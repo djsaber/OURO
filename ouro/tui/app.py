@@ -254,6 +254,7 @@ _AGENT_INTERACTION_EVENTS = {
 _SESSION_GROUPING_ACTION = "__ouro_session_grouping__"
 _THEME_ACTION = "__ouro_theme__"
 _THOUGHT_DISPLAY_ACTION = "__ouro_thought_display__"
+_SCAFFOLD_MESSAGES_ACTION = "__ouro_scaffold_messages__"
 _WELCOME_STYLE_PREFIX = "welcome:"
 _WELCOME_MOTION_ACTION = "__ouro_welcome_motion__"
 _INPUT_DRAFT_MEMORY_ACTION = "__ouro_input_draft_memory__"
@@ -1038,6 +1039,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         with Vertical(id="main"):
             yield ConversationView(
                 reasoning_expanded=self._preferences.reasoning_expanded,
+                show_scaffold_messages=self._preferences.show_scaffold_messages,
                 welcome_state_changed=self._apply_welcome_mode,
                 system_status_changed=self._set_welcome_system_status,
             )
@@ -1751,8 +1753,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 message_id = event.payload.get("message_id")
                 if isinstance(message_id, str):
                     input_message = input_messages[message_id]
-                    if input_message.role == "user":
-                        await conversation.add_user_message(input_message)
+                    await conversation.add_user_message(input_message)
             if event.event_type == "compaction_completed":
                 await flush_stream()
                 covered = event.payload.get("covered_message_count")
@@ -4112,6 +4113,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._prepare_loaded_session,
             loaded,
             self._models,
+            show_scaffold_messages=self._preferences.show_scaffold_messages,
         )
         if self._host_closing or revision != self._view_revision:
             return False
@@ -4402,6 +4404,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             frozenset(self._history_run_ids) | self.query_one(ConversationView).presented_run_ids,
             self._models,
             self._visible_agent.delegation_id if self._visible_agent is not None else None,
+            show_scaffold_messages=self._preferences.show_scaffold_messages,
         )
         async with self._runtime_event_apply_lock:
             if (
@@ -4427,6 +4430,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         newer_run_ids: frozenset[str],
         models: tuple[AvailableModel, ...],
         delegation_id: str | None,
+        *,
+        show_scaffold_messages: bool = False,
     ) -> PreparedTranscript:
         presentations = project_run_presentations(
             (run for run in window.runs if run.kind == "agent"), window.messages, models=models
@@ -4437,6 +4442,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             presentations,
             mutable_tool_call_keys=frozenset(),
             visible_scaffold_delegation_id=delegation_id,
+            show_scaffold_messages=show_scaffold_messages,
         )
         return (
             tuple(
@@ -4604,6 +4610,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def _prepare_loaded_session(
         loaded: LoadedSession,
         models: tuple[AvailableModel, ...],
+        *,
+        show_scaffold_messages: bool = False,
     ) -> tuple[
         TuiSessionProjection,
         PreparedTranscript,
@@ -4643,6 +4651,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             visible_scaffold_delegation_id=(
                 session.delegation_id if session.session_kind == "subagent" else None
             ),
+            show_scaffold_messages=show_scaffold_messages,
         )
         entries, presented_runs = transcript
         prepared = list(entries)
@@ -4860,8 +4869,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._apply_reasoning_state(state)
 
     def action_actions(self) -> None:
-        if self._visible_read_only:
-            return
         self._request_menu_navigation(_MENU_ACTIONS)
 
     def action_plugins(self) -> None:
@@ -4962,6 +4969,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if action_id == _THOUGHT_DISPLAY_ACTION:
                 await self._choose_thought_display(menu=action_screen)
                 return None
+            if action_id == _SCAFFOLD_MESSAGES_ACTION:
+                await self._choose_scaffold_messages(menu=action_screen)
+                return None
             if action_id == _INPUT_DRAFT_MEMORY_ACTION:
                 await self._choose_input_draft_memory(menu=action_screen)
                 return None
@@ -5045,6 +5055,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                         group="Settings",
                     ),
                     Choice(
+                        _SCAFFOLD_MESSAGES_ACTION,
+                        "Scaffold messages",
+                        group="Settings",
+                    ),
+                    Choice(
                         _INPUT_DRAFT_MEMORY_ACTION,
                         "Remember drafts",
                         group="Settings",
@@ -5065,6 +5080,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 key=lambda choice: _ACTION_GROUP_RANK[choice.group],
             )
         )
+        if self._visible_read_only:
+            # Presentation preferences also apply while observing a child;
+            # session and runtime mutations remain unavailable there.
+            actions = tuple(
+                action
+                for action in actions
+                if action.value
+                in {_THEME_ACTION, _THOUGHT_DISPLAY_ACTION, _SCAFFOLD_MESSAGES_ACTION}
+            )
         return (*self._recent_action_choices(actions), *actions)
 
     def _command_action_choice(
@@ -5344,6 +5368,57 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 on_select=select_display,
             )
         )
+
+    async def _choose_scaffold_messages(self, *, menu: ChoiceScreen) -> None:
+        def choices() -> tuple[Choice, ...]:
+            return tuple(
+                Choice(
+                    value,
+                    label,
+                    marker=(
+                        self._tui_theme.selected_choice_marker
+                        if enabled == self._preferences.show_scaffold_messages
+                        else ""
+                    ),
+                )
+                for value, label, enabled in (("off", "Off", False), ("on", "On", True))
+            )
+
+        async def select(value: str) -> tuple[Choice, ...] | None:
+            worker: Worker[bool] = self.run_worker(
+                partial(self._set_scaffold_messages, value == "on"), group="scaffold-messages"
+            )
+            if not await asyncio.shield(worker.wait()):
+                return None
+            return choices()
+
+        menu.push_page(
+            title="SCAFFOLD MESSAGES",
+            placeholder="Choose whether to show scaffold messages…",
+            choices=choices(),
+            initial_value="on" if self._preferences.show_scaffold_messages else "off",
+            on_select=select,
+        )
+
+    async def _set_scaffold_messages(self, enabled: bool) -> bool:
+        async with self._preferences_save_lock:
+            if enabled == self._preferences.show_scaffold_messages:
+                return True
+            preferences = self._preferences.model_copy(update={"show_scaffold_messages": enabled})
+            try:
+                await asyncio.to_thread(self._preferences_store.save, preferences)
+            except OuroError as exc:
+                self.notify(str(exc), severity="error", markup=False)
+                return False
+            self._preferences = preferences
+        self.query_one(ConversationView).show_scaffold_messages = enabled
+        self._session_history_states.clear()
+        session_id = self._visible_session_id()
+        if session_id is not None:
+            # Reload through observation so retained pages, active streams and
+            # read-only child sessions use the same snapshot/event handoff.
+            await self._show_observed_session(session_id)
+        return True
 
     async def _choose_session_grouping(self, *, menu: ChoiceScreen) -> None:
         def grouping_choices() -> tuple[Choice, ...]:

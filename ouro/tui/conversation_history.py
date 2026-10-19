@@ -48,7 +48,9 @@ class ToolActivityRenderer(Protocol):
     ) -> Text: ...
 
 
-TranscriptEntryKind = Literal["user", "assistant", "tool", "notice", "command", "compaction", "run"]
+TranscriptEntryKind = Literal[
+    "user", "scaffold", "assistant", "tool", "notice", "command", "compaction", "run"
+]
 
 _REASONING_ENTRY_META = "ouro_reasoning_entry"
 _TOOL_NAVIGATION_META = "ouro_tool_navigation"
@@ -267,6 +269,7 @@ class TranscriptEntry:
     run: RunPresentation | None = None
     compaction: CompactionPresentation | None = None
     error: bool = False
+    scaffold: bool = False
 
 
 @dataclass(frozen=True)
@@ -278,6 +281,7 @@ class _UserMessageContent:
     created_at: datetime | None = None
     entry_index: int = -1
     highlighted: bool = False
+    scaffold: bool = False
 
     def __rich_console__(
         self,
@@ -297,7 +301,10 @@ class _UserMessageContent:
             bgcolor=self.theme.highlight if self.highlighted else self.theme.panel,
             meta=interaction_meta,
         )
-        content = ProseText(self.text, style=self.theme.text_highlight)
+        content = ProseText(
+            self.text,
+            style=self.theme.text_lowlight if self.scaffold else self.theme.text_highlight,
+        )
         lines = console.render_lines(content, content_options, pad=False)
         if self.created_at is not None:
             timestamp = Text(
@@ -308,7 +315,11 @@ class _UserMessageContent:
                 style=self.theme.text_faint,
             )
             lines.extend(console.render_lines(timestamp, content_options, pad=False))
-        border = Segment("│", Style(color=self.theme.accent) + interaction_style)
+        border = Segment(
+            "│",
+            Style(color=self.theme.text_lowlight if self.scaffold else self.theme.accent)
+            + interaction_style,
+        )
 
         def framed_line(line: list[Segment]) -> RenderResult:
             yield border
@@ -803,7 +814,7 @@ def _entry_renderables(
 
     entry = request.entry
     theme = request.theme
-    if entry.kind == "user":
+    if entry.kind in {"user", "scaffold"}:
         return [
             (
                 Padding(
@@ -813,10 +824,11 @@ def _entry_renderables(
                         created_at=entry.created_at,
                         entry_index=request.entry_index,
                         highlighted=request.user_highlighted,
+                        scaffold=entry.scaffold,
                     ),
                     (1, 2, 2, 2),
                 ),
-                "user",
+                "user" if entry.kind == "user" else "body",
             )
         ]
     if entry.kind == "tool":
@@ -1077,7 +1089,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         if not isinstance(user_entry_index, int) or not 0 <= user_entry_index < len(self._entries):
             return
         entry = self._entries[user_entry_index]
-        if entry.kind != "user":
+        if entry.kind not in {"user", "scaffold"}:
             return
         event.prevent_default()
         event.stop()

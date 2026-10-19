@@ -451,7 +451,15 @@ ready message 只启动一个呈现 worker，不在 App 消息泵中等待解析
 中处理不可变快照，UI loop 只提交捕获宽度对应的 strips，后台线程不得修改 Widget。
 
 实时和重载使用 canonical MessageRecord 的 `role/scaffold` 决定可见性；事件类型表达来源，不能替代这些字段。
-`scaffold=true` 不进入对话面，semantic tag 只影响模型包络。流式回归须在 Provider 仍被阻塞时验证可见源流，
+默认隐藏内部 `scaffold=true` 消息，保留附件输入和当前子会话自身的委派输入。Actions → Settings →
+`Scaffold messages` 提供 `Off`（默认）和 `On`，持久化为 `config/tui.json` 中的
+`show_scaffold_messages`。开启后，脚手架正文复用用户消息的布局、时间戳、悬停与复制交互，正文和左边栏均使用
+主题 `text_lowlight`，悬停时正文仍保持低亮；真实用户消息保持 `text_highlight` 正文和 `accent` 左边栏。
+新增显示的内部消息不改变 `/fork`、`/navigate`
+的用户消息编号。该偏好统一应用于主会话、子会话和任务会话的快照、实时事件、分页及缓存恢复；切换立即刷新当前
+视图并保留已加载的历史范围，不改变后台 Run。只读子会话可打开 Actions 中的 Theme、Thinking display 和
+Scaffold messages，其他会话与运行配置操作仍不可用。semantic tag 只影响模型包络。
+流式回归须在 Provider 仍被阻塞时验证可见源流，
 不能仅检查最终 RunResult。
 
 Catalog 错误条目单独标记，但不能据此推断 canonical Session 不可读取。有稳定 Session identity 时仍由

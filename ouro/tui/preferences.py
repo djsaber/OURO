@@ -26,6 +26,7 @@ class TuiPreferences(OuroModel):
     welcome_style: str = DEFAULT_WELCOME_STYLE
     welcome_motion: bool = True
     reasoning_expanded: bool = False
+    show_scaffold_messages: bool = False
     input_draft_memory_enabled: bool = True
     session_grouping: SessionGrouping = "date"
     recent_actions: tuple[str, ...] = ()

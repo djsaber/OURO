@@ -7541,6 +7541,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         assert [choice.label for choice in action_choices] == [
             "Theme",
             "Thinking display",
+            "Scaffold messages",
             "Remember drafts",
             "Session grouping",
             "Queued messages",
@@ -7579,7 +7580,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Keyboard help",
         ]
         assert [choice.group for choice in action_choices] == [
-            *("Settings",) * 8,
+            *("Settings",) * 9,
             *("Sessions",) * 5,
             *("Tasks",) * 3,
             *("Providers",) * 5,

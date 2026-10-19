@@ -81,6 +81,7 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
 
     assert TuiPreferences().session_grouping == "date"
     assert TuiPreferences().reasoning_expanded is False
+    assert TuiPreferences().show_scaffold_messages is False
     assert TuiPreferences().input_draft_memory_enabled is True
     assert TuiPreferences().theme_saturation_level == 0
     store.save(
@@ -89,6 +90,7 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
             session_grouping="workspace",
             theme_saturation_level=17,
             reasoning_expanded=False,
+            show_scaffold_messages=True,
             input_draft_memory_enabled=False,
             recent_actions=("/new", "__ouro_theme__"),
             recent_workspaces=(str(tmp_path),),
@@ -101,6 +103,7 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
         session_grouping="workspace",
         theme_saturation_level=17,
         reasoning_expanded=False,
+        show_scaffold_messages=True,
         input_draft_memory_enabled=False,
         recent_actions=("/new", "__ouro_theme__"),
         recent_workspaces=(str(tmp_path),),
@@ -121,6 +124,7 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
         {"theme": "cobalt", "theme_saturation_level": THEME_SATURATION_LEVELS},
         {"theme": "cobalt", "theme_saturation_level": True},
         {"theme": "cobalt", "reasoning_expanded": "sometimes"},
+        {"show_scaffold_messages": "sometimes"},
         {"theme": "cobalt", "input_draft_memory_enabled": "sometimes"},
         {"theme": "cobalt", "recent_actions": ["one", "two", "three", "four"]},
         {"theme": "cobalt", "recent_actions": ["same", "same"]},

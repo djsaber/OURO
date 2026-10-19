@@ -1246,7 +1246,10 @@ def _presents_message(
     message: MessageRecord,
     *,
     visible_scaffold_delegation_id: str | None,
+    show_scaffold_messages: bool = False,
 ) -> bool:
+    if show_scaffold_messages:
+        return True
     if not message.scaffold:
         return True
     if message.semantic_tag == "attachments" and message.input_attachments:
@@ -1260,6 +1263,34 @@ def _presents_message(
     )
 
 
+def _input_transcript_entry(
+    message: MessageRecord,
+    *,
+    visible_scaffold_delegation_id: str | None,
+    show_scaffold_messages: bool,
+) -> TranscriptEntry | None:
+    """Share input presentation between snapshots, history pages and live events."""
+    normally_visible = _presents_message(
+        message, visible_scaffold_delegation_id=visible_scaffold_delegation_id
+    )
+    if not normally_visible and not (message.scaffold and show_scaffold_messages):
+        return None
+    if message.role != "user" and not (message.scaffold and show_scaffold_messages):
+        return None
+    text = user_message_text(
+        message, include_scaffold_content=message.scaffold and show_scaffold_messages
+    )
+    if not text:
+        return None
+    return TranscriptEntry(
+        # Revealing internal messages must not renumber /fork and /navigate targets.
+        kind="user" if normally_visible and message.role == "user" else "scaffold",
+        text=text,
+        created_at=message.created_at,
+        scaffold=message.scaffold,
+    )
+
+
 type PreparedTranscript = tuple[tuple[TranscriptEntry, ...], frozenset[str]]
 
 
@@ -1270,6 +1301,7 @@ def project_transcript_entries(
     *,
     mutable_tool_call_keys: frozenset[tuple[str | None, str]],
     visible_scaffold_delegation_id: str | None,
+    show_scaffold_messages: bool = False,
 ) -> tuple[tuple[TranscriptEntry, ...], frozenset[str]]:
     """Build immutable history away from Textual's event loop.
 
@@ -1284,6 +1316,7 @@ def project_transcript_entries(
         if _presents_message(
             message,
             visible_scaffold_delegation_id=visible_scaffold_delegation_id,
+            show_scaffold_messages=show_scaffold_messages,
         )
     )
     requests = {request.message_id: request for run in runs for request in run.requests}
@@ -1297,16 +1330,14 @@ def project_transcript_entries(
         if message.run_id is not None:
             last_message_by_run[message.run_id] = message_index
         entries = message_entries[message_index]
-        if message.role == "user":
-            text = user_message_text(message)
-            if text:
-                entries.append(
-                    TranscriptEntry(
-                        kind="user",
-                        text=text,
-                        created_at=message.created_at,
-                    )
-                )
+        if message.role == "user" or message.scaffold:
+            entry = _input_transcript_entry(
+                message,
+                visible_scaffold_delegation_id=visible_scaffold_delegation_id,
+                show_scaffold_messages=show_scaffold_messages,
+            )
+            if entry is not None:
+                entries.append(entry)
             continue
         if message.role != "assistant":
             continue
@@ -1415,10 +1446,12 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         reasoning_expanded: bool = True,
         welcome_state_changed: Callable[[bool], None] | None = None,
         system_status_changed: Callable[[TuiSystemStatus], None] | None = None,
+        show_scaffold_messages: bool = False,
     ) -> None:
         super().__init__(id="conversation")
         self._follow_tail = True
         self._reasoning_expanded = reasoning_expanded
+        self.show_scaffold_messages = show_scaffold_messages
         self._welcome_state_changed = welcome_state_changed
         self._system_status_changed = system_status_changed
         self._history = ConversationHistory(
@@ -1628,10 +1661,8 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         held_scroll_y: float | None = None,
         reusable_history: ConversationHistoryState | None = None,
     ) -> None:
-        # Canonical history contains both autonomous dialogue and harness
-        # scaffolding. A child view deliberately presents only the user-role
-        # inputs belonging to its own Delegation; every other scaffold remains
-        # hidden according to its explicit presentation provenance.
+        # All session kinds share the same presentation policy, including the
+        # user-facing attachment and delegation inputs shown by default.
         materialized = tuple(messages)
         compaction_records = tuple(compactions)
         run_presentations = tuple(runs)
@@ -1648,6 +1679,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                 run_presentations,
                 mutable_tool_call_keys=mutable_tool_call_keys,
                 visible_scaffold_delegation_id=visible_scaffold_delegation_id,
+                show_scaffold_messages=self.show_scaffold_messages,
             )
         else:
             transcript, presented_run_ids = project_transcript_entries(
@@ -1656,6 +1688,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                 run_presentations,
                 mutable_tool_call_keys=mutable_tool_call_keys,
                 visible_scaffold_delegation_id=visible_scaffold_delegation_id,
+                show_scaffold_messages=self.show_scaffold_messages,
             )
         await self.load_transcript(
             (transcript, presented_run_ids),
@@ -1759,17 +1792,16 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         )
 
     async def add_user_message(self, message: MessageRecord) -> None:
-        if message.role != "user" or not self._presents_message(message):
-            return
-        text = user_message_text(message)
-        if text:
-            await self.add_user(text, created_at=message.created_at)
-
-    def _presents_message(self, message: MessageRecord) -> bool:
-        return _presents_message(
+        """Append user or scaffold input using the persisted-history projection."""
+        entry = _input_transcript_entry(
             message,
             visible_scaffold_delegation_id=self._visible_scaffold_delegation_id,
+            show_scaffold_messages=self.show_scaffold_messages,
         )
+        if entry is not None:
+            await self._dismiss_welcome()
+            await self.finish_assistant()
+            self._history.append(entry)
 
     async def append_assistant(self, text: str) -> None:
         await self._dismiss_welcome()
@@ -3697,12 +3729,14 @@ class StatusLine(Horizontal):
         self._context_width = content_width
 
 
-def user_message_text(message: MessageRecord | ModelMessage) -> str:
+def user_message_text(
+    message: MessageRecord | ModelMessage, *, include_scaffold_content: bool = False
+) -> str:
     if isinstance(message, MessageRecord) and message.input_attachments:
         names = " · ".join(item.label for item in message.input_attachments)
         text = (
             ""
-            if message.semantic_tag == "attachments"
+            if message.semantic_tag == "attachments" and not include_scaffold_content
             else user_message_text(ModelMessage.from_record(message))
         )
         return f"{text}\n{names}".lstrip("\n")
