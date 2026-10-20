@@ -3559,13 +3559,16 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("collapse_traces", [True, False])
 async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    collapse_traces: bool,
 ) -> None:
+    TuiPreferencesStore(tmp_path).save(TuiPreferences(collapse_traces=collapse_traces))
     provider = MultiChildStreamingProvider()
     application = _multi_child_streaming_application(tmp_path, provider)
-    app = OuroTuiApp(application=application)
+    app = OuroTuiApp(home=tmp_path, application=application)
 
     async with run_ready_app(app, size=(100, 38)) as pilot:
         await pilot.pause()
@@ -3798,12 +3801,21 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
 
         app.action_main_session()
         await _wait_for_worker_group(app, pilot, group="navigation")
+        await root_history.wait_until_rendered()
+        await app.screen.wait_for_refresh()
         assert app._visible_session_id() == root_session_id
-        assert app.query_one(ConversationView).scroll_y == held_root_scroll_y
+        if collapse_traces:
+            # The root completed while hidden. Folding its tool trace can make
+            # the saved offset exceed the destination's new scroll range.
+            assert root_conversation.max_scroll_y < held_root_scroll_y
+            restored_root_scroll_y = root_conversation.max_scroll_y
+        else:
+            restored_root_scroll_y = held_root_scroll_y
+        assert root_conversation.scroll_y == restored_root_scroll_y
         assert displayed_root_frames
         assert all(
             ("first child paragraph 29" in rendered and scroll_y == held_child_scroll_y)
-            or ("Root history paragraph 79" in rendered and scroll_y == held_root_scroll_y)
+            or ("Root history paragraph 79" in rendered and scroll_y == restored_root_scroll_y)
             for rendered, scroll_y in displayed_root_frames
         )
         assert app._visible_read_only is False
@@ -3832,7 +3844,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             pilot,
             description="completed first child preview",
         )
-        assert "└ Done • Observe child 1" in root_history.rendered_text
+        assert ("└ Done • Observe child 1" in root_history.rendered_text) is (not collapse_traces)
 
         displayed_child_frames: list[tuple[str, float]] = []
         rendered_during_cached_switch: list[int] = []
@@ -3885,11 +3897,11 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         rendered_during_cached_switch.clear()
         assert displayed_child_frames
         assert all(
-            ("Root history paragraph 79" in rendered and scroll_y == held_root_scroll_y)
+            ("Root history paragraph 79" in rendered and scroll_y == restored_root_scroll_y)
             or ("first child paragraph 29" in rendered and scroll_y == held_child_scroll_y)
             for rendered, scroll_y in displayed_child_frames
         ), (
-            held_root_scroll_y,
+            restored_root_scroll_y,
             held_child_scroll_y,
             [
                 ("Root history paragraph 79" in rendered, "first child paragraph 29" in rendered, y)
@@ -4290,10 +4302,13 @@ async def test_thought_display_command_applies_to_history_and_live_output_and_pe
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("collapse_traces", [True, False])
 async def test_history_restores_each_model_call_timing_with_one_run_summary(
     tmp_path: Path,
+    collapse_traces: bool,
 ) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
+    TuiPreferencesStore(tmp_path).save(TuiPreferences(collapse_traces=collapse_traces))
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
     started_at = datetime(2026, 8, 11, tzinfo=UTC)
     run = RunRecord(
         session_id="ses_multi_model",
@@ -4330,6 +4345,7 @@ async def test_history_restores_each_model_call_timing_with_one_run_summary(
         await pilot.pause()
 
         history = conversation.query_one(ConversationHistory)
+        await history.wait_until_rendered()
         thoughts = [
             entry for entry in history.entries if entry.kind == "assistant" and entry.reasoning
         ]
@@ -4339,7 +4355,14 @@ async def test_history_restores_each_model_call_timing_with_one_run_summary(
         assert summaries[0].run == presentation
         assert presentation.model == "provider-model"
         assert presentation.duration_seconds == 3
+        assert history.rendered_text.count("+ Thought • 500ms") == (1 if collapse_traces else 2)
+        assert ("Answer 0" in history.rendered_text) is (not collapse_traces)
+        assert "Answer 1" in history.rendered_text
+        if collapse_traces:
+            history.toggle_trace(history.entries.index(summaries[0]))
+        # Expanding the trace must restore the earlier call's original timing.
         assert history.rendered_text.count("+ Thought • 500ms") == 2
+        assert "Answer 0" in history.rendered_text
         assert "provider-model" in history.rendered_text
         assert "chat-endpoint" not in history.rendered_text
         assert "3.0s" in history.rendered_text
@@ -7910,7 +7933,9 @@ async def test_actions_opens_provider_scoped_endpoint_configuration(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_provider_enable_action_is_owned_by_provider_submenu(tmp_path: Path) -> None:
+async def test_provider_enable_action_is_owned_by_provider_submenu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     configuration = ConfigurationFacade(tmp_path)
     created = configuration.add_provider(
         display_name="Secondary",
@@ -7924,17 +7949,28 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(tmp_path: Pat
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with run_ready_app(app, size=(100, 34)) as pilot:
-        await pilot.pause()
         await pilot.press("ctrl+p")
-        await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Manage providers"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Secondary"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, "Manage providers", title="PROVIDERS")
+        catalog_started, release_catalog = asyncio.Event(), asyncio.Event()
+        provider_catalog = app._controller.provider_catalog
+
+        async def delayed_catalog():
+            catalog_started.set()
+            await release_catalog.wait()
+            return await provider_catalog()
+
+        monkeypatch.setattr(app._controller, "provider_catalog", delayed_catalog)
+        try:
+            await choose_menu(pilot, "Secondary")
+            await asyncio.wait_for(catalog_started.wait(), timeout=15)
+            # An idle message pump does not imply that the catalog read has finished.
+            await pilot.pause()
+            assert app.screen.page_title == "PROVIDERS"
+            assert app.screen.query_one("#choice-filter", Input).has_focus
+        finally:
+            release_catalog.set()
+        await _wait_for_screen(app, ChoiceScreen, title="PROVIDER • Secondary")
 
         assert app.screen.query_one("#choice-title", Static).render().plain == (
             "PROVIDER • Secondary"
@@ -7946,32 +7982,38 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(tmp_path: Pat
         options.highlighted = options.get_option_index("toggle")
         options.focus()
         await pilot.press("enter")
-        await pilot.pause()
-        assert ConfigurationFacade(tmp_path).provider(provider_id).enabled is True
-        assert (
-            next(choice for choice in app.screen._choices if choice.value == "toggle").label
-            == "Disable"
+        await _wait_until(
+            lambda: (
+                next(choice for choice in app.screen._choices if choice.value == "toggle").label
+                == "Disable"
+            ),
+            pilot,
+            description="enabled provider reflected in its submenu",
         )
+        assert ConfigurationFacade(tmp_path).provider(provider_id).enabled is True
 
         await pilot.press("escape")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="PROVIDERS")
         provider_choice = next(
             choice for choice in app.screen._choices if choice.value == provider_id
         )
         assert provider_choice.trailing == "custom"
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="PROVIDER • Secondary")
         options = app.screen.query_one("#choice-list", OptionList)
         await pilot.click(options, offset=(4, options.get_option_index("toggle")))
-        await pilot.pause()
-        assert ConfigurationFacade(tmp_path).provider(provider_id).enabled is False
-        assert (
-            next(choice for choice in app.screen._choices if choice.value == "toggle").label
-            == "Enable"
+        await _wait_until(
+            lambda: (
+                next(choice for choice in app.screen._choices if choice.value == "toggle").label
+                == "Enable"
+            ),
+            pilot,
+            description="disabled provider reflected in its submenu",
         )
+        assert ConfigurationFacade(tmp_path).provider(provider_id).enabled is False
 
         await pilot.press("escape")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="PROVIDERS")
         provider_choice = next(
             choice for choice in app.screen._choices if choice.value == provider_id
         )
@@ -11399,7 +11441,8 @@ async def test_workspace_command_selects_paths_only_before_session_and_keeps_cle
         assert "Recent workspace" not in workspace_menu.plain
 
         await pilot.press("down", "enter")
-        await pilot.pause()
+        # The header changes before the off-thread history save completes.
+        await _wait_for_worker_group(app, pilot, group="composer-command", timeout=15)
         assert app._active_workspace == str(historical.resolve())
         assert preferences.load().recent_workspaces[:2] == (
             str(historical.resolve()),
@@ -11415,7 +11458,7 @@ async def test_workspace_command_selects_paths_only_before_session_and_keeps_cle
             assert popup.selected_argument is None
 
             await pilot.press("enter")
-            await pilot.pause()
+            await _wait_for_worker_group(app, pilot, group="composer-command", timeout=15)
             assert app._active_workspace == str(parent.resolve())
             assert preferences.load().recent_workspaces[0] == str(parent.resolve())
 
@@ -11426,7 +11469,7 @@ async def test_workspace_command_selects_paths_only_before_session_and_keeps_cle
         assert popup.selected_argument is not None
         assert popup.selected_argument.value == str(historical.resolve())
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_worker_group(app, pilot, group="composer-command", timeout=15)
         assert app._active_workspace == str(historical.resolve())
 
         composer.load_text(f"/workspace {historical.parent}")
@@ -11443,14 +11486,14 @@ async def test_workspace_command_selects_paths_only_before_session_and_keeps_cle
         await pilot.pause()
         assert popup.selected_argument is None
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_worker_group(app, pilot, group="composer-command", timeout=15)
         assert app._active_workspace == str(historical.parent.resolve())
 
         composer.load_text(f"/workspace {historical}")
         composer.move_cursor((0, len(composer.document.lines[0])))
         await pilot.pause()
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_worker_group(app, pilot, group="composer-command", timeout=15)
         assert app._active_workspace == str(historical.resolve())
 
         composer.load_text(f"/workspace {freeform}")
@@ -11462,7 +11505,7 @@ async def test_workspace_command_selects_paths_only_before_session_and_keeps_cle
         assert not popup.display
 
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_worker_group(app, pilot, group="composer-command", timeout=15)
         assert app._active_workspace == str(freeform.resolve())
         assert preferences.load().recent_workspaces[:4] == (
             str(freeform.resolve()),
@@ -11530,7 +11573,7 @@ async def test_workspace_clear_argument_forgets_saved_history_without_changing_w
         composer.move_cursor((0, len(composer.document.lines[0])))
         await pilot.pause()
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_worker_group(app, pilot, group="composer-command", timeout=15)
 
         assert preferences.load().recent_workspaces == ()
         assert app._active_workspace == active_workspace

@@ -645,16 +645,20 @@ async def test_leaving_child_restores_destination_draft_and_editable_surface(tmp
         assert composer.text == "Root draft"
 
 
+@pytest.mark.parametrize("destination", ("new", "reload", "snapshot"))
 async def test_queue_read_finishing_after_navigation_does_not_replace_destination_queue(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, destination
 ):
     application = _application(tmp_path)
     source = application.runtime.sessions.create(title="Source").session
     app = OuroTuiApp(application=application, resume_session_id=source.session_id)
-    entered, release = asyncio.Event(), asyncio.Event()
+    entered, release, requested = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    reads = 0
 
     async def delayed_inputs(session_id):
+        nonlocal reads
         assert session_id == source.session_id
+        reads += 1
         entered.set()
         await release.wait()
         return (
@@ -663,18 +667,145 @@ async def test_queue_read_finishing_after_navigation_does_not_replace_destinatio
                 prompt="Background follow-up",
                 mode="follow_up",
                 queued_at=datetime.now(UTC),
+                waiting_on_run_id="run_source",
             ),
         )
 
+    async def refresh_before_navigation():
+        requested.set()
+        await app._sync_queued_inputs()
+
     async with run_ready_app(app, size=(100, 32)) as pilot:
         monkeypatch.setattr(app._controller, "queued_user_inputs", delayed_inputs)
-        refresh = asyncio.create_task(app._sync_queued_inputs())
+        refreshes = [asyncio.create_task(app._sync_queued_inputs())]
         try:
             await asyncio.wait_for(entered.wait(), 5)
-            await app._new_session()
+            refreshes.append(asyncio.create_task(refresh_before_navigation()))
+            await asyncio.wait_for(requested.wait(), 5)
+            if destination == "new":
+                await app._new_session()
+            elif destination == "reload":
+                await app._open_session(source.session_id)
+            else:
+                observation = await app._controller.observe_session(source.session_id)
+                try:
+                    await app._install_session_surface(
+                        observation.loaded,
+                        subscription=observation.subscription,
+                        revision=app._view_revision,
+                    )
+                finally:
+                    if app._observation_subscription is not observation.subscription:
+                        observation.subscription.close()
         finally:
             release.set()
-        await refresh
+            await asyncio.gather(*refreshes)
         await pilot.pause()
+        assert reads == 1
+        assert app.query_one(QueuedInputPanel).inputs == ()
         assert not app.query_one(QueuedInputPanel).display
         assert app.query_one(ConversationView).showing_welcome
+
+
+@pytest.mark.parametrize("change", ("enqueue", "unqueue", "consume"))
+async def test_queue_refresh_serializes_reads_and_preserves_latest_inputs(
+    tmp_path, monkeypatch, change
+):
+    application = _application(tmp_path)
+    session = application.runtime.sessions.create(title="Queued inputs").session
+    app = OuroTuiApp(application=application, resume_session_id=session.session_id)
+    first, second = (
+        QueuedUserInputView(
+            queue_id=f"queued_{index}",
+            prompt=prompt,
+            mode="follow_up",
+            queued_at=datetime.now(UTC),
+            waiting_on_run_id="run_active",
+        )
+        for index, prompt in enumerate(("keep queued", "return to composer"))
+    )
+    previous, current = {
+        "enqueue": ((first,), (first, second)),
+        "unqueue": ((first, second), (first,)),
+        "consume": ((first, second), ()),
+    }[change]
+    entered, release, requested = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    reads = 0
+
+    async def delayed_inputs(session_id):
+        nonlocal reads
+        assert session_id == session.session_id
+        reads += 1
+        if reads == 1:
+            entered.set()
+            await release.wait()
+            return previous
+        return current
+
+    async def refresh_after_change():
+        requested.set()
+        await app._sync_queued_inputs()
+
+    async with run_ready_app(app) as pilot:
+        monkeypatch.setattr(app._controller, "queued_user_inputs", delayed_inputs)
+        refreshes = [asyncio.create_task(app._sync_queued_inputs())]
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            refreshes.append(asyncio.create_task(refresh_after_change()))
+            await asyncio.wait_for(requested.wait(), 5)
+            # Snapshot freshness follows actual reads, not task creation order.
+            assert reads == 1
+        finally:
+            release.set()
+            await asyncio.gather(*refreshes)
+        await pilot.pause()
+        panel = app.query_one(QueuedInputPanel)
+        assert panel.inputs == current
+        assert panel.display is bool(current)
+        assert tuple(option.value for option in app._queued_input_arguments()) == tuple(
+            item.queue_id for item in current
+        )
+
+
+@pytest.mark.parametrize("outcome", ("error", "cancel"))
+async def test_failed_queue_read_releases_the_next_refresh(tmp_path, monkeypatch, outcome):
+    application = _application(tmp_path)
+    session = application.runtime.sessions.create(title="Queue recovery").session
+    app = OuroTuiApp(application=application, resume_session_id=session.session_id)
+    entered, release, requested = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    reads = 0
+
+    async def delayed_inputs(session_id):
+        nonlocal reads
+        assert session_id == session.session_id
+        reads += 1
+        if reads == 1:
+            entered.set()
+            await release.wait()
+            raise OSError("queue read failed")
+        return ()
+
+    async def refresh_after_failure():
+        requested.set()
+        await app._sync_queued_inputs()
+
+    async with run_ready_app(app):
+        monkeypatch.setattr(app._controller, "queued_user_inputs", delayed_inputs)
+        refreshes = [asyncio.create_task(app._sync_queued_inputs())]
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            refreshes.append(asyncio.create_task(refresh_after_failure()))
+            await asyncio.wait_for(requested.wait(), 5)
+            assert reads == 1
+            if outcome == "cancel":
+                refreshes[0].cancel()
+            else:
+                release.set()
+            with pytest.raises(asyncio.CancelledError if outcome == "cancel" else OSError):
+                await refreshes[0]
+            await asyncio.wait_for(asyncio.shield(refreshes[1]), 5)
+        finally:
+            release.set()
+            await asyncio.gather(*refreshes, return_exceptions=True)
+        assert reads == 2
+        assert app.query_one(QueuedInputPanel).inputs == ()

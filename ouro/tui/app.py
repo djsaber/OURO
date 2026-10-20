@@ -997,6 +997,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._runtime_event_apply_lock = asyncio.Lock()
         self._session_controls_refresh_requested = False
         self._session_controls_refresh_task: asyncio.Task[None] | None = None
+        self._queued_inputs_lock = asyncio.Lock()
         self._mcp_status_timer: Timer | None = None
         self._input_surface: WelcomePanel | None = None
         self._input_draft_revision = 0
@@ -2435,6 +2436,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         return models
 
     async def _sync_queued_inputs(self, session_id: str | None = None) -> None:
+        """Serialize queue reads and publication for the surface that requested them."""
+
         if not self._surface_available() or not self.query(QueuedInputPanel):
             return
         session_id = session_id or self._controller.session_id
@@ -2443,12 +2446,28 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         if not self._owns_session_surface(session_id):
             return
-        inputs = await self._controller.queued_user_inputs(session_id)
-        if not self._surface_available() or not self._owns_session_surface(session_id):
-            return
-        self.query_one(QueuedInputPanel).set_inputs(inputs)
-        if self._projection is not None:
-            self._sync_activity(self._projection.activity)
+        view_revision = self._view_revision
+        projection = self._projection
+
+        def owns_view() -> bool:
+            return (
+                self._surface_available()
+                and view_revision == self._view_revision
+                and projection is self._projection
+                and self._owns_session_surface(session_id)
+            )
+
+        # Thread scheduling does not preserve request order. Keep the actual
+        # read and publication together; snapshot replacement invalidates both.
+        async with self._queued_inputs_lock:
+            if not owns_view():
+                return
+            inputs = await self._controller.queued_user_inputs(session_id)
+            if not owns_view():
+                return
+            self.query_one(QueuedInputPanel).set_inputs(inputs)
+            if self._projection is not None:
+                self._sync_activity(self._projection.activity)
 
     def on_text_area_changed(self, message: TextArea.Changed) -> None:
         if not self._surface_available():

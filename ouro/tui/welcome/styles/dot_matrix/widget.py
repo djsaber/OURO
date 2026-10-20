@@ -24,7 +24,7 @@ def _render_frame(
     background: tuple[int, int, int],
 ) -> tuple[PhosphorRaster, tuple[Strip, ...], tuple[Region, ...]]:
     """Compute with exclusive raster ownership and no access to mounted widgets."""
-    if raster is None:
+    if raster is None or (raster.columns, raster.rows) != (size.width, size.height):
         raster = PhosphorRaster(artwork, size.width, size.height)
     lines = raster.frame(seconds, delta, monochrome=monochrome, background=background)
     return raster, lines, raster.damage
@@ -69,7 +69,11 @@ class DotMatrix(Widget):
         self._last_tick = None
         self._pending_frame = None
         self._frame_requested.set()
-        if self.is_mounted and (active or self._raster is None):
+        if self.is_mounted and (
+            active
+            or self._raster is None
+            or (self._raster.columns, self._raster.rows) != (self.size.width, self.size.height)
+        ):
             self._paint(0)
 
     def _tick(self) -> None:
@@ -80,7 +84,6 @@ class DotMatrix(Widget):
         self._paint(delta)
 
     def on_resize(self, event: events.Resize) -> None:
-        self._raster = None
         # A new size needs a frame even when animation playback is paused.
         self._paint(0)
 
@@ -152,13 +155,18 @@ class DotMatrix(Widget):
                     background,
                 )
                 self._rendering = False
-                if not self.is_mounted or revision != self._render_revision:
-                    # Its persistence and damage buffers advanced without being
-                    # displayed. The next accepted frame needs a fresh baseline.
-                    if self._raster is raster:
-                        self._raster = None
+                if not self.is_mounted:
                     continue
-                self._raster, self._lines = raster, lines
+                if size != self.size:
+                    self._raster = None
+                    continue
+                self._raster = raster
+                if revision != self._render_revision:
+                    # Numerical state belongs to this size; the terminal baseline
+                    # is valid only for frames that were actually published.
+                    raster.invalidate_frame()
+                    continue
+                self._lines = lines
                 if damage:
                     self.refresh(*damage)
         finally:

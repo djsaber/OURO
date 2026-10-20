@@ -76,6 +76,11 @@ class PhosphorRaster:
         self._lines: tuple[Strip, ...] = ()
         self.damage: tuple[Region, ...] = ()
 
+    def invalidate_frame(self) -> None:
+        """Require a full repaint while retaining the size-owned numerical engine."""
+        self._lines = ()
+        self.damage = ()
+
     def _split_dots(self, field: Field) -> None:
         """Project dot-row storage onto the eight fixed positions of each cell."""
         columns = self.columns

@@ -10,6 +10,7 @@ import pytest
 from rich.console import Console
 from rich.segment import Segment
 from rich.style import Style
+from textual import events
 from textual.app import App
 from textual.geometry import Region
 from textual.strip import Strip
@@ -92,8 +93,9 @@ async def test_inflight_frame_cannot_publish_after_pause_or_unmount(monkeypatch,
     async with app.run_test() as pilot:
         matrix = app.query_one(DotMatrix)
         async with asyncio.timeout(2):
-            while matrix._rendering:
+            while matrix._raster is None or matrix._rendering or matrix._pending_frame:
                 await asyncio.sleep(0.01)
+        raster = matrix._raster
         before = matrix._lines
         monkeypatch.setattr(PhosphorRaster, "frame", slow_frame)
         matrix.set_active(True)
@@ -119,7 +121,7 @@ async def test_inflight_frame_cannot_publish_after_pause_or_unmount(monkeypatch,
             async with asyncio.timeout(2):
                 while matrix._pending_frame is not None or matrix._rendering:
                     await asyncio.sleep(0.01)
-            assert matrix._raster is not None
+            assert matrix._raster is raster
             assert sum(region.area for region in matrix._raster.damage) == matrix.size.area
 
 
@@ -180,6 +182,7 @@ def test_transient_frame_encoding_preserves_styles_links_crops_and_divisions(col
 
 async def test_replacement_engine_uses_same_widget_pipeline_and_one_lifetime_worker():
     prepared, sampled = [], []
+    started, release = threading.Event(), threading.Event()
 
     def unused_sampler(grid):
         raise AssertionError("the replacement engine owns preparation")
@@ -191,6 +194,9 @@ async def test_replacement_engine_uses_same_widget_pipeline_and_one_lifetime_wor
 
         def frame(self, seconds, elapsed):
             sampled.append((seconds, elapsed, threading.get_ident()))
+            if not started.is_set():
+                started.set()
+                assert release.wait(5), "initial frame was not released"
             return self.channel, self.channel, self.channel
 
     class ReplacementApp(App):
@@ -204,8 +210,20 @@ async def test_replacement_engine_uses_same_widget_pipeline_and_one_lifetime_wor
     async with app.run_test() as pilot:
         matrix = app.query_one(DotMatrix)
         worker = next(worker for worker in app.workers if worker.node is matrix)
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            # Theme requests may invalidate initial rendering before its raster
+            # is published. They must retain this size's numerical engine.
+            for _ in range(3):
+                matrix.refresh_theme()
+        finally:
+            release.set()
+        async with asyncio.timeout(3):
+            while matrix._raster is None or matrix._rendering or matrix._pending_frame:
+                await asyncio.sleep(0)
         for _ in range(3):
             count = len(sampled)
+            matrix.on_resize(events.Resize(matrix.size, matrix.virtual_size))
             matrix.refresh_theme()
             async with asyncio.timeout(3):
                 while len(sampled) == count or matrix._rendering or matrix._pending_frame:
