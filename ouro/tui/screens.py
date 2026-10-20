@@ -314,7 +314,7 @@ def grouped_choice_options(
     """Render choices with the shared TUI group headers and row treatment."""
 
     options: list[Option] = []
-    resolved_group_accent = theme.text_heading if group_accent is None else group_accent
+    resolved_group_accent = theme.text_emphasis if group_accent is None else group_accent
     previous_group: object = object()
     for choice in choices:
         if choice.group != previous_group:

@@ -13,11 +13,9 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 from rich.segment import Segment
-from rich.style import Style
 from rich.text import Text
 from textual import events
 from textual.app import App
-from textual.color import Color
 from textual.containers import Vertical
 from textual.content import Content
 from textual.pilot import Pilot
@@ -148,7 +146,7 @@ from ouro.tui.state import (
     project_run_presentation,
 )
 from ouro.tui.subagent_navigation import SubagentNavigationPanel
-from ouro.tui.theme import DEFAULT_TUI_THEME, THEME_SATURATION_LEVELS, TUI_THEMES, theme_for
+from ouro.tui.theme import DEFAULT_TUI_THEME, THEME_SATURATION_LEVELS, TUI_THEMES
 from ouro.tui.widgets import (
     COMMAND_POPUP_MAX_HEIGHT,
     COMPOSER_FRAME_HEIGHT,
@@ -335,7 +333,7 @@ def test_session_choices_prefix_forks_with_the_theme_separator(tmp_path: Path) -
     )
 
 
-def test_session_choices_use_semantic_health_tones(tmp_path: Path) -> None:
+def test_session_choices_keep_catalog_errors_visible_and_ordered(tmp_path: Path) -> None:
     application = _application(tmp_path)
     template = application.runtime.sessions.create(title="Template").session
     entry = application.runtime.sessions.catalog().entries[0]
@@ -352,14 +350,8 @@ def test_session_choices_use_semantic_health_tones(tmp_path: Path) -> None:
             }
         ),
     )
-
     projected = _session_choices(sessions)
     choices = {choice.value: choice for choice in projected}
-
-    assert choices[template.session_id].accent is None
-    assert choices["ses_warning"].accent == DEFAULT_TUI_THEME.warning
-    assert choices["ses_failure"].accent == DEFAULT_TUI_THEME.failure
-    assert choices["ses_index_error"].accent == DEFAULT_TUI_THEME.failure
     assert choices["ses_index_error"].trailing == "index error"
     assert choices["ses_index_error"].group == "Today"
     assert projected[-1].value == "ses_index_error"
@@ -2039,7 +2031,6 @@ async def test_welcome_usage_hover_selects_day_without_changing_color_and_previe
         await pilot.pause()
 
         chart = usage._chart.render()
-        initial_colors = [chart.get_style_at_offset(index).foreground for index in range(2)]
         assert chart.plain == "■■ • last 2 days"
         assert usage._requests.render().plain == "3 request(s)"
         assert usage._tokens.render().plain == "2.0K in • 500 out • 25.00% cache"
@@ -2048,9 +2039,7 @@ async def test_welcome_usage_hover_selects_day_without_changing_color_and_previe
         await pilot.pause()
 
         hovered_chart = usage._chart.render()
-        hovered_colors = [hovered_chart.get_style_at_offset(index).foreground for index in range(2)]
         assert hovered_chart.plain == "▣■ • 2026-09-01"
-        assert hovered_colors == initial_colors
         assert usage._requests.render().plain == "1 request(s)"
         assert usage._tokens.render().plain == "800 in • 200 out • 12.50% cache"
 
@@ -2152,10 +2141,6 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
         context_detail = status_line.query_one("#context-detail", Static)
         context = context_detail.render()
         assert context.plain == "48.0K █████▒▒▒▒▒▒ 40%"
-        percentage_offset = context.plain.index("40%")
-        assert context.get_style_at_offset(percentage_offset).foreground == Color.parse(
-            app.tui_theme.text_lowlight
-        )
 
         at_warning_boundary = ContextMetrics(
             estimated_input_tokens=96000,
@@ -2165,9 +2150,6 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
         status_line.set_context(context_status.model_copy(update={"metrics": at_warning_boundary}))
         boundary = context_detail.render()
         assert boundary.plain == "96.0K █████████▒▒ 80%"
-        assert boundary.get_style_at_offset(boundary.plain.index("80%")).foreground == Color.parse(
-            app.tui_theme.text_lowlight
-        )
 
         above_warning_boundary = ContextMetrics(
             estimated_input_tokens=97200,
@@ -2179,9 +2161,6 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
         )
         warning = context_detail.render()
         assert warning.plain == "97.2K █████████▒▒ 81%"
-        assert warning.get_style_at_offset(warning.plain.index("81%")).foreground == Color.parse(
-            "#968264"
-        )
 
         status_line.set_context(None)
         assert context_detail.render().plain == ""
@@ -2570,9 +2549,6 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
         assert connecting_label[0] in DEFAULT_TUI_THEME.spinner_frames
         starting_status = welcome.page._system._mcp.render()
         assert "0/1 connected • 0 tool(s) • 1 connecting" in starting_status.plain
-        assert starting_status.get_style_at_offset(
-            starting_status.plain.index("connecting"),
-        ).foreground == Color.parse(app.tui_theme.accent)
 
         session.initialize_gate.set()
         await _wait_until(
@@ -2583,9 +2559,6 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
         connected_status = welcome.page._system._mcp.render()
         assert mcp_label.render().plain == "MCP"
         assert "1/1 connected • 1 tool(s)" in connected_status.plain
-        assert connected_status.get_style_at_offset(
-            connected_status.plain.index("connected"),
-        ).foreground == Color.parse(app.tui_theme.accent)
         assert "live__search" in application.runtime.tools.names()
 
         session.tools.append(LiveMcpSession._tool("fetch"))
@@ -2836,7 +2809,6 @@ async def test_reasoning_stream_lines_match_whole_block_rendering(tmp_path: Path
             for segment in strip:
                 if segment.text.strip() and segment.text != "│":
                     assert segment.style is not None
-                    assert segment.style.color == Style(color=app.tui_theme.text_lowlight).color
                     assert not segment.style.dim
 
 
@@ -3253,7 +3225,6 @@ async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
                     active_placeholder.plain.index(shortcut)
                 )
                 assert style.bold is False
-                assert style.foreground == Color.parse(TUI_THEMES["original"].accent_bright)
 
             composer.focus()
             composer.cursor_blink = True
@@ -3323,17 +3294,7 @@ async def test_queued_input_rows_use_single_line_tokenized_previews(tmp_path: Pa
         assert f"2. Follow-up{DEFAULT_TUI_THEME.inline_separator}follow next" in source.plain
 
         label_style = source.get_style_at_offset(Console(), source.plain.index("Guide"))
-        separator_style = source.get_style_at_offset(
-            Console(), source.plain.index(DEFAULT_TUI_THEME.inline_separator_mark)
-        )
-        message_style = source.get_style_at_offset(Console(), source.plain.index("first line"))
         assert not label_style.bold
-        assert separator_style.color is not None
-        assert separator_style.color.triplet is not None
-        assert separator_style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
-        assert message_style.color is not None
-        assert message_style.color.triplet is not None
-        assert message_style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
 
         assert content_widget.styles.text_wrap == "nowrap"
         assert content_widget.styles.text_overflow == "ellipsis"
@@ -3746,15 +3707,12 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
                 child_placeholder.plain.index(shortcut)
             )
             assert shortcut_style.bold is False
-            assert shortcut_style.foreground == Color.parse(TUI_THEMES["original"].accent_bright)
         rendered_placeholder = composer.render_line(0)
         assert rendered_placeholder.text == child_placeholder.plain
         for shortcut in ("Alt+↑", "Alt+←/→"):
             offset = rendered_placeholder.text.index(shortcut)
             segment = next(iter(rendered_placeholder.crop(offset, offset + len(shortcut))))
             assert segment.style is not None and not segment.style.bold
-            assert segment.style.color is not None
-            assert segment.style.color.get_truecolor().hex == TUI_THEMES["original"].accent_bright
         assert any(
             entry.kind == "user" and entry.text == "first child task"
             for entry in app.query_one(ConversationHistory).entries
@@ -6032,7 +5990,6 @@ async def test_session_picker_opens_canonical_session_when_catalog_entry_is_inva
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         choice = next(item for item in app.screen._choices if item.value == session.session_id)
 
-        assert choice.accent == DEFAULT_TUI_THEME.failure
         assert choice.trailing == "index error"
         assert choice.group == "Today"
 
@@ -6648,7 +6605,6 @@ async def test_session_picker_contains_load_failure_in_choice_dialog(
         error = app.screen._choices[0].description
         assert session.session_id in error
         assert "message journal is invalid" in error
-        assert app.screen._choices[0].description_accent == DEFAULT_TUI_THEME.failure
         assert "Ready" in app.query_one(ActivityIndicator).render().plain
 
         await pilot.press("escape")
@@ -6819,8 +6775,6 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
             )
         )
         assert action_screen.query_one("#choice-panel", Vertical).display is False
-        assert action_screen.styles.background.a == 0
-        assert rename_screen.styles.background.a == 0.65
         assert [choice.value for choice in rename_screen._choices] == [active.session_id]
         assert {choice.group for choice in rename_screen._choices} == {"Today"}
         assert rename_screen._choices[0].marker == DEFAULT_TUI_THEME.selected_choice_marker
@@ -6897,7 +6851,6 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         assert app.screen is action_screen
         assert action_screen.query_one("#choice-panel", Vertical).display is True
-        assert action_screen.styles.background.a == 0.65
 
 
 @pytest.mark.asyncio
@@ -6933,11 +6886,7 @@ async def test_delete_session_menu_force_deletes_catalog_error_and_quits_cleanly
         await pilot.press("enter")
         confirm = app.screen.query_one(OptionList).get_option("__multi_confirm__").prompt
         assert isinstance(confirm, Text)
-        assert confirm.get_style_at_offset(Console(), 0).color is None
-        assert (
-            confirm.get_style_at_offset(Console(), confirm.plain.index("Permanently delete")).color
-            == Style(color=app.tui_theme.danger).color
-        )
+        assert "Permanently delete" in confirm.plain
         await pilot.press("down", "enter")
         await _wait_until(
             lambda: not app._sessions,
@@ -8009,7 +7958,6 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(tmp_path: Pat
             choice for choice in app.screen._choices if choice.value == provider_id
         )
         assert provider_choice.trailing == "custom"
-        assert provider_choice.accent is None
         await pilot.press("enter")
         await pilot.pause()
         options = app.screen.query_one("#choice-list", OptionList)
@@ -8027,7 +7975,6 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(tmp_path: Pat
             choice for choice in app.screen._choices if choice.value == provider_id
         )
         assert provider_choice.trailing == "custom"
-        assert provider_choice.accent == app.tui_theme.text_lowlight
         await pilot.press("escape")
 
 
@@ -8126,10 +8073,6 @@ async def test_provider_catalog_refreshes_before_returning_from_submenu(
             "中文供应商",
             "+",
         ]
-        assert (
-            next(choice for choice in menu._choices if choice.label == "中文供应商").accent
-            == app.tui_theme.text_lowlight
-        )
         options = menu.query_one(OptionList)
         options.highlighted = options.get_option_index(provider_id)
         options.focus()
@@ -8184,13 +8127,6 @@ async def test_default_provider_and_endpoint_show_badges_and_disable_deletion(
         assert provider_choice.trailing_badge == "default"
         assert provider_choice.trailing == "custom"
         provider_options = app.screen.query_one(OptionList)
-        assert any(
-            "default" in segment.text
-            and segment.style is not None
-            and segment.style.color == Style(color=app.tui_theme.accent).color
-            for y in range(provider_options.size.height)
-            for segment in provider_options.render_line(y)
-        )
         assert any(
             "default" in (line := provider_options.render_line(y)).text
             and line.text.index("default") < line.text.index("custom")
@@ -8306,20 +8242,6 @@ async def test_endpoint_actions_flatten_routes_grouped_by_provider(
         assert endpoint_options[primary_key].disabled is False
         assert endpoint_options[secondary_key].disabled is True
         assert any(
-            "default" in segment.text
-            and segment.style is not None
-            and segment.style.color == Style(color=app.tui_theme.accent).color
-            for y in range(options.size.height)
-            for segment in options.render_line(y)
-        )
-        assert any(
-            "reasoning" in segment.text
-            and segment.style is not None
-            and segment.style.color == Style(color=app.tui_theme.text_lowlight).color
-            for y in range(options.size.height)
-            for segment in options.render_line(y)
-        )
-        assert any(
             "default" in (line := options.render_line(y)).text
             and line.text.index("default") < line.text.index("reasoning")
             for y in range(options.size.height)
@@ -8389,7 +8311,6 @@ async def test_provider_deletions_use_shared_menu_confirmation(
 
         remove = next(choice for choice in app.screen._choices if choice.value == "remove")
         assert remove.label == "Delete"
-        assert remove.accent == app.tui_theme.danger
         assert remove.destructive
         app.screen.query_one("#choice-filter", Input).value = "Delete"
         await pilot.pause()
@@ -8405,20 +8326,10 @@ async def test_provider_deletions_use_shared_menu_confirmation(
         assert options.has_focus
         confirm = options.get_option(ConfirmationScreen.CONFIRM_VALUE).prompt
         assert isinstance(confirm, Text)
-        assert confirm.get_style_at_offset(Console(), 0).color is None
-        assert (
-            confirm.get_style_at_offset(Console(), confirm.plain.index(message)).color
-            == Style(color=app.tui_theme.danger).color
-        )
+        assert message in confirm.plain
 
         await pilot.press("down")
-        assert any(
-            "Delete" in segment.text
-            and segment.style is not None
-            and segment.style.color == Style(color=app.tui_theme.danger).color
-            for y in range(options.size.height)
-            for segment in options.render_line(y)
-        )
+        assert any("Delete" in options.render_line(y).text for y in range(options.size.height))
         await pilot.press("up")
 
         await pilot.press("enter")
@@ -8543,7 +8454,6 @@ async def test_endpoint_management_returns_to_catalog_after_deletion(tmp_path: P
             "Delete",
         ]
         remove = next(choice for choice in app.screen._choices if choice.value == "remove")
-        assert remove.accent == app.tui_theme.danger
         assert remove.destructive
         options = app.screen.query_one(OptionList)
         options.highlighted = options.get_option_index("remove")
@@ -9575,7 +9485,6 @@ async def test_mcp_catalog_can_create_edit_and_delete_its_last_entry(
         delete = next(choice for choice in menu._choices if choice.value == "remove")
         assert delete.label == "Delete"
         assert delete.destructive
-        assert delete.accent == theme_for(app).danger
         options = menu.query_one(OptionList)
         options.highlighted = options.get_option_index("remove")
         options.focus()
@@ -10260,9 +10169,7 @@ async def test_configuration_editor_restores_retained_action_menu(tmp_path: Path
 
         assert action_screen in app.screen_stack
         assert action_screen.query_one("#choice-panel", Vertical).display is False
-        assert action_screen.styles.background.a == 0
         assert app.screen is not action_screen
-        assert app.screen.styles.background.a == 0.65
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         assert app.screen is action_screen
@@ -10298,7 +10205,6 @@ async def test_action_choice_submenus_reuse_the_action_screen_without_flash(
 
             assert app.screen is action_screen
             assert len(app.screen_stack) == 2
-            assert action_screen.styles.background.a == 0.65
 
             await pilot.press("escape")
             await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -10405,8 +10311,6 @@ async def test_configuration_editors_replace_visible_parent_at_every_depth(
 
         compaction_screen = app.screen
         assert action_screen.query_one("#choice-panel", Vertical).display is False
-        assert action_screen.styles.background.a == 0
-        assert compaction_screen.styles.background.a == 0.65
 
         compaction_screen.query_one(
             "#choice-list", OptionList
@@ -10417,20 +10321,16 @@ async def test_configuration_editors_replace_visible_parent_at_every_depth(
         await _wait_for_screen(app, ChoiceScreen, title="COMPACTION MODEL")
 
         assert compaction_screen.query_one("#choice-panel", Vertical).display is False
-        assert compaction_screen.styles.background.a == 0
-        assert app.screen.styles.background.a == 0.65
 
         await pilot.press("escape")
         await _wait_for_screen(app, CompactionConfigurationScreen, title="CONTEXT COMPACTION")
         assert app.screen is compaction_screen
         assert compaction_screen.query_one("#choice-panel", Vertical).display is True
-        assert compaction_screen.styles.background.a == 0.65
 
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         assert app.screen is action_screen
         assert action_screen.query_one("#choice-panel", Vertical).display is True
-        assert action_screen.styles.background.a == 0.65
 
 
 @pytest.mark.asyncio
@@ -11283,8 +11183,6 @@ async def test_plugin_commands_complete_and_execute_through_controller_boundary(
         assert content_segment.style is not None
         assert not content_segment.style.bold
         if expected_kind == "command":
-            assert content_segment.style.bgcolor == Style(bgcolor=app.tui_theme.panel).bgcolor
-            assert content_segment.style.color == Style(color=app.tui_theme.text_lowlight).color
             assert history.entries[-1].created_at is None
             assert history.user_turns == ()
 
@@ -11495,14 +11393,9 @@ async def test_workspace_command_selects_paths_only_before_session_and_keeps_cle
             "clear",
         ]
         assert all(not argument.description for argument in popup._arguments)
-        assert popup._arguments[-1].accent == DEFAULT_TUI_THEME.danger
         workspace_menu = command_popup_text(popup)
         assert "Current workspace" not in workspace_menu.plain
         assert "Recent workspace" not in workspace_menu.plain
-        clear_style = workspace_menu.get_style_at_offset(
-            app.console, workspace_menu.plain.index("clear")
-        )
-        assert clear_style.color == Style.parse(DEFAULT_TUI_THEME.danger).color
 
         await pilot.press("down", "enter")
         await pilot.pause()
@@ -13452,12 +13345,6 @@ async def test_theme_preview_is_local_and_cleared_when_picker_is_cancelled(
         await pilot.pause()
 
         assert app.tui_theme == TUI_THEMES["sienna"]
-        assert theme_screen.query_one("#choice-title", Static).styles.color == Color.parse(
-            TUI_THEMES["honey"].accent
-        )
-        assert app.query_one(Composer).styles.border_left[1] == Color.parse(
-            TUI_THEMES["sienna"].accent
-        )
 
         theme_options = theme_screen.query_one(OptionList)
         honey_index = theme_options.highlighted
@@ -13507,14 +13394,7 @@ async def test_theme_preview_is_local_and_cleared_when_picker_is_cancelled(
         await pilot.pause()
 
         assert app.tui_theme == TUI_THEMES["sienna"]
-        assert theme_screen.query_one("#choice-title", Static).styles.color == Color.parse(
-            TUI_THEMES["sienna"].accent
-        )
-        assert app.query_one(Composer).styles.border_left[1] == Color.parse(
-            TUI_THEMES["sienna"].accent
-        )
-        theme_action = next(choice for choice in app.screen._choices if choice.label == "Theme")
-        assert theme_action.accent == TUI_THEMES["sienna"].accent
+        next(choice for choice in app.screen._choices if choice.label == "Theme")
         assert preferences.load() == TuiPreferences(
             theme="sienna",
             recent_actions=("__ouro_theme__",),

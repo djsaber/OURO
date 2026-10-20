@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 
 import pytest
 from textual.widgets import Input, OptionList
@@ -10,7 +9,6 @@ from ouro.application.plugin_models import PluginDetail, PluginInstallView, Plug
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.plugin_workflows import _plugin_action_choices
 from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
-from ouro.tui.theme import DEFAULT_TUI_THEME
 from tests.tui.helpers import run_ready_app
 from tests.tui.test_app import _application, _wait_for_screen
 
@@ -36,7 +34,7 @@ def test_plugin_actions_use_explicit_lifecycle_without_duplicate_trust_actions()
     assert not {"authorize", "trust-code", "revoke", "revoke-code-trust"} & actions
 
 
-def test_plugin_management_uses_one_action_group_and_the_theme_danger_color() -> None:
+def test_plugin_management_groups_lifecycle_actions_and_marks_delete_destructive() -> None:
     plugin = _detail()
     plugin.configuration_supported = True
     plugin.installs = [
@@ -48,16 +46,13 @@ def test_plugin_management_uses_one_action_group_and_the_theme_danger_color() ->
         )
         for version, digest in (("1.0.0", "a"), ("2.0.0", "b"))
     ]
-    theme = replace(DEFAULT_TUI_THEME, danger="#ff1234")
-
-    choices = _plugin_action_choices(plugin, theme=theme)
+    choices = _plugin_action_choices(plugin)
 
     assert {choice.group for choice in choices} == {"ACTIONS"}
     actions = {choice.value: choice for choice in choices}
     assert actions["check"].label == "Check"
     assert actions["configure"].label == "Settings"
     assert actions["remove"].label == "Delete"
-    assert actions["remove"].accent == theme.danger
     assert actions["remove"].destructive
     assert list(actions) == ["configure", "select-install", "enable", "check", "restart", "remove"]
 

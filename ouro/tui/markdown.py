@@ -57,7 +57,7 @@ class _AssistantMarkdown:
             markdown = _ProseMarkdown(
                 self.source,
                 code_theme=self.theme.syntax_theme(),  # type: ignore[arg-type]
-                style=self.theme.text_primary,
+                style=self.theme.text_emphasis,
             )
             with console.use_theme(self.theme.rich_theme()):
                 yield from console.render(markdown, options)
@@ -66,7 +66,7 @@ class _AssistantMarkdown:
                 "Could not render assistant Markdown (%s)",
                 type(exc).__name__,
             )
-            yield ProseText(self.source, style=self.theme.text_primary)
+            yield ProseText(self.source, style=self.theme.text_emphasis)
 
 
 def assistant_markdown(text: str, theme: TuiTheme) -> _AssistantMarkdown:

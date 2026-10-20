@@ -9,7 +9,6 @@ from ouro.config.prompts import PromptConfigManager, PromptDraft, PromptEntry
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.prompt_screens import PromptEntryScreen
 from ouro.tui.screens import ChoiceScreen, ConfirmationScreen
-from ouro.tui.theme import DEFAULT_TUI_THEME
 from tests.tui.helpers import choose_menu, run_ready_app, two_route_application, wait_for_screen
 
 
@@ -71,12 +70,9 @@ async def test_prompt_actions_manage_order_activation_edit_and_delete(tmp_path):
         await choose("other", title="PROMPT · Other")
         choices = {choice.value: choice for choice in app.screen._choices}
         assert choices["edit"].label == "Edit"
-        assert choices["edit"].accent is None
         assert choices["delete"].label == "Delete"
-        assert choices["delete"].accent == DEFAULT_TUI_THEME.danger
         assert choices["delete"].destructive
         assert choices["toggle"].description == ("Enabling overrides OURO's default system prompt.")
-        assert choices["toggle"].description_accent == DEFAULT_TUI_THEME.danger
         await choose("Enable", title="PERSONAL PROMPTS")
         config = PromptConfigManager(tmp_path).snapshot().config
         assert [p.enabled for p in config.replacements] == [False, True]

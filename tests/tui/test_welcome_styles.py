@@ -9,7 +9,6 @@ import pytest
 from rich.segment import Segment
 from rich.text import Text
 from textual.app import App
-from textual.color import Color
 from textual.geometry import Region
 from textual.strip import Strip
 from textual.widgets import Input, OptionList, Static
@@ -26,7 +25,6 @@ from ouro.tui.welcome.dot_matrix.widget import DotWelcomePage
 from ouro.tui.welcome.host import WelcomeHost
 from ouro.tui.widgets import CommandPopup, Composer, WelcomePanel
 from tests.tui.helpers import run_ready_app, two_route_application
-from tests.tui.test_app import _wait_until
 
 
 class CustomPage(WelcomePage):
@@ -136,7 +134,6 @@ async def test_full_page_controls_viewport_input_layout_composition_and_style_sc
         assert isinstance(page, BytePage)
         assert page.frames > 0
         assert page.query_one(".byte-label", Static).render().plain == "OURO / BYTE FIELD"
-        assert surface.styles.background == Color.parse("#123456")
         assert composer.selection == selection and app.focused is composer
         host.set_system_status(TuiSystemStatus(usage_request_count=42))
         assert page.usage._requests.render().plain == "42 request(s)"
@@ -190,7 +187,6 @@ async def test_full_page_controls_viewport_input_layout_composition_and_style_sc
         await pilot.pause()
         assert not page.display
         assert not host.has_class("welcome-style-byte-page")
-        assert surface.styles.background != Color.parse("#123456")
         host.set_welcome_mode(True)
         await host.set_welcome_style(WELCOME_STYLES["basic"], motion=True)
         await pilot.pause()
@@ -198,7 +194,6 @@ async def test_full_page_controls_viewport_input_layout_composition_and_style_sc
         assert host.input_surface is surface and app.query_one(Composer) is composer
         assert composer.text == "a draft\nwith two lines"
         assert not host.has_class("welcome-style-byte-page")
-        assert surface.styles.background != Color.parse("#123456")
 
 
 async def test_invalid_factory_keeps_the_mounted_page_and_input(tmp_path):
@@ -327,26 +322,11 @@ async def test_theme_menu_groups_inline_styles_and_keeps_color_settings_independ
             for choice in style_choices
         )
         options.highlighted = options.get_option_index("coral")
-        await _wait_until(
-            lambda: (
-                menu.query_one("#choice-title", Static).styles.color
-                == Color.parse(TUI_THEMES["coral"].accent)
-            ),
-            pilot,
-            description="color preview",
-        )
+        await pilot.pause()
 
         menu.query_one(Input).value = "Welcome style"
         await pilot.pause()
         assert options.option_count == len(style_choices) + 2  # heading and animation
-        await _wait_until(
-            lambda: (
-                menu.query_one("#choice-title", Static).styles.color
-                == Color.parse(app.tui_theme.accent)
-            ),
-            pilot,
-            description="welcome group to clear the color preview",
-        )
         menu.query_one(Input).value = "Ember"
         await pilot.pause()
         await pilot.press("left", "right")

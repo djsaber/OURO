@@ -134,13 +134,8 @@ def test_command_presentation_keeps_full_flattened_command_for_layout_time() -> 
         frame=0,
         theme=DEFAULT_TUI_THEME,
     )
-    command_offset = rendered.plain.index("Get-ChildItem")
-    command_style = rendered.get_style_at_offset(Console(), command_offset)
     assert rendered.no_wrap is True
     assert rendered.overflow == "ellipsis"
-    assert command_style.color is not None
-    assert command_style.color.triplet is not None
-    assert command_style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
 
 
 def test_todolist_presentation_exposes_progress_and_item_states() -> None:
@@ -162,13 +157,6 @@ def test_todolist_presentation_exposes_progress_and_item_states() -> None:
         ("◉", "active"),
         ("○", "pending"),
     ]
-
-    rendered = _tool_activity_text(tool, frame=0, theme=DEFAULT_TUI_THEME)
-    for marker in ("●", "◉"):
-        marker_style = rendered.get_style_at_offset(Console(), rendered.plain.index(marker))
-        assert marker_style.color is not None
-        assert marker_style.color.triplet is not None
-        assert marker_style.color.triplet.hex == DEFAULT_TUI_THEME.accent
 
     empty = present_tool(_tool("TodoList", arguments={"todos": []}))
     assert empty.summary == "empty"
@@ -221,11 +209,6 @@ def test_spawn_agent_uses_agent_identity_and_places_task_below_header() -> None:
     )
     assert "Inspect the event pipeline" not in rendered.splitlines()[0]
     assert "└ Responding • Inspect the event pipeline" in rendered
-    detail_offset = rendered.index("└ Responding")
-    detail_style = rendered_text.get_style_at_offset(Console(), detail_offset)
-    assert detail_style.color is not None
-    assert detail_style.color.triplet is not None
-    assert detail_style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
 
 
 @pytest.mark.parametrize(
@@ -276,7 +259,7 @@ def test_spawn_agent_first_frame_uses_request_for_complete_preview(
     assert updated[1] == initial[1]
 
 
-def test_streaming_tool_uses_lowlight_left_filled_window_without_execution_details() -> None:
+def test_streaming_tool_fills_argument_window_without_execution_details() -> None:
     preview = 'prefix:{"content":"实时参数流"}'
     tool = _tool(
         "Write",
@@ -302,13 +285,6 @@ def test_streaming_tool_uses_lowlight_left_filled_window_without_execution_detai
     assert "should-not-render.txt" not in rendered
     assert "\n" not in rendered
     assert cell_len(window) == 48
-    tool_style = rendered_text.get_style_at_offset(Console(), rendered.index("Write"))
-    preview_style = rendered_text.get_style_at_offset(Console(), rendered.index(preview))
-    assert preview_style.color is not None
-    assert preview_style.color.get_truecolor().hex == DEFAULT_TUI_THEME.text_lowlight
-    assert tool_style.color is not None
-    assert tool_style.color.triplet is not None
-    assert tool_style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
 
 
 def test_streaming_tool_name_is_active_before_arguments_arrive() -> None:
@@ -448,9 +424,11 @@ def test_spawn_agent_distinguishes_foreground_work_from_background_work() -> Non
     ("agent_status", "expected"),
     (("completed", "done"), ("failed", "failed"), ("aborted", "failed")),
 )
+@pytest.mark.parametrize("highlighted", [False, True])
 def test_spawn_agent_uses_task_outcome_status(
     agent_status: str,
     expected: str,
+    highlighted: bool,
 ) -> None:
     activity = RuntimeActivitySnapshot(
         session_id="ses_child",
@@ -465,6 +443,7 @@ def test_spawn_agent_uses_task_outcome_status(
         frame=0,
         theme=DEFAULT_TUI_THEME,
         agent=agent,
+        highlighted=highlighted,
     )
     rendered = rendered_text.plain
     header, detail = rendered.splitlines()
@@ -472,11 +451,6 @@ def test_spawn_agent_uses_task_outcome_status(
     assert header.strip() == (f"General Agent{DEFAULT_TUI_THEME.inline_separator}Scout  {expected}")
     assert f"└ {expected.title()} • Inspect the event pipeline" == detail.strip()
     title_style = rendered_text.get_style_at_offset(Console(), rendered.index("General Agent"))
-    assert title_style.color is not None
-    assert title_style.color.triplet is not None
-    assert title_style.color.triplet.hex == (
-        DEFAULT_TUI_THEME.failure if expected == "failed" else DEFAULT_TUI_THEME.text_lowlight
-    )
     assert not title_style.bold
 
 

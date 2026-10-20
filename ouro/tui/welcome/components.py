@@ -37,7 +37,7 @@ class WelcomeInformation(Vertical):
     WelcomeInformation .welcome-title {
         width: auto;
         height: 1;
-        color: $ouro-text-heading;
+        color: $ouro-text-emphasis;
         text-style: bold;
     }
 
@@ -261,7 +261,7 @@ class WelcomeSystem(WelcomeInformation):
             )
         if status.plugin_issue_count:
             plugins.append(theme.section_separator, style=theme.text_lowlight)
-            plugins.append(f"{status.plugin_issue_count} need attention", style=theme.critical)
+            plugins.append(f"{status.plugin_issue_count} need attention", style=theme.warning)
         self._plugins.update(plugins)
 
         mcp = Text()
@@ -277,7 +277,7 @@ class WelcomeSystem(WelcomeInformation):
                 mcp.append(f"{status.mcp_connecting_count} connecting", style=theme.accent)
             if status.mcp_failed_count:
                 mcp.append(theme.section_separator, style=theme.text_lowlight)
-                mcp.append(f"{status.mcp_failed_count} failed", style=theme.critical)
+                mcp.append(f"{status.mcp_failed_count} failed", style=theme.failure)
         else:
             mcp.append("not configured", style=theme.text_lowlight)
         self._mcp.update(mcp)
@@ -424,7 +424,10 @@ class WelcomeTips(WelcomeInformation):
         self.refresh_theme()
 
     def refresh_theme(self) -> None:
-        self._title.update("TIPS")
+        theme = theme_for(self)
+        self._title.update(
+            Text(f"{theme.selected_choice_marker} TIPS", style=f"bold {theme.accent}")
+        )
 
 
 class WelcomeVersion(Static):

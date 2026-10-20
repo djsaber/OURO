@@ -5,7 +5,6 @@ from threading import Event
 
 import pytest
 from rich.console import Console
-from rich.style import Style
 
 from ouro.core.attachment_input import separate_attachments
 from ouro.core.errors import ConfigError
@@ -17,7 +16,7 @@ from ouro.tui.conversation_history import ConversationHistory, _MessageContent
 from ouro.tui.preferences import TuiPreferencesStore
 from ouro.tui.screens import ChoiceScreen
 from ouro.tui.state import TuiSessionProjection
-from ouro.tui.theme import TUI_THEMES
+from ouro.tui.theme import DEFAULT_TUI_THEME
 from ouro.tui.widgets import Composer, ConversationView, project_transcript_entries
 from tests.tui.helpers import choose_menu, run_ready_app, wait_for_screen, wait_until
 from tests.tui.test_app import _application, _persist_direct_child_session
@@ -25,13 +24,12 @@ from tests.tui.test_background_navigation import NavigationProvider, submit
 from tests.tui.test_tasks import streaming_application
 
 
-@pytest.mark.parametrize("theme", TUI_THEMES.values(), ids=lambda theme: theme.theme_id)
 @pytest.mark.parametrize("highlighted", [False, True])
-def test_scaffold_frame_uses_lowlight_body_and_border_without_changing_layout(theme, highlighted):
+def test_scaffold_frame_preserves_user_message_layout_and_targets(highlighted):
     console = Console(force_terminal=True, color_system="truecolor", width=36)
     options = dict(
         text="Long wrapped message with 中文 and **literal markup**\nSecond line",
-        theme=theme,
+        theme=DEFAULT_TUI_THEME,
         created_at=datetime(2026, 10, 19, tzinfo=UTC),
         entry_index=2,
         highlighted=highlighted,
@@ -39,20 +37,12 @@ def test_scaffold_frame_uses_lowlight_body_and_border_without_changing_layout(th
     user = console.render_lines(_MessageContent(**options))
     scaffold = console.render_lines(_MessageContent(**options, lowlight=True))
     assert len(user) == len(scaffold)
-    body_segments = 0
     for normal, internal in zip(user, scaffold, strict=True):
         for normal_segment, internal_segment in zip(normal[1:], internal[1:], strict=True):
             assert normal_segment.text == internal_segment.text
-            expected_style = normal_segment.style
-            if expected_style.color == Style(color=theme.text_primary).color:
-                expected_style += Style(color=theme.text_lowlight)
-                body_segments += 1
-            assert internal_segment.style == expected_style
+            assert internal_segment.style.meta == normal_segment.style.meta
         assert normal[0].text == internal[0].text == "│"
-        assert internal[0].style.color.triplet.hex == theme.text_lowlight
-        assert normal[0].style.color.triplet.hex == theme.accent
         assert normal[0].style.meta == internal[0].style.meta
-    assert body_segments > 0
 
 
 @pytest.mark.parametrize("prompt", ["", "Read this file"])

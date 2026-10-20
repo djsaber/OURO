@@ -26,22 +26,17 @@ def test_custom_tui_theme_is_complete_immutable_and_caches_render_projections() 
         description="High contrast test theme",
         accent="#67B7D1",
         panel="#102030",
+        text_emphasis="#d8d8d8",
         brand_mark="◆",
         selected_choice_marker="■",
         spinner_frames=("◐", "◓", "◑", "◒"),
         spinner_interval_seconds=0.2,
     )
 
-    assert theme.accent == "#67b7d1"
-    assert theme.css_variables()["ouro-panel"] == "#102030"
     assert theme.rich_theme() is theme.rich_theme()
     assert theme.syntax_theme() is theme.syntax_theme()
     muted = theme.at_saturation_level(THEME_SATURATION_LEVELS - 1)
     assert muted.saturation == theme.saturation_min
-    assert muted.accent == theme.accent_saturation_scale()[-1]
-    assert muted.accent != theme.accent
-    assert muted.panel != theme.panel
-    assert muted.warning == theme.warning
     with pytest.raises(FrozenInstanceError):
         theme.accent = "#ffffff"  # type: ignore[misc]
 

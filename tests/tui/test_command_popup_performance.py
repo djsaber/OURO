@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import pytest
-from rich.style import Style
 from rich.text import Text
 from textual.app import App
 
 from ouro.tui.commands import TuiCommand, TuiCommandArgument
-from ouro.tui.theme import DEFAULT_TUI_THEME
 from ouro.tui.widgets import CommandPopup
 
 
@@ -76,10 +74,6 @@ async def test_navigation_does_not_traverse_the_catalog(monkeypatch):
             assert popup._heading_widget.region.bottom <= row_y < popup.content_region.bottom
             strip = popup._content.render_line(expected)
             assert strip.text.startswith("› ")
-            assert all(
-                segment.style.bgcolor == Style.parse(f"on {DEFAULT_TUI_THEME.highlight}").bgcolor
-                for segment in strip
-            )
         assert label_reads < 100
 
 

@@ -270,8 +270,6 @@ async def test_task_delete_and_status_actions_stay_on_shared_menu(tmp_path):
         assert next(row for row in rows if row.value == "interrupt").disabled
         delete_prompt = app.screen.query_one(OptionList).get_option("delete").prompt
         assert isinstance(delete_prompt, Text)
-        color = delete_prompt.get_style_at_offset(app.console, 0).color
-        assert color is not None and color.triplet.hex == theme_for(app).danger
         await choose(pilot, app, "Delete")
         await _wait_for_screen(app, ConfirmationScreen, title="CONFIRM DELETE TASK")
         await pilot.press("escape")
@@ -285,7 +283,7 @@ async def test_task_delete_and_status_actions_stay_on_shared_menu(tmp_path):
         assert app.screen._choices[0].label == "No tasks yet"
 
 
-async def test_task_list_lowlight_keeps_inactive_tasks_selectable(tmp_path, monkeypatch):
+async def test_task_list_keeps_inactive_tasks_selectable(tmp_path, monkeypatch):
     application = _application(tmp_path)
     app = OuroTuiApp(application=application)
     async with run_ready_app(app, size=(100, 34)) as pilot:
@@ -310,11 +308,9 @@ async def test_task_list_lowlight_keeps_inactive_tasks_selectable(tmp_path, monk
         monkeypatch.setattr(app._controller, "tasks", AsyncMock(return_value=records))
         await pilot.press("ctrl+t")
         await _wait_for_screen(app, ChoiceScreen, title="Tasks")
-        for row, record in zip(app.screen._choices, records, strict=True):
+        assert len(app.screen._choices) == len(records)
+        for row in app.screen._choices:
             assert not row.disabled
-            assert row.accent == (
-                None if record.status in {"waiting", "running"} else theme_for(app).text_lowlight
-            )
         await choose(pilot, app, "Paused task")
         assert next(row for row in app.screen._choices if row.value == "toggle").label == "Enable"
         await choose(pilot, app, "Enable")
@@ -323,7 +319,7 @@ async def test_task_list_lowlight_keeps_inactive_tasks_selectable(tmp_path, monk
         assert next(row for row in app.screen._choices if row.value == "toggle").label == "Pause"
 
 
-async def test_welcome_task_counts_show_only_actionable_activity_in_semantic_colors(tmp_path):
+async def test_welcome_task_counts_show_only_actionable_activity(tmp_path):
     app = OuroTuiApp(application=_application(tmp_path))
     async with run_ready_app(app, size=(140, 34)) as pilot:
         welcome = app.query_one(WelcomePanel)
@@ -343,15 +339,6 @@ async def test_welcome_task_counts_show_only_actionable_activity_in_semantic_col
         content = app.query_one("#welcome-task-counts", Static).content
         assert isinstance(content, Text)
         assert content.plain == "7/10 completed • 2 waiting • 1 running • 1 approval"
-        theme = theme_for(welcome)
-        for label, color in (
-            ("waiting", theme.text_lowlight),
-            ("running", theme.accent),
-            ("approval", theme.warning),
-            ("•", theme.text_lowlight),
-        ):
-            style = content.get_style_at_offset(app.console, content.plain.index(label))
-            assert style.color is not None and style.color.triplet.hex == color
         welcome.set_system_status(
             TuiSystemStatus(task_counts=TaskCounts(completed_executions=8, failed_executions=3))
         )

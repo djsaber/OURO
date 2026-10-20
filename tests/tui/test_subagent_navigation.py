@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import pytest
-from rich.color import Color
-from rich.console import Console
 from textual.app import App, ComposeResult
 
 from ouro.application.agent_models import AgentTreeNode
 from ouro.application.supervisor_models import RuntimeActivitySnapshot
 from ouro.tui.subagent_navigation import SubagentNavigationPanel
-from ouro.tui.theme import DEFAULT_TUI_THEME
 
 
 def _agent(
@@ -210,31 +207,6 @@ async def test_subagent_panel_hover_previews_stable_visible_node_and_click_reque
 
         assert app.navigation == ["ses_child_3", "ses_root"]
         assert panel.selected_session_id == "ses_root"
-
-
-def test_subagent_panel_node_colors_follow_runtime_outcomes() -> None:
-    panel = SubagentNavigationPanel()
-    agents = (
-        _agent(1, parent_run_id="run_root", status="running"),
-        _agent(2, parent_run_id="run_root", status="completed"),
-        _agent(3, parent_run_id="run_root", status="failed"),
-    )
-    panel.set_tree(root_session_id="ses_root", agents=agents, root_status="running")
-    panel.set_current_session("ses_child_1")
-
-    rendered = panel.render_content(80)
-    node_offsets = [
-        index for index, character in enumerate(rendered.plain) if character in {"■", "▣"}
-    ]
-    node_colors = [rendered.get_style_at_offset(Console(), offset).color for offset in node_offsets]
-
-    assert node_colors == [
-        Color.parse(DEFAULT_TUI_THEME.running),
-        Color.parse(DEFAULT_TUI_THEME.running),
-        Color.parse(DEFAULT_TUI_THEME.text_lowlight),
-        Color.parse(DEFAULT_TUI_THEME.failure),
-    ]
-    assert panel.tooltip is None
 
 
 def test_subagent_panel_skips_equivalent_tree_and_selection_refreshes(

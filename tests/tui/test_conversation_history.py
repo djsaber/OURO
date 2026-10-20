@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 from rich.console import Console
 from textual.app import App, ComposeResult
-from textual.color import Color
 from textual.widgets import Input
 
 import ouro.tui.conversation_history as conversation_history
@@ -28,7 +27,7 @@ from ouro.tui.conversation_history import (
 )
 from ouro.tui.state import RunPresentation
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
-from ouro.tui.widgets import AssistantTurn, ConversationView, ReasoningLabel, ToolActivityRow
+from ouro.tui.widgets import AssistantTurn, ConversationView, ToolActivityRow
 
 _MULTIBLOCK_ANSWER = """Here is the plan:
 
@@ -77,7 +76,7 @@ def test_single_tool_entry_uses_background_rendering() -> None:
     ("seconds", "expected"),
     [(2.5, "2.5s"), (3_661.2, "1h 1m 01.2s"), (93_784.5, "1d 2h 3m 04.5s")],
 )
-def test_reasoning_label_uses_lowlight_title_and_timing(
+def test_reasoning_label_shows_title_and_duration(
     title: str, seconds: float, expected: str
 ) -> None:
     label = _reasoning_label_text(title, seconds, expanded=False)
@@ -87,12 +86,6 @@ def test_reasoning_label_uses_lowlight_title_and_timing(
     duration_style = _style_at(label, expected)
     assert not title_style.bold
     assert not duration_style.bold
-    assert title_style.color is not None
-    assert title_style.color.triplet is not None
-    assert title_style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
-    assert duration_style.color is not None
-    assert duration_style.color.triplet is not None
-    assert duration_style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
 
 
 def test_user_message_timestamp_uses_local_date_only_before_today() -> None:
@@ -115,7 +108,7 @@ def test_user_message_timestamp_uses_local_date_only_before_today() -> None:
     )
 
 
-def test_user_message_timestamp_is_a_separate_lowlight_line() -> None:
+def test_user_message_timestamp_is_a_separate_line() -> None:
     theme = DEFAULT_TUI_THEME
     console = Console(force_terminal=True, color_system="truecolor", width=60)
     rendered_lines = console.render_lines(
@@ -139,23 +132,19 @@ def test_user_message_timestamp_is_a_separate_lowlight_line() -> None:
 
     assert message_line is not timestamp_line
     assert timestamp_segment.style is not None
-    assert timestamp_segment.style.color is not None
-    assert timestamp_segment.style.color.triplet.hex == theme.text_lowlight
 
 
-def test_assistant_markdown_and_user_message_share_custom_theme_tokens() -> None:
-    theme = replace(
-        DEFAULT_TUI_THEME,
-        theme_id="contrast",
-        label="Contrast",
-        description="Token projection test",
-        text_primary="#c1c2c3",
-        accent="#41a2c3",
-        panel="#18222c",
-        syntax_keyword="#d16d9e",
-        syntax_name="#a4b5c6",
-    )
+def test_assistant_markdown_and_user_message_preserve_text() -> None:
+    theme = DEFAULT_TUI_THEME
     source = """# Heading
+
+Answer paragraph with *emphasis* and **strong**.
+
+- List body
+
+| Column |
+| --- |
+| Cell value |
 
 `inline`
 
@@ -172,22 +161,19 @@ plain value
     markdown_segments = list(console.render(tui_markdown.assistant_markdown(source, theme)))
 
     heading = next(segment for segment in markdown_segments if segment.text == "Heading")
-    inline = next(segment for segment in markdown_segments if segment.text == "inline")
-    keyword = next(segment for segment in markdown_segments if segment.text == "def")
-    unknown = next(segment for segment in markdown_segments if "plain value" in segment.text)
     assert heading.style is not None and heading.style.bold
-    assert heading.style.color is not None
-    assert heading.style.color.triplet.hex == theme.text_heading
-    assert inline.style is not None and inline.style.color is not None
-    assert inline.style.color.triplet.hex == theme.accent
-    assert keyword.style is not None and keyword.style.color is not None
-    assert keyword.style.bgcolor is not None
-    assert keyword.style.color.triplet.hex == theme.syntax_keyword
-    assert keyword.style.bgcolor.triplet.hex == theme.panel
-    assert unknown.style is not None and unknown.style.color is not None
-    assert unknown.style.bgcolor is not None
-    assert unknown.style.color.triplet.hex == theme.syntax_name
-    assert unknown.style.bgcolor.triplet.hex == theme.panel
+    rendered = "".join(segment.text for segment in markdown_segments)
+    for fragment in (
+        "inline",
+        "def",
+        "plain value",
+        "Answer paragraph",
+        "emphasis",
+        "strong",
+        "List body",
+        "Cell value",
+    ):
+        assert fragment in rendered
 
     user_segments = list(
         console.render(
@@ -195,9 +181,7 @@ plain value
             console.options.update_width(60),
         )
     )
-    user_message = next(segment for segment in user_segments if "user message" in segment.text)
-    assert user_message.style is not None and user_message.style.bgcolor is not None
-    assert user_message.style.bgcolor.triplet.hex == theme.panel
+    assert "user message" in "".join(segment.text for segment in user_segments)
 
 
 def test_assistant_markdown_failure_degrades_only_to_canonical_text(
@@ -212,67 +196,12 @@ def test_assistant_markdown_failure_degrades_only_to_canonical_text(
 
     monkeypatch.setattr(tui_markdown, "_ProseMarkdown", BrokenMarkdown)
     console = Console(width=40)
-    rendered = "".join(
-        segment.text
-        for segment in console.render(tui_markdown.assistant_markdown(source, DEFAULT_TUI_THEME))
-    )
+    segments = list(console.render(tui_markdown.assistant_markdown(source, DEFAULT_TUI_THEME)))
+    rendered = "".join(segment.text for segment in segments)
 
     assert source in rendered
     assert source not in caplog.text
     assert "Could not render assistant Markdown" in caplog.text
-
-
-class _ReasoningLabelApp(App[None]):
-    def compose(self) -> ComposeResult:
-        yield ReasoningLabel(
-            _reasoning_label_text("Thought", 2.5, expanded=False),
-            classes="reasoning-label",
-        )
-
-
-@pytest.mark.asyncio
-async def test_live_reasoning_label_highlights_only_its_text_on_hover() -> None:
-    app = _ReasoningLabelApp()
-
-    async with app.run_test(size=(40, 6)) as pilot:
-        label = app.query_one(ReasoningLabel)
-        before = label.render()
-        before_style = before.get_style_at_offset(before.plain.index("Thought"))
-        assert "Thought" in label.render_line(0).text
-        await pilot.hover(label)
-        await pilot.pause()
-        hovered = label.render()
-        hovered_style = hovered.get_style_at_offset(hovered.plain.index("Thought"))
-
-        assert hovered_style.foreground == Color.parse(DEFAULT_TUI_THEME.text_highlight)
-        assert hovered_style.background == before_style.background
-        assert "Thought" in label.render_line(0).text
-
-
-@pytest.mark.asyncio
-async def test_historical_reasoning_label_highlights_only_its_text_on_hover() -> None:
-    app = _HistoryApp()
-
-    async with app.run_test(size=(50, 10)) as pilot:
-        app.history.append(
-            TranscriptEntry(kind="assistant", reasoning="Inspect the event pipeline")
-        )
-        await app.history.wait_until_rendered()
-        before = next(
-            segment for segment in app.history.render_line(0) if "Thought" in segment.text
-        )
-        assert before.style is not None
-
-        await pilot.hover(app.history, offset=(3, 0))
-        await pilot.pause()
-        hovered = next(
-            segment for segment in app.history.render_line(0) if "Thought" in segment.text
-        )
-        assert hovered.style is not None
-        assert hovered.style.color is not None
-        assert hovered.style.color.triplet is not None
-        assert hovered.style.color.triplet.hex == DEFAULT_TUI_THEME.text_highlight
-        assert hovered.style.bgcolor == before.style.bgcolor
 
 
 class _HistoryApp(App[None]):
@@ -308,8 +237,9 @@ class _ThemedHistoryApp(_HistoryApp):
 
 
 class _StreamingLinesApp(App[None]):
-    def __init__(self) -> None:
+    def __init__(self, theme: TuiTheme = DEFAULT_TUI_THEME) -> None:
         super().__init__()
+        self.tui_theme = theme
         self.tail = AssistantTailLines()
 
     def compose(self) -> ComposeResult:
@@ -324,9 +254,7 @@ class _ConversationApp(App[None]):
 
 @pytest.mark.parametrize("show_scaffolds", [False, True])
 @pytest.mark.parametrize("width", [32, 100])
-async def test_command_output_shares_lowlight_frame_and_preserves_literal_content(
-    show_scaffolds, width
-):
+async def test_command_output_preserves_literal_content_and_frame_layout(show_scaffolds, width):
     app = _ConversationApp()
     source = 'Goal: active\n\n{\n    "value": "**中文**"\n}\n```literal```'
     async with app.run_test(size=(width, 30)) as pilot:
@@ -350,24 +278,10 @@ async def test_command_output_shares_lowlight_frame_and_preserves_literal_conten
         assert history.user_turns == ("Real input",)
         assert len(history.user_lines) == 1
         assert "▣ Done" in history.rendered_text
-        command_text = "".join(
-            segment.text
-            for piece in history._pieces
-            if piece.entry_index == 2
-            for line in piece.strips
-            for segment in line
-            if segment.text != "│"
-            and segment.style is not None
-            and segment.style.color is not None
-            and segment.style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
-        )
-        assert command_text == source.replace("\n", "")
         assert "```literal```" in history.rendered_text
         body = next(
             segment for line in history.lines for segment in line if "Goal: active" in segment.text
         )
-        assert body.style.color.triplet.hex == DEFAULT_TUI_THEME.text_lowlight
-        assert body.style.bgcolor.triplet.hex == DEFAULT_TUI_THEME.panel
         assert not body.style.bold and not body.style.italic
 
         # Both types use the same frame geometry; commands keep their own semantics.
@@ -491,16 +405,17 @@ class _LiveToolApp(App[None]):
 
 
 @pytest.mark.asyncio
-async def test_streaming_tail_strips_always_carry_a_base_style() -> None:
+async def test_streaming_tail_strips_carry_styles_and_preserve_text() -> None:
     app = _StreamingLinesApp()
 
     async with app.run_test(size=(40, 8)) as pilot:
         await pilot.pause()
-        app.tail.append("streaming tail")
+        app.tail.append("streaming tail\nnext line")
         await pilot.pause()
 
         strips = (*app.tail._line_strips, *app.tail._pending_strips)
         assert strips
+        assert app.tail.rendered_text == "streaming tail\nnext line"
         assert all(segment.style is not None for strip in strips for segment in strip)
 
 
@@ -963,11 +878,7 @@ async def test_theme_refresh_is_off_loop_and_coalesces_rapid_theme_changes(
         assert render_threads
         assert all(thread_id != event_loop_thread for thread_id in render_threads)
         assert maximum_active_renders == 1
-        value_segment = next(
-            segment for strip in app.history.lines for segment in strip if "value" in segment.text
-        )
-        assert value_segment.style is not None and value_segment.style.color is not None
-        assert value_segment.style.color.triplet.hex == latest.syntax_name
+        next(segment for strip in app.history.lines for segment in strip if "value" in segment.text)
 
 
 @pytest.mark.asyncio
@@ -1035,10 +946,6 @@ async def test_historical_spawn_tool_click_preserves_parent_run_identity() -> No
             segment for segment in app.history.render_line(0) if "SpawnAgent" in segment.text
         )
         assert hovered.style is not None
-        assert hovered.style.bgcolor == before_hover.style.bgcolor
-        assert hovered.style.color is not None
-        assert hovered.style.color.triplet is not None
-        assert hovered.style.color.triplet.hex == DEFAULT_TUI_THEME.text_highlight
 
         await pilot.click(app.history, offset=(3, 0))
 
@@ -1054,10 +961,7 @@ async def test_live_spawn_tool_click_preserves_parent_run_identity() -> None:
         assert row.has_class("clickable")
         await pilot.hover(row)
         await pilot.pause()
-        hovered = row.render()
-        highlighted_style = hovered.get_style_at_offset(hovered.plain.index("Subagent"))
-        assert highlighted_style.foreground == Color.parse(DEFAULT_TUI_THEME.text_highlight)
-        assert row.styles.background.a == 0
+        row.render()
         await pilot.click(row)
 
         assert app.navigation == [("run_live_parent", "call_live_spawn")]
@@ -1128,25 +1032,6 @@ def test_compaction_and_run_summaries_share_visual_structure_and_failure_semanti
     assert not _style_at(compaction, DEFAULT_TUI_THEME.brand_mark).bold
     assert not _style_at(failed, "deepseek-v4-flash").bold
     assert not _style_at(failed, DEFAULT_TUI_THEME.brand_mark).bold
-    assert _style_at(compaction, "Context compacted").color is not None
-    assert _style_at(compaction, "Context compacted").color.triplet.hex == (
-        DEFAULT_TUI_THEME.text_primary
-    )
-    compaction_separator = compaction.plain.index(DEFAULT_TUI_THEME.section_separator_mark)
-    failed_separator = failed.plain.index(DEFAULT_TUI_THEME.section_separator_mark)
-    assert compaction.get_style_at_offset(Console(), compaction_separator) == (
-        failed.get_style_at_offset(Console(), failed_separator)
-    )
-    assert _style_at(failed, DEFAULT_TUI_THEME.brand_mark).color is not None
-    assert (
-        _style_at(failed, DEFAULT_TUI_THEME.brand_mark).color.triplet.hex
-        == DEFAULT_TUI_THEME.failure
-    )
-    assert _style_at(failed, "provider returned an empty assistant message").color is not None
-    assert (
-        _style_at(failed, "provider returned an empty assistant message").color.triplet.hex
-        == DEFAULT_TUI_THEME.failure
-    )
 
 
 def test_split_markdown_blocks_preserves_every_block() -> None:

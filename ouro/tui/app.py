@@ -407,11 +407,11 @@ _OURO_TUI_CSS = """
     }
 
     Toast.-warning {
-        border-left: solid $ouro-warning-bright;
+        border-left: solid $ouro-warning;
     }
 
     Toast.-error {
-        border-left: solid $ouro-danger;
+        border-left: solid $ouro-failure;
     }
 
     VerticalScroll, TextArea, OptionList {
@@ -703,7 +703,7 @@ _OURO_TUI_CSS = """
         max-height: $composer-max-height;
         margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
         padding: 1 2;
-        color: $ouro-text-primary;
+        color: $ouro-text-emphasis;
         background: $ouro-panel;
         border-top: none;
         border-right: solid $ouro-progress-track;

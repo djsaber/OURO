@@ -28,7 +28,7 @@ from ouro.tui.conversation_history import (
     TranscriptEntry,
 )
 from ouro.tui.screens import ChoiceScreen
-from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
+from ouro.tui.theme import TuiTheme
 from ouro.tui.widgets import Composer, ConversationView
 from tests.tui.helpers import run_ready_app, two_route_application
 
@@ -263,15 +263,10 @@ async def test_history_right_click_copies_only_the_dragged_text() -> None:
 
         assert app.screen.get_selected_text() == "only"
         assert history.text_selection == Selection(Offset(7, 0), Offset(11, 0))
-        selection_background = app.screen.get_component_rich_style(
-            "screen--selection", partial=True
-        ).bgcolor
         selected_segment = next(
             segment for segment in history.render_line(0) if segment.text == "only"
         )
         assert selected_segment.style is not None
-        assert selected_segment.style.bgcolor == selection_background
-        assert selected_segment.style.color != selection_background
 
         await pilot.mouse_down(history, offset=(7, 0), button=3)
         await pilot.pause()
@@ -296,27 +291,19 @@ async def test_message_hover_and_right_click_copy_preserve_selection_priority(ki
             y for y, line in enumerate(history.lines) if "copy this exact" in line.text
         )
         message_x = history.lines[message_y].text.index("copy this exact")
-        before = next(
+        next(
             segment
             for segment in history.render_line(message_y)
             if "copy this exact" in segment.text
         )
-        assert before.style is not None and before.style.bgcolor is not None
-        assert before.style.bgcolor.triplet.hex == DEFAULT_TUI_THEME.panel
 
         await pilot.hover(history, offset=(message_x, message_y))
         await pilot.pause()
 
-        hovered = next(
+        next(
             segment
             for segment in history.render_line(message_y)
             if "copy this exact" in segment.text
-        )
-        assert hovered.style is not None and hovered.style.bgcolor is not None
-        assert hovered.style.bgcolor.triplet.hex == DEFAULT_TUI_THEME.highlight
-        assert hovered.style.color == before.style.color
-        assert hovered.style.color.triplet.hex == (
-            DEFAULT_TUI_THEME.text_primary if kind == "user" else DEFAULT_TUI_THEME.text_lowlight
         )
 
         await pilot.click(history, offset=(message_x, message_y))

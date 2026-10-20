@@ -237,7 +237,7 @@ def _brand_header_content(
 
     content = Text()
     content.append(f" {theme.brand_mark} OURO ", style=f"bold {theme.accent}")
-    title = label_text(session_title, theme=theme, style=theme.text_heading)
+    title = label_text(session_title, theme=theme, style=theme.text_emphasis)
     if session_detail:
         title.append(theme.inline_separator, style=theme.text_lowlight)
         title.append(session_detail, style=theme.text_lowlight)
@@ -418,12 +418,16 @@ class ActivityIndicator(Static):
         accent = theme.accent
         busy = self._activity in _BUSY_ACTIVITIES or self._show_pending
         ready = self._activity in {"idle", "completed"}
+        failed = self._activity == "failed"
         mark = theme.spinner_frames[self._frame] if busy else theme.brand_mark
         label = _ACTIVITY_LABELS.get(self._activity, self._activity.replace("_", " ").title())
         if self._show_pending and ready:
             label = "Working"
         elif self._subagent is not None and ready:
-            label = _subagent_task_status(self._subagent).title()
+            subagent_status = _subagent_task_status(self._subagent)
+            label = subagent_status.title()
+            ready = subagent_status == "done"
+            failed = subagent_status == "failed"
         if (
             self._activity == "waiting_model"
             and self._model_attempt is not None
@@ -431,18 +435,23 @@ class ActivityIndicator(Static):
             and 2 <= self._model_attempt <= self._model_max_attempts
         ):
             label = f"{label} {self._model_attempt}/{self._model_max_attempts}"
+        if busy:
+            marker_style = f"bold {accent}"
+        elif failed:
+            marker_style = f"bold {theme.failure}"
+        elif ready:
+            marker_style = f"bold {accent}"
+        else:
+            marker_style = theme.text_primary
         content = Text()
-        content.append(
-            f" {mark} ",
-            style=f"bold {accent}" if busy or ready else theme.text_primary,
-        )
+        content.append(f" {mark} ", style=marker_style)
         for control_label in self._session_control_labels:
             content.append(control_label, style=f"bold {accent}")
             content.append(
                 theme.section_separator,
                 style=theme.text_lowlight,
             )
-        content.append(label, style=accent if ready else theme.text_primary)
+        content.append(label, style=theme.text_primary)
         content.append(
             theme.section_separator,
             style=theme.text_lowlight,
@@ -982,7 +991,7 @@ def _tool_activity_text(
     elif is_spawn_agent:
         _append_subagent_preview(text, tool, theme=theme)
     if highlighted:
-        text.stylize(theme.text_highlight)
+        text = theme.highlight_text(text)
     return text
 
 
@@ -2063,7 +2072,7 @@ class ApprovalPanel(Vertical):
 
     def _render_approval_title(self, title: str) -> None:
         theme = theme_for(self)
-        self._title.update(Text(title, style=f"bold {theme.text_heading}"))
+        self._title.update(Text(title, style=f"bold {theme.text_emphasis}"))
 
     def _append_approval_option(
         self,
@@ -2243,7 +2252,7 @@ class InteractionBar(ApprovalPanel):
         content = Text()
         options = (
             ("Allow", "Run this tool", theme.success),
-            ("Deny", "Reject this tool", theme.failure),
+            ("Deny", "Reject this tool", theme.danger),
         )
         for index, (label, description, tone) in enumerate(options):
             self._append_approval_option(
@@ -2462,7 +2471,7 @@ class AskUserPanel(Static):
         content = Text()
         content.append(
             f"{question.header.upper()}  {self._question_index + 1}/{total}\n",
-            style=f"bold {theme.text_heading}",
+            style=f"bold {theme.text_emphasis}",
         )
         content.append(
             f"{question.prompt}\n\n",
@@ -2677,7 +2686,7 @@ class PlanConfirmationPanel(ApprovalPanel):
         theme = theme_for(self)
         content = Text()
         if request.error:
-            content.append(f"{request.error}\n\n", style=theme.danger)
+            content.append(f"{request.error}\n\n", style=theme.failure)
         if self._stage == "action":
             content.append(
                 "Choose how to respond to this plan\n\n",
@@ -2724,7 +2733,7 @@ class PlanConfirmationPanel(ApprovalPanel):
                 trailing=("Esc back",),
             )
         else:
-            content.append("REVISION FEEDBACK\n", style=f"bold {theme.text_heading}")
+            content.append("REVISION FEEDBACK\n", style=f"bold {theme.text_emphasis}")
             content.append(
                 "Type the requested plan changes below, then press Enter",
                 style=theme.text_lowlight,
@@ -2962,7 +2971,7 @@ class CommandPopup(VerticalScroll):
             return
         width = self.scrollable_content_region.width
         theme = theme_for(self)
-        heading = Text(self._heading, style=f"bold {theme.text_heading}")
+        heading = Text(self._heading, style=f"bold {theme.text_emphasis}")
         if self._selection_count is not None:
             heading = _trailing_badge(
                 heading, str(self._selection_count), width, theme.text_lowlight
@@ -3082,7 +3091,7 @@ class QueuedInputPanel(VerticalScroll):
                     theme.inline_separator,
                     style=theme.text_lowlight,
                 )
-                row.append(prompt, style=theme.text_lowlight)
+                row.append(prompt, style=theme.text_emphasis)
                 badge = file_count_label(item.attachments, item.resource_refs)
                 if badge:
                     row = _trailing_badge(

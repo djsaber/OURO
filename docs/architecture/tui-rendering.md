@@ -152,11 +152,11 @@ TranscriptEntry + TuiTheme + render width
 | 类别 | Token |
 |---|---|
 | identity | `theme_id`、`label`、`description` |
-| surface | `background`、`panel`、`highlight`、`input_highlight` |
-| border | `progress_track`、`border_focus`、`border_subtle`、`border`、`scrollbar_hover` |
-| text | `text_heading`、`text_primary`、`text_lowlight`、`text_highlight`、`text_disabled` |
 | accent | `accent`、`accent_bright` |
-| status | `running`、`success`、`warning`、`warning_bright`、`danger`、`failure`、`critical` |
+| surface | `background`、`panel`、`highlight`、`input_highlight` |
+| border / control | `border_subtle`、`border`、`border_focus`、`progress_track`、`scrollbar_hover` |
+| text | `text_disabled`、`text_lowlight`、`text_primary`、`text_emphasis`、`text_highlight` |
+| status | `running`、`success`、`warning`、`danger`、`failure` |
 | syntax | `syntax_comment`、`syntax_keyword`、`syntax_string`、`syntax_number`、`syntax_operator`、`syntax_name`、`syntax_error` |
 | glyph | `section_separator_mark`、`inline_separator_mark`、`brand_mark`、`mask_character`、`selected_choice_marker`、`unselected_choice_marker`、`active_item_marker`、`completed_item_marker`、`pending_item_marker`、`session_node_mark`、`selected_session_node_mark`、`expanded_disclosure_marker`、`collapsed_disclosure_marker` |
 | motion | `spinner_frames`、`spinner_interval_seconds` |
@@ -164,15 +164,31 @@ TranscriptEntry + TuiTheme + render width
 每个字段使用组件无关的语义名称。组件专用名称、特定语言 token 和渲染器实现名称不进入 TuiTheme。
 `accent` 用于操作、链接、inline code 和活动状态，`accent_bright` 用于焦点和高亮操作。
 
-静态文字按信息职责分为三个层次，组件不另建相近亮度的文字色：
+颜色字段按 accent、surface、border/control、text、status、syntax 分组排列；各组投影与颜色字段清单保持同样顺序。
+文字按语义显著度由低到高定义，不按标题等具体元素命名；组件按内容职责复用这些层级：
 
 | 层次 | Token / 默认值 | 使用范围 |
 |---|---|---|
-| 标题 | `text_heading` / `#d6d9df` | 页面与区块标题、会话标题、Markdown 标题；区块标题使用 bold |
-| 常规 | `text_primary` / `#a3adb9` | 正文、用户输入、普通选项与汇总值、审批模式、模型名称、思考强度；默认常规字重 |
-| 辅助 | `text_lowlight` / `#5f6975` | 工具消息整体、思考标记与正文、路径、耗时、时间戳、说明、延展列表、快捷键说明和分隔符 |
+| 不可用 | `text_disabled` / `#626262` | 禁用选项和不可用内容 |
+| 辅助 | `text_lowlight` / `#676767` | 工具消息整体、思考标记与正文、路径、耗时、时间戳、说明、延展列表、快捷键说明和分隔符 |
+| 常规 | `text_primary` / `#ababab` | 普通选项与汇总值、审批模式、模型名称、思考强度；默认常规字重 |
+| 强调 | `text_emphasis` / `#d9d9d9` | 用户输入与消息正文、排队输入预览正文、模型回复正文、重要标签、页面与区块标题、会话标题、Markdown 标题、strong 和表头；需要时使用 bold |
+| 高亮 | `text_highlight` / `#e7e7e7` | 悬停等交互反馈 |
 
-欢迎页 USAGE、SYSTEM、TIPS 共用标题层；内部选项名和主要值共用常规层，详情与统计拆分使用辅助层。
+以上默认值为中性灰，Original 保持中性。基础边框、轨道和普通语法色同样使用中性灰，状态色与字符串、数字等
+语法语义色保留各自含义。每个内置主题在自己的 `TuiTheme` 实例中显式声明五个 `text_*` 色值，
+以接近中性灰的低饱和度融入主题色，并保持由低到高的亮度梯度，便于各主题独立调整。
+背景、边框、轨道、状态色与语法色不随主题色染色。主题构造与注册直接使用声明值，不自动推导文字色。
+饱和度设置作用于文字色；降低饱和度减弱染色，不改变文字层级或状态色。
+
+语义色固定为运行、成功、警告、危险操作与失败五类，职责及默认值见 [TUI 规格](../specs/tui.md#语义色)。
+各类只定义一个色值，不设高亮或低亮变体，不随主题色或饱和度偏好变化。运行与成功分别使用青绿、绿色；
+警告、危险操作与失败沿琥珀、暖橙、红色过渡，依靠色相表达区别，不以亮暗表达严重程度。
+需要关注的插件状态使用 `warning`，已发生的连接、执行或通知错误使用 `failure`，删除、拒绝与自动审批等风险操作使用 `danger`。
+工具行的悬停通过 `TuiTheme.highlight_text()` 投影，保留已有语义色前景；活动行和历史行共用这一规则。
+
+欢迎页 USAGE、SYSTEM 标题共用强调层；TIPS 标题使用 `accent`，前缀复用 `selected_choice_marker`，
+随主题刷新同步更新。内部选项名和主要值共用常规层，详情与统计拆分使用辅助层。
 工具名称、命令、路径及耗时统一低亮，让出正文的视觉重点。思考正文保留 italic，低亮文字不叠加 dim。
 section 和 inline separator 均复用低亮色，不继承相邻字段的颜色或字重；组合标签通过 `label_text`
 投影为 Rich Text。该投影只用于 UI 标签，不处理消息正文、代码或编辑值。
@@ -180,7 +196,11 @@ section 和 inline separator 均复用低亮色，不继承相邻字段的颜色
 状态与交互独立于静态文字层次：自动审批保留 `danger`，最高思考强度保留主题色与 bold，错误和增删行
 保留对应语义色；选中项与焦点使用主题色，`text_highlight` 用于悬停反馈，`text_disabled` 表示不可用内容。
 `border_subtle` 只用于结构边界，如菜单边栏、Markdown 表格边框和水平线，不承担文本分隔符职责。
-模型正文使用 `text_primary`，Markdown 内容保留各自的语义样式。失败状态继续使用错误色，悬浮高亮与点击语义保持一致。
+模型回复正文使用 `text_emphasis`，覆盖活动流式 tail、完成块、历史消息和 Markdown 失败后的纯文本降级；
+Markdown 内容保留各自的语义样式。工具、思考和脚手架消息使用 `text_lowlight`。失败状态使用 `failure`，悬浮高亮与点击语义保持一致。
+用户消息正文、composer 编辑文字和排队输入预览正文使用 `text_emphasis`，保持常规字重；时间戳、占位提示和分隔符使用低亮层。
+ActivityIndicator 将会话状态色限定在标记上：就绪使用 `accent`、失败使用 `failure`，其他静态状态使用 `text_primary`；
+活动 spinner 保持 `accent`。状态名称使用常规字重的 `text_primary`，审批模式、模型和思考强度保留各自语义样式。
 压缩摘要与运行摘要使用常规字重。短命令反馈复用 `brand_mark` 加消息文本的提醒结构；多行命令内容与用户消息、
 脚手架共用字面文本容器。命令和脚手架正文及左边栏使用 `text_lowlight`，容器共用 `panel` 背景、内外边距、
 悬停和右键复制交互，保留换行、缩进及字面 Markdown 标记。命令条目不附加时间戳，保持独立类型和可见性，
@@ -213,11 +233,12 @@ custom_theme = replace(
     theme_id="graphite",
     label="Graphite",
     description="Low-noise neutral palette",
-    text_heading="#e2e8f0",
-    text_primary="#a3adb9",
-    text_lowlight="#647180",
-    accent="#67b7d1",
-    syntax_keyword="#7aa2c7",
+    accent="#c8c8c8",
+    accent_bright="#eeeeee",
+    text_lowlight="#707070",
+    text_primary="#b0b0b0",
+    text_emphasis="#dedede",
+    syntax_keyword="#bcbcbc",
     brand_mark="◆",
     selected_choice_marker="■",
     spinner_frames=("◐", "◓", "◑", "◒"),
@@ -313,9 +334,9 @@ ConversationView 持有稳定的历史组件和 AssistantTurn。AssistantTurn �
 
 | Markdown 语义 | 样式 |
 |---|---|
-| paragraph | `text_primary`，无额外背景 |
-| h1/h2/h3/h4/h5/h6 | `text_heading` + bold |
-| strong | `text_heading` + bold |
+| paragraph | `text_emphasis`，常规字重，无额外背景 |
+| h1/h2/h3/h4/h5/h6 | `text_emphasis` + bold |
+| strong | `text_emphasis` + bold |
 | emphasis | italic，继承当前前景色 |
 | inline code | `accent`，无独立背景 |
 | block quote | `text_lowlight`，使用 OURO 定义的引用结构 |
@@ -444,9 +465,9 @@ ConversationHistory revision 规则丢弃，不建立第二套渲染或取消协
 | `ouro/tui/app.py` | 接收和切换 TuiTheme，应用 CSS variables，协调主题刷新 |
 | `ouro/tui/entry.py` | 将 Python API 的 theme 参数传给 App |
 | `ouro/tui/widgets.py` 与其他 TUI 组件 | 从 owning App 取得主题并构造 Rich Text、glyph 与 spinner |
-| `tests/tui/test_preferences.py` | 内置主题以及 color、glyph、motion Token 校验 |
-| `tests/tui/test_conversation_history.py` | Markdown、SyntaxTheme、panel 背景、降级和缓存隔离 |
-| `tests/tui/test_app.py` | CSS/Rich/glyph/motion 主题一致性、App 隔离、完整主题切换和布局隔离 |
+| `tests/tui/test_preferences.py` | 主题数据、Token 格式、不可变性、投影缓存和偏好持久化 |
+| `tests/tui/test_conversation_history.py` | Markdown 文本、降级、异步排版和缓存隔离 |
+| `tests/tui/test_app.py` | 主题选择与持久化、App 隔离、交互和布局隔离 |
 
 `ouro.application`、`ouro.core` 以及 Session、Runtime、Provider、Plugin 领域模块不依赖 TuiTheme；
 只有 `ouro.tui` 内的对应界面适配代码消费主题。
@@ -489,11 +510,11 @@ ConversationHistory revision 规则丢弃，不建立第二套渲染或取消协
 - Application/Core 不依赖 TUI 或 Rich；
 - TUI 热路径、架构和行为测试通过。
 
-视觉验证覆盖默认主题和一份高对比 Token 测试主题，包括标题、inline code、Python/JSON/未知语言代码块、引用、列表、
-表格、reasoning、用户消息、工具状态、composer、选择器、自定义 glyph 和 spinner。视觉画面验证 Token 来源，行为测试
-验证 canonical 文本、metadata、缓存、Timer 生命周期和失败语义。
+人工视觉检查覆盖默认主题与自定义主题的标题、inline code、Python/JSON/未知语言代码块、引用、列表、表格、reasoning、
+用户消息、工具状态、composer、选择器、自定义 glyph 和 spinner。固定色值、角色配色、色相、亮度、饱和度、悬停配色与
+透明度由人工核查，自动测试验证主题数据合法性、canonical 文本、metadata、缓存、Timer 生命周期和失败处理。
 
-## 演进边界
+## 能力边界
 
 Host 自定义主题的文件持久化、主题包、字重与边框形态自定义、布局自定义和 Desktop 共享 schema 分别属于独立需求。
 每项能力需要真实使用场景和独立契约，不预置继承链、目录发现、热加载、通用 renderer registry、关键帧或动画 DSL。

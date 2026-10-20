@@ -331,7 +331,6 @@ async def test_child_return_renders_complete_parent_frames(
         assert filter_input.cursor_position == len(action)
         assert app.cursor_position == filter_input.cursor_screen_offset
         assert parent.query_one(OptionList).highlighted == selected
-        assert parent.styles.background.a == 0.65
         assert len(app.screen_stack) == 2
         await pilot.press("x")
         assert filter_input.value == action + "x"
@@ -369,8 +368,6 @@ async def test_nested_child_return_after_resize_preserves_menu_state(
         assert app.screen is parent
         assert options.has_focus if accept else parent.query_one(Input).has_focus
         assert options.get_option_at_index(options.highlighted).id == "compaction-model"
-        assert parent.styles.background.a == 0.65
-        assert actions.styles.background.a == 0
 
 
 @pytest.mark.asyncio

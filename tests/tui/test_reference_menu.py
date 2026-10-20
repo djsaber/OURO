@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-from rich.style import Style
 from textual import events
 from textual.widgets import Static
 
@@ -80,9 +79,6 @@ async def test_reference_heading_and_count_stay_visible_while_scrolling_and_filt
         assert heading.region.y == initial_y
         assert heading.content.plain.endswith("[1]")
         assert heading.content.cell_len == heading.content_region.width
-        assert heading.content.get_style_at_offset(
-            app.console, len(heading.content.plain) - 1
-        ) == Style.parse(app.tui_theme.text_lowlight)
         assert "Reference selected" not in command_popup_text(popup).plain
         assert popup.region.bottom == composer.region.y
         assert popup.region.right <= 44

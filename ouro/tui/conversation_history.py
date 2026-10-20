@@ -303,7 +303,7 @@ class _MessageContent:
         )
         content = ProseText(
             self.text,
-            style=self.theme.text_lowlight if self.lowlight else self.theme.text_primary,
+            style=self.theme.text_lowlight if self.lowlight else self.theme.text_emphasis,
         )
         lines = console.render_lines(content, content_options, pad=False)
         if self.created_at is not None:
@@ -602,7 +602,7 @@ class AssistantTailLines(ReasoningLines):
 
     def _render_source_line(self, line: str) -> list[Strip]:
         console = self.app.console
-        base_style = Style(color=theme_for(self).text_primary)
+        base_style = Style(color=theme_for(self).text_emphasis)
         options = console.options.update_width(self._render_width)
         rendered_lines = console.render_lines(Text(line, style=base_style), options, pad=False)
         if not rendered_lines:
@@ -842,14 +842,14 @@ def _entry_renderables(
         if entry.tool.tool_name == "SpawnAgent" and entry.run_id is not None:
             interaction_style = Style(meta={_TOOL_NAVIGATION_META: request.entry_index})
             if request.tool_highlighted:
-                interaction_style += Style(color=theme.text_highlight)
+                rendered = theme.highlight_text(rendered)
             rendered.stylize(interaction_style, 0, len(rendered))
         return [(Padding(rendered, (0, 2, 0, 2)), "body")]
     if entry.kind == "notice":
         top = 1 if request.previous_kind == "tool" else 0
         summary = _summary_line(entry.text, marker_tone=theme.accent, details=(), theme=theme)
         if entry.error:
-            summary.stylize(theme.critical)
+            summary.stylize(theme.failure)
         return [(Padding(summary, (top, 1, 1, 2)), "body")]
     if entry.kind == "compaction":
         assert entry.compaction is not None

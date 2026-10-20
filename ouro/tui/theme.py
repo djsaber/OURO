@@ -72,37 +72,45 @@ class TuiTheme:
     theme_id: str
     label: str
     description: str
+
+    # Brand and interactive accents.
     accent: str
     accent_bright: str
 
+    # Surfaces, from the page background to active inputs.
     background: str = "#0c0c0c"
     panel: str = "#171717"
     highlight: str = "#242424"
     input_highlight: str = "#2a2a2a"
-    progress_track: str = "#34373d"
-    border_focus: str = "#3f4650"
-    border_subtle: str = "#4d5560"
-    border: str = "#505967"
-    text_disabled: str = "#626b78"
-    scrollbar_hover: str = "#6a7482"
-    text_lowlight: str = "#5f6975"
-    warning: str = "#968264"
-    danger: str = "#b97878"
-    text_primary: str = "#a3adb9"
-    text_heading: str = "#d6d9df"
-    failure: str = "#d87575"
-    critical: str = "#e08a8a"
-    text_highlight: str = "#e5e7eb"
-    warning_bright: str = "#facc15"
-    running: str = "#77b083"
-    success: str = "#77b083"
 
-    syntax_comment: str = "#647180"
-    syntax_keyword: str = "#7aa2c7"
+    # Structural boundaries and control tracks.
+    border_subtle: str = "#545454"
+    border: str = "#585858"
+    border_focus: str = "#464646"
+    progress_track: str = "#373737"
+    scrollbar_hover: str = "#737373"
+
+    # Component-independent text prominence, from lowest to highest.
+    text_disabled: str = "#626262"
+    text_lowlight: str = "#676767"
+    text_primary: str = "#ababab"
+    text_emphasis: str = "#d9d9d9"
+    text_highlight: str = "#e7e7e7"
+
+    # Fixed semantic hues: progress, positive outcome, attention, risk, failure.
+    running: str = "#6fa8a0"
+    success: str = "#86ad7a"
+    warning: str = "#b8a06a"
+    danger: str = "#c18d6c"
+    failure: str = "#c17b7b"
+
+    # Syntax roles keep their own palette, independent of the brand accent.
+    syntax_comment: str = "#707070"
+    syntax_keyword: str = "#b8b8b8"
     syntax_string: str = "#77b083"
     syntax_number: str = "#968264"
-    syntax_operator: str = "#8f9aa8"
-    syntax_name: str = "#a3adb9"
+    syntax_operator: str = "#999999"
+    syntax_name: str = "#ababab"
     syntax_error: str = "#d87575"
 
     section_separator_mark: str = "•"
@@ -135,6 +143,14 @@ class TuiTheme:
     saturation_min: float = DEFAULT_THEME_SATURATION_MIN
     saturation_max: float = DEFAULT_THEME_SATURATION_MAX
 
+    _TEXT_COLOR_FIELDS: ClassVar[tuple[str, ...]] = (
+        "text_disabled",
+        "text_lowlight",
+        "text_primary",
+        "text_emphasis",
+        "text_highlight",
+    )
+
     # Palette colors follow the user's saturation preference; semantic colors
     # preserve the meaning and prominence of states and destructive actions.
     _PALETTE_COLOR_FIELDS: ClassVar[tuple[str, ...]] = (
@@ -144,16 +160,12 @@ class TuiTheme:
         "panel",
         "highlight",
         "input_highlight",
-        "progress_track",
-        "border_focus",
         "border_subtle",
         "border",
-        "text_disabled",
+        "border_focus",
+        "progress_track",
         "scrollbar_hover",
-        "text_lowlight",
-        "text_primary",
-        "text_heading",
-        "text_highlight",
+        *_TEXT_COLOR_FIELDS,
         "syntax_comment",
         "syntax_keyword",
         "syntax_string",
@@ -162,13 +174,11 @@ class TuiTheme:
         "syntax_name",
     )
     _SEMANTIC_COLOR_FIELDS: ClassVar[tuple[str, ...]] = (
+        "running",
+        "success",
         "warning",
         "danger",
         "failure",
-        "critical",
-        "warning_bright",
-        "running",
-        "success",
         "syntax_error",
     )
     _GLYPH_FIELDS: ClassVar[tuple[str, ...]] = (
@@ -318,29 +328,44 @@ class TuiTheme:
             "ouro-panel": self.panel,
             "ouro-highlight": self.highlight,
             "ouro-input-highlight": self.input_highlight,
-            "ouro-progress-track": self.progress_track,
-            "ouro-border-focus": self.border_focus,
             "ouro-border-subtle": self.border_subtle,
             "ouro-border": self.border,
-            "ouro-text-disabled": self.text_disabled,
+            "ouro-border-focus": self.border_focus,
+            "ouro-progress-track": self.progress_track,
             "ouro-scrollbar-hover": self.scrollbar_hover,
+            "ouro-text-disabled": self.text_disabled,
             "ouro-text-lowlight": self.text_lowlight,
             "ouro-text-primary": self.text_primary,
-            "ouro-text-heading": self.text_heading,
+            "ouro-text-emphasis": self.text_emphasis,
             "ouro-text-highlight": self.text_highlight,
             "ouro-running": self.running,
             "ouro-success": self.success,
             "ouro-warning": self.warning,
-            "ouro-warning-bright": self.warning_bright,
             "ouro-danger": self.danger,
             "ouro-failure": self.failure,
-            "ouro-critical": self.critical,
         }
 
     def rich_theme(self) -> RichTheme:
         """Return the bounded cached Rich style projection for this value."""
 
         return _rich_theme(self)
+
+    def highlight_text(self, text: Text) -> Text:
+        """Highlight interactive text while retaining fixed semantic foregrounds."""
+
+        semantic_colors = {
+            Style(color=getattr(self, name)).color for name in self._SEMANTIC_COLOR_FIELDS
+        }
+        preserved = []
+        for span in text.spans:
+            style = Style.parse(span.style) if isinstance(span.style, str) else span.style
+            if style.color in semantic_colors:
+                preserved.append(span)
+        highlighted = text.copy()
+        highlighted.stylize(self.text_highlight)
+        for span in preserved:
+            highlighted.stylize(span.style, span.start, span.end)
+        return highlighted
 
     def syntax_theme(self) -> SyntaxTheme:
         """Return the bounded cached Pygments projection for this value."""
@@ -352,32 +377,32 @@ class TuiTheme:
 def _rich_theme(theme: TuiTheme) -> RichTheme:
     return RichTheme(
         {
-            "markdown.paragraph": Style(color=theme.text_primary),
-            "markdown.text": Style(color=theme.text_primary),
+            "markdown.paragraph": Style(color=theme.text_emphasis),
+            "markdown.text": Style(color=theme.text_emphasis),
             "markdown.em": Style(italic=True),
             "markdown.emph": Style(italic=True),
-            "markdown.strong": Style(color=theme.text_heading, bold=True),
+            "markdown.strong": Style(color=theme.text_emphasis, bold=True),
             "markdown.code": Style(color=theme.accent),
             "markdown.code_block": Style(color=theme.syntax_name, bgcolor=theme.panel),
             "markdown.block_quote": Style(color=theme.text_lowlight),
             "markdown.list": Style(color=theme.text_lowlight),
-            "markdown.item": Style(color=theme.text_primary),
+            "markdown.item": Style(color=theme.text_emphasis),
             "markdown.item.bullet": Style(color=theme.text_lowlight),
             "markdown.item.number": Style(color=theme.text_lowlight),
             "markdown.hr": Style(color=theme.border_subtle, dim=True),
             "markdown.h1.border": Style(color=theme.border_subtle),
-            "markdown.h1": Style(color=theme.text_heading, bold=True),
-            "markdown.h2": Style(color=theme.text_heading, bold=True),
-            "markdown.h3": Style(color=theme.text_heading, bold=True),
-            "markdown.h4": Style(color=theme.text_heading, bold=True),
-            "markdown.h5": Style(color=theme.text_heading, bold=True),
-            "markdown.h6": Style(color=theme.text_heading, bold=True),
-            "markdown.h7": Style(color=theme.text_heading, bold=True),
+            "markdown.h1": Style(color=theme.text_emphasis, bold=True),
+            "markdown.h2": Style(color=theme.text_emphasis, bold=True),
+            "markdown.h3": Style(color=theme.text_emphasis, bold=True),
+            "markdown.h4": Style(color=theme.text_emphasis, bold=True),
+            "markdown.h5": Style(color=theme.text_emphasis, bold=True),
+            "markdown.h6": Style(color=theme.text_emphasis, bold=True),
+            "markdown.h7": Style(color=theme.text_emphasis, bold=True),
             "markdown.link": Style(color=theme.accent, underline=True),
             "markdown.link_url": Style(color=theme.accent, underline=True),
             "markdown.s": Style(strike=True),
             "markdown.table.border": Style(color=theme.border_subtle),
-            "markdown.table.header": Style(color=theme.text_heading, bold=True),
+            "markdown.table.header": Style(color=theme.text_emphasis, bold=True),
             "markdown.kbd": Style(color=theme.accent_bright, bold=True),
         },
         inherit=True,
@@ -425,6 +450,11 @@ _THEMES = (
         description="Neutral original white",
         accent="#e8e8e8",
         accent_bright="#ffffff",
+        text_disabled="#626262",
+        text_lowlight="#676767",
+        text_primary="#ababab",
+        text_emphasis="#d9d9d9",
+        text_highlight="#e7e7e7",
     ),
     TuiTheme(
         theme_id="blossom",
@@ -432,6 +462,11 @@ _THEMES = (
         description="Refined rose",
         accent="#e08795",
         accent_bright="#f0a1ad",
+        text_disabled="#665e5f",
+        text_lowlight="#6b6364",
+        text_primary="#aea8a9",
+        text_emphasis="#dad8d8",
+        text_highlight="#e8e6e6",
     ),
     TuiTheme(
         theme_id="coral",
@@ -439,6 +474,11 @@ _THEMES = (
         description="Soft warm coral",
         accent="#e18881",
         accent_bright="#f2a39c",
+        text_disabled="#665f5e",
+        text_lowlight="#6b6463",
+        text_primary="#aea8a8",
+        text_emphasis="#dad8d8",
+        text_highlight="#e8e6e6",
     ),
     TuiTheme(
         theme_id="sienna",
@@ -446,6 +486,11 @@ _THEMES = (
         description="Polished warm clay",
         accent="#de8e69",
         accent_bright="#eea788",
+        text_disabled="#66615e",
+        text_lowlight="#6b6663",
+        text_primary="#aeaaa8",
+        text_emphasis="#dad8d8",
+        text_highlight="#e8e6e6",
     ),
     TuiTheme(
         theme_id="honey",
@@ -453,6 +498,11 @@ _THEMES = (
         description="Muted golden amber",
         accent="#cd9a50",
         accent_bright="#dfb274",
+        text_disabled="#65635f",
+        text_lowlight="#6b6863",
+        text_primary="#aeaca8",
+        text_emphasis="#dad9d8",
+        text_highlight="#e8e7e6",
     ),
     TuiTheme(
         theme_id="citrine",
@@ -460,6 +510,11 @@ _THEMES = (
         description="Balanced yellow olive",
         accent="#b5a64f",
         accent_bright="#c9bc73",
+        text_disabled="#65645f",
+        text_lowlight="#6a6964",
+        text_primary="#adaca9",
+        text_emphasis="#dadad8",
+        text_highlight="#e8e8e6",
     ),
     TuiTheme(
         theme_id="fern",
@@ -467,6 +522,11 @@ _THEMES = (
         description="Fresh botanical green",
         accent="#86b46d",
         accent_bright="#a0c98b",
+        text_disabled="#616460",
+        text_lowlight="#666965",
+        text_primary="#aaada9",
+        text_emphasis="#d9dad8",
+        text_highlight="#e7e8e6",
     ),
     TuiTheme(
         theme_id="jade",
@@ -474,6 +534,11 @@ _THEMES = (
         description="Calm mint green",
         accent="#60ba8d",
         accent_bright="#82cea6",
+        text_disabled="#5f6562",
+        text_lowlight="#646a67",
+        text_primary="#a9adab",
+        text_emphasis="#d8dad9",
+        text_highlight="#e6e8e7",
     ),
     TuiTheme(
         theme_id="lagoon",
@@ -481,6 +546,11 @@ _THEMES = (
         description="Clear coastal teal",
         accent="#39bab4",
         accent_bright="#6acec8",
+        text_disabled="#5f6565",
+        text_lowlight="#636b6a",
+        text_primary="#a8aeae",
+        text_emphasis="#d8dada",
+        text_highlight="#e6e8e8",
     ),
     TuiTheme(
         theme_id="glacier",
@@ -488,6 +558,11 @@ _THEMES = (
         description="Cool mineral cyan",
         accent="#3db6cf",
         accent_bright="#6bcae1",
+        text_disabled="#5e6566",
+        text_lowlight="#636a6b",
+        text_primary="#a8adae",
+        text_emphasis="#d8dada",
+        text_highlight="#e6e8e8",
     ),
     TuiTheme(
         theme_id="azure",
@@ -495,6 +570,11 @@ _THEMES = (
         description="Open sky blue",
         accent="#57afe0",
         accent_bright="#7bc5ef",
+        text_disabled="#5e6366",
+        text_lowlight="#63686b",
+        text_primary="#a8acae",
+        text_emphasis="#d8dada",
+        text_highlight="#e6e7e8",
     ),
     TuiTheme(
         theme_id="cobalt",
@@ -502,6 +582,11 @@ _THEMES = (
         description="Polished medium blue",
         accent="#74a7e8",
         accent_bright="#91bef7",
+        text_disabled="#5e6166",
+        text_lowlight="#63666b",
+        text_primary="#a8aaae",
+        text_emphasis="#d8d9da",
+        text_highlight="#e6e7e8",
     ),
     TuiTheme(
         theme_id="indigo",
@@ -509,6 +594,11 @@ _THEMES = (
         description="Soft blue violet",
         accent="#909fe9",
         accent_bright="#a8b6f8",
+        text_disabled="#5e5f66",
+        text_lowlight="#63646b",
+        text_primary="#a8a9ae",
+        text_emphasis="#d8d8da",
+        text_highlight="#e6e6e8",
     ),
     TuiTheme(
         theme_id="orchid",
@@ -516,6 +606,11 @@ _THEMES = (
         description="Refined violet",
         accent="#a996e2",
         accent_bright="#bfaff2",
+        text_disabled="#605e66",
+        text_lowlight="#65636b",
+        text_primary="#aaa8ae",
+        text_emphasis="#d8d8da",
+        text_highlight="#e6e6e8",
     ),
     TuiTheme(
         theme_id="wisteria",
@@ -523,6 +618,11 @@ _THEMES = (
         description="Gentle purple",
         accent="#bf8fd4",
         accent_bright="#d2a8e5",
+        text_disabled="#635f65",
+        text_lowlight="#68646a",
+        text_primary="#aca8ae",
+        text_emphasis="#dad8da",
+        text_highlight="#e7e6e8",
     ),
     TuiTheme(
         theme_id="peony",
@@ -530,6 +630,11 @@ _THEMES = (
         description="Modern magenta rose",
         accent="#d389ba",
         accent_bright="#e4a3ce",
+        text_disabled="#655f63",
+        text_lowlight="#6a6468",
+        text_primary="#aea8ac",
+        text_emphasis="#dad8da",
+        text_highlight="#e8e6e7",
     ),
     TuiTheme(
         theme_id="lilac",
@@ -537,6 +642,11 @@ _THEMES = (
         description="Quiet pink mauve",
         accent="#db87a8",
         accent_bright="#eca1be",
+        text_disabled="#655f61",
+        text_lowlight="#6b6366",
+        text_primary="#aea8aa",
+        text_emphasis="#dad8d9",
+        text_highlight="#e8e6e7",
     ),
 )
 
