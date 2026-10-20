@@ -66,14 +66,13 @@ class WelcomeHost(Widget):
     WelcomeHost.welcome-page { height: 100%; }
     """
 
-    def __init__(self, surface: Widget, style: WelcomeStyle, *, motion: bool) -> None:
+    def __init__(self, surface: Widget, style: WelcomeStyle) -> None:
         super().__init__(id="input-region")
         self.input_surface = surface
         self.style_package = style
         self.page = self._create(style)
         self.page.display = False
         self.welcome_active = False
-        self._motion = motion
         self._status = TuiSystemStatus()
         self._page_layout = _WelcomeLayout(self)
 
@@ -93,24 +92,25 @@ class WelcomeHost(Widget):
         yield self.input_surface
 
     def on_mount(self) -> None:
-        self.app.screen_change_signal.subscribe(self, lambda _: self._sync_playback())
+        self.app.screen_change_signal.subscribe(self, lambda _: self._sync_active())
         self.page.set_system_status(self._status)
-        self._sync_playback()
+        self.page.refresh_theme()
+        self._sync_active()
 
     def on_unmount(self) -> None:
         self.app.screen_change_signal.unsubscribe(self)
-        self.page.set_playback(active=False, motion=self._motion)
+        self.page.set_active(False)
 
     def set_system_status(self, status: TuiSystemStatus) -> None:
         self._status = status
         self.page.set_system_status(status)
 
-    async def set_welcome_style(self, style: WelcomeStyle, *, motion: bool) -> None:
+    async def set_welcome_style(self, style: WelcomeStyle) -> None:
         if style != self.style_package:
             page = self._create(style)
             page.display = False
             with self.app.batch_update():
-                self.page.set_playback(active=False, motion=self._motion)
+                self.page.set_active(False)
                 await asyncio.shield(self.page.remove())
                 self.remove_class(f"welcome-style-{self.style_package.style_id}")
                 self.style_package, self.page = style, page
@@ -119,8 +119,7 @@ class WelcomeHost(Widget):
                 page.display = self.welcome_active
                 page.set_system_status(self._status)
                 page.refresh_theme()
-        self._motion = motion
-        self._sync_playback()
+        self._sync_active()
         self.refresh(layout=True)
 
     def set_welcome_mode(self, enabled: bool) -> None:
@@ -128,12 +127,12 @@ class WelcomeHost(Widget):
         self.set_class(enabled, "welcome-page")
         self.set_class(enabled, f"welcome-style-{self.style_package.style_id}")
         self.page.display = enabled
-        self._sync_playback()
+        self._sync_active()
         self.refresh(layout=True)
 
-    def _sync_playback(self) -> None:
+    def _sync_active(self) -> None:
         active = self.welcome_active and self.is_attached and self.app.screen is self.screen
-        self.page.set_playback(active=active, motion=self._motion)
+        self.page.set_active(active)
 
     def constrain_input(self, region: Region, viewport: Size) -> None:
         """Let the host bound connected menus against the resolved input location."""

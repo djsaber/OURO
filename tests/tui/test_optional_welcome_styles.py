@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import sys
 import textwrap
@@ -8,7 +9,7 @@ from importlib.metadata import PackageNotFoundError
 
 import pytest
 
-import ouro.tui.welcome.dot_matrix as dot_matrix
+import ouro.tui.welcome.styles as theme_styles
 from ouro.core.errors import ConfigError
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
@@ -40,7 +41,7 @@ def test_tui_import_and_basic_page_do_not_require_arrayfunc():
                 assert TuiPreferences().welcome_style == "basic"
                 assert WELCOME_STYLES["basic"].create() is not None
                 assert "arrayfunc" not in sys.modules
-                assert "ouro.tui.welcome.dot_matrix.widget" not in sys.modules
+                assert "ouro.tui.welcome.styles.dot_matrix.widget" not in sys.modules
             """),
         ],
         capture_output=True,
@@ -54,41 +55,41 @@ def test_missing_theme_dependency_has_an_actionable_reason(monkeypatch):
     def missing(_name):
         raise PackageNotFoundError("arrayfunc")
 
-    monkeypatch.setattr(dot_matrix, "version", missing)
-    assert "ouro-agent[themes]" in dot_matrix.check_requirements()
+    monkeypatch.setattr(theme_styles, "version", missing)
+    assert "ouro-agent[themes]" in theme_styles.check_requirements()
 
 
 @pytest.mark.parametrize("installed", ["8.5.6", "9.0.0", "invalid"])
 def test_incompatible_theme_dependency_is_not_imported(monkeypatch, installed):
-    monkeypatch.setattr(dot_matrix, "version", lambda _name: installed)
+    monkeypatch.setattr(theme_styles, "version", lambda _name: installed)
 
     def unexpected_import(_name):
         pytest.fail("incompatible extension must not be loaded")
 
-    monkeypatch.setattr(dot_matrix, "import_module", unexpected_import)
-    assert "incompatible" in dot_matrix.check_requirements()
+    monkeypatch.setattr(theme_styles, "import_module", unexpected_import)
+    assert "incompatible" in theme_styles.check_requirements()
 
 
 @pytest.mark.parametrize("error", [ImportError("missing symbol"), OSError("invalid binary")])
 def test_broken_extension_keeps_its_loading_diagnostic(monkeypatch, error):
-    monkeypatch.setattr(dot_matrix, "version", lambda _name: "8.5.7")
+    monkeypatch.setattr(theme_styles, "version", lambda _name: "8.5.7")
 
     def broken(_name):
         raise error
 
-    monkeypatch.setattr(dot_matrix, "import_module", broken)
-    assert str(error) in dot_matrix.check_requirements()
+    monkeypatch.setattr(theme_styles, "import_module", broken)
+    assert str(error) in theme_styles.check_requirements()
 
 
 def test_dependency_programming_errors_are_not_hidden(monkeypatch):
-    monkeypatch.setattr(dot_matrix, "version", lambda _name: "8.5.7")
+    monkeypatch.setattr(theme_styles, "version", lambda _name: "8.5.7")
 
     def broken(_name):
         raise RuntimeError("unexpected extension bug")
 
-    monkeypatch.setattr(dot_matrix, "import_module", broken)
+    monkeypatch.setattr(theme_styles, "import_module", broken)
     with pytest.raises(RuntimeError, match="unexpected extension bug"):
-        dot_matrix.check_requirements()
+        theme_styles.check_requirements()
 
 
 def test_shared_requirements_are_checked_once_and_do_not_change_known_identities():
@@ -116,7 +117,7 @@ async def test_missing_builtin_dependency_keeps_tui_usable_and_preferences_intac
     def missing(_name):
         raise PackageNotFoundError("arrayfunc")
 
-    monkeypatch.setattr(dot_matrix, "version", missing)
+    monkeypatch.setattr(theme_styles, "version", missing)
     store = TuiPreferencesStore(tmp_path)
     store.save(TuiPreferences(welcome_style=selected))
     app = OuroTuiApp(application=two_route_application(tmp_path))
@@ -133,9 +134,11 @@ async def test_missing_builtin_dependency_keeps_tui_usable_and_preferences_intac
         else:
             assert not notices
         assert not await app._set_welcome_style("event-horizon")
-        assert await app._set_welcome_style("__ouro_welcome_motion__")
+        app._request_tui_theme("coral")
+        workers = [worker for worker in app.workers if worker.group == "theme-switch"]
+        await asyncio.gather(*(worker.wait() for worker in workers))
         assert store.load().welcome_style == selected
-        assert store.load().welcome_motion is False
+        assert store.load().theme == "coral"
     with pytest.raises(ConfigError, match="unknown welcome style"):
         store.save(TuiPreferences.model_construct(welcome_style="misspelled-theme"))
 
@@ -167,8 +170,8 @@ async def test_installing_theme_dependencies_does_not_change_the_default(tmp_pat
 
 
 def test_available_dependency_can_be_used_without_an_extra_activation_flag(monkeypatch):
-    monkeypatch.setattr(dot_matrix, "version", lambda _name: "8.5.7")
+    monkeypatch.setattr(theme_styles, "version", lambda _name: "8.5.7")
     imports = []
-    monkeypatch.setattr(dot_matrix, "import_module", lambda name: imports.append(name))
-    assert dot_matrix.check_requirements() is None
+    monkeypatch.setattr(theme_styles, "import_module", lambda name: imports.append(name))
+    assert theme_styles.check_requirements() is None
     assert imports == ["arrayfunc"]

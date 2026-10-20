@@ -4,9 +4,13 @@ from array import array
 from math import cos, pi, sin
 
 import arrayfunc as af  # type: ignore[import-untyped]
+from rich.text import Text
+from textual.containers import Vertical
+from textual.widgets import Static
 
-from ouro.tui.welcome.dot_matrix.field import (
-    DotGrid,
+from ouro.tui.welcome.centered import CenteredWelcomePage
+from ouro.tui.welcome.styles.dot_matrix.field import (
+    ParticleGrid,
     Radiance,
     Sampler,
     Spectrum,
@@ -14,11 +18,13 @@ from ouro.tui.welcome.dot_matrix.field import (
     buffer,
     clip,
 )
+from ouro.tui.welcome.styles.dot_matrix.raster import DotArtwork
+from ouro.tui.welcome.styles.dot_matrix.widget import DotMatrix
 
 _SPECTRUM = ((0.29, 0.05, 0.09), (0.86, 0.21, 0.19), (1.0, 0.64, 0.39), (1.0, 0.97, 0.82))
 
 
-def prepare(grid: DotGrid) -> Sampler:
+def prepare(grid: ParticleGrid) -> Sampler:
     x, y = array("d", grid.x), array("d", grid.y)
     work, aperture = buffer(len(x)), buffer(len(x))
     projections = []
@@ -65,3 +71,31 @@ def prepare(grid: DotGrid) -> Sampler:
         return spectrum.sample(position, light)
 
     return sample
+
+
+class PrismPage(CenteredWelcomePage):
+    DEFAULT_CSS = """
+    PrismPage .phosphor-art {
+        layout: vertical; width: 100%; height: 1fr; min-height: 0; margin-bottom: 1;
+    }
+    PrismPage .art-caption { width: 100%; height: 1; text-align: center; }
+    """
+
+    def __init__(self) -> None:
+        self.artwork = DotArtwork(prepare, span=(5.8, 2.7))
+        self.matrix = DotMatrix(self.artwork)
+        self._caption = Static(classes="art-caption")
+        super().__init__(Vertical(self.matrix, self._caption, classes="phosphor-art"))
+
+    def set_active(self, active: bool) -> None:
+        self.matrix.set_active(active)
+
+    def refresh_theme(self) -> None:
+        theme = self.tui_theme
+        caption = Text("O U R O", style=theme.text_emphasis)
+        caption.append("  /  PRISM", style=theme.text_lowlight)
+        self._caption.update(caption)
+
+
+def create_page() -> PrismPage:
+    return PrismPage()

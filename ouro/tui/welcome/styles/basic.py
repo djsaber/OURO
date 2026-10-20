@@ -3,7 +3,6 @@
 from rich.text import Text
 from textual.widgets import Static
 
-from ouro.tui.theme import theme_for
 from ouro.tui.welcome.centered import CenteredWelcomePage
 from ouro.tui.welcome.model import WelcomeStyle
 
@@ -26,11 +25,8 @@ class BasicPage(CenteredWelcomePage):
         self._wordmark = Static(classes="wordmark")
         super().__init__(self._wordmark)
 
-    def on_mount(self) -> None:
-        self.refresh_theme()
-
     def refresh_theme(self) -> None:
-        self._wordmark.update(Text(_WORDMARK, style=f"bold {theme_for(self).accent}"))
+        self._wordmark.update(Text(_WORDMARK, style=f"bold {self.tui_theme.accent}"))
 
 
 STYLE = WelcomeStyle("basic", "Still", "The OURO wordmark. Still and silent.", BasicPage)

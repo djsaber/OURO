@@ -37,6 +37,19 @@ uv run --frozen python -m dev.benchmarks.startup --repeat 5
 ## 会话管线与 TUI
 
 ```powershell
+uv run --frozen --extra themes python -m dev.benchmarks.welcome --frames 60
+uv run --frozen --extra themes python -m dev.benchmarks.welcome_input --style clifford-torus --keys 240
+uv run --frozen --extra themes python -m dev.benchmarks.welcome_input --pattern alternate --keys 240
+```
+
+点阵基准包含采样、公共数值处理与终端行编码，覆盖所有内置粒子主题和两个视口尺寸。
+输入基准使用 114×30 的艺术区域、真实 Textual 合成与 ANSI 序列化，捕获输出而不接管终端。
+默认先连续输入再连续删除；`alternate` 为交替输入/删除。分别测量暂停与播放状态，
+输出按键处理延迟、编辑耗时、5 ms ticker 的 loop lag、帧发布间隔、GC 时长与输出量。
+间隔统计只包含有 damage 的发布；发布不等于终端完成绘制。输出不包含操作系统终端渲染、IME
+及完整 Application 的草稿持久化，因此须结合完整 TUI 回归和真实终端检查。
+
+```powershell
 uv run --frozen python -m dev.benchmarks.file_menu C:\Windows\System32 --keys 60
 ```
 

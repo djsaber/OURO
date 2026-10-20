@@ -1118,7 +1118,6 @@ class WelcomePanel(WelcomeHost):
         status: TuiSystemStatus | None = None,
         *,
         welcome_style: WelcomeStyle = WELCOME_STYLES[DEFAULT_WELCOME_STYLE],
-        welcome_motion: bool = True,
     ) -> None:
         self._subagent_navigation = SubagentNavigationPanel()
         self._command_popup = CommandPopup()
@@ -1137,7 +1136,7 @@ class WelcomePanel(WelcomeHost):
             id="interaction-surface",
         )
         surface.styles.height = "auto"
-        super().__init__(surface, welcome_style, motion=welcome_motion)
+        super().__init__(surface, welcome_style)
         self._status = status or TuiSystemStatus()
         self._viewport_size: Size | None = None
 

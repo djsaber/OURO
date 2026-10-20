@@ -24,7 +24,6 @@ class TuiPreferences(OuroModel):
     theme: str = DEFAULT_TUI_THEME.theme_id
     theme_saturation_level: int = 0
     welcome_style: str = DEFAULT_WELCOME_STYLE
-    welcome_motion: bool = True
     reasoning_expanded: bool = False
     collapse_traces: bool = True
     show_scaffold_messages: bool = False

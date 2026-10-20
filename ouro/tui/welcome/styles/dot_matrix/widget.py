@@ -5,20 +5,13 @@ from __future__ import annotations
 import asyncio
 from time import monotonic
 
-from rich.text import Text
 from textual import events
-from textual.containers import Vertical
 from textual.geometry import Region, Size
 from textual.strip import Strip
-from textual.timer import Timer
 from textual.widget import Widget
-from textual.widgets import Static
 from textual.worker import Worker
 
-from ouro.tui.theme import theme_for
-from ouro.tui.welcome.centered import CenteredWelcomePage
-from ouro.tui.welcome.dot_matrix.field import DotArtwork
-from ouro.tui.welcome.dot_matrix.raster import PhosphorRaster
+from ouro.tui.welcome.styles.dot_matrix.raster import DotArtwork, FrameStrip, PhosphorRaster
 
 
 def _render_frame(
@@ -44,14 +37,13 @@ class DotMatrix(Widget):
     DotMatrix { width: 100%; height: 1fr; min-height: 0; overflow: hidden; }
     """
 
-    def __init__(self, style: DotArtwork, *, motion: bool) -> None:
+    def __init__(self, style: DotArtwork) -> None:
         super().__init__()
         self.artwork = style
-        self.motion = motion
         self.active = False
         self.elapsed = 0.0
         self._last_tick: float | None = None
-        self._timer: Timer | None = None
+        self._frame_requested = asyncio.Event()
         self._raster: PhosphorRaster | None = None
         self._lines: tuple[Strip, ...] = ()
         self._rendering = False
@@ -59,49 +51,30 @@ class DotMatrix(Widget):
         self._pending_frame: tuple[Size, float, float, bool, tuple[int, int, int]] | None = None
 
     def on_mount(self) -> None:
-        self._timer = self.set_interval(1 / 30, self._tick, pause=True)
-        self._sync_timer()
+        _worker: Worker[None] = self.run_worker(self._render_frames, group="welcome-artwork")
+        self._paint(0)
 
     def on_unmount(self) -> None:
         self._render_revision += 1
         self._pending_frame = None
-        if self._timer is not None:
-            self._timer.stop()
-            self._timer = None
+        self._frame_requested.set()
         self._raster = None
         self._lines = ()
 
-    def set_playback(self, *, active: bool, motion: bool) -> None:
-        if (active, motion) == (self.active, self.motion):
+    def set_active(self, active: bool) -> None:
+        if active == self.active:
             return
-        self.active, self.motion = active, motion
+        self.active = active
         self._render_revision += 1
-        self._sync_timer()
+        self._last_tick = None
+        self._pending_frame = None
+        self._frame_requested.set()
         if self.is_mounted and (active or self._raster is None):
             self._paint(0)
 
-    def _sync_timer(self) -> None:
-        self._last_tick = None
-        if self._timer is not None:
-            if self.active and self.motion:
-                self._timer.resume()
-            else:
-                self._timer.pause()
-
     def _tick(self) -> None:
-        if (
-            not self.active
-            or not self.motion
-            or self.app.screen is not self.screen
-            or not self.visible
-            or not self.display
-        ):
-            self._last_tick = None
-            return
-        if self._rendering:
-            return
         now = monotonic()
-        delta = 0.0 if self._last_tick is None else min(0.1, now - self._last_tick)
+        delta = 0.0 if self._last_tick is None else now - self._last_tick
         self._last_tick = now
         self.elapsed += delta
         self._paint(delta)
@@ -129,16 +102,45 @@ class DotMatrix(Widget):
             self.app.no_color,
             self.background_colors[1].rgb,
         )
-        if not self._rendering:
-            self._rendering = True
-            _worker: Worker[None] = self.run_worker(self._render_frames, group="welcome-artwork")
+        self._frame_requested.set()
 
     async def _render_frames(self) -> None:
+        """One lifetime-owned worker; no frame queue or per-frame Textual workers.
+
+        Deadlines are measured from the start of computation. Slow frames yield
+        before continuing at current playback time, without waiting an extra tick
+        or replaying missed frames. Geometry and static repaint requests wake the
+        same loop, including when playback is paused.
+        """
+        deadline = 0.0
         try:
-            while self._pending_frame is not None:
+            # A worker can start before the Mount handler has completed.
+            # Textual cancels this owned worker when the widget is removed.
+            while True:
+                if self._pending_frame is None:
+                    if self.active and self.size.area:
+                        delay = max(0.0, deadline - monotonic())
+                        if delay:
+                            try:
+                                await asyncio.wait_for(self._frame_requested.wait(), delay)
+                            except TimeoutError:
+                                pass
+                        else:
+                            await asyncio.sleep(0)
+                        if self._pending_frame is None and self.active:
+                            self._tick()
+                    else:
+                        await self._frame_requested.wait()
+                self._frame_requested.clear()
+                if self._pending_frame is None:
+                    continue
                 revision = self._render_revision
                 size, seconds, delta, monochrome, background = self._pending_frame
                 self._pending_frame = None
+                self._rendering = True
+                started = monotonic()
+                # Keep cadence through timer jitter, but do not queue missed frames.
+                deadline = (deadline if 0 <= started - deadline < 1 / 30 else started) + 1 / 30
                 raster, lines, damage = await asyncio.to_thread(
                     _render_frame,
                     self.artwork,
@@ -149,6 +151,7 @@ class DotMatrix(Widget):
                     monochrome,
                     background,
                 )
+                self._rendering = False
                 if not self.is_mounted or revision != self._render_revision:
                     # Its persistence and damage buffers advanced without being
                     # displayed. The next accepted frame needs a fresh baseline.
@@ -170,31 +173,7 @@ class DotMatrix(Widget):
             )
         return Strip.blank(self.size.width, self.rich_style)
 
-
-class DotWelcomePage(CenteredWelcomePage):
-    """A phosphor package surface; captions and LED rendering are package-owned."""
-
-    DEFAULT_CSS = """
-    DotWelcomePage .phosphor-art {
-        layout: vertical; width: 100%; height: 1fr; min-height: 0; margin-bottom: 1;
-    }
-    DotWelcomePage .art-caption { width: 100%; height: 1; text-align: center; }
-    """
-
-    def __init__(self, artwork: DotArtwork) -> None:
-        self.artwork = artwork
-        self.matrix = DotMatrix(artwork, motion=True)
-        self._caption = Static(classes="art-caption")
-        super().__init__(Vertical(self.matrix, self._caption, classes="phosphor-art"))
-
-    def on_mount(self) -> None:
-        self.refresh_theme()
-
-    def set_playback(self, *, active: bool, motion: bool) -> None:
-        self.matrix.set_playback(active=active, motion=motion)
-
-    def refresh_theme(self) -> None:
-        theme = theme_for(self)
-        caption = Text("O U R O", style=theme.text_emphasis)
-        caption.append(f"  /  {self.artwork.label.upper()}", style=theme.text_lowlight)
-        self._caption.update(caption)
+    def render_lines(self, crop: Region) -> list[Strip]:
+        # Preserve Textual CSS, opacity, filters and cropping before transferring
+        # disposable frame rows to the compositor.
+        return [FrameStrip(line, line.cell_length) for line in super().render_lines(crop)]

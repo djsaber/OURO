@@ -257,7 +257,6 @@ _THOUGHT_DISPLAY_ACTION = "__ouro_thought_display__"
 _COLLAPSE_TRACES_ACTION = "__ouro_collapse_traces__"
 _SCAFFOLD_MESSAGES_ACTION = "__ouro_scaffold_messages__"
 _WELCOME_STYLE_PREFIX = "welcome:"
-_WELCOME_MOTION_ACTION = "__ouro_welcome_motion__"
 _INPUT_DRAFT_MEMORY_ACTION = "__ouro_input_draft_memory__"
 _RENAME_SESSION_ACTION = "__ouro_rename_session__"
 _ARCHIVE_SESSION_ACTION = "__ouro_archive_session__"
@@ -1045,10 +1044,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 welcome_state_changed=self._apply_welcome_mode,
                 system_status_changed=self._set_welcome_system_status,
             )
-            self._input_surface = WelcomePanel(
-                welcome_style=self._welcome_style,
-                welcome_motion=self._preferences.welcome_motion,
-            )
+            self._input_surface = WelcomePanel(welcome_style=self._welcome_style)
             yield self._input_surface
 
     def get_driver_class(self) -> type[Driver]:
@@ -5218,7 +5214,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
         async def select_choice(value: str) -> tuple[Choice, ...] | None:
             nonlocal selected_theme_id, selected_level
-            if value.startswith(_WELCOME_STYLE_PREFIX) or value == _WELCOME_MOTION_ACTION:
+            if value.startswith(_WELCOME_STYLE_PREFIX):
                 # Choice workers may be cancelled by another selection. The host
                 # owns the complete save/mount transaction, serialized with prefs.
                 worker: Worker[bool] = self.run_worker(
@@ -5325,13 +5321,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.notify(reason, severity="warning", markup=False)
             return False
         async with self._preferences_save_lock:
-            update = (
-                {"welcome_motion": not self._preferences.welcome_motion}
-                if value == _WELCOME_MOTION_ACTION
-                else {"welcome_style": value}
-            )
             preferences = self._preferences_store.validate(
-                {**self._preferences.model_dump(), **update}
+                {**self._preferences.model_dump(), "welcome_style": value}
             )
             try:
                 await asyncio.to_thread(self._preferences_store.save, preferences)
@@ -5339,10 +5330,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self.notify(str(exc), severity="error", markup=False)
                 return False
             self._preferences = preferences
-            await self.query_one(WelcomePanel).set_welcome_style(
-                self._welcome_style,
-                motion=preferences.welcome_motion,
-            )
+            await self.query_one(WelcomePanel).set_welcome_style(self._welcome_style)
         return True
 
     async def _choose_thought_display(self, *, menu: ChoiceScreen | None = None) -> None:
@@ -5606,12 +5594,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 )
                 for style in self._welcome_styles.values()
                 if style.style_id not in self._unavailable_welcome_styles
-            ),
-            Choice(
-                _WELCOME_MOTION_ACTION,
-                "Animation",
-                group="Welcome style",
-                trailing="Playing" if self._preferences.welcome_motion else "Paused",
             ),
             *(theme_choice(theme) for theme in TUI_THEMES.values()),
         )

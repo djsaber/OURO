@@ -7,7 +7,7 @@ from textual import events
 
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.welcome import WELCOME_STYLES
-from ouro.tui.welcome.dot_matrix.widget import DotWelcomePage
+from ouro.tui.welcome.styles.dot_matrix.widget import DotMatrix
 from ouro.tui.widgets import CommandPopup, Composer, WelcomePanel
 from tests.tui.helpers import run_ready_app, two_route_application
 
@@ -48,9 +48,9 @@ async def test_animation_keeps_editor_layout_and_cursor_stable_during_cjk_edits(
     app = OuroTuiApp(application=two_route_application(tmp_path))
     async with run_ready_app(app, size=(140, 50)) as pilot:
         welcome = app.query_one(WelcomePanel)
-        await welcome.set_welcome_style(WELCOME_STYLES["clifford-torus"], motion=True)
+        await welcome.set_welcome_style(WELCOME_STYLES["clifford-torus"])
         await pilot.pause()
-        assert isinstance(welcome.page, DotWelcomePage)
+        assert welcome.page.query_one(DotMatrix) is welcome.page.matrix
         matrix = welcome.page.matrix
         composer = app.query_one(Composer)
         before = composer.region, welcome.input_surface.region, matrix.region

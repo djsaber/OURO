@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import pytest
 from rich.segment import Segment
 from rich.text import Text
 from textual.app import App
+from textual.drivers.headless_driver import HeadlessDriver
 from textual.geometry import Region
 from textual.strip import Strip
 from textual.widgets import Input, OptionList, Static
@@ -18,11 +20,11 @@ from ouro.tui.app import OuroTuiApp
 from ouro.tui.controller import TuiSystemStatus
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.screens import ChoiceScreen
-from ouro.tui.theme import TUI_THEMES
+from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
 from ouro.tui.welcome import WELCOME_STYLES, WelcomePage, WelcomeStyle, welcome_catalog
 from ouro.tui.welcome.components import WelcomeUsage
-from ouro.tui.welcome.dot_matrix.widget import DotWelcomePage
 from ouro.tui.welcome.host import WelcomeHost
+from ouro.tui.welcome.styles.dot_matrix.widget import DotMatrix
 from ouro.tui.widgets import CommandPopup, Composer, WelcomePanel
 from tests.tui.helpers import run_ready_app, two_route_application
 
@@ -34,7 +36,7 @@ class CustomPage(WelcomePage):
 
     def __init__(self):
         super().__init__()
-        self.playback = (False, True)
+        self.active = False
 
     def render(self):
         return Text("CUSTOM WELCOME")
@@ -44,11 +46,139 @@ class CustomPage(WelcomePage):
         height = measure(width)
         return Region((viewport.width - width) // 2, viewport.height - height, width, height)
 
-    def set_playback(self, *, active: bool, motion: bool) -> None:
-        self.playback = active, motion
+    def set_active(self, active: bool) -> None:
+        self.active = active
 
 
 CUSTOM = WelcomeStyle("custom-scene", "Custom scene", "A custom component.", CustomPage)
+
+
+async def test_custom_page_tracks_initial_palette_saturation_and_hidden_updates(tmp_path):
+    class PalettePage(CustomPage):
+        DEFAULT_CSS = """
+        PalettePage .palette-css { color: $ouro-theme; background: $ouro-panel; height: 1; }
+        PalettePage .palette-rich { height: 1; }
+        """
+
+        def __init__(self):
+            super().__init__()
+            self.palettes = []
+
+        def compose(self):
+            yield Static("CSS palette", classes="palette-css")
+            yield Static(classes="palette-rich")
+
+        def refresh_theme(self):
+            theme = self.tui_theme
+            self.palettes.append(theme)
+            self.query_one(".palette-rich", Static).update(Text(theme.label, style=theme.accent))
+
+    package = WelcomeStyle("palette-page", "Palette", "Follows TUI colors", PalettePage)
+    store = TuiPreferencesStore(tmp_path, welcome_styles=welcome_catalog((package,)))
+    store.save(
+        store.validate(
+            {
+                "welcome_style": package.style_id,
+                "theme": "coral",
+                "theme_saturation_level": 5,
+            }
+        )
+    )
+    app = OuroTuiApp(application=two_route_application(tmp_path), welcome_styles=(package,))
+    async with run_ready_app(app) as pilot:
+        host, composer = app.query_one(WelcomePanel), app.query_one(Composer)
+        page = host.page
+        composer.load_text("keep this draft")
+        selection = composer.selection
+
+        def assert_palette(theme_id, level):
+            expected = TUI_THEMES[theme_id].at_saturation_level(level)
+            assert page.tui_theme == page.palettes[-1] == expected
+            assert page.query_one(".palette-css").styles.color.hex.lower() == expected.accent
+            assert page.query_one(".palette-css").styles.background.hex.lower() == expected.panel
+            content = page.query_one(".palette-rich", Static).render()
+            assert content.render_segments()[0].style.color.name == expected.accent
+
+        assert_palette("coral", 5)
+        await pilot.press("ctrl+p")
+        assert not page.active
+        for theme_id, level in (("blossom", 0), ("blossom", 20)):
+            count = len(page.palettes)
+            app._request_tui_theme(theme_id, saturation_level=level)
+            workers = [worker for worker in app.workers if worker.group == "theme-switch"]
+            await asyncio.gather(*(worker.wait() for worker in workers))
+            await pilot.pause()
+            assert host.page is page and len(page.palettes) == count + 1
+            assert not page.active
+            assert_palette(theme_id, level)
+
+        # A newly loaded page receives the currently resolved palette behind the menu.
+        await host.set_welcome_style(WELCOME_STYLES["basic"])
+        await host.set_welcome_style(package)
+        page = host.page
+        assert_palette("blossom", 20)
+        assert not page.active
+        await pilot.press("escape")
+        assert page.active
+        assert app.query_one(Composer) is composer and app.focused is composer
+        assert composer.text == "keep this draft" and composer.selection == selection
+
+
+@pytest.mark.parametrize(
+    "style", [style for key, style in WELCOME_STYLES.items() if key != "basic"]
+)
+async def test_particle_page_owns_caption_independently_of_catalog_label(style):
+    class PackageApp(App):
+        def get_css_variables(self):
+            return {**super().get_css_variables(), **DEFAULT_TUI_THEME.css_variables()}
+
+        def compose(self):
+            host = WelcomeHost(Static("input"), replace(style, label="Menu label"))
+            host.set_welcome_mode(True)
+            yield host
+
+    app = PackageApp()
+    async with app.run_test(size=(120, 40)):
+        page = app.query_one(WelcomeHost).page
+        assert page.query_one(".art-caption", Static).render().plain == (
+            f"O U R O  /  {style.label.upper()}"
+        )
+        assert page.query_one(DotMatrix) is page.matrix
+
+
+async def test_package_owns_pointer_interaction_without_replacing_host_input():
+    class InteractivePage(CustomPage):
+        def __init__(self):
+            super().__init__()
+            self.clicks = 0
+
+        def on_click(self, event):
+            event.stop()
+            self.clicks += 1
+            self.refresh()
+
+        def render(self):
+            return Text(f"LOCAL ACTION {self.clicks}")
+
+    class PackageApp(App):
+        def compose(self):
+            package = WelcomeStyle(
+                "interactive", "Interactive", "Local interaction", InteractivePage
+            )
+            host = WelcomeHost(Composer(), package)
+            host.set_welcome_mode(True)
+            yield host
+
+    app = PackageApp()
+    async with app.run_test() as pilot:
+        page, composer = app.query_one(InteractivePage), app.query_one(Composer)
+        composer.load_text("draft")
+        composer.focus()
+        await pilot.click(InteractivePage, offset=(1, 1))
+        assert page.clicks == 1 and page.render().plain == "LOCAL ACTION 1"
+        assert composer.text == "draft"
+        await pilot.press("end", "!")
+        assert composer.text == "draft!"
 
 
 class BytePage(WelcomePage):
@@ -69,7 +199,7 @@ class BytePage(WelcomePage):
         self.frames = 0
         self.layouts = 0
         self.timer = None
-        self.playback = (False, True)
+        self.active = False
         self.usage = WelcomeUsage()
         self.theme_updates = 0
 
@@ -88,16 +218,16 @@ class BytePage(WelcomePage):
 
     def on_mount(self):
         self.timer = self.set_interval(1 / 30, self.advance, pause=True)
-        self.set_playback(active=self.playback[0], motion=self.playback[1])
+        self.set_active(self.active)
 
     def advance(self):
         self.frames += 1
         self.refresh()
 
-    def set_playback(self, *, active, motion):
-        self.playback = active, motion
+    def set_active(self, active):
+        self.active = active
         if self.timer is not None:
-            if active and motion:
+            if active:
                 self.timer.resume()
             else:
                 self.timer.pause()
@@ -128,7 +258,7 @@ async def test_full_page_controls_viewport_input_layout_composition_and_style_sc
         composer.load_text("a draft\nwith two lines")
         selection = composer.selection
         surface = host.input_surface
-        await host.set_welcome_style(package, motion=True)
+        await host.set_welcome_style(package)
         await pilot.pause(0.15)
         page = host.page
         assert isinstance(page, BytePage)
@@ -172,11 +302,11 @@ async def test_full_page_controls_viewport_input_layout_composition_and_style_sc
         await pilot.press("ctrl+p")
         frames = page.frames
         await pilot.pause(0.12)
-        assert page.frames == frames and not page.playback[0]
+        assert page.frames == frames and not page.active
         await pilot.press("escape")
         await pilot.pause(0.12)
         assert page.frames > frames
-        await host.set_welcome_style(package, motion=False)
+        host.set_welcome_mode(False)
         frames = page.frames
         await pilot.pause(0.12)
         assert page.frames == frames
@@ -188,7 +318,7 @@ async def test_full_page_controls_viewport_input_layout_composition_and_style_sc
         assert not page.display
         assert not host.has_class("welcome-style-byte-page")
         host.set_welcome_mode(True)
-        await host.set_welcome_style(WELCOME_STYLES["basic"], motion=True)
+        await host.set_welcome_style(WELCOME_STYLES["basic"])
         await pilot.pause()
         assert page.timer is None
         assert host.input_surface is surface and app.query_one(Composer) is composer
@@ -207,7 +337,7 @@ async def test_invalid_factory_keeps_the_mounted_page_and_input(tmp_path):
             with pytest.raises(
                 ValueError, match="invalid: factory must return a fresh WelcomePage"
             ):
-                await host.set_welcome_style(invalid, motion=True)
+                await host.set_welcome_style(invalid)
             assert host.page is page and host.input_surface is surface
             assert page.is_attached and page.matrix.active
 
@@ -227,7 +357,7 @@ async def test_page_layout_rejects_invalid_input_geometry_with_package_identity(
     class LayoutApp(App):
         def compose(self):
             package = WelcomeStyle("invalid-page", "Invalid", "Invalid geometry", InvalidPage)
-            host = WelcomeHost(Static("input"), package, motion=False)
+            host = WelcomeHost(Static("input"), package)
             host.set_welcome_mode(True)
             yield host
 
@@ -248,13 +378,11 @@ def test_custom_catalog_is_immutable_isolated_and_rejects_colliding_identities()
         WelcomeStyle("../scene", "Bad", "Bad ID", CustomPage)
 
 
-def test_style_and_motion_persist_independently_of_color_theme_and_validate_against_catalog(
+def test_style_persists_independently_of_color_theme_and_validates_against_catalog(
     tmp_path,
 ):
     store = TuiPreferencesStore(tmp_path, welcome_styles=welcome_catalog((CUSTOM,)))
-    preferences = store.validate(
-        {"welcome_style": CUSTOM.style_id, "welcome_motion": False, "theme": "coral"}
-    )
+    preferences = store.validate({"welcome_style": CUSTOM.style_id, "theme": "coral"})
     store.save(preferences)
     assert store.load() == preferences
     with pytest.raises(ConfigError, match="unknown welcome style"):
@@ -307,7 +435,6 @@ async def test_theme_menu_groups_inline_styles_and_keeps_color_settings_independ
             "Still",
             "Horizon",
             "Bloom",
-            "Labyrinth",
             "Tide",
             "Iris",
             "Prism",
@@ -326,7 +453,7 @@ async def test_theme_menu_groups_inline_styles_and_keeps_color_settings_independ
 
         menu.query_one(Input).value = "Welcome style"
         await pilot.pause()
-        assert options.option_count == len(style_choices) + 2  # heading and animation
+        assert options.option_count == len(style_choices) + 1  # group heading
         menu.query_one(Input).value = "Ember"
         await pilot.pause()
         await pilot.press("left", "right")
@@ -347,14 +474,10 @@ async def test_theme_menu_groups_inline_styles_and_keeps_color_settings_independ
         workers = [worker for worker in app.workers if worker.group == "theme-switch"]
         await asyncio.wait_for(asyncio.gather(*(worker.wait() for worker in workers)), 3)
         await pilot.pause()
-        await select_menu(app, pilot, "Animation")
         assert app.screen is menu and menu.page_revision == revision
         preferences = app._preferences_store.load()
         assert preferences.theme == "coral" and preferences.theme_saturation_level == 1
-        assert preferences.welcome_style == "coral" and not preferences.welcome_motion
-        assert next(choice for choice in menu._choices if choice.label == "Animation").trailing == (
-            "Paused"
-        )
+        assert preferences.welcome_style == "coral"
         await pilot.press("escape")
         if not standalone:
             assert app.screen is menu and menu.page_title == "ACTIONS"
@@ -372,11 +495,11 @@ async def test_picker_mounts_arbitrary_custom_package_preserves_input_and_persis
         await select_menu(app, pilot, "Custom scene")
         slot = app.query_one(WelcomePanel)
         assert isinstance(slot.page, CustomPage)
-        assert slot.page.playback == (False, True)
+        assert not slot.page.active
         assert app.screen is menu
         await pilot.press("escape", "escape")
         await pilot.pause()
-        assert slot.page.playback == (True, True)
+        assert slot.page.active
         assert composer.text == "draft"
         assert app.focused is composer
         assert app._preferences_store.load().welcome_style == CUSTOM.style_id
@@ -387,7 +510,7 @@ async def test_picker_mounts_arbitrary_custom_package_preserves_input_and_persis
         assert isinstance(restarted.query_one(WelcomePanel).page, CustomPage)
 
 
-async def test_dot_playback_pauses_for_menu_conversation_and_motion_setting_and_releases_timer(
+async def test_particle_theme_pauses_when_hidden_and_releases_worker_on_replacement(
     tmp_path: Path,
 ):
     TuiPreferencesStore(tmp_path).save(TuiPreferences(welcome_style="event-horizon"))
@@ -395,7 +518,7 @@ async def test_dot_playback_pauses_for_menu_conversation_and_motion_setting_and_
     async with run_ready_app(app, size=(100, 40)) as pilot:
         panel = app.query_one(WelcomePanel)
         visual = panel.page
-        assert isinstance(visual, DotWelcomePage)
+        assert visual.query_one(DotMatrix) is visual.matrix
         matrix = visual.matrix
         await pilot.pause(0.12)
         assert matrix.elapsed > 0
@@ -403,12 +526,7 @@ async def test_dot_playback_pauses_for_menu_conversation_and_motion_setting_and_
         before = matrix.elapsed
         await pilot.pause(0.12)
         assert not matrix.active and matrix.elapsed == before
-        await select_menu(app, pilot, "Animation")
         await pilot.press("escape", "escape")
-        await pilot.pause(0.12)
-        assert matrix.elapsed == before
-        assert not app._preferences_store.load().welcome_motion
-        await panel.set_welcome_style(WELCOME_STYLES["event-horizon"], motion=True)
         await pilot.pause(0.12)
         assert matrix.elapsed > before
         panel.set_welcome_mode(False)
@@ -421,12 +539,58 @@ async def test_dot_playback_pauses_for_menu_conversation_and_motion_setting_and_
             await pilot.pause()
             assert matrix.region in panel.page._top.region
             assert matrix._raster is not None
-            assert matrix._raster.grid.columns == matrix.size.width
-        await panel.set_welcome_style(WELCOME_STYLES["basic"], motion=True)
+            assert matrix._raster.columns == matrix.size.width
+        await panel.set_welcome_style(WELCOME_STYLES["basic"])
         await pilot.pause()
-        assert matrix._timer is None
-        assert not list(panel.query(DotWelcomePage))
+        assert not any(worker.node is matrix for worker in app.workers)
+        assert not list(panel.query(DotMatrix))
         assert app.query_one(Composer).region.y == panel.page._top.region.bottom
+
+
+def test_normal_startup_displays_saved_particle_theme(tmp_path: Path, monkeypatch):
+    frames = []
+    mount = DotMatrix.on_mount
+    frame_loop = DotMatrix._render_frames
+    worker_started = asyncio.Event()
+
+    async def yielding_mount(matrix):
+        mount(matrix)
+        # Exercise the valid ordering where the worker starts before Mount completes.
+        await worker_started.wait()
+
+    async def early_frame_loop(matrix):
+        assert not matrix.is_mounted
+        worker_started.set()
+        await frame_loop(matrix)
+
+    monkeypatch.setattr(DotMatrix, "on_mount", yielding_mount)
+    monkeypatch.setattr(DotMatrix, "_render_frames", early_frame_loop)
+
+    class OutputSink(HeadlessDriver):
+        @property
+        def is_headless(self):
+            return False
+
+        def write(self, data):
+            if any(0x2800 < ord(char) <= 0x28FF for char in data):
+                frames.append(data)
+
+    class StartupApp(OuroTuiApp):
+        def get_driver_class(self):
+            return OutputSink
+
+        def on_ready(self):
+            self.set_timer(5, lambda: self.exit(False))
+            self.set_interval(1 / 30, self.check_output)
+
+        def check_output(self):
+            if len(set(frames)) >= 2:
+                self.exit(True)
+
+    TuiPreferencesStore(tmp_path).save(TuiPreferences(welcome_style="event-horizon"))
+    app = StartupApp(application=two_route_application(tmp_path))
+    # App.run uses production startup ordering; run_test can mask an early worker exit.
+    assert app.run(size=(130, 31)), "the selected particle theme never reached terminal output"
 
 
 async def test_failed_style_save_keeps_current_package_and_preference(tmp_path, monkeypatch):
@@ -447,7 +611,7 @@ async def test_failed_style_save_keeps_current_package_and_preference(tmp_path, 
 
 @pytest.mark.parametrize(
     ("next_choice", "style_id", "theme_id"),
-    [("Labyrinth", "julia-reliquary", "original"), ("Coral", "electron-bloom", "coral")],
+    [("Tide", "interference", "original"), ("Coral", "electron-bloom", "coral")],
 )
 async def test_style_transaction_survives_reselection_and_picker_close(
     tmp_path, monkeypatch, next_choice, style_id, theme_id

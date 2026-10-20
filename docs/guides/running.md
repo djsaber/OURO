@@ -75,7 +75,7 @@ uv tool install --python 3.14 "ouro-agent[themes]"
 使用 pip 时，在 OURO 所在虚拟环境执行 `python -m pip install "ouro-agent[themes]"`。
 uv tool 使用独立环境，向系统 Python 或其他虚拟环境安装依赖不会改变 OURO 的可用主题。
 
-点阵主题 Horizon、Bloom、Labyrinth、Tide、Iris、Prism 需要 `arrayfunc>=8.5.7,<9`。
+点阵主题 Horizon、Bloom、Tide、Iris、Prism 需要 `arrayfunc>=8.5.7,<9`。
 该依赖提供 Windows x64 / CPython 3.14 wheel；没有匹配 wheel 的平台需要 C 编译器和对应 Python
 开发头文件。Linux x86_64 上，uv 的 Python 与系统 C 编译器组合可能需要显式启用 SSE4.1。
 确认 `grep -w sse4_1 /proc/cpuinfo` 有输出后，可在 bash 中执行：
@@ -91,6 +91,6 @@ TUI 每次启动检测主题所需依赖，只列出可用主题；安装依赖�
 切换主题。已保存的主题暂不可用时，本次显示 Still 并提示原因，保留原选择；恢复依赖后再次启动即可
 恢复该主题。使用同一 OURO 环境中手动安装的兼容依赖，也能启用对应主题。
 
-`Animation` 独立控制当前主题的动画播放；主题也可以是静态页面。主题与播放偏好立即保存，独立于界面配色。
+主题选择立即保存，独立于界面配色。动画由各主题自行实现，TUI 菜单不提供主题内部设置。
 所选作品立即显示在菜单后方，菜单打开期间暂停动画。自定义主题接入见
 [欢迎页样式包开发](../development/welcome-styles.md)。

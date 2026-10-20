@@ -11,6 +11,7 @@ from textual.reactive import reactive
 from textual.widget import Widget
 
 from ouro.tui.controller import TuiSystemStatus
+from ouro.tui.theme import TuiTheme, theme_for
 
 
 class WelcomePage(Widget):
@@ -45,11 +46,24 @@ class WelcomePage(Widget):
     def set_system_status(self, status: TuiSystemStatus) -> None:
         """Receive the host's immutable system/usage snapshot without querying services."""
 
-    def set_playback(self, *, active: bool, motion: bool) -> None:
-        """Update visibility and the user's motion preference; static visuals need no work."""
+    def set_active(self, active: bool) -> None:
+        """Receive foreground visibility; the package owns its resource policy."""
+
+    @property
+    def tui_theme(self) -> TuiTheme:
+        """Current immutable TUI palette, including the user's saturation selection.
+
+        Read after mounting or in refresh_theme; without an App palette this uses
+        the default.
+        """
+        return theme_for(self)
 
     def refresh_theme(self) -> None:
-        """Refresh any interface tokens consumed by this package."""
+        """Read tui_theme after mount or a palette change and refresh owned content.
+
+        CSS using $ouro-* variables updates automatically. This hook also runs for
+        hidden mounted pages; it must not activate the page or reset input state.
+        """
 
 
 @dataclass(frozen=True)

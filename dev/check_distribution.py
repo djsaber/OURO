@@ -40,9 +40,11 @@ async def check_tui(*, themes: bool) -> None:
                 if choice.value.startswith("welcome:")
             }
             assert actual == expected, actual
-            assert await app._set_welcome_style("__ouro_welcome_motion__")
+            app._request_tui_theme("coral")
+            workers = [worker for worker in app.workers if worker.group == "theme-switch"]
+            await asyncio.gather(*(worker.wait() for worker in workers))
             assert store.load().welcome_style == "event-horizon"
-            assert not store.load().welcome_motion
+            assert store.load().theme == "coral"
 
 
 def main() -> None:

@@ -9,7 +9,7 @@ from statistics import median
 from time import perf_counter
 
 from ouro.tui.welcome import WELCOME_STYLES
-from ouro.tui.welcome.dot_matrix.raster import PhosphorRaster
+from ouro.tui.welcome.styles.dot_matrix.raster import PhosphorRaster
 
 
 def main() -> None:
