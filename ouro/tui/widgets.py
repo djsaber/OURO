@@ -1456,6 +1456,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         welcome_state_changed: Callable[[bool], None] | None = None,
         system_status_changed: Callable[[TuiSystemStatus], None] | None = None,
         show_scaffold_messages: bool = False,
+        collapse_traces: bool = True,
     ) -> None:
         super().__init__(id="conversation")
         self._follow_tail = True
@@ -1466,6 +1467,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         self._history = ConversationHistory(
             _tool_activity_text,
             reasoning_expanded=reasoning_expanded,
+            collapse_traces=collapse_traces,
         )
         self._live_turn = AssistantTurn(reasoning_expanded=reasoning_expanded)
         self._live_turn.display = False
@@ -1653,6 +1655,23 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                 self.release_anchor()
             self._history.toggle_reasoning(message.entry_index)
         message.stop()
+
+    def on_conversation_history_toggle_trace_requested(
+        self,
+        message: ConversationHistory.ToggleTraceRequested,
+    ) -> None:
+        with self.app.batch_update():
+            # Keep the clicked summary under the pointer in the same layout pass.
+            scroll_y = self.scroll_y
+            delta = self._history.toggle_trace(message.entry_index)
+            self._restore_scroll_y(scroll_y + delta)
+        message.stop()
+
+    def set_collapse_traces(self, collapsed: bool) -> None:
+        with self.app.batch_update():
+            delta = self._history.set_collapse_traces(collapsed, above_line=round(self.scroll_y))
+            if not self._follow_tail:
+                self._restore_scroll_y(self.scroll_y + delta)
 
     def take_history_state(self) -> ConversationHistoryState | None:
         """Detach the persisted transcript; live Run widgets are reconstructed."""

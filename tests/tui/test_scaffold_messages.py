@@ -158,6 +158,7 @@ async def test_settings_toggle_refreshes_visible_session_and_survives_navigation
                 "Theme",
                 "Thinking display",
                 "Scaffold messages",
+                "Collapse traces",
             }
         await choose_menu(pilot, "Scaffold messages", title="SCAFFOLD MESSAGES")
         menu = app.screen

@@ -380,7 +380,7 @@ OuroTuiApp 在任何历史渲染 worker 启动前确定活动 TuiTheme。Rich Ma
 - previous entry kind；
 - render width；
 - TuiTheme；
-- reasoning 展开与交互高亮状态。
+- reasoning 展开、执行轨迹折叠与交互高亮状态。
 
 `ConversationHistoryState` 保存生成 Strip 所使用的完整 TuiTheme 和已绘制条目数。恢复缓存需要同时满足：
 
@@ -400,6 +400,14 @@ TranscriptEntry，确认目标版本后安装内容；`ConversationHistory` 接�
 工作结果校验内容版本、条目、宽度与主题，切换后不提交旧结果或启动旧目标剩余块。
 会话缓存保存已发布的兼容内容，重进只准备缺失部分，再一次并入显示。
 滚动恢复保留目标偏移直到历史布局完成；用户主动滚动会接管锚点。
+
+执行轨迹折叠属于历史可见性投影。ConversationHistory 按 Run 终态摘要识别最终文本后缀及其相邻思考，
+仅将之前的 assistant/tool 条目归入可折叠范围；用户、脚手架、通知及压缩摘要不进入该范围。
+折叠保留所有条目和 Strip，只过滤可见行；隐藏工具的后续状态更新仍更新其缓存，不向可见缓冲插入内容。
+模型摘要复用主题 disclosure 标记与 metadata 交互，悬停使用固定行高。手动切换返回摘要位移，
+ConversationView 通过现有滚动恢复入口，在同一布局帧保持锚点。后台渲染请求捕获轨迹交互状态，
+发布前沿用现有请求比较规则拒绝过期结果。默认偏好和按 Run 的手动选择随历史缓存恢复；
+宽度或主题导致 Strip 缓存失效时，手动选择仍保留。
 
 不同 App 或不同 TuiTheme 值不共享 Markdown style、SyntaxTheme 或 history Strip。theme id 只用于身份和 preference，
 不能替代完整主题值参与缓存判断。实现不使用全局 mutable current theme、ContextVar 或线程局部主题。

@@ -254,6 +254,7 @@ _AGENT_INTERACTION_EVENTS = {
 _SESSION_GROUPING_ACTION = "__ouro_session_grouping__"
 _THEME_ACTION = "__ouro_theme__"
 _THOUGHT_DISPLAY_ACTION = "__ouro_thought_display__"
+_COLLAPSE_TRACES_ACTION = "__ouro_collapse_traces__"
 _SCAFFOLD_MESSAGES_ACTION = "__ouro_scaffold_messages__"
 _WELCOME_STYLE_PREFIX = "welcome:"
 _WELCOME_MOTION_ACTION = "__ouro_welcome_motion__"
@@ -1040,6 +1041,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             yield ConversationView(
                 reasoning_expanded=self._preferences.reasoning_expanded,
                 show_scaffold_messages=self._preferences.show_scaffold_messages,
+                collapse_traces=self._preferences.collapse_traces,
                 welcome_state_changed=self._apply_welcome_mode,
                 system_status_changed=self._set_welcome_system_status,
             )
@@ -4969,6 +4971,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if action_id == _THOUGHT_DISPLAY_ACTION:
                 await self._choose_thought_display(menu=action_screen)
                 return None
+            if action_id == _COLLAPSE_TRACES_ACTION:
+                await self._choose_collapse_traces(menu=action_screen)
+                return None
             if action_id == _SCAFFOLD_MESSAGES_ACTION:
                 await self._choose_scaffold_messages(menu=action_screen)
                 return None
@@ -5060,6 +5065,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                         group="Settings",
                     ),
                     Choice(
+                        _COLLAPSE_TRACES_ACTION,
+                        "Collapse traces",
+                        group="Settings",
+                    ),
+                    Choice(
                         _INPUT_DRAFT_MEMORY_ACTION,
                         "Remember drafts",
                         group="Settings",
@@ -5087,7 +5097,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 action
                 for action in actions
                 if action.value
-                in {_THEME_ACTION, _THOUGHT_DISPLAY_ACTION, _SCAFFOLD_MESSAGES_ACTION}
+                in {
+                    _THEME_ACTION,
+                    _THOUGHT_DISPLAY_ACTION,
+                    _COLLAPSE_TRACES_ACTION,
+                    _SCAFFOLD_MESSAGES_ACTION,
+                }
             )
         return (*self._recent_action_choices(actions), *actions)
 
@@ -5368,6 +5383,51 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 on_select=select_display,
             )
         )
+
+    async def _choose_collapse_traces(self, *, menu: ChoiceScreen) -> None:
+        def choices() -> tuple[Choice, ...]:
+            return tuple(
+                Choice(
+                    value,
+                    label,
+                    marker=(
+                        self._tui_theme.selected_choice_marker
+                        if enabled == self._preferences.collapse_traces
+                        else ""
+                    ),
+                )
+                for value, label, enabled in (("on", "On", True), ("off", "Off", False))
+            )
+
+        async def select(value: str) -> tuple[Choice, ...] | None:
+            worker: Worker[bool] = self.run_worker(
+                partial(self._set_collapse_traces, value == "on"), group="collapse-traces"
+            )
+            if not await asyncio.shield(worker.wait()):
+                return None
+            return choices()
+
+        menu.push_page(
+            title="COLLAPSE TRACES",
+            placeholder="Collapse execution traces after the final reply…",
+            choices=choices(),
+            initial_value="on" if self._preferences.collapse_traces else "off",
+            on_select=select,
+        )
+
+    async def _set_collapse_traces(self, collapsed: bool) -> bool:
+        async with self._preferences_save_lock:
+            if collapsed == self._preferences.collapse_traces:
+                return True
+            preferences = self._preferences.model_copy(update={"collapse_traces": collapsed})
+            try:
+                await asyncio.to_thread(self._preferences_store.save, preferences)
+            except OuroError as exc:
+                self.notify(str(exc), severity="error", markup=False)
+                return False
+            self._preferences = preferences
+        self.query_one(ConversationView).set_collapse_traces(collapsed)
+        return True
 
     async def _choose_scaffold_messages(self, *, menu: ChoiceScreen) -> None:
         def choices() -> tuple[Choice, ...]:

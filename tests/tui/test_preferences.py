@@ -76,6 +76,7 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
 
     assert TuiPreferences().session_grouping == "date"
     assert TuiPreferences().reasoning_expanded is False
+    assert TuiPreferences().collapse_traces is True
     assert TuiPreferences().show_scaffold_messages is False
     assert TuiPreferences().input_draft_memory_enabled is True
     assert TuiPreferences().theme_saturation_level == 0
@@ -85,6 +86,7 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
             session_grouping="workspace",
             theme_saturation_level=17,
             reasoning_expanded=False,
+            collapse_traces=False,
             show_scaffold_messages=True,
             input_draft_memory_enabled=False,
             recent_actions=("/new", "__ouro_theme__"),
@@ -98,6 +100,7 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
         session_grouping="workspace",
         theme_saturation_level=17,
         reasoning_expanded=False,
+        collapse_traces=False,
         show_scaffold_messages=True,
         input_draft_memory_enabled=False,
         recent_actions=("/new", "__ouro_theme__"),
