@@ -2424,10 +2424,10 @@ async def test_status_line_projects_arbitrary_session_control_label_first(
         indicator = status_line.query_one(ActivityIndicator)
 
         status_line.set_session_controls(("Review Harness",))
-        assert indicator.render().plain.startswith(" ▣ Review Harness • Ready")
+        assert indicator.render().plain.startswith("▣ Review Harness • Ready")
 
         status_line.set_session_controls(())
-        assert indicator.render().plain.startswith(" ▣ Ready")
+        assert indicator.render().plain.startswith("▣ Ready")
         assert "Review Harness" not in indicator.render().plain
 
 
@@ -5220,8 +5220,12 @@ async def test_history_load_keeps_the_active_tool_batch_in_live_rows(tmp_path: P
         assert not [entry for entry in history.entries if entry.tool is not None]
         row = conversation._tools[tool_call_id]
         assert row.is_attached is True
-        assert row.content_region.x == conversation.content_region.x + 2
-        assert row.content_region.right == conversation.content_region.right - 2
+        assert row.content_region.x == conversation.content_region.x == app.screen.region.x + 1
+        assert (
+            row.content_region.right
+            == conversation.content_region.right
+            == app.screen.region.right - 1
+        )
         assert row._timer is not None
         frame = row._frame
         row._tick()
@@ -12386,7 +12390,7 @@ async def test_plan_command_without_dialogue_keeps_welcome_and_updates_status_li
         assert conversation.query_one(ConversationHistory).entries == ()
         assert app._has_active_run() is False
         assert app.query_one(Composer).disabled is False
-        assert indicator.render().plain.startswith(" ▣ Plan • Ready")
+        assert indicator.render().plain.startswith("▣ Plan • Ready")
 
         await pilot.press("slash", "p", "l", "a", "n", "space", "o", "f", "f", "enter")
         await _wait_for_worker_group(app, pilot, group="plugin-command")
@@ -12399,7 +12403,7 @@ async def test_plan_command_without_dialogue_keeps_welcome_and_updates_status_li
         assert app._projection.session_id == app._controller.session_id
         assert conversation.showing_welcome is True
         assert conversation.query_one(ConversationHistory).entries == ()
-        assert indicator.render().plain.startswith(" ▣ Ready")
+        assert indicator.render().plain.startswith("▣ Ready")
         assert "Plan" not in indicator.render().plain
 
 
@@ -12453,7 +12457,7 @@ async def test_loaded_session_projects_active_harness_into_status_line(tmp_path:
             pilot,
             description="restored harness status",
         )
-        assert indicator.render().plain.startswith(" ▣ Plan • Ready")
+        assert indicator.render().plain.startswith("▣ Plan • Ready")
 
         await pilot.press("slash", *"plan off", "enter")
         await _wait_for_worker_group(app, pilot, group="plugin-command")

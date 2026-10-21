@@ -175,7 +175,7 @@ _SINGLE_LINE_TRANSLATION = str.maketrans("\r\n\t", "   ")
 
 
 class BrandHeader(Static):
-    """Static brand identity and session title docked at the top of the screen."""
+    """Session title and workspace docked at the top of the screen."""
 
     def __init__(
         self,
@@ -236,7 +236,7 @@ def _brand_header_content(
     """Lay out the title and right-aligned workspace with workspace priority."""
 
     content = Text()
-    content.append(f" {theme.brand_mark} OURO ", style=f"bold {theme.accent}")
+    content.append(f"{theme.brand_mark} ", style=f"bold {theme.accent}")
     title = label_text(session_title, theme=theme, style=theme.text_emphasis)
     if session_detail:
         title.append(theme.inline_separator, style=theme.text_lowlight)
@@ -444,7 +444,7 @@ class ActivityIndicator(Static):
         else:
             marker_style = theme.text_primary
         content = Text()
-        content.append(f" {mark} ", style=marker_style)
+        content.append(f"{mark} ", style=marker_style)
         for control_label in self._session_control_labels:
             content.append(control_label, style=f"bold {accent}")
             content.append(

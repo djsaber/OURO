@@ -105,7 +105,7 @@ async def test_welcome_status_and_menu_separators_preserve_semantic_fields_on_th
             indicator.set_activity(activity)
             content = indicator.content
             marker = theme.spinner_frames[indicator._frame] if busy else theme.brand_mark
-            assert content.plain.startswith(f" {marker} {label}")
+            assert content.plain.startswith(f"{marker} {label}")
         indicator.set_activity("failed")
 
         choice = Choice(
@@ -132,7 +132,7 @@ async def test_welcome_status_and_menu_separators_preserve_semantic_fields_on_th
         menu.refresh_theme()
         tips.refresh_theme()
         indicator.refresh_theme()
-        assert indicator.content.plain.startswith(f" {app.tui_theme.brand_mark} Failed")
+        assert indicator.content.plain.startswith(f"{app.tui_theme.brand_mark} Failed")
         title = tips._title.content
         assert title.plain == f"{app.tui_theme.selected_choice_marker} TIPS"
         title = menu.query_one("#choice-title", Static).content

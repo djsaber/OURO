@@ -814,7 +814,7 @@ def _reasoning_area(
         )
     else:
         area = label
-    return Padding(area, (top, 2, 1, 2)), "reasoning"
+    return Padding(area, (top, 0, 1, 0)), "reasoning"
 
 
 def _entry_renderables(
@@ -837,7 +837,7 @@ def _entry_renderables(
                         highlighted=request.message_highlighted,
                         lowlight=entry.scaffold or entry.kind in {"scaffold", "command"},
                     ),
-                    (1, 2, 2, 2),
+                    (1, 0, 2, 0),
                 ),
                 "user" if entry.kind == "user" else "body",
             )
@@ -855,18 +855,18 @@ def _entry_renderables(
             if request.tool_highlighted:
                 rendered = theme.highlight_text(rendered)
             rendered.stylize(interaction_style, 0, len(rendered))
-        return [(Padding(rendered, (0, 2, 0, 2)), "body")]
+        return [(rendered, "body")]
     if entry.kind == "notice":
         top = 1 if request.previous_kind == "tool" else 0
         summary = _summary_line(entry.text, marker_tone=theme.accent, details=(), theme=theme)
         if entry.error:
             summary.stylize(theme.failure)
-        return [(Padding(summary, (top, 1, 1, 2)), "body")]
+        return [(Padding(summary, (top, 0, 1, 0)), "body")]
     if entry.kind == "compaction":
         assert entry.compaction is not None
         top = 1 if request.previous_kind == "tool" else 0
         summary = _compaction_summary(entry.compaction, theme)
-        return [(Padding(summary, (top, 1, 1, 2)), "body")]
+        return [(Padding(summary, (top, 0, 1, 0)), "body")]
     if entry.kind == "run":
         assert entry.run is not None
         summary = _run_summary(entry.run, theme)
@@ -885,7 +885,7 @@ def _entry_renderables(
             summary.stylize(Style(meta={_TRACE_ENTRY_META: request.entry_index}))
             summary.no_wrap = True
             summary.overflow = "ellipsis"
-        return [(Padding(summary, (0, 1, 1, 2)), "body")]
+        return [(Padding(summary, (0, 0, 1, 0)), "body")]
 
     pieces: list[tuple[RenderableType, _PieceTag]] = []
     top = 1 if request.previous_kind == "tool" else 0
@@ -904,7 +904,7 @@ def _entry_renderables(
         text_top = 0 if entry.reasoning else top
         pieces.append(
             (
-                Padding(assistant_markdown(entry.text, theme), (text_top, 2, 1, 2)),
+                Padding(assistant_markdown(entry.text, theme), (text_top, 0, 1, 0)),
                 "body",
             )
         )

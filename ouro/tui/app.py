@@ -359,7 +359,7 @@ class _OuroHostScreen(Screen):
 _OURO_TUI_CSS = """
     /* Geometry remains fixed here; the owning app injects every visual token
        from its complete TuiTheme so CSS and Rich rendering share one source. */
-    $conversation-left-gutter: 2;
+    $conversation-left-gutter: 1;
     $conversation-right-gutter: 1;
 
     Screen {
@@ -427,6 +427,7 @@ _OURO_TUI_CSS = """
         width: 100%;
         height: 1;
         dock: top;
+        padding: 0 $conversation-right-gutter 0 $conversation-left-gutter;
         background: $ouro-background;
         color: $ouro-text-primary;
     }
@@ -511,16 +512,11 @@ _OURO_TUI_CSS = """
     }
 
     .assistant-turn {
-        /* Match ConversationHistory's two-cell assistant Padding so the live
-           tail and its frozen replacement wrap at the same content width. */
-        padding: 0 2;
+        padding: 0;
     }
 
     .assistant-turn.after-tool {
-        /* Textual stores padding as one Spacing value: overriding only the
-           top side clears the inline padding declared above. Restate all four
-           sides so post-tool live turns keep the history content width. */
-        padding: 1 2 0 2;
+        padding: 1 0 0 0;
     }
 
     .assistant-markdown {
@@ -562,7 +558,7 @@ _OURO_TUI_CSS = """
 
     .tool-row {
         height: auto;
-        margin: 0 2;
+        margin: 0;
         color: $ouro-text-lowlight;
         background: transparent;
     }
