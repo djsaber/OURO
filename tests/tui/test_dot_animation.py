@@ -7,6 +7,9 @@ from array import array
 from copy import copy
 
 import pytest
+from ouro_tui_themes.dot_matrix.raster import DotArtwork, FrameStrip, PhosphorRaster
+from ouro_tui_themes.dot_matrix.widget import DotMatrix
+from ouro_tui_themes.styles import STYLES
 from rich.console import Console
 from rich.segment import Segment
 from rich.style import Style
@@ -17,9 +20,9 @@ from textual.strip import Strip
 from textual.widgets import TextArea
 from textual.worker import WorkerFailed
 
-from ouro.tui.welcome import WELCOME_STYLES
-from ouro.tui.welcome.styles.dot_matrix.raster import DotArtwork, FrameStrip, PhosphorRaster
-from ouro.tui.welcome.styles.dot_matrix.widget import DotMatrix
+from ouro.tui.welcome import welcome_catalog
+
+WELCOME_STYLES = welcome_catalog(STYLES)
 
 
 class ArtworkApp(App):
@@ -244,7 +247,7 @@ async def test_replacement_engine_uses_same_widget_pipeline_and_one_lifetime_wor
 
 
 def test_unchanged_frame_does_not_construct_terminal_segments(monkeypatch):
-    import ouro.tui.welcome.styles.dot_matrix.raster as raster_module
+    import ouro_tui_themes.dot_matrix.raster as raster_module
 
     raster = PhosphorRaster(WELCOME_STYLES["electron-bloom"].create().artwork, 38, 8)
     previous = raster.frame(0, 0)

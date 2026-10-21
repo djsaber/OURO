@@ -8,7 +8,7 @@ from textual.containers import Vertical
 from textual.widgets import Static
 
 from ouro.tui.welcome.centered import CenteredWelcomePage
-from ouro.tui.welcome.styles.dot_matrix.field import (
+from ouro_tui_themes.dot_matrix.field import (
     ParticleGrid,
     Radiance,
     Sampler,
@@ -16,8 +16,8 @@ from ouro.tui.welcome.styles.dot_matrix.field import (
     band,
     buffer,
 )
-from ouro.tui.welcome.styles.dot_matrix.raster import DotArtwork
-from ouro.tui.welcome.styles.dot_matrix.widget import DotMatrix
+from ouro_tui_themes.dot_matrix.raster import DotArtwork
+from ouro_tui_themes.dot_matrix.widget import DotMatrix
 
 _SPECTRUM = ((0.21, 0.12, 0.58), (0.51, 0.34, 1.0), (0.38, 0.86, 1.0), (0.92, 0.98, 1.0))
 _DEPTHS = tuple(-2.2 + index * (4.4 / 13) for index in range(13)) + (2.2,)

@@ -6,6 +6,12 @@ resolution-markers = [
     "python_full_version < '3.15'",
 ]
 
+[manifest]
+members = [
+    "ouro-agent",
+    "ouro-tui-themes",
+]
+
 [[package]]
 name = "annotated-types"
 version = "0.7.0"
@@ -591,7 +597,7 @@ dependencies = [
 
 [package.optional-dependencies]
 themes = [
-    { name = "numpy" },
+    { name = "ouro-tui-themes" },
 ]
 
 [package.dev-dependencies]
@@ -613,7 +619,7 @@ requires-dist = [
     { name = "httpx-sse", specifier = ">=0.4.3" },
     { name = "jsonschema", specifier = ">=4.25" },
     { name = "mcp", specifier = ">=1.28,<2" },
-    { name = "numpy", marker = "extra == 'themes'", specifier = ">=2.3.3,<3" },
+    { name = "ouro-tui-themes", marker = "extra == 'themes'", editable = "packages/tui-themes" },
     { name = "packaging", specifier = ">=24.2" },
     { name = "pathspec", specifier = ">=1.1.1" },
     { name = "pillow", specifier = ">=12.3,<13" },
@@ -641,6 +647,21 @@ dev = [
     { name = "types-jsonschema", specifier = ">=4.26" },
     { name = "types-pyperclip", specifier = ">=1.11.0.20260508" },
     { name = "types-pyyaml", specifier = ">=6.0.12" },
+]
+
+[[package]]
+name = "ouro-tui-themes"
+version = "0.3.5"
+source = { editable = "packages/tui-themes" }
+dependencies = [
+    { name = "numpy" },
+    { name = "ouro-agent" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy", specifier = ">=2.3.3,<3" },
+    { name = "ouro-agent", editable = "." },
 ]
 
 [[package]]

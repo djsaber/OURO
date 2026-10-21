@@ -154,6 +154,7 @@ from ouro.tui.welcome import (
     unavailable_styles,
     welcome_catalog,
 )
+from ouro.tui.welcome_packages import load_theme_styles
 from ouro.tui.widgets import (
     COMMAND_POPUP_MAX_HEIGHT,
     COMMAND_POPUP_MIN_HEIGHT,
@@ -898,13 +899,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if home is None and application is not None
             else home
         )
-        self._welcome_styles = welcome_catalog(welcome_styles)
+        theme_styles, self._welcome_package_error = load_theme_styles()
+        self._welcome_styles = welcome_catalog((*theme_styles, *welcome_styles))
         self._unavailable_welcome_styles = unavailable_styles(self._welcome_styles)
         for reason in dict.fromkeys(self._unavailable_welcome_styles.values()):
             _LOG.info("Welcome styles unavailable: %s", reason)
-        self._preferences_store = TuiPreferencesStore(
-            preference_home, welcome_styles=self._welcome_styles
-        )
+        self._preferences_store = TuiPreferencesStore(preference_home)
         self._preferences_error: str | None = None
         try:
             preferences = self._preferences_store.load()
@@ -1121,10 +1121,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         _worker: Worker[None] = self.run_worker(self._start, name="tui-start", exclusive=True)
         if self._preferences_error is not None:
             self.notify(self._preferences_error, severity="warning")
-        if reason := self._unavailable_welcome_styles.get(self._preferences.welcome_style):
-            selected = self._welcome_styles[self._preferences.welcome_style]
+        if reason := self._welcome_style_unavailable_reason(self._preferences.welcome_style):
+            selected = self._welcome_styles.get(self._preferences.welcome_style)
+            label = selected.label if selected else self._preferences.welcome_style
             self.notify(
-                f"{selected.label} is unavailable; using {self._welcome_style.label}. {reason}",
+                f"{label} is unavailable; using {self._welcome_style.label}. {reason}",
                 severity="warning",
                 markup=False,
             )
@@ -5331,12 +5332,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     @property
     def _welcome_style(self) -> WelcomeStyle:
         identity = self._preferences.welcome_style
-        if identity in self._unavailable_welcome_styles:
+        if self._welcome_style_unavailable_reason(identity):
             identity = DEFAULT_WELCOME_STYLE
         return self._welcome_styles[identity]
 
+    def _welcome_style_unavailable_reason(self, identity: str) -> str | None:
+        if identity not in self._welcome_styles:
+            detail = self._welcome_package_error or "Install or register its welcome style package."
+            return f"Unknown welcome style {identity!r}. {detail}"
+        return self._unavailable_welcome_styles.get(identity)
+
     async def _set_welcome_style(self, value: str) -> bool:
-        if reason := self._unavailable_welcome_styles.get(value):
+        if reason := self._welcome_style_unavailable_reason(value):
             self.notify(reason, severity="warning", markup=False)
             return False
         async with self._preferences_save_lock:

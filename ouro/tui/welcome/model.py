@@ -13,6 +13,8 @@ from textual.widget import Widget
 from ouro.tui.controller import TuiSystemStatus
 from ouro.tui.theme import TuiTheme, theme_for
 
+WELCOME_STYLE_ID_PATTERN = r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+
 
 class WelcomePage(Widget):
     """A package-owned page covering the entire welcome viewport.
@@ -82,7 +84,7 @@ class WelcomeStyle:
     check_requirements: Callable[[], str | None] | None = None
 
     def __post_init__(self) -> None:
-        if re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", self.style_id) is None:
+        if re.fullmatch(WELCOME_STYLE_ID_PATTERN, self.style_id) is None:
             raise ValueError("welcome style IDs must use lowercase words separated by hyphens")
         if not self.label.strip() or not self.description.strip() or not callable(self.create):
             raise ValueError("welcome styles require a label, description and page factory")

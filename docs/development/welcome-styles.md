@@ -5,6 +5,24 @@
 Host 负责业务状态、持久输入组件、菜单、主题选择与生命周期。页面内部设置、动画和资源策略由主题自行实现。
 呈现与配置契约见 [TUI 规格](../specs/tui.md#欢迎页样式)。
 
+## 模块与发行边界
+
+基础发行包 `ouro-agent` 包含欢迎页框架、公共组件和静态 `basic` 页，不包含可选引擎或风格实现。
+`ouro-tui-themes` 是一个完整的主题扩展发行包，同时提供点阵引擎、官方风格和它们的依赖；用户通过
+`ouro-agent[themes]` 整体安装，没有独立的引擎安装选项。
+
+| 位置 | 职责 |
+|---|---|
+| `ouro/tui/welcome/` | 页面契约、宿主、只读目录、公共组件、可选居中组合与 basic 回退页 |
+| `ouro/tui/welcome_packages.py` | 检查官方扩展发行版本并加载轻量注册信息，由 App 与显式注入包组合 |
+| `packages/tui-themes/src/ouro_tui_themes/dot_matrix/` | 可复用的数值计算、终端编码和 Textual 调度组件 |
+| `packages/tui-themes/src/ouro_tui_themes/styles/` | 官方风格的注册信息、页面构图、采样算法和艺术光谱 |
+
+框架不导入扩展实现。风格包消费欢迎页公开接口，并按需使用点阵引擎；引擎不依赖欢迎页契约或具体风格。
+`field.py` 只处理数值网格、采样与光场，`raster.py` 将数值帧映射为 Braille 和终端颜色，`widget.py`
+负责帧计算调度与组件生命周期。数值契约使用 NumPy 数组，主题通过 `prepare` 提供采样器，通过
+`DotArtwork.engine_factory` 选择数值引擎。各主题的艺术算法与光谱留在风格包。
+
 ## 页面与输入的边界
 
 `WelcomeHost` 的两个直接子节点是样式包页面和持久的 `#interaction-surface`。页面占满视口，输入层
@@ -67,14 +85,17 @@ byte_page = WelcomeStyle(
 run_tui(welcome_styles=(byte_page,))
 ```
 
-`OuroTuiApp` 接受相同的 `welcome_styles` 参数。每个 App 将这些包与内置包组成自己的只读目录；
+`OuroTuiApp` 接受相同的 `welcome_styles` 参数。每个 App 将这些包与 basic、已安装的官方扩展组成自己的只读目录；
 重复 ID 在组合边界报错。可用包出现在 `Theme` 菜单的 `Welcome style` 分组中，以 `label` 单行展示；
 `description` 保留为包元数据，不显示在菜单中。保存自定义包后，后续启动
-需要注册同一 ID；未知 ID 明确报告配置错误。JSON 只保存身份与呈现偏好，不加载 Python 路径或执行代码。
+需要注册同一 ID 才能显示原页面。配置只校验 ID 格式；未找到的已保存 ID 保留并提示，实际显示 basic。
+新的主题选择必须存在于当前可用目录。JSON 只保存身份与呈现偏好，不加载 Python 路径或执行代码。
 
 ## 可选主题依赖
 
-`ouro-agent[themes]` 是欢迎页主题拓展的标准 extra。基础安装默认显示 `basic`，TUI 其余功能完整可用。
+`ouro-agent[themes]` 是欢迎页主题拓展的统一安装入口，安装同版本的 `ouro-tui-themes` 及 NumPy 依赖。
+基础安装默认显示 `basic`，TUI 其余功能完整可用。App 先检查扩展发行版本，再加载注册信息；
+扩展未安装或版本不匹配时不导入实现。核心与官方扩展同步发布，扩展也声明精确的核心版本依赖。
 主题是完整页面，可以静态展示，也可以自行实现动画；TUI 不提供主题内部设置入口或设置传递管线。
 
 `WelcomeStyle` 的元数据和工厂必须能在缺少可选依赖时导入。需要可选依赖的包通过
@@ -82,9 +103,13 @@ run_tui(welcome_styles=(byte_page,))
 App 在启动时执行检查，使用相同函数的主题共用一次结果；不做运行中的环境扫描或依赖安装。
 工厂在选用主题时加载渲染实现，依赖检查只处理其明确负责的依赖错误，不吞掉主题代码的编程错误。
 
-已知目录用于验证和保存主题身份，可用性用于菜单筛选与实际显示。所选主题暂不可用时，显示基础页并
-提示原因，保留用户选择；配色偏好的写入也保留该身份。恢复依赖并重启后恢复原选择。
+偏好保存的选择与本次实际显示分开解析。所选主题未注册、扩展被卸载或依赖暂不可用时，显示基础页并
+提示原因，保留用户选择和其他偏好；配色偏好的写入也保留该身份。恢复扩展与依赖并重启后恢复原选择。
 完整配置与回退契约见 [TUI 规格](../specs/tui.md#欢迎页样式)。
+
+开发时使用 `uv sync --frozen --all-groups --extra themes` 安装 workspace 中的核心与扩展。
+发布时同步维护两个 `pyproject.toml` 的版本及相互约束，运行 `uv build --all-packages` 构建两个发行包。
+两个发行包均需发布，`themes` extra 才能解析完整安装；基础 wheel 不携带扩展源码。
 
 ## 公共组件与局部样式
 
@@ -147,9 +172,10 @@ Host 在离开欢迎页、打开覆盖菜单或替换页面时调用 `set_active
 针对欢迎页的回归入口：
 
 ```bash
-uv run --frozen --extra themes pytest tests/tui/test_optional_welcome_styles.py tests/tui/test_welcome_styles.py tests/tui/test_welcome_layout.py tests/tui/test_welcome_refresh.py tests/tui/test_preferences.py
+uv run --frozen pytest tests/architecture/test_welcome_boundaries.py tests/tui/test_optional_welcome_styles.py tests/tui/test_welcome_package_recovery.py
+uv run --frozen --extra themes pytest tests/tui/test_theme_package.py tests/tui/test_welcome_styles.py tests/tui/test_welcome_layout.py tests/tui/test_welcome_refresh.py tests/tui/test_preferences.py
 uv run --frozen --extra themes pytest tests/tui/test_app.py -k 'welcome or theme or composer_growth or session_input_surface or startup'
-uv run --frozen --extra themes pytest tests/tui/test_dot_animation.py tests/tui/test_windows_driver.py
+uv run --frozen --extra themes pytest tests/tui/test_dot_animation.py tests/tui/test_particle_fields.py tests/tui/test_particle_raster.py tests/tui/test_particle_samplers.py
 ```
 
 自定义包需验证全视口绘制、公共组件组合、输入布局与增长、短终端、命令弹窗方向、局部样式撤销、
@@ -157,3 +183,6 @@ uv run --frozen --extra themes pytest tests/tui/test_dot_animation.py tests/tui/
 自动回归保护包的加载与失败处理、主题选择保存、输入保留、配色与饱和度联动、可见性通知和资源回收；
 验证边界见[测试策略](testing.md)。主题内部计算与输入负载基准见
 [本地性能测量](../../dev/benchmarks/README.md#会话管线与-tui)，基准不能替代实际终端与输入法验收。
+
+CI 分别在隔离环境中安装基础 wheel 与带 `themes` 的 wheel，通过 `dev/check_distribution.py` 验证
+实际包内容、依赖、CLI 启动、主题目录、缺失扩展时的回退，以及修改配色后原主题选择仍被保留。

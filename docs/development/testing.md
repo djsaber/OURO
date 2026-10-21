@@ -61,6 +61,9 @@ uv run --frozen --extra themes pytest -n 4 --dist worksteal --durations=20 --cov
 CI 在三个系统上执行功能和安装检查，lint、格式及类型检查在独立 Windows job 中执行一次。
 静态门禁安装 `themes`，mypy 使用显式 `--platform win32 --no-incremental`：完整源码包含 Windows
 原生适配器，类型检查需要相应的标准库声明及可选扩展的实际安装；增量缓存不能作为依赖可用性的证据。
+主题扩展源码位于 `packages/tui-themes/src/ouro_tui_themes`，与核心一起参与静态检查。
+基础环境门禁验证框架依赖边界和无扩展回退；安装门禁通过 `uv build --all-packages` 构建核心与主题发行包，
+分别验证基础安装与 `themes` 整体安装。欢迎页定向回归入口见[样式包开发](welcome-styles.md#验证)。
 
 诊断单个模块时保持串行，避免把竞争负载误当成模块自身成本：
 

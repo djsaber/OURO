@@ -13,7 +13,7 @@ from rich.style import Style
 from textual.geometry import Region
 from textual.strip import Strip
 
-from ouro.tui.welcome.styles.dot_matrix.field import (
+from ouro_tui_themes.dot_matrix.field import (
     EngineFactory,
     Field,
     ParticleGrid,

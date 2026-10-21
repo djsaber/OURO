@@ -8,8 +8,7 @@ import pytest
 pytest.importorskip("numpy")
 
 import numpy as np
-
-from ouro.tui.welcome.styles.dot_matrix.field import ParticleGrid
+from ouro_tui_themes.dot_matrix.field import ParticleGrid
 
 
 def band(distance, width):
@@ -82,7 +81,7 @@ def scalar(name, x, y, seconds, depths=()):
     "name", ["event_horizon", "electron_bloom", "interference", "clifford", "crystal"]
 )
 def test_sampler_matches_scalar_equations_at_arbitrary_times(name):
-    module = import_module(f"ouro.tui.welcome.styles.{name}")
+    module = import_module(f"ouro_tui_themes.styles.{name}")
     grid = ParticleGrid.create(11, 9, span=(5.8, 2.7))
     sample = module.prepare(grid)
     coordinates = (grid.x.copy(), grid.y.copy())

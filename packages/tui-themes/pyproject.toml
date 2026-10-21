@@ -1,0 +1,19 @@
+[project]
+name = "ouro-tui-themes"
+version = "0.3.5"
+description = "Optional OURO welcome styles and shared dot-matrix rendering engine."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.14"
+dependencies = [
+    "ouro-agent==0.3.5",
+    "numpy>=2.3.3,<3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ouro_tui_themes"]

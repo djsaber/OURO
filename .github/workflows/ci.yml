@@ -32,7 +32,7 @@ jobs:
         run: uv sync --frozen --all-groups
 
       - name: Check architecture and core units
-        run: uv run --frozen pytest -q tests/architecture tests/core tests/tui/test_optional_welcome_styles.py
+        run: uv run --frozen pytest -q tests/architecture tests/core tests/tui/test_optional_welcome_styles.py tests/tui/test_welcome_package_recovery.py
 
   static-checks:
     name: Lint, formatting and types
@@ -54,13 +54,13 @@ jobs:
         run: uv sync --frozen --all-groups --extra themes
 
       - name: Check lint
-        run: uv run --frozen --extra themes ruff check ouro tests dev/check_distribution.py
+        run: uv run --frozen --extra themes ruff check ouro packages tests dev/check_distribution.py
 
       - name: Check formatting
-        run: uv run --frozen --extra themes ruff format --check ouro tests dev/check_distribution.py
+        run: uv run --frozen --extra themes ruff format --check ouro packages tests dev/check_distribution.py
 
       - name: Check types
-        run: uv run --frozen --extra themes mypy --no-incremental --platform win32 ouro
+        run: uv run --frozen --extra themes mypy --no-incremental --platform win32 ouro packages/tui-themes/src/ouro_tui_themes
 
   quality:
     name: Python 3.14 / ${{ matrix.os }}
@@ -97,15 +97,15 @@ jobs:
         run: uv run --frozen --extra themes pytest -n 4 --dist worksteal --durations=20 --cov=ouro --cov-report=term-missing
 
       - name: Compile package
-        run: uv run --frozen --extra themes python -m compileall -q ouro
+        run: uv run --frozen --extra themes python -m compileall -q ouro packages/tui-themes/src
 
       - name: Build distributions
-        run: uv build
+        run: uv build --all-packages
 
       - name: Check installed base and theme distributions
         shell: bash
         run: |
-          for wheel in dist/*.whl; do
+          for wheel in dist/ouro_agent-*.whl; do
             uv run --isolated --no-project --with "$wheel" python -I dev/check_distribution.py
-            uv run --isolated --no-project --with "$wheel[themes]" python -I dev/check_distribution.py --themes
+            uv run --isolated --no-project --find-links dist --with "$wheel[themes]" python -I dev/check_distribution.py --themes
           done

@@ -19,13 +19,16 @@ from threading import Thread
 from time import monotonic, sleep
 from typing import cast
 
+from ouro_tui_themes.dot_matrix.widget import DotMatrix
+from ouro_tui_themes.styles import STYLES
 from textual import events
 from textual.app import App
 from textual.drivers.headless_driver import HeadlessDriver
 
-from ouro.tui.welcome import WELCOME_STYLES
-from ouro.tui.welcome.styles.dot_matrix.widget import DotMatrix
+from ouro.tui.welcome import welcome_catalog
 from ouro.tui.widgets import Composer
+
+WELCOME_STYLES = welcome_catalog(STYLES)
 
 
 class OutputSink(HeadlessDriver):

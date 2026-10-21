@@ -11,9 +11,13 @@ from importlib.metadata import version
 from statistics import median
 from time import perf_counter
 
-from ouro.tui.welcome import WELCOME_STYLES
-from ouro.tui.welcome.styles.dot_matrix.field import ParticleGrid
-from ouro.tui.welcome.styles.dot_matrix.raster import DotArtwork, PhosphorRaster
+from ouro_tui_themes.dot_matrix.field import ParticleGrid
+from ouro_tui_themes.dot_matrix.raster import DotArtwork, PhosphorRaster
+from ouro_tui_themes.styles import STYLES
+
+from ouro.tui.welcome import welcome_catalog
+
+WELCOME_STYLES = welcome_catalog(STYLES)
 
 
 def measure(sample: Callable[[float], object], frames: int) -> dict[str, float]:

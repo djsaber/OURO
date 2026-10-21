@@ -55,7 +55,7 @@ PyPI 包名是 `ouro-agent`，安装后的命令是 `ouro`。
 
 ### TUI 欢迎页主题拓展
 
-基础安装包含完整 TUI 和默认的 Still 欢迎页。可选主题通过 `themes` extra 安装：
+基础安装包含完整 TUI 和默认的 Still 欢迎页。通过 `themes` extra 整体安装主题扩展发行包、点阵引擎及依赖：
 
 ```bash
 uv tool install --python 3.14 "ouro-agent[themes]"
@@ -63,7 +63,7 @@ uv tool install --python 3.14 "ouro-agent[themes]"
 
 使用 pip 时，在 OURO 所在虚拟环境执行 `python -m pip install "ouro-agent[themes]"`。
 重启 TUI 后，在 `Ctrl+P → Theme → Welcome style` 中选择可用主题。安装拓展不会改变已有选择。
-点阵主题依赖 `NumPy`；安装及环境说明见
+主题扩展由同版本的 `ouro-tui-themes` 提供，基础包不携带扩展源码。安装及环境说明见
 [欢迎页主题指南](https://github.com/djsaber/OURO/blob/main/docs/guides/running.md#欢迎页主题)。
 
 ## 第一次使用

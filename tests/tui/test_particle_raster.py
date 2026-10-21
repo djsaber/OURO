@@ -5,8 +5,7 @@ import pytest
 pytest.importorskip("numpy")
 
 import numpy as np
-
-from ouro.tui.welcome.styles.dot_matrix.raster import DotArtwork, PhosphorRaster
+from ouro_tui_themes.dot_matrix.raster import DotArtwork, PhosphorRaster
 
 BITS = (1, 8, 2, 16, 4, 32, 64, 128)
 THRESHOLDS = (0.08, 0.48, 0.68, 0.28, 0.23, 0.63, 0.43, 0.13)

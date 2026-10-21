@@ -3,10 +3,10 @@
 from collections.abc import Callable, Iterable, Mapping
 from types import MappingProxyType
 
+from ouro.tui.welcome.basic import STYLE as BASIC_STYLE
 from ouro.tui.welcome.model import WelcomePage, WelcomeStyle
-from ouro.tui.welcome.styles import STYLES
 
-WELCOME_STYLES = MappingProxyType({style.style_id: style for style in STYLES})
+WELCOME_STYLES = MappingProxyType({BASIC_STYLE.style_id: BASIC_STYLE})
 DEFAULT_WELCOME_STYLE = "basic"
 
 

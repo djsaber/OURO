@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-themes = ["numpy>=2.3.3,<3"]
+themes = ["ouro-tui-themes==0.3.5"]
 
 [project.urls]
 Homepage = "https://github.com/djsaber/OURO"
@@ -52,6 +52,13 @@ dev = [
     "types-pyperclip>=1.11.0.20260508",
     "types-pyyaml>=6.0.12",
 ]
+
+[tool.uv.workspace]
+members = ["packages/tui-themes"]
+
+[tool.uv.sources]
+ouro-agent = { workspace = true }
+ouro-tui-themes = { workspace = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

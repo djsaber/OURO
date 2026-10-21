@@ -7,6 +7,7 @@ import asyncio
 import subprocess
 import sys
 from importlib.metadata import PackageNotFoundError, distribution
+from importlib.util import find_spec
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -15,7 +16,6 @@ from packaging.requirements import Requirement
 import ouro
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
-from ouro.tui.welcome import WELCOME_STYLES
 from ouro.tui.widgets import WelcomePanel
 
 
@@ -33,7 +33,18 @@ async def check_tui(*, themes: bool) -> None:
             assert app._preferences_error is None
             host = app.query_one(WelcomePanel)
             assert host.style_package.style_id == ("event-horizon" if themes else "basic")
-            expected = set(WELCOME_STYLES) if themes else {"basic"}
+            expected = (
+                {
+                    "basic",
+                    "event-horizon",
+                    "electron-bloom",
+                    "interference",
+                    "clifford-torus",
+                    "quasicrystal",
+                }
+                if themes
+                else {"basic"}
+            )
             actual = {
                 choice.value.removeprefix("welcome:")
                 for choice in app._theme_choices()
@@ -58,17 +69,31 @@ def main() -> None:
     source_package = Path(__file__).resolve().parent.parent / "ouro"
     assert not installed_module.is_relative_to(source_package)
     requirements = [Requirement(value) for value in package.requires or ()]
-    optional = next(value for value in requirements if value.name == "arrayfunc")
+    optional = next(value for value in requirements if value.name == "ouro-tui-themes")
+    assert not any(value.name == "numpy" for value in requirements)
     assert optional.marker is not None
     assert not optional.marker.evaluate({"extra": ""})
     assert optional.marker.evaluate({"extra": "themes"})
     try:
-        extension = distribution("arrayfunc")
+        extension = distribution("ouro-tui-themes")
     except PackageNotFoundError:
-        assert not args.themes, "theme dependencies were not installed"
+        assert not args.themes, "theme extension was not installed"
+        assert find_spec("ouro_tui_themes") is None
+        assert find_spec("numpy") is None
     else:
-        assert args.themes, "base installation unexpectedly contains arrayfunc"
+        assert args.themes, "base installation unexpectedly contains the theme extension"
         assert extension.version in optional.specifier
+        files = {str(file).replace("\\", "/") for file in extension.files or ()}
+        assert "ouro_tui_themes/dot_matrix/field.py" in files
+        assert "ouro_tui_themes/styles/event_horizon.py" in files
+        dependencies = [Requirement(value) for value in extension.requires or ()]
+        numpy = next(value for value in dependencies if value.name == "numpy")
+        assert distribution("numpy").version in numpy.specifier
+        core = next(value for value in dependencies if value.name == "ouro-agent")
+        assert package.version in core.specifier
+    assert not any(
+        "ouro/tui/welcome/styles/" in str(file).replace("\\", "/") for file in package.files or ()
+    )
     for flag in ("--version", "--help"):
         result = subprocess.run(
             [sys.executable, "-I", "-m", "ouro.cli.main", flag],

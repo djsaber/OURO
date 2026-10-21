@@ -1,41 +1,19 @@
 from __future__ import annotations
 
-import ast
 from math import exp
-from pathlib import Path
 
 import pytest
 
 pytest.importorskip("numpy")
 
 import numpy as np
-
-from ouro.tui.welcome.styles.dot_matrix.field import (
+from ouro_tui_themes.dot_matrix.field import (
     ParticleGrid,
     PhosphorField,
     Spectrum,
     buffer,
     clip,
 )
-
-
-@pytest.mark.parametrize("module", ["__init__", "field", "raster", "widget"])
-def test_shared_module_does_not_depend_on_theme_pages_or_framework_contracts(module):
-    source = Path(__file__).parents[2] / f"ouro/tui/welcome/styles/dot_matrix/{module}.py"
-    tree = ast.parse(source.read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            modules = [alias.name for alias in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            assert node.level == 0
-            modules = [node.module or ""]
-        else:
-            continue
-        for dependency in modules:
-            if module == "field":
-                assert dependency.split(".")[0] not in {"ouro", "rich", "textual"}
-            elif dependency.startswith("ouro."):
-                assert dependency.startswith("ouro.tui.welcome.styles.dot_matrix.")
 
 
 @pytest.mark.parametrize("size", [(1, 1), (1, 3), (3, 1), (3, 2)])

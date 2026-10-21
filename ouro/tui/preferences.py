@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
 
-from pydantic import ValidationError, ValidationInfo, field_validator
+from pydantic import Field, ValidationError, field_validator
 
 from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError
 from ouro.local_io import read_text_atomic, write_model_atomic
 from ouro.tui.theme import DEFAULT_TUI_THEME, THEME_SATURATION_LEVELS, TUI_THEMES
-from ouro.tui.welcome import DEFAULT_WELCOME_STYLE, WELCOME_STYLES, WelcomeStyle
+from ouro.tui.welcome import DEFAULT_WELCOME_STYLE
+from ouro.tui.welcome.model import WELCOME_STYLE_ID_PATTERN
 
 MAX_RECENT_WORKSPACES = 20
 SessionGrouping = Literal["date", "workspace"]
@@ -23,7 +23,7 @@ SessionGrouping = Literal["date", "workspace"]
 class TuiPreferences(OuroModel):
     theme: str = DEFAULT_TUI_THEME.theme_id
     theme_saturation_level: int = 0
-    welcome_style: str = DEFAULT_WELCOME_STYLE
+    welcome_style: str = Field(default=DEFAULT_WELCOME_STYLE, pattern=WELCOME_STYLE_ID_PATTERN)
     reasoning_expanded: bool = False
     collapse_traces: bool = True
     show_scaffold_messages: bool = False
@@ -31,16 +31,6 @@ class TuiPreferences(OuroModel):
     session_grouping: SessionGrouping = "date"
     recent_actions: tuple[str, ...] = ()
     recent_workspaces: tuple[str, ...] = ()
-
-    @field_validator("welcome_style")
-    @classmethod
-    def validate_welcome_style(cls, value: str, info: ValidationInfo) -> str:
-        styles = info.context["welcome_styles"] if info.context else WELCOME_STYLES
-        if value not in styles:
-            raise ValueError(
-                f"unknown welcome style {value!r}; expected one of: {', '.join(styles)}"
-            )
-        return value
 
     @field_validator("theme")
     @classmethod
@@ -87,21 +77,13 @@ class TuiPreferences(OuroModel):
 class TuiPreferencesStore:
     """Read and atomically replace the TUI-only preference artifact."""
 
-    def __init__(
-        self,
-        root: str | Path | None = None,
-        *,
-        welcome_styles: Mapping[str, WelcomeStyle] = WELCOME_STYLES,
-    ) -> None:
+    def __init__(self, root: str | Path | None = None) -> None:
         root_value = root if root is not None else os.environ.get("OURO_HOME")
         ouro_home = Path(root_value) if root_value is not None else Path.home() / ".ouro"
         self.path = ouro_home / "config" / "tui.json"
-        self._welcome_styles = welcome_styles
 
     def validate(self, value: object) -> TuiPreferences:
-        return TuiPreferences.model_validate(
-            value, context={"welcome_styles": self._welcome_styles}
-        )
+        return TuiPreferences.model_validate(value)
 
     def load(self) -> TuiPreferences:
         if not self.path.exists():

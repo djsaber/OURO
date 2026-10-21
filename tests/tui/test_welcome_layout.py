@@ -3,13 +3,16 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from ouro_tui_themes.dot_matrix.widget import DotMatrix
+from ouro_tui_themes.styles import STYLES
 from textual import events
 
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.welcome import WELCOME_STYLES
-from ouro.tui.welcome.styles.dot_matrix.widget import DotMatrix
+from ouro.tui.welcome import welcome_catalog
 from ouro.tui.widgets import CommandPopup, Composer, WelcomePanel
 from tests.tui.helpers import run_ready_app, two_route_application
+
+WELCOME_STYLES = welcome_catalog(STYLES)
 
 
 @pytest.mark.parametrize(

@@ -7,6 +7,8 @@ from functools import partial
 from pathlib import Path
 
 import pytest
+from ouro_tui_themes.dot_matrix.widget import DotMatrix
+from ouro_tui_themes.styles import STYLES
 from rich.segment import Segment
 from rich.text import Text
 from textual.app import App
@@ -21,12 +23,13 @@ from ouro.tui.controller import TuiSystemStatus
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.screens import ChoiceScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
-from ouro.tui.welcome import WELCOME_STYLES, WelcomePage, WelcomeStyle, welcome_catalog
+from ouro.tui.welcome import WelcomePage, WelcomeStyle, welcome_catalog
 from ouro.tui.welcome.components import WelcomeUsage
 from ouro.tui.welcome.host import WelcomeHost
-from ouro.tui.welcome.styles.dot_matrix.widget import DotMatrix
 from ouro.tui.widgets import CommandPopup, Composer, WelcomePanel
 from tests.tui.helpers import run_ready_app, two_route_application
+
+WELCOME_STYLES = welcome_catalog(STYLES)
 
 
 class CustomPage(WelcomePage):
@@ -74,7 +77,7 @@ async def test_custom_page_tracks_initial_palette_saturation_and_hidden_updates(
             self.query_one(".palette-rich", Static).update(Text(theme.label, style=theme.accent))
 
     package = WelcomeStyle("palette-page", "Palette", "Follows TUI colors", PalettePage)
-    store = TuiPreferencesStore(tmp_path, welcome_styles=welcome_catalog((package,)))
+    store = TuiPreferencesStore(tmp_path)
     store.save(
         store.validate(
             {
@@ -378,17 +381,16 @@ def test_custom_catalog_is_immutable_isolated_and_rejects_colliding_identities()
         WelcomeStyle("../scene", "Bad", "Bad ID", CustomPage)
 
 
-def test_style_persists_independently_of_color_theme_and_validates_against_catalog(
+def test_style_persists_independently_of_color_theme_and_installed_catalog(
     tmp_path,
 ):
-    store = TuiPreferencesStore(tmp_path, welcome_styles=welcome_catalog((CUSTOM,)))
+    store = TuiPreferencesStore(tmp_path)
     preferences = store.validate({"welcome_style": CUSTOM.style_id, "theme": "coral"})
     store.save(preferences)
     assert store.load() == preferences
-    with pytest.raises(ConfigError, match="unknown welcome style"):
-        TuiPreferencesStore(tmp_path).load()
-    with pytest.raises(ConfigError, match="unknown welcome style"):
-        store.save(preferences.model_copy(update={"welcome_style": "missing"}))
+    assert TuiPreferencesStore(tmp_path).load() == preferences
+    with pytest.raises(ConfigError, match="String should match pattern"):
+        store.save(preferences.model_copy(update={"welcome_style": "../missing"}))
 
 
 async def select_menu(app, pilot, label):

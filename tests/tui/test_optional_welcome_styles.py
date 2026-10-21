@@ -1,48 +1,51 @@
 from __future__ import annotations
 
-import asyncio
 import subprocess
 import sys
 import textwrap
 from dataclasses import replace
 from importlib.metadata import PackageNotFoundError
+from types import SimpleNamespace
 
 import pytest
 
-import ouro.tui.welcome.styles as theme_styles
-from ouro.core.errors import ConfigError
+import ouro.tui.welcome_packages as theme_packages
+from ouro import __version__
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
-from ouro.tui.welcome import WELCOME_STYLES, unavailable_styles, welcome_catalog
+from ouro.tui.preferences import TuiPreferencesStore
+from ouro.tui.welcome import WELCOME_STYLES, unavailable_styles
 from ouro.tui.widgets import WelcomePanel
 from tests.tui.helpers import run_ready_app, two_route_application
 
 
-def test_tui_import_and_basic_page_do_not_require_numpy():
+@pytest.mark.parametrize("block_extension", [False, True])
+def test_tui_import_and_basic_page_do_not_require_extensions(block_extension):
     result = subprocess.run(
         [
             sys.executable,
             "-c",
-            textwrap.dedent("""
-                import importlib.abc
-                import sys
+            textwrap.dedent(f"""
+            import importlib.abc
+            import sys
 
-                class NoNumpy(importlib.abc.MetaPathFinder):
-                    def find_spec(self, fullname, path=None, target=None):
-                        if fullname == "numpy" or fullname.startswith("numpy."):
-                            raise ModuleNotFoundError("numpy is not installed", name=fullname)
+            blocked = {{"numpy", "ouro_tui_themes"}} if {block_extension!r} else {{"numpy"}}
 
-                sys.meta_path.insert(0, NoNumpy())
-                from ouro.tui.app import OuroTuiApp
-                from ouro.tui.preferences import TuiPreferences
-                from ouro.tui.welcome import DEFAULT_WELCOME_STYLE, WELCOME_STYLES
+            class NoExtensions(importlib.abc.MetaPathFinder):
+                def find_spec(self, fullname, path=None, target=None):
+                    if fullname.split(".")[0] in blocked:
+                        raise ModuleNotFoundError("extension is not installed", name=fullname)
 
-                assert DEFAULT_WELCOME_STYLE == "basic"
-                assert TuiPreferences().welcome_style == "basic"
-                assert WELCOME_STYLES["basic"].create() is not None
-                assert "numpy" not in sys.modules
-                assert "ouro.tui.welcome.styles.dot_matrix.widget" not in sys.modules
-            """),
+            sys.meta_path.insert(0, NoExtensions())
+            from ouro.tui.app import OuroTuiApp
+            from ouro.tui.preferences import TuiPreferences
+            from ouro.tui.welcome import DEFAULT_WELCOME_STYLE, WELCOME_STYLES
+
+            assert DEFAULT_WELCOME_STYLE == "basic"
+            assert TuiPreferences().welcome_style == "basic"
+            assert WELCOME_STYLES["basic"].create() is not None
+            assert "numpy" not in sys.modules
+            assert not any(name.startswith("ouro_tui_themes") for name in sys.modules)
+        """),
         ],
         capture_output=True,
         text=True,
@@ -51,45 +54,47 @@ def test_tui_import_and_basic_page_do_not_require_numpy():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_missing_theme_dependency_has_an_actionable_reason(monkeypatch):
+def test_missing_distribution_does_not_import_extension_code(monkeypatch):
     def missing(_name):
-        raise PackageNotFoundError("numpy")
+        raise PackageNotFoundError("ouro-tui-themes")
 
-    monkeypatch.setattr(theme_styles, "version", missing)
-    assert "ouro-agent[themes]" in theme_styles.check_requirements()
-
-
-@pytest.mark.parametrize("installed", ["2.3.2", "3.0.0", "invalid"])
-def test_incompatible_theme_dependency_is_not_imported(monkeypatch, installed):
-    monkeypatch.setattr(theme_styles, "version", lambda _name: installed)
-
-    def unexpected_import(_name):
-        pytest.fail("incompatible extension must not be loaded")
-
-    monkeypatch.setattr(theme_styles, "import_module", unexpected_import)
-    assert "incompatible" in theme_styles.check_requirements()
+    monkeypatch.setattr(theme_packages, "version", missing)
+    monkeypatch.setattr(theme_packages, "import_module", lambda _: pytest.fail("unexpected import"))
+    styles, reason = theme_packages.load_theme_styles()
+    assert not styles
+    assert "not installed" in reason and "ouro-agent[themes]" in reason
 
 
-@pytest.mark.parametrize("error", [ImportError("missing symbol"), OSError("invalid binary")])
-def test_broken_extension_keeps_its_loading_diagnostic(monkeypatch, error):
-    monkeypatch.setattr(theme_styles, "version", lambda _name: "2.3.3")
-
-    def broken(_name):
-        raise error
-
-    monkeypatch.setattr(theme_styles, "import_module", broken)
-    assert str(error) in theme_styles.check_requirements()
+@pytest.mark.parametrize("installed", ["0.0.1", "99.0.0", "invalid"])
+def test_incompatible_distribution_is_rejected_before_import(monkeypatch, installed):
+    monkeypatch.setattr(theme_packages, "version", lambda _: installed)
+    monkeypatch.setattr(theme_packages, "import_module", lambda _: pytest.fail("unexpected import"))
+    styles, reason = theme_packages.load_theme_styles()
+    assert not styles
+    assert "incompatible" in reason
 
 
-def test_dependency_programming_errors_are_not_hidden(monkeypatch):
-    monkeypatch.setattr(theme_styles, "version", lambda _name: "2.3.3")
+def test_matching_distribution_supplies_style_metadata(monkeypatch):
+    styles = (replace(WELCOME_STYLES["basic"], style_id="installed-scene"),)
+    monkeypatch.setattr(theme_packages, "version", lambda _: __version__)
+    monkeypatch.setattr(theme_packages, "import_module", lambda _: SimpleNamespace(STYLES=styles))
+    assert theme_packages.load_theme_styles() == (styles, None)
 
-    def broken(_name):
-        raise RuntimeError("unexpected extension bug")
 
-    monkeypatch.setattr(theme_styles, "import_module", broken)
-    with pytest.raises(RuntimeError, match="unexpected extension bug"):
-        theme_styles.check_requirements()
+@pytest.mark.parametrize("missing", ["ouro_tui_themes", "ouro_tui_themes.styles", "internal_bug"])
+def test_only_missing_package_modules_are_reported_as_unavailable(monkeypatch, missing):
+    monkeypatch.setattr(theme_packages, "version", lambda _: __version__)
+
+    def fail(_name):
+        raise ModuleNotFoundError("missing module", name=missing)
+
+    monkeypatch.setattr(theme_packages, "import_module", fail)
+    if missing == "internal_bug":
+        with pytest.raises(ModuleNotFoundError):
+            theme_packages.load_theme_styles()
+    else:
+        styles, reason = theme_packages.load_theme_styles()
+        assert not styles and "could not load" in reason
 
 
 def test_shared_requirements_are_checked_once_and_do_not_change_known_identities():
@@ -110,39 +115,6 @@ def test_shared_requirements_are_checked_once_and_do_not_change_known_identities
     assert tuple(styles) == ("basic", "first", "second")
 
 
-@pytest.mark.parametrize("selected", ["basic", "event-horizon"])
-async def test_missing_builtin_dependency_keeps_tui_usable_and_preferences_intact(
-    tmp_path, monkeypatch, selected
-):
-    def missing(_name):
-        raise PackageNotFoundError("numpy")
-
-    monkeypatch.setattr(theme_styles, "version", missing)
-    store = TuiPreferencesStore(tmp_path)
-    store.save(TuiPreferences(welcome_style=selected))
-    app = OuroTuiApp(application=two_route_application(tmp_path))
-    notices = []
-    monkeypatch.setattr(app, "notify", lambda message, **_kwargs: notices.append(message))
-    async with run_ready_app(app):
-        assert app._preferences_error is None
-        assert app.query_one(WelcomePanel).style_package.style_id == "basic"
-        assert [
-            choice.value for choice in app._theme_choices() if choice.value.startswith("welcome:")
-        ] == ["welcome:basic"]
-        if selected != "basic":
-            assert any("Horizon is unavailable" in notice for notice in notices)
-        else:
-            assert not notices
-        assert not await app._set_welcome_style("event-horizon")
-        app._request_tui_theme("coral")
-        workers = [worker for worker in app.workers if worker.group == "theme-switch"]
-        await asyncio.gather(*(worker.wait() for worker in workers))
-        assert store.load().welcome_style == selected
-        assert store.load().theme == "coral"
-    with pytest.raises(ConfigError, match="unknown welcome style"):
-        store.save(TuiPreferences.model_construct(welcome_style="misspelled-theme"))
-
-
 async def test_restarting_after_dependency_install_restores_the_saved_theme(tmp_path):
     installed = False
 
@@ -150,7 +122,7 @@ async def test_restarting_after_dependency_install_restores_the_saved_theme(tmp_
         return None if installed else "renderer missing"
 
     style = replace(WELCOME_STYLES["basic"], style_id="optional-scene", check_requirements=check)
-    store = TuiPreferencesStore(tmp_path, welcome_styles=welcome_catalog((style,)))
+    store = TuiPreferencesStore(tmp_path)
     store.save(store.validate({"welcome_style": style.style_id}))
     for available in (False, True):
         installed = available
@@ -167,11 +139,3 @@ async def test_installing_theme_dependencies_does_not_change_the_default(tmp_pat
     async with run_ready_app(app):
         assert app.query_one(WelcomePanel).style_package.style_id == "basic"
         assert app._preferences.welcome_style == "basic"
-
-
-def test_available_dependency_can_be_used_without_an_extra_activation_flag(monkeypatch):
-    monkeypatch.setattr(theme_styles, "version", lambda _name: "2.3.3")
-    imports = []
-    monkeypatch.setattr(theme_styles, "import_module", lambda name: imports.append(name))
-    assert theme_styles.check_requirements() is None
-    assert imports == ["numpy"]
