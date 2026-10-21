@@ -1,9 +1,8 @@
 """A Clifford torus rotated in four dimensions, sampled by inverse projection."""
 
-from array import array
 from math import cos, exp, sin
 
-import arrayfunc as af  # type: ignore[import-untyped]
+import numpy as np
 from rich.text import Text
 from textual.containers import Vertical
 from textual.widgets import Static
@@ -25,14 +24,14 @@ _DEPTHS = tuple(-2.2 + index * (4.4 / 13) for index in range(13)) + (2.2,)
 
 
 def prepare(grid: ParticleGrid) -> Sampler:
-    x, y = array("d", grid.x), array("d", grid.y)
-    af.mul(x, 2.5)
-    af.mul(y, 2.5)
+    x, y = grid.x.copy(), grid.y.copy()
+    np.multiply(x, 2.5, out=x)
+    np.multiply(y, 2.5, out=y)
     (
         radial,
         angle,
-        radius,
-        denominator,
+        rotated_x,
+        rotated_y,
         rx,
         ry,
         work,
@@ -44,61 +43,63 @@ def prepare(grid: ParticleGrid) -> Sampler:
         position,
         falloff,
     ) = (buffer(len(x)) for _ in range(14))
-    af.mul(x, x, radial)
-    af.mul(y, y, work)
-    af.add(radial, work)
-    af.atan2(y, x, angle)
-    af.mul(radial, -0.32, falloff)
-    af.exp(falloff)
-    depths = tuple((depth, exp(-depth * depth * 0.32) * 0.65) for depth in _DEPTHS)
+    np.multiply(x, x, out=radial)
+    np.multiply(y, y, out=work)
+    np.add(radial, work, out=radial)
+    np.arctan2(y, x, out=angle)
+    np.multiply(radial, -0.32, out=falloff)
+    np.exp(falloff, out=falloff)
+    # The inverse stereographic denominator depends only on the fixed grid/depth.
+    # Keep one reciprocal plane per ray sample, not four projected coordinates.
+    depths = tuple(
+        (depth, exp(-depth * depth * 0.32) * 0.65, 1.0 / (radial + depth * depth + 1.0))
+        for depth in _DEPTHS
+    )
     spectrum = Spectrum(len(x), _SPECTRUM)
 
     def sample(seconds: float) -> Radiance:
         a = 0.18 * sin(seconds * 0.19)
         b = 0.55 + 0.35 * sin(seconds * 0.13)
         ca, sa, cb, sb = cos(a), sin(a), cos(b), sin(b)
-        af.repeat(light, 0.0)
-        af.repeat(transmission, 1.0)
+        light.fill(0.0)
+        transmission.fill(1.0)
+        np.multiply(x, 2.0 * ca, out=rotated_x)
+        np.add(rotated_x, 2.0 * sa, out=rotated_x)
+        np.multiply(y, 2.0 * cb, out=rotated_y)
         # Integrate fixed view rays through S3; rotate the projected surface,
         # never the receiving LED grid.
-        for depth, attenuation in depths:
-            af.add(radial, depth * depth, radius)
-            af.add(radius, 1.0, denominator)
-            af.mul(x, 2.0 * ca, rx)
-            af.sub(radius, 1.0, work)
-            af.mul(work, sa)
-            af.sub(rx, work)
-            af.truediv(rx, denominator)
-            af.mul(y, 2.0 * cb, ry)
-            af.sub(ry, 2 * depth * sb)
-            af.truediv(ry, denominator)
-            af.mul(rx, rx, surface)
-            af.mul(ry, ry, work)
-            af.add(surface, work)
-            af.sub(surface, 0.5)
-            af.add(rx, ry, weave)
-            af.mul(weave, 28.0)
-            af.sub(weave, seconds * 0.5)
-            af.cos(weave)
-            af.mul(weave, weave)
-            af.mul(weave, 0.35)
-            af.add(weave, 0.65)
+        for depth, attenuation, reciprocal in depths:
+            np.multiply(rotated_x, reciprocal, out=rx)
+            np.subtract(rx, sa, out=rx)
+            np.subtract(rotated_y, 2 * depth * sb, out=ry)
+            np.multiply(ry, reciprocal, out=ry)
+            np.multiply(rx, rx, out=surface)
+            np.multiply(ry, ry, out=work)
+            np.add(surface, work, out=surface)
+            np.subtract(surface, 0.5, out=surface)
+            np.add(rx, ry, out=weave)
+            np.multiply(weave, 28.0, out=weave)
+            np.subtract(weave, seconds * 0.5, out=weave)
+            np.cos(weave, out=weave)
+            np.multiply(weave, weave, out=weave)
+            np.multiply(weave, 0.35, out=weave)
+            np.add(weave, 0.65, out=weave)
             density[:] = surface
             band(density, 0.07)
-            af.mul(density, falloff)
-            af.mul(density, attenuation)
-            af.mul(density, weave, work)
-            af.mul(work, transmission)
-            af.mul(work, 1 - depth * 0.18)
-            af.add(light, work)
-            af.mul(density, 0.55, work)
-            af.sub(1.0, work, work)
-            af.mul(transmission, work)
-        af.add(angle, seconds * 0.17, position)
-        af.sin(position)
-        af.mul(position, 0.5)
-        af.add(position, 0.5)
-        af.mul(light, 1.8)
+            np.multiply(density, falloff, out=density)
+            np.multiply(density, attenuation, out=density)
+            np.multiply(density, weave, out=work)
+            np.multiply(work, transmission, out=work)
+            np.multiply(work, 1 - depth * 0.18, out=work)
+            np.add(light, work, out=light)
+            np.multiply(density, 0.55, out=work)
+            np.subtract(1.0, work, out=work)
+            np.multiply(transmission, work, out=transmission)
+        np.add(angle, seconds * 0.17, out=position)
+        np.sin(position, out=position)
+        np.multiply(position, 0.5, out=position)
+        np.add(position, 0.5, out=position)
+        np.multiply(light, 1.8, out=light)
         return spectrum.sample(position, light)
 
     return sample

@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from array import array
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 
-import arrayfunc as af  # type: ignore[import-untyped]
+import numpy as np
 from rich.color import Color
 from rich.segment import Segment
 from rich.style import Style
@@ -20,14 +19,12 @@ from ouro.tui.welcome.styles.dot_matrix.field import (
     ParticleGrid,
     PhosphorField,
     Prepare,
-    buffer,
-    clip,
-    maximum,
 )
 
 _BRAILLE_BITS = (1, 8, 2, 16, 4, 32, 64, 128)
 _THRESHOLDS = (0.08, 0.48, 0.68, 0.28, 0.23, 0.63, 0.43, 0.13)
 _COLOR_THRESHOLDS = tuple(value * 0.25 for value in _THRESHOLDS)
+_GLYPHS = (" ",) + tuple(chr(0x2800 + mask) for mask in range(1, 256))
 
 
 @dataclass(frozen=True)
@@ -56,8 +53,12 @@ class FrameStrip(Strip):
 
 
 @lru_cache(maxsize=4096)
-def _led_style(rgb: tuple[int, int, int] | None) -> Style:
-    return Style() if rgb is None else Style(color=Color.from_rgb(*rgb))
+def _led_style(rgb: int | None) -> Style:
+    return (
+        Style()
+        if rgb is None
+        else Style(color=Color.from_rgb(rgb >> 16, (rgb >> 8) & 255, rgb & 255))
+    )
 
 
 class PhosphorRaster:
@@ -67,12 +68,18 @@ class PhosphorRaster:
         self.columns, self.rows = columns, rows
         grid = ParticleGrid.create(columns * 2, rows * 4, span=style.span)
         self._engine = style.engine_factory(grid, style.prepare)
-        dots, cells = len(grid.x), columns * rows
-        self._luminance, self._scratch = buffer(dots), buffer(dots)
-        self._lanes = tuple(buffer(cells) for _ in range(8))
-        self._color, self._color_scratch = buffer(cells), buffer(cells)
-        self._rgb = tuple(array("B", [0]) * cells for _ in range(3))
-        self._cells = array("I", [0]) * cells
+        self._luminance = np.empty(grid.width * grid.height, dtype=np.float64)
+        self._lanes = self._dot_views(self._luminance)
+        shape = (rows, columns)
+        self._peak = np.empty(shape, dtype=np.float64)
+        self._color = np.empty(shape, dtype=np.float64)
+        self._above = np.empty(shape, dtype=np.bool_)
+        self._visible = np.empty(shape, dtype=np.bool_)
+        self._masks = np.empty(shape, dtype=np.uint32)
+        self._channel = np.empty(shape, dtype=np.uint32)
+        self._packed = np.empty(shape, dtype=np.uint32)
+        self._cells = np.zeros(shape, dtype=np.uint32)
+        self._changed = np.empty(shape, dtype=np.bool_)
         self._lines: tuple[Strip, ...] = ()
         self.damage: tuple[Region, ...] = ()
 
@@ -81,15 +88,10 @@ class PhosphorRaster:
         self._lines = ()
         self.damage = ()
 
-    def _split_dots(self, field: Field) -> None:
-        """Project dot-row storage onto the eight fixed positions of each cell."""
-        columns = self.columns
-        width = columns * 2
-        for dot, lane in enumerate(self._lanes):
-            dy, dx = divmod(dot, 2)
-            for row in range(self.rows):
-                start = (row * 4 + dy) * width
-                lane[row * columns : (row + 1) * columns] = field[start + dx : start + width : 2]
+    def _dot_views(self, field: Field) -> tuple[Field, ...]:
+        """Eight strided views of row-major dots; no dot-to-cell transpose/copy."""
+        blocks = np.asarray(field).reshape(self.rows, 4, self.columns, 2)
+        return tuple(blocks[:, dy, :, dx] for dy in range(4) for dx in range(2))
 
     def frame(
         self,
@@ -100,70 +102,67 @@ class PhosphorRaster:
         background: tuple[int, int, int] = (0, 0, 0),
     ) -> tuple[Strip, ...]:
         mapped_channels = self._engine.frame(seconds, elapsed)
-        maximum(mapped_channels[0], mapped_channels[1], self._luminance, self._scratch)
-        maximum(self._luminance, mapped_channels[2], self._luminance, self._scratch)
-        self._split_dots(self._luminance)
-        masks = []
+        np.maximum(mapped_channels[0], mapped_channels[1], out=self._luminance)
+        np.maximum(self._luminance, mapped_channels[2], out=self._luminance)
+        self._peak[:] = self._lanes[0]
+        for lane in self._lanes[1:]:
+            np.maximum(self._peak, lane, out=self._peak)
+        if not monochrome:
+            self._peak *= 0.30
+        self._masks.fill(0)
         thresholds = _THRESHOLDS if monochrome else _COLOR_THRESHOLDS
-        minimum = min(thresholds)
-        for values in zip(*self._lanes, strict=True):
-            peak = max(values)
-            if peak <= minimum:
-                mask = 0
-            else:
-                contour = 0.0 if monochrome else peak * 0.30
-                # Fade by coverage as well as color: terminals may raise the
-                # contrast of dark foregrounds, but cannot brighten absent dots.
-                mask = sum(
-                    bit
-                    for value, bit, threshold in zip(values, _BRAILLE_BITS, thresholds, strict=True)
-                    if value >= contour and value > threshold
-                )
-            masks.append(mask)
-        for mapped, rgb, base in zip(mapped_channels, self._rgb, background, strict=True):
-            self._split_dots(mapped)
-            self._color[:] = self._lanes[0]
-            for lane in self._lanes[1:]:
-                af.add(self._color, lane)
-            af.mul(self._color, 1.25 / 8)
-            clip(self._color, 0.0, 1.0, self._color_scratch)
+        for lane, bit, threshold in zip(self._lanes, _BRAILLE_BITS, thresholds, strict=True):
+            np.greater(lane, threshold, out=self._above)
+            if not monochrome:
+                np.greater_equal(lane, self._peak, out=self._visible)
+                self._above &= self._visible
+            # Fade by coverage as well as color. Dark foregrounds may be raised
+            # by terminals, but absent dots cannot be brightened.
+            np.bitwise_or(self._masks, bit, out=self._masks, where=self._above)
+        self._packed[:] = self._masks
+        for mapped, base, shift in zip(mapped_channels, background, (24, 16, 8), strict=True):
+            lanes = self._dot_views(mapped)
+            self._color[:] = lanes[0]
+            for lane in lanes[1:]:
+                self._color += lane
+            self._color *= 1.25 / 8
+            np.clip(self._color, 0.0, 1.0, out=self._color)
             # Screen-compose emitted light over the actual canvas. Zero light
             # leaves the background unchanged, including in individual channels.
-            af.fma(self._color, float(255 - base), float(base))
-            af.convert(self._color, rgb)
-        rows = []
+            self._color *= 255 - base
+            self._color += base
+            np.copyto(self._channel, self._color, casting="unsafe")
+            np.left_shift(self._channel, shift, out=self._channel)
+            self._packed |= self._channel
+        np.equal(self._masks, 0, out=self._above)
+        np.copyto(self._packed, 0, where=self._above)
+        np.not_equal(self._packed, self._cells, out=self._changed)
+        if not self._lines:
+            self._changed.fill(True)
+        changed_rows = np.flatnonzero(self._changed.any(axis=1))
+        if not len(changed_rows):
+            self.damage = ()
+            return self._lines
+        self._cells[:] = self._packed
+        rows = list(self._lines) if self._lines else [Strip.blank(self.columns)] * self.rows
         damage = []
-        colors = zip(*self._rgb, strict=True)
-        for row in range(self.rows):
-            start, end = row * self.columns, (row + 1) * self.columns
-            row_colors = [next(colors) for _ in range(self.columns)]
-            first, last = self.columns, -1
-            # Compare final cells before constructing Rich objects. In particular,
-            # dark or unchanged rows must not allocate throwaway Segments each frame.
-            for column, (red, green, blue) in enumerate(row_colors):
-                index = start + column
-                mask = masks[index]
-                cell = (red << 24) | (green << 16) | (blue << 8) | mask if mask else 0
-                if not self._lines or self._cells[index] != cell:
-                    first, last = min(first, column), column
-                    self._cells[index] = cell
-            if last < 0:
-                rows.append(self._lines[row])
-                continue
+        for row in changed_rows.tolist():
+            changed = np.flatnonzero(self._changed[row])
+            first, last = int(changed[0]), int(changed[-1])
             segments: list[Segment] = []
-            run = ""
-            previous: tuple[int, int, int] | None = None
-            for index, color in zip(range(start, end), row_colors, strict=True):
-                mask = masks[index]
-                key = color if mask else None
+            run: list[str] = []
+            previous: int | None = None
+            # Cross the Python/Rich boundary only for rows with changed final cells.
+            for cell in self._packed[row].tolist():
+                key = cell >> 8 if cell else None
                 if run and key != previous:
-                    segments.append(Segment(run, _led_style(previous)))
-                    run = ""
-                run += chr(0x2800 + mask) if mask else " "
+                    segments.append(Segment("".join(run), _led_style(previous)))
+                    run.clear()
+                run.append(_GLYPHS[cell & 255])
                 previous = key
             if run:
-                segments.append(Segment(run, _led_style(previous)))
-            rows.append(Strip(segments, self.columns))
+                segments.append(Segment("".join(run), _led_style(previous)))
+            rows[row] = Strip(segments, self.columns)
             damage.append(Region(first, row, last - first + 1, 1))
         self._lines = tuple(rows)
         self.damage = tuple(damage)

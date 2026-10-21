@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-themes = ["arrayfunc>=8.5.7,<9"]
+themes = ["numpy>=2.3.3,<3"]
 
 [project.urls]
 Homepage = "https://github.com/djsaber/OURO"

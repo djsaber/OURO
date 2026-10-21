@@ -18,7 +18,7 @@ from ouro.tui.widgets import WelcomePanel
 from tests.tui.helpers import run_ready_app, two_route_application
 
 
-def test_tui_import_and_basic_page_do_not_require_arrayfunc():
+def test_tui_import_and_basic_page_do_not_require_numpy():
     result = subprocess.run(
         [
             sys.executable,
@@ -27,12 +27,12 @@ def test_tui_import_and_basic_page_do_not_require_arrayfunc():
                 import importlib.abc
                 import sys
 
-                class NoArrayfunc(importlib.abc.MetaPathFinder):
+                class NoNumpy(importlib.abc.MetaPathFinder):
                     def find_spec(self, fullname, path=None, target=None):
-                        if fullname == "arrayfunc" or fullname.startswith("arrayfunc."):
-                            raise ModuleNotFoundError("arrayfunc is not installed", name=fullname)
+                        if fullname == "numpy" or fullname.startswith("numpy."):
+                            raise ModuleNotFoundError("numpy is not installed", name=fullname)
 
-                sys.meta_path.insert(0, NoArrayfunc())
+                sys.meta_path.insert(0, NoNumpy())
                 from ouro.tui.app import OuroTuiApp
                 from ouro.tui.preferences import TuiPreferences
                 from ouro.tui.welcome import DEFAULT_WELCOME_STYLE, WELCOME_STYLES
@@ -40,7 +40,7 @@ def test_tui_import_and_basic_page_do_not_require_arrayfunc():
                 assert DEFAULT_WELCOME_STYLE == "basic"
                 assert TuiPreferences().welcome_style == "basic"
                 assert WELCOME_STYLES["basic"].create() is not None
-                assert "arrayfunc" not in sys.modules
+                assert "numpy" not in sys.modules
                 assert "ouro.tui.welcome.styles.dot_matrix.widget" not in sys.modules
             """),
         ],
@@ -53,13 +53,13 @@ def test_tui_import_and_basic_page_do_not_require_arrayfunc():
 
 def test_missing_theme_dependency_has_an_actionable_reason(monkeypatch):
     def missing(_name):
-        raise PackageNotFoundError("arrayfunc")
+        raise PackageNotFoundError("numpy")
 
     monkeypatch.setattr(theme_styles, "version", missing)
     assert "ouro-agent[themes]" in theme_styles.check_requirements()
 
 
-@pytest.mark.parametrize("installed", ["8.5.6", "9.0.0", "invalid"])
+@pytest.mark.parametrize("installed", ["2.3.2", "3.0.0", "invalid"])
 def test_incompatible_theme_dependency_is_not_imported(monkeypatch, installed):
     monkeypatch.setattr(theme_styles, "version", lambda _name: installed)
 
@@ -72,7 +72,7 @@ def test_incompatible_theme_dependency_is_not_imported(monkeypatch, installed):
 
 @pytest.mark.parametrize("error", [ImportError("missing symbol"), OSError("invalid binary")])
 def test_broken_extension_keeps_its_loading_diagnostic(monkeypatch, error):
-    monkeypatch.setattr(theme_styles, "version", lambda _name: "8.5.7")
+    monkeypatch.setattr(theme_styles, "version", lambda _name: "2.3.3")
 
     def broken(_name):
         raise error
@@ -82,7 +82,7 @@ def test_broken_extension_keeps_its_loading_diagnostic(monkeypatch, error):
 
 
 def test_dependency_programming_errors_are_not_hidden(monkeypatch):
-    monkeypatch.setattr(theme_styles, "version", lambda _name: "8.5.7")
+    monkeypatch.setattr(theme_styles, "version", lambda _name: "2.3.3")
 
     def broken(_name):
         raise RuntimeError("unexpected extension bug")
@@ -115,7 +115,7 @@ async def test_missing_builtin_dependency_keeps_tui_usable_and_preferences_intac
     tmp_path, monkeypatch, selected
 ):
     def missing(_name):
-        raise PackageNotFoundError("arrayfunc")
+        raise PackageNotFoundError("numpy")
 
     monkeypatch.setattr(theme_styles, "version", missing)
     store = TuiPreferencesStore(tmp_path)
@@ -170,8 +170,8 @@ async def test_installing_theme_dependencies_does_not_change_the_default(tmp_pat
 
 
 def test_available_dependency_can_be_used_without_an_extra_activation_flag(monkeypatch):
-    monkeypatch.setattr(theme_styles, "version", lambda _name: "8.5.7")
+    monkeypatch.setattr(theme_styles, "version", lambda _name: "2.3.3")
     imports = []
     monkeypatch.setattr(theme_styles, "import_module", lambda name: imports.append(name))
     assert theme_styles.check_requirements() is None
-    assert imports == ["arrayfunc"]
+    assert imports == ["numpy"]

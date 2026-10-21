@@ -75,17 +75,9 @@ uv tool install --python 3.14 "ouro-agent[themes]"
 使用 pip 时，在 OURO 所在虚拟环境执行 `python -m pip install "ouro-agent[themes]"`。
 uv tool 使用独立环境，向系统 Python 或其他虚拟环境安装依赖不会改变 OURO 的可用主题。
 
-点阵主题 Horizon、Bloom、Tide、Iris、Prism 需要 `arrayfunc>=8.5.7,<9`。
-该依赖提供 Windows x64 / CPython 3.14 wheel；没有匹配 wheel 的平台需要 C 编译器和对应 Python
-开发头文件。Linux x86_64 上，uv 的 Python 与系统 C 编译器组合可能需要显式启用 SSE4.1。
-确认 `grep -w sse4_1 /proc/cpuinfo` 有输出后，可在 bash 中执行：
-
-```bash
-CFLAGS="${CFLAGS:+$CFLAGS }-msse4.1" uv tool install --python 3.14 "ouro-agent[themes]"
-```
-
-此参数仅适用于支持 SSE4.1 的 x86_64 CPU，不适用于 ARM。源码构建要求见
-[arrayfunc 安装说明](https://pypi.org/project/arrayfunc/8.5.7/#installation)。基础安装无需该依赖。
+点阵主题 Horizon、Bloom、Tide、Iris、Prism 需要 `numpy>=2.3.3,<3`。
+更新主题包后，应在同一 OURO 环境中重新安装 `ouro-agent[themes]` 以同步依赖。
+基础安装无需该依赖。数组运算使用 NumPy 自带的原生实现，无需额外 JIT、GPU 或计算服务。
 
 TUI 每次启动检测主题所需依赖，只列出可用主题；安装依赖后需要重启。安装拓展只增加可选项，不自动
 切换主题。已保存的主题暂不可用时，本次显示 Still 并提示原因，保留原选择；恢复依赖后再次启动即可

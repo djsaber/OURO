@@ -11,29 +11,26 @@ from packaging.version import InvalidVersion
 from ouro.tui.welcome.model import WelcomePage, WelcomeStyle
 from ouro.tui.welcome.styles.basic import STYLE as BASIC_STYLE
 
-_ARRAYFUNC_VERSIONS = SpecifierSet(">=8.5.7,<9")
+_NUMPY_VERSIONS = SpecifierSet(">=2.3.3,<3")
 _INSTALL_HINT = "Install ouro-agent[themes] in the OURO environment and restart the TUI."
 
 
 def check_requirements() -> str | None:
     """Check the actual extension, not just the presence of package metadata."""
     try:
-        installed = version("arrayfunc")
+        installed = version("numpy")
     except PackageNotFoundError:
-        return f"arrayfunc is not installed. {_INSTALL_HINT}"
+        return f"numpy is not installed. {_INSTALL_HINT}"
     try:
-        compatible = installed in _ARRAYFUNC_VERSIONS
+        compatible = installed in _NUMPY_VERSIONS
     except InvalidVersion:
         compatible = False
     if not compatible:
-        return (
-            f"arrayfunc {installed} is incompatible; requires {_ARRAYFUNC_VERSIONS}. "
-            f"{_INSTALL_HINT}"
-        )
+        return f"numpy {installed} is incompatible; requires {_NUMPY_VERSIONS}. {_INSTALL_HINT}"
     try:
-        import_module("arrayfunc")
+        import_module("numpy")
     except (ImportError, OSError) as exc:
-        return f"arrayfunc could not load: {exc}. {_INSTALL_HINT}"
+        return f"numpy could not load: {exc}. {_INSTALL_HINT}"
     return None
 
 

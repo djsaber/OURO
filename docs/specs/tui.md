@@ -84,7 +84,7 @@ App 持有的写入/挂载事务；事务与其他 TUI 偏好更新共用锁。�
 内置包包括 `basic`、`event-horizon`、`electron-bloom`、`interference`、
 `clifford-torus` 和 `quasicrystal`。`basic` 是静态 OURO 字标，各包自行负责内部呈现。
 基础安装包含完整 TUI 和 `basic`；`ouro-agent[themes]` 声明欢迎页主题拓展的可选依赖，当前点阵包
-要求 `arrayfunc>=8.5.7,<9`。主题身份、名称和说明不依赖可选渲染代码的导入。
+要求 `numpy>=2.3.3,<3`。主题身份、名称和说明不依赖可选渲染代码的导入。
 
 每个 App 启动时执行主题的依赖检查，同一检查函数只执行一次。可用性取决于当前 Python 环境中的
 兼容依赖能否成功加载，不依赖安装时是否使用 extra；安装或移除依赖后通过重启重新检测。

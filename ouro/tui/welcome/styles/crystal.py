@@ -1,9 +1,8 @@
 """Five reciprocal-lattice waves reveal a nonperiodic diffraction rosette."""
 
-from array import array
 from math import cos, pi, sin
 
-import arrayfunc as af  # type: ignore[import-untyped]
+import numpy as np
 from rich.text import Text
 from textual.containers import Vertical
 from textual.widgets import Static
@@ -25,49 +24,52 @@ _SPECTRUM = ((0.29, 0.05, 0.09), (0.86, 0.21, 0.19), (1.0, 0.64, 0.39), (1.0, 0.
 
 
 def prepare(grid: ParticleGrid) -> Sampler:
-    x, y = array("d", grid.x), array("d", grid.y)
+    x, y = grid.x, grid.y
     work, aperture = buffer(len(x)), buffer(len(x))
     projections = []
     for index in range(5):
         angle = index * pi / 5
         projection = buffer(len(x))
-        af.mul(x, cos(angle), projection)
-        af.mul(y, sin(angle), work)
-        af.add(projection, work)
-        af.mul(projection, 15.0)
-        projections.append(projection)
-    af.hypot(x, y, aperture)
-    af.truediv(aperture, 1.05)
-    af.pow(aperture, 8.0)
-    af.neg(aperture)
-    af.exp(aperture)
+        np.multiply(x, cos(angle), out=projection)
+        np.multiply(y, sin(angle), out=work)
+        np.add(projection, work, out=projection)
+        np.multiply(projection, 15.0, out=projection)
+        projections.append((np.cos(projection), np.sin(projection)))
+    np.hypot(x, y, out=aperture)
+    np.divide(aperture, 1.05, out=aperture)
+    np.power(aperture, 8.0, out=aperture)
+    np.negative(aperture, out=aperture)
+    np.exp(aperture, out=aperture)
     wave, quadrature, light, position = (buffer(len(x)) for _ in range(4))
     spectrum = Spectrum(len(x), _SPECTRUM)
 
     def sample(seconds: float) -> Radiance:
-        af.repeat(wave, 0.0)
-        af.repeat(quadrature, 0.0)
-        for index, projection in enumerate(projections):
+        wave.fill(0.0)
+        quadrature.fill(0.0)
+        for index, (spatial_cos, spatial_sin) in enumerate(projections):
             phase = sin(seconds * 0.17 + index * 2.4) * 1.6
-            af.add(projection, phase, work)
-            af.cos(work)
-            af.add(wave, work)
-            af.sub(projection, phase, work)
-            af.sin(work)
-            af.add(quadrature, work)
-        af.abs_(wave)
-        af.sub(wave, 0.6, light)
-        af.truediv(light, 4.4)
-        clip(light, 0.0, 1.0, work)
-        af.pow(light, 1.35)
-        af.mul(light, 1.7)
+            cp, sp = cos(phase), sin(phase)
+            np.multiply(spatial_cos, cp, out=work)
+            np.add(wave, work, out=wave)
+            np.multiply(spatial_sin, sp, out=work)
+            np.subtract(wave, work, out=wave)
+            np.multiply(spatial_sin, cp, out=work)
+            np.add(quadrature, work, out=quadrature)
+            np.multiply(spatial_cos, sp, out=work)
+            np.subtract(quadrature, work, out=quadrature)
+        np.absolute(wave, out=wave)
+        np.subtract(wave, 0.6, out=light)
+        np.divide(light, 4.4, out=light)
+        clip(light, 0.0, 1.0)
+        np.power(light, 1.35, out=light)
+        np.multiply(light, 1.7, out=light)
         band(quadrature, 0.35)
-        af.mul(quadrature, 0.3)
-        af.add(light, quadrature)
-        af.mul(light, aperture)
-        af.mul(light, 1.8)
-        af.mul(wave, 0.12, position)
-        af.add(position, 0.4)
+        np.multiply(quadrature, 0.3, out=quadrature)
+        np.add(light, quadrature, out=light)
+        np.multiply(light, aperture, out=light)
+        np.multiply(light, 1.8, out=light)
+        np.multiply(wave, 0.12, out=position)
+        np.add(position, 0.4, out=position)
         return spectrum.sample(position, light)
 
     return sample

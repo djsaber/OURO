@@ -1,8 +1,8 @@
 """A caustic aperture formed by coherent sources and a slowly drifting phase."""
 
-from array import array
+from math import cos, sin
 
-import arrayfunc as af  # type: ignore[import-untyped]
+import numpy as np
 from rich.text import Text
 from textual.containers import Vertical
 from textual.widgets import Static
@@ -23,47 +23,50 @@ _SPECTRUM = ((0.025, 0.19, 0.25), (0.07, 0.66, 0.63), (0.49, 0.95, 0.77), (0.95,
 
 
 def prepare(grid: ParticleGrid) -> Sampler:
-    x, y = array("d", grid.x), array("d", grid.y)
+    x, y = grid.x, grid.y.copy()
     left, right, lower, aperture, center = (buffer(len(x)) for _ in range(5))
-    af.add(x, 0.83, left)
-    af.hypot(left, y)
-    af.sub(x, 0.83, right)
-    af.hypot(right, y)
-    af.sub(y, 1.2, lower)
-    af.hypot(x, lower, lower)
-    af.sub(left, right, center)
+    np.add(x, 0.83, out=left)
+    np.hypot(left, y, out=left)
+    np.subtract(x, 0.83, out=right)
+    np.hypot(right, y, out=right)
+    np.subtract(y, 1.2, out=lower)
+    np.hypot(x, lower, out=lower)
+    np.subtract(left, right, out=center)
     band(center, 0.05)
-    af.mul(center, 0.1)
-    af.mul(left, 18.0)
-    af.mul(right, 18.0)
-    af.mul(lower, 15.0)
-    af.truediv(x, 2.1, aperture)
-    af.pow(aperture, 6.0)
-    af.truediv(y, 0.9, y)
-    af.pow(y, 6.0)
-    af.add(aperture, y)
-    af.neg(aperture)
-    af.exp(aperture)
+    np.multiply(center, 0.1, out=center)
+    np.multiply(left, 18.0, out=left)
+    np.multiply(right, 18.0, out=right)
+    np.multiply(lower, 15.0, out=lower)
+    np.divide(x, 2.1, out=aperture)
+    np.power(aperture, 6.0, out=aperture)
+    np.divide(y, 0.9, out=y)
+    np.power(y, 6.0, out=y)
+    np.add(aperture, y, out=aperture)
+    np.negative(aperture, out=aperture)
+    np.exp(aperture, out=aperture)
+    # Both side sources share a time frequency, so sum their spatial bases once.
+    side_cos = np.cos(left) + np.cos(right)
+    side_sin = np.sin(left) - np.sin(right)
+    lower_cos, lower_sin = np.cos(lower) * 0.65, np.sin(lower) * 0.65
     wave, work, position, light = (buffer(len(x)) for _ in range(4))
     spectrum = Spectrum(len(x), _SPECTRUM)
 
     def sample(seconds: float) -> Radiance:
         phase = seconds * 0.55
-        af.sub(left, phase, wave)
-        af.cos(wave)
-        af.add(right, phase, work)
-        af.cos(work)
-        af.add(wave, work)
-        af.add(lower, phase * 0.6, work)
-        af.cos(work)
-        af.mul(work, 0.65)
-        af.add(wave, work)
-        af.abs_(wave, position)
-        af.truediv(position, 2.65)
-        af.pow(position, 3.0, light)
-        af.mul(light, 1.7)
-        af.add(light, center)
-        af.mul(light, aperture)
+        np.multiply(side_cos, cos(phase), out=wave)
+        np.multiply(side_sin, sin(phase), out=work)
+        np.add(wave, work, out=wave)
+        np.multiply(lower_cos, cos(phase * 0.6), out=work)
+        np.add(wave, work, out=wave)
+        np.multiply(lower_sin, sin(phase * 0.6), out=work)
+        np.subtract(wave, work, out=wave)
+        np.absolute(wave, out=position)
+        np.divide(position, 2.65, out=position)
+        np.square(position, out=light)
+        np.multiply(light, position, out=light)
+        np.multiply(light, 1.7, out=light)
+        np.add(light, center, out=light)
+        np.multiply(light, aperture, out=light)
         return spectrum.sample(position, light)
 
     return sample
