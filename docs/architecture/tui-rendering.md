@@ -75,6 +75,12 @@ Markdown/SyntaxTheme 均从该对象取得视觉语义。
 补全使用同一份候选快照及预先计算的空输入提示；命令或查询文本不一致时，通过当前命令目录重新计算，保证同步编辑反馈。
 
 Actions、会话、模型、Provider、插件、技能、任务及配置页面共用 ChoiceScreen 和 OptionList。
+`menu_styles.py` 统一声明弹出菜单样式：`ModalScreen` 遮罩与 `#choice-panel` 均使用
+`$ouro-background` 不透明背景，与主页面同色；面板、标题、说明、筛选框、选项列表和提示栏均无边框。
+标题使用 `accent` 与粗体，选项焦点使用 accent 前景及 `highlight` / `input_highlight` 背景。
+子屏活动期间，父菜单隐藏 `#choice-panel` 并将屏幕背景设为透明；返回时同步恢复背景、面板及输入焦点，
+保留筛选、选择和滚动状态。
+
 需要异步数据的子菜单在 `prepare()` 中取得初始候选后才进入屏幕栈；等待期间保留父菜单及其筛选、焦点和滚动位置，
 父页面关闭或切换后丢弃迟到的打开请求。归档路径、认证状态和凭据列表遵循这一生命周期；直接打开这些菜单时也先准备候选。
 
@@ -200,7 +206,7 @@ section 和 inline separator 均复用低亮色，不继承相邻字段的颜色
 
 状态与交互独立于静态文字层次：自动审批保留 `danger`，最高思考强度保留主题色与 bold，错误和增删行
 保留对应语义色；选中项与焦点使用主题色，`text_highlight` 用于悬停反馈，`text_disabled` 表示不可用内容。
-`border_subtle` 只用于结构边界，如菜单边栏、Markdown 表格边框和水平线，不承担文本分隔符职责。
+`border_subtle` 只用于结构边界，如 Markdown 表格边框和水平线，不承担文本分隔符职责。
 模型回复正文使用 `text_emphasis`，覆盖活动流式 tail、完成块、历史消息和 Markdown 失败后的纯文本降级；
 Markdown 内容保留各自的语义样式。工具、思考和脚手架消息使用 `text_lowlight`。失败状态使用 `failure`，悬浮高亮与点击语义保持一致。
 用户消息正文、composer 编辑文字和排队输入预览正文使用 `text_emphasis`，保持常规字重；时间戳、占位提示和分隔符使用低亮层。
@@ -264,7 +270,7 @@ run_tui(theme=custom_theme)
 `theme_for(node)` 是唯一的 Widget 主题查询入口：
 
 - mounted Widget 读取 owning App 的 tui_theme；
-- 显式接收启动主题的 pre-mount 配置界面使用该主题，其他 pre-mount 或独立测试节点使用
+- 显式接收启动主题的 pre-mount 配置界面使用该主题，其他 pre-mount 或独立节点使用
   DEFAULT_TUI_THEME；
 - 不读取环境变量、文件或模块可变状态；
 - 不缓存 Widget 到 App 的关系。
@@ -326,7 +332,7 @@ Markdown 通过局部 element 映射为段落、标题和表格单元格提供 `
 
 `wrapped_document.py` 封装 Textual 8 的文档显示几何适配。Textual 未提供断行策略回调，因此适配器
 集中维护其断行与行索引缓存，复用原有文档、编辑历史和导航协议。断行和光标映射使用相同的制表符宽度；
-框架内部字段的依赖限制在该适配器内，由编辑、缩放、选区及光标往返测试验证。适配不修改依赖全局状态，
+框架内部字段的依赖限制在该适配器内。适配不修改依赖全局状态，
 不改变业务层文本，也不在渲染链路执行 I/O。
 
 每次断行按当前源行长度线性扫描，适配层不缓存完整文本或分词结果。文本编辑只对受影响的源行重新分词，
@@ -435,7 +441,7 @@ ConversationView 通过现有滚动恢复入口，在同一布局帧保持锚点
 不同 App 或不同 TuiTheme 值不共享 Markdown style、SyntaxTheme 或 history Strip。theme id 只用于身份和 preference，
 不能替代完整主题值参与缓存判断。实现不使用全局 mutable current theme、ContextVar 或线程局部主题。
 
-TUI 主题选择面板将高亮项的 `accent` 直接投影到面板标题、输入焦点轨道和选项高亮前景。该投影只更新少量已 mounted
+TUI 主题选择面板将高亮项的 `accent` 直接投影到面板标题和选项高亮前景。该投影只更新少量已 mounted
 样式，不调用 App 主题切换、全局 CSS refresh、Widget 树遍历、Markdown 投影或历史重渲染。离开主题页时，面板局部投影
 随页面生命周期清除。
 
@@ -459,7 +465,7 @@ ConversationHistory revision 规则丢弃，不建立第二套渲染或取消协
 ## 失败语义
 
 - 非法主题身份、颜色、glyph、spinner 帧或刷新间隔在 TuiTheme 构造边界失败；
-- 内置主题无效属于开发错误，由测试阻止发布；
+- 内置主题无效属于开发错误；
 - 单个 Markdown block 失败时降级为有界纯文本；
 - 未知 lexer 降级为 panel 背景上的 plain text；
 - 降级不改变 Run、消息顺序或后续条目；
@@ -495,15 +501,13 @@ ConversationHistory revision 规则丢弃，不建立第二套渲染或取消协
 | `ouro/tui/conversation_history.py` | 捕获 TuiTheme、生成 Strip、维护缓存 identity |
 | `ouro/tui/app.py` | 接收和切换 TuiTheme，应用 CSS variables，协调主题刷新 |
 | `ouro/tui/entry.py` | 将 Python API 的 theme 参数传给 App |
+| `ouro/tui/menu_styles.py` | 共享菜单背景、无边框布局、文字层级和选项焦点样式 |
 | `ouro/tui/widgets.py` 与其他 TUI 组件 | 从 owning App 取得主题并构造 Rich Text、glyph 与 spinner |
-| `tests/tui/test_preferences.py` | 主题数据、Token 格式、不可变性、投影缓存和偏好持久化 |
-| `tests/tui/test_conversation_history.py` | Markdown 文本、降级、异步排版和缓存隔离 |
-| `tests/tui/test_app.py` | 主题选择与持久化、App 隔离、交互和布局隔离 |
 
 `ouro.application`、`ouro.core` 以及 Session、Runtime、Provider、Plugin 领域模块不依赖 TuiTheme；
 只有 `ouro.tui` 内的对应界面适配代码消费主题。
 
-## 验收条件
+## 设计约束
 
 ### 自定义能力
 
@@ -523,7 +527,8 @@ ConversationHistory revision 规则丢弃，不建立第二套渲染或取消协
 - brand、choice、status、session 和 disclosure 标识符全部来自 TuiTheme；
 - spinner 帧和刷新间隔全部来自 TuiTheme；
 - NO_COLOR 通过 bold、dim、underline 和文本保留结构；
-- Widget 尺寸、间距、滚动和响应式行为独立于主题。
+- Widget 尺寸、间距、滚动和响应式行为独立于主题；
+- 弹出菜单与遮罩共用主页面背景色，菜单各区域使用无边框布局。
 
 ### 正确性与性能
 
@@ -538,12 +543,7 @@ ConversationHistory revision 规则丢弃，不建立第二套渲染或取消协
 - loading 在完整主题应用及最新 history render 完成后移除；
 - Markdown/theme 失败只降级当前 block；
 - 历史复杂 Markdown 在 worker 渲染；
-- Application/Core 不依赖 TUI 或 Rich；
-- TUI 热路径、架构和行为测试通过。
-
-人工视觉检查覆盖默认主题与自定义主题的标题、inline code、Python/JSON/未知语言代码块、引用、列表、表格、reasoning、
-用户消息、工具状态、composer、选择器、自定义 glyph 和 spinner。固定色值、角色配色、色相、亮度、饱和度、悬停配色与
-透明度由人工核查，自动测试验证主题数据合法性、canonical 文本、metadata、缓存、Timer 生命周期和失败处理。
+- Application/Core 不依赖 TUI 或 Rich。
 
 ## 能力边界
 

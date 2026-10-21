@@ -4,18 +4,13 @@ MENU_CSS = """
     ModalScreen {
         align: center middle;
         overflow: hidden;
-        /* Exactly one visible menu owns the focus backdrop. Parent menu panels
-           become fully transparent while a child page is active, preventing
-           nested darkening without losing the menu's visual focus. */
-        background: $ouro-background 65%;
+        /* Match the terminal and menu panel backgrounds for a seamless surface.
+           Parent menu panels become fully transparent while a child page
+           is active, leaving only the visible menu's surface. */
+        background: $ouro-background;
     }
 
-    /* All modal menus share one flat chrome with the composer and command
-       menu: a low-contrast panel with a muted edge on the right. The left
-       rail is segmented — the title carries the theme accent, the body
-       carries the lowlight — so the header reads as emphasis and the body
-       as structure, matching the "quiet frame + bright header" contrast of
-       the input box. */
+    /* All modal menus blend into the terminal background without borders. */
     #choice-panel {
         width: 1fr;
         max-width: 72;
@@ -23,11 +18,8 @@ MENU_CSS = """
         height: auto;
         min-height: 12;
         max-height: 27;
-        background: $ouro-panel;
-        border-top: none;
-        border-right: solid $ouro-progress-track;
-        border-bottom: none;
-        border-left: none;
+        background: $ouro-background;
+        border: none;
     }
 
     #choice-title {
@@ -38,7 +30,6 @@ MENU_CSS = """
         text-style: bold;
         background: transparent;
         border: none;
-        border-left: solid $ouro-theme;
     }
 
     #choice-description {
@@ -48,7 +39,7 @@ MENU_CSS = """
         padding: 0 2;
         color: $ouro-text-lowlight;
         background: transparent;
-        border-left: solid $ouro-theme;
+        border: none;
     }
 
     #choice-filter {
@@ -58,7 +49,6 @@ MENU_CSS = """
         color: $ouro-text-primary;
         background: transparent;
         border: none;
-        border-left: solid $ouro-theme;
     }
 
     #choice-filter .input--placeholder,
@@ -80,7 +70,6 @@ MENU_CSS = """
         color: $ouro-text-primary;
         background: transparent;
         border: none;
-        border-left: solid $ouro-border-subtle;
         /* The menu is keyboard-first: arrow navigation keeps the highlighted
            option in view, so the scrollbar is pure chrome and is hidden to
            match the flat panels used elsewhere. */
@@ -109,7 +98,6 @@ MENU_CSS = """
         color: $ouro-text-lowlight;
         background: transparent;
         border: none;
-        border-left: solid $ouro-border-subtle;
     }
 
 """

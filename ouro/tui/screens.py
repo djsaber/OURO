@@ -811,9 +811,6 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._accent_preview = color
         title = self.query_one("#choice-title", Static)
         title.styles.color = color
-        title.styles.border_left = ("solid", color)
-        self.query_one("#choice-description", Static).styles.border_left = ("solid", color)
-        self.query_one("#choice-filter", Input).styles.border_left = ("solid", color)
         self.query_one("#choice-list", _ChoiceOptionList).set_accent_preview(color)
 
     def clear_accent_preview(self) -> None:
@@ -825,9 +822,6 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._accent_preview = None
         title = self.query_one("#choice-title", Static)
         title.styles.color = None
-        title.styles.border_left = None
-        self.query_one("#choice-description", Static).styles.border_left = None
-        self.query_one("#choice-filter", Input).styles.border_left = None
         self.query_one("#choice-list", _ChoiceOptionList).set_accent_preview(None)
 
     async def refresh_choices(self) -> bool:

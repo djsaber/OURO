@@ -121,8 +121,7 @@ Host 通过 `set_active(bool)` 通知前台可见性，页面自行管理动画�
 后台帧计算在实际尺寸变化时重建匹配引擎，过期尺寸或已卸载组件的计算结果不得发布到终端。
 
 扩展代码及生命周期说明见
-[欢迎页样式包开发](../development/welcome-styles.md)。行为由 `tests/tui/test_welcome_styles.py`、
-`test_welcome_layout.py`、`test_welcome_refresh.py` 及主题菜单回归验证。
+[欢迎页样式包开发](../development/welcome-styles.md)。
 
 ## 语义色
 
@@ -139,8 +138,6 @@ Host 通过 `set_active(bool)` 通知前台可见性，页面自行管理动画�
 
 错误通知、错误消息和失败状态使用 `failure`，警告通知使用 `warning`。工具行悬停只改变普通文本，
 保留语义色的固定前景。就绪标记、spinner、选择焦点仍按交互职责使用主题 accent。
-
-视觉颜色通过人工核查验收；自动测试验证主题数据格式、文本、交互、布局、偏好、缓存和资源生命周期。
 
 ## 会话与工作区
 
@@ -318,6 +315,11 @@ composer 使用 `Enter` 发送或排队，菜单使用 `Enter` 确认，内联�
 帮助条目用于说明操作，选中条目不执行命令；切换菜单后，选择操作由当前页面的回调处理。
 瞬时确认框和编辑子屏保留自己的交互边界，不被全局菜单快捷键替换。
 
+弹出菜单居中显示，遮罩与菜单面板统一使用活动主题的 `background` 不透明背景，与终端主页面同色。
+菜单面板、标题、说明、筛选框、选项列表和提示栏均无边框；标题以主题 accent 和粗体表达层级，
+当前选项通过前景色与高亮背景表达焦点。主题色预览作用于标题和选项高亮前景。
+子屏打开期间，父菜单面板隐藏、父屏背景透明；返回时恢复父菜单及其筛选、焦点和滚动位置。
+
 composer 与菜单筛选框使用常规文本编辑组合：`Ctrl+A` 全选，`Ctrl+←/→` 按词移动，
 `Home/End` 行首行尾，`Ctrl+Home/End` 文首文尾，`Shift` 配合方向键或 `Home/End` 扩展选区，
 `Ctrl+Shift+←/→` 按词扩展选区，`Ctrl+X/C/V` 剪切、复制、粘贴。
@@ -383,8 +385,6 @@ Provider 子菜单的 `Authentication` 入口通过 `TuiController.provider_auth
 - 注销先展示当前共享 Provider 引用并使用现有确认页。`Manage local credentials` 展示安全摘要，允许清理 Provider 删除后留下的凭据；取消确认没有副作用。清理保留 Application 定义的 logged_out 记录。
 - 受管理 Provider 的配置页显示认证驱动并隐藏 API Key/env 输入；创建时传递模板认证默认值，普通编辑保留现有认证绑定，不隐式切换账户或认证方式。
 - Provider 配置页的 Request headers 接受 literal/env/context 请求头声明 JSON；空白保留已有配置，`{}` 清空，完整对象整组替换。页面显示当前条目数，编辑框不预填脱敏值；保存通过 ConfigurationFacade 原子校验并持久化，格式及字段错误阻止保存。
-
-`tests/tui/test_provider_auth.py` 以两种不同方法及秘密结构的测试驱动验证登录—状态—注销/清理、授权失败、保存失败、配置冲突、取消/保存竞争、卸载和完整 Host 关闭；实际配置及凭据服务参与测试。此证据不代表生产 OAuth 或订阅后端已接入。
 
 ## 工具审批与 AskUser
 
@@ -569,19 +569,6 @@ Controller 不维护第二份恢复输入缓存，界面只通过 Runtime 执行
 
 撤销后的新 Run 事件使用当前 epoch；旧 Run 的迟到事件与结果保留原代次，不能恢复旧“准备上下文”状态
 或读取已删除消息。
-
-## 验收证据
-
-当前契约由以下测试面保护：
-
-- `tests/tui/test_app.py`：启动、输入、运行、交互与页面行为；
-- `tests/tui/test_controller.py`：Application 映射、Session 观察与配置；
-- `tests/tui/test_conversation_history.py`：历史、Markdown、reasoning 与滚动；
-- `tests/tui/test_commands.py`、`test_keyboard.py`：命令和键位；
-- `tests/tui/test_subagent_navigation.py`：controlled/visible Session 与只读 child；
-- `tests/tui/test_preferences.py`、`test_input_drafts.py`：偏好和草稿；
-- `tests/tui/test_question_forms.py`、`test_plan_confirmation.py`：AskUser 与 Plan 交互；
-- Application、Session、Plugin、Tool 和架构测试：TUI 依赖边界与 durable 行为。
 
 ## 数据传输
 

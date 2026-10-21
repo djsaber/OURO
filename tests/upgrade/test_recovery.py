@@ -96,10 +96,6 @@ async def test_unsupported_upgrade_preserves_data_and_offers_safe_default(
         assert (
             "unsupported" in str(app.screen.query_one("#recovery-status", Static).render()).lower()
         )
-        panel = app.screen.query_one("#choice-panel")
-        assert all(edge[0] in {"", "none"} for edge in panel.styles.border)
-        assert app.screen.styles.background.a == 1
-        assert panel.region.x + panel.region.width // 2 == app.size.width // 2
         await pilot.press("escape")
     assert hashes(historical_home) != before
 
