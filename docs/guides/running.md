@@ -75,7 +75,7 @@ uv tool install --python 3.14 "ouro-agent[themes]"
 使用 pip 时，在 OURO 所在虚拟环境执行 `python -m pip install "ouro-agent[themes]"`。
 uv tool 使用独立环境，向系统 Python 或其他虚拟环境安装依赖不会改变 OURO 的可用主题。
 
-`themes` 整体安装与核心同版本的 `ouro-tui-themes`，包含 Horizon、Bloom、Tide、Iris、Prism 风格、
+`themes` 整体安装与核心兼容的 `ouro-tui-themes`，包含 Horizon、Bloom、Tide、Iris、Prism 风格、
 共用点阵引擎及 `numpy>=2.3.3,<3`。基础安装不包含这些扩展代码或 NumPy。
 升级时使用 `ouro-agent[themes]` 同步核心与扩展。数组运算使用 NumPy 自带的原生实现，无需额外 JIT、GPU 或计算服务。
 

@@ -1,13 +1,13 @@
 [project]
 name = "ouro-tui-themes"
-version = "0.3.6"
+version = "0.3.6.post1"
 description = "Optional OURO welcome styles and shared dot-matrix rendering engine."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.14"
 dependencies = [
-    "ouro-agent==0.3.6",
+    "ouro-agent>=0.3.6,<0.4",
     "numpy>=2.3.3,<3",
 ]
 

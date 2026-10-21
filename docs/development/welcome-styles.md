@@ -93,7 +93,7 @@ run_tui(welcome_styles=(byte_page,))
 
 ## 可选主题依赖
 
-`ouro-agent[themes]` 是欢迎页主题拓展的统一安装入口，安装同版本的 `ouro-tui-themes` 及 NumPy 依赖。
+`ouro-agent[themes]` 是欢迎页主题拓展的统一安装入口，安装兼容版本的 `ouro-tui-themes` 及 NumPy 依赖。
 基础安装默认显示 `basic`，TUI 其余功能完整可用。App 先检查扩展发行版本，再加载注册信息；
 扩展未安装或版本不匹配时不导入实现。核心与官方扩展同步发布，扩展也声明精确的核心版本依赖。
 主题是完整页面，可以静态展示，也可以自行实现动画；TUI 不提供主题内部设置入口或设置传递管线。

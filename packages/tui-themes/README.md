@@ -13,7 +13,7 @@ The engine does not depend on style implementations or welcome-page contracts.
 
 OURO's core provides the welcome API, persistent input surface, shared information
 components and the `basic` fallback page. It runs without this distribution or NumPy.
-The application loads style metadata from the installed matching release and imports
+The application loads style metadata from the installed compatible release and imports
 renderers only when selected. Missing extensions or unavailable dependencies preserve
 the saved selection while displaying `basic`; restarting after installation restores it.
 

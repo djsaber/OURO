@@ -10,7 +10,6 @@ from types import SimpleNamespace
 import pytest
 
 import ouro.tui.welcome_packages as theme_packages
-from ouro import __version__
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.preferences import TuiPreferencesStore
 from ouro.tui.welcome import WELCOME_STYLES, unavailable_styles
@@ -76,14 +75,14 @@ def test_incompatible_distribution_is_rejected_before_import(monkeypatch, instal
 
 def test_matching_distribution_supplies_style_metadata(monkeypatch):
     styles = (replace(WELCOME_STYLES["basic"], style_id="installed-scene"),)
-    monkeypatch.setattr(theme_packages, "version", lambda _: __version__)
+    monkeypatch.setattr(theme_packages, "version", lambda _: theme_packages.THEME_PACKAGE_VERSION)
     monkeypatch.setattr(theme_packages, "import_module", lambda _: SimpleNamespace(STYLES=styles))
     assert theme_packages.load_theme_styles() == (styles, None)
 
 
 @pytest.mark.parametrize("missing", ["ouro_tui_themes", "ouro_tui_themes.styles", "internal_bug"])
 def test_only_missing_package_modules_are_reported_as_unavailable(monkeypatch, missing):
-    monkeypatch.setattr(theme_packages, "version", lambda _: __version__)
+    monkeypatch.setattr(theme_packages, "version", lambda _: theme_packages.THEME_PACKAGE_VERSION)
 
     def fail(_name):
         raise ModuleNotFoundError("missing module", name=missing)
