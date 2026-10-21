@@ -163,7 +163,7 @@ TranscriptEntry + TuiTheme + render width
 | text | `text_disabled`、`text_lowlight`、`text_primary`、`text_emphasis`、`text_highlight` |
 | status | `running`、`success`、`warning`、`danger`、`failure` |
 | syntax | `syntax_comment`、`syntax_keyword`、`syntax_string`、`syntax_number`、`syntax_operator`、`syntax_name`、`syntax_error` |
-| glyph | `section_separator_mark`、`inline_separator_mark`、`brand_mark`、`mask_character`、`selected_choice_marker`、`unselected_choice_marker`、`active_item_marker`、`completed_item_marker`、`pending_item_marker`、`session_node_mark`、`selected_session_node_mark`、`expanded_disclosure_marker`、`collapsed_disclosure_marker` |
+| glyph | `section_separator_mark`、`inline_separator_mark`、`brand_mark`、`mask_character`、`selected_choice_marker`、`unselected_choice_marker`、`active_item_marker`、`completed_item_marker`、`pending_item_marker`、`session_node_mark`、`selected_session_node_mark`、`expanded_disclosure_marker`、`collapsed_disclosure_marker`、`progress_filled_marker`、`progress_empty_marker` |
 | motion | `spinner_frames`、`spinner_interval_seconds` |
 
 每个字段使用组件无关的语义名称。组件专用名称、特定语言 token 和渲染器实现名称不进入 TuiTheme。
@@ -285,11 +285,29 @@ App 的 CSS variables 全部由活动 TuiTheme 提供。TCSS selector、spacing 
 
 mounted Widget 使用 `theme_for(self)` 构造 Rich Text、标识符和 spinner。主题读取不依赖模块变量赋值。
 
+### 文本选区
+
+主页面的文本选区使用 `screen--selection` 统一表达反色：前景与背景声明为透明，只叠加 `reverse`，
+由每段文字自身的前景色和所在表面的背景色决定选中外观。正文、思考、代码及工具文本保留各自的颜色层次和
+字重；选区不使用独立固定色板。
+
+普通组件由 Textual 应用选区样式；历史行和流式正文在可见行渲染时读取同一组件样式，按字符范围叠加到 Rich
+Segment，保留字宽与交互元数据。高亮范围与复制使用的显示文本一致，排除行尾空白，行内空格和缩进属于文本范围。
+选区样式不写入历史 Strip 缓存，不触发 Markdown 解析或历史重新排版；额外处理仅作用于可见的选中行。
+
+消息输入框通过 `TextAreaTheme.selection_style` 声明纯 `reverse` 样式，普通文字、附件及引用名称按各自
+前景色与输入面板背景反色。其余编辑器样式来自组件 CSS，与活动 TuiTheme 共用配色。选区范围、换行提示、
+光标绘制和编辑操作由 Textual 管理，附件与引用遵循整体选择语义；选区呈现使用原生编辑器渲染路径。
+
 ## 标识符与动画
 
 brand、separator、choice、activity、completion、session node、disclosure 和 mask 均从活动 TuiTheme 读取。语义角色由
 组件确定，主题只提供角色对应的单 cell glyph。`section_separator`、`inline_separator` 和 `idle_mark` 由 marker Token
 纯派生，调用方不拼接主题外的替代字符。
+
+上下文占用条的已占用和剩余格分别使用 `progress_filled_marker`（默认 `█`）与 `progress_empty_marker`
+（默认 `▒`），颜色分别使用 `accent` 与 `progress_track`。两个标记均遵循单终端 cell 与无控制字符约束；
+占用条宽度和占用比例计算由组件管理，主题决定字符与配色。
 
 spinner 组件使用 `spinner_frames` 按顺序循环，并以 `spinner_interval_seconds` 作为刷新间隔。TuiTheme 只声明帧与
 节奏；Timer 的创建、暂停、恢复、停止和刷新仍由 Widget 生命周期管理。单帧 spinner 不创建周期 Timer。

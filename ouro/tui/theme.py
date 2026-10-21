@@ -126,6 +126,8 @@ class TuiTheme:
     selected_session_node_mark: str = "▣"
     expanded_disclosure_marker: str = "-"
     collapsed_disclosure_marker: str = "+"
+    progress_filled_marker: str = "█"
+    progress_empty_marker: str = "▒"
     spinner_frames: tuple[str, ...] = (
         "⠋",
         "⠙",
@@ -195,6 +197,8 @@ class TuiTheme:
         "selected_session_node_mark",
         "expanded_disclosure_marker",
         "collapsed_disclosure_marker",
+        "progress_filled_marker",
+        "progress_empty_marker",
     )
 
     def __post_init__(self) -> None:

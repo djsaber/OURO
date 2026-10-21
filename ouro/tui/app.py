@@ -313,6 +313,14 @@ _CLEAR_WORKSPACE_HISTORY_ARGUMENT = "clear"
 class _OuroHostScreen(Screen):
     """Own Host-level lifecycle and page-selection interactions."""
 
+    DEFAULT_CSS = """
+    _OuroHostScreen > .screen--selection {
+        color: transparent;
+        background: transparent;
+        text-style: reverse;
+    }
+    """
+
     def __init__(
         self,
         on_prune: Callable[[], None],

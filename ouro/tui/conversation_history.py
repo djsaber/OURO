@@ -399,7 +399,8 @@ def _apply_selection_style(
 ) -> Strip:
     """Apply a character-indexed selection style without losing Rich segments."""
 
-    text_length = len(strip.text)
+    # Match rendered_text's selection boundary, excluding trailing layout whitespace.
+    text_length = len(strip.text.rstrip())
     start = min(max(0, start), text_length)
     end = text_length if end < 0 else min(max(0, end), text_length)
     if end <= start:

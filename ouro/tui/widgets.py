@@ -11,6 +11,7 @@ from typing import Literal
 
 from pydantic import JsonValue
 from rich.cells import cell_len, get_character_cell_size
+from rich.style import Style as RichStyle
 from rich.text import Text
 from textual import events, work
 from textual.app import ComposeResult
@@ -26,6 +27,7 @@ from textual.style import Style
 from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Label, Static, TextArea
+from textual.widgets.text_area import TextAreaTheme
 
 from ouro.application.agent_models import AgentTreeNode
 from ouro.application.queued_inputs import (
@@ -3185,6 +3187,8 @@ class Composer(AttachmentTextArea):
             show_line_numbers=False,
             compact=True,
         )
+        self.register_theme(TextAreaTheme("ouro-composer", selection_style=RichStyle(reverse=True)))
+        self.theme = "ouro-composer"
         self._history: list[InputContent] = []
         self._history_index = 0
         self._clipboard_reader = clipboard_reader
@@ -3738,9 +3742,9 @@ class StatusLine(Horizontal):
                 bounded_ratio = min(ratio, 1.0)
                 completed = ceil(bounded_ratio * _CONTEXT_PROGRESS_WIDTH)
                 content = Text(f"{format_compact_count(used)} ")
-                content.append("█" * completed, style=theme.accent)
+                content.append(theme.progress_filled_marker * completed, style=theme.accent)
                 content.append(
-                    "▒" * (_CONTEXT_PROGRESS_WIDTH - completed),
+                    theme.progress_empty_marker * (_CONTEXT_PROGRESS_WIDTH - completed),
                     style=theme.progress_track,
                 )
                 percentage_tone = theme.warning if ratio > 0.8 else theme.text_lowlight
