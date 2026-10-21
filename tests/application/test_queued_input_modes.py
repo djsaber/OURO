@@ -16,6 +16,7 @@ from ouro.core.session_controls import (
 )
 from ouro.sessions import LocalSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
+from tests.application.helpers import running_runtime_task
 
 
 class TurnGateProvider:
@@ -76,15 +77,6 @@ def _runtime(tmp_path, *, consumption_mode: str):
         queued_input_config=QueuedInputConfig(consumption_mode=consumption_mode),
     )
     return store, provider, runtime
-
-
-async def _active_session(store: LocalSessionStore):
-    for _ in range(100):
-        sessions = store.list_sessions()
-        if sessions and sessions[0].active_run_id:
-            return sessions[0]
-        await asyncio.sleep(0.01)
-    raise AssertionError("active session was not created")
 
 
 def _user_texts(messages: Sequence[MessageRecord | ModelMessage]) -> list[str]:
@@ -168,19 +160,19 @@ async def test_steering_inputs_are_consumed_at_turn_boundaries_in_fifo_order(
 ) -> None:
     store, provider, runtime = _runtime(tmp_path, consumption_mode=consumption_mode)
 
-    first_task = asyncio.create_task(runtime.run("initial"))
-    session = await _active_session(store)
-    await asyncio.wait_for(provider.first_started.wait(), timeout=1)
-    await runtime.run("steer-1", session_id=session.session_id, queue_mode="steer")
-    await runtime.run("steer-2", session_id=session.session_id, queue_mode="steer")
-    provider.release_first.set()
-    await asyncio.wait_for(first_task, timeout=2)
+    async with running_runtime_task(runtime, runtime.run("initial")) as first_task:
+        await provider.first_started.wait()
+        session = store.list_sessions()[0]
+        await runtime.run("steer-1", session_id=session.session_id, queue_mode="steer")
+        await runtime.run("steer-2", session_id=session.session_id, queue_mode="steer")
+        provider.release_first.set()
+        await first_task
 
-    snapshot = store.load_session(session.session_id)
-    assert len(provider.contexts) == expected_calls
-    assert len(snapshot.runs) == expected_run_count
-    assert [_user_texts(context) for context in provider.contexts] == expected_contexts
-    assert "follow_up_queue" not in snapshot.session.metadata
+        snapshot = store.load_session(session.session_id)
+        assert len(provider.contexts) == expected_calls
+        assert len(snapshot.runs) == expected_run_count
+        assert [_user_texts(context) for context in provider.contexts] == expected_contexts
+        assert "follow_up_queue" not in snapshot.session.metadata
 
 
 @pytest.mark.asyncio
@@ -200,68 +192,68 @@ async def test_follow_up_inputs_are_consumed_at_run_boundaries_in_fifo_order(
 ) -> None:
     store, provider, runtime = _runtime(tmp_path, consumption_mode=consumption_mode)
 
-    first_task = asyncio.create_task(runtime.run("initial"))
-    session = await _active_session(store)
-    await asyncio.wait_for(provider.first_started.wait(), timeout=1)
-    await runtime.run("follow-1", session_id=session.session_id, queue_mode="follow_up")
-    await runtime.run("follow-2", session_id=session.session_id, queue_mode="follow_up")
-    provider.release_first.set()
-    await asyncio.wait_for(first_task, timeout=2)
+    async with running_runtime_task(runtime, runtime.run("initial")) as first_task:
+        await provider.first_started.wait()
+        session = store.list_sessions()[0]
+        await runtime.run("follow-1", session_id=session.session_id, queue_mode="follow_up")
+        await runtime.run("follow-2", session_id=session.session_id, queue_mode="follow_up")
+        provider.release_first.set()
+        await first_task
 
-    snapshot = store.load_session(session.session_id)
-    assert len(provider.contexts) == expected_calls
-    assert len(snapshot.runs) == expected_run_count
-    assert _user_texts(provider.contexts[-1]) == last_context_users
-    assert "follow_up_queue" not in snapshot.session.metadata
+        snapshot = store.load_session(session.session_id)
+        assert len(provider.contexts) == expected_calls
+        assert len(snapshot.runs) == expected_run_count
+        assert _user_texts(provider.contexts[-1]) == last_context_users
+        assert "follow_up_queue" not in snapshot.session.metadata
 
 
 @pytest.mark.asyncio
 async def test_host_follow_up_preserves_explicit_scaffold_attribution(tmp_path) -> None:
     store, provider, runtime = _runtime(tmp_path, consumption_mode="one_by_one")
 
-    first_task = asyncio.create_task(runtime.run("initial"))
-    session = await _active_session(store)
-    await asyncio.wait_for(provider.first_started.wait(), timeout=1)
-    receipt = await runtime.submit_host_input(
-        HostSessionInput(
-            prompt="Recover from the durable checkpoint.",
-            mode="follow_up",
-            title="Recovery",
-            host_source_id="ouro.runtime/recovery",
-            semantic_tag="runtime-recovery",
-        ),
-        session_id=session.session_id,
-    )
+    async with running_runtime_task(runtime, runtime.run("initial")) as first_task:
+        await provider.first_started.wait()
+        session = store.list_sessions()[0]
+        receipt = await runtime.submit_host_input(
+            HostSessionInput(
+                prompt="Recover from the durable checkpoint.",
+                mode="follow_up",
+                title="Recovery",
+                host_source_id="ouro.runtime/recovery",
+                semantic_tag="runtime-recovery",
+            ),
+            session_id=session.session_id,
+        )
 
-    queued_event = store.load_session(session.session_id).events[-1]
-    assert receipt.session_id == session.session_id
-    assert queued_event.payload["queue_id"] == receipt.queue_id
-    assert queued_event.payload["source"] == "host"
-    assert queued_event.payload["host_source_id"] == "ouro.runtime/recovery"
-    provider.release_first.set()
-    await asyncio.wait_for(first_task, timeout=2)
+        queued_event = store.load_session(session.session_id).events[-1]
+        assert receipt.session_id == session.session_id
+        assert queued_event.payload["queue_id"] == receipt.queue_id
+        assert queued_event.payload["source"] == "host"
+        assert queued_event.payload["host_source_id"] == "ouro.runtime/recovery"
+        provider.release_first.set()
+        await first_task
 
-    snapshot = store.load_session(session.session_id)
-    host_message = next(
-        message
-        for message in snapshot.messages
-        if message.metadata.get("session_input_source") == "host"
-    )
-    host_run = snapshot.runs[-1]
+        snapshot = store.load_session(session.session_id)
+        host_message = next(
+            message
+            for message in snapshot.messages
+            if message.metadata.get("session_input_source") == "host"
+        )
+        host_run = snapshot.runs[-1]
 
-    assert host_message.role == "system"
-    assert host_message.semantic_tag == "runtime-recovery"
-    assert host_message.text_content == "Recover from the durable checkpoint."
-    assert host_message.metadata["host_source_id"] == "ouro.runtime/recovery"
-    assert provider.contexts[-1][-1].text_content == (
-        "<runtime-recovery>\nRecover from the durable checkpoint.\n</runtime-recovery>"
-    )
-    assert not hasattr(provider.contexts[-1][-1], "message_id")
-    assert host_run.origin == "host"
-    assert host_run.trigger == "host"
-    assert host_run.initiator_id == "ouro.runtime/recovery"
-    assert host_run.parent_run_id == snapshot.runs[0].run_id
-    assert "follow_up_queue" not in snapshot.session.metadata
+        assert host_message.role == "system"
+        assert host_message.semantic_tag == "runtime-recovery"
+        assert host_message.text_content == "Recover from the durable checkpoint."
+        assert host_message.metadata["host_source_id"] == "ouro.runtime/recovery"
+        assert provider.contexts[-1][-1].text_content == (
+            "<runtime-recovery>\nRecover from the durable checkpoint.\n</runtime-recovery>"
+        )
+        assert not hasattr(provider.contexts[-1][-1], "message_id")
+        assert host_run.origin == "host"
+        assert host_run.trigger == "host"
+        assert host_run.initiator_id == "ouro.runtime/recovery"
+        assert host_run.parent_run_id == snapshot.runs[0].run_id
+        assert "follow_up_queue" not in snapshot.session.metadata
 
 
 @pytest.mark.asyncio
@@ -297,20 +289,20 @@ async def test_steering_waits_for_tool_results_before_entering_model_context(tmp
         tools=tools,
     )
 
-    first_task = asyncio.create_task(runtime.run("initial"))
-    session = await _active_session(store)
-    await asyncio.wait_for(provider.first_started.wait(), timeout=1)
-    await runtime.run("steer", session_id=session.session_id, queue_mode="steer")
-    provider.release_first.set()
-    await asyncio.wait_for(first_task, timeout=2)
+    async with running_runtime_task(runtime, runtime.run("initial")) as first_task:
+        await provider.first_started.wait()
+        session = store.list_sessions()[0]
+        await runtime.run("steer", session_id=session.session_id, queue_mode="steer")
+        provider.release_first.set()
+        await first_task
 
-    assert [message.role for message in provider.contexts[1]] == [
-        "user",
-        "assistant",
-        "tool_result",
-        "user",
-    ]
-    assert provider.contexts[1][-1].text_content == "steer"
+        assert [message.role for message in provider.contexts[1]] == [
+            "user",
+            "assistant",
+            "tool_result",
+            "user",
+        ]
+        assert provider.contexts[1][-1].text_content == "steer"
 
 
 @pytest.mark.asyncio
@@ -376,18 +368,18 @@ async def test_delivery_modes_keep_independent_boundaries_without_losing_queue_o
 ) -> None:
     store, provider, runtime = _runtime(tmp_path, consumption_mode="one_by_one")
 
-    first_task = asyncio.create_task(runtime.run("initial"))
-    session = await _active_session(store)
-    await asyncio.wait_for(provider.first_started.wait(), timeout=1)
-    await runtime.run("follow", session_id=session.session_id, queue_mode="follow_up")
-    await runtime.run("steer", session_id=session.session_id, queue_mode="steer")
-    provider.release_first.set()
-    await asyncio.wait_for(first_task, timeout=2)
+    async with running_runtime_task(runtime, runtime.run("initial")) as first_task:
+        await provider.first_started.wait()
+        session = store.list_sessions()[0]
+        await runtime.run("follow", session_id=session.session_id, queue_mode="follow_up")
+        await runtime.run("steer", session_id=session.session_id, queue_mode="steer")
+        provider.release_first.set()
+        await first_task
 
-    snapshot = store.load_session(session.session_id)
-    assert [_user_texts(context) for context in provider.contexts] == [
-        ["initial"],
-        ["initial", "steer"],
-        ["initial", "steer", "follow"],
-    ]
-    assert [run.status for run in snapshot.runs] == ["completed", "completed"]
+        snapshot = store.load_session(session.session_id)
+        assert [_user_texts(context) for context in provider.contexts] == [
+            ["initial"],
+            ["initial", "steer"],
+            ["initial", "steer", "follow"],
+        ]
+        assert [run.status for run in snapshot.runs] == ["completed", "completed"]

@@ -5,7 +5,7 @@ from threading import Event
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Input, Static
+from textual.widgets import Static
 
 from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.core.messages import MessageRecord, TextContent
@@ -21,7 +21,7 @@ from ouro.tui.screens import ChoiceScreen
 from ouro.tui.state import RunPresentation
 from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
 from ouro.tui.widgets import ConversationView
-from tests.tui.helpers import run_ready_app
+from tests.tui.helpers import choose_menu, run_ready_app, wait_for_screen, wait_until
 from tests.tui.test_app import _persist_direct_child_session
 from tests.tui.test_tasks import streaming_application
 
@@ -274,17 +274,17 @@ async def test_actions_trace_setting_persists_and_is_available_to_child_observer
     async with run_ready_app(app, size=(100, 32)) as pilot:
         assert TuiPreferences().collapse_traces is True
         await pilot.press("ctrl+p")
-        app.screen.query_one("#choice-filter", Input).value = "Collapse traces"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, "Collapse traces", title="COLLAPSE TRACES")
         menu = app.screen
         assert isinstance(menu, ChoiceScreen)
         assert menu.query_one("#choice-title", Static).render().plain == "COLLAPSE TRACES"
-        menu.query_one("#choice-filter", Input).value = "Off"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await choose_menu(pilot, "Off")
+        await wait_until(
+            lambda: not app._preferences.collapse_traces,
+            pilot,
+            description="trace preference saved",
+        )
         assert TuiPreferencesStore(tmp_path).load().collapse_traces is False
         assert app.screen is menu
         app._visible_read_only = True

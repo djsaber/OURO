@@ -69,6 +69,7 @@ from ouro.tools import (
     builtin_tools,
 )
 from ouro.tools.builtin_shell import detect_command_shell
+from tests.application.helpers import running_runtime_task
 
 
 def _tools() -> ToolRegistry:
@@ -586,21 +587,21 @@ class CapturingProvider:
 
 
 async def _wait_for_active_session(store: LocalSessionStore):
-    for _ in range(100):
-        sessions = store.list_sessions()
-        if sessions and sessions[0].last_run_id:
-            return sessions[0]
-        await asyncio.sleep(0.01)
-    raise AssertionError("active session was not created")
+    async with asyncio.timeout(30):
+        while True:
+            sessions = store.list_sessions()
+            if sessions and sessions[0].last_run_id:
+                return sessions[0]
+            await asyncio.sleep(0.01)
 
 
 async def _wait_for_event(store: LocalSessionStore, session_id: str, event_type: str) -> None:
-    for _ in range(100):
-        snapshot = store.load_session(session_id)
-        if any(event.event_type == event_type for event in snapshot.events):
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError(f"event was not emitted: {event_type}")
+    async with asyncio.timeout(30):
+        while True:
+            snapshot = store.load_session(session_id)
+            if any(event.event_type == event_type for event in snapshot.events):
+                return
+            await asyncio.sleep(0.01)
 
 
 @pytest.mark.asyncio
@@ -928,18 +929,18 @@ async def test_prompt_policy_denies_before_active_run_queue_persistence(tmp_path
         tools=_tools(),
         prompt_policies=policies,
     )
-    first = asyncio.create_task(runtime.run("first prompt"))
-    await provider.first_started.wait()
-    session = await _wait_for_active_session(store)
+    async with running_runtime_task(runtime, runtime.run("first prompt")) as first:
+        await provider.first_started.wait()
+        session = await _wait_for_active_session(store)
 
-    with pytest.raises(PromptRejectedError, match="blocked before queue"):
-        await runtime.run("blocked follow-up", session_id=session.session_id)
+        with pytest.raises(PromptRejectedError, match="blocked before queue"):
+            await runtime.run("blocked follow-up", session_id=session.session_id)
 
-    snapshot = store.load_runtime_session(session.session_id)
-    assert "follow_up_queue" not in snapshot.session.metadata
-    assert all(message.text_content != "blocked follow-up" for message in snapshot.messages)
-    provider.release_first.set()
-    await first
+        snapshot = store.load_runtime_session(session.session_id)
+        assert "follow_up_queue" not in snapshot.session.metadata
+        assert all(message.text_content != "blocked follow-up" for message in snapshot.messages)
+        provider.release_first.set()
+        await first
 
 
 @pytest.mark.asyncio
@@ -1127,35 +1128,41 @@ async def test_runtime_persists_tool_call_deltas_before_model_response_completes
         tools=_tools(),
     )
 
-    run_task = asyncio.create_task(runtime.run("Write a file"))
-    session = await _wait_for_active_session(store)
-    await asyncio.wait_for(provider.waiting_after_first_delta.wait(), timeout=1)
-    # The provider reader is deliberately independent from persistence, so
-    # reaching the provider-side gate no longer implies that the consumer has
-    # already committed the preceding delta.
-    await _wait_for_event(store, session.session_id, "model_tool_call_delta")
+    async with running_runtime_task(runtime, runtime.run("Write a file")) as run_task:
+        await provider.waiting_after_first_delta.wait()
+        session = store.list_sessions()[0]
+        # The provider reader is deliberately independent from persistence, so
+        # reaching the provider-side gate no longer implies that the consumer has
+        # already committed the preceding delta.
+        await _wait_for_event(store, session.session_id, "model_tool_call_delta")
 
-    streaming_snapshot = store.load_session(session.session_id)
-    delta_events = [
-        event for event in streaming_snapshot.events if event.event_type == "model_tool_call_delta"
-    ]
-    assert run_task.done() is False
-    assert [event.payload["arguments_delta"] for event in delta_events] == ['{"path":"out.txt",']
+        streaming_snapshot = store.load_session(session.session_id)
+        delta_events = [
+            event
+            for event in streaming_snapshot.events
+            if event.event_type == "model_tool_call_delta"
+        ]
+        assert run_task.done() is False
+        assert [event.payload["arguments_delta"] for event in delta_events] == [
+            '{"path":"out.txt",'
+        ]
 
-    provider.release.set()
-    result = await asyncio.wait_for(run_task, timeout=1)
-    completed_snapshot = store.load_session(session.session_id)
-    completed_delta_events = [
-        event for event in completed_snapshot.events if event.event_type == "model_tool_call_delta"
-    ]
+        provider.release.set()
+        result = await run_task
+        completed_snapshot = store.load_session(session.session_id)
+        completed_delta_events = [
+            event
+            for event in completed_snapshot.events
+            if event.event_type == "model_tool_call_delta"
+        ]
 
-    assert result.run.status == "waiting_approval"
-    assert result.run.active_tool_batch is not None
-    assert result.run.active_tool_batch.calls[0].request.arguments == {
-        "path": "out.txt",
-        "content": "hello",
-    }
-    assert len(completed_delta_events) == 2
+        assert result.run.status == "waiting_approval"
+        assert result.run.active_tool_batch is not None
+        assert result.run.active_tool_batch.calls[0].request.arguments == {
+            "path": "out.txt",
+            "content": "hello",
+        }
+        assert len(completed_delta_events) == 2
 
 
 @pytest.mark.asyncio
@@ -2173,30 +2180,30 @@ async def test_runtime_drains_queued_follow_up_after_active_run_completes(tmp_pa
         tools=_tools(),
     )
 
-    first_task = asyncio.create_task(runtime.run("First prompt"))
-    session = await _wait_for_active_session(store)
-    await asyncio.wait_for(provider.first_started.wait(), timeout=1)
+    async with running_runtime_task(runtime, runtime.run("First prompt")) as first_task:
+        await provider.first_started.wait()
+        session = store.list_sessions()[0]
 
-    queued = await runtime.run("Second prompt", session_id=session.session_id)
-    queued_snapshot = store.load_session(session.session_id)
-    provider.release_first.set()
-    first = await asyncio.wait_for(first_task, timeout=2)
-    snapshot = store.load_session(session.session_id)
+        queued = await runtime.run("Second prompt", session_id=session.session_id)
+        queued_snapshot = store.load_session(session.session_id)
+        provider.release_first.set()
+        first = await first_task
+        snapshot = store.load_session(session.session_id)
 
-    assert queued.run.run_id == session.last_run_id
-    assert queued.events[-1].event_type == "follow_up_input_queued"
-    assert first.final_text == "first"
-    assert provider.calls == 2
-    assert "follow_up_queue" not in snapshot.session.metadata
-    assert [run.status for run in snapshot.runs] == ["completed", "completed"]
-    assert [message.text_content for message in snapshot.messages] == [
-        "First prompt",
-        "first",
-        "Second prompt",
-        "second",
-    ]
-    assert queued_snapshot.session.metadata["follow_up_queue"][0]["prompt"] == "Second prompt"
-    assert runtime.pending_user_inputs(session.session_id) == ()
+        assert queued.run.run_id == session.last_run_id
+        assert queued.events[-1].event_type == "follow_up_input_queued"
+        assert first.final_text == "first"
+        assert provider.calls == 2
+        assert "follow_up_queue" not in snapshot.session.metadata
+        assert [run.status for run in snapshot.runs] == ["completed", "completed"]
+        assert [message.text_content for message in snapshot.messages] == [
+            "First prompt",
+            "first",
+            "Second prompt",
+            "second",
+        ]
+        assert queued_snapshot.session.metadata["follow_up_queue"][0]["prompt"] == "Second prompt"
+        assert runtime.pending_user_inputs(session.session_id) == ()
 
 
 @pytest.mark.asyncio
@@ -2221,30 +2228,30 @@ async def test_runtime_cancels_pending_user_input_before_follow_up_consumption(
         tools=_tools(),
     )
 
-    first_task = asyncio.create_task(runtime.run("First prompt"))
-    session = await _wait_for_active_session(store)
-    await asyncio.wait_for(provider.first_started.wait(), timeout=1)
-    await runtime.run("Return this draft", session_id=session.session_id)
-    queued = runtime.pending_user_inputs(session.session_id)[0]
+    async with running_runtime_task(runtime, runtime.run("First prompt")) as first_task:
+        await provider.first_started.wait()
+        session = store.list_sessions()[0]
+        await runtime.run("Return this draft", session_id=session.session_id)
+        queued = runtime.pending_user_inputs(session.session_id)[0]
 
-    cancelled = await runtime.cancel_pending_user_input(session.session_id, queued.queue_id)
-    provider.release_first.set()
-    first = await asyncio.wait_for(first_task, timeout=2)
-    snapshot = store.load_session(session.session_id)
+        cancelled = await runtime.cancel_pending_user_input(session.session_id, queued.queue_id)
+        provider.release_first.set()
+        first = await first_task
+        snapshot = store.load_session(session.session_id)
 
-    assert cancelled == queued
-    assert first.run.status == "completed"
-    assert provider.calls == 1
-    assert runtime.pending_user_inputs(session.session_id) == ()
-    assert [message.text_content for message in snapshot.messages] == ["First prompt", "first"]
-    cancelled_event = next(
-        event for event in snapshot.events if event.event_type == "queued_input_cancelled"
-    )
-    assert cancelled_event.payload == {
-        "queue_id": queued.queue_id,
-        "mode": "follow_up",
-        "source": "user",
-    }
+        assert cancelled == queued
+        assert first.run.status == "completed"
+        assert provider.calls == 1
+        assert runtime.pending_user_inputs(session.session_id) == ()
+        assert [message.text_content for message in snapshot.messages] == ["First prompt", "first"]
+        cancelled_event = next(
+            event for event in snapshot.events if event.event_type == "queued_input_cancelled"
+        )
+        assert cancelled_event.payload == {
+            "queue_id": queued.queue_id,
+            "mode": "follow_up",
+            "source": "user",
+        }
 
 
 @pytest.mark.asyncio
@@ -2597,23 +2604,23 @@ async def test_runtime_aborts_active_provider_stream(tmp_path) -> None:
         tools=_tools(),
     )
 
-    run_task = asyncio.create_task(runtime.run("Wait for abort"))
-    session = await _wait_for_active_session(store)
-    await _wait_for_event(store, session.session_id, "model_text_delta")
+    async with running_runtime_task(runtime, runtime.run("Wait for abort")) as run_task:
+        session = await _wait_for_active_session(store)
+        await _wait_for_event(store, session.session_id, "model_text_delta")
 
-    await runtime.abort_run(
-        session_id=session.session_id,
-        run_id=session.last_run_id,
-    )
-    result = await asyncio.wait_for(run_task, timeout=1)
-    snapshot = store.load_session(session.session_id)
+        await runtime.abort_run(
+            session_id=session.session_id,
+            run_id=session.last_run_id,
+        )
+        result = await run_task
+        snapshot = store.load_session(session.session_id)
 
-    assert result.run.status == "aborted"
-    assert result.session.status == "idle"
-    assert result.final_text == "begin"
-    assert provider.closed is True
-    assert "run_aborted" in [event.event_type for event in snapshot.events]
-    assert "run_completed" not in [event.event_type for event in snapshot.events]
+        assert result.run.status == "aborted"
+        assert result.session.status == "idle"
+        assert result.final_text == "begin"
+        assert provider.closed is True
+        assert "run_aborted" in [event.event_type for event in snapshot.events]
+        assert "run_completed" not in [event.event_type for event in snapshot.events]
 
 
 @pytest.mark.asyncio
@@ -2630,23 +2637,23 @@ async def test_runtime_recovery_materializes_partial_output_from_event_journal(t
         tools=_tools(),
     )
 
-    run_task = asyncio.create_task(runtime.run("Wait for crash"))
-    session = await _wait_for_active_session(store)
-    await _wait_for_event(store, session.session_id, "model_text_delta")
+    async with running_runtime_task(runtime, runtime.run("Wait for crash")) as run_task:
+        session = await _wait_for_active_session(store)
+        await _wait_for_event(store, session.session_id, "model_text_delta")
 
-    run_task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await run_task
+        run_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await run_task
 
-    recovered = runtime.session_recovery.recover(session.session_id)
+        recovered = runtime.session_recovery.recover(session.session_id)
 
-    assert recovered.runs[0].status == "recoverable"
-    assert recovered.session.status == "idle"
-    assert [message.role for message in recovered.messages] == ["user", "assistant"]
-    assert recovered.messages[-1].text_content == "begin"
-    assert recovered.messages[-1].metadata["recovered_from_event_journal"] is True
-    assert recovered.session.message_count == 2
-    assert recovered.session.last_message_id == recovered.messages[-1].message_id
+        assert recovered.runs[0].status == "recoverable"
+        assert recovered.session.status == "idle"
+        assert [message.role for message in recovered.messages] == ["user", "assistant"]
+        assert recovered.messages[-1].text_content == "begin"
+        assert recovered.messages[-1].metadata["recovered_from_event_journal"] is True
+        assert recovered.session.message_count == 2
+        assert recovered.session.last_message_id == recovered.messages[-1].message_id
 
 
 @pytest.mark.asyncio
@@ -2730,7 +2737,7 @@ async def test_runtime_aborts_active_approved_command_tool(tmp_path) -> None:
     store.initialize()
     shell = detect_command_shell()
     assert shell is not None
-    command = f'"{sys.executable}" -c "import time; time.sleep(5)"'
+    command = f'"{sys.executable}" -c "import threading; threading.Event().wait()"'
     if shell.kind in ("powershell", "windows_powershell"):
         command = f"& {command}"
     runtime = RuntimeService(
@@ -2754,44 +2761,41 @@ async def test_runtime_aborts_active_approved_command_tool(tmp_path) -> None:
     )
     pending = await runtime.run("Run command")
 
-    approval_task = asyncio.create_task(
+    async with running_runtime_task(
+        runtime,
         runtime.approve_tool(
             session_id=pending.session.session_id,
             run_id=pending.run.run_id,
             approved=True,
+        ),
+    ) as approval_task:
+        await _wait_for_event(store, pending.session.session_id, "tool_call_started")
+
+        await runtime.abort_run(
+            session_id=pending.session.session_id,
+            run_id=pending.run.run_id,
         )
-    )
-    for _ in range(100):
+        result = await approval_task
         snapshot = store.load_session(pending.session.session_id)
-        if "tool_call_started" in [event.event_type for event in snapshot.events]:
-            break
-        await asyncio.sleep(0.01)
-    else:
-        raise AssertionError("command tool did not start")
 
-    await runtime.abort_run(
-        session_id=pending.session.session_id,
-        run_id=pending.run.run_id,
-    )
-    result = await asyncio.wait_for(approval_task, timeout=2)
-    snapshot = store.load_session(pending.session.session_id)
-
-    assert result.run.status == "aborted"
-    assert result.session.status == "idle"
-    assert "run_aborted" in [event.event_type for event in snapshot.events]
-    assert not any(message.role == "tool_result" for message in snapshot.messages)
-    completed = next(
-        event for event in snapshot.events if event.event_type == "tool_call_completed"
-    )
-    assert completed.payload["status"] == "aborted"
-    completed_event = next(
-        event for event in snapshot.events if event.event_type == "tool_call_completed"
-    )
-    assert snapshot.runs[0].active_tool_batch is not None
-    assert completed_event.payload["status"] == snapshot.runs[0].active_tool_batch.calls[0].status
-    assert snapshot.session.message_count == len(snapshot.messages)
-    assert snapshot.runs[0].active_tool_batch is not None
-    assert snapshot.runs[0].active_tool_batch.phase == "aborted"
+        assert result.run.status == "aborted"
+        assert result.session.status == "idle"
+        assert "run_aborted" in [event.event_type for event in snapshot.events]
+        assert not any(message.role == "tool_result" for message in snapshot.messages)
+        completed = next(
+            event for event in snapshot.events if event.event_type == "tool_call_completed"
+        )
+        assert completed.payload["status"] == "aborted"
+        completed_event = next(
+            event for event in snapshot.events if event.event_type == "tool_call_completed"
+        )
+        assert snapshot.runs[0].active_tool_batch is not None
+        assert (
+            completed_event.payload["status"] == snapshot.runs[0].active_tool_batch.calls[0].status
+        )
+        assert snapshot.session.message_count == len(snapshot.messages)
+        assert snapshot.runs[0].active_tool_batch is not None
+        assert snapshot.runs[0].active_tool_batch.phase == "aborted"
 
 
 @pytest.mark.asyncio
@@ -2928,27 +2932,39 @@ async def test_runtime_abort_owns_tool_cancellation_across_runtime_instances(tmp
     )
 
     run_task = asyncio.create_task(runtime.run("Cancel the tool"))
-    session = await _wait_for_active_session(store)
-    await asyncio.wait_for(started.wait(), timeout=1)
+    phase = "tool entry"
+    try:
+        async with asyncio.timeout(30):
+            # The tool itself establishes readiness; disk I/O is not a latency contract.
+            await started.wait()
+            session = store.list_sessions()[0]
+            phase = "cross-runtime abort"
+            aborted = await aborter.abort_run(
+                session_id=session.session_id, run_id=session.last_run_id
+            )
+            phase = "owner settlement"
+            result = await run_task
+        snapshot = store.load_session(session.session_id)
+        event_types = [event.event_type for event in snapshot.events]
+        completed = next(
+            event for event in snapshot.events if event.event_type == "tool_call_completed"
+        )
 
-    aborted = await asyncio.wait_for(
-        aborter.abort_run(session_id=session.session_id, run_id=session.last_run_id),
-        timeout=2,
-    )
-    result = await asyncio.wait_for(run_task, timeout=1)
-    snapshot = store.load_session(session.session_id)
-    event_types = [event.event_type for event in snapshot.events]
-    completed = next(
-        event for event in snapshot.events if event.event_type == "tool_call_completed"
-    )
-
-    assert finalized.is_set()
-    assert aborted.run.status == "aborted"
-    assert result.run.status == "aborted"
-    assert completed.payload["status"] == "aborted"
-    assert event_types.index("tool_call_completed") < event_types.index("tool_batch_aborted")
-    assert event_types.index("tool_batch_aborted") < event_types.index("run_aborted")
-    assert not any(message.role == "tool_result" for message in snapshot.messages)
+        assert finalized.is_set()
+        assert aborted.run.status == "aborted"
+        assert result.run.status == "aborted"
+        assert completed.payload["status"] == "aborted"
+        assert event_types.index("tool_call_completed") < event_types.index("tool_batch_aborted")
+        assert event_types.index("tool_batch_aborted") < event_types.index("run_aborted")
+        assert not any(message.role == "tool_result" for message in snapshot.messages)
+    except TimeoutError:
+        pytest.fail(f"Timed out during {phase}; owner={run_task!r}")
+    finally:
+        if not run_task.done():
+            run_task.cancel()
+        await asyncio.gather(run_task, return_exceptions=True)
+        await aborter.close()
+        await runtime.close()
 
 
 @pytest.mark.asyncio

@@ -299,21 +299,34 @@ async def test_active_session_model_switch_applies_to_the_next_model_request(tmp
     )
 
     running = asyncio.create_task(runtime.run("start"))
-    await asyncio.wait_for(alpha.request_started.wait(), timeout=2)
-    session_id = next(entry.session_id for entry in runtime.sessions.catalog().entries)
+    phase = "first model request"
+    try:
+        # Events define the model-change boundary; this deadline only guards
+        # against a deadlock, not the latency of durable Session/Run writes.
+        async with asyncio.timeout(30):
+            await alpha.request_started.wait()
+            session_id = next(entry.session_id for entry in runtime.sessions.catalog().entries)
+            switched = runtime.switch_session_model(session_id, "beta/fast")
+            phase = "run completion after the model change"
+            alpha.release.set()
+            result = await running
 
-    switched = runtime.switch_session_model(session_id, "beta/fast")
-    alpha.release.set()
-    result = await asyncio.wait_for(running, timeout=2)
-
-    requests = [event for event in result.events if event.event_type == "model_request_started"]
-    assert switched.current_model == "beta/fast"
-    assert [event.payload["model"] for event in requests] == ["alpha-model", "beta-model"]
-    assert result.final_text == "beta-response"
-    assert result.run.model == "beta-model"
-    assert result.run.model_endpoint_id == "fast"
-    assert alpha.request_contexts[0].values == beta.request_contexts[0].values
-    assert beta.request_contexts[0].values["run.id"] == result.run.run_id
+        requests = [event for event in result.events if event.event_type == "model_request_started"]
+        assert switched.current_model == "beta/fast"
+        assert [event.payload["model"] for event in requests] == ["alpha-model", "beta-model"]
+        assert result.final_text == "beta-response"
+        assert result.run.model == "beta-model"
+        assert result.run.model_endpoint_id == "fast"
+        assert alpha.request_contexts[0].values == beta.request_contexts[0].values
+        assert beta.request_contexts[0].values["run.id"] == result.run.run_id
+    except TimeoutError:
+        pytest.fail(f"Timed out waiting for {phase}; run task: {running!r}")
+    finally:
+        alpha.release.set()
+        if not running.done():
+            running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+        await runtime.close()
 
 
 @pytest.mark.asyncio

@@ -19,12 +19,12 @@ from ouro.tui.provider_auth_screens import (
     ProviderLoginScreen,
 )
 from ouro.tui.provider_screens import ProviderConfigurationScreen, profile_for_provider
-from ouro.tui.screens import ConfirmationScreen
+from ouro.tui.screens import ChoiceScreen, ConfirmationScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME
 from tests.application.test_provider_auth import auth_home as auth_home
 from tests.application.test_runtime_authentication import managed_runtime as managed_runtime
 from tests.auth.test_driver_contracts import NOW, BrowserFixtureDriver, DeviceFixtureDriver
-from tests.tui.helpers import run_ready_app
+from tests.tui.helpers import choose_menu, run_ready_app, wait_for_menu_action, wait_for_screen
 
 
 class GatedDriver:
@@ -98,10 +98,11 @@ async def test_builtin_subscription_starts_without_login_and_shows_service_limit
     app = OuroTuiApp(application=application)
     async with run_ready_app(app) as pilot:
         await pilot.press("ctrl+p")
-        await choose(app, pilot, "Manage providers")
-        await choose(app, pilot, "Personal Codex")
+        await wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose(app, pilot, "Manage providers", title="PROVIDERS")
+        await choose(app, pilot, "Personal Codex", title="PROVIDER • Personal Codex")
         assert "local planning budget" in choices(app.screen)["service-notice"].description
-        await choose(app, pilot, "Authentication")
+        await choose(app, pilot, "Authentication", title="AUTHENTICATION • Personal Codex")
         assert isinstance(app.screen, ProviderAuthenticationScreen)
         await eventually(lambda: "status" in choices(app.screen))
         assert choices(app.screen)["status"].trailing == "missing"
@@ -123,18 +124,17 @@ async def eventually(predicate):
             await asyncio.sleep(0.01)
 
 
-async def choose(app, pilot, text):
+async def choose(app, pilot, text, *, title=None):
     if isinstance(app.screen, ConfirmationScreen):
         options = app.screen.query_one(OptionList)
         options.highlighted = 1 if text == "Confirm" else 0
         options.focus()
         await pilot.press("enter")
         await pilot.pause()
+        if title is not None:
+            await wait_for_screen(app, ChoiceScreen, title=title)
         return
-    app.screen.query_one("#choice-filter", Input).value = text
-    await pilot.pause()
-    await pilot.press("enter")
-    await pilot.pause()
+    await choose_menu(pilot, text, title=title)
 
 
 def choices(screen):
@@ -166,7 +166,9 @@ async def test_method_challenge_success_logout_and_no_challenge_in_terminal_ui(
         assert choices(menu)["status"].trailing == "missing"
         method = driver.descriptor.methods[0]
         assert choices(menu)[f"login:{method.method_id}"].label == method.label
-        await choose(app, pilot, method.label)
+        await choose(
+            app, pilot, method.label, title=f"SIGN IN • {_provider_names(config)[provider_id]}"
+        )
         login = app.screen
         assert isinstance(login, ProviderLoginScreen)
         assert login._title == f"SIGN IN • {_provider_names(config)[provider_id]}"
@@ -177,10 +179,12 @@ async def test_method_challenge_success_logout_and_no_challenge_in_terminal_ui(
         if method.kind == "device_code":
             assert rows["code"].trailing == "fixture-code"
         await choose(app, pilot, "Open browser")
+        await eventually(lambda: bool(opened))
         assert opened == [rows["url"].description]
         driver.release.set()
         await eventually(lambda: login.result is not None)
         assert login.result.state == "succeeded"
+        assert login.result.provider_id == provider_id
         assert driver.cleaned == 1
         assert set(choices(login)) == {"result", "close"}
         assert login.query_one("#choice-filter", Input).value == ""
@@ -189,13 +193,16 @@ async def test_method_challenge_success_logout_and_no_challenge_in_terminal_ui(
         assert (await service.status(provider_id)).state == "ready"
         await pilot.press("escape")
         await eventually(lambda: choices(menu)["status"].trailing == "ready")
-        await choose(app, pilot, "Sign out")
+        await choose(app, pilot, "Sign out", title="CONFIRM SIGN OUT")
         assert isinstance(app.screen, ConfirmationScreen)
         assert _provider_names(config)[provider_id] in app.screen._choices[1].description
         assert provider_id not in app.screen._choices[1].description
-        await choose(app, pilot, "Cancel")
+        await choose(
+            app, pilot, "Cancel", title=f"AUTHENTICATION • {_provider_names(config)[provider_id]}"
+        )
+        await wait_for_menu_action(pilot, menu)
         assert (await service.status(provider_id)).state == "ready"
-        await choose(app, pilot, "Sign out")
+        await choose(app, pilot, "Sign out", title="CONFIRM SIGN OUT")
         await choose(app, pilot, "Confirm")
         await eventually(lambda: choices(menu)["status"].trailing == "logged_out")
         assert (await service.status(provider_id)).state == "logged_out"
@@ -289,10 +296,11 @@ async def test_local_credentials_list_allows_clearing_orphan_without_false_cance
     async with app.run_test() as pilot:
         await eventually(lambda: credential_id in choices(screen))
         assert choices(screen)[credential_id].description == "Shared by: none"
-        await choose(app, pilot, credential_id)
-        await choose(app, pilot, "Cancel")
+        await choose(app, pilot, credential_id, title="CONFIRM CLEAR LOCAL CREDENTIAL")
+        await choose(app, pilot, "Cancel", title="LOCAL CREDENTIALS")
+        await wait_for_menu_action(pilot, screen)
         assert (await service.credentials())[0].credential.state == "active"
-        await choose(app, pilot, credential_id)
+        await choose(app, pilot, credential_id, title="CONFIRM CLEAR LOCAL CREDENTIAL")
         await choose(app, pilot, "Confirm")
         await eventually(lambda: choices(screen)[credential_id].trailing == "logged_out")
         assert (await service.credentials())[0].credential.state == "logged_out"
@@ -434,17 +442,25 @@ async def test_full_tui_uses_runtime_auth_and_preserves_managed_provider_edit(
         assert created.credential.state == "managed"
         assert created.credential.reference != before.credential.reference
         await pilot.press("ctrl+p")
-        await choose(app, pilot, "Manage providers")
-        await choose(app, pilot, "Subscription")
-        await choose(app, pilot, "Authentication")
+        await wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose(app, pilot, "Manage providers", title="PROVIDERS")
+        # The second provider sorts first. Do not filter the retained ACTIONS
+        # page while its asynchronous provider catalog is still loading.
+        await choose(app, pilot, "Subscription", title="PROVIDER • Subscription")
+        await choose(app, pilot, "Authentication", title="AUTHENTICATION • Subscription")
         assert isinstance(app.screen, ProviderAuthenticationScreen)
         await eventually(lambda: "status" in choices(app.screen))
         assert choices(app.screen)["status"].trailing == "missing"
-        await choose(app, pilot, drivers[0].descriptor.methods[0].label)
+        await choose(
+            app, pilot, drivers[0].descriptor.methods[0].label, title="SIGN IN • Subscription"
+        )
         login = app.screen
+        assert isinstance(login, ProviderLoginScreen)
         await eventually(lambda: login.result is not None)
+        assert login.result.provider_id == provider_id
         assert login.result.state == "succeeded"
         assert (await application.provider_auth.status(provider_id)).state == "ready"
+        assert (await application.provider_auth.status(created.provider_id)).state == "missing"
 
 
 async def test_unavailable_store_status_and_failed_begin_stay_in_management_ui(
@@ -464,7 +480,12 @@ async def test_unavailable_store_status_and_failed_begin_stay_in_management_ui(
         await eventually(lambda: "status" in choices(screen))
         assert choices(screen)["status"].trailing == "unavailable"
         assert choices(screen)["status"].description == "credential_store_error"
-        await choose(app, pilot, "Use browser")
+        await choose(
+            app,
+            pilot,
+            "Use browser",
+            title=f"SIGN IN • {_provider_names(config)[_provider_id(config)]}",
+        )
         login = app.screen
         await eventually(lambda: login._login_task.done())
         assert choices(login)["result"].label == "Sign-in failed"

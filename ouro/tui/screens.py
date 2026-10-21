@@ -17,7 +17,7 @@ from textual.binding import Binding
 from textual.color import Color
 from textual.containers import Vertical
 from textual.css.styles import RulesMap
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
 from textual.visual import RichVisual, Visual
 from textual.widget import Widget
@@ -520,6 +520,9 @@ class ChoiceScreen(ModalScreen[str | None]):
         return theme.inline_separator.join(resolved.split(DEFAULT_TUI_THEME.inline_separator))
 
     def on_mount(self) -> None:
+        self.app.screen_change_signal.subscribe(
+            self, self._on_current_screen_changed, immediate=True
+        )
         self._sync_loading_timer()
         self.query_one("#choice-filter", Input).focus()
         options = self.query_one("#choice-list", OptionList)
@@ -918,6 +921,16 @@ class ChoiceScreen(ModalScreen[str | None]):
     def on_screen_resume(self) -> None:
         """Restore a parent menu only after its child has left the screen stack."""
 
+        self._restore_after_child()
+
+    def _on_current_screen_changed(self, screen: Screen) -> None:
+        if screen is self:
+            # The stack changes synchronously, but ScreenResume is queued. A
+            # pending repaint can run first, so restore visibility at the stack
+            # boundary rather than allowing that repaint to draw a hidden menu.
+            self._restore_after_child()
+
+    def _restore_after_child(self) -> None:
         background = self._child_background
         if background is None:
             return
@@ -927,7 +940,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         # Widget display changes queue a layout message. Invalidate the screen
         # now so its next repaint cannot reuse the hidden parent's compositor.
         self.refresh(layout=True)
-        # Resume owns this focus change; the child result may select another
+        # Returning to the parent owns this focus change; the child result may select another
         # control before the next frame, so do not defer it past that result.
         self.query_one("#choice-filter", Input).focus()
 

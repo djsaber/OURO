@@ -21,6 +21,7 @@ from ouro.local_application import LocalApplication
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
+from ouro.tui.conversation_history import ConversationHistory
 from ouro.tui.screens import ChoiceScreen
 from ouro.tui.widgets import CommandPopup
 
@@ -69,7 +70,11 @@ async def wait_for_screen(
     title: str,
     timeout: float = 15.0,
 ) -> None:
-    """Wait for the requested page, including mount and its first refresh."""
+    """Wait for the requested page, including mount and its first refresh.
+
+    Returning from an editor restores its parent before persistence completes.
+    Use wait_for_menu_action on the parent before asserting a save's outcome.
+    """
 
     try:
         async with asyncio.timeout(timeout):
@@ -89,8 +94,51 @@ async def wait_for_screen(
         raise AssertionError(f"Timed out waiting for {title}; {surface_state(app)}") from None
 
 
+async def wait_for_menu_action(pilot, menu: ChoiceScreen, *, timeout: float = 15.0) -> None:
+    """Await the parent menu's selection, including child results and persistence.
+
+    Call after submitting or dismissing its child, not while the child still
+    needs input. Wait only for this menu's action; session observers and other
+    long-lived application workers deliberately remain running.
+    """
+
+    try:
+        async with asyncio.timeout(timeout):
+            await pilot._wait_for_screen()
+            workers = tuple(
+                worker
+                for worker in pilot.app.workers
+                if worker.group == f"choice-selection-{id(menu)}"
+            )
+            await asyncio.gather(*(worker.wait() for worker in workers))
+            await pilot._wait_for_screen()
+    except TimeoutError:
+        raise AssertionError(
+            f"Timed out waiting for menu action on {menu.page_title!r}; {surface_state(pilot.app)}"
+        ) from None
+
+
+async def wait_for_history_render(pilot) -> None:
+    """Observe the deferred layout after content has been installed.
+
+    Session activation and load_messages commit entries before rendering them.
+    Do not call a render method here: a missing scheduled render should fail.
+    """
+    history = pilot.app.query_one(ConversationHistory)
+    await wait_until(
+        lambda: history.render_complete,
+        pilot,
+        description="installed conversation history to finish rendering",
+    )
+
+
 async def choose_menu(pilot, label: str, *, title: str | None = None) -> None:
-    """Filter and accept a choice, optionally awaiting the resulting page."""
+    """Filter and accept a choice, optionally awaiting the resulting page.
+
+    A reused ChoiceScreen can still show the old page while selection I/O runs.
+    Supply its destination title, or explicitly await the business outcome at
+    the call site; draining UI messages alone does not complete that operation.
+    """
 
     pilot.app.screen.query_one("#choice-filter", Input).value = label
     await pilot.pause()

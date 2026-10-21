@@ -235,16 +235,29 @@ async def test_active_session_approval_change_applies_to_the_next_tool_preflight
     )
 
     running = asyncio.create_task(runtime.run("write"))
-    await asyncio.wait_for(provider.request_started.wait(), timeout=2)
-    session_id = next(entry.session_id for entry in runtime.sessions.catalog().entries)
+    phase = "first model request"
+    try:
+        # Events define the policy-change boundary; this deadline only guards
+        # against a deadlock, not the latency of durable Session/Run writes.
+        async with asyncio.timeout(30):
+            await provider.request_started.wait()
+            session_id = next(entry.session_id for entry in runtime.sessions.catalog().entries)
+            updated = runtime.set_session_approval_mode(session_id, "auto")
+            phase = "run completion after the approval-mode change"
+            provider.release.set()
+            result = await running
 
-    updated = runtime.set_session_approval_mode(session_id, "auto")
-    provider.release.set()
-    result = await asyncio.wait_for(running, timeout=2)
-
-    assert updated.approval_mode == "auto"
-    assert result.run.status == "completed"
-    assert target.read_text(encoding="utf-8") == "live"
+        assert updated.approval_mode == "auto"
+        assert result.run.status == "completed"
+        assert target.read_text(encoding="utf-8") == "live"
+    except TimeoutError:
+        pytest.fail(f"Timed out waiting for {phase}; run task: {running!r}")
+    finally:
+        provider.release.set()
+        if not running.done():
+            running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+        await runtime.close()
 
 
 @pytest.mark.asyncio

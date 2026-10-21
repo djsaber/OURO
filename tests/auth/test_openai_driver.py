@@ -45,7 +45,7 @@ def authenticator(service, credential, driver):
     )
 
 
-async def test_browser_grant_commit_refresh_snapshot_and_logout(tmp_path):
+async def test_browser_grant_commit_refresh_snapshot_and_logout(tmp_path, openai_callback):
     requests = []
 
     def handler(request):
@@ -70,7 +70,7 @@ async def test_browser_grant_commit_refresh_snapshot_and_logout(tmp_path):
                 query = parse_qs(urlsplit(str(attempt.challenge.authorization_url)).query)
                 async with httpx.AsyncClient(trust_env=False) as local:
                     response = await local.get(
-                        "http://127.0.0.1:1455/auth/callback",
+                        openai_callback(),
                         params={"state": query["state"][0], "code": "code-secret"},
                     )
                     assert response.status_code == 200
@@ -223,7 +223,7 @@ async def test_only_verified_browser_method_is_exposed():
 
 
 @pytest.mark.parametrize("end", ["denied", "expired", "cancelled", "http_error"])
-async def test_browser_failures_release_port_and_keep_borrowed_client(end):
+async def test_browser_failures_release_port_and_keep_borrowed_client(end, openai_callback):
     def handler(request):
         return httpx.Response(500, text="token-secret callback-secret")
 
@@ -240,7 +240,7 @@ async def test_browser_failures_release_port_and_keep_borrowed_client(end):
                 params = {"state": query["state"][0]}
                 params["error" if end == "denied" else "code"] = "callback-secret"
                 async with httpx.AsyncClient(trust_env=False) as local:
-                    await local.get("http://127.0.0.1:1455/auth/callback", params=params)
+                    await local.get(openai_callback(), params=params)
             if end == "cancelled":
                 await attempt.cancel()
             with pytest.raises(AuthError) as failure:
@@ -291,7 +291,9 @@ async def test_request_scoped_http_is_closed_on_every_exit(monkeypatch, outcome)
 
 
 @pytest.mark.parametrize("cancel", [False, True])
-async def test_pending_browser_exchange_is_stopped_without_closing_borrowed_http(cancel):
+async def test_pending_browser_exchange_is_stopped_without_closing_borrowed_http(
+    cancel, openai_callback
+):
     entered, stopped = asyncio.Event(), asyncio.Event()
 
     async def handler(request):
@@ -305,25 +307,28 @@ async def test_pending_browser_exchange_is_stopped_without_closing_borrowed_http
         driver = OpenAICodexDriver(
             client_id="test-client",
             client=client,
-            authorization_timeout=60 if cancel else 0.2,
+            authorization_timeout=60,
         )
         attempt = await driver.begin_authorization("browser")
         try:
             query = parse_qs(urlsplit(str(attempt.challenge.authorization_url)).query)
             async with httpx.AsyncClient(trust_env=False) as local:
                 response = await local.get(
-                    "http://127.0.0.1:1455/auth/callback",
+                    openai_callback(),
                     params={"state": query["state"][0], "code": "code-secret"},
                 )
                 assert response.status_code == 200
             await entered.wait()
             if cancel:
                 await attempt.cancel()
+            else:
+                # Explicit close must cancel an in-flight exchange too. Expiry
+                # belongs to TaskAuthorizationAttempt's deadline tests; a 200ms
+                # browser round trip is not part of this driver's contract.
+                await attempt.close()
             with pytest.raises(AuthError) as failure:
                 await attempt.wait()
-            assert failure.value.code == (
-                "authorization_cancelled" if cancel else "authorization_expired"
-            )
+            assert failure.value.code == "authorization_cancelled"
         finally:
             await attempt.close()
         assert stopped.is_set() and not client.is_closed

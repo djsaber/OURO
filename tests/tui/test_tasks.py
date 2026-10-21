@@ -28,7 +28,7 @@ from ouro.tui.screens import ChoiceScreen, ConfirmationScreen
 from ouro.tui.task_screens import TaskConfigurationScreen
 from ouro.tui.theme import theme_for
 from ouro.tui.widgets import Composer, ConversationView, QueuedInputPanel, WelcomePanel
-from tests.tui.helpers import run_ready_app
+from tests.tui.helpers import run_ready_app, wait_for_menu_action, wait_until
 from tests.tui.test_app import _application, _wait_for_screen
 
 
@@ -60,6 +60,7 @@ async def test_plugin_task_editor_and_history_use_service_arguments_and_result(t
         assert receipt.status == "completed", receipt.error
         await pilot.press("ctrl+t")
         await _wait_for_screen(app, ChoiceScreen, title="Tasks")
+        menu = app.screen
         await choose(pilot, app, task.configuration.display_title)
         await _wait_for_screen(
             app,
@@ -85,6 +86,7 @@ async def test_plugin_task_editor_and_history_use_service_arguments_and_result(t
         )
         await screen._save_field("arguments", '{"value": "edited"}')
         await choose(pilot, app, "Save", identity="save")
+        await wait_for_menu_action(pilot, menu)
         assert (await application.tasks.get(task.task_id)).configuration.target.arguments == {
             "value": "edited"
         }
@@ -166,6 +168,8 @@ async def test_task_menu_saves_multiline_instructions_and_pauses_schedule(tmp_pa
     async with run_ready_app(app, size=(120, 40)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        menu = app.screen
         await choose(pilot, app, "+ task")
         await _wait_for_screen(app, TaskConfigurationScreen, title="CREATE TASK")
         form = app.screen
@@ -216,6 +220,7 @@ async def test_task_menu_saves_multiline_instructions_and_pauses_schedule(tmp_pa
         await _wait_for_screen(app, TaskConfigurationScreen, title="CREATE TASK")
         await choose(pilot, app, "Save", identity="save")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await wait_for_menu_action(pilot, menu)
         tasks = await application.tasks.list()
         assert len(tasks) == 1
         task = tasks[0]
@@ -252,11 +257,18 @@ async def test_task_delete_and_status_actions_stay_on_shared_menu(tmp_path):
             )
         )
         await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         await choose(pilot, app, "Update status")
+        await wait_until(
+            lambda: app._system_status.task_counts.waiting == 1,
+            pilot,
+            description="task status refreshed",
+        )
         assert app._system_status.task_counts.waiting == 1
         await choose(pilot, app, "Manage tasks")
         await _wait_for_screen(app, ChoiceScreen, title="Tasks")
         await choose(pilot, app, "Delete this scheduled task")
+        await _wait_for_screen(app, ChoiceScreen, title="TASK • Delete this scheduled task")
         rows = app.screen._choices
         assert [(row.label, row.group) for row in rows] == [
             ("Waiting", "STATUS"),
@@ -540,7 +552,9 @@ def streaming_application(tmp_path, provider, *, backend="files", model=None):
 
 
 @pytest.mark.parametrize("entry", ["sessions", "history"])
-async def test_background_run_stays_silent_and_attaching_restores_live_stream(tmp_path, entry):
+async def test_background_run_stays_silent_and_attaching_restores_live_stream(
+    tmp_path, entry, monkeypatch
+):
     provider = StreamingTaskProvider()
     application = streaming_application(tmp_path, provider)
     runtime = application.runtime
@@ -548,12 +562,11 @@ async def test_background_run_stays_silent_and_attaching_restores_live_stream(tm
     async with run_ready_app(app, size=(120, 40)) as pilot:
         await pilot.pause()
         now = datetime.now(UTC)
+        monkeypatch.setattr(application.tasks, "clock", lambda: now)
         task = await application.tasks.create(
             TaskConfiguration(
                 title="Background stream",
-                schedule=TaskSchedule(
-                    frequency="custom", unit="minutes", starts_at=now + timedelta(seconds=0.1)
-                ),
+                schedule=TaskSchedule(frequency="custom", unit="minutes", starts_at=now),
                 target=AgentTaskTarget(
                     prompt="Describe the workspace", workspace=str(tmp_path), model="faux/faux"
                 ),

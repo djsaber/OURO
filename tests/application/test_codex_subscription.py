@@ -48,7 +48,7 @@ async def test_subscription_target_override_fails_before_credentials_or_network(
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
 async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logout(
-    tmp_path, monkeypatch, backend
+    tmp_path, monkeypatch, backend, openai_callback
 ):
     model_requests, token_requests, clients, executions = [], [], [], []
     replies = deque()
@@ -152,7 +152,7 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
             transport=httpx.AsyncHTTPTransport(trust_env=False), trust_env=False
         ) as local:
             response = await local.get(
-                "http://127.0.0.1:1455/auth/callback",
+                openai_callback(),
                 params={"state": query["state"][0], "code": "fixture-code"},
             )
             assert response.status_code == 200

@@ -169,7 +169,13 @@ from ouro.tui.widgets import (
     WelcomePanel,
     _tool_activities_from_messages,
 )
-from tests.tui.helpers import choose_menu, command_popup_text, run_ready_app
+from tests.tui.helpers import (
+    choose_menu,
+    command_popup_text,
+    run_ready_app,
+    wait_for_history_render,
+    wait_for_menu_action,
+)
 from tests.tui.helpers import wait_for_screen as _wait_for_screen
 from tests.tui.helpers import wait_until as _wait_until
 
@@ -4184,7 +4190,7 @@ async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -
         conversation = app.query_one(ConversationView)
         conversation.set_reasoning_expanded(True)
         await conversation.load_messages((message,))
-        await pilot.pause()
+        await wait_for_history_render(pilot)
 
         history = app.query_one(ConversationHistory)
         assert len(history.entries) == 2
@@ -4232,7 +4238,7 @@ async def test_thought_display_command_applies_to_history_and_live_output_and_pe
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages((message,))
-        await pilot.pause()
+        await wait_for_history_render(pilot)
         history = conversation.query_one(ConversationHistory)
         assert "+ Thought" in history.rendered_text
         assert "Historical private thought" not in history.rendered_text
@@ -4255,7 +4261,11 @@ async def test_thought_display_command_applies_to_history_and_live_output_and_pe
         assert popup.selected_argument.value == "expand"
 
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_until(
+            lambda: "Historical private thought" in history.rendered_text,
+            pilot,
+            description="thinking display applied to history",
+        )
         assert app.query_one(Composer).text == ""
         assert "- Thought" in history.rendered_text
         assert "Historical private thought" in history.rendered_text
@@ -4292,6 +4302,7 @@ async def test_thought_display_command_applies_to_history_and_live_output_and_pe
         await pilot.pause()
         conversation = restarted.query_one(ConversationView)
         await conversation.load_messages((message,))
+        await wait_for_history_render(pilot)
         history = conversation.query_one(ConversationHistory)
         assert "Historical private thought" not in history.rendered_text
 
@@ -4342,10 +4353,9 @@ async def test_history_restores_each_model_call_timing_with_one_run_summary(
         conversation = app.query_one(ConversationView)
         presentation = project_run_presentation(run, messages)
         await conversation.load_messages(messages, runs=(presentation,))
-        await pilot.pause()
 
         history = conversation.query_one(ConversationHistory)
-        await history.wait_until_rendered()
+        await wait_for_history_render(pilot)
         thoughts = [
             entry for entry in history.entries if entry.kind == "assistant" and entry.reasoning
         ]
@@ -4395,7 +4405,7 @@ async def test_history_loads_failed_run_summary_with_failure_semantics(tmp_path:
             (message,),
             runs=(project_run_presentation(run, (message,)),),
         )
-        await pilot.pause()
+        await wait_for_history_render(pilot)
 
         history = conversation.query_one(ConversationHistory)
         summary = next(entry for entry in history.entries if entry.kind == "run")
@@ -4450,7 +4460,7 @@ async def test_reloaded_history_renders_identically_to_streamed_output(
             ),
         )
         await conversation.load_messages(messages)
-        await pilot.pause()
+        await wait_for_history_render(pilot)
         reloaded = conversation.query_one(ConversationHistory).rendered_text
 
         assert reloaded == streamed
@@ -4547,7 +4557,7 @@ async def test_history_restores_compaction_boundaries_in_chronological_order(
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(messages, compactions)
-        await pilot.pause()
+        await wait_for_history_render(pilot)
 
         history = conversation.query_one(ConversationHistory)
         assert [(entry.kind, entry.compaction) for entry in history.entries] == [
@@ -5148,7 +5158,7 @@ async def test_history_load_renders_tool_calls_between_messages(tmp_path: Path) 
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(messages)
-        await pilot.pause()
+        await wait_for_history_render(pilot)
 
         history = conversation.query_one(ConversationHistory)
         tools = [entry.tool for entry in history.entries if entry.tool is not None]
@@ -5425,7 +5435,7 @@ async def test_history_load_marks_failed_tool_calls(tmp_path: Path) -> None:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(messages)
-        await pilot.pause()
+        await wait_for_history_render(pilot)
 
         history = conversation.query_one(ConversationHistory)
         tools = [entry.tool for entry in history.entries if entry.tool is not None]
@@ -5465,6 +5475,7 @@ async def test_navigate_to_top_scrolls_to_first_message(tmp_path: Path) -> None:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(_scrollable_messages())
+        await wait_for_history_render(pilot)
         await pilot.pause()
         assert conversation.scroll_y > 0  # anchored at the bottom after load
 
@@ -5482,6 +5493,7 @@ async def test_navigate_to_bottom_scrolls_to_latest(tmp_path: Path) -> None:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(_scrollable_messages())
+        await wait_for_history_render(pilot)
         await pilot.pause()
 
         conversation.scroll_home(animate=False, immediate=True)
@@ -5503,6 +5515,7 @@ async def test_conversation_shortcuts_navigate_while_composer_is_focused(
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(_scrollable_messages())
+        await wait_for_history_render(pilot)
         composer = app.query_one(Composer)
         composer.load_text("draft")
         composer.focus()
@@ -5535,6 +5548,7 @@ async def test_conversation_shortcuts_navigate_adjacent_user_messages(
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(_scrollable_messages())
+        await wait_for_history_render(pilot)
         history = conversation.query_one(ConversationHistory)
         composer = app.query_one(Composer)
         composer.load_text("draft")
@@ -5579,6 +5593,7 @@ async def test_navigate_to_user_message_scrolls_to_target(tmp_path: Path) -> Non
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(_scrollable_messages())
+        await wait_for_history_render(pilot)
         await pilot.pause()
         assert conversation.scroll_y > 0  # at the bottom
 
@@ -6195,8 +6210,11 @@ async def test_fork_projects_animated_activity_until_the_branch_is_created(
         assert indicator._activity == "forking"
         assert "Forking session" in indicator.render().plain
         menu_frame = indicator._frame
-        await pilot.pause(0.2)
-        assert indicator._frame != menu_frame
+        await _wait_until(
+            lambda: indicator._frame != menu_frame,
+            pilot,
+            description="fork indicator animation while the session picker is open",
+        )
 
         release_branch.set()
         await _wait_for_worker_group(app, pilot, group="session-fork")
@@ -6357,6 +6375,7 @@ async def test_session_picker_restores_history_after_returning_to_welcome(
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         await pilot.press("enter")
         await _wait_for_active_session(app, pilot, session.session_id)
+        await wait_for_history_render(pilot)
 
         history = app.query_one(ConversationHistory)
         assert history.user_turns == ("Persisted user message",)
@@ -6706,11 +6725,8 @@ async def test_session_picker_and_archive_menu_switch_and_toggle_archived_domain
         await pilot.press("escape")
 
         await pilot.press("ctrl+p")
-        await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Archive session"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, "Archive session", title="ARCHIVE SESSIONS • USER")
         archive_screen = app.screen
         initial = {choice.value: choice for choice in archive_screen._choices}
         assert initial[active.session_id].marker == DEFAULT_TUI_THEME.selected_choice_marker
@@ -7586,10 +7602,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Keyboard help": "F1",
         }
 
-        app.screen.query_one("#choice-filter", Input).value = "Context compaction"
-        await pilot.pause()
-        await pilot.press("enter", "enter")
-        await pilot.pause(0.2)
+        await choose_menu(pilot, "Context compaction", title="CONTEXT COMPACTION")
         assert isinstance(app.screen, CompactionConfigurationScreen)
         await pilot.press("escape")
 
@@ -7689,7 +7702,8 @@ async def test_actions_opens_subagent_dispatch_policy(
     async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        menu = app.screen
 
         app.screen.query_one("#choice-filter", Input).value = "Subagent permissions"
         await pilot.pause()
@@ -7707,6 +7721,7 @@ async def test_actions_opens_subagent_dispatch_policy(
         )
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await wait_for_menu_action(pilot, menu)
         assert not list(app.query("Toast"))
         await pilot.press("escape")
 
@@ -7814,6 +7829,7 @@ async def test_subagent_crud_saves_without_success_notifications(tmp_path: Path)
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        menu = app.screen
         app.screen.query_one("#choice-filter", Input).value = "Create subagent"
         await pilot.pause()
         await pilot.press("enter")
@@ -7839,6 +7855,7 @@ async def test_subagent_crud_saves_without_success_notifications(tmp_path: Path)
         )
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await wait_for_menu_action(pilot, menu)
 
         assert application.agent_definitions is not None
         assert [
@@ -7868,6 +7885,7 @@ async def test_subagent_crud_saves_without_success_notifications(tmp_path: Path)
         )
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await wait_for_menu_action(pilot, menu)
         assert (
             application.agent_definitions.config.snapshot().definitions[0].name
             == "Senior code reviewer"
@@ -7889,6 +7907,7 @@ async def test_subagent_crud_saves_without_success_notifications(tmp_path: Path)
         )
         await pilot.press("down", "enter")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await wait_for_menu_action(pilot, menu)
         assert not application.agent_definitions.config.snapshot().definitions
         assert not list(app.query("Toast"))
         await pilot.press("escape")
@@ -7912,21 +7931,16 @@ async def test_actions_opens_provider_scoped_endpoint_configuration(tmp_path: Pa
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with run_ready_app(app, size=(100, 34)) as pilot:
-        await pilot.pause()
         await pilot.press("ctrl+p")
-        await pilot.pause()
-
-        app.screen.query_one("#choice-filter", Input).value = "+ endpoint"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, "+ endpoint", title="ADD ENDPOINT • PROVIDER")
         assert app.screen.query_one("#choice-title", Static).render().plain == (
             "ADD ENDPOINT • PROVIDER"
         )
         assert [choice.label for choice in app.screen._choices] == ["Custom", "Zulu"]
 
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, EndpointConfigurationScreen, title="ADD ENDPOINT")
 
         assert isinstance(app.screen, EndpointConfigurationScreen)
         await pilot.press("escape")
@@ -8038,17 +8052,11 @@ async def test_provider_submenu_updates_from_latest_preset_in_place(tmp_path: Pa
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with run_ready_app(app, size=(100, 34)) as pilot:
-        await pilot.pause()
         await pilot.press("ctrl+p")
-        await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Manage providers"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Primary"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, "Manage providers", title="PROVIDERS")
+        await choose_menu(pilot, "Primary", title="PROVIDER • Primary")
+        menu = app.screen
 
         update = next(choice for choice in app.screen._choices if choice.value == "update-template")
         assert update.label == "Update"
@@ -8057,7 +8065,7 @@ async def test_provider_submenu_updates_from_latest_preset_in_place(tmp_path: Pa
         options.highlighted = options.get_option_index("update-template")
         options.focus()
         await pilot.press("enter")
-        await pilot.pause()
+        await wait_for_menu_action(pilot, menu)
 
         assert (
             next(
@@ -8340,17 +8348,15 @@ async def test_provider_deletions_use_shared_menu_confirmation(
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with run_ready_app(app, size=(100, 34)) as pilot:
-        await pilot.pause()
         await pilot.press("ctrl+p")
-        await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = manage_label
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = target_label
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        catalog_title = "PROVIDERS" if manage_label == "Manage providers" else "ENDPOINTS"
+        detail_title = (
+            "PROVIDER • Custom" if manage_label == "Manage providers" else "ENDPOINT • Chat"
+        )
+        await choose_menu(pilot, manage_label, title=catalog_title)
+        await choose_menu(pilot, target_label, title=detail_title)
+        menu = app.screen
 
         remove = next(choice for choice in app.screen._choices if choice.value == "remove")
         assert remove.label == "Delete"
@@ -8358,7 +8364,7 @@ async def test_provider_deletions_use_shared_menu_confirmation(
         app.screen.query_one("#choice-filter", Input).value = "Delete"
         await pilot.pause()
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, ConfirmationScreen, title=confirm_title)
 
         assert isinstance(app.screen, ConfirmationScreen)
         assert app.screen.query_one("#choice-title", Static).render().plain == confirm_title
@@ -8376,7 +8382,9 @@ async def test_provider_deletions_use_shared_menu_confirmation(
         await pilot.press("up")
 
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title=detail_title)
+        await wait_for_menu_action(pilot, menu)
+        assert app.screen is menu
         assert not isinstance(app.screen, ConfirmationScreen)
         assert ConfigurationFacade(tmp_path).provider(provider_id) is not None
 
@@ -8907,30 +8915,30 @@ async def test_actions_persists_three_distinct_recent_choices_across_restart(
 
     async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.pause()
-        for label, screen_type in (
-            ("Theme", ChoiceScreen),
-            ("Context compaction", CompactionConfigurationScreen),
-            ("+ mcp", MCPConfigurationScreen),
+        for label, screen_type, title in (
+            ("Theme", ChoiceScreen, "THEME"),
+            ("Context compaction", CompactionConfigurationScreen, "CONTEXT COMPACTION"),
+            ("+ mcp", MCPConfigurationScreen, "ADD MCP"),
         ):
             await pilot.press("ctrl+p")
-            await pilot.pause()
+            await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
             assert "Recent" not in {choice.group for choice in app.screen._choices}
-            app.screen.query_one("#choice-filter", Input).value = label
-            await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause(0.2)
+            await choose_menu(pilot, label, title=title)
             assert isinstance(app.screen, screen_type)
             await pilot.press("escape")
-            await pilot.pause()
-            if isinstance(app.screen, ChoiceScreen) and app.screen._title == "ACTIONS":
-                await pilot.press("escape")
-                await pilot.pause()
+            await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+            await pilot.press("escape")
+            await _wait_until(
+                lambda: not isinstance(app.screen, ChoiceScreen),
+                pilot,
+                description="actions menu closed",
+            )
 
         preferences = TuiPreferencesStore(tmp_path).load()
         assert len(preferences.recent_actions) == 3
 
         await pilot.press("ctrl+p")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         assert [choice.label for choice in app.screen._choices[:3]] == [
             "+ mcp",
             "Context compaction",
@@ -8942,7 +8950,7 @@ async def test_actions_persists_three_distinct_recent_choices_across_restart(
     async with run_ready_app(restarted, size=(100, 34)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
-        await pilot.pause()
+        await _wait_for_screen(restarted, ChoiceScreen, title="ACTIONS")
         assert [choice.label for choice in restarted.screen._choices[:3]] == [
             "+ mcp",
             "Context compaction",
@@ -9291,7 +9299,7 @@ async def test_root_help_groups_runtime_plugin_commands(
         help_screen.query_one(Input).value = "New session"
         await pilot.pause()
         await pilot.press("enter")
-        await pilot.pause()
+        await wait_for_menu_action(pilot, help_screen)
         assert len(app.screen_stack) == 1
         assert app._active_title == "New conversation"
 
@@ -9361,7 +9369,7 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         assert menu.query_one("#choice-hint", Static).render().plain == (ChoiceScreen.DEFAULT_HINT)
 
         await pilot.press("ctrl+n")
-        await pilot.pause()
+        await _wait_for_worker_group(app, pilot, group="navigation")
         assert not isinstance(app.screen, ChoiceScreen)
         assert len(app.screen_stack) == 1
         assert app._active_title == "New conversation"
@@ -9482,6 +9490,7 @@ async def test_mcp_catalog_can_create_edit_and_delete_its_last_entry(
         await _wait_for_screen(app, MCPConfigurationScreen, title="ADD MCP")
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="MCPs")
+        await wait_for_menu_action(pilot, menu)
         assert app.screen is menu
         assert menu.query_one(Input).has_focus
         await pilot.press("enter")
@@ -9498,6 +9507,9 @@ async def test_mcp_catalog_can_create_edit_and_delete_its_last_entry(
         options.highlighted = options.get_option_index("mcp-save")
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="MCPs")
+        # Dismissing the editor restores this page before the parent action
+        # finishes saving, reconciling runtime state, and refreshing its rows.
+        await wait_for_menu_action(pilot, menu)
         assert app.screen is menu
         server_id = ConfigurationFacade(tmp_path).mcp_server_by_name("Local").server_id
         assert [choice.value for choice in menu._choices] == [server_id, "+"]
@@ -9518,8 +9530,10 @@ async def test_mcp_catalog_can_create_edit_and_delete_its_last_entry(
         options.highlighted = options.get_option_index("mcp-save")
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="MCP • Renamed")
+        await wait_for_menu_action(pilot, menu)
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="MCPs")
+        await _wait_for_worker_group(app, pilot, group="choice-return")
         assert (
             next(choice for choice in menu._choices if choice.value == server_id).label == "Renamed"
         )
@@ -9538,11 +9552,13 @@ async def test_mcp_catalog_can_create_edit_and_delete_its_last_entry(
         assert server_id not in confirmation.description
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="MCP • Renamed")
+        await wait_for_menu_action(pilot, menu)
         assert ConfigurationFacade(tmp_path).mcp_server(server_id).name == "Renamed"
         await pilot.press("enter")
         await _wait_for_screen(app, ConfirmationScreen, title="CONFIRM DELETE MCP")
         await pilot.press("down", "enter")
         await _wait_for_screen(app, ChoiceScreen, title="MCPs")
+        await wait_for_menu_action(pilot, menu)
         assert app.screen is menu
         assert [choice.value for choice in menu._choices] == ["+"]
         assert any("MCP deleted: Renamed" in notice for notice in notices)
@@ -9989,7 +10005,7 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
         options.highlighted = options.get_option_index("toggle")
         options.focus()
         await pilot.press("enter")
-        await pilot.pause()
+        await wait_for_menu_action(pilot, action_screen)
         assert ConfigurationFacade(tmp_path).mcp_server(saved.server_id).enabled is False
         assert (
             next(choice for choice in app.screen._choices if choice.value == "toggle").label
@@ -10017,7 +10033,7 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
         await _wait_for_screen(app, ChoiceScreen, title="MCP • local")
         options = app.screen.query_one("#choice-list", OptionList)
         await pilot.click(options, offset=(4, 1))
-        await pilot.pause()
+        await wait_for_menu_action(pilot, action_screen)
         assert ConfigurationFacade(tmp_path).mcp_server(saved.server_id).enabled is True
         assert (
             next(choice for choice in app.screen._choices if choice.value == "toggle").label
@@ -10140,13 +10156,15 @@ async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
         )
 
         session.initialize_gate.set()
-        deadline = asyncio.get_running_loop().time() + 2
-        while next(
-            choice for choice in action_screen._choices if choice.value == saved.server_id
-        ).loading:
-            if asyncio.get_running_loop().time() >= deadline:
-                raise AssertionError("MCP start did not refresh the parent menu")
-            await pilot.pause(0.05)
+        await _wait_until(
+            lambda: (
+                not next(
+                    choice for choice in action_screen._choices if choice.value == saved.server_id
+                ).loading
+            ),
+            pilot,
+            description="MCP start reflected in its parent menu",
+        )
         assert (
             next(
                 choice for choice in action_screen._choices if choice.value == saved.server_id
@@ -10166,7 +10184,11 @@ async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
 
         options.highlighted = options.get_option_index("stop")
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_until(
+            lambda: options.get_option("stop").disabled,
+            pilot,
+            description="MCP stop reflected in its menu",
+        )
 
         assert [choice.value for choice in action_screen._choices] == [
             "edit",
@@ -10387,13 +10409,9 @@ async def test_skill_actions_open_operation_specific_skill_selection(tmp_path: P
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with run_ready_app(app, size=(100, 34)) as pilot:
-        await pilot.pause()
         await pilot.press("ctrl+p")
-        await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Check skill"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause(0.2)
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, "Check skill", title="CHECK SKILL")
 
         assert isinstance(app.screen, ChoiceScreen)
         assert app.screen.query_one("#choice-title", Static).render().plain == "CHECK SKILL"
@@ -12772,7 +12790,12 @@ async def test_plan_mode_write_approval_keeps_focus_on_approval_panel(tmp_path: 
     async with run_ready_app(app, size=(100, 42)) as pilot:
         await pilot.pause()
         await pilot.press("slash", *"plan", "space", "o", "n", "enter")
-        await pilot.pause()
+        await _wait_for_worker_group(app, pilot, group="plugin-command")
+        await _wait_until(
+            lambda: app._projection is not None and not app.query_one(Composer).disabled,
+            pilot,
+            description="plan session ready for input",
+        )
         await pilot.click("#composer")
         await pilot.press("p", "l", "a", "n", "enter")
 
@@ -12853,7 +12876,12 @@ async def test_plan_confirmation_renders_only_plan_and_collects_revision_feedbac
     async with run_ready_app(app, size=(100, 42)) as pilot:
         await pilot.pause()
         await pilot.press("slash", *"plan", "space", "o", "n", "enter")
-        await pilot.pause()
+        await _wait_for_worker_group(app, pilot, group="plugin-command")
+        await _wait_until(
+            lambda: app._projection is not None and not app.query_one(Composer).disabled,
+            pilot,
+            description="plan session ready for input",
+        )
         await pilot.click("#composer")
         await pilot.press("p", "l", "a", "n", "enter")
 
@@ -12937,13 +12965,18 @@ async def test_plan_confirmation_accepts_a_keyboard_selected_implementation_opti
     async with run_ready_app(app, size=(100, 42)) as pilot:
         await pilot.pause()
         await pilot.press("slash", *"plan", "space", "o", "n", "enter")
-        await pilot.pause()
+        await _wait_for_worker_group(app, pilot, group="plugin-command")
+        await _wait_until(
+            lambda: app._projection is not None and not app.query_one(Composer).disabled,
+            pilot,
+            description="plan session ready for input",
+        )
         await pilot.click("#composer")
         await pilot.press("p", "l", "a", "n", "enter")
 
         panel = app.query_one(PlanConfirmationPanel)
         await _wait_until(
-            lambda: panel.display,
+            lambda: panel.display and panel.has_focus,
             pilot,
             description="plan confirmation",
         )
@@ -13000,43 +13033,28 @@ async def test_noop_abort_does_not_notify_when_ready_status_is_visible(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_preference_writes_do_not_block_the_event_loop(
+async def test_preference_writes_run_outside_the_event_loop_thread(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with run_ready_app(app, size=(100, 32)) as pilot:
-        await pilot.pause()
-        entered = threading.Event()
-        release = threading.Event()
+    async with run_ready_app(app, size=(100, 32)):
         writer_threads: list[int] = []
         save_preferences = app._preferences_store.save
 
-        def blocking_save(preferences: TuiPreferences) -> None:
+        def record_save(preferences: TuiPreferences) -> None:
             writer_threads.append(threading.get_ident())
-            entered.set()
-            release.wait()
             save_preferences(preferences)
 
-        monkeypatch.setattr(app._preferences_store, "save", blocking_save)
-        watchdog = threading.Timer(1, release.set)
-        watchdog.start()
+        monkeypatch.setattr(app._preferences_store, "save", record_save)
         event_loop_thread = threading.get_ident()
         app._request_tui_theme("blossom")
         saving = next(worker for worker in app.workers if worker.name == "tui-theme-switch")
-
-        try:
-            writer_entered = await asyncio.to_thread(entered.wait, 2)
-            event_loop_remained_responsive = not saving.is_finished
-        finally:
-            release.set()
-            watchdog.cancel()
         await saving.wait()
 
-        assert writer_entered is True
-        assert event_loop_remained_responsive is True
-        assert writer_threads != [event_loop_thread]
+        assert writer_threads
+        assert event_loop_thread not in writer_threads
         assert app._preferences_store.load().theme == "blossom"
         assert app.tui_theme == TUI_THEMES["blossom"]
 
@@ -13087,13 +13105,9 @@ async def test_theme_switch_stays_interactive_coalesces_and_outlives_picker(
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
-        await pilot.pause()
         await pilot.press("ctrl+p")
-        await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Theme"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, "Theme", title="THEME")
 
         theme_screen = app.screen
         assert isinstance(theme_screen, ChoiceScreen)
@@ -13103,8 +13117,11 @@ async def test_theme_switch_stays_interactive_coalesces_and_outlives_picker(
         release = threading.Event()
         saved_themes: list[str] = []
         save_preferences = app._preferences_store.save
+        event_loop_thread = threading.get_ident()
 
         def blocking_save(preferences: TuiPreferences) -> None:
+            # Fail instead of deadlocking if saving regresses to the UI thread.
+            assert threading.get_ident() != event_loop_thread
             saved_themes.append(preferences.theme)
             if len(saved_themes) == 1:
                 entered.set()
@@ -13112,11 +13129,11 @@ async def test_theme_switch_stays_interactive_coalesces_and_outlives_picker(
             save_preferences(preferences)
 
         monkeypatch.setattr(app._preferences_store, "save", blocking_save)
-        watchdog = threading.Timer(2, release.set)
-        watchdog.start()
+        # Keep I/O blocked until all pending-state assertions have run, regardless
+        # of machine speed; finally also releases the thread after an assertion fails.
         try:
             await pilot.press("down", "enter")
-            assert await asyncio.to_thread(entered.wait, 1)
+            await _wait_until(entered.is_set, pilot, description="theme save blocked")
             choices = {choice.value: choice for choice in theme_screen._choices}
             assert choices["blossom"].loading is True
             assert choices["coral"].loading is False
@@ -13134,7 +13151,7 @@ async def test_theme_switch_stays_interactive_coalesces_and_outlives_picker(
             assert reasoning_update.done() is False
 
             await pilot.press("escape")
-            await pilot.pause()
+            await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
             assert app.screen is theme_screen
             assert theme_screen.page_title == "ACTIONS"
             await pilot.press("escape")
@@ -13143,7 +13160,6 @@ async def test_theme_switch_stays_interactive_coalesces_and_outlives_picker(
             assert app._theme_switch_active is True
         finally:
             release.set()
-            watchdog.cancel()
 
         await _wait_until(
             lambda: not app._theme_switch_active,
@@ -13174,12 +13190,10 @@ async def test_theme_loading_ends_after_history_reaches_the_new_theme(
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await app.query_one(ConversationView).load_messages((message,))
+        await wait_for_history_render(pilot)
         await pilot.press("ctrl+p")
-        await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Theme"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, "Theme", title="THEME")
 
         theme_screen = app.screen
         assert isinstance(theme_screen, ChoiceScreen)
@@ -13188,8 +13202,10 @@ async def test_theme_loading_ends_after_history_reaches_the_new_theme(
         entered = threading.Event()
         release = threading.Event()
         render_entries = conversation_history._render_entry_requests
+        event_loop_thread = threading.get_ident()
 
         def blocking_render(*args, **kwargs):
+            assert threading.get_ident() != event_loop_thread
             entered.set()
             release.wait()
             return render_entries(*args, **kwargs)
@@ -13199,11 +13215,9 @@ async def test_theme_loading_ends_after_history_reaches_the_new_theme(
             "_render_entry_requests",
             blocking_render,
         )
-        watchdog = threading.Timer(2, release.set)
-        watchdog.start()
         try:
             await pilot.press("down", "enter")
-            assert await asyncio.to_thread(entered.wait, 1)
+            await _wait_until(entered.is_set, pilot, description="theme history render blocked")
             await pilot.pause()
             assert app.tui_theme == TUI_THEMES["blossom"]
             assert app._theme_switch_active is True
@@ -13224,7 +13238,6 @@ async def test_theme_loading_ends_after_history_reaches_the_new_theme(
             )
         finally:
             release.set()
-            watchdog.cancel()
 
         await _wait_until(
             lambda: not app._theme_switch_active,
@@ -13242,13 +13255,9 @@ async def test_theme_persistence_failure_keeps_current_theme_and_clears_loading(
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with run_ready_app(app, size=(100, 32), notifications=True) as pilot:
-        await pilot.pause()
         await pilot.press("ctrl+p")
-        await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Theme"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, "Theme", title="THEME")
         theme_screen = app.screen
         assert isinstance(theme_screen, ChoiceScreen)
 
@@ -13280,13 +13289,9 @@ async def test_action_menu_updates_thought_display_without_closing_picker(
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with run_ready_app(app, size=(100, 32), notifications=True) as pilot:
-        await pilot.pause()
         await pilot.press("ctrl+p")
-        await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Thinking display"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, "Thinking display", title="THINKING DISPLAY")
 
         thought_screen = app.screen
         assert isinstance(thought_screen, ChoiceScreen)
@@ -13297,10 +13302,16 @@ async def test_action_menu_updates_thought_display_without_closing_picker(
         assert choices["collapse"].marker == DEFAULT_TUI_THEME.selected_choice_marker
         assert choices["expand"].marker == ""
 
-        thought_screen.query_one("#choice-filter", Input).value = "Expand"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await choose_menu(pilot, "Expand")
+        await _wait_until(
+            lambda: any(
+                choice.value == "expand"
+                and choice.marker == DEFAULT_TUI_THEME.selected_choice_marker
+                for choice in thought_screen._choices
+            ),
+            pilot,
+            description="thinking display saved and selected row refreshed",
+        )
         assert app.screen is thought_screen
         choices = {choice.value: choice for choice in thought_screen._choices}
         assert choices["expand"].marker == DEFAULT_TUI_THEME.selected_choice_marker
@@ -13326,11 +13337,8 @@ async def test_action_menu_toggles_input_draft_memory_and_clears_disabled_state(
         assert composer.text == "remember this draft"
 
         await pilot.press("ctrl+p")
-        await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Remember drafts"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, "Remember drafts", title="REMEMBER DRAFTS")
 
         memory_screen = app.screen
         assert isinstance(memory_screen, ChoiceScreen)
@@ -13377,9 +13385,9 @@ async def test_theme_preview_is_local_and_cleared_when_picker_is_cancelled(
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
-        await pilot.pause()
-        await pilot.press("ctrl+p", "enter")
-        await pilot.pause()
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await choose_menu(pilot, "Theme", title="THEME")
         theme_screen = app.screen
         assert isinstance(theme_screen, ChoiceScreen)
         theme_options = theme_screen.query_one(OptionList)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 
@@ -187,7 +187,7 @@ async def test_two_tuis_follow_tools_and_consecutive_runs_without_duplicate_summ
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
 async def test_task_owned_by_another_runtime_streams_through_tools_and_session_switches(
-    tmp_path, backend
+    tmp_path, backend, monkeypatch
 ):
     provider = LiveToolProvider()
     owner = streaming_application(tmp_path, provider, backend=backend)
@@ -201,6 +201,9 @@ async def test_task_owned_by_another_runtime_streams_through_tools_and_session_s
         )
     )
     app = OuroTuiApp(application=viewer)
+    # Creation and dispatch share a logical instant, independent of validation I/O.
+    due = datetime.now(UTC)
+    monkeypatch.setattr(owner.tasks, "clock", lambda: due)
     await owner.start()
     try:
         async with run_ready_app(app, size=(120, 40)) as pilot:
@@ -210,7 +213,7 @@ async def test_task_owned_by_another_runtime_streams_through_tools_and_session_s
                     schedule=TaskSchedule(
                         frequency="custom",
                         unit="minutes",
-                        starts_at=datetime.now(UTC) + timedelta(seconds=0.1),
+                        starts_at=due,
                     ),
                     target=AgentTaskTarget(
                         prompt="Inspect and report", workspace=str(tmp_path), model="faux/faux"

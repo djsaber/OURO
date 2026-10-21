@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 
@@ -49,7 +49,7 @@ async def test_application_close_retries_failed_plugin_cleanup(tmp_path, monkeyp
 @pytest.mark.parametrize("task_backend", ["files", "sqlite"])
 @pytest.mark.parametrize("session_backend", ["files", "sqlite"])
 async def test_task_sessions_use_the_composed_session_backend(
-    tmp_path, task_backend, session_backend
+    tmp_path, task_backend, session_backend, monkeypatch
 ):
     application = LocalApplication.build(
         tmp_path, task_backend=task_backend, session_backend=session_backend
@@ -62,11 +62,10 @@ async def test_task_sessions_use_the_composed_session_backend(
         )
         assert tasks.runtime is application.runtime
         now = datetime.now(UTC)
+        monkeypatch.setattr(tasks, "clock", lambda: now)
         task = await tasks.create(
             TaskConfiguration(
-                schedule=TaskSchedule(
-                    frequency="custom", unit="minutes", starts_at=now + timedelta(milliseconds=100)
-                ),
+                schedule=TaskSchedule(frequency="custom", unit="minutes", starts_at=now),
                 target=AgentTaskTarget(
                     prompt="Run this scheduled instruction",
                     workspace=str(tmp_path),

@@ -9,7 +9,13 @@ from ouro.config.prompts import PromptConfigManager, PromptDraft, PromptEntry
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.prompt_screens import PromptEntryScreen
 from ouro.tui.screens import ChoiceScreen, ConfirmationScreen
-from tests.tui.helpers import choose_menu, run_ready_app, two_route_application, wait_for_screen
+from tests.tui.helpers import (
+    choose_menu,
+    run_ready_app,
+    two_route_application,
+    wait_for_menu_action,
+    wait_for_screen,
+)
 
 
 async def test_prompt_editor_requires_content_and_preserves_multiline_and_cancel():
@@ -66,6 +72,7 @@ async def test_prompt_actions_manage_order_activation_edit_and_delete(tmp_path):
         await pilot.press("ctrl+p")
         await wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         await choose("Personal prompts", title="PERSONAL PROMPTS")
+        menu = app.screen
         assert any(c.label == "First annotation" for c in app.screen._choices)
         await choose("other", title="PROMPT · Other")
         choices = {choice.value: choice for choice in app.screen._choices}
@@ -88,6 +95,7 @@ async def test_prompt_actions_manage_order_activation_edit_and_delete(tmp_path):
         await choose("Content")
         await pilot.press("ctrl+u", "n", "ctrl+enter", "e", "enter")
         await choose("Save", title="PERSONAL PROMPTS")
+        await wait_for_menu_action(pilot, menu)
         assert PromptConfigManager(tmp_path).snapshot().config.additions[1].text == "n\ne"
         await choose("last", title="PROMPT · Last")
         await choose("Disable", title="PERSONAL PROMPTS")
@@ -114,6 +122,7 @@ async def test_prompt_creation_and_stale_editor_do_not_overwrite_other_changes(t
         await pilot.press("ctrl+p")
         await wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         await choose("Personal prompts", title="PERSONAL PROMPTS")
+        menu = app.screen
         app.screen.query_one(Input).value = "+"
         await pilot.pause()
         await pilot.press("right", "enter")
@@ -128,6 +137,7 @@ async def test_prompt_creation_and_stale_editor_do_not_overwrite_other_changes(t
             == "Disable"
         )
         await choose("Save", title="PERSONAL PROMPTS")
+        await wait_for_menu_action(pilot, menu)
         config = facade.system_prompt().config
         assert len(config.additions) == 1
         entry_id = config.additions[0].id
@@ -145,6 +155,7 @@ async def test_prompt_creation_and_stale_editor_do_not_overwrite_other_changes(t
         await choose("Content")
         await pilot.press("ctrl+u", "x", "enter")
         await choose("Save", title="PERSONAL PROMPTS")
+        await wait_for_menu_action(pilot, menu)
         assert facade.system_prompt().config.additions[0].text == "External edit"
         assert any("revision conflict" in str(item.message) for item in app._notifications)
         # Refresh and edit again against the current revision.

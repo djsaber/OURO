@@ -115,7 +115,7 @@ async def test_loopback_denial_and_idle_connections_are_closed():
     await writer.wait_closed()
 
 
-async def test_browser_pkce_exchange_and_port_cleanup():
+async def test_browser_pkce_exchange_and_port_cleanup(openai_callback):
     captured = []
 
     def handler(request):
@@ -133,7 +133,7 @@ async def test_browser_pkce_exchange_and_port_cleanup():
         try:
             async with httpx.AsyncClient(trust_env=False) as local:
                 response = await local.get(
-                    "http://127.0.0.1:1455/auth/callback",
+                    openai_callback(),
                     params={
                         "state": query["state"][0],
                         "code": "authorization-secret",
@@ -157,7 +157,7 @@ async def test_browser_pkce_exchange_and_port_cleanup():
         await third.close()
 
 
-async def test_browser_port_conflict_is_reported_without_interfering_with_owner():
+async def test_browser_port_conflict_is_reported_without_interfering_with_owner(openai_callback):
     receiver = CallbackReceiver("other-client")
     await receiver.start(1455)
     try:

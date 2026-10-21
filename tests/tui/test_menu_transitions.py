@@ -15,7 +15,7 @@ from textual.widgets import Input, OptionList, Static
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.screens import Choice, ChoiceScreen, MultiChoiceScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME
-from tests.tui.helpers import run_ready_app
+from tests.tui.helpers import run_ready_app, wait_until
 from tests.tui.test_app import _application, _wait_for_screen
 
 
@@ -51,8 +51,11 @@ async def test_waiting_choice_animates_without_blocking_filter_navigation_or_clo
             assert isinstance(prompt, Text)
             assert prompt.plain.startswith(DEFAULT_TUI_THEME.spinner_frames)
             first_frame = prompt.plain
-            await pilot.pause(DEFAULT_TUI_THEME.spinner_interval_seconds * 1.2)
-            assert options.get_option("slow").prompt.plain != first_frame
+            await wait_until(
+                lambda: options.get_option("slow").prompt.plain != first_frame,
+                pilot,
+                description="waiting choice animation to advance",
+            )
             await pilot.press("enter", "down")
             assert calls == ["slow"]
             assert options.get_option_at_index(options.highlighted).id == "other"
@@ -274,6 +277,18 @@ def _parent_frames(
 
     with monkeypatch.context() as patch:
         patch.setattr(app, "_display", capture)
+        pop_screen = app.pop_screen
+
+        def pop_and_repaint():
+            result = pop_screen()
+            if app.screen is parent:
+                # Force an already-due repaint before the queued ScreenResume.
+                # Every return path must publish a complete parent in this order too.
+                parent.refresh()
+                parent._on_timer_update()
+            return result
+
+        patch.setattr(app, "pop_screen", pop_and_repaint)
         yield frames
 
 
@@ -324,7 +339,7 @@ async def test_child_return_renders_complete_parent_frames(
             await pilot.pause()
         assert app.screen is parent
         assert frames
-        assert all("ACTIONS" in frame and action in frame for frame in frames)
+        assert all("ACTIONS" in frame and action in frame for frame in frames), frames
         assert filter_input.value == action
         assert filter_input.has_focus
         assert filter_input.selection.is_empty

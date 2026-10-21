@@ -22,6 +22,7 @@ from ouro.tui.commands import resolve_command
 from ouro.tui.data_transfer import DataTransferScreen
 from ouro.tui.screens import ChoiceScreen, MultiChoiceScreen
 from ouro.tui.widgets import Composer, ConversationHistory
+from tests.tui.helpers import wait_for_screen, wait_until
 
 
 def test_transfer_command_only_exports_current_session_without_arguments():
@@ -174,16 +175,19 @@ async def _choose_menu_row(app, pilot, identity):
 
 async def _open_data_menu(app, pilot, action, kind=None):
     await app._choose_action()
-    await pilot.pause()
+    await wait_for_screen(app, ChoiceScreen, title="ACTIONS")
     menu = app.screen
     await _choose_menu_row(app, pilot, "__ouro_system_setting__:data.transfer")
+    await wait_for_screen(app, ChoiceScreen, title="MANAGE DATA")
     assert app.screen is menu and menu._title == "MANAGE DATA"
     await _choose_menu_row(app, pilot, action)
     if action == "import":
+        await wait_for_screen(app, DataTransferScreen, title="IMPORT DATA")
         assert isinstance(app.screen, DataTransferScreen)
         assert app.screen._kind is None
         assert "kind" not in {row.value for row in app.screen._choices}
         return
+    await wait_for_screen(app, ChoiceScreen, title="EXPORT DATA")
     assert app.screen is menu
     assert {row.value for row in menu._choices} == {
         "providers",
@@ -198,6 +202,7 @@ async def _open_data_menu(app, pilot, action, kind=None):
         "Personal prompt configuration"
     )
     await _choose_menu_row(app, pilot, kind)
+    await wait_for_screen(app, DataTransferScreen, title="EXPORT DATA")
     assert isinstance(app.screen, DataTransferScreen)
 
 
@@ -456,15 +461,20 @@ async def test_data_menu_returns_through_pages_without_changing_conversation(tmp
         await app.workers.wait_for_complete()
         await _open_data_menu(app, pilot, "export", "skills")
         await pilot.press("escape")
-        await pilot.pause()
+        await wait_for_screen(app, ChoiceScreen, title="EXPORT DATA")
         menu = app.screen
         assert menu._title == "EXPORT DATA"
         await pilot.press("escape")
+        await wait_for_screen(app, ChoiceScreen, title="MANAGE DATA")
         assert app.screen is menu and menu._title == "MANAGE DATA"
         await _choose_menu_row(app, pilot, "import")
+        await wait_for_screen(app, DataTransferScreen, title="IMPORT DATA")
         assert isinstance(app.screen, DataTransferScreen)
         assert app.screen._kind is None
-        await pilot.press("escape", "escape")
+        await pilot.press("escape")
+        await wait_for_screen(app, ChoiceScreen, title="MANAGE DATA")
+        await pilot.press("escape")
+        await wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         assert app.screen is menu and menu._title == "ACTIONS"
 
 
@@ -485,6 +495,7 @@ async def test_export_session_selection_displays_identity_as_trailing_label(tmp_
         form = app.screen
         await _choose_menu_row(app, pilot, "selection")
         await _choose_menu_row(app, pilot, "selected")
+        await wait_for_screen(app, MultiChoiceScreen, title="SELECT SESSIONS")
         assert isinstance(app.screen, MultiChoiceScreen)
         assert {(row.label, row.trailing, row.description) for row in app.screen._choices} == {
             ("Conversation", "ses_alpha", ""),
@@ -494,6 +505,11 @@ async def test_export_session_selection_displays_identity_as_trailing_label(tmp_
         await pilot.pause()
         await pilot.press("space", "enter")
         await _choose_menu_row(app, pilot, "__multi_confirm__")
+        await wait_until(
+            lambda: form._identities == ("ses_beta",),
+            pilot,
+            description="export session selection applied",
+        )
         assert form._identities == ("ses_beta",)
         await _choose_menu_row(app, pilot, "submit")
         await app.workers.wait_for_complete()
