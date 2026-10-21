@@ -192,7 +192,7 @@ class BrandHeader(Static):
         self._render_header()
 
     def on_resize(self, event: events.Resize) -> None:
-        self._render_header(width=event.size.width)
+        self._render_header()
 
     def set_context(
         self,
@@ -211,15 +211,14 @@ class BrandHeader(Static):
     def refresh_theme(self) -> None:
         self._render_header()
 
-    def _render_header(self, *, width: int | None = None) -> None:
+    def _render_header(self) -> None:
         theme = theme_for(self)
-        available_width = self.size.width if width is None else width
         self.update(
             _brand_header_content(
                 self._session_title,
                 self._session_detail,
                 self._workspace,
-                width=available_width,
+                width=self.size.width,
                 theme=theme,
             )
         )

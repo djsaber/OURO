@@ -6359,13 +6359,15 @@ async def test_session_picker_restores_history_after_returning_to_welcome(
     )
     app = OuroTuiApp(application=application)
 
-    async with run_ready_app(app, size=(100, 32)) as pilot:
+    async with run_ready_app(app, size=(len(str(workspace)) + 40, 32)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+o")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         await pilot.press("enter")
         await _wait_for_active_session(app, pilot, session.session_id)
+        await pilot.pause()
         assert app.query_one(ConversationHistory).user_turns == ("Persisted user message",)
+        assert app.query_one(BrandHeader).render_line(0).text.rstrip().endswith(str(workspace))
 
         await pilot.press("ctrl+n")
         await _wait_until(
@@ -6384,6 +6386,7 @@ async def test_session_picker_restores_history_after_returning_to_welcome(
         history = app.query_one(ConversationHistory)
         assert history.user_turns == ("Persisted user message",)
         assert "Persisted user message" in history.rendered_text
+        assert app.query_one(BrandHeader).render_line(0).text.rstrip().endswith(str(workspace))
 
 
 @pytest.mark.asyncio
