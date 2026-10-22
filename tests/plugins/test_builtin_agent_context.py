@@ -21,6 +21,9 @@ from ouro.plugins.catalog import GenerationGate
 from ouro.plugins.environment import PluginEnvironmentService
 from ouro.plugins.instructions import AgentInstructionError, AgentInstructionLoader
 from ouro.providers import FauxProvider
+from ouro.providers.anthropic_messages_codec import messages_to_anthropic_messages
+from ouro.providers.openai_chat_completions_codec import messages_to_chat_completions
+from ouro.providers.openai_responses_codec import responses_input
 from ouro.sdk.plugins import v5 as sdk
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
@@ -76,6 +79,7 @@ def test_system_information_is_tagged_prompt_tail_with_day_precision() -> None:
     fragment = output.fragments[0]
     assert isinstance(fragment, sdk.ContextFragment)
     assert fragment.target == "system_prompt"
+    assert fragment.role == "system"
     assert fragment.persistence == "ephemeral"
     assert fragment.semantic_tag == "ouro-system-information"
     assert fragment.text == (
@@ -264,6 +268,8 @@ async def test_agent_instructions_keep_nested_discovery_contract_without_current
     fragment = output.fragments[0]
     assert isinstance(fragment, sdk.ContextFragment)
     assert fragment.semantic_tag == "ouro-agent-instructions"
+    assert fragment.target == "system_prompt"
+    assert fragment.role == "system"
     assert "check for a more specific AGENTS.md" in fragment.text
 
 
@@ -324,6 +330,29 @@ async def test_default_builtin_injects_instructions_then_runtime_facts_without_p
     assert context is not None
     assert "<ouro-agent-instructions>" in context.provider_context.system_prompt
     assert "<ouro-system-information>" in context.provider_context.system_prompt
+    prepared = context.provider_context
+    assert [message.text_content for message in prepared.messages] == ["Inspect the environment"]
+    assert [message.role for message in prepared.messages] == ["user"]
+    arguments = {
+        "system_prompt": prepared.system_prompt,
+        "provider_id": "faux",
+        "model_id": "faux",
+    }
+    responses = responses_input(prepared.messages, scope=(), **arguments)
+    assert responses["instructions"] == prompt
+    assert responses["input"] == [{"role": "user", "content": "Inspect the environment"}]
+    chat = messages_to_chat_completions(prepared.messages, supports_image_input=False, **arguments)
+    assert chat == [
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": "Inspect the environment"},
+    ]
+    system, messages = messages_to_anthropic_messages(
+        prepared.messages, supports_image_input=False, **arguments
+    )
+    assert system == prompt
+    assert messages == [
+        {"role": "user", "content": [{"type": "text", "text": "Inspect the environment"}]}
+    ]
 
 
 def _context_call(*, workspace: str | None = None) -> sdk.ContextCall:

@@ -73,7 +73,7 @@ the end of the complete system prompt.
 ## State and Boundaries
 
 - Neither provider creates a canonical Session message or durable plugin state.
-- Both providers target only the request-local system prompt.
+- Both providers explicitly declare `role=system` and target only the request-local system prompt.
 - The plugin does not activate Skills, reinterpret vendor-specific instruction files, or search
   below the current workspace.
 - Context Provider execution uses the framework callback boundary; synchronous file discovery does

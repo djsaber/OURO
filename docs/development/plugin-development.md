@@ -129,7 +129,7 @@ Compaction Strategy handler 同样可以把 `CancellationContext` 作为第二�
 周期性调用 `raise_if_aborted`，异步 handler 和 worker 调用则由 Host task cancellation 传播。Host 不会强杀或遗弃仍在
 运行的 Python 同步线程，取消后产生的迟到摘要不会被激活。
 `SessionInput` 分别携带 `role`、`scaffold` 和可选 `semantic_tag`；SDK 的默认构造值为
-`role="system", scaffold=True, semantic_tag=None`，插件应按消息真实语义显式选择，Host 不从其中任何一项推导
+`role="user", scaffold=True, semantic_tag=None`，插件应按消息真实语义显式选择，Host 不从其中任何一项推导
 另一项。插件 provenance 始终保留，`role="user"` 不等于直接用户来源或授权。Tool
 Policy 只能把执行提升为审批或拒绝，不能降低 Host policy、批准调用或改写参数。
 

@@ -25,6 +25,13 @@ semantic envelope renderer 包裹原始正文；未提供标签时直接拼接�
 之后，进入 token 估算和请求快照，但不构造消息。恢复投影只在模型上下文中标记 incomplete assistant 尝试，
 不把它升级为 canonical 完成消息。
 
+脚手架输入、Context Fragment 和续跑决策默认使用 `role=user`，提供方可显式声明其他角色。
+基础指令与 Skills 继续组装为 system prompt；Agent Context 的 AGENTS.md 指令和运行环境信息显式声明
+`role=system, target=system_prompt`，只进入系统提示词，不构造 user 消息。
+内置 Plan 与 Goal 的 Context Provider 使用 `persistence=message`，在模型请求准备边界将 user 脚手架追加到
+canonical history；模式和目标状态不并入 system prompt。子 Agent 指导和异步结果也以 user 脚手架进入普通输入队列。
+这些消息保留来源和语义标签，user 角色不表示真人输入，也不改变执行权限。
+
 ## 最近一次 Provider 请求快照
 
 最近请求快照记录已准备请求的事实。追加响应或更新 Harness 状态不会使它失效，进行中的请求仍使用原身份

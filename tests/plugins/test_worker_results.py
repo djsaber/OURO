@@ -123,6 +123,24 @@ async def test_worker_defaults_and_unchanged_state(worker, view, kind):
     assert diagnostics == []
 
 
+@pytest.mark.parametrize("role", [None, "system"])
+@pytest.mark.parametrize("kind", ["context", "command", "continuation"])
+async def test_worker_scaffold_role_defaults_to_user_and_preserves_explicit_role(
+    worker, kind, role
+):
+    invoke, _ = worker
+    fields = {} if role is None else {"role": role}
+    if kind == "context":
+        output = await invoke(kind, {"fragments": [{"text": "Context", **fields}]})
+        message = output.fragments[0]
+    elif kind == "command":
+        output = await invoke(kind, {"session_inputs": [{"prompt": "Continue", **fields}]})
+        message = output.session_inputs[0]
+    else:
+        message = await invoke(kind, {"action": "continue", "prompt": "Continue", **fields})
+    assert message.role == (role or "user")
+
+
 @pytest.mark.parametrize("kind", ["tool", "tool_resume"])
 async def test_worker_input_request_and_output_remain_distinct(worker, kind):
     invoke, _ = worker

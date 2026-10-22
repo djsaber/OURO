@@ -1630,7 +1630,7 @@ def _decode_worker_continuation(result: dict[str, Any], method: str) -> sdk.Cont
         prompt=result.get("prompt"),
         mode=mode,
         title=result.get("title"),
-        role=_worker_session_input_role(result.get("role", "system")),
+        role=_worker_session_input_role(result.get("role", "user")),
         scaffold=_worker_scaffold(result.get("scaffold", True)),
         semantic_tag=_worker_semantic_tag(result.get("semantic_tag")),
         coalesce_key=result.get("coalesce_key"),
@@ -1703,7 +1703,7 @@ def _worker_session_inputs(raw: dict[str, Any]) -> tuple[sdk.SessionInput, ...]:
         prompt = value.get("prompt")
         mode = value.get("mode", "follow_up")
         title = value.get("title")
-        role = value.get("role", "system")
+        role = value.get("role", "user")
         scaffold = _worker_scaffold(value.get("scaffold", True))
         semantic_tag = _worker_semantic_tag(value.get("semantic_tag"))
         driver_id = value.get("driver_id")
@@ -1815,7 +1815,7 @@ def _worker_context_fragment(raw: object) -> str | sdk.ContextFragment:
     text = raw.get("text")
     persistence = raw.get("persistence", "ephemeral")
     target = raw.get("target", "message")
-    role = _worker_session_input_role(raw.get("role", "system"))
+    role = _worker_session_input_role(raw.get("role", "user"))
     scaffold = _worker_scaffold(raw.get("scaffold", True))
     semantic_tag = _worker_semantic_tag(raw.get("semantic_tag"))
     if not isinstance(text, str) or not text:

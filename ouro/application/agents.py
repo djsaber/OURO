@@ -1015,6 +1015,7 @@ class AgentService:
             await self.scheduler.route_host_input(
                 HostSessionInput(
                     prompt=message,
+                    role="user",
                     mode="steer",
                     host_source_id=(f"ouro.subagents/{delegation_id}/messages/{request_id}"),
                     semantic_tag="subagent-message",
@@ -1032,6 +1033,7 @@ class AgentService:
             run,
             HostSessionInput(
                 prompt=message,
+                role="user",
                 mode="follow_up",
                 host_source_id=f"ouro.subagents/{delegation_id}/messages/{request_id}",
                 semantic_tag="subagent-message",
@@ -1759,6 +1761,7 @@ class AgentService:
                 receipt = await self.scheduler.route_host_input(
                     HostSessionInput(
                         prompt=prompt,
+                        role="user",
                         mode="steer",
                         host_source_id=f"ouro.subagents/results/{result.delivery.delivery_id}",
                         semantic_tag="subagent-result",

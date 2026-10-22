@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from dataclasses import dataclass, field
+from itertools import pairwise
 
 import pytest
 
@@ -18,10 +19,12 @@ from ouro.config.compaction import CompactionConfig
 from ouro.config.queued_inputs import QueuedInputConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.compaction import CompactionArtifact, CompactionStrategyRegistry
+from ouro.core.errors import SessionBranchError
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent, Usage
 from ouro.core.state import SessionRecord
 from ouro.core.tools import ToolCallRequest
 from ouro.local_application import LocalApplication
+from ouro.providers.openai_responses_codec import responses_input
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 
@@ -34,9 +37,11 @@ class ScriptedProvider:
     def __init__(self):
         self.responses = deque()
         self.requests = []
+        self.system_prompts = []
 
     async def stream(self, *, model, messages, **kwargs):
         self.requests.append(list(messages))
+        self.system_prompts.append(kwargs["system_prompt"])
         assert self.responses, "Goal started an unexpected model request"
         response = self.responses.popleft()
         if isinstance(response, ToolCallRequest):
@@ -47,6 +52,22 @@ class ScriptedProvider:
 
     async def check_connection(self, model, **kwargs):
         return ProviderCheckResult(provider_id=self.provider_id, model_id=model.model_id, ok=True)
+
+
+def _assert_provider_input_prefix(provider):
+    payloads = [
+        responses_input(
+            messages,
+            system_prompt=system_prompt,
+            provider_id=provider.provider_id,
+            model_id="goal-test",
+            scope=(),
+        )
+        for messages, system_prompt in zip(provider.requests, provider.system_prompts, strict=True)
+    ]
+    for previous, current in pairwise(payloads):
+        assert current["instructions"] == previous["instructions"]
+        assert current["input"][: len(previous["input"])] == previous["input"]
 
 
 class GoalSummary:
@@ -150,6 +171,114 @@ async def goal_app(tmp_path, request):
         await app.close()
 
 
+async def test_goal_creation_and_completion_preserve_the_provider_input_prefix(goal_app):
+    g = goal_app
+    g.provider.responses.append("Existing conversation.")
+    await g.say("Background information.")
+    await g.command("Check the result")
+    g.provider.responses.extend(
+        [
+            ToolCallRequest(
+                id="complete",
+                name="UpdateGoal",
+                arguments={"status": "complete", "report": "Checked the result."},
+            ),
+            "Goal complete.",
+        ]
+    )
+    await g.consume()
+    assert len(g.provider.requests) == 3
+    _assert_provider_input_prefix(g.provider)
+    messages = g.runtime.store.load_session(g.session.session_id).messages
+    snapshots = [message for message in messages if message.semantic_tag == "goal-context"]
+    assert snapshots
+    assert all(message.role == "user" and message.scaffold for message in snapshots)
+    assert "Status: complete" in snapshots[-1].text_content
+
+
+@pytest.mark.parametrize("command", ["pause", "resume", "replace Updated objective", "cancel"])
+async def test_goal_lifecycle_commands_preserve_the_provider_input_prefix(goal_app, command):
+    g = goal_app
+    await g.command("Original objective")
+    await g.command("pause")
+    g.provider.responses.append("The goal is paused.")
+    await g.consume()
+    if command == "pause":
+        await g.command("resume")
+    await g.command(command)
+    goal = await g.goal()
+    if goal is not None and goal["status"] == "active":
+        g.provider.responses.append(
+            ToolCallRequest(
+                id="complete",
+                name="UpdateGoal",
+                arguments={"status": "complete", "report": "Verified the result."},
+            )
+        )
+    g.provider.responses.append("Handled the latest operation.")
+    if g.pending():
+        await g.consume()
+    else:
+        await g.say("Handle the latest operation.")
+    assert len(g.provider.requests) >= 2
+    _assert_provider_input_prefix(g.provider)
+
+
+async def test_goal_context_refreshes_when_resuming_a_context_blocked_round(goal_app):
+    g = goal_app
+    model = g.runtime.adapter.model
+    g.runtime.adapter.model = model.model_copy(update={"context_window": 1000})
+    await g.command("Inspect the project")
+    blocked = await g.consume()
+    assert blocked.run.status == "paused"
+    assert blocked.run.metadata["pause"]["reason"] == "context_blocked"
+    assert blocked.run.model_round_count == 0
+    assert g.provider.requests == []
+    assert (await g.goal())["status"] == "paused"
+    before = g.runtime.store.load_session(g.session.session_id).messages
+    assert "Status: active" in before[-1].text_content
+
+    g.runtime.adapter.model = model
+    g.provider.responses.append("The goal is paused.")
+    resumed = await g.runtime.continue_run(session_id=g.session.session_id)
+    assert resumed.run.run_id == blocked.run.run_id
+    assert resumed.run.status == "completed"
+    assert (await g.goal())["status"] == "paused"
+    messages = g.runtime.store.load_session(g.session.session_id).messages
+    assert messages[: len(before)] == before
+    assert messages[-2].semantic_tag == "goal-context"
+    assert messages[-2].role == "user"
+    assert messages[-2].scaffold is True
+    assert "Status: paused" in g.provider.requests[-1][-1].text_content
+
+
+async def test_goal_branch_resets_persisted_context_and_business_state(goal_app):
+    g = goal_app
+    await g.command("Inspect the original project")
+    await g.command("pause")
+    g.provider.responses.append("Recorded initial progress.")
+    result = await g.consume()
+    assert result.run.status == "completed"
+    source = g.runtime.store.load_session(g.session.session_id)
+    context = next(m for m in source.messages if m.semantic_tag == "goal-context")
+    branch = g.runtime.sessions.branch(g.session.session_id, source.messages[-1].message_id)
+    branch_id = branch.session.session_id
+    status = await g.app.plugins.execute_command(
+        f"{PLUGIN_ID}:goal", "status", session_id=branch_id
+    )
+    assert status.data["goal"] is None
+    messages = g.runtime.store.load_session(branch_id).messages
+    assert not any(m.semantic_tag == "goal-context" for m in messages)
+    assert any(m.text_content == "Inspect the original project" for m in messages)
+
+    g.provider.responses.append("Discussing a different subject.")
+    await g.runtime.run("Discuss a different subject.", session_id=branch_id)
+    assert not any("<goal-context>" in m.text_content for m in g.provider.requests[-1])
+    with pytest.raises(SessionBranchError, match="must reset"):
+        g.runtime.sessions.branch(g.session.session_id, context.message_id)
+    assert g.runtime.store.load_session(g.session.session_id).messages == source.messages
+
+
 @pytest.mark.parametrize("resume", ["command", "continue", "message"])
 async def test_pause_stops_stream_and_resume_keeps_existing_input(goal_app, monkeypatch, resume):
     g = goal_app
@@ -206,9 +335,9 @@ async def test_pause_stops_stream_and_resume_keeps_existing_input(goal_app, monk
         assert results[-1].run.status == "completed"
         assert (await g.goal())["status"] == ("complete" if resume == "command" else "paused")
         messages = g.runtime.store.load_session(g.session.session_id).messages
-        inputs = [m for m in messages if m.role == "user"]
+        inputs = [m for m in messages if m.role == "user" and m.semantic_tag != "goal-context"]
         assert (inputs[:-1] if resume == "message" else inputs) == [
-            m for m in before if m.role == "user"
+            m for m in before if m.role == "user" and m.semantic_tag != "goal-context"
         ]
     finally:
         if not task.done():
@@ -298,7 +427,7 @@ async def test_creation_rejects_unfinished_goal_and_replaces_completed_record(go
     )
     await g.consume()
     assert (await g.goal())["tokens_used"] == 5
-    assert "Status: complete" in g.provider.requests[-1][0].text_content
+    assert "Status: complete" in g.provider.requests[-1][-1].text_content
     await g.command("Second objective")
     current = await g.goal()
     assert current["status"] == "active"
@@ -334,10 +463,10 @@ async def test_natural_language_creation_gets_context_and_preserves_request_usag
     assert goal["tokens_used"] == 5
     assert len(g.provider.requests) == 3
     second = g.provider.requests[1]
-    assert "Status: active" in second[0].text_content
-    assert "Check the result" in second[0].text_content
-    assert "Goal: active" in second[-1].text_content
-    assert "will be created" not in second[-1].text_content
+    assert "Status: active" in second[-1].text_content
+    assert "Check the result" in second[-1].text_content
+    assert "Goal: active" in second[-2].text_content
+    assert "will be created" not in second[-2].text_content
     messages = g.runtime.store.load_run_messages(g.session.session_id, result.run.run_id)
     assert not any(message.semantic_tag == "goal-create" for message in messages)
 
@@ -360,7 +489,7 @@ async def test_automatic_empty_work_pauses_and_user_information_does_not_resume(
     assert len(g.provider.requests) == 3
     assert (await g.goal())["status"] == "paused"
     assert (await g.goal())["tokens_used"] == 10
-    assert "The goal is stopped" in g.provider.requests[-1][0].text_content
+    assert "The goal is stopped" in g.provider.requests[-1][-1].text_content
 
 
 @pytest.mark.parametrize("status", ["paused", "blocked", "budget_exhausted"])
@@ -385,13 +514,7 @@ async def test_stopped_goal_allows_normal_tools_without_resuming(goal_app, statu
     await g.consume()
     goal = await g.goal()
     assert goal["status"] == status
-    assert (
-        sum(
-            "This status supersedes earlier goal notifications." in message.text_content
-            for message in g.provider.requests[0]
-        )
-        == 1
-    )
+    assert sum("<goal-context>" in message.text_content for message in g.provider.requests[0]) == 1
     used = goal["tokens_used"]
 
     g.provider.responses.extend(
@@ -410,7 +533,7 @@ async def test_stopped_goal_allows_normal_tools_without_resuming(goal_app, statu
     assert g.pending() == []
 
 
-async def test_compaction_preserves_current_goal_projection_without_persisting_it(goal_app):
+async def test_compaction_appends_current_goal_state_after_the_summary(goal_app):
     g = goal_app
     await g.command("Keep this exact objective")
     await g.command("pause")
@@ -424,11 +547,13 @@ async def test_compaction_preserves_current_goal_projection_without_persisting_i
     g.provider.responses.append("The goal remains paused.")
     await g.say("What is the current objective?")
     messages = g.provider.requests[-1]
-    assert "Keep this exact objective" in messages[0].text_content
-    assert "Status: paused" in messages[0].text_content
+    assert "Keep this exact objective" in messages[-1].text_content
+    assert "Status: paused" in messages[-1].text_content
     assert any("<conversation-summary>" in message.text_content for message in messages)
     canonical = g.runtime.store.load_session(g.session.session_id).messages
-    assert not any(message.semantic_tag == "goal-context" for message in canonical)
+    assert canonical[-2].semantic_tag == "goal-context"
+    assert canonical[-2].role == "user"
+    assert canonical[-2].scaffold is True
 
 
 async def test_pause_during_model_request_discards_uncommitted_tool_calls(goal_app, monkeypatch):
@@ -454,7 +579,7 @@ async def test_pause_during_model_request_discards_uncommitted_tool_calls(goal_a
     assert result.run.status == "aborted"
     assert g.executed_tools == []
     assert (await g.goal())["status"] == "paused"
-    assert "Status: active" in g.provider.requests[0][0].text_content
+    assert "Status: active" in g.provider.requests[0][-1].text_content
     assert len(g.provider.requests) == 1
     assert g.pending() == []
 
@@ -514,7 +639,9 @@ async def test_resume_after_completed_discussion_adds_no_input(goal_app):
     results = [item async for item in consume_plugin_command(g.runtime, submission)]
     assert results[-1].run.status == "completed"
     messages = g.runtime.store.load_session(g.session.session_id).messages
-    assert [m for m in messages if m.role == "user"] == [m for m in before if m.role == "user"]
+    assert [m for m in messages if m.role == "user" and m.semantic_tag != "goal-context"] == [
+        m for m in before if m.role == "user" and m.semantic_tag != "goal-context"
+    ]
 
 
 @pytest.mark.parametrize("existing_dialogue", [False, True])

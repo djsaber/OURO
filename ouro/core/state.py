@@ -127,7 +127,7 @@ class RunContinuationSettlementPlan(OuroModel):
     prompt: str | None = None
     mode: SessionInputMode = "follow_up"
     title: str | None = None
-    role: SessionInputRole = "system"
+    role: SessionInputRole = "user"
     scaffold: bool = True
     semantic_tag: SemanticTag | None = None
     coalesce_key: str | None = Field(default=None, min_length=1, max_length=128)

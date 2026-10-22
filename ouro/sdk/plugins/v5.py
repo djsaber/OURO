@@ -284,7 +284,7 @@ class SessionInput:
     prompt: str
     mode: SessionInputMode = "follow_up"
     title: str | None = None
-    role: SessionInputRole = "system"
+    role: SessionInputRole = "user"
     scaffold: bool = True
     semantic_tag: str | None = None
     driver_id: str | None = None
@@ -633,7 +633,7 @@ class ContinuationDecision:
     prompt: str | None = None
     mode: SessionInputMode = "follow_up"
     title: str | None = None
-    role: SessionInputRole = "system"
+    role: SessionInputRole = "user"
     scaffold: bool = True
     semantic_tag: str | None = None
     coalesce_key: str | None = None
@@ -751,7 +751,7 @@ class ContextFragment:
     text: str
     persistence: ContextFragmentPersistence = "ephemeral"
     target: ContextFragmentTarget = "message"
-    role: SessionInputRole = "system"
+    role: SessionInputRole = "user"
     scaffold: bool = True
     semantic_tag: str | None = None
 

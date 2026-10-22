@@ -33,7 +33,7 @@ class ContextFragment(OuroModel):
     text: str = Field(min_length=1)
     persistence: ContextFragmentPersistence = "ephemeral"
     target: ContextFragmentTarget = "message"
-    role: MessageRole = "system"
+    role: MessageRole = "user"
     scaffold: bool = True
     semantic_tag: SemanticTag | None = None
 
@@ -52,7 +52,7 @@ class AttributedContextFragment(OuroModel):
     text: str = Field(min_length=1)
     persistence: ContextFragmentPersistence = "ephemeral"
     target: ContextFragmentTarget = "message"
-    role: MessageRole = "system"
+    role: MessageRole = "user"
     scaffold: bool = True
     semantic_tag: SemanticTag | None = None
 

@@ -87,10 +87,8 @@ def creation_instruction(objective: str, token_budget: int | None) -> str:
 
 
 def goal_context(goal: GoalRecord) -> str:
-    """Project stable business facts without changing counters in the request prefix."""
-    return "Current goal. This status supersedes earlier goal notifications.\n\n" + _goal_snapshot(
-        goal
-    )
+    """Describe Goal state at this conversation boundary."""
+    return "Goal state after the latest operation.\n\n" + _goal_snapshot(goal)
 
 
 def _goal_snapshot(goal: GoalRecord) -> str:

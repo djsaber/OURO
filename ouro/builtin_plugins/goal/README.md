@@ -44,15 +44,20 @@ Resume starts a fresh blocker assessment.
 
 ## Context and Controls
 
-Temporary goal-context reads current state for each request, including after compaction. It contains
-the objective, status, total budget, relevant report, and action rules. Changing usage and timestamps
-stay out of the request prefix. Pending creation, replacement and cancellation batches coalesce.
-Raw objective text remains a non-scaffold user message in the initial atomic batch.
+At each model request boundary, goal-context appends a persistent user scaffold containing the
+objective, status, total budget, relevant report, and action rules. It also supplies the state after
+compaction. Lifecycle changes leave earlier messages and system instructions intact; the latest
+appended state guides subsequent work. GetGoal reports usage and timestamps; continuation messages
+also report usage. Pending creation, replacement and cancellation batches coalesce. Raw objective
+text remains a non-scaffold user message in the initial atomic batch.
+Retrying a blocked request appends changed Goal state even within the same model round; unchanged
+retries are deduplicated by the Context Provider mechanism.
 
 Pause commits goal state with the framework's generic stop intent and cancels the current execution.
 Resume uses the generic continue intent to resume retained work or consume the initial pending input.
-Neither operation adds a scaffold or input message. The framework owns cancellation, settlement and
-checkpoint recovery; completed tool results are retained without replaying their execution.
+Neither operation queues an additional execution input. The next model request appends the resulting
+state as a user scaffold. The framework owns cancellation, settlement and checkpoint recovery;
+completed tool results are retained without replaying their execution.
 
 Stopped goals allow normal conversation, tools and /continue without automatic goal resumption.
 The model can call UpdateGoal(active) when current evidence justifies resuming, preserving the budget;
@@ -80,7 +85,9 @@ usage. Old requests cannot complete a newly activated objective.
 - Controller mode exclusively claims ouro.session.primary_behavior, shared with Plan.
 - Context goal-context; continuation goal-continuation.
 - Permissions: sessions.write and background.run.
-- State uses branch_policy=reset; only schema 4 is supported.
+- State uses branch_policy=reset; its declared projection tags remove goal-context and lifecycle
+  notifications from branches together with Goal state. Ordinary conversation remains. Only
+  schema 4 is supported.
 - No private store, polling loop, history service, or permission escalation.
 
 commands.py handles commands; goal_plugin.py composes tools, transitions and policies; state.py owns

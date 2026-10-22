@@ -296,7 +296,7 @@ class PlanPlugin:
                 ContextFragment(
                     text=scaffold,
                     persistence="message",
-                    role="system",
+                    role="user",
                     scaffold=True,
                     semantic_tag="plan-context",
                 ),

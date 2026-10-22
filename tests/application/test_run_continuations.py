@@ -379,7 +379,7 @@ async def test_plugin_continuation_creates_attributed_scaffold_follow_up(
     assert [message.role for message in snapshot.messages] == [
         "user",
         "assistant",
-        "system",
+        "user",
         "assistant",
     ]
     scaffold = snapshot.messages[2]
@@ -460,7 +460,7 @@ async def test_plugin_command_returns_permission_checked_session_input(tmp_path)
     snapshot = store.load_runtime_session(result.session.session_id)
     assert len(snapshot.runs) == 1
     assert snapshot.runs[0].origin == "plugin"
-    assert snapshot.messages[0].role == "system"
+    assert snapshot.messages[0].role == "user"
     assert snapshot.messages[0].text_content == "Work on: ship the feature"
     assert inspected_prompts == []
 

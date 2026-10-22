@@ -411,9 +411,22 @@ class ContextPreparationService:
                 f"{run.run_id}:{model_round}:{fragment.plugin_id}:"
                 f"{fragment.provider_id}:{fragment.fragment_index}"
             )
-            if any(
-                message.metadata.get("context_provider_delivery_key") == delivery_key
-                for message in messages
+            previous = next(
+                (
+                    message
+                    for message in reversed(messages)
+                    if message.metadata.get("context_provider_delivery_key") == delivery_key
+                ),
+                None,
+            )
+            # Preparation can fail after persistence without advancing the model round.
+            # Deduplicate unchanged retries; append changed state after the previous value.
+            if (
+                previous is not None
+                and previous.text_content == fragment.text
+                and previous.role == fragment.role
+                and previous.scaffold == fragment.scaffold
+                and previous.semantic_tag == fragment.semantic_tag
             ):
                 continue
             metadata: dict[str, object] = {

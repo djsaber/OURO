@@ -53,7 +53,9 @@ Activation creates a unique Markdown artifact under:
 ```
 
 The Context Provider tells the Agent to investigate, design, verify, write that file, and call
-`ExitPlanMode` before implementation.
+`ExitPlanMode` before implementation. At each model request boundary it appends these instructions
+as a persistent user scaffold with the `plan-context` semantic tag. Plan state leaves system
+instructions and earlier conversation messages intact.
 
 ### Tool Restrictions
 

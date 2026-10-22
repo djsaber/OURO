@@ -4,6 +4,7 @@ import re
 import shutil
 from collections.abc import AsyncIterator
 from dataclasses import replace
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,7 @@ from ouro.core.session_controls import AttributedSessionControlTransition
 from ouro.core.state import SessionRecord
 from ouro.core.tools import ToolCallRequest
 from ouro.local_application import LocalApplication
+from ouro.providers.openai_responses_codec import responses_input
 from ouro.sessions import LocalSessionStore
 from ouro.tools import (
     Tool,
@@ -49,6 +51,7 @@ class PlanBuildProvider:
         self.stream_count = 0
         self.plan_path: Path | None = None
         self.requests: list[list[ModelMessage]] = []
+        self.system_prompts: list[str] = []
         self.tool_names: list[set[str]] = []
 
     async def stream(
@@ -60,8 +63,9 @@ class PlanBuildProvider:
         tools=None,
         request_context=None,
     ) -> AsyncIterator[ProviderStreamEvent]:
-        del model, system_prompt
+        del model
         self.requests.append(list(messages))
+        self.system_prompts.append(system_prompt)
         self.tool_names.append({_provider_tool_name(tool) for tool in tools or []})
         if self.stream_count == 0:
             call = ToolCallRequest(id="call_enter", name="EnterPlanMode", arguments={})
@@ -69,7 +73,7 @@ class PlanBuildProvider:
             scaffold = next(
                 message.text_content
                 for message in reversed(messages)
-                if message.role == "system" and "Plan file:" in message.text_content
+                if message.role == "user" and "<plan-context>" in message.text_content
             )
             match = re.search(r"Plan file: (.+)", scaffold)
             assert match is not None
@@ -272,6 +276,37 @@ async def _enable_plan_mode(application: LocalApplication) -> None:
     assert (await application.plugins.enable(PLUGIN_ID)).status == "active"
 
 
+async def test_plan_rounds_preserve_the_provider_input_prefix(tmp_path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    provider = PlanBuildProvider()
+    runtime, _ = _runtime(home, workspace, provider)
+    application = LocalApplication.from_runtime(runtime, home=home)
+    try:
+        await _enable_plan_mode(application)
+        result = await runtime.run("Design the implementation", approval_mode="auto")
+        assert result.run.status == "waiting_user"
+        assert len(provider.requests) == 4
+        payloads = [
+            responses_input(
+                messages,
+                system_prompt=system_prompt,
+                provider_id=provider.provider_id,
+                model_id="plan-test",
+                scope=(),
+            )
+            for messages, system_prompt in zip(
+                provider.requests, provider.system_prompts, strict=True
+            )
+        ]
+        for previous, current in pairwise(payloads):
+            assert current["instructions"] == previous["instructions"]
+            assert current["input"][: len(previous["input"])] == previous["input"]
+    finally:
+        await application.close()
+
+
 @pytest.mark.asyncio
 async def test_plan_command_creates_and_binds_a_session(tmp_path) -> None:
     home = tmp_path / "home"
@@ -372,7 +407,7 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
         and message.metadata.get("plugin_id") == PLUGIN_ID
     ]
     assert len(scaffolds) == 3
-    assert all(message.role == "system" for message in scaffolds)
+    assert all(message.role == "user" for message in scaffolds)
     assert all(message.semantic_tag == "plan-context" for message in scaffolds)
     assert all(str(first_provider.plan_path) in message.text_content for message in scaffolds)
     assert all(

@@ -153,6 +153,7 @@ application 用例仍负责取得 mutation lock、准备业务字段、先保存
 - `MessageRole` 是封闭枚举：`system | user | assistant | tool_result`，只表达模型看到的上下文身份。
 - `scaffold: bool` 只表达消息是否由 Harness 有意构造并注入；它与 role 正交，四种 role 都可以是或不是
   scaffold。
+- 脚手架输入、Context Fragment 与续跑决策的默认 role 为 `user`；显式 role 原样传递，持久消息按已保存的角色读取。
 - `semantic_tag` 是可选模型可见语义标记；它与 role、scaffold 和 producer provenance 都正交。只有提供方显式
   声明标签时，统一 renderer 才形成语义包络。
 - 消息提供方必须显式定义 role、scaffold 和 semantic tag；Core、队列、Store 和 Provider adapter 只校验并传递，

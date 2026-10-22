@@ -117,6 +117,7 @@ class GoalStateRepository:
             payload=cast(JsonValue, state.to_json()),
             branch_policy="reset",
             projection_semantic_tags=(
+                "goal-context",
                 "goal-create",
                 "goal-continue",
                 "goal-updated",

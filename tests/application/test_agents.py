@@ -31,6 +31,7 @@ from ouro.core.session_commits import SessionCommit
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolInvocation
 from ouro.providers.anthropic_messages_codec import messages_to_anthropic_messages
+from ouro.providers.openai_responses_codec import responses_input
 from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolInputRequest, ToolRegistry, ToolResult
@@ -1369,7 +1370,7 @@ async def test_spawn_retry_rejects_changed_request_for_same_idempotency_key(tmp_
 
 @pytest.mark.asyncio
 async def test_idle_child_follow_up_reuses_session_and_creates_new_run(tmp_path) -> None:
-    service, supervisor, store, _ = await _services(tmp_path)
+    service, supervisor, store, provider = await _services(tmp_path)
     first = await service.spawn_agent(
         SpawnAgentRequest(
             request_id="host/initial-child",
@@ -1396,7 +1397,7 @@ async def test_idle_child_follow_up_reuses_session_and_creates_new_run(tmp_path)
     assert resumed.child_run_id != first.child_run_id
     child_snapshot = store.load_runtime_session(first.child_session_id)
     assert len(child_snapshot.runs) == 2
-    assert child_snapshot.messages[-2].role == "system"
+    assert child_snapshot.messages[-2].role == "user"
     assert child_snapshot.messages[-2].semantic_tag == "subagent-message"
     assert (
         child_snapshot.messages[-2]
@@ -1404,6 +1405,19 @@ async def test_idle_child_follow_up_reuses_session_and_creates_new_run(tmp_path)
         .endswith("/messages/host/follow-up-1")
     )
     assert child_snapshot.messages[-1].text_content == "child complete"
+    payloads = [
+        responses_input(
+            messages,
+            system_prompt=prompt,
+            provider_id=provider.provider_id,
+            model_id="child",
+            scope=(),
+        )
+        for messages, prompt in zip(provider.messages, provider.system_prompts, strict=True)
+    ]
+    assert len(payloads) == 2
+    assert payloads[1]["instructions"] == payloads[0]["instructions"]
+    assert payloads[1]["input"][: len(payloads[0]["input"])] == payloads[0]["input"]
     await service.close()
     await supervisor.shutdown()
 
@@ -1517,7 +1531,7 @@ async def test_active_child_message_uses_steer_without_new_run(tmp_path) -> None
         if message.metadata.get("host_source_id", "").endswith("/messages/host/steer-1")
     ]
     assert len(steer_messages) == 1
-    assert steer_messages[0].role == "system"
+    assert steer_messages[0].role == "user"
     assert snapshot.messages[-1].text_content == "steered child complete"
     await service.close()
     await supervisor.shutdown()
@@ -1660,7 +1674,7 @@ async def test_sync_follow_up_result_is_delivered_to_parent(tmp_path) -> None:
         == f"ouro.subagents/results/{relation.result.delivery.delivery_id}"
     ]
     assert len(delivered) == 1
-    assert delivered[0].role == "system"
+    assert delivered[0].role == "user"
     assert delivered[0].semantic_tag == "subagent-result"
     assert "## Subagent Result" in delivered[0].text_content
     assert "child complete" in delivered[0].text_content
@@ -1731,7 +1745,8 @@ async def test_sync_follow_up_result_stays_pending_after_parent_abort(tmp_path) 
     assert relation.result.delivery.policy == "resume_waiter"
     assert relation.result.delivery.status == "pending"
     assert not any(
-        message.role == "system" for message in store.load_runtime_session("ses_root").messages
+        message.semantic_tag == "subagent-result"
+        for message in store.load_runtime_session("ses_root").messages
     )
     await service.close()
     await supervisor.shutdown()
@@ -3270,7 +3285,7 @@ async def test_next_boundary_delivery_racing_parent_round_is_committed_once(tmp_
         == f"ouro.subagents/results/{delivered.result.delivery.delivery_id}"
     ]
     assert len(delivery_messages) == 1
-    assert delivery_messages[0].role == "system"
+    assert delivery_messages[0].role == "user"
     assert len(snapshot.runs) == 1
     assert snapshot.messages[-1].text_content == "parent consumed child result"
     await service.reconcile()
@@ -3354,7 +3369,7 @@ async def test_async_result_delivery_is_exact_once(tmp_path) -> None:
         == f"ouro.subagents/results/{relation.result.delivery.delivery_id}"
     ]
     assert len(delivered_messages) == 1
-    assert delivered_messages[0].role == "system"
+    assert delivered_messages[0].role == "user"
     delivered_content = delivered_messages[0].text_content
     assert "## Subagent Result" in delivered_content
     assert f"**Delegation ID**: `{relation.delegation_id}`" in delivered_content

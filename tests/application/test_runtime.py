@@ -904,7 +904,7 @@ async def test_prompt_policy_excludes_plugin_input_and_human_resolutions(tmp_pat
     assert plugin_result.run.status == "completed"
     assert inspected_prompts == ["Write the approved file", "Ask for a file"]
     plugin_snapshot = store.load_runtime_session(plugin_result.session.session_id)
-    assert plugin_snapshot.messages[0].role == "system"
+    assert plugin_snapshot.messages[0].role == "user"
 
 
 @pytest.mark.asyncio
@@ -1649,7 +1649,7 @@ async def test_runtime_context_provider_adds_context_to_provider(tmp_path) -> No
     result = await runtime.run("Use context")
 
     assert seen_system_prompts == [DEFAULT_SYSTEM_PROMPT]
-    assert seen_messages[0].role == "system"
+    assert seen_messages[0].role == "user"
     assert seen_messages[0].text_content == "extra context"
     snapshot = store.load_runtime_session(result.session.session_id)
     assert not any(
@@ -1757,7 +1757,7 @@ async def test_runtime_persists_context_provider_message_with_provenance(tmp_pat
         for message in snapshot.messages
         if message.metadata.get("kind") == "context_provider"
     )
-    assert scaffold.role == "system"
+    assert scaffold.role == "user"
     assert scaffold.scaffold is True
     assert scaffold.semantic_tag == "plugin-context"
     assert scaffold.text_content == "durable harness context"
@@ -1772,7 +1772,7 @@ async def test_runtime_persists_context_provider_message_with_provenance(tmp_pat
     }
     assert (
         sum(
-            message.role == "system"
+            message.role == "user"
             and message.text_content
             == "<plugin-context>\ndurable harness context\n</plugin-context>"
             for message in provider.messages
@@ -1780,6 +1780,88 @@ async def test_runtime_persists_context_provider_message_with_provenance(tmp_pat
         == 1
     )
     assert all(not hasattr(message, "message_id") for message in provider.messages)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"text": "State B"},
+        {"role": "system"},
+        {"scaffold": False},
+        {"semantic_tag": "updated-state"},
+    ],
+)
+async def test_context_provider_retry_appends_changes_without_rewriting_history(
+    tmp_path, change
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = CapturingProvider()
+    model = ModelMetadata(model_id="capture", provider_id="capture")
+    adapter = RuntimeAdapter(provider, model.model_copy(update={"context_window": 1}))
+    initial = ContextFragment(text="State A", persistence="message", semantic_tag="test-state")
+    fragment = initial
+    context_providers = ContextProviderRegistry()
+    context_providers.replace_owner(
+        "ctx",
+        (
+            ContextProviderRegistration(
+                plugin_id="dev.example.context",
+                provider_id="state",
+                handler=lambda _call: ContextProviderResult(fragments=[fragment]),
+            ),
+        ),
+    )
+
+    def create_runtime():
+        return RuntimeService(
+            store=store,
+            adapter=adapter,
+            tools=ToolRegistry(),
+            context_providers=context_providers,
+        )
+
+    runtime = create_runtime()
+    try:
+        blocked = await runtime.run("Use current context")
+        session_id = blocked.session.session_id
+        assert blocked.run.status == "paused"
+        before = store.load_session(session_id).messages
+        await runtime.close()
+        runtime = create_runtime()
+        changed = initial.model_copy(update=change)
+        for next_fragment, expected in (
+            (initial, [initial]),
+            (changed, [initial, changed]),
+            (changed, [initial, changed]),
+            (initial, [initial, changed, initial]),
+        ):
+            fragment = next_fragment
+            retried = await runtime.continue_run(session_id=session_id)
+            assert retried.run.run_id == blocked.run.run_id
+            assert retried.run.status == "paused"
+            assert retried.run.model_round_count == 0
+            messages = store.load_session(session_id).messages
+            assert messages[: len(before)] == before
+            scaffolds = [m for m in messages if m.metadata.get("kind") == "context_provider"]
+            assert len(scaffolds) == len(expected)
+            for message, value in zip(scaffolds, expected, strict=True):
+                assert message.text_content == value.text
+                assert message.role == value.role
+                assert message.scaffold == value.scaffold
+                assert message.semantic_tag == value.semantic_tag
+            before = messages
+
+        adapter.model = model
+        assert provider.calls == 0
+        completed = await runtime.continue_run(session_id=session_id)
+        assert completed.run.status == "completed"
+        assert provider.calls == 1
+        messages = store.load_session(session_id).messages
+        assert messages[:-1] == before
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -1887,10 +1969,10 @@ async def test_runtime_merges_context_builder_skills_before_provider_context(tmp
     assert provider.system_prompt.startswith(DEFAULT_SYSTEM_PROMPT.strip())
     assert "<skills_instructions>" in provider.system_prompt
     assert "<name>pdf</name>" in provider.system_prompt
-    system_messages = [
-        message.text_content for message in provider.messages if message.role == "system"
+    scaffold_messages = [
+        message.text_content for message in provider.messages if message.role == "user"
     ]
-    assert system_messages == ["plugin context"]
+    assert scaffold_messages == ["plugin context", "Use context"]
 
 
 @pytest.mark.asyncio

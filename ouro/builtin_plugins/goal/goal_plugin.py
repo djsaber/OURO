@@ -419,6 +419,7 @@ class GoalPlugin:
             fragments=(
                 ContextFragment(
                     text=goal_context(goal),
+                    persistence="message",
                     role="user",
                     scaffold=True,
                     semantic_tag="goal-context",

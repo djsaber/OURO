@@ -707,10 +707,11 @@ producer、typed input/output、组合、失败和授权规则同时明确时才
 ### 10.2 Context Provider
 
 Context Fragment 显式声明 `persistence = ephemeral | message`，默认 `ephemeral`，并独立携带 role、scaffold 与
-可选 semantic tag（SDK 默认值是显式契约值 `role=system, scaffold=true, semantic_tag=None`）。`message` 表示该
+可选 semantic tag（SDK 默认值是显式契约值 `role=user, scaffold=true, semantic_tag=None`）。`message` 表示该
 片段必须在模型请求前由 application 以提供方给出的消息属性和 provider/generation provenance 持久化为 canonical
-message；
-Run/model round/provider/fragment index 构成幂等 delivery identity。持久化失败阻断模型请求，不能退化为临时注入。
+message。Run/model round/provider/fragment index 标识请求边界内的片段位置；重试时，正文、role、scaffold 和
+semantic tag 与该位置最近一次持久消息一致才跳过。内容或消息属性变化时追加新消息，不改写已有历史；
+恢复为更早的值也按新变化追加。持久化失败阻断模型请求，不能退化为临时注入。
 该机制服务需要审计和恢复的 Harness 消息，不把所有动态 Context Provider 输出强制写入历史。
 
 Fragment 的 `target = message | system_prompt` 默认是 `message`。`system_prompt` target 只允许 ephemeral：

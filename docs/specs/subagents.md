@@ -83,7 +83,7 @@ child_run_id 和状态。Handle 是控制引用，不是 canonical 运行事实�
 8. waiting child、waiting approval 和 waiting user 不占用模型/工具执行 permit。
 9. Delegation、child Session、child Run、result delivery 和 interaction 都有可重建的 durable identity。
 10. child terminal 状态不能由 UI、内存 task、进程退出码或缺失事件单独推断。
-11. async result 必须保留 Host/Agent provenance，不能写成 role=user。
+11. async result 使用 role=user、scaffold=true，并保留 Host/Agent provenance；模型角色不代表直接用户来源。
 12. 权限求值先应用不可突破的 capability cap，再应用 auto/approval/deny。
 13. 恢复不得自动重放 running 或 unknown_outcome 的 child 工具调用。
 14. Host 只能通过 application service/DTO 订阅和控制 child，不直接读取 delegation 文件。
@@ -571,7 +571,7 @@ next_boundary 应复用现有 durable queued input：
 
 - producer=host；
 - host_source_id=ouro.subagents/results/<delivery_id>；
-- role=system，scaffold=true；
+- role=user，scaffold=true；
 - queue id 与 delivery_id 稳定关联；
 
 `submit_host_input` 只负责持久接收并返回 receipt，`consume_host_input` 才把已接收项推进普通 Run 路径。异步 child

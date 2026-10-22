@@ -103,6 +103,7 @@ class AgentContextPlugin:
             fragments=(
                 ContextFragment(
                     text=text,
+                    role="system",
                     semantic_tag="ouro-agent-instructions",
                     target="system_prompt",
                 ),
@@ -114,6 +115,7 @@ class AgentContextPlugin:
             fragments=(
                 ContextFragment(
                     text=self._render_system_information(call, self._clock()),
+                    role="system",
                     semantic_tag="ouro-system-information",
                     target="system_prompt",
                 ),

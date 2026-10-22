@@ -33,7 +33,7 @@ class SessionInputRequest(OuroModel):
     prompt: str = Field(min_length=1)
     mode: SessionInputMode = "follow_up"
     title: str | None = None
-    role: SessionInputRole = "system"
+    role: SessionInputRole = "user"
     scaffold: bool = True
     semantic_tag: SemanticTag | None = None
     driver_id: str | None = Field(default=None, min_length=1)

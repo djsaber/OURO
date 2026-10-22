@@ -63,12 +63,12 @@ class _EndToEndGoalProvider:
         self.calls += 1
         if call == 0:
             assert messages[-1].role == "user"
-            assert messages[-1].text_content == "Ship end to end"
-            assert "<goal-create>" in messages[-2].text_content
-            assert "Status: active" in messages[0].text_content
+            assert messages[-2].text_content == "Ship end to end"
+            assert "<goal-create>" in messages[-3].text_content
+            assert "Status: active" in messages[-1].text_content
             yield ProviderStreamEvent(type="text_delta", text="Made verified progress.")
         elif call == 1:
-            assert "<goal-continue>" in messages[-1].text_content
+            assert "<goal-continue>" in messages[-2].text_content
             yield ProviderStreamEvent.from_tool_call(
                 ToolCallRequest(
                     id="complete_goal",
@@ -494,7 +494,7 @@ async def test_goal_runs_end_to_end_and_retains_final_usage(tmp_path) -> None:
 
         messages = store.load_session(session.session_id).messages
         by_tag = {message.semantic_tag: message for message in messages if message.semantic_tag}
-        assert set(by_tag) == {"goal-create", "goal-continue"}
+        assert set(by_tag) == {"goal-create", "goal-continue", "goal-context"}
         for scaffold in by_tag.values():
             assert scaffold.role == "user"
             assert scaffold.scaffold is True
