@@ -627,7 +627,9 @@ def test_skills_commands_list_show_roots_and_prompt(
 
     assert show_code == 0
     assert show_payload["skill"]["name"] == "xlsx"
-    assert show_payload["skill"]["content"] == "XLSX instructions."
+    assert show_payload["skill"]["content"] == (
+        workspace / ".ouro" / "skills" / "xlsx" / "SKILL.md"
+    ).read_text(encoding="utf-8")
 
     roots_code = main(["skills", "roots", "--home", str(home), "--json"])
     roots_payload = json.loads(capsys.readouterr().out)

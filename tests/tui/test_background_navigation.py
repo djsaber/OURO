@@ -411,6 +411,7 @@ async def test_usage_refresh_does_not_update_hidden_welcome_and_reentry_reads_cu
     )
     app = OuroTuiApp(application=application)
     entered, release = asyncio.Event(), asyncio.Event()
+    full_status_read, publish_full_status = asyncio.Event(), asyncio.Event()
     calls = 0
 
     async def summary():
@@ -423,7 +424,16 @@ async def test_usage_refresh_does_not_update_hidden_welcome_and_reentry_reads_cu
         return UsageSummary(usage_filter=UsageFilter(), totals=UsageTotals(request_count=value))
 
     async with run_ready_app(app) as pilot:
+        system_status = app._controller.system_status
+
+        async def held_system_status():
+            status = await system_status()
+            full_status_read.set()
+            await publish_full_status.wait()
+            return status
+
         monkeypatch.setattr(app._controller, "usage_summary", summary)
+        monkeypatch.setattr(app._controller, "system_status", held_system_status)
         refresh = asyncio.create_task(app._refresh_welcome_status())
         try:
             await asyncio.wait_for(entered.wait(), 2)
@@ -433,15 +443,37 @@ async def test_usage_refresh_does_not_update_hidden_welcome_and_reentry_reads_cu
             assert calls == 1
             if reenter_before_read:
                 await app._new_session()
+                # Reentry schedules a full refresh after layout. Make sure it
+                # joins the in-flight read before releasing that stale result.
+                await wait_until(
+                    lambda: app._welcome_refresh_requested == "system",
+                    pilot,
+                    description="welcome reentry refresh queued behind the stale usage read",
+                )
+            release.set()
+            if not reenter_before_read:
+                await refresh
+                assert app.query_one(WelcomePanel)._status is status
+                await app._new_session()
+
+            await asyncio.wait_for(full_status_read.wait(), 5)
+            assert calls == 2
+            # A completed usage query is not a published full snapshot. Neither
+            # the hidden view nor the reentered view may receive the stale read.
+            assert app.query_one(WelcomePanel)._status.usage_request_count == (
+                status.usage_request_count
+            )
         finally:
             release.set()
-        await refresh
-        if not reenter_before_read:
-            assert app.query_one(WelcomePanel)._status is status
-            await app._new_session()
-        await pilot.pause()
+            publish_full_status.set()
+            await refresh
+        await wait_until(
+            lambda: app.query_one(WelcomePanel)._status.usage_request_count == 2,
+            pilot,
+            description="current welcome usage snapshot published",
+        )
         assert calls == 2
-        assert app.query_one(WelcomePanel)._status.usage_request_count == 2
+        assert app._system_status.usage_request_count == 2
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])

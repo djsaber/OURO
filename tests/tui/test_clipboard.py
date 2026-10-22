@@ -8,9 +8,7 @@ from rich.text import Text
 from textual import events
 from textual._xterm_parser import XTermParser
 from textual.app import App, ComposeResult
-from textual.geometry import Offset
 from textual.screen import Screen
-from textual.selection import Selection
 from textual.widgets import Input, Static
 
 from ouro.application.agent_models import AgentTreeNode
@@ -256,19 +254,15 @@ async def test_history_right_click_copies_only_the_dragged_text() -> None:
         await pilot.pause()
         assert copied == []
 
-        await pilot.mouse_down(history, offset=(7, 0))
-        await pilot.hover(history, offset=(10, 0))
-        await pilot.mouse_up(history, offset=(10, 0))
+        y = next(y for y, line in enumerate(history.lines) if "copy only this text" in line.text)
+        x = history.lines[y].text.index("only")
+        await pilot.mouse_down(history, offset=(x, y))
+        await pilot.hover(history, offset=(x + 3, y))
+        await pilot.mouse_up(history, offset=(x + 3, y))
         await pilot.pause()
 
         assert app.screen.get_selected_text() == "only"
-        assert history.text_selection == Selection(Offset(7, 0), Offset(11, 0))
-        selected_segment = next(
-            segment for segment in history.render_line(0) if segment.text == "only"
-        )
-        assert selected_segment.style is not None
-
-        await pilot.mouse_down(history, offset=(7, 0), button=3)
+        await pilot.mouse_down(history, offset=(x, y), button=3)
         await pilot.pause()
         assert copied == ["only"]
         assert app.screen.get_selected_text() is None

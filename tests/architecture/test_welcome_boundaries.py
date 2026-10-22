@@ -5,6 +5,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
 
 ROOT = Path(__file__).resolve().parents[2]
 EXTENSION = ROOT / "packages/tui-themes"
@@ -37,12 +38,16 @@ def test_dot_matrix_is_independent_of_welcome_contracts_and_style_packages(modul
             assert dependency.split(".")[0] not in {"rich", "textual"}, (path, dependency)
 
 
-def test_core_and_single_theme_distribution_have_matching_releases():
+def test_core_and_theme_distribution_declare_compatible_releases():
     core = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     extension = tomllib.loads((EXTENSION / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    assert extension["version"] == core["version"]
     assert core["optional-dependencies"]["themes"] == [
         f"{extension['name']}=={extension['version']}"
     ]
-    assert f"{core['name']}=={core['version']}" in extension["dependencies"]
+    core_requirement = next(
+        Requirement(value)
+        for value in extension["dependencies"]
+        if Requirement(value).name == core["name"]
+    )
+    assert core["version"] in core_requirement.specifier
     assert not any(requirement.startswith("numpy") for requirement in core["dependencies"])

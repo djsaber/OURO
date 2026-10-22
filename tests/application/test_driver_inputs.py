@@ -419,8 +419,9 @@ def test_atomic_sdk_input_batch_requires_one_driver_selection():
 
 
 @pytest.mark.parametrize("requires_session", [True, False])
+@pytest.mark.parametrize("role", [None, "system"])
 async def test_worker_command_atomic_batch_keeps_driver_selection_and_input_order(
-    tmp_path, requires_session
+    tmp_path, requires_session, role
 ):
     store = SQLiteSessionStore(tmp_path / "sessions.sqlite3")
     store.initialize()
@@ -437,12 +438,12 @@ async def test_worker_command_atomic_batch_keeps_driver_selection_and_input_orde
         text[:start]
         + """def request_review(call):
     return sdk.CommandOutput(session_input_batches=(sdk.SessionInputBatch(inputs=(
-        sdk.SessionInput(prompt="criteria", driver_id="DRIVER"),
+        sdk.SessionInput(prompt="criteria", driver_id="DRIVER"ROLE),
         sdk.SessionInput(prompt=call.argument, role="user", driver_id="DRIVER"),
     )),))
 
 
-""".replace("DRIVER", DRIVER)
+""".replace("DRIVER", DRIVER).replace("ROLE", f", role={role!r}" if role else "")
         + text[end:]
     )
     source.write_text(text, encoding="utf-8")
@@ -467,7 +468,7 @@ async def test_worker_command_atomic_batch_keeps_driver_selection_and_input_orde
             "request",
             "batch done",
         ]
-        assert [item.role for item in history.messages] == ["system", "user", "assistant"]
+        assert [item.role for item in history.messages] == [role or "user", "user", "assistant"]
         assert {item.metadata["input_driver_id"] for item in history.messages[:2]} == {DRIVER}
         assert len({item.run_id for item in history.messages}) == 1
     finally:
