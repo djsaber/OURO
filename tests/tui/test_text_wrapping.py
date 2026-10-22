@@ -16,6 +16,7 @@ from ouro.tui.text_inputs import TuiTextArea
 from ouro.tui.text_wrapping import ProseText, wrap_offsets
 from ouro.tui.theme import DEFAULT_TUI_THEME
 from ouro.tui.wrapped_document import ProseDocument
+from tests.tui.helpers import resize_terminal
 
 _CHINESE = "资质审核结果中触发的规则其实是模块内部的"
 
@@ -161,7 +162,7 @@ async def test_editor_reflows_edits_undo_redo_resize_and_document_replacement() 
         editor.action_redo()
         assert editor.text == edited
 
-        await pilot.resize_terminal(40, 16)
+        await resize_terminal(pilot, 40, 16)
         expected = ProseDocument(Document(edited), editor.wrap_width)
         assert editor.wrapped_document.lines == expected.lines
         editor.select_all()

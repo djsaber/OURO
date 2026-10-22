@@ -6,6 +6,7 @@ from textual.app import App
 
 from ouro.tui.commands import TuiCommand, TuiCommandArgument
 from ouro.tui.widgets import CommandPopup
+from tests.tui.helpers import resize_terminal
 
 
 class PopupApp(App):
@@ -43,7 +44,7 @@ async def test_large_menu_formats_only_viewport_rows(monkeypatch, operation, cou
         elif operation == "navigate":
             popup.navigate(1)
         else:
-            await pilot.resize_terminal(44, 22)
+            await resize_terminal(pilot, 44, 22)
         await pilot.pause()
         assert popup.selected_argument == arguments[operation == "navigate"]
         # Several layout/paint passes are allowed; formatting the whole catalog is not.

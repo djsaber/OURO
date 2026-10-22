@@ -17,7 +17,7 @@ from ouro.tui import conversation_history as history_module
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.conversation_history import ConversationHistory
 from ouro.tui.widgets import Composer, ConversationView
-from tests.tui.helpers import run_ready_app, wait_until
+from tests.tui.helpers import release_on_exit, run_ready_app, wait_until
 from tests.tui.test_background_navigation import NavigationProvider
 from tests.tui.test_tasks import streaming_application
 
@@ -117,17 +117,48 @@ async def test_view_commit_uses_prepared_policy_and_reasoning_facts(tmp_path, mo
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
+@pytest.mark.parametrize("prefix_before_open", [True, False])
 async def test_opening_a_live_session_does_not_read_full_execution_history(
-    tmp_path, monkeypatch, backend
+    tmp_path, monkeypatch, backend, prefix_before_open
 ):
     provider = NavigationProvider()
+    prefix_ready, release_prefix = asyncio.Event(), asyncio.Event()
+    stream = provider.stream
+
+    async def gated_stream(**kwargs):
+        async for event in stream(**kwargs):
+            if event.type == "text_delta":
+                prefix_ready.set()
+                await release_prefix.wait()
+            yield event
+
+    monkeypatch.setattr(provider, "stream", gated_stream)
     application = streaming_application(tmp_path, provider, backend=backend)
     session, _messages = seed(application, 405)
     app = OuroTuiApp(application=application, close_application=False)
     try:
-        async with run_ready_app(app):
+        async with run_ready_app(app) as pilot, release_on_exit(release_prefix):
             handle = await application.supervisor.submit("live", session_id=session.session_id)
-            assert await asyncio.wait_for(provider.started.get(), 5) == "live"
+            await wait_until(prefix_ready.is_set, pilot, description="provider prefix ready")
+            if prefix_before_open:
+                subscription = await application.supervisor.subscribe(
+                    session.session_id, after_sequence=0
+                )
+                try:
+                    release_prefix.set()
+                    # Provider entry precedes publication. Wait for the durable
+                    # delta so this case exercises the observation snapshot.
+                    async with asyncio.timeout(15):
+                        while True:
+                            notification = await subscription.get()
+                            assert notification.diagnostic is None, notification.diagnostic
+                            if (
+                                notification.event is not None
+                                and notification.event.event_type == "model_text_delta"
+                            ):
+                                break
+                finally:
+                    subscription.close()
 
             def forbidden(*args, **kwargs):
                 pytest.fail("observation of an owned Run loaded full execution history")
@@ -136,6 +167,16 @@ async def test_opening_a_live_session_does_not_read_full_execution_history(
                 patch.setattr(application.runtime.store, "load_runtime_session", forbidden)
                 await app._open_session(session.session_id)
                 assert app._projection.activity.status == "running"
+                if not prefix_before_open:
+                    assert app._projection.assistant_text == ""
+                    release_prefix.set()
+                    # The same bounded observation must also receive deltas
+                    # published after opening, without a full-history reload.
+                    await wait_until(
+                        lambda: app._projection.assistant_text == "live prefix. ",
+                        pilot,
+                        description="live prefix after opening",
+                    )
                 assert app._projection.assistant_text == "live prefix. "
             provider.finish("live")
             await application.supervisor.wait(handle)

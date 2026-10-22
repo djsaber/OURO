@@ -57,7 +57,12 @@ from ouro.core.agents import (
 )
 from ouro.core.base import new_id, utc_now
 from ouro.core.callbacks import run_blocking
-from ouro.core.errors import DelegationRevisionConflictError, PersistenceError, SessionBusyError
+from ouro.core.errors import (
+    DelegationRevisionConflictError,
+    OuroError,
+    PersistenceError,
+    SessionBusyError,
+)
 from ouro.core.model_selection import DEFAULT_MODEL
 from ouro.core.redaction import redact_text
 from ouro.core.run_budget import RunBudgetPolicy, RunBudgetReason
@@ -1946,34 +1951,144 @@ class AgentService:
             )
             if parent_done in done:
                 parent_done.result()
-                if await run_blocking(
-                    self._tool_result_is_committed,
-                    session_id=session_id,
-                    run_id=run_id,
-                    tool_call_id=tool_call_id,
-                ):
-                    await self._mark_waiter_delivery(wait.delegation_id, target_run_id=run_id)
-                return
-            child_done.result()
+            else:
+                child_done.result()
         finally:
             for task in (child_done, parent_done):
                 task.cancel()
             await asyncio.gather(child_done, parent_done, return_exceptions=True)
 
+        if await self._commit_agent_wait_result(
+            session_id=session_id,
+            run_id=run_id,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            wait=wait,
+        ):
+            await self._mark_waiter_delivery(wait.delegation_id, target_run_id=run_id)
+
+    async def _commit_agent_wait_result(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        tool_call_id: str,
+        tool_name: str,
+        wait: AgentWaitRequest,
+    ) -> bool:
+        """Resume a pending join once, then observe its canonical result commit."""
         if await run_blocking(
             self._tool_result_is_committed,
             session_id=session_id,
             run_id=run_id,
             tool_call_id=tool_call_id,
         ):
-            await self._mark_waiter_delivery(wait.delegation_id, target_run_id=run_id)
-            return
-        parent = await self.scheduler.wait_run(
-            session_id, run_id, until=frozenset({"waiting_child"})
+            return True
+        subscription = await self.scheduler.subscribe_state(
+            session_id,
+            event_types=frozenset(
+                {"run_status_changed", "tool_batch_completed", "tool_batch_aborted"}
+            ),
         )
-        if parent.status != "waiting_child":
-            return
+        scheduled = False
+        receipt: asyncio.Task[RuntimeStatusSnapshot] | None = None
+        try:
+            while True:
+                attempt_finished = receipt is not None and receipt.done()
+                # Subscribe before reading; read lifecycle before the receipt.
+                # Every exit uses a receipt newer than its lifecycle observation.
+                parent = await run_blocking(self.store.load_run, session_id, run_id)
+                if await run_blocking(
+                    self._tool_result_is_committed,
+                    session_id=session_id,
+                    run_id=run_id,
+                    tool_call_id=tool_call_id,
+                ):
+                    return True
+                if parent.status not in ACTIVE_RUN_STATUSES:
+                    return False
+                batch = parent.active_tool_batch
+                call = (
+                    next((call for call in batch.calls if call.request.id == tool_call_id), None)
+                    if batch is not None
+                    else None
+                )
+                resolved = (
+                    call is not None
+                    and call.agent_wait is not None
+                    and call.agent_wait.state == "resolved"
+                )
+                if not resolved and receipt is not None and attempt_finished:
+                    receipt.result()
+                    raise SessionBusyError("Parent continuation has not resolved the child wait")
+                if parent.status == "waiting_child" and not resolved and not scheduled:
+                    if call is None or call.agent_wait is None:
+                        raise ValueError("parent ToolCall no longer has a pending child wait")
+                    handle = await self._schedule_agent_wait_result(
+                        session_id=session_id,
+                        run_id=run_id,
+                        tool_call_id=tool_call_id,
+                        tool_name=tool_name,
+                        wait=wait,
+                    )
+                    # Cleanup owns the execution attempt immediately. Delivery
+                    # can finish while this task still waits for parent output.
+                    receipt = self._execution.own_receipt(handle)
+                    scheduled = True
+                    continue
 
+                # Sibling progress inside a resolved batch cannot publish our
+                # receipt. Coalesced activity still reveals commit/terminal
+                # boundaries; an unfinished local attempt can also fail without
+                # advancing durable Run state and must wake this observer.
+                while True:
+                    change = asyncio.create_task(subscription.get())
+                    try:
+                        if receipt is not None and not attempt_finished:
+                            done, _ = await asyncio.wait(
+                                (change, receipt), return_when=asyncio.FIRST_COMPLETED
+                            )
+                            if receipt in done:
+                                receipt.result()
+                                break
+                        notification = await change
+                    finally:
+                        change.cancel()
+                        await asyncio.gather(change, return_exceptions=True)
+                    if notification.diagnostic is not None:
+                        raise OuroError(notification.diagnostic.message)
+                    event = notification.event
+                    if (
+                        event is not None
+                        and event.run_id == run_id
+                        and (
+                            not resolved
+                            or event.event_type in {"tool_batch_completed", "tool_batch_aborted"}
+                        )
+                    ):
+                        break
+                    activity = notification.activity
+                    if activity is not None and (
+                        not resolved
+                        or activity.run_id != run_id
+                        or activity.status not in ACTIVE_RUN_STATUSES
+                        or batch is None
+                        or activity.batch_id != batch.batch_id
+                        or activity.batch_phase in {"completed", "aborted"}
+                    ):
+                        break
+        finally:
+            subscription.close()
+
+    async def _schedule_agent_wait_result(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        tool_call_id: str,
+        tool_name: str,
+        wait: AgentWaitRequest,
+    ) -> RunHandle:
         resolution = AgentWaitResolution(
             resolved_delegation_id=wait.delegation_id,
             reason="condition_met",
@@ -1992,42 +2107,17 @@ class AgentService:
             resource_refs=resource_refs,
         )
         try:
-            handle = await self.scheduler.resume_agent_wait(
+            return await self.scheduler.resume_agent_wait(
                 session_id=session_id,
                 run_id=run_id,
                 tool_call_id=tool_call_id,
                 resolution=resolution,
                 result=result,
             )
-        except ValueError:
-            # Another Host may have committed this same wait while the enqueue
-            # yielded. Only a canonical receipt permits treating it as settled.
-            if await run_blocking(
-                self._tool_result_is_committed,
-                session_id=session_id,
-                run_id=run_id,
-                tool_call_id=tool_call_id,
-            ):
-                await self._mark_waiter_delivery(wait.delegation_id, target_run_id=run_id)
-                return
-            raise
-        try:
-            await self.scheduler.wait(handle)
-        finally:
-            # The resume receipt is private to this waiter. Cancellation while
-            # execution is active leaves ownership with the supervised job.
-            self._execution.own_receipt(handle)
-        if await run_blocking(
-            self._tool_result_is_committed,
-            session_id=session_id,
-            run_id=run_id,
-            tool_call_id=tool_call_id,
-        ):
-            await self._mark_waiter_delivery(wait.delegation_id, target_run_id=run_id)
-        else:
-            parent = await run_blocking(self.store.load_run, session_id, run_id)
-            if parent.status in ACTIVE_RUN_STATUSES:
-                raise SessionBusyError("Parent continuation has not committed the child result")
+        except ValueError as exc:
+            # A competing Host can change the join after the observation. Retry
+            # through the same receipt-first flow, rather than replaying it here.
+            raise SessionBusyError("Parent join changed while scheduling its result") from exc
 
     def _load_and_copy_result_resources(
         self,

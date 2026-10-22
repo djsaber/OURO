@@ -9,7 +9,7 @@ from ouro.skills import SkillLoader
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.attachment_picker import AttachmentEntry, AttachmentPicker
 from ouro.tui.widgets import CommandPopup, Composer
-from tests.tui.helpers import command_popup_text, run_ready_app
+from tests.tui.helpers import command_popup_text, resize_terminal, run_ready_app
 from tests.tui.test_history_commands import application_at
 
 
@@ -88,7 +88,7 @@ async def test_reference_heading_and_count_stay_visible_while_scrolling_and_filt
         assert heading.content.plain.endswith("[0]")
         assert popup._content.region.y == heading.region.bottom
         await pilot.press("space")
-        await pilot.resize_terminal(60, 26)
+        await resize_terminal(pilot, 60, 26)
         await pilot.pause()
         assert heading.content.plain.endswith("[1]")
         assert heading.content.cell_len == heading.content_region.width

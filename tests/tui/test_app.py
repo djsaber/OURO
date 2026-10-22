@@ -172,11 +172,14 @@ from ouro.tui.widgets import (
 from tests.tui.helpers import (
     choose_menu,
     command_popup_text,
+    release_on_exit,
+    resize_terminal,
     run_ready_app,
     wait_for_history_render,
     wait_for_menu_action,
 )
 from tests.tui.helpers import wait_for_screen as _wait_for_screen
+from tests.tui.helpers import wait_for_worker_group as _wait_for_worker_group
 from tests.tui.helpers import wait_until as _wait_until
 
 
@@ -200,19 +203,6 @@ async def _wait_for_active_session(
     await pilot._wait_for_screen()
 
 
-async def _wait_for_worker_group(
-    app: OuroTuiApp,
-    pilot,
-    *,
-    group: str,
-    timeout: float = 5.0,
-) -> None:
-    workers = tuple(worker for worker in app.workers if worker.group == group)
-    if workers:
-        await asyncio.wait_for(app.workers.wait_for_complete(workers), timeout=timeout)
-    await pilot._wait_for_screen()
-
-
 async def _wait_for_tool_approval(
     app: OuroTuiApp,
     pilot,
@@ -224,12 +214,17 @@ async def _wait_for_tool_approval(
 
     def ready() -> bool:
         projection = app._projection
-        pending = projection.pending_interaction if projection is not None else None
+        pending = app._interaction
         return (
             pending is not None
             and pending.kind == "approval"
             and pending.tool_call_id == tool_call_id
-            and (pending_count is None or len(projection.pending_interactions) == pending_count)
+            and (
+                pending_count is None
+                or (
+                    projection is not None and len(projection.pending_interactions) == pending_count
+                )
+            )
             and panel._interaction == pending
             and panel.display
             and not panel.disabled
@@ -248,23 +243,20 @@ async def _wait_for_welcome_render(
     pilot,
     *,
     contains: str,
-    timeout: float = 2.0,
+    timeout: float = 15.0,
 ) -> WelcomePanel:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while True:
+    def ready() -> bool:
         matches = list(app.query(WelcomePanel))
         welcome = matches[0] if matches else None
-        if (
+        return (
             welcome is not None
             and welcome.has_class("welcome-page")
             and welcome.page.region.width > 0
             and contains in _welcome_plain_text(welcome)
-        ):
-            await pilot._wait_for_screen()
-            return welcome
-        if asyncio.get_running_loop().time() >= deadline:
-            raise AssertionError(f"Timed out waiting for welcome content: {contains}")
-        await asyncio.sleep(0.01)
+        )
+
+    await _wait_until(ready, pilot, description=f"welcome content: {contains}", timeout=timeout)
+    return app.query_one(WelcomePanel)
 
 
 def _welcome_plain_text(welcome: WelcomePanel) -> str:
@@ -770,7 +762,6 @@ class RetryThenBlockProvider:
     provider_id = "retry-then-block"
 
     def __init__(self) -> None:
-        self.retry_observed = asyncio.Event()
         self.release = asyncio.Event()
 
     async def stream(
@@ -792,7 +783,6 @@ class RetryThenBlockProvider:
                 reason="temporary transport failure",
             ),
         )
-        self.retry_observed.set()
         await self.release.wait()
         yield ProviderStreamEvent(type="text_delta", text="Recovered.")
         yield ProviderStreamEvent(type="done")
@@ -2373,9 +2363,8 @@ async def test_status_line_updates_while_a_model_retry_is_waiting(tmp_path: Path
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
-        await pilot.press(*"retry", "enter")
         try:
-            await asyncio.wait_for(provider.retry_observed.wait(), timeout=2)
+            await pilot.press(*"retry", "enter")
             await _wait_until(
                 lambda: "Waiting for model 3/5" in app.query_one(ActivityIndicator).render().plain,
                 pilot,
@@ -2496,15 +2485,17 @@ async def test_tui_changes_model_and_approval_while_the_session_is_running(tmp_p
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
-        await pilot.press(*"stream", "enter")
-        await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
-        await _wait_until(
-            lambda: app._projection is not None and app._projection.activity.status == "running",
-            pilot,
-            description="active streamed run",
-        )
-
         try:
+            await pilot.press(*"stream", "enter")
+            await _wait_until(
+                lambda: (
+                    provider.first_chunk_sent.is_set()
+                    and app._projection is not None
+                    and app._projection.activity.status == "running"
+                ),
+                pilot,
+                description="active streamed run",
+            )
             await app._select_model("blocking/blocking")
             session_id = app._controller.session_id
             assert session_id is not None
@@ -2544,14 +2535,16 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
             command="unused-in-test",
             auto_start=True,
             auto_reconnect=False,
-            timeout_seconds=1,
             health_check_interval_seconds=60,
         )
     )
     application.mcp = MCPRuntimeResource(manager)
     app = OuroTuiApp(application=application)
 
-    async with run_ready_app(app, size=(100, 32)) as pilot:
+    async with (
+        run_ready_app(app, size=(100, 32)) as pilot,
+        release_on_exit(session.initialize_gate),
+    ):
         welcome = await _wait_for_welcome_render(app, pilot, contains="connecting")
         mcp_label = welcome.query_one("#welcome-mcp-label", Static)
         connecting_label = mcp_label.render().plain
@@ -2944,9 +2937,8 @@ async def test_first_markdown_chunk_renders_while_provider_is_still_running(
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
-        await pilot.press("s", "t", "r", "e", "a", "m", "enter")
         try:
-            await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
+            await pilot.press("s", "t", "r", "e", "a", "m", "enter")
             await _wait_until(
                 lambda: app._projection is not None and app._projection.assistant_text == "first ",
                 pilot,
@@ -3184,9 +3176,8 @@ async def test_first_user_message_renders_when_leaving_welcome_page(tmp_path: Pa
             description="welcome page",
         )
 
-        await pilot.press(*"first message", "enter")
         try:
-            await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
+            await pilot.press(*"first message", "enter")
             await _wait_until(
                 lambda: app._projection is not None and app._projection.assistant_text == "first ",
                 pilot,
@@ -3216,12 +3207,12 @@ async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
         assert composer.placeholder == "Ask anything..."
 
         await pilot.click("#composer")
-        await pilot.press(*"stream", "enter")
         try:
-            await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
+            await pilot.press(*"stream", "enter")
             await _wait_until(
                 lambda: (
-                    isinstance(composer.placeholder, Content)
+                    provider.first_chunk_sent.is_set()
+                    and isinstance(composer.placeholder, Content)
                     and composer.placeholder.plain == Composer.ACTIVE_RUN_PLACEHOLDER
                 ),
                 pilot,
@@ -3326,39 +3317,49 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
     async with run_ready_app(app, size=(100, 36)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
-        await pilot.press(*"first", "enter")
-        await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
+        try:
+            await pilot.press(*"first", "enter")
+            await _wait_until(
+                lambda: (
+                    provider.first_chunk_sent.is_set()
+                    and app._projection is not None
+                    and app._projection.activity.status == "running"
+                ),
+                pilot,
+                description="active run",
+            )
+
+            app.query_one(Composer).load_text("follow next")
+            await pilot.press("enter")
+            await _wait_until(
+                lambda: app.query_one(QueuedInputPanel).display,
+                pilot,
+                description="queued follow-up",
+            )
+
+            queue_panel = app.query_one(QueuedInputPanel)
+            conversation = app.query_one(ConversationView)
+            assert queue_panel.display is True
+            queue_text = queue_panel.query_one("#queued-input-content").render().plain
+            assert "QUEUED INPUTS" not in queue_text
+            assert "Follow-up" in queue_text
+            assert f"Follow-up{DEFAULT_TUI_THEME.inline_separator}follow next" in queue_text
+            assert "follow next" in queue_text
+            history = conversation.query_one(ConversationHistory)
+            assert history.user_turns == ("first",)
+
+        finally:
+            provider.release.set()
         await _wait_until(
-            lambda: app._projection is not None and app._projection.activity.status == "running",
+            lambda: (
+                sum(entry.kind == "assistant" for entry in history.entries) == 2
+                and app._projection is not None
+                and app._projection.activity.status == "completed"
+                and not queue_panel.display
+            ),
             pilot,
-            description="active run",
+            description="completed initial run and queued follow-up",
         )
-
-        app.query_one(Composer).load_text("follow next")
-        await pilot.press("enter")
-        await _wait_until(
-            lambda: app.query_one(QueuedInputPanel).display,
-            pilot,
-            description="queued follow-up",
-        )
-
-        queue_panel = app.query_one(QueuedInputPanel)
-        conversation = app.query_one(ConversationView)
-        assert queue_panel.display is True
-        queue_text = queue_panel.query_one("#queued-input-content").render().plain
-        assert "QUEUED INPUTS" not in queue_text
-        assert "Follow-up" in queue_text
-        assert f"Follow-up{DEFAULT_TUI_THEME.inline_separator}follow next" in queue_text
-        assert "follow next" in queue_text
-        history = conversation.query_one(ConversationHistory)
-        assert history.user_turns == ("first",)
-
-        provider.release.set()
-        for _ in range(20):
-            await pilot.pause(0.1)
-            assistant_count = sum(entry.kind == "assistant" for entry in history.entries)
-            if assistant_count == 2:
-                break
 
         assert queue_panel.display is False
         assert history.user_turns == (
@@ -3393,58 +3394,63 @@ async def test_unqueue_command_selects_message_and_returns_it_to_composer(
     async with run_ready_app(app, size=(100, 36)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
-        await pilot.press(*"first", "enter")
-        await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
-        await _wait_until(
-            lambda: app._projection is not None and app._projection.activity.status == "running",
-            pilot,
-            description="active run",
-        )
+        try:
+            await pilot.press(*"first", "enter")
+            await _wait_until(
+                lambda: (
+                    provider.first_chunk_sent.is_set()
+                    and app._projection is not None
+                    and app._projection.activity.status == "running"
+                ),
+                pilot,
+                description="active run",
+            )
 
-        # This test exercises /unqueue. Establish its accepted-input precondition
-        # through the Runtime; composer delivery is covered by the follow-up test.
-        assert app._projection is not None
-        session_id = app._projection.session_id
-        for prompt in ("keep queued", "return to composer"):
-            await application.runtime.run(prompt, session_id=session_id, queue_mode="follow_up")
-        composer = app.query_one(Composer)
-        await _wait_until(
-            lambda: all(
-                value
-                in app.query_one(QueuedInputPanel)
-                .query_one("#queued-input-content", Static)
-                .render()
-                .plain
-                for value in ("keep queued", "return to composer")
-            ),
-            pilot,
-            description="queued inputs",
-        )
+            # This test exercises /unqueue. Establish its accepted-input precondition
+            # through the Runtime; composer delivery is covered by the follow-up test.
+            assert app._projection is not None
+            session_id = app._projection.session_id
+            for prompt in ("keep queued", "return to composer"):
+                await application.runtime.run(prompt, session_id=session_id, queue_mode="follow_up")
+            composer = app.query_one(Composer)
+            await _wait_until(
+                lambda: all(
+                    value
+                    in app.query_one(QueuedInputPanel)
+                    .query_one("#queued-input-content", Static)
+                    .render()
+                    .plain
+                    for value in ("keep queued", "return to composer")
+                ),
+                pilot,
+                description="queued inputs",
+            )
 
-        await pilot.press("slash", *"unqueue", "enter")
-        await pilot.pause()
-        popup = app.query_one(CommandPopup)
-        choices = command_popup_text(popup).plain
-        assert popup.argument_command is not None
-        assert popup.argument_command.name == "/unqueue"
-        assert "1. keep queued" in choices
-        assert "2. return to composer" in choices
+            await pilot.press("slash", *"unqueue", "enter")
+            await pilot.pause()
+            popup = app.query_one(CommandPopup)
+            choices = command_popup_text(popup).plain
+            assert popup.argument_command is not None
+            assert popup.argument_command.name == "/unqueue"
+            assert "1. keep queued" in choices
+            assert "2. return to composer" in choices
 
-        await pilot.press("down", "enter")
-        await _wait_until(
-            lambda: composer.text == "return to composer",
-            pilot,
-            description="restored queued input",
-        )
+            await pilot.press("down", "enter")
+            await _wait_until(
+                lambda: composer.text == "return to composer",
+                pilot,
+                description="restored queued input",
+            )
 
-        assert composer.text == "return to composer"
-        queue_panel = app.query_one(QueuedInputPanel)
-        queued_text = queue_panel.query_one("#queued-input-content", Static).render().plain
-        assert queue_panel.display is True
-        assert "keep queued" in queued_text
-        assert "return to composer" not in queued_text
+            assert composer.text == "return to composer"
+            queue_panel = app.query_one(QueuedInputPanel)
+            queued_text = queue_panel.query_one("#queued-input-content", Static).render().plain
+            assert queue_panel.display is True
+            assert "keep queued" in queued_text
+            assert "return to composer" not in queued_text
 
-        provider.release.set()
+        finally:
+            provider.release.set()
         await _wait_until(
             lambda: app._projection is not None and app._projection.activity.status == "completed",
             pilot,
@@ -3470,12 +3476,15 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(
     def delayed_checkpoint(**kwargs):
         if kwargs["session"].session_kind == "subagent" and kwargs["status"] == "waiting_approval":
             checkpoint_waiting.set()
-            assert release_checkpoint.wait(10), "child checkpoint was not released"
+            release_checkpoint.wait()
         return save_batch(**kwargs)
 
     monkeypatch.setattr(application.runtime.run_lifecycle, "save_batch_state", delayed_checkpoint)
 
-    async with run_ready_app(app, size=(100, 38)) as pilot:
+    async with (
+        run_ready_app(app, size=(100, 38)) as pilot,
+        release_on_exit(provider.release_child, release_checkpoint),
+    ):
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press(*"start child", "enter")
@@ -3516,7 +3525,9 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(
         assert interaction.kind == "approval"
         assert interaction.is_subagent is True
         assert interaction.tool_name == "Danger"
-        approval_panel = app.query_one(InteractionBar)
+        approval_panel = await _wait_for_tool_approval(
+            app, pilot, tool_call_id="child_approval_call"
+        )
         assert approval_panel.display is True
         subagent_panel = app.query_one(SubagentNavigationPanel)
         queue_panel = app.query_one(QueuedInputPanel)
@@ -3531,12 +3542,11 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(
         )
 
         await pilot.press("enter")
-        await asyncio.wait_for(provider.queued_input_consumed.wait(), timeout=5)
-        await _wait_for_worker_group(app, pilot, group="run")
         history = app.query_one(ConversationHistory)
         await _wait_until(
             lambda: (
-                app._projection is not None
+                provider.queued_input_consumed.is_set()
+                and app._projection is not None
                 and app._projection.activity.status == "completed"
                 and app._interaction is None
                 and not app._pending_runtime_events
@@ -3551,6 +3561,7 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(
             description="completed queued follow-up with settled TUI events",
         )
 
+        await _wait_for_worker_group(app, pilot, group="run")
         assert app._interaction is None
         assert app.query_one(InteractionBar).display is False
         assert app.query_one(QueuedInputPanel).display is False
@@ -3571,15 +3582,21 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
     application = _multi_child_streaming_application(tmp_path, provider)
     app = OuroTuiApp(home=tmp_path, application=application)
 
-    async with run_ready_app(app, size=(100, 38)) as pilot:
+    async with (
+        run_ready_app(app, size=(100, 38)) as pilot,
+        release_on_exit(provider.release_root, *provider.releases.values()),
+    ):
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press(*"start two children", "enter")
-        await asyncio.wait_for(
-            asyncio.gather(*(event.wait() for event in provider.first_chunks.values())),
-            timeout=5,
+        await _wait_until(
+            lambda: (
+                provider.root_stream_started.is_set()
+                and all(event.is_set() for event in provider.first_chunks.values())
+            ),
+            pilot,
+            description="root and both child streams started",
         )
-        await asyncio.wait_for(provider.root_stream_started.wait(), timeout=5)
         root_session_id = app._controller.session_id
         assert root_session_id is not None
         assert application.agents is not None
@@ -4090,16 +4107,19 @@ async def test_guide_shortcuts_steer_the_active_run_at_the_next_model_turn(
     async with run_ready_app(app, size=(100, 36)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
-        await pilot.press(*"first", "enter")
-        await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
-        await _wait_until(
-            lambda: app._projection is not None and app._projection.activity.status == "running",
-            pilot,
-            description="active run",
-        )
-
-        queue_panel = app.query_one(QueuedInputPanel)
         try:
+            await pilot.press(*"first", "enter")
+            await _wait_until(
+                lambda: (
+                    provider.first_chunk_sent.is_set()
+                    and app._projection is not None
+                    and app._projection.activity.status == "running"
+                ),
+                pilot,
+                description="active run",
+            )
+
+            queue_panel = app.query_one(QueuedInputPanel)
             app.query_one(Composer).load_text("guide now")
             await pilot.press("ctrl+g")
             await _wait_until(
@@ -5786,7 +5806,7 @@ async def test_composer_growth_is_driven_by_soft_wrapped_width(tmp_path: Path) -
         await pilot.pause()
         assert composer.outer_size.height == COMPOSER_MIN_HEIGHT
 
-        await pilot.resize_terminal(30, 32)
+        await resize_terminal(pilot, 30, 32)
         await pilot.pause()
         assert composer.size.height > 1
         assert composer.outer_size.height == composer.size.height + COMPOSER_FRAME_HEIGHT
@@ -7648,7 +7668,7 @@ async def test_shared_menu_height_tracks_terminal_with_bounded_layout(tmp_path: 
         app.screen.query_one("#choice-filter", Input).value = ""
         await pilot.pause()
 
-        await pilot.resize_terminal(48, 18)
+        await resize_terminal(pilot, 48, 18)
         await pilot.pause()
         assert 12 <= panel.region.height < 27
         assert panel.region.x == app.screen.region.width - panel.region.right
@@ -7656,7 +7676,7 @@ async def test_shared_menu_height_tracks_terminal_with_bounded_layout(tmp_path: 
         assert panel.region.bottom <= app.screen.region.height
         assert hint.region.bottom <= panel.region.bottom
 
-        await pilot.resize_terminal(48, 12)
+        await resize_terminal(pilot, 48, 12)
         await pilot.pause()
         assert panel.region.height == 12
         assert panel.region.x == app.screen.region.width - panel.region.right
@@ -10803,7 +10823,7 @@ async def test_shared_inline_editor_keeps_cursor_in_horizontal_viewport(
         assert prompt.plain.endswith("…")
 
         screen.action_edit_end()
-        await pilot.resize_terminal(42, 18)
+        await resize_terminal(pilot, 42, 18)
         await pilot.pause()
         prompt = rendered_prompt()
         assert prompt.plain.startswith("…")
@@ -11353,8 +11373,8 @@ async def test_command_and_approval_menus_fit_resized_terminal(tmp_path: Path) -
         await pilot.press("enter")
         await _wait_for_worker_group(app, pilot, group="run")
 
-        await pilot.resize_terminal(80, 16)
-        await pilot.click("#composer")
+        await resize_terminal(pilot, 80, 16)
+        assert await pilot.click("#composer")
         await pilot.press("slash")
         await pilot.pause()
         popup = app.query_one(CommandPopup)
@@ -11362,7 +11382,7 @@ async def test_command_and_approval_menus_fit_resized_terminal(tmp_path: Path) -
         assert popup.region.bottom == composer.region.y
         assert app.query_one(StatusLine).region.bottom == app.screen.region.bottom
 
-        await pilot.resize_terminal(40, 12)
+        await resize_terminal(pilot, 40, 12)
         await pilot.pause()
         assert popup.region.height == 5
         assert popup.region.right <= app.screen.region.right
@@ -11383,7 +11403,7 @@ async def test_command_and_approval_menus_fit_resized_terminal(tmp_path: Path) -
         assert popup.selected_argument == popup._arguments[-1]
         assert popup.scroll_y > 0
 
-        await pilot.resize_terminal(100, 32)
+        await resize_terminal(pilot, 100, 32)
         composer.load_text("/")
         composer.move_cursor((0, 1))
         await pilot.pause()

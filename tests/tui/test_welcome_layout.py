@@ -10,7 +10,7 @@ from textual import events
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.welcome import welcome_catalog
 from ouro.tui.widgets import CommandPopup, Composer, WelcomePanel
-from tests.tui.helpers import run_ready_app, two_route_application
+from tests.tui.helpers import resize_terminal, run_ready_app, two_route_application
 
 WELCOME_STYLES = welcome_catalog(STYLES)
 
@@ -33,7 +33,7 @@ async def test_welcome_menu_stays_attached_above_input_across_terminal_heights(t
         assert composer.region == input_region
 
         for width, height in ((100, 33), (100, 32), (100, 31), (40, 17), (40, 16), (100, 33)):
-            await pilot.resize_terminal(width, height)
+            await resize_terminal(pilot, width, height)
             assert popup.display and popup.region in app.screen.region
             assert popup.region.bottom == composer.region.y
             assert popup.region.x == composer.region.x

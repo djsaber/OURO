@@ -27,7 +27,7 @@ from ouro.tui.welcome import WelcomePage, WelcomeStyle, welcome_catalog
 from ouro.tui.welcome.components import WelcomeUsage
 from ouro.tui.welcome.host import WelcomeHost
 from ouro.tui.widgets import CommandPopup, Composer, WelcomePanel
-from tests.tui.helpers import run_ready_app, two_route_application
+from tests.tui.helpers import resize_terminal, run_ready_app, two_route_application
 
 WELCOME_STYLES = welcome_catalog(STYLES)
 
@@ -277,7 +277,7 @@ async def test_full_page_controls_viewport_input_layout_composition_and_style_sc
         assert page.frames > frames and page.layouts == layouts
 
         for width, height in ((160, 48), (40, 16), (200, 60)):
-            await pilot.resize_terminal(width, height)
+            await resize_terminal(pilot, width, height)
             await pilot.pause()
             assert page.region == host.region == app.screen.region
             assert surface.region.width == width
@@ -537,7 +537,7 @@ async def test_particle_theme_pauses_when_hidden_and_releases_worker_on_replacem
         assert matrix.elapsed == before
         panel.set_welcome_mode(True)
         for size in ((40, 16), (80, 24), (160, 48)):
-            await pilot.resize_terminal(*size)
+            await resize_terminal(pilot, *size)
             await pilot.pause()
             assert matrix.region in panel.page._top.region
             assert matrix._raster is not None

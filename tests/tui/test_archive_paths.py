@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -5,6 +6,7 @@ from textual.app import App
 from textual.widgets import OptionList
 
 from ouro.tui.archive_paths import ArchivePathScreen
+from tests.tui.helpers import wait_for_menu_action, wait_until
 
 
 async def test_archive_listing_reuses_directory_entry_types(tmp_path, monkeypatch):
@@ -83,13 +85,33 @@ async def test_invalid_path_warns_and_preserves_editor_until_corrected(
         options = screen.query_one(OptionList)
         options.highlighted = options.get_option_index(field)
         await pilot.press("enter", "ctrl+u", *invalid, "enter")
+        await wait_for_menu_action(pilot, screen)
         assert app.screen is screen
         assert notices == [message]
         assert screen._editing_value == field
         assert screen._edit_text == invalid
         assert screen._directory == tmp_path
         assert screen._filename == "original.zip"
-        await pilot.press("ctrl+u", *valid, "enter")
+        # Keep directory publication pending to exercise the asynchronous save
+        # boundary without depending on the filesystem or machine's speed.
+        listing_started = asyncio.Event()
+        release_listing = asyncio.Event()
+        path_choices = screen._path_choices
+
+        async def delayed_choices():
+            listing_started.set()
+            await release_listing.wait()
+            return await path_choices()
+
+        monkeypatch.setattr(screen, "_path_choices", delayed_choices)
+        try:
+            await pilot.press("ctrl+u", *valid, "enter")
+            await wait_until(listing_started.is_set, pilot, description="corrected path listing")
+            assert screen._editing_value == field
+            assert screen._edit_text == valid
+        finally:
+            release_listing.set()
+        await wait_for_menu_action(pilot, screen)
         assert screen._editing_value is None
         assert screen._directory == (tmp_path / valid if field == "location" else tmp_path)
         assert screen._filename == ("backup.zip" if field == "filename" else "original.zip")
@@ -114,6 +136,7 @@ async def test_folder_access_error_warns_and_allows_cancel(tmp_path, monkeypatch
 
         monkeypatch.setattr(Path, "is_dir", denied)
         await pilot.press("enter", "ctrl+u", *"denied", "enter")
+        await wait_for_menu_action(pilot, screen)
         assert notices == ["Folder access denied"]
         assert screen._editing_value == "location"
         assert screen._directory == tmp_path

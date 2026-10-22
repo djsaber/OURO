@@ -547,6 +547,16 @@ root budget。
 中断或关闭时释放自己的订阅，不影响其他终端。多个 waiter 竞争恢复时以原 ToolCall 的 canonical result 为完成凭据，
 不能因为本地 job 结束或一次 SessionBusy 就丢弃尚未交付的结果。
 
+并行批次中的单个 join 已 resolved、但 canonical result 尚未提交时，waiter 继续观察该批次，不能重复恢复
+已 resolved 的 ToolCall，也不能把等待其他子任务当作投递失败消耗补偿次数。观察复用共享状态订阅，先订阅再读，
+仅在批次提交或活动状态变化时重读，不按 token 扫描消息或轮询检查点。父 Run 进入终态后必须重新核对提交凭据，
+不能用终态之前读到的“结果不存在”决定结束送达观察。
+
+同步送达以原 ToolCall 的 canonical result 提交为完成边界；父模型仍在生成时也必须完成确认。
+恢复调度后立即将进程内 job receipt 交给执行任务管理器，句柄按尝试结束独立回收，不能成为送达的前置等待。
+送达观察统一处理尚未恢复、已恢复但整批未提交、已提交和父 Run 终止四种状态。若本地尝试已结束但 join
+仍未恢复，则按执行失败补偿；等待其他子任务或父模型输出本身不属于失败。
+
 ## Async 执行与结果联动
 
 async spawn 成功后立即返回 handle。父 Run 不进入 waiting_child。

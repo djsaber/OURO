@@ -6,9 +6,11 @@ import asyncio
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from threading import Event
 
 from rich.text import Text
 from textual.app import App
+from textual.geometry import Size
 from textual.widgets import Input
 
 from ouro.application.models import AvailableModel, close_runtime_adapters
@@ -32,11 +34,15 @@ def surface_state(app: App) -> str:
     workers = [(worker.name, worker.group, worker.state.name) for worker in app.workers]
     focused = app.focused
     projection = getattr(app, "_projection", None)
+    activity = getattr(projection, "activity", None)
     pending = [item.tool_call_id for item in getattr(projection, "pending_interactions", ())]
     bound = getattr(focused, "_interaction", None)
     return (
         f"page={getattr(app.screen, 'page_title', type(app.screen).__name__)!r}, "
         f"focus={focused!r}, pending={pending!r}, "
+        f"session={getattr(projection, 'session_id', None)!r}, "
+        f"status={getattr(activity, 'status', None)!r}, "
+        f"activity={getattr(activity, 'activity', None)!r}, "
         f"bound={getattr(bound, 'tool_call_id', None)!r}, "
         f"disabled={getattr(focused, 'disabled', None)!r}, workers={workers!r}"
     )
@@ -102,20 +108,35 @@ async def wait_for_menu_action(pilot, menu: ChoiceScreen, *, timeout: float = 15
     long-lived application workers deliberately remain running.
     """
 
+    await wait_for_worker_group(
+        pilot.app, pilot, group=f"choice-selection-{id(menu)}", timeout=timeout
+    )
+
+
+async def wait_for_worker_group(app: App, pilot, *, group: str, timeout: float = 15.0) -> None:
+    """Await one finite operation after its initiating UI messages have drained."""
+
     try:
         async with asyncio.timeout(timeout):
             await pilot._wait_for_screen()
-            workers = tuple(
-                worker
-                for worker in pilot.app.workers
-                if worker.group == f"choice-selection-{id(menu)}"
-            )
+            workers = tuple(worker for worker in app.workers if worker.group == group)
             await asyncio.gather(*(worker.wait() for worker in workers))
             await pilot._wait_for_screen()
     except TimeoutError:
         raise AssertionError(
-            f"Timed out waiting for menu action on {menu.page_title!r}; {surface_state(pilot.app)}"
+            f"Timed out waiting for worker group {group!r}; {surface_state(app)}"
         ) from None
+
+
+@asynccontextmanager
+async def release_on_exit(*events: asyncio.Event | Event):
+    """Release test-owned gates before the enclosing application's shutdown."""
+
+    try:
+        yield
+    finally:
+        for event in events:
+            event.set()
 
 
 async def wait_for_history_render(pilot) -> None:
@@ -130,6 +151,29 @@ async def wait_for_history_render(pilot) -> None:
         pilot,
         description="installed conversation history to finish rendering",
     )
+
+
+async def resize_terminal(pilot, width: int, height: int, *, timeout: float = 15.0) -> None:
+    """Await applied screen geometry before reading coordinates or clicking.
+
+    Pilot updates the driver's size before Textual dispatches the deferred
+    Resize event. Screen.size follows that driver immediately; Screen.region
+    comes from the compositor and identifies the layout actually applied.
+    """
+    size = Size(width, height)
+    try:
+        async with asyncio.timeout(timeout):
+            await pilot.resize_terminal(width, height)
+            screen = pilot.app.screen
+            while screen.region.size != size:
+                await screen.wait_for_refresh()
+            # Resize handlers may invalidate child layout after screen reflow.
+            await screen.wait_for_refresh()
+    except TimeoutError:
+        raise AssertionError(
+            f"Timed out applying terminal size {size!r}; "
+            f"layout={pilot.app.screen.region!r}; {surface_state(pilot.app)}"
+        ) from None
 
 
 async def choose_menu(pilot, label: str, *, title: str | None = None) -> None:

@@ -11,6 +11,7 @@ from textual.widgets import Input, OptionList, Static
 from ouro.tui.inline_editor import MultilineEditableChoiceScreen, multiline_edit_prompt
 from ouro.tui.screens import Choice, EditableChoiceScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME
+from tests.tui.helpers import resize_terminal
 
 
 @pytest.mark.parametrize("action", ("type", "cancel", "close"))
@@ -94,7 +95,7 @@ async def test_empty_single_line_editor_bounds_placeholder_through_typing_and_re
         await pilot.press("{")
         await assert_single_line()
         await pilot.press("ctrl+u")
-        await pilot.resize_terminal(30, 18)
+        await resize_terminal(pilot, 30, 18)
         await assert_single_line()
         assert options.get_option("json").prompt.plain.endswith("…")
 
@@ -147,7 +148,7 @@ async def test_reusable_multiline_form_preserves_newlines_across_save_reopen_and
         await pilot.pause()
         assert form._edit_text == "a\nb\nc\nd\ne\nf"
         assert len(options.get_option("instruction").prompt.plain.split("\n")) == 3
-        await pilot.resize_terminal(42, 18)
+        await resize_terminal(pilot, 42, 18)
         await pilot.pause()
         assert "f" in options.get_option("instruction").prompt.plain
         await pilot.press("escape")

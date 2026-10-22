@@ -28,6 +28,7 @@ from ouro.tui.conversation_history import (
 from ouro.tui.state import RunPresentation
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
 from ouro.tui.widgets import AssistantTurn, ConversationView, ToolActivityRow
+from tests.tui.helpers import resize_terminal
 
 _MULTIBLOCK_ANSWER = """Here is the plan:
 
@@ -289,7 +290,7 @@ async def test_command_output_preserves_literal_content_and_frame_layout(show_sc
         pieces = history._pieces
         assert len(pieces) == 2
         assert [line.text for line in pieces[0].strips] == [line.text for line in pieces[1].strips]
-        await pilot.resize_terminal(width + 12, 30)
+        await resize_terminal(pilot, width + 12, 30)
         await history.wait_until_rendered()
         assert history.entries[0].text == source
         assert '    "value": "**中文**"' in history.rendered_text
@@ -676,7 +677,7 @@ async def test_failed_history_renderer_stops_until_content_is_reopened(monkeypat
         assert len(failures) == 1 and "ValueError" in failures[0]
         assert app.history.entries == entries
         app.history.append(TranscriptEntry(kind="assistant", text="later"))
-        await pilot.resize_terminal(80, 30)
+        await resize_terminal(pilot, 80, 30)
         assert len(calls) == 1
         assert app.is_running
         monkeypatch.setattr(conversation_history, "_render_entry_requests", render)
@@ -903,10 +904,10 @@ async def test_history_resize_keeps_old_buffer_until_latest_width_is_ready(monke
 
         monkeypatch.setattr(conversation_history, "_render_entry_requests", blocked_render)
         try:
-            await pilot.resize_terminal(80, 30)
+            await resize_terminal(pilot, 80, 30)
             assert await asyncio.to_thread(entered.wait, 2)
             assert tuple(app.history.lines) == old_lines
-            await pilot.resize_terminal(60, 30)
+            await resize_terminal(pilot, 60, 30)
             assert tuple(app.history.lines) == old_lines
         finally:
             release.set()

@@ -45,7 +45,7 @@ class AgentExecutionTasks:
         self.events = events
         self.settle = settle
         self._tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
-        self._receipts: set[asyncio.Task[None]] = set()
+        self._receipts: set[asyncio.Task[RuntimeStatusSnapshot]] = set()
         self._closed = False
 
     def watch(self, relation: DelegationRecord) -> None:
@@ -64,20 +64,22 @@ class AgentExecutionTasks:
         self._tasks[key] = task
         task.add_done_callback(lambda done: self._finished(key, done))
 
-    def own_receipt(self, handle: RunHandle) -> None:
-        """Release private process receipts; result waits use durable identity."""
+    def own_receipt(self, handle: RunHandle) -> asyncio.Task[RuntimeStatusSnapshot] | None:
+        """Own cleanup independently of callers observing the attempt's outcome."""
         if self._closed:
-            return
+            return None
 
-        async def release() -> None:
-            await self.observer.wait(handle)
+        async def release() -> RuntimeStatusSnapshot:
+            outcome = await self.observer.wait(handle)
             self.observer.release_handle(handle)
+            return outcome
 
         task = asyncio.create_task(release(), name=f"ouro-agent-receipt-{handle.handle_id}")
         self._receipts.add(task)
         task.add_done_callback(self._receipt_finished)
+        return task
 
-    def _receipt_finished(self, task: asyncio.Task[None]) -> None:
+    def _receipt_finished(self, task: asyncio.Task[RuntimeStatusSnapshot]) -> None:
         self._receipts.discard(task)
         if not task.cancelled() and task.exception() is not None:
             _LOGGER.error("Agent receipt cleanup failed: %s", type(task.exception()).__name__)

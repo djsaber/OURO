@@ -8,6 +8,7 @@ from textual.app import App
 from textual.widgets import OptionList
 
 from ouro.tui.screens import Choice, ChoiceScreen
+from tests.tui.helpers import resize_terminal
 
 
 class ChoiceApp(App):
@@ -46,7 +47,7 @@ async def test_large_status_menu_renders_only_visible_tables(monkeypatch, operat
         elif operation == "update":
             menu.update_choices((replace(choices[0], trailing="Changed"), *choices[1:]))
         else:
-            await pilot.resize_terminal(60, 24)
+            await resize_terminal(pilot, 60, 24)
         await pilot.pause()
         assert menu.query_one(OptionList).option_count > len(choices)
         assert renders < 150

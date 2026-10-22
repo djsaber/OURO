@@ -12,7 +12,7 @@ from ouro.tui.provider_screens import (
     profile_for_provider,
 )
 from ouro.tui.theme import theme_for
-from tests.tui.helpers import run_ready_app, two_route_application
+from tests.tui.helpers import resize_terminal, run_ready_app, two_route_application
 from tests.tui.test_provider_protocols import select_choice
 
 
@@ -126,7 +126,7 @@ async def test_credential_tab_preserves_each_input_cancel_state_and_navigation(t
         screen.post_message(events.Paste("env:" + "WIDE_KEY_" * 20))
         await pilot.pause()
         for width in (40, 28, 80):
-            await pilot.resize_terminal(width, 22)
+            await resize_terminal(pilot, width, 22)
             await pilot.pause()
             prompt = options.get_option("provider-credential").prompt
             assert prompt.plain.endswith("[ENV]")

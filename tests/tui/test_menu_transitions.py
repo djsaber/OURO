@@ -11,7 +11,7 @@ from textual.widgets import Input, OptionList, Static
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.screens import Choice, ChoiceScreen, MultiChoiceScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME
-from tests.tui.helpers import run_ready_app, wait_until
+from tests.tui.helpers import resize_terminal, run_ready_app, wait_until
 from tests.tui.test_app import _application, _wait_for_screen
 
 
@@ -327,7 +327,7 @@ async def test_nested_child_return_after_resize_preserves_menu_state(
         options.highlighted = options.get_option_index("compaction-model")
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="COMPACTION MODEL")
-        await pilot.resize_terminal(90, 30)
+        await resize_terminal(pilot, 90, 30)
         await pilot.pause()
 
         await pilot.press("enter" if accept else "escape")

@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from threading import get_ident
+from contextvars import ContextVar
+from threading import Event, get_ident
 
 import pytest
 
@@ -13,12 +14,19 @@ from ouro.application.agents import AgentService
 from ouro.application.resources import ResourceService
 from ouro.application.runtime import RuntimeService
 from ouro.application.supervisor import RuntimeSupervisor
+from ouro.application.supervisor_models import (
+    RunHandle,
+    RuntimeActivitySnapshot,
+    RuntimeNotification,
+    RuntimeStatusSnapshot,
+)
 from ouro.config.agents import AgentDefinitionsConfigManager
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import (
     AgentControlRequest,
     AgentDefinition,
     AgentSpawnPolicy,
+    AgentWaitRequest,
     DelegationRecord,
     ToolSelection,
 )
@@ -33,8 +41,9 @@ from ouro.core.tools import ToolInvocation
 from ouro.providers.anthropic_messages_codec import messages_to_anthropic_messages
 from ouro.providers.openai_responses_codec import responses_input
 from ouro.resources import LocalResourceStore
-from ouro.sessions import LocalSessionStore
+from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolInputRequest, ToolRegistry, ToolResult
+from tests.application.helpers import wait_for_parent_delivery
 
 
 class CapturingChildProvider:
@@ -2931,85 +2940,247 @@ async def test_sync_spawn_releases_parent_worker_and_resumes_original_tool_call(
         events=runtime.event_recorder,
     )
     runtime.bind_extensions(agent_definitions=definitions, agent_controls=service)
-    await service.start()
+    try:
+        await service.start()
 
-    parent_handle = await supervisor.submit("Delegate this task.")
-    parked = await supervisor.wait(parent_handle)
-    assert parked.status == "waiting_child"
-    root_session_id = parent_handle.session_id
-    parent_run_id = parked.run_id
-    assert parent_run_id is not None
+        parent_handle = await supervisor.submit("Delegate this task.")
+        parked = await supervisor.wait(parent_handle)
+        assert parked.status == "waiting_child"
+        root_session_id = parent_handle.session_id
+        parent_run_id = parked.run_id
+        assert parent_run_id is not None
 
-    async with asyncio.timeout(5):
-        while store.load_run(root_session_id, parent_run_id).status != "completed":
-            await asyncio.sleep(0.01)
-        while (
-            store.list_delegations(root_session_id)[0].result is None
-            or store.list_delegations(root_session_id)[0].result.delivery.status != "delivered"
-        ):
-            await asyncio.sleep(0.01)
+        await wait_for_parent_delivery(supervisor, root_session_id, parent_run_id)
+        assert (await supervisor.wait_run(root_session_id, parent_run_id)).status == "completed"
 
-    parent_run = store.load_run(root_session_id, parent_run_id)
-    snapshot = store.load_runtime_session(root_session_id)
-    spawn_result_messages = [
-        message
-        for message in snapshot.messages
-        if message.role == "tool_result"
-        and message.tool_result is not None
-        and message.tool_result.tool_name == "SpawnAgent"
-    ]
-    assert parent_run.status == "completed"
-    assert parent_run.run_id == parent_run_id
-    assert len(spawn_result_messages) == 1
-    assert spawn_result_messages[0].tool_result is not None
-    assert spawn_result_messages[0].tool_result.tool_call_id == "spawn_call"
-    spawn_content = spawn_result_messages[0].text_content
-    delegation = store.list_delegations(root_session_id)[0]
-    assert "## Subagent Result" in spawn_content
-    assert f"**Delegation ID**: `{delegation.delegation_id}`" in spawn_content
-    assert "**Status**: completed" in spawn_content
-    assert "child evidence" in spawn_content
-    assert delegation.child_session_id not in spawn_content
-    assert delegation.current_child_run_id not in spawn_content
-    assert snapshot.messages[-1].text_content == "parent resumed"
-    assert provider.child_tool_names == ["Read"]
-    spawn_definition = next(
-        item for item in provider.root_tool_schemas[0] if item["name"] == "SpawnAgent"
+        parent_run = store.load_run(root_session_id, parent_run_id)
+        snapshot = store.load_runtime_session(root_session_id)
+        spawn_result_messages = [
+            message
+            for message in snapshot.messages
+            if message.role == "tool_result"
+            and message.tool_result is not None
+            and message.tool_result.tool_name == "SpawnAgent"
+        ]
+        assert parent_run.status == "completed"
+        assert parent_run.run_id == parent_run_id
+        assert len(spawn_result_messages) == 1
+        assert spawn_result_messages[0].tool_result is not None
+        assert spawn_result_messages[0].tool_result.tool_call_id == "spawn_call"
+        spawn_content = spawn_result_messages[0].text_content
+        delegation = store.list_delegations(root_session_id)[0]
+        assert "## Subagent Result" in spawn_content
+        assert f"**Delegation ID**: `{delegation.delegation_id}`" in spawn_content
+        assert "**Status**: completed" in spawn_content
+        assert "child evidence" in spawn_content
+        assert delegation.child_session_id not in spawn_content
+        assert delegation.current_child_run_id not in spawn_content
+        assert snapshot.messages[-1].text_content == "parent resumed"
+        assert provider.child_tool_names == ["Read"]
+        spawn_definition = next(
+            item for item in provider.root_tool_schemas[0] if item["name"] == "SpawnAgent"
+        )
+        agent_options = spawn_definition["parameters_schema"]["properties"]["agent_id"]["oneOf"]
+        assert agent_options == [
+            {
+                "const": "general",
+                "title": "General",
+                "description": "A general-purpose subagent for a bounded delegated task.",
+            },
+            {
+                "const": "reader",
+                "title": "Reader",
+                "description": "Read bounded evidence.",
+            },
+        ]
+        events = store.load_session(root_session_id).events
+        assert [event.event_type for event in events].count("agent_wait_requested") == 1
+        assert [event.event_type for event in events].count("agent_wait_resolved") == 1
+        assert [
+            event.payload["tool_call_id"]
+            for event in events
+            if event.event_type == "tool_call_completed"
+            and event.payload.get("tool_name") == "SpawnAgent"
+        ] == ["spawn_call"]
+        relation = store.list_delegations(root_session_id)[0]
+        assert relation.result is not None
+        assert relation.result.delivery.status == "delivered"
+        assert relation.result.delivery.target_run_id == parent_run_id
+
+    finally:
+        await service.close()
+        await supervisor.shutdown()
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+@pytest.mark.parametrize("parallel", [False, True])
+@pytest.mark.parametrize("attempt_failure", [False, True])
+async def test_sync_delivery_commits_while_parent_model_is_still_running(
+    tmp_path, monkeypatch, backend, parallel, attempt_failure
+):
+    store = (
+        LocalSessionStore(tmp_path)
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sessions.sqlite3")
     )
-    agent_options = spawn_definition["parameters_schema"]["properties"]["agent_id"]["oneOf"]
-    assert agent_options == [
-        {
-            "const": "general",
-            "title": "General",
-            "description": "A general-purpose subagent for a bounded delegated task.",
-        },
-        {
-            "const": "reader",
-            "title": "Reader",
-            "description": "Read bounded evidence.",
-        },
-    ]
-    events = store.load_session(root_session_id).events
-    assert [event.event_type for event in events].count("agent_wait_requested") == 1
-    assert [event.event_type for event in events].count("agent_wait_resolved") == 1
-    assert [
-        event.payload["tool_call_id"]
-        for event in events
-        if event.event_type == "tool_call_completed"
-        and event.payload.get("tool_name") == "SpawnAgent"
-    ] == ["spawn_call"]
-    relation = store.list_delegations(root_session_id)[0]
-    assert relation.result is not None
-    assert relation.result.delivery.status == "delivered"
-    assert relation.result.delivery.target_run_id == parent_run_id
+    store.initialize()
+    tools = _tools()
+    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions.create(
+        agent_id="reader",
+        name="Reader",
+        description="Read bounded evidence.",
+        system_prompt="CHILD ONLY",
+        tool_selection=ToolSelection(mode="selected", names=("Read",)),
+        tools=tools,
+        expected_revision=0,
+    )
+    provider = ParallelSyncAgentProvider() if parallel else SyncAgentProvider()
+    streaming, release = asyncio.Event(), asyncio.Event()
+    emit_tokens = asyncio.Event()
+    stream = provider.stream
 
-    await service.close()
-    await supervisor.shutdown()
+    async def held_parent(**kwargs):
+        resumed_parent = any(
+            tool["name"] == "SpawnAgent" for tool in kwargs["tools"] or []
+        ) and any(message.role == "tool_result" for message in kwargs["messages"])
+        async for event in stream(**kwargs):
+            if resumed_parent and event.type == "done":
+                streaming.set()
+                await emit_tokens.wait()
+                for _ in range(64):
+                    yield ProviderStreamEvent(type="text_delta", text=".")
+                yield ProviderStreamEvent(type="text_delta", text="burst finished")
+                await release.wait()
+            yield event
+
+    monkeypatch.setattr(provider, "stream", held_parent)
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(provider, ModelMetadata(model_id="sync", provider_id="sync")),
+        tools=tools,
+    )
+    supervisor = RuntimeSupervisor(runtime, max_concurrency=4 if parallel else 1)
+    service = AgentService(
+        store=store, definitions=definitions, scheduler=supervisor, events=runtime.event_recorder
+    )
+    runtime.bind_extensions(agent_definitions=definitions, agent_controls=service)
+    receipt_checks = []
+    committed = service._tool_result_is_committed
+
+    def counted_receipt(**kwargs):
+        receipt_checks.append(kwargs["tool_call_id"])
+        return committed(**kwargs)
+
+    monkeypatch.setattr(service, "_tool_result_is_committed", counted_receipt)
+    failed_handle = None
+    released = []
+    if attempt_failure:
+        resume = supervisor.resume_agent_wait
+        wait = supervisor.wait
+        release_handle = supervisor.release_handle
+
+        async def fail_first_attempt(**kwargs):
+            nonlocal failed_handle
+            if failed_handle is None:
+                failed_handle = RunHandle(session_id=kwargs["session_id"])
+                return failed_handle
+            return await resume(**kwargs)
+
+        async def attempt_outcome(handle):
+            if handle == failed_handle:
+                return RuntimeStatusSnapshot(session_id=handle.session_id, status="failed")
+            return await wait(handle)
+
+        def release_attempt(handle):
+            if handle == failed_handle:
+                released.append(handle)
+            else:
+                release_handle(handle)
+
+        monkeypatch.setattr(supervisor, "resume_agent_wait", fail_first_attempt)
+        monkeypatch.setattr(supervisor, "wait", attempt_outcome)
+        monkeypatch.setattr(supervisor, "release_handle", release_attempt)
+    try:
+        await service.start()
+        handle = await supervisor.submit("Delegate and continue generating.")
+        parked = await supervisor.wait(handle)
+        assert parked.status == "waiting_child"
+        async with asyncio.timeout(30):
+            await streaming.wait()
+        messages = store.load_run_messages(handle.session_id, parked.run_id)
+        assert len([message for message in messages if message.tool_result is not None]) == (
+            2 if parallel else 1
+        )
+        await wait_for_parent_delivery(supervisor, handle.session_id, parked.run_id)
+        assert store.load_run(handle.session_id, parked.run_id).status == "running"
+        assert not release.is_set()
+        assert any(not receipt.done() for receipt in service._execution._receipts)
+        checks_before_tokens = len(receipt_checks)
+        subscription = await supervisor.subscribe(handle.session_id, after_sequence=0)
+        try:
+            emit_tokens.set()
+            async with asyncio.timeout(30):
+                while True:
+                    notification = await subscription.get()
+                    if (
+                        notification.event is not None
+                        and notification.event.event_type == "model_text_delta"
+                        and "burst finished" in (notification.event.text or "")
+                    ):
+                        break
+        finally:
+            subscription.close()
+        assert len(receipt_checks) == checks_before_tokens
+
+        # A committed join takes the receipt-only fast path, without creating a
+        # state observer or loading a Run checkpoint.
+        relations = store.list_delegations(handle.session_id)
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("committed receipt re-entered parent observation")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(supervisor, "subscribe_state", forbidden)
+            patch.setattr(store, "load_run", forbidden)
+            for relation in relations:
+                assert await service._commit_agent_wait_result(
+                    session_id=handle.session_id,
+                    run_id=parked.run_id,
+                    tool_call_id=relation.parent_tool_call_id,
+                    tool_name="SpawnAgent",
+                    wait=AgentWaitRequest(delegation_id=relation.delegation_id),
+                )
+        if attempt_failure:
+            assert released == [failed_handle]
+        release.set()
+        assert (await supervisor.wait_run(handle.session_id, parked.run_id)).status == "completed"
+        receipts = tuple(service._execution._receipts)
+        async with asyncio.timeout(30):
+            await asyncio.gather(*receipts)
+        assert not service._execution._receipts
+    finally:
+        emit_tokens.set()
+        release.set()
+        await service.close()
+        await supervisor.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_parallel_sync_spawns_serialize_parent_resumption(tmp_path) -> None:
-    store = LocalSessionStore(tmp_path)
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+@pytest.mark.parametrize(
+    "late_check",
+    [None, 0, 1, 2, 3],
+    ids=["normal", "partial_batch", "receipt", "parked", "recovery_partial_batch"],
+)
+async def test_parallel_sync_spawns_serialize_parent_resumption(
+    tmp_path, monkeypatch, backend, late_check
+) -> None:
+    store = (
+        LocalSessionStore(tmp_path)
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sessions.sqlite3")
+    )
     store.initialize()
     tools = _tools()
     definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
@@ -3039,51 +3210,166 @@ async def test_parallel_sync_spawns_serialize_parent_resumption(tmp_path) -> Non
         events=runtime.event_recorder,
     )
     runtime.bind_extensions(agent_definitions=definitions, agent_controls=service)
-    await service.start()
+    stale_read = Event()
+    parent_committed = Event()
+    resumption_ids = []
+    if late_check is not None:
+        settling_call = ContextVar("settling_call", default=None)
+        resume_wait = service._resume_agent_wait
+        committed = service._tool_result_is_committed
+        resume_parent = supervisor.resume_agent_wait
+        subscribe_state = supervisor.subscribe_state
+        partial_checks = 0
 
-    parent_handle = await supervisor.submit("Delegate two synchronous tasks.")
-    parked = await supervisor.wait(parent_handle)
-    assert parked.status == "waiting_child"
-    assert parked.run_id is not None
+        async def tracked_wait(**kwargs):
+            token = settling_call.set(kwargs["tool_call_id"])
+            try:
+                return await resume_wait(**kwargs)
+            finally:
+                settling_call.reset(token)
 
-    async with asyncio.timeout(5):
-        while store.load_run(parent_handle.session_id, parked.run_id).status != "completed":
-            await asyncio.sleep(0.01)
+        def held_receipt_read(**kwargs):
+            nonlocal partial_checks
+            found = committed(**kwargs)
+            if not found and settling_call.get() == "parallel_spawn_0":
+                run = store.load_run(kwargs["session_id"], kwargs["run_id"])
+                if run.active_tool_batch is not None and any(
+                    call.request.id == "parallel_spawn_0" and call.status == "completed"
+                    for call in run.active_tool_batch.calls
+                ):
+                    partial_checks += 1
+                    if late_check in {2, 3} and partial_checks == 1:
+                        # Exercise retry/recovery's pre-resume receipt read as
+                        # well as settlement immediately after a partial join.
+                        raise OSError("temporary receipt read failure")
+                    if late_check in {1, 2} and partial_checks == late_check:
+                        # Return a real, earlier absence only after the sibling
+                        # commits the batch and the parent becomes terminal.
+                        stale_read.set()
+                        parent_committed.wait()
+            return found
 
-    events = store.load_session(parent_handle.session_id).events
-    completed_spawn_ids = {
-        event.payload["tool_call_id"]
-        for event in events
-        if event.event_type == "tool_call_completed"
-        and event.payload.get("tool_name") == "SpawnAgent"
-    }
-    assert completed_spawn_ids == {"parallel_spawn_0", "parallel_spawn_1"}
-    snapshot = store.load_runtime_session(parent_handle.session_id)
-    assert snapshot.messages[-1].text_content == "parallel parent resumed"
-    relations_by_call = {
-        relation.parent_tool_call_id: relation
-        for relation in store.list_delegations(parent_handle.session_id)
-    }
-    spawn_results = [
-        message
-        for message in snapshot.messages
-        if message.tool_result is not None and message.tool_result.tool_name == "SpawnAgent"
-    ]
-    assert {message.tool_result.tool_call_id for message in spawn_results} == {
-        "parallel_spawn_0",
-        "parallel_spawn_1",
-    }
-    for message in spawn_results:
-        assert message.tool_result is not None
-        assert message.tool_execution is not None
-        relation = relations_by_call[message.tool_result.tool_call_id]
-        assert relation.result is not None
-        assert message.tool_execution.started_at == relation.created_at
-        assert message.tool_execution.ended_at == relation.result.result_ready_at
-        assert message.tool_execution.ended_at > message.tool_execution.started_at
+        async def ordered_resume(**kwargs):
+            if kwargs["tool_call_id"] == "parallel_spawn_1":
+                await asyncio.to_thread(stale_read.wait)
+            resumption_ids.append(kwargs["tool_call_id"])
+            if resumption_ids.count("parallel_spawn_0") > 1:
+                stale_read.set()
+                raise AssertionError("a resolved child wait was scheduled again")
+            return await resume_parent(**kwargs)
 
-    await service.close()
-    await supervisor.shutdown()
+        async def observe_delivery_wait(session_id, **kwargs):
+            subscription = await subscribe_state(session_id, **kwargs)
+            if late_check in {0, 3} and settling_call.get() == "parallel_spawn_0":
+                get = subscription.get
+                updates = 0
+                checks_before_updates = None
+                parent = store.load_run(session_id, subscription.initial_activity.run_id)
+                assert parent.active_tool_batch is not None
+
+                async def waiting_for_commit():
+                    nonlocal updates, checks_before_updates
+                    if late_check == 3 and partial_checks >= 2:
+                        if checks_before_updates is None:
+                            checks_before_updates = partial_checks
+                        if updates < 256:
+                            updates += 1
+                            return RuntimeNotification(
+                                kind="activity",
+                                activity=RuntimeActivitySnapshot(
+                                    session_id=session_id,
+                                    run_id=parent.run_id,
+                                    status="waiting_child",
+                                    activity="waiting_child",
+                                    batch_id=parent.active_tool_batch.batch_id,
+                                    batch_phase="awaiting_child",
+                                    sequence=updates,
+                                ),
+                            )
+                        if updates == 256:
+                            assert partial_checks == checks_before_updates
+                            updates += 1
+                    # Keep the sibling unresolved until the first waiter has
+                    # consumed its negative receipt and awaits batch publication.
+                    if partial_checks:
+                        stale_read.set()
+                    return await get()
+
+                monkeypatch.setattr(subscription, "get", waiting_for_commit)
+            return subscription
+
+        monkeypatch.setattr(service, "_resume_agent_wait", tracked_wait)
+        monkeypatch.setattr(service, "_tool_result_is_committed", held_receipt_read)
+        monkeypatch.setattr(supervisor, "resume_agent_wait", ordered_resume)
+        monkeypatch.setattr(supervisor, "subscribe_state", observe_delivery_wait)
+    try:
+        await service.start()
+
+        parent_handle = await supervisor.submit("Delegate two synchronous tasks.")
+        parked = await supervisor.wait(parent_handle)
+        assert parked.status == "waiting_child"
+        assert parked.run_id is not None
+
+        if late_check is not None:
+            async with asyncio.timeout(30):
+                terminal = await supervisor.wait_run(parent_handle.session_id, parked.run_id)
+            assert terminal.status == "completed"
+            assert stale_read.is_set()
+            parent_committed.set()
+        await wait_for_parent_delivery(supervisor, parent_handle.session_id, parked.run_id)
+        assert (
+            await supervisor.wait_run(parent_handle.session_id, parked.run_id)
+        ).status == "completed"
+        if late_check is not None:
+            assert sorted(resumption_ids) == ["parallel_spawn_0", "parallel_spawn_1"]
+
+        events = store.load_session(parent_handle.session_id).events
+        assert not any(
+            event.event_type == "diagnostic"
+            and event.payload.get("code") == "agent_result_delivery_incomplete"
+            for event in events
+        )
+        completed_spawn_ids = [
+            event.payload["tool_call_id"]
+            for event in events
+            if event.event_type == "tool_call_completed"
+            and event.payload.get("tool_name") == "SpawnAgent"
+        ]
+        assert sorted(completed_spawn_ids) == ["parallel_spawn_0", "parallel_spawn_1"]
+        deliveries = [event for event in events if event.event_type == "agent_result_delivered"]
+        assert len(deliveries) == 2
+        assert len({event.payload["delegation_id"] for event in deliveries}) == 2
+        snapshot = store.load_runtime_session(parent_handle.session_id)
+        assert snapshot.messages[-1].text_content == "parallel parent resumed"
+        relations_by_call = {
+            relation.parent_tool_call_id: relation
+            for relation in store.list_delegations(parent_handle.session_id)
+        }
+        spawn_results = [
+            message
+            for message in snapshot.messages
+            if message.tool_result is not None and message.tool_result.tool_name == "SpawnAgent"
+        ]
+        assert len(spawn_results) == 2
+        assert {message.tool_result.tool_call_id for message in spawn_results} == {
+            "parallel_spawn_0",
+            "parallel_spawn_1",
+        }
+        for message in spawn_results:
+            assert message.tool_result is not None
+            assert message.tool_execution is not None
+            relation = relations_by_call[message.tool_result.tool_call_id]
+            assert relation.result is not None
+            assert relation.result.delivery.error is None
+            assert message.tool_execution.started_at == relation.created_at
+            assert message.tool_execution.ended_at == relation.result.result_ready_at
+            assert message.tool_execution.ended_at > message.tool_execution.started_at
+
+    finally:
+        stale_read.set()
+        parent_committed.set()
+        await service.close()
+        await supervisor.shutdown()
 
 
 @pytest.mark.asyncio
@@ -3111,54 +3397,48 @@ async def test_sync_child_hitl_keeps_parent_parked_and_single_worker_progresses(
         events=runtime.event_recorder,
     )
     runtime.bind_extensions(agent_definitions=definitions, agent_controls=service)
-    await service.start()
+    try:
+        await service.start()
 
-    parent_handle = await supervisor.submit("Delegate a synchronous question.")
-    parked = await supervisor.wait(parent_handle)
-    assert parked.status == "waiting_child"
-    assert parked.run_id is not None
-    root_session_id = parent_handle.session_id
+        parent_handle = await supervisor.submit("Delegate a synchronous question.")
+        parked = await supervisor.wait(parent_handle)
+        assert parked.status == "waiting_child"
+        assert parked.run_id is not None
+        root_session_id = parent_handle.session_id
 
-    async with asyncio.timeout(3):
-        while not service.list_agent_interactions(root_session_id):
-            await asyncio.sleep(0.01)
-    interaction = service.list_agent_interactions(root_session_id)[0]
-    assert interaction.kind == "user_input"
-    assert store.load_run(root_session_id, parked.run_id).status == "waiting_child"
-    tree = service.agent_tree_snapshot(root_session_id)
-    assert tree.nodes[0].status == "waiting_user"
-    assert tree.pending_interaction_count == 1
-    assert tree.root_activity is not None
-    assert tree.root_activity.status == "waiting_child"
-    assert tree.waiting_on_delegation_ids == (tree.nodes[0].delegation_id,)
+        async with asyncio.timeout(3):
+            while not service.list_agent_interactions(root_session_id):
+                await asyncio.sleep(0.01)
+        interaction = service.list_agent_interactions(root_session_id)[0]
+        assert interaction.kind == "user_input"
+        assert store.load_run(root_session_id, parked.run_id).status == "waiting_child"
+        tree = service.agent_tree_snapshot(root_session_id)
+        assert tree.nodes[0].status == "waiting_user"
+        assert tree.pending_interaction_count == 1
+        assert tree.root_activity is not None
+        assert tree.root_activity.status == "waiting_child"
+        assert tree.waiting_on_delegation_ids == (tree.nodes[0].delegation_id,)
 
-    child_resume = await service.resolve_agent_input(
-        tree.nodes[0].delegation_id,
-        child_session_id=interaction.child_session_id,
-        child_run_id=interaction.child_run_id,
-        tool_call_id=interaction.tool_call_id,
-        request_id=interaction.request_id,
-        answer="A",
-    )
-    assert (await supervisor.wait(child_resume)).status == "completed"
-    async with asyncio.timeout(5):
-        while True:
-            relation = store.list_delegations(root_session_id)[0]
-            if (
-                store.load_run(root_session_id, parked.run_id).status == "completed"
-                and relation.result is not None
-                and relation.result.delivery.status == "delivered"
-            ):
-                break
-            await asyncio.sleep(0.01)
+        child_resume = await service.resolve_agent_input(
+            tree.nodes[0].delegation_id,
+            child_session_id=interaction.child_session_id,
+            child_run_id=interaction.child_run_id,
+            tool_call_id=interaction.tool_call_id,
+            request_id=interaction.request_id,
+            answer="A",
+        )
+        assert (await supervisor.wait(child_resume)).status == "completed"
+        await wait_for_parent_delivery(supervisor, root_session_id, parked.run_id)
+        assert (await supervisor.wait_run(root_session_id, parked.run_id)).status == "completed"
 
-    root_snapshot = store.load_runtime_session(root_session_id)
-    assert root_snapshot.messages[-1].text_content == "sync parent resumed"
-    relation = store.list_delegations(root_session_id)[0]
-    assert relation.result is not None
-    assert relation.result.delivery.status == "delivered"
-    await service.close()
-    await supervisor.shutdown()
+        root_snapshot = store.load_runtime_session(root_session_id)
+        assert root_snapshot.messages[-1].text_content == "sync parent resumed"
+        relation = store.list_delegations(root_session_id)[0]
+        assert relation.result is not None
+        assert relation.result.delivery.status == "delivered"
+    finally:
+        await service.close()
+        await supervisor.shutdown()
 
 
 @pytest.mark.asyncio

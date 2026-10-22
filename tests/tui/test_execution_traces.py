@@ -21,7 +21,13 @@ from ouro.tui.screens import ChoiceScreen
 from ouro.tui.state import RunPresentation
 from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
 from ouro.tui.widgets import ConversationView
-from tests.tui.helpers import choose_menu, run_ready_app, wait_for_screen, wait_until
+from tests.tui.helpers import (
+    choose_menu,
+    resize_terminal,
+    run_ready_app,
+    wait_for_screen,
+    wait_until,
+)
 from tests.tui.test_app import _persist_direct_child_session
 from tests.tui.test_tasks import streaming_application
 
@@ -231,7 +237,7 @@ async def test_trace_choices_survive_session_cache_resize_theme_and_prepend():
         state = history.take_state()
         await history.load(trace_entries("other"))
         assert "Investigating" not in history.rendered_text
-        await pilot.resize_terminal(60, 24)
+        await resize_terminal(pilot, 60, 24)
         await history.load(entries, reusable_state=state)
         assert "Investigating" in history.rendered_text
         app.tui_theme = TUI_THEMES["indigo"]
