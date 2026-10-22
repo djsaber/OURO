@@ -4,7 +4,6 @@ import asyncio
 import importlib
 import importlib.util
 import logging
-import shutil
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -202,8 +201,6 @@ class LoadedPluginModule:
             module = sys.modules.get(name)
             if module is not None and _module_belongs_to(module, self.package_root):
                 sys.modules.pop(name, None)
-        for cache in self.package_root.rglob("__pycache__"):
-            shutil.rmtree(cache, ignore_errors=True)
 
 
 def load_plugin_factory(

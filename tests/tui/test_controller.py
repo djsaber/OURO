@@ -1433,12 +1433,12 @@ async def test_controller_manages_discovered_skill_policy_and_validation(tmp_pat
             item for item in (await controller.skill_catalog()).skills if item.name == "demo"
         )
         assert disabled.enabled is False
-        assert controller.runtime_skill_names() == ()
-        assert controller.skill_invocation_options() == ()
+        assert await controller.runtime_skill_names() == ()
+        assert await controller.skill_invocation_options() == ()
 
         await controller.set_skill_enabled("demo", enabled=True)
-        assert controller.runtime_skill_names() == ("demo",)
-        assert [item.name for item in controller.skill_invocation_options()] == ["demo"]
+        assert await controller.runtime_skill_names() == ("demo",)
+        assert [item.name for item in await controller.skill_invocation_options()] == ["demo"]
     finally:
         await controller.close()
 
@@ -1475,19 +1475,19 @@ async def test_controller_updates_skill_directory_sources_and_live_runtime(tmp_p
             source_updates={"codex.user": False}
         )
         assert disabled_codex.disabled_sources == ["codex.user"]
-        assert controller.runtime_skill_names() == ("ouro-skill",)
+        assert await controller.runtime_skill_names() == ("ouro-skill",)
 
         discovery_off = await controller.update_skill_discovery(enabled=False)
         assert discovery_off.enabled is False
-        assert controller.runtime_skill_names() == ()
+        assert await controller.runtime_skill_names() == ()
 
         discovery_on = await controller.update_skill_discovery(enabled=True)
         assert discovery_on.enabled is True
         assert discovery_on.disabled_sources == ["codex.user"]
-        assert controller.runtime_skill_names() == ("ouro-skill",)
+        assert await controller.runtime_skill_names() == ("ouro-skill",)
 
         await controller.update_skill_discovery(source_updates={"codex.user": True})
-        assert controller.runtime_skill_names() == ("codex-skill", "ouro-skill")
+        assert await controller.runtime_skill_names() == ("codex-skill", "ouro-skill")
     finally:
         await controller.close()
 

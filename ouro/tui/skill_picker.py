@@ -12,6 +12,7 @@ class SkillPicker:
     def __init__(self, options: tuple[TuiCommandArgument, ...]) -> None:
         self.options = options
         self.selected: list[str] = []
+        self.loading = False
 
     def toggle(self, value: str) -> None:
         if value in self.selected:

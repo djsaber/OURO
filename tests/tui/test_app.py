@@ -10486,7 +10486,7 @@ async def test_skill_directory_sources_use_shared_menu_and_persist_toggles(tmp_p
 
         policy = ConfigurationFacade(tmp_path).skill_policy()
         assert policy.disabled_sources == ["ouro.user"]
-        assert app._controller.runtime_skill_names() == ()
+        assert await app._controller.runtime_skill_names() == ()
         assert (
             next(
                 choice for choice in action_screen._choices if choice.value == "ouro.user"
@@ -10575,7 +10575,7 @@ async def test_skill_disable_action_is_owned_by_skill_submenu(tmp_path: Path) ->
             pilot,
             description="skill disable completion",
         )
-        assert app._controller.runtime_skill_names() == ()
+        assert await app._controller.runtime_skill_names() == ()
         assert app.screen._choices[0].label == "Enable"
         assert {choice.value for choice in app.screen._choices} == {"enable", "validate"}
 
@@ -10594,7 +10594,7 @@ async def test_skill_disable_action_is_owned_by_skill_submenu(tmp_path: Path) ->
             pilot,
             description="skill enable completion",
         )
-        assert app._controller.runtime_skill_names() == ("demo",)
+        assert await app._controller.runtime_skill_names() == ("demo",)
         assert app.screen._choices[0].label == "Disable"
 
         await pilot.press("escape")

@@ -94,10 +94,10 @@ from ouro.mcp import (
 )
 from ouro.prompts import render_agent_skills_prompt
 from ouro.skills import (
-    SkillLoader,
     SkillManager,
     default_skill_roots,
     discover_skill_catalog,
+    load_skill_from_metadata,
 )
 
 
@@ -1133,17 +1133,8 @@ class ConfigurationFacade:
         metadata = next((item for item in catalog.skills if item.name == name), None)
         if metadata is None:
             raise ConfigError(f"skill not found: {name}")
-        loader = SkillLoader(
-            Path(metadata.location).parent,
-            default_source=metadata.source,
-            default_origin=metadata.origin,
-        )
-        loaded = loader.load_content(name)
-        loaded = loaded.model_copy(
-            update={"metadata": loaded.metadata.model_copy(update={"enabled": metadata.enabled})}
-        )
         return loaded_skill_view(
-            loaded,
+            load_skill_from_metadata(metadata),
             installed=self._skill_policy.snapshot().config.installed,
         )
 
@@ -1210,7 +1201,7 @@ class ConfigurationFacade:
             source_updates=source_updates,
         )
         return self.skill_policy(
-            change=configuration_change("skills", "discovery_updated", "next_runtime")
+            change=configuration_change("skills", "discovery_updated", "next_request")
         )
 
     def _require_provider(self, provider_id: str) -> ProviderConfig:

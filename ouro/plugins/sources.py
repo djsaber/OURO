@@ -13,7 +13,12 @@ from typing import Protocol
 
 from ouro.core.redaction import public_url
 from ouro.plugins.models import PluginSourceKind
-from ouro.plugins.package import PackageLimits, PluginPackageError
+from ouro.plugins.package import (
+    PackageLimits,
+    PluginPackageError,
+    ignore_plugin_caches,
+    is_plugin_cache_path,
+)
 from ouro.plugins.paths import portable_relative_path
 
 
@@ -39,7 +44,7 @@ class LocalPluginSource:
         if not source.is_dir():
             raise PluginPackageError(f"local plugin source is not a directory: {source}")
         target = destination / "package"
-        shutil.copytree(source, target, symlinks=True)
+        shutil.copytree(source, target, ignore=ignore_plugin_caches, symlinks=True)
         return MaterializedPluginSource(
             root=target,
             source_kind="local",
@@ -78,11 +83,14 @@ class ArchivePluginSource:
 
     def _extract_zip(self, source: Path, target: Path) -> None:
         with zipfile.ZipFile(source) as archive:
-            entries = archive.infolist()
+            entries = [
+                (entry, relative)
+                for entry in archive.infolist()
+                if not is_plugin_cache_path(relative := _safe_archive_path(entry.filename))
+            ]
             _validate_archive_count(entries, self.limits)
             total = 0
-            for entry in entries:
-                relative = _safe_archive_path(entry.filename)
+            for entry, relative in entries:
                 mode = entry.external_attr >> 16
                 if mode and (mode & 0o170000) == 0o120000:
                     raise PluginPackageError(f"archive contains symlink: {entry.filename}")
@@ -110,11 +118,14 @@ class ArchivePluginSource:
 
     def _extract_tar(self, source: Path, target: Path) -> None:
         with tarfile.open(source) as archive:
-            entries = archive.getmembers()
+            entries = [
+                (entry, relative)
+                for entry in archive.getmembers()
+                if not is_plugin_cache_path(relative := _safe_archive_path(entry.name))
+            ]
             _validate_archive_count(entries, self.limits)
             total = 0
-            for entry in entries:
-                relative = _safe_archive_path(entry.name)
+            for entry, relative in entries:
                 if entry.issym() or entry.islnk() or entry.isdev() or entry.isfifo():
                     raise PluginPackageError(f"archive contains unsafe entry: {entry.name}")
                 if not (entry.isfile() or entry.isdir()):
@@ -191,7 +202,7 @@ class GitPluginSource:
                     f"Git plugin subdirectory does not exist: {self.subdirectory}"
                 )
         target = destination / "package"
-        shutil.copytree(source_root, target, ignore=shutil.ignore_patterns(".git"), symlinks=True)
+        shutil.copytree(source_root, target, ignore=_ignore_git_source_entries, symlinks=True)
         return MaterializedPluginSource(
             root=target,
             source_kind="git",
@@ -297,14 +308,18 @@ def _validate_git_tree(
     entries = [entry for entry in raw.split("\0") if entry]
     if not entries:
         raise PluginPackageError("Git plugin source contains no files")
-    if len(entries) > limits.max_files:
-        raise PluginPackageError("Git plugin source exceeds file count limit")
+    count = 0
     total = 0
     for entry in entries:
         metadata, separator, path = entry.partition("\t")
         if not separator:
             raise PluginPackageError("Git source tree returned an invalid entry")
-        _safe_archive_path(path)
+        relative = _safe_archive_path(path)
+        if is_plugin_cache_path(relative):
+            continue
+        count += 1
+        if count > limits.max_files:
+            raise PluginPackageError("Git plugin source exceeds file count limit")
         parts = metadata.split()
         if len(parts) != 4 or parts[1] != "blob":
             raise PluginPackageError(f"Git source contains an unsupported entry: {path}")
@@ -320,3 +335,7 @@ def _validate_git_tree(
         total += size
         if total > limits.max_total_bytes:
             raise PluginPackageError("Git plugin source exceeds total size limit")
+
+
+def _ignore_git_source_entries(directory: str, names: list[str]) -> list[str]:
+    return [*ignore_plugin_caches(directory, names), *(name for name in names if name == ".git")]

@@ -738,9 +738,11 @@ def test_skill_queries_and_management_use_application_dtos(tmp_path) -> None:
     assert loaded.skill.name == "echo"
     assert "Use echo carefully" in loaded.content
     assert disabled.change.section == "skills"
+    assert disabled.change.effective_from == "next_request"
     assert facade.skill_policy().disabled == ["echo"]
     assert facade.skill_catalog().skills == []
     assert facade.skill_catalog(include_disabled=True).skills[0].enabled is False
+    assert facade.skill("echo").skill.enabled is False
 
 
 def test_skill_discovery_policy_updates_application_view(tmp_path) -> None:
@@ -751,7 +753,7 @@ def test_skill_discovery_policy_updates_application_view(tmp_path) -> None:
     )
 
     assert policy.change is not None
-    assert policy.change.effective_from == "next_runtime"
+    assert policy.change.effective_from == "next_request"
     assert policy.disabled_sources == ["claude.workspace", "ouro.user"]
     states = {source.source_id: source.enabled for source in policy.sources}
     assert states["ouro.user"] is False

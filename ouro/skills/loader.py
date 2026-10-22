@@ -42,7 +42,6 @@ class SkillLoader:
         self.max_depth = max(0, max_depth)
         self.max_directories = max(1, max_directories)
         self.parser = parser or SkillDocumentParser()
-        self._metadata: dict[str, SkillMetadata] = {}
         self._diagnostics: list[SkillDiagnostic] = []
 
     @property
@@ -50,19 +49,20 @@ class SkillLoader:
         return tuple(self._diagnostics)
 
     def load_catalog(self) -> SkillCatalog:
-        self._metadata = {}
+        discovered: dict[str, SkillMetadata] = {}
         self._diagnostics = []
         for location in self._skill_paths():
             result = self.parser.parse(
                 location,
                 source=self.default_source,
                 origin=self.default_origin,
+                metadata_only=True,
             )
             self._diagnostics.extend(result.diagnostics)
             if result.skill is None:
                 continue
             metadata = result.skill.metadata
-            existing = self._metadata.get(metadata.name)
+            existing = discovered.get(metadata.name)
             if existing is not None:
                 self._diagnostics.append(
                     SkillDiagnostic(
@@ -75,9 +75,9 @@ class SkillLoader:
                     )
                 )
                 continue
-            self._metadata[metadata.name] = metadata
+            discovered[metadata.name] = metadata
         return SkillCatalog(
-            skills=sorted(self._metadata.values(), key=lambda item: item.name),
+            skills=sorted(discovered.values(), key=lambda item: item.name),
             diagnostics=list(self._diagnostics),
         )
 
@@ -85,12 +85,10 @@ class SkillLoader:
         return self.load_catalog().skills
 
     def load_content(self, skill_name: str) -> LoadedSkill:
-        metadata = self._metadata.get(skill_name)
-        if metadata is None:
-            metadata = self.load_catalog().by_name().get(skill_name)
+        metadata = self.load_catalog().by_name().get(skill_name)
         if metadata is None:
             raise KeyError(f"unknown skill: {skill_name}")
-        return load_skill_from_metadata(metadata, parser=self.parser)
+        return load_skill_from_metadata(metadata)
 
     def _skill_paths(self) -> list[Path]:
         if not self.root.exists() or not self.root.is_dir():
@@ -147,31 +145,15 @@ class SkillLoader:
 
 
 def load_skill_from_metadata(
-    metadata: SkillMetadata,
-    *,
-    parser: SkillDocumentParser | None = None,
+    metadata: SkillMetadata, *, include_resources: bool = True
 ) -> LoadedSkill:
-    """Load exactly the catalog-selected skill without repeating root discovery."""
+    """Read the selected document as it exists now, preserving its catalog identity."""
 
-    active_parser = parser or SkillDocumentParser()
-    result = active_parser.parse(
-        metadata.location,
-        source=metadata.source,
-        origin=metadata.origin,
-    )
-    if result.skill is None:
-        messages = "; ".join(item.message for item in result.diagnostics)
-        raise ValueError(f"skill is no longer loadable: {metadata.name}: {messages}")
-
-    parsed_metadata = result.skill.metadata.model_copy(update={"enabled": metadata.enabled})
-    if parsed_metadata != metadata:
-        raise ValueError(
-            f"skill metadata changed after catalog discovery: {metadata.name}; retry the request"
-        )
+    path = Path(metadata.location)
     return LoadedSkill(
-        metadata=parsed_metadata,
-        content=result.skill.body,
-        resources=_resource_paths(Path(metadata.location).parent),
+        metadata=metadata.model_copy(deep=True),
+        content=path.read_text(encoding="utf-8-sig"),
+        resources=_resource_paths(path.parent) if include_resources else [],
     )
 
 

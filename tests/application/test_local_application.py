@@ -20,6 +20,22 @@ from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.local_index import LocalSessionIndex
 
 
+async def test_local_application_discovers_skills_after_startup(tmp_path):
+    async with LocalApplication.build(tmp_path) as application:
+        assert await application.available_skills() == ()
+        skill = tmp_path / "skills" / "writer" / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text(
+            "---\nname: writer\ndescription: Write text.\n---\nWrite.\n", encoding="utf-8"
+        )
+        assert [item.name for item in await application.available_skills()] == ["writer"]
+        previous = application.plugin_runtime.catalog()
+        assert [item.name for item in await application.available_skills()] == ["writer"]
+        assert application.plugin_runtime.catalog() is previous
+        skill.unlink()
+        assert await application.available_skills() == ()
+
+
 async def test_application_close_retries_failed_plugin_cleanup(tmp_path, monkeypatch):
     application = LocalApplication.build(tmp_path)
     await application.start()

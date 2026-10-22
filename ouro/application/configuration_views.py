@@ -258,5 +258,5 @@ def skill_management_view(result: SkillManagementResult) -> SkillManagementView:
             for item in result.skills
         ],
         diagnostics=[skill_diagnostic_view(item) for item in result.diagnostics],
-        change=configuration_change("skills", result.action, "next_runtime"),
+        change=configuration_change("skills", result.action, "next_request"),
     )

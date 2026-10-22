@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from ouro.skills import (
     default_skill_roots,
     discover_available_skills,
     discover_skill_catalog,
+    load_skill_from_metadata,
     skill_catalog_from_roots,
 )
 
@@ -38,7 +40,7 @@ def test_activation_prunes_ignored_resource_directories(tmp_path, monkeypatch):
     assert loader.load_content("writer").resources == ["references/style.txt"]
 
 
-def test_loader_uses_skill_md_as_the_manifest_and_loads_body_on_activation(tmp_path) -> None:
+def test_loader_uses_skill_md_as_the_manifest_and_loads_document_on_activation(tmp_path) -> None:
     skill_dir = tmp_path / "writer"
     _write_skill(
         skill_dir,
@@ -74,8 +76,60 @@ x-community-field: preserved
     assert not hasattr(metadata[0], "content")
 
     loaded = loader.load_content("writer")
-    assert loaded.content == "# Writer\n\nFull skill instructions."
+    assert loaded.content == (skill_dir / "SKILL.md").read_text(encoding="utf-8")
     assert loaded.resources == ["references/STYLE.md"]
+
+
+@pytest.mark.parametrize("content", ["Updated instructions without frontmatter.\n", ""])
+def test_selected_skill_reads_current_document_without_content_checks(tmp_path, content):
+    root = tmp_path / "writer"
+    _write_skill(root, "writer", "Write documents.")
+    metadata = SkillLoader(root).load_metadata()[0]
+    (root / "SKILL.md").write_text(content, encoding="utf-8")
+
+    loaded = load_skill_from_metadata(metadata)
+
+    assert loaded.content == content
+    assert loaded.metadata == metadata
+
+
+def test_loader_resolves_names_from_current_directory(tmp_path):
+    loader = SkillLoader(tmp_path)
+    root = tmp_path / "writer"
+    _write_skill(root, "writer", "Write documents.")
+    loader.load_metadata()
+    (root / "SKILL.md").unlink()
+    _write_skill(tmp_path / "reviewer", "reviewer", "Review documents.")
+
+    assert loader.load_content("reviewer").metadata.name == "reviewer"
+    with pytest.raises(KeyError, match="unknown skill: writer"):
+        loader.load_content("writer")
+
+
+def test_catalog_stops_reading_after_frontmatter(tmp_path, monkeypatch):
+    root = tmp_path / "writer"
+    _write_skill(root, "writer", "Write documents.")
+    open_file = Path.open
+    skill_file = root / "SKILL.md"
+
+    class MetadataStream(StringIO):
+        def __next__(self):
+            line = super().__next__()
+            assert line != "BODY MUST NOT BE READ\n"
+            return line
+
+        def read(self, *args):
+            raise AssertionError("catalog discovery must not read the complete document")
+
+    def open_metadata(path, *args, **kwargs):
+        if path == skill_file:
+            return MetadataStream(
+                "---\nname: writer\ndescription: Write documents.\n---\nBODY MUST NOT BE READ\n"
+            )
+        return open_file(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_metadata)
+    assert SkillLoader(tmp_path).load_catalog().skills[0].name == "writer"
 
 
 def test_loader_rejects_malformed_community_format_variants(tmp_path) -> None:

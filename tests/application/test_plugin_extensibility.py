@@ -8,6 +8,7 @@ import pytest
 
 from ouro.application.observers import ObserverDispatcher
 from ouro.application.runtime import RuntimeService
+from ouro.application.runtime_configuration import RuntimeConfigurationResolver
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.config.queued_inputs import QueuedInputConfig
 from ouro.core.adapter import RuntimeAdapter
@@ -1321,6 +1322,7 @@ async def test_plugin_skill_prompt_is_resolved_from_each_run_catalog(tmp_path) -
             ModelMetadata(model_id="skills", provider_id="faux"),
         ),
         tools=ToolRegistry(),
+        skill_catalog_resolver=RuntimeConfigurationResolver(home).skills,
         environment=RuntimeEnvironment(home=home),
     )
     application = LocalApplication.from_runtime(runtime, home=home)
@@ -1335,6 +1337,16 @@ async def test_plugin_skill_prompt_is_resolved_from_each_run_catalog(tmp_path) -
     assert enabled_run.run.status == "completed"
     assert "<name>calendar</name>" in provider.system_prompts[-1]
     assert "Manage the personal calendar." in provider.system_prompts[-1]
+
+    local_skill = home / "skills" / "writer" / "SKILL.md"
+    local_skill.parent.mkdir(parents=True)
+    local_skill.write_text(
+        "---\nname: writer\ndescription: Write project notes.\n---\nWrite notes.\n",
+        encoding="utf-8",
+    )
+    await runtime.run("Write project notes", session_id=enabled_run.session.session_id)
+    assert "<name>writer</name>" in provider.system_prompts[-1]
+    assert "<name>calendar</name>" in provider.system_prompts[-1]
 
     assert (await application.plugins.disable("dev.ouro.skill_prompt")).status == "disabled"
     disabled_run = await runtime.run("answer without the plugin")

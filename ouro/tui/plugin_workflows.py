@@ -472,7 +472,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
 
     async def _refresh_plugin_system_status(self) -> None:
         plugins = await self._controller.plugins()
-        skill_names = self._controller.runtime_skill_names()
+        skill_names = await self._controller.runtime_skill_names()
         self._system_status = project_plugin_system_status(
             replace(
                 self._system_status,

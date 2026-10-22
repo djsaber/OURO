@@ -60,7 +60,6 @@ class RuntimeConfigurationResolver:
         provider_options: ProviderRuntimeOptions | None = None,
         system_prompt: str | None = None,
     ) -> RuntimeConfigurationSnapshot:
-        skill_catalog = discover_skill_catalog(home=self.root)
         prompts = self._prompts.snapshot().config
         permissions = self._permissions.snapshot()
         return RuntimeConfigurationSnapshot(
@@ -75,8 +74,13 @@ class RuntimeConfigurationResolver:
             tool_execution=self._tool_execution.snapshot(),
             run_budget=self._run_budget.snapshot(),
             queued_inputs=self._queued_inputs.snapshot(),
-            skills=tuple(skill.model_copy(deep=True) for skill in skill_catalog.skills),
+            skills=self.skills(),
         )
+
+    def skills(self) -> tuple[SkillMetadata, ...]:
+        """Discover the current directory entries and source policy on demand."""
+
+        return tuple(discover_skill_catalog(home=self.root).skills)
 
     def prompt_context(self, *, system_prompt: str | None = None) -> PromptContext:
         prompts = self._prompts.snapshot().config

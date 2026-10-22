@@ -31,7 +31,7 @@ class SkillInvocationRequest(OuroModel):
 
 
 class SkillActivationService:
-    """Resolve explicit user selections against one already-frozen skill catalog."""
+    """Resolve user selections and capture their current documents as accepted input."""
 
     def list_for_host(self, skills: Sequence[SkillMetadata]) -> tuple[SkillMetadata, ...]:
         return tuple(
@@ -51,7 +51,7 @@ class SkillActivationService:
                 f"Unknown skill: {request.name}",
             )
         if len(matches) > 1:
-            raise RuntimeError(f"frozen skill catalog contains duplicate name: {request.name}")
+            raise RuntimeError(f"skill catalog contains duplicate name: {request.name}")
         metadata = matches[0]
         if not metadata.enabled:
             raise SkillActivationError(
@@ -66,19 +66,13 @@ class SkillActivationService:
                 f"Skill does not allow explicit user invocation: {request.name}",
             )
         try:
-            loaded = load_skill_from_metadata(metadata)
+            loaded = load_skill_from_metadata(metadata, include_resources=False)
         except (OSError, ValueError) as exc:
             raise SkillActivationError(
                 "unloadable_skill",
                 request.name,
                 f"Could not load skill {request.name}: {exc}",
             ) from exc
-        if not loaded.content.strip():
-            raise SkillActivationError(
-                "unloadable_skill",
-                request.name,
-                f"Skill has no instructions: {request.name}",
-            )
         return SkillActivationContent(
             name=loaded.metadata.name,
             text_offset=request.text_offset,
@@ -89,6 +83,13 @@ class SkillActivationService:
             instructions=loaded.content,
             content_digest=_skill_content_digest(loaded.metadata, loaded.content),
         )
+
+    def resolve_user_activations(
+        self,
+        skills: Sequence[SkillMetadata],
+        requests: Sequence[SkillInvocationRequest],
+    ) -> tuple[SkillActivationContent, ...]:
+        return tuple(self.resolve_user_activation(skills, request) for request in requests)
 
 
 def _skill_content_digest(metadata: SkillMetadata, instructions: str) -> str:

@@ -47,12 +47,13 @@ class SkillDocumentParser:
         *,
         source: SkillSource = "user",
         origin: SkillOrigin = "configured",
+        metadata_only: bool = False,
     ) -> SkillParseResult:
         path = Path(location).expanduser().resolve()
         diagnostics: list[SkillDiagnostic] = []
         try:
-            raw = path.read_text(encoding="utf-8-sig")
-        except OSError as exc:
+            raw = self._read_document(path, metadata_only=metadata_only)
+        except (OSError, UnicodeError) as exc:
             return SkillParseResult(
                 skill=None,
                 diagnostics=(self._error("read_failed", str(exc), path),),
@@ -160,6 +161,21 @@ class SkillDocumentParser:
             raw_content=raw,
         )
         return SkillParseResult(skill=skill, diagnostics=tuple(diagnostics))
+
+    @staticmethod
+    def _read_document(path: Path, *, metadata_only: bool) -> str:
+        if not metadata_only:
+            return path.read_text(encoding="utf-8-sig")
+        with path.open(encoding="utf-8-sig") as stream:
+            first = stream.readline()
+            if not _FRONTMATTER_BOUNDARY.fullmatch(first.rstrip("\n")):
+                return first
+            lines = [first]
+            for line in stream:
+                lines.append(line)
+                if _FRONTMATTER_BOUNDARY.fullmatch(line.rstrip("\n")):
+                    break
+        return "".join(lines)
 
     def _extract_frontmatter(self, raw: str, path: Path) -> tuple[str, str] | None:
         normalized = raw.replace("\r\n", "\n").replace("\r", "\n")

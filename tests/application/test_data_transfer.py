@@ -355,7 +355,8 @@ def test_skills_transfer_actual_files_without_discovery_configuration(tmp_path):
     JsonConfigFile(source).write({"skills": {"enabled": False}})
     archive = tmp_path / "skills.zip"
     transfer(source, "export", "skills", archive, ids=("review",))
-    transfer(target, "import", "skills", archive)
+    result = transfer(target, "import", "skills", archive)
+    assert not result.restart_required
     assert (
         target / "skills" / "review" / "scripts" / "check.py"
     ).read_bytes() == b"print('review')\n"

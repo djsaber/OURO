@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from ouro.application.runtime import RuntimeService
+from ouro.application.runtime_configuration import RuntimeConfigurationResolver
 from ouro.application.skill_activations import SkillActivationService, SkillInvocationRequest
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import PromptRejectedError, SkillActivationError
@@ -18,8 +19,8 @@ from ouro.core.prompt_policies import (
 )
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.sessions import LocalSessionStore
-from ouro.skills import SkillLoader
-from ouro.tools import ToolRegistry
+from ouro.skills import SkillLoader, SkillManager
+from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 
 
 class CapturingProvider:
@@ -67,7 +68,14 @@ def _metadata(root: Path):
     return SkillLoader(root.parent).load_metadata()[0]
 
 
-def _runtime(tmp_path: Path, provider: CapturingProvider, metadata, *, policies=None):
+def _runtime(
+    tmp_path: Path,
+    provider: CapturingProvider,
+    metadata,
+    *,
+    policies=None,
+    skill_catalog_resolver=None,
+):
     store = LocalSessionStore(tmp_path / "sessions")
     store.initialize()
     return RuntimeService(
@@ -78,11 +86,12 @@ def _runtime(tmp_path: Path, provider: CapturingProvider, metadata, *, policies=
         ),
         tools=ToolRegistry(),
         skills=metadata if isinstance(metadata, tuple) else (metadata,),
+        skill_catalog_resolver=skill_catalog_resolver,
         prompt_policies=policies,
     )
 
 
-def test_skill_activation_service_enforces_user_invocation_and_exact_catalog_metadata(
+def test_skill_activation_service_respects_selection_and_reads_current_content(
     tmp_path,
 ) -> None:
     root = tmp_path / "skills" / "reviewer"
@@ -96,7 +105,7 @@ def test_skill_activation_service_enforces_user_invocation_and_exact_catalog_met
     )
 
     assert activation.name == "reviewer"
-    assert activation.instructions == "Review the requested code carefully."
+    assert activation.instructions == (root / "SKILL.md").read_text(encoding="utf-8")
     assert activation.content_digest.startswith("sha256:")
     assert metadata.disable_model_invocation is True
 
@@ -115,10 +124,115 @@ def test_skill_activation_service_enforces_user_invocation_and_exact_catalog_met
     assert unknown_error.value.code == "unknown_skill"
 
     _write_skill(root, description="Changed after discovery.")
-    with pytest.raises(SkillActivationError) as changed_error:
+    changed = service.resolve_user_activation((metadata,), SkillInvocationRequest(name="reviewer"))
+    assert "Changed after discovery." in changed.instructions
+    (root / "SKILL.md").unlink()
+    with pytest.raises(SkillActivationError) as missing_error:
         service.resolve_user_activation((metadata,), SkillInvocationRequest(name="reviewer"))
-    assert changed_error.value.code == "unloadable_skill"
-    assert "metadata changed" in str(changed_error.value)
+    assert missing_error.value.code == "unloadable_skill"
+
+
+async def test_runtime_discovers_installed_updated_and_removed_skills_at_use_boundaries(tmp_path):
+    skill_root = tmp_path / "skills"
+    provider = CapturingProvider()
+    runtime = _runtime(
+        tmp_path, provider, (), skill_catalog_resolver=RuntimeConfigurationResolver(tmp_path).skills
+    )
+    try:
+        assert await runtime.available_skills() == ()
+        root = skill_root / "reviewer"
+        _write_skill(root)
+        assert [item.name for item in await runtime.available_skills()] == ["reviewer"]
+        _write_skill(root, description="Current description.", body="Current instructions.")
+        result = await runtime.run("", skill_invocation=SkillInvocationRequest(name="reviewer"))
+        assert "Current description." in provider.calls[-1][-1].text_content
+        assert "Current instructions." in provider.calls[-1][-1].text_content
+
+        (root / "SKILL.md").unlink()
+        assert await runtime.available_skills() == ()
+        with pytest.raises(SkillActivationError) as missing:
+            await runtime.run("", skill_invocation=SkillInvocationRequest(name="reviewer"))
+        assert missing.value.code == "unknown_skill"
+        await runtime.run("next", session_id=result.session.session_id)
+        assert "<name>reviewer</name>" not in provider.system_prompts[-1]
+    finally:
+        await runtime.close()
+
+
+async def test_natural_language_turn_sees_skills_installed_during_the_session(tmp_path):
+    provider = CapturingProvider()
+    home = tmp_path / "home"
+    runtime = _runtime(
+        home, provider, (), skill_catalog_resolver=RuntimeConfigurationResolver(home).skills
+    )
+    try:
+        first = await runtime.run("Start working")
+        assert "<name>reviewer</name>" not in provider.system_prompts[-1]
+        source = tmp_path / "reviewer"
+        _write_skill(source)
+        SkillManager(home).install(str(source))
+
+        await runtime.run("Review this project", session_id=first.session.session_id)
+
+        prompt = provider.system_prompts[-1]
+        assert "<name>reviewer</name>" in prompt
+        assert "Review source code." in prompt
+        assert str(home / "skills" / "reviewer" / "SKILL.md") in prompt
+        _write_skill(home / "skills" / "reviewer", description="Review the current project.")
+        await runtime.run("Continue reviewing", session_id=first.session.session_id)
+        assert "Review the current project." in provider.system_prompts[-1]
+        assert "Review source code." not in provider.system_prompts[-1]
+    finally:
+        await runtime.close()
+
+
+async def test_model_request_after_install_tool_sees_the_new_skill(tmp_path):
+    class InstallingProvider(CapturingProvider):
+        async def stream(
+            self, *, model, system_prompt="", messages, tools=None, request_context=None
+        ):
+            self.calls.append(list(messages))
+            self.system_prompts.append(system_prompt)
+            if len(self.calls) == 1:
+                yield ProviderStreamEvent.from_tool_call(
+                    {"id": "install_1", "name": "InstallSkill", "arguments": {}}
+                )
+            else:
+                yield ProviderStreamEvent(type="text_delta", text="Installed skill is available.")
+            yield ProviderStreamEvent(type="done")
+
+    home = tmp_path / "home"
+    source = tmp_path / "reviewer"
+    _write_skill(source)
+    provider = InstallingProvider()
+    runtime = _runtime(
+        home, provider, (), skill_catalog_resolver=RuntimeConfigurationResolver(home).skills
+    )
+
+    def install(invocation, context):
+        SkillManager(home).install(str(source))
+        return ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+            content="Installed reviewer.",
+        )
+
+    runtime.tools.register(
+        Tool(
+            definition=ToolDefinition(
+                name="InstallSkill", description="Install a skill.", permission_mode="auto"
+            ),
+            handler=install,
+        )
+    )
+    try:
+        result = await runtime.run("Install the reviewer skill and use it")
+        assert result.run.status == "completed"
+        assert len(provider.system_prompts) == 2
+        assert "<name>reviewer</name>" not in provider.system_prompts[0]
+        assert "<name>reviewer</name>" in provider.system_prompts[1]
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -188,6 +302,7 @@ async def test_runtime_allows_argumentless_skill_and_uses_skill_title(tmp_path) 
 async def test_queued_skill_activation_uses_the_instructions_frozen_at_acceptance(tmp_path) -> None:
     root = tmp_path / "skills" / "reviewer"
     _write_skill(root, body="Original queued instructions.")
+    original_document = (root / "SKILL.md").read_text(encoding="utf-8")
     metadata = _metadata(root)
     provider = CapturingProvider(block_first=True)
     runtime = _runtime(tmp_path, provider, metadata)
@@ -215,9 +330,7 @@ async def test_queued_skill_activation_uses_the_instructions_frozen_at_acceptanc
     snapshot = runtime.store.load_runtime_session(session.session_id)
     activation_messages = [message for message in snapshot.messages if message.skill_activations]
     assert len(activation_messages) == 1
-    assert activation_messages[0].skill_activations[0].instructions == (
-        "Original queued instructions."
-    )
+    assert activation_messages[0].skill_activations[0].instructions == original_document
 
 
 @pytest.mark.parametrize("reject_second", (False, True))
@@ -257,8 +370,10 @@ async def test_multiple_skills_are_accepted_as_one_input_after_all_policies_allo
 
 
 async def test_multiple_queued_skills_remain_one_input_with_frozen_instructions(tmp_path):
+    originals = []
     for name in ("reviewer", "writer"):
         _write_skill(tmp_path / "skills" / name, name=name, body=f"Original {name}.")
+        originals.append((tmp_path / "skills" / name / "SKILL.md").read_text(encoding="utf-8"))
     provider = CapturingProvider(block_first=True)
     runtime = _runtime(tmp_path, provider, tuple(SkillLoader(tmp_path / "skills").load_metadata()))
     session = runtime.create_session(title="Multi skill queue")
@@ -284,8 +399,5 @@ async def test_multiple_queued_skills_remain_one_input_with_frozen_instructions(
     snapshot = runtime.store.load_runtime_session(session.session_id)
     activated = [item for item in snapshot.messages if item.skill_activations]
     assert len(activated) == 1 and not activated[0].scaffold
-    assert [item.instructions for item in activated[0].skill_activations] == [
-        "Original reviewer.",
-        "Original writer.",
-    ]
+    assert [item.instructions for item in activated[0].skill_activations] == originals
     assert len(provider.calls) == 2

@@ -15,6 +15,7 @@ import pytest
 
 import ouro.plugins.worker as worker_module
 from ouro.application.plugins import PluginOperationNotAllowedError, PluginService
+from ouro.application.skill_activations import SkillActivationService, SkillInvocationRequest
 from ouro.core.base import utc_now
 from ouro.core.compaction import CompactionStrategyRegistry
 from ouro.core.context_providers import ContextProviderCall
@@ -780,6 +781,55 @@ async def test_plugin_mcp_tools_are_frozen_in_catalog_and_resource_closes(tmp_pa
     await runtime.close()
 
 
+@pytest.mark.parametrize(
+    "cache_path",
+    [
+        "__pycache__/module.cpython-314.pyc",
+        ".pytest_cache/v/cache/nodeids",
+        ".mypy_cache/types.json",
+        ".ruff_cache/results",
+        ".cache/results",
+        "module.pyc",
+    ],
+)
+def test_plugin_caches_do_not_change_package_identity_or_verification(tmp_path, cache_path):
+    source = tmp_path / "source"
+    _write_native_plugin(source)
+    implementation = source / "module.py"
+    implementation.write_text("VALUE = 1\n", encoding="utf-8")
+    service = build_local_plugin_service(tmp_path / "home")
+    installed = service.install(source)
+    cache = source / cache_path
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_bytes(b"cached")
+
+    assert service.install(source).changed is False
+    package = service.store.verify_package(installed.plugin_id, installed.package_digest)
+    stored_cache = package / cache_path
+    stored_cache.parent.mkdir(parents=True, exist_ok=True)
+    stored_cache.write_bytes(b"runtime cache")
+    assert service.store.verify_package(installed.plugin_id, installed.package_digest) == package
+    stored_cache.write_bytes(b"updated runtime cache")
+    assert service.store.verify_package(installed.plugin_id, installed.package_digest) == package
+    (package / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
+    with pytest.raises(PluginStoreError, match="corrupted"):
+        service.store.verify_package(installed.plugin_id, installed.package_digest)
+
+
+@pytest.mark.parametrize("directory", ["__pycache__", "module.pyc"])
+def test_manifest_cannot_publish_a_resource_excluded_as_cache(tmp_path, directory):
+    source = tmp_path / "source"
+    _write_native_plugin(
+        source, contributes={"skills": [{"id": "writer", "path": f"./{directory}/writer"}]}
+    )
+    skill = source / directory / "writer" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("---\nname: writer\ndescription: Write.\n---\n", encoding="utf-8")
+
+    with pytest.raises(PluginPackageError, match="cannot reference a cache"):
+        validate_plugin_package(source)
+
+
 def test_install_is_immutable_and_never_imports_entrypoint(tmp_path) -> None:
     source = tmp_path / "source"
     source.mkdir()
@@ -1138,6 +1188,10 @@ async def test_declarative_skill_is_projected_into_immutable_catalog(tmp_path, m
         "contribution_id": "calendar",
         "execution_contract_hash": snapshot.generations[0].execution_contract_hash,
     }
+    activation = SkillActivationService().resolve_user_activation(
+        snapshot.skills, SkillInvocationRequest(name="calendar")
+    )
+    assert activation.instructions == Path(skill.location).read_text(encoding="utf-8")
     await service.disable("dev.ouro.echo")
     with runtime.snapshot() as current:
         assert current.skills == ()

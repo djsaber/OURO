@@ -595,7 +595,10 @@ class TuiController:
             self.models(), self.default_model(), self.usage_summary()
         )
         mcp_servers = self.mcp_servers()
-        status = await asyncio.to_thread(self._project_system_status, models, usage, mcp_servers)
+        skills = await self._runtime().available_skills()
+        status = await asyncio.to_thread(
+            self._project_system_status, models, usage, mcp_servers, skills
+        )
         return TuiBootstrap(
             models=models,
             current_model=current_model,
@@ -608,9 +611,11 @@ class TuiController:
     async def system_status(self) -> TuiSystemStatus:
         """Project current process-owned resources for a newly opened Host view."""
 
-        models, usage = await asyncio.gather(self.models(), self.usage_summary())
+        models, usage, skills = await asyncio.gather(
+            self.models(), self.usage_summary(), self._runtime().available_skills()
+        )
         status = await asyncio.to_thread(
-            self._project_system_status, models, usage, self.mcp_servers()
+            self._project_system_status, models, usage, self.mcp_servers(), skills
         )
         return await self._with_task_status(status)
 
@@ -619,10 +624,10 @@ class TuiController:
         models: tuple[AvailableModel, ...],
         usage: UsageSummary,
         mcp_servers: tuple[McpServerStatus, ...],
+        skills: tuple[SkillMetadata, ...],
     ) -> TuiSystemStatus:
         runtime = self._runtime()
         assert self._application is not None
-        skills = self._application.available_skills()
         plugins = (
             tuple(self._application.plugins.list()) if self._application.plugins is not None else ()
         )
@@ -822,7 +827,7 @@ class TuiController:
             if is_new_session and revision == self._selection_revision:
                 self._creating_session = False
 
-    def skill_invocation_options(self) -> tuple[TuiSkillInvocationOption, ...]:
+    async def skill_invocation_options(self) -> tuple[TuiSkillInvocationOption, ...]:
         """Project currently invocable Runtime skills for the inline command menu."""
 
         return tuple(
@@ -831,12 +836,12 @@ class TuiController:
                 description=skill.description,
                 argument_hint=skill.argument_hint,
             )
-            for skill in self._runtime().available_skills()
+            for skill in await self._runtime().available_skills()
             if skill.enabled and skill.user_invocable
         )
 
-    def runtime_skill_names(self) -> tuple[str, ...]:
-        return tuple(sorted(skill.name for skill in self._runtime().available_skills()))
+    async def runtime_skill_names(self) -> tuple[str, ...]:
+        return tuple(skill.name for skill in await self._runtime().available_skills())
 
     async def continue_session(self) -> RunResult:
         assert self._application is not None
@@ -1867,7 +1872,7 @@ class TuiController:
         )
         self._runtime()
         assert self._application is not None
-        effective = self._application.available_skills()
+        effective = await self._application.available_skills()
         skills = {skill.name: skill for skill in configured.skills}
         for metadata in effective:
             configured_skill = skills.get(metadata.name)
@@ -1942,7 +1947,7 @@ class TuiController:
         plugin_skill = next(
             (
                 skill
-                for skill in self._runtime().available_skills()
+                for skill in await self._runtime().available_skills()
                 if skill.name == name and _plugin_skill_owner(skill) is not None
             ),
             None,

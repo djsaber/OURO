@@ -5,7 +5,7 @@ import json
 import os
 import stat
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Any
 
 from ouro import __version__
@@ -19,7 +19,19 @@ PLUGIN_API_VERSION = "5.0.0"
 WORKER_PROTOCOL_VERSION = "3.0"
 NATIVE_MANIFEST = Path(".ouro-plugin") / "plugin.json"
 
-_REJECTED_PARTS = {".git", ".hg", ".svn", "__pycache__", ".pytest_cache", ".mypy_cache"}
+_REJECTED_PARTS = {".git", ".hg", ".svn"}
+_CACHE_PARTS = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".cache"}
+_CACHE_SUFFIXES = (".pyc", ".pyo")
+
+
+def is_plugin_cache_path(path: PurePath) -> bool:
+    return any(part in _CACHE_PARTS or part.endswith(_CACHE_SUFFIXES) for part in path.parts)
+
+
+def ignore_plugin_caches(directory: str, names: list[str]) -> list[str]:
+    """Use the same cache exclusion for source copies and package publication."""
+
+    return [name for name in names if is_plugin_cache_path(PurePath(name))]
 
 
 class PluginPackageError(ValueError):
@@ -152,6 +164,8 @@ def resolve_manifest_path(root: Path, value: str, *, allow_directory: bool) -> P
         relative = portable_relative_path(value[2:])
     except ValueError as exc:
         raise PluginPackageError(f"invalid manifest path {value}: {exc}") from exc
+    if is_plugin_cache_path(relative):
+        raise PluginPackageError(f"manifest path cannot reference a cache: {value}")
     candidate = root.joinpath(*relative.parts)
     _assert_plain_path(candidate, root=root)
     if allow_directory:
@@ -220,10 +234,19 @@ def compute_tree_digest(root: Path) -> str:
 
 
 def _tree_entries(root: Path) -> list[Path]:
-    return sorted(
-        (path for path in root.rglob("*") if path != root),
-        key=lambda path: path.relative_to(root).as_posix(),
-    )
+    entries: list[Path] = []
+    pending = [root]
+    while pending:
+        with os.scandir(pending.pop()) as directory:
+            for entry in directory:
+                path = Path(entry.path)
+                if is_plugin_cache_path(PurePath(entry.name)):
+                    continue
+                entries.append(path)
+                if entry.is_dir(follow_symlinks=False):
+                    _assert_plain_path(path, root=root)
+                    pending.append(path)
+    return sorted(entries, key=lambda path: path.relative_to(root).as_posix())
 
 
 def _assert_plain_path(path: Path, *, root: Path) -> None:

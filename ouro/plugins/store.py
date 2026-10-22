@@ -19,6 +19,7 @@ from ouro.plugins.models import PluginAuditEvent, PluginStateDocument
 from ouro.plugins.package import (
     ValidatedPluginPackage,
     compute_tree_digest,
+    ignore_plugin_caches,
     validate_package_tree,
 )
 
@@ -105,7 +106,7 @@ class PluginPackageStore:
             staging_root.mkdir(parents=True, exist_ok=True)
             staging = staging_root / uuid4().hex
             try:
-                shutil.copytree(package.root, staging)
+                shutil.copytree(package.root, staging, ignore=ignore_plugin_caches)
                 _fsync_tree(staging)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(staging, target)

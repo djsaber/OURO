@@ -383,15 +383,12 @@ class LocalApplication:
     async def refresh_skills(self, skills: tuple[SkillMetadata, ...]) -> None:
         """Publish a new Host Skill baseline for subsequent Runs."""
 
-        if self.plugin_runtime is None:
-            self.runtime.skills = tuple(skill.model_copy(deep=True) for skill in skills)
-            return
-        await self.plugin_runtime.replace_base_skills(skills)
+        await self.runtime.refresh_skills(skills)
 
-    def available_skills(self) -> tuple[SkillMetadata, ...]:
-        """Return the skills published by the current live extension Catalog."""
+    async def available_skills(self) -> tuple[SkillMetadata, ...]:
+        """Read current directory skills together with active plugin contributions."""
 
-        return self.runtime.available_skills()
+        return await self.runtime.available_skills()
 
     async def close(self) -> None:
         self._closed = True
@@ -639,6 +636,7 @@ def build_local_runtime(
         else None,
         queued_input_config=resolved.queued_inputs,
         skills=resolved.skills,
+        skill_catalog_resolver=configuration.skills,
         resources=session_services.resources,
         usage_service=usage,
         default_workspace=Path.cwd(),

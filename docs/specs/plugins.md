@@ -109,7 +109,7 @@ ExtensionCatalog
 
 - `plugin_id` 使用反向域名风格，安装后不能由更新改变；
 - `version` 使用 SemVer，描述作者发布版本；
-- `package_digest` 是规范化包文件树的 SHA-256；
+- `package_digest` 是排除缓存后的规范化包文件树的 SHA-256；
 - `generation_id` 标识当前进程内资源 owner；
 - `execution_contract_hash` 标识可跨进程校验的运行契约；
 - `configuration_revision_id` 是规范化配置与完整凭据绑定的内容摘要；环境引用按引用计算，直接密钥按真实值计算；
@@ -146,7 +146,7 @@ Builtin contract hash 的输入格式版本为 2，包含规范化 Manifest、de
 继续由各自的读取与持久化契约管理。插件间依赖通过 dependency lock 纳入 execution contract，
 SDK 和 Host 通过既有 API、贡献与执行契约约束，不把整个应用文件树纳入局部插件摘要。
 
-User package digest 仍覆盖完整规范化包文件树，用于安装内容身份与完整性检查；不能套用 builtin 的运行输入范围。
+User package digest 覆盖排除缓存后的完整规范化包文件树，用于安装内容身份与完整性检查。
 `builtin_contract_hash` 作为 release identity，并参与 execution contract。
 
 `builtin | user` 是代码供应类别，`declarative | python-inprocess | worker` 是运行方式，二者相互独立。Manifest
@@ -284,8 +284,12 @@ calendar-plugin/
 - 解析后位于 package root；
 - 指向安装时存在的普通文件或目录。
 
-包拒绝 symlink、junction、reparse point、device、socket、FIFO、VCS 和 cache 目录。materialization 必须有文件数、
+包拒绝 symlink、junction、reparse point、device、socket、FIFO 和 VCS 目录。materialization 必须有文件数、
 单文件、总大小、archive compression 和 Git 时间/下载边界。
+
+`__pycache__`、`.pytest_cache`、`.mypy_cache`、`.ruff_cache`、`.cache` 目录及 `.pyc`、`.pyo` 文件属于缓存，
+不进入安装载荷、包文件树校验或 package digest。遍历时直接剪枝缓存目录；运行过程中生成或更新缓存不会改变包身份，
+也不要求卸载插件时清理缓存。Manifest 的资源路径不得指向这些排除项。源代码、Manifest 和其他发布资源继续参与校验。
 
 ## 7. Runtime
 

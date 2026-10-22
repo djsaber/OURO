@@ -45,6 +45,11 @@ def application_at(tmp_path, provider=None, *, backend="files", skills=None):
         tools=ToolRegistry(),
         resources=ResourceService(store=resources, sessions=store),
         skills=tuple(discover_skill_catalog(home=tmp_path).skills) if skills is None else skills,
+        skill_catalog_resolver=(
+            (lambda: tuple(discover_skill_catalog(home=tmp_path).skills))
+            if skills is None
+            else None
+        ),
         environment=RuntimeEnvironment.local(
             tmp_path, store.sessions_dir if backend == "files" else None
         ),

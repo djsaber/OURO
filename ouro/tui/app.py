@@ -1960,6 +1960,27 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 picker.loading, picker.loaded = False, True
                 self._show_attachment_menu()
 
+    @work(exclusive=True, group="skill-options")
+    async def _load_skill_options(self, picker: SkillPicker) -> None:
+        revision = self._controller.selection_revision
+        self.query_one(CommandPopup).set_loading(True)
+        try:
+            skills = await self._controller.skill_invocation_options()
+        except Exception as exc:  # noqa: BLE001 - report discovery failures at the UI boundary.
+            if picker is self._skill_picker and revision == self._controller.selection_revision:
+                self._close_attachment_menu()
+                self.notify(str(exc), severity="error", markup=False)
+            return
+        if picker is self._skill_picker and revision == self._controller.selection_revision:
+            existing = {item.name for item in self.query_one(Composer).draft_content.skills}
+            picker.options = tuple(
+                TuiCommandArgument(skill.name, skill.description)
+                for skill in skills
+                if skill.name not in existing
+            )
+            picker.loading = False
+            self._show_attachment_menu()
+
     def _show_attachment_menu(self) -> None:
         if not self._surface_available():
             return
@@ -1985,10 +2006,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if name == "@skill":
             self._attachment_picker = None
             if self._skill_picker is None:
-                existing = {item.name for item in composer.draft_content.skills}
-                self._skill_picker = SkillPicker(
-                    tuple(item for item in self._skill_arguments() if item.value not in existing)
-                )
+                self._skill_picker = SkillPicker(())
+                self._skill_picker.loading = True
+                self._load_skill_options(self._skill_picker)
+            if self._skill_picker.loading:
+                return
             arguments = self._skill_picker.arguments(query, self._tui_theme)
             selection_count = len(self._skill_picker.selected)
             title, heading = "No matching skills", "Skills"
@@ -2043,6 +2065,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def _choose_attachment(self) -> None:
         picker = self._attachment_picker
         if picker is not None and picker.loading:
+            return
+        if self._skill_picker is not None and self._skill_picker.loading:
             return
         popup = self.query_one(CommandPopup)
         composer = self.query_one(Composer)
@@ -2641,7 +2665,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 return bool(matching_commands(name, REFERENCE_COMMANDS))
             if name == "@skill":
                 return self._skill_picker is not None and bool(
-                    self._skill_picker.selected
+                    self._skill_picker.loading
+                    or self._skill_picker.selected
                     or self._skill_picker.arguments(query, self._tui_theme)
                 )
             picker = self._attachment_picker
@@ -3337,19 +3362,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 trailing_badge=file_count_label(item.attachments, item.resource_refs),
             )
             for index, item in enumerate(inputs, start=1)
-        )
-
-    def _skill_arguments(self) -> tuple[TuiCommandArgument, ...]:
-        try:
-            skills = self._controller.skill_invocation_options()
-        except Exception:  # noqa: BLE001 - startup may not have completed yet.
-            return ()
-        return tuple(
-            TuiCommandArgument(
-                skill.name,
-                skill.description,
-            )
-            for skill in skills
         )
 
     async def _unqueue_message(self, queue_id: str) -> None:

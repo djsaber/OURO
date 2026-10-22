@@ -235,6 +235,7 @@ class RuntimeService:
         turn_policies: TurnPolicyRegistry | None = None,
         queued_input_config: QueuedInputConfig | None = None,
         skills: tuple[SkillMetadata, ...] = (),
+        skill_catalog_resolver: Callable[[], tuple[SkillMetadata, ...]] | None = None,
         resources: ResourceService | None = None,
         usage_service: UsageService | None = None,
         default_workspace: str | Path | None = None,
@@ -265,6 +266,8 @@ class RuntimeService:
         self._close_task: asyncio.Task[None] | None = None
         self.tools = tools
         self.skills = tuple(skill.model_copy(deep=True) for skill in skills)
+        self.skill_catalog_resolver = skill_catalog_resolver
+        self._skill_refresh_lock = asyncio.Lock()
         self.skill_activations = SkillActivationService()
         self.default_workspace = (
             str(Path(default_workspace).expanduser().resolve())
@@ -514,14 +517,17 @@ class RuntimeService:
     def _skill_instructions_for_run(self, run_id: str) -> str:
         return render_agent_skills_prompt(self._skills_for_run(run_id))
 
-    def _resolve_skill_activation_for_run(
+    async def _resolve_skill_activations_for_run(
         self,
         run_id: str,
-        request: SkillInvocationRequest,
-    ) -> SkillActivationContent:
-        return self.skill_activations.resolve_user_activation(
+        requests: tuple[SkillInvocationRequest, ...],
+    ) -> tuple[SkillActivationContent, ...]:
+        if not requests:
+            return ()
+        return await run_blocking(
+            self.skill_activations.resolve_user_activations,
             self._skills_for_run(run_id),
-            request,
+            requests,
         )
 
     def _compaction_for_run(self, run_id: str) -> CompactionStrategyRegistry:
@@ -869,9 +875,23 @@ class RuntimeService:
         finally:
             lease.close()
 
-    def available_skills(self) -> tuple[SkillMetadata, ...]:
-        """Return the current Host view without exposing discovery to interface layers."""
+    async def refresh_skills(self, skills: tuple[SkillMetadata, ...] | None = None) -> None:
+        """Resolve and publish directory skills at a use boundary, without polling."""
 
+        async with self._skill_refresh_lock:
+            if skills is None:
+                if self.skill_catalog_resolver is None:
+                    return
+                skills = await run_blocking(self.skill_catalog_resolver)
+            if self._extension_catalog is not None:
+                await self._extension_catalog.replace_base_skills(skills)
+            self.skills = tuple(skill.model_copy(deep=True) for skill in skills)
+
+    async def available_skills(self) -> tuple[SkillMetadata, ...]:
+        """Return current directory and active plugin skills for one Host query."""
+
+        await self.refresh_skills()
+        await self._synchronize_extensions()
         if self._extension_catalog is None:
             return self.skill_activations.list_for_host(self.skills)
         lease = self._extension_catalog.snapshot()
@@ -1307,6 +1327,8 @@ class RuntimeService:
         existing = await run_blocking(self._user_input_receipt, session_id, request)
         if existing is not None:
             return existing
+        if request.skill_invocations:
+            await self.refresh_skills()
         await self._synchronize_extensions()
         if request.session_id is None:
             session, _, prospective = await self._accept_new_user_input(
@@ -1477,9 +1499,8 @@ class RuntimeService:
                 snapshot=self._extension_catalog.snapshot()
             )
         try:
-            resolved_skill_activations = tuple(
-                self._resolve_skill_activation_for_run(preapproved_new_run.run_id, invocation)
-                for invocation in skill_invocations
+            resolved_skill_activations = await self._resolve_skill_activations_for_run(
+                preapproved_new_run.run_id, skill_invocations
             )
             candidate_input = QueuedInput(
                 queue_id=input_id or new_id("queued"),
@@ -1629,6 +1650,8 @@ class RuntimeService:
                 "resource attachments require an existing Session or a reserved namespace; "
                 "pass session_id or new_session_id"
             )
+        if skill_invocations:
+            await self.refresh_skills()
         await self._synchronize_extensions()
         preapproved_new_run: RunRecord | None = None
         attributed_driver = _input_attribution.driver_id if _input_attribution is not None else None
@@ -1933,9 +1956,8 @@ class RuntimeService:
             else:
                 run = await self._attach_extension_snapshot(run)
             if skill_invocations and not resolved_skill_activations:
-                resolved_skill_activations = tuple(
-                    self._resolve_skill_activation_for_run(run.run_id, invocation)
-                    for invocation in skill_invocations
+                resolved_skill_activations = await self._resolve_skill_activations_for_run(
+                    run.run_id, skill_invocations
                 )
             pending_inputs = _queued_inputs or [
                 QueuedInput(
@@ -2546,6 +2568,7 @@ class RuntimeService:
                 self._resolve_session_adapter, snapshot.session
             )
             run = run.model_copy(update={"model": active_adapter.model.model_id})
+            await self.refresh_skills()
             run = await self._attach_extension_snapshot(run)
             terminal_run = run
             active_session, run = await run_blocking(
@@ -2916,9 +2939,8 @@ class RuntimeService:
             prospective_run_id = prospective.run_id
             prospective = await self._attach_extension_snapshot(prospective)
             try:
-                resolved_skill_activations = tuple(
-                    self._resolve_skill_activation_for_run(prospective.run_id, invocation)
-                    for invocation in skill_invocations
+                resolved_skill_activations = await self._resolve_skill_activations_for_run(
+                    prospective.run_id, skill_invocations
                 )
                 await self._evaluate_prompt_policies(
                     session=snapshot.session,
@@ -4516,6 +4538,7 @@ class RuntimeService:
         run: RunRecord,
         model_round: int,
     ) -> RunRecord:
+        await self.refresh_skills()
         await self._synchronize_extensions()
         return await run_blocking(
             self._capture_run_capabilities, session=session, run=run, model_round=model_round

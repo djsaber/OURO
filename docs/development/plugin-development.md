@@ -89,6 +89,10 @@ Git source 使用 shallow、blob-filtered fetch；指定 `--subdirectory` 时在
 再做 sparse checkout。Git LFS 自动下载被禁用。archive/local/Git 最终都经过同一 package path、symlink、类型、大小、
 manifest 与 digest 校验。
 
+缓存不属于插件发布内容：`__pycache__`、`.pytest_cache`、`.mypy_cache`、`.ruff_cache`、`.cache` 目录及
+`.pyc`、`.pyo` 文件在复制、包校验和摘要计算中排除。插件加载生成的缓存可留在安装目录，不影响后续校验或重启；
+Manifest 中的资源路径必须指向参与发布的文件或目录。
+
 ## 4. SDK contribution
 
 in-process 插件只从 `ouro.sdk.plugins.v5` 使用公开类型。factory 接收 `PluginContext` 并返回实现以下生命周期的对象：

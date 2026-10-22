@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tarfile
+import zipfile
 
 import pytest
 
 from ouro.plugins.package import PackageLimits, PluginPackageError
-from ouro.plugins.sources import GitPluginSource
+from ouro.plugins.sources import ArchivePluginSource, GitPluginSource
 
 
 def _git(repository, *arguments: str) -> None:
@@ -66,6 +68,57 @@ def test_git_subdirectory_is_size_checked_before_sparse_checkout(tmp_path) -> No
 
     assert (materialized.root / ".ouro-plugin" / "plugin.json").is_file()
     assert not (destination / "repository" / "outside.bin").exists()
+
+
+@pytest.mark.parametrize("archive_type", ["zip", "tar"])
+def test_archive_materialization_excludes_cache_payload_and_limits(tmp_path, archive_type):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    cache = source / "__pycache__" / "module.pyc"
+    cache.parent.mkdir()
+    cache.write_bytes(b"cached" * 2000)
+    archive_path = tmp_path / f"source.{archive_type}"
+    if archive_type == "zip":
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            for path in source.rglob("*"):
+                if path.is_file():
+                    archive.write(path, path.relative_to(source).as_posix())
+    else:
+        with tarfile.open(archive_path, "w") as archive:
+            for path in source.rglob("*"):
+                if path.is_file():
+                    archive.add(path, arcname=path.relative_to(source).as_posix())
+    destination = tmp_path / "materialized"
+    destination.mkdir()
+
+    materialized = ArchivePluginSource(
+        archive_path, limits=PackageLimits(max_files=1, max_file_bytes=100, max_total_bytes=100)
+    ).materialize(destination)
+
+    assert (materialized.root / "module.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert not (materialized.root / "__pycache__").exists()
+
+
+def test_git_source_excludes_cache_payload_from_package_limits(tmp_path):
+    repository = tmp_path / "repository"
+    _create_repository(repository)
+    cache = repository / "plugins" / "example" / "__pycache__" / "module.pyc"
+    cache.parent.mkdir()
+    cache.write_bytes(b"cached" * 2000)
+    _git(repository, "add", ".")
+    _git(repository, "commit", "-m", "cache")
+    destination = tmp_path / "materialized"
+    destination.mkdir()
+
+    materialized = GitPluginSource(
+        repository.as_uri(),
+        subdirectory="plugins/example",
+        limits=PackageLimits(max_files=1, max_file_bytes=4096, max_total_bytes=8192),
+    ).materialize(destination)
+
+    assert (materialized.root / ".ouro-plugin" / "plugin.json").is_file()
+    assert not (materialized.root / "__pycache__").exists()
 
 
 def test_git_oversized_plugin_blob_is_rejected_before_checkout(tmp_path) -> None:

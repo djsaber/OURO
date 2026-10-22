@@ -783,10 +783,12 @@ class PluginRuntimeResource:
         so a Host/plugin Skill conflict cannot partially publish.
         """
 
-        candidate_skills = tuple(skill.model_copy(deep=True) for skill in skills)
         async with self._mutation_lock:
             if self._closed:
                 raise RuntimeError("plugin runtime is closed")
+            if skills == self.base_skills:
+                return
+            candidate_skills = tuple(skill.model_copy(deep=True) for skill in skills)
             current = self._ensure_catalog()
             catalog_base = self._capture_catalog_base(skills=candidate_skills)
             catalog = current.rebase(catalog_base)

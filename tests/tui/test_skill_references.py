@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
 
 from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.core.input_content import InputContent, InputFileReference, InputSkillReference
-from ouro.skills import SkillLoader
+from ouro.skills import SkillManager
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.input_drafts import TuiInputDraftStore
 from ouro.tui.widgets import CommandPopup, Composer
@@ -22,7 +23,7 @@ def application_with_skills(home):
             f"---\nname: {name}\ndescription: Use {name}.\n---\nInstructions for {name}.\n",
             encoding="utf-8",
         )
-    application = application_at(home, skills=tuple(SkillLoader(home / "skills").load_metadata()))
+    application = application_at(home)
     application.runtime.default_workspace = str(home)
     return application
 
@@ -60,6 +61,88 @@ async def test_skill_multiselect_is_inline_atomic_and_preserves_the_draft(tmp_pa
         assert not app._skill_picker.options
         await pilot.press("escape")
         assert composer.input_content == content
+
+
+async def test_skill_menu_discovers_external_install_and_filters_without_rescanning(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "home"
+    application = application_at(home)
+    app = OuroTuiApp(application=application)
+    async with run_ready_app(app) as pilot:
+        source = tmp_path / "reviewer"
+        source.mkdir()
+        (source / "SKILL.md").write_text(
+            "---\nname: reviewer\ndescription: Review code.\n---\nOriginal instructions.\n",
+            encoding="utf-8",
+        )
+        installed = SkillManager(home).install(str(source)).skills[0].target / "SKILL.md"
+        resolver = application.runtime.skill_catalog_resolver
+        reads = []
+
+        def discover():
+            reads.append(True)
+            return resolver()
+
+        monkeypatch.setattr(application.runtime, "skill_catalog_resolver", discover)
+        composer = app.query_one(Composer)
+        await pilot.press("@", *"skill", "enter")
+        workers = [worker for worker in app.workers if worker.group == "skill-options"]
+        await app.workers.wait_for_complete(workers)
+        await pilot.pause()
+        assert [item.value for item in app._skill_picker.options] == ["reviewer"]
+        assert len(reads) == 1
+        await pilot.press(*"rev", "backspace", "space")
+        assert len(reads) == 1
+        await pilot.press("enter")
+        assert [item.name for item in composer.input_content.skills] == ["reviewer"]
+        installed.write_text(
+            "---\nname: reviewer\ndescription: Updated review.\n---\nCurrent instructions.\n",
+            encoding="utf-8",
+        )
+        await pilot.press("enter")
+        if workers := [worker for worker in app.workers if worker.group == "run"]:
+            await app.workers.wait_for_complete(workers)
+        snapshot = application.runtime.store.load_runtime_session(app._controller.session_id)
+        activation = next(item for item in snapshot.messages if item.skill_activations)
+        assert activation.skill_activations[0].instructions == installed.read_text(encoding="utf-8")
+
+
+async def test_skill_menu_loading_keeps_composer_responsive_and_discards_closed_results(
+    tmp_path, monkeypatch
+):
+    app = OuroTuiApp(application=application_with_skills(tmp_path))
+    async with run_ready_app(app) as pilot:
+        runtime = app._controller._application.runtime
+        resolver = runtime.skill_catalog_resolver
+        started = threading.Event()
+        release = threading.Event()
+
+        def delayed_discovery():
+            started.set()
+            assert release.wait(timeout=10)
+            return resolver()
+
+        monkeypatch.setattr(runtime, "skill_catalog_resolver", delayed_discovery)
+        try:
+            composer = app.query_one(Composer)
+            composer.load_text("draft")
+            composer.move_cursor((0, 0))
+            await pilot.press("@", *"skill", "enter")
+            assert await asyncio.to_thread(started.wait, 3)
+            await pilot.press(*"rev", "enter")
+            assert app._skill_picker.loading
+            assert app._controller.session_id is None
+            await pilot.press("escape")
+            assert composer.text == "draft"
+            assert not app.query_one(CommandPopup).display
+        finally:
+            release.set()
+            workers = [worker for worker in app.workers if worker.group == "skill-options"]
+            await app.workers.wait_for_complete(workers)
+        assert app._skill_picker is None
+        assert composer.text == "draft"
+        assert not app.query_one(CommandPopup).display
 
 
 async def test_mixed_references_survive_restart_and_form_one_complete_attachment_scaffold(
@@ -167,9 +250,10 @@ async def test_unqueue_restores_multiple_skills_and_files_after_an_existing_draf
         )
         composer.insert_plain_paste("task")
         original = composer.input_content
+        available = await runtime.available_skills()
         activations = tuple(
             runtime.skill_activations.resolve_user_activation(
-                runtime.available_skills(),
+                available,
                 SkillInvocationRequest(
                     name=item.name, text_offset=item.text_offset, order=item.order
                 ),
