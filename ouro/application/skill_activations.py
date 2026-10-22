@@ -8,8 +8,15 @@ from pathlib import Path
 from pydantic import Field, field_validator
 
 from ouro.core.base import OuroModel
+from ouro.core.compaction import CompactionRecord
+from ouro.core.context_providers import ContextFragment
 from ouro.core.errors import SkillActivationError
-from ouro.core.messages import SkillActivationContent
+from ouro.core.messages import (
+    MessageRecord,
+    ModelMessage,
+    SkillActivationContent,
+    model_visible_message,
+)
 from ouro.skills import SkillMetadata, load_skill_from_metadata
 
 
@@ -92,6 +99,31 @@ class SkillActivationService:
         return tuple(self.resolve_user_activation(skills, request) for request in requests)
 
 
+def compacted_skill_context(
+    messages: Sequence[MessageRecord], active: CompactionRecord | None
+) -> list[ContextFragment]:
+    """Keep covered skill instructions stable for the lifetime of a compaction projection."""
+    if active is None:
+        return []
+    boundary_run_id = next(
+        message.run_id
+        for message in messages
+        if message.message_id == active.history_boundary_message_id
+    )
+    if boundary_run_id is None:
+        return []
+    return [
+        ContextFragment(
+            role="user",
+            text=model_visible_message(
+                ModelMessage(role="user", content=list(message.skill_activations))
+            ).text_content,
+        )
+        for message in messages[: len(active.covered_message_ids)]
+        if message.run_id == boundary_run_id and message.skill_activations
+    ]
+
+
 def _skill_content_digest(metadata: SkillMetadata, instructions: str) -> str:
     payload = {
         "metadata": metadata.model_dump(mode="json"),
@@ -106,4 +138,4 @@ def _skill_content_digest(metadata: SkillMetadata, instructions: str) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
-__all__ = ["SkillActivationService", "SkillInvocationRequest"]
+__all__ = ["SkillActivationService", "SkillInvocationRequest", "compacted_skill_context"]

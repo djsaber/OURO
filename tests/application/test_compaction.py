@@ -6,6 +6,7 @@ import pytest
 
 import ouro.application.summary_compaction as compaction_module
 from ouro.application.configuration import ConfigurationFacade
+from ouro.application.resources import ResourceService
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_configuration import RuntimeConfigurationResolver
 from ouro.application.summary_compaction import LLMSummaryCompactionStrategy
@@ -23,7 +24,7 @@ from ouro.core.compaction import (
 from ouro.core.context import ContextBuilder
 from ouro.core.context_budget import ContextBudget
 from ouro.core.errors import CompactionError
-from ouro.core.messages import MessageRecord, ModelMessage
+from ouro.core.messages import ImageContent, MessageRecord, ModelMessage
 from ouro.core.provider import (
     ModelMetadata,
     ProviderCheckResult,
@@ -33,6 +34,7 @@ from ouro.core.provider import (
 )
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.core.state import SessionRecord
+from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
 
@@ -188,11 +190,13 @@ def _runtime(
     strategy,
     *,
     strategy_id: str,
+    resources: ResourceService | None = None,
 ) -> RuntimeService:
     registry = CompactionStrategyRegistry()
     registry.register(strategy)
     return RuntimeService(
         store=store,
+        resources=resources,
         adapter=RuntimeAdapter(
             provider,
             ModelMetadata(
@@ -331,6 +335,7 @@ async def test_prompt_snapshot_survives_config_update_during_compaction(tmp_path
         assert record is not None
         assert record.context_metrics_after.estimated_fixed_tokens < 100
         assert len(strategy.requests) == 1
+        assert strategy.requests[0].agent_system_prompt == "Before"
         assert len(resolutions) == 1
         assert resolutions[0].system_prompt == "Before"
         sent = len(provider.calls)
@@ -347,11 +352,32 @@ def _summary_request() -> CompactionRequest:
         session_id="ses_route",
         strategy_id="builtin.llm_summary",
         trigger="manual",
+        agent_system_prompt="Agent instructions: use the workspace and follow its skills.",
         messages=[
             MessageRecord.text(session_id="ses_route", role="user", text="old question"),
             MessageRecord.text(session_id="ses_route", role="assistant", text="old answer"),
         ],
     )
+
+
+async def test_summary_receives_agent_system_and_history_only_as_user_scaffolding():
+    provider = SummaryRouteProvider()
+    strategy = LLMSummaryCompactionStrategy(
+        _summary_adapter(provider, provider_id="runtime", endpoint_id="chat")
+    )
+    request = _summary_request().model_copy(update={"previous_summary": "Earlier progress"})
+
+    await strategy.compact(request)
+
+    assert provider.system_prompts == [strategy.prompt]
+    assert request.agent_system_prompt not in provider.system_prompts[0]
+    background, history = provider.messages[0]
+    assert background.role == history.role == "user"
+    assert background.text_content.startswith("<agent-system-context>\n")
+    assert request.agent_system_prompt in background.text_content
+    assert "Earlier progress" in history.text_content
+    assert "old question" in history.text_content
+    assert "old answer" in history.text_content
 
 
 def _summary_adapter(
@@ -449,6 +475,7 @@ def test_summary_chunk_selection_serializes_each_message_once_and_preserves_budg
         for index in range(200)
     ]
     previous_summary = "earlier summary"
+    agent_system_prompt = "Agent background. " * 1_000
     summary_output_tokens = 512
     adapter = adapter.with_output_limit(summary_output_tokens)
     capacity = adapter.model.context_budget.input_tokens
@@ -461,9 +488,14 @@ def test_summary_chunk_selection_serializes_each_message_once_and_preserves_budg
             messages=[
                 ModelMessage.text(
                     role="user",
+                    text=agent_system_prompt,
+                    semantic_tag="agent-system-context",
+                ),
+                ModelMessage.text(
+                    role="user",
                     text=compaction_module._summary_payload(previous_summary, candidate),
                     semantic_tag="conversation-to-summarize",
-                )
+                ),
             ],
             tools=[],
             budget=ContextBudget(context_window=capacity),
@@ -491,6 +523,7 @@ def test_summary_chunk_selection_serializes_each_message_once_and_preserves_budg
         frames,
         adapter=adapter,
         previous_summary=previous_summary,
+        agent_system_prompt=agent_system_prompt,
     )
 
     assert selected == expected
@@ -719,6 +752,11 @@ async def test_unclosed_length_summary_retries_once_with_half_the_frames() -> No
 
     assert artifact.summary == "complete rolling summary"
     assert len(provider.models) == 3
+    assert provider.system_prompts == [strategy.prompt] * 3
+    assert all(
+        messages[0].role == "user" and request.agent_system_prompt in messages[0].text_content
+        for messages in provider.messages
+    )
     assert [output.status for output in artifact.model_outputs] == [
         "failed",
         "completed",
@@ -1034,14 +1072,30 @@ async def test_auto_compaction_persists_and_is_reused_by_new_runtime(tmp_path) -
 
 
 @pytest.mark.asyncio
-async def test_later_auto_compaction_is_incremental(tmp_path) -> None:
+@pytest.mark.parametrize("with_media", [False, True])
+async def test_later_auto_compaction_is_incremental(tmp_path, with_media) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Incremental summary")
     store.create_session(session)
+    resources = None
+    if with_media:
+        resource_store = LocalResourceStore(tmp_path)
+        resource_store.initialize()
+        resources = ResourceService(store=resource_store, sessions=store)
+        store.append_message(
+            MessageRecord(
+                session_id=session.session_id,
+                role="user",
+                sequence=1,
+                content=[ImageContent(uri="data:image/png;base64,AAAA", media_type="image/png")],
+            )
+        )
     _append_turns(store, session.session_id, 5)
     strategy = RecordingStrategy()
-    runtime = _runtime(store, RecordingProvider(), strategy, strategy_id=strategy.strategy_id)
+    runtime = _runtime(
+        store, RecordingProvider(), strategy, strategy_id=strategy.strategy_id, resources=resources
+    )
 
     await runtime.run("first", session_id=session.session_id)
     first_request_ids = {message.message_id for message in strategy.requests[0].messages}
@@ -1059,6 +1113,13 @@ async def test_later_auto_compaction_is_incremental(tmp_path) -> None:
         snapshot.active_compaction.previous_compaction_id == snapshot.compactions[0].compaction_id
     )
     assert snapshot.active_compaction.summary == "summary-2"
+    if with_media:
+        assert isinstance(snapshot.messages[0].content[0], ImageContent)
+        assert not any(
+            isinstance(block, ImageContent)
+            for message in strategy.requests[0].messages
+            for block in message.content
+        )
 
 
 @pytest.mark.asyncio

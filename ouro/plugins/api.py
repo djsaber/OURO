@@ -863,6 +863,7 @@ class _SDKCompactionStrategy:
         call = sdk.CompactionCall(
             session_id=request.session_id,
             run_id=request.run_id,
+            agent_system_prompt=request.agent_system_prompt,
             previous_summary=request.previous_summary,
             messages=tuple(
                 message.model_dump(mode="json", exclude_none=True) for message in request.messages

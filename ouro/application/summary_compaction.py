@@ -81,7 +81,7 @@ class LLMSummaryCompactionStrategy:
 
     strategy_id = "builtin.llm_summary"
     version = "1"
-    prompt_version = "3"
+    prompt_version = "4"
 
     def __init__(
         self,
@@ -215,6 +215,7 @@ class LLMSummaryCompactionStrategy:
                 chunk, consumed_frames = self._next_chunk(
                     remaining_frames,
                     adapter=adapter,
+                    agent_system_prompt=request.agent_system_prompt,
                     previous_summary=rolling_summary,
                 )
                 try:
@@ -226,6 +227,7 @@ class LLMSummaryCompactionStrategy:
                         input_frame_count=consumed_frames,
                         session_id=request.session_id,
                         run_id=request.run_id,
+                        agent_system_prompt=request.agent_system_prompt,
                         previous_summary=rolling_summary,
                         messages=chunk,
                         signal=signal,
@@ -249,6 +251,7 @@ class LLMSummaryCompactionStrategy:
                             input_frame_count=consumed_frames,
                             session_id=request.session_id,
                             run_id=request.run_id,
+                            agent_system_prompt=request.agent_system_prompt,
                             previous_summary=rolling_summary,
                             messages=chunk,
                             signal=signal,
@@ -299,13 +302,14 @@ class LLMSummaryCompactionStrategy:
         frames: Sequence[Sequence[MessageRecord]],
         *,
         adapter: RuntimeAdapter,
+        agent_system_prompt: str,
         previous_summary: str | None,
     ) -> tuple[list[MessageRecord], int]:
         """Choose one provider-safe chunk using the latest rolling summary size."""
 
         capacity = adapter.model.context_budget.input_tokens
-        empty_context = self._summary_context(adapter, previous_summary, [])
-        empty_payload = empty_context.provider_context().messages[0].text_content
+        empty_context = self._summary_context(adapter, agent_system_prompt, previous_summary, [])
+        empty_payload = empty_context.provider_context().messages[-1].text_content
         fixed_tokens = empty_context.metrics.estimated_input_tokens - estimate_text_tokens(
             empty_payload
         )
@@ -319,7 +323,8 @@ class LLMSummaryCompactionStrategy:
             >= capacity
         ):
             raise ContextOverflowError(
-                "summary prompt and previous summary exceed model input budget"
+                "summary instructions, Agent background and previous summary "
+                "exceed model input budget"
             )
 
         current: list[MessageRecord] = []
@@ -354,17 +359,30 @@ class LLMSummaryCompactionStrategy:
     def _summary_context(
         self,
         adapter: RuntimeAdapter,
+        agent_system_prompt: str,
         previous_summary: str | None,
         messages: Sequence[MessageRecord],
     ) -> ContextView:
+        background = (
+            [
+                ModelMessage.text(
+                    role="user",
+                    text=agent_system_prompt,
+                    semantic_tag="agent-system-context",
+                )
+            ]
+            if agent_system_prompt
+            else []
+        )
         return ContextBuilder().build(
             system_prompt=self.prompt,
             messages=[
+                *background,
                 ModelMessage.text(
                     role="user",
                     text=_summary_payload(previous_summary, messages),
                     semantic_tag=_SUMMARY_INPUT_TAG,
-                )
+                ),
             ],
             tools=[],
             budget=adapter.model.context_budget,
@@ -380,11 +398,12 @@ class LLMSummaryCompactionStrategy:
         input_frame_count: int,
         session_id: str,
         run_id: str | None,
+        agent_system_prompt: str,
         previous_summary: str | None,
         messages: Sequence[MessageRecord],
         signal: AbortSignal | None,
     ) -> _SummaryChunkResult:
-        context = self._summary_context(adapter, previous_summary, messages)
+        context = self._summary_context(adapter, agent_system_prompt, previous_summary, messages)
         if context.metrics.over_budget:
             raise ContextOverflowError("summary input exceeds model input budget")
         request_id = new_id("req")

@@ -862,6 +862,7 @@ class WorkerPluginInstance:
                     "call": {
                         "session_id": call.session_id,
                         "run_id": call.run_id,
+                        "agent_system_prompt": call.agent_system_prompt,
                         "previous_summary": call.previous_summary,
                         "messages": [dict(message) for message in call.messages],
                     },

@@ -47,6 +47,7 @@ class CompactionRequest(OuroModel):
     run_id: str | None = None
     strategy_id: str
     trigger: CompactionTrigger
+    agent_system_prompt: str = ""
     previous_summary: str | None = None
     messages: list[MessageRecord] = Field(default_factory=list)
 
@@ -147,7 +148,6 @@ class CompactionRecord(VersionedOuroModel):
 class CompactionPlan(OuroModel):
     messages_to_compact: list[MessageRecord] = Field(default_factory=list)
     retained_messages: list[MessageRecord] = Field(default_factory=list)
-    covered_message_ids: list[str] = Field(default_factory=list)
 
 
 class CompactionCommandResult(OuroModel):
@@ -258,37 +258,20 @@ class CompactionStrategyRegistry:
 
 def plan_compaction(
     messages: Sequence[MessageRecord],
-    active: CompactionRecord | None,
     *,
     tail_token_budget: int,
     force: bool = False,
     token_estimator: TokenEstimator | None = None,
-    protected_run_id: str | None = None,
 ) -> CompactionPlan:
-    """Select a canonical prefix while preserving the latest context frame verbatim."""
+    """Select a prefix of unsummarized input, preserving the latest context frame."""
 
     estimator = token_estimator or estimate_text_tokens
-    covered_count = validate_compaction_lineage(messages, active)
-    prior_ids = list(active.covered_message_ids) if active else []
-    uncovered = list(messages[covered_count:])
-    frames = compaction_frames(uncovered)
+    frames = compaction_frames(messages)
     if len(frames) <= 1:
-        return CompactionPlan(retained_messages=uncovered, covered_message_ids=prior_ids)
+        return CompactionPlan(retained_messages=list(messages))
 
-    protected_index = next(
-        (
-            index
-            for index, frame in enumerate(frames)
-            if protected_run_id is not None
-            and any(message.run_id == protected_run_id for message in frame)
-        ),
-        len(frames) - 1,
-    )
-    retained_start = protected_index
-    retained_tokens = _messages_tokens(
-        [message for frame in frames[retained_start:] for message in frame],
-        estimator,
-    )
+    retained_start = len(frames) - 1
+    retained_tokens = _messages_tokens(frames[-1], estimator)
     while retained_start > 0:
         frame = frames[retained_start - 1]
         frame_tokens = _messages_tokens(frame, estimator)
@@ -297,7 +280,7 @@ def plan_compaction(
         retained_start -= 1
         retained_tokens += frame_tokens
 
-    if force and protected_run_id is None and retained_start == 0 and len(frames) > 1:
+    if force and retained_start == 0 and len(frames) > 1:
         retained_start = 1
 
     messages_to_compact = [message for frame in frames[:retained_start] for message in frame]
@@ -305,7 +288,6 @@ def plan_compaction(
     return CompactionPlan(
         messages_to_compact=messages_to_compact,
         retained_messages=retained_messages,
-        covered_message_ids=[*prior_ids, *(message.message_id for message in messages_to_compact)],
     )
 
 

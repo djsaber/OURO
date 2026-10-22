@@ -7,6 +7,10 @@
 上下文系统从 canonical messages 构建一次 Provider 请求视图，在不改写历史的前提下应用系统提示词、
 Skills 指令、恢复投影、摘要压缩和模型 token 预算。
 
+压缩是框架的请求准备机制，对用户消息与 Agent 执行轨迹构成的会话记录做上下文重构。框架负责预算判断、
+历史帧选择、结果校验与激活；内置或插件贡献的策略负责生成继续执行所需的背景上下文，正文形式由策略决定。
+规划只依赖会话材料、完整帧边界和预算，不依赖具体插件或 Run 的完成状态。
+
 ## ContextView
 
 `ContextView` 包含：system prompt、messages、tools、token estimate、budget、overflow 状态和 metadata。
@@ -31,6 +35,22 @@ semantic envelope renderer 包裹原始正文；未提供标签时直接拼接�
 内置 Plan 与 Goal 的 Context Provider 使用 `persistence=message`，在模型请求准备边界将 user 脚手架追加到
 canonical history；模式和目标状态不并入 system prompt。子 Agent 指导和异步结果也以 user 脚手架进入普通输入队列。
 这些消息保留来源和语义标签，user 角色不表示真人输入，也不改变执行权限。
+
+系统提示词、补充提示词、Skills 目录与请求级注入不被压缩改写。压缩前后使用同一次请求已解析的固定上下文，
+并将其完整计入输入预算。Agent 系统指令同时作为背景提供给生成策略，帮助理解会话，但不成为摘要模型的系统指令。
+
+Agent 的有效系统上下文为固定系统上下文加最新压缩结果。最新结果通过唯一的
+`role=system, semantic_tag=conversation-summary` 投影进入 Provider 的 system/instructions；原系统提示词完整保留。
+再次压缩只替换这一结果，不累计追加旧摘要。canonical history 保留原始消息，投影使用最新结果及未覆盖尾部。
+
+显式用户技能激活正文保存在 canonical 输入中。请求准备层根据压缩记录的 `history_boundary_message_id`
+确定该边界所属 Run，恢复其中已被覆盖的技能正文为 ephemeral user context；仍在尾部的激活不重复注入。
+正文从已接受的激活块重建，不重新读取文件、不提升角色、不追加 canonical 消息，并计入预算与请求快照。
+这部分背景固定到下一次压缩，不随当前执行 Run 切换而移除，也不依赖运行实例的内存状态。
+
+压缩激活后的第一次 Agent 请求使用重构后的上下文。此后直到下次压缩，压缩投影保持已有前缀不变，
+只在保留尾部之后追加新消息；关闭运行实例后恢复也从相同持久化记录重建。显式提示词、技能目录或消息编辑
+按各自契约生效，不属于压缩引起的变化。请求边界对不完整消息帧的安全过滤仍然适用，不与只追加约束冲突。
 
 ## 最近一次 Provider 请求快照
 
@@ -72,7 +92,10 @@ schema 5 固定实际发送的文本、状态、图片、音频和视频内容�
 - 无 `turn_id` 的普通消息按用户请求分组。
 - 含未完成工具请求的后缀整体受保护。
 
-压缩计划只能覆盖 canonical 前缀，并至少保留最新完整帧。
+压缩计划只能覆盖 canonical 前缀，并保留最新帧及未完成工具交换所在的整个后缀。已完成的旧帧可来自当前
+Run；Run 是执行归属，不是压缩边界。摘要覆盖不删除或改写 canonical 消息，也不改变工具执行和恢复记录。
+历史身份与内容哈希在原始 canonical 记录上校验；规划器只接收尚未覆盖的请求投影，按帧及预算选择本次材料。
+提交时从原始前缀生成累计覆盖身份与内容哈希，图片降级等请求投影不参与历史一致性判断。
 
 ## 压缩配置
 
@@ -87,7 +110,11 @@ schema 5 固定实际发送的文本、状态、图片、音频和视频内容�
 
 ## 摘要执行
 
-框架与生成策略的契约是输入材料和规范化的摘要正文。`CompactionRequest` 提供会话/运行身份、Harness 视图、触发方式、已有摘要及本次材料；不传入主请求预算或生成额度。策略返回 `CompactionArtifact.summary`，可附带用量、请求审计与策略 metadata。插件可自行选择提示词、模型和响应格式，再将结果转换为摘要正文。
+框架与生成策略的契约是输入材料和继续执行的背景上下文。`CompactionRequest` 提供会话/运行身份、Harness 视图、
+触发方式、`agent_system_prompt`、已有压缩结果及本次会话材料；不传入主请求预算或生成额度。
+`agent_system_prompt` 是本次已解析的完整固定系统背景，不含旧压缩结果，后者由 `previous_summary` 单独传递。
+策略通过 `CompactionArtifact.summary` 返回非空上下文，可附带用量、请求审计与策略 metadata。
+插件可自行选择策略、提示词、模型和响应格式，框架不要求结果必须是自然语言摘要。
 
 框架执行顺序：
 
@@ -99,9 +126,15 @@ schema 5 固定实际发送的文本、状态、图片、音频和视频内容�
 
 提示词、原始输出格式、解析、分块和格式相关重试由生成策略负责。框架不检查 `<summary>` 标签，不依据输出参数预测摘要正文大小，不要求插件沿用内置提示词。
 
-内置 `builtin.llm_summary` 位于 `application/summary_compaction.py`，将已有摘要与新增材料序列化为独立模型请求，不进入主 agent 循环，不创建持久化 Session，不携带普通工具。输入使用 `role=user, semantic_tag=conversation-to-summarize`；估算包括提示词、标签、转义后的正文及已有摘要。其提示词要求完整简洁的摘要，不依赖数值输出预算模板。当前内置解析器提取非空 `<summary>` 正文，格式规则与提示词一起维护。
+内置 `builtin.llm_summary` 位于 `application/summary_compaction.py`，使用独立模型请求，不进入主 Agent 循环，
+不创建持久化 Session，不携带普通工具。摘要模型的 system 仅含其压缩指令；Agent 系统背景以
+`role=user, semantic_tag=agent-system-context` 脚手架传入，已有摘要与待压缩会话以
+`role=user, semantic_tag=conversation-to-summarize` 传入。两者都是待理解的材料，不能混入摘要模型的系统指令。
+每个分块及重试均保留 Agent 背景，估算覆盖全部脚手架、标签、转义正文、已有摘要及压缩指令。
+其提示词要求完整简洁的替代摘要，不复述固定系统指令，不依赖数值输出预算模板。
+当前内置解析器提取非空 `<summary>` 正文，格式规则与提示词一起维护。
 
-每次滚动摘要使用自身请求的输入容量。选块按完整 frame 进行，对候选内容最多序列化一次，用与默认 estimator 一致的可加字符度量累计容量，保持线性复杂度。单帧或提示词与已有摘要无法容纳时明确失败。内置策略仅对现有可识别的未闭合、被截断摘要执行一次缩块重试，不循环扩大额度。
+每次滚动摘要使用自身请求的输入容量。选块按完整 frame 进行，对候选内容最多序列化一次，用与默认 estimator 一致的可加字符度量累计容量，保持线性复杂度。单帧或压缩指令、Agent 背景与已有摘要无法容纳时明确失败。内置策略仅对现有可识别的未闭合、被截断摘要执行一次缩块重试，不循环扩大额度。
 
 公共模型执行负责完成判定：`length`、过滤、缺少完成事件等失败不能因摘要标签闭合而视为成功。通用请求审计记录输出参数（可以为 `None`）、原始正文和思考、完成原因、用量及错误；不包含标签开闭状态。已发生的用量仍归属原 Session/Run 并只记账一次；取消和失败不激活摘要。
 
@@ -121,10 +154,13 @@ schema 5 固定实际发送的文本、状态、图片、音频和视频内容�
 
 ## 自动与手动压缩
 
-- 自动压缩在上下文达到 trigger ratio 时运行。
+- 每次主模型请求前都估算完整输入；达到 trigger ratio 时自动尝试压缩。工具轮次完成后发起的下一次请求
+  使用相同入口，因此单个 Run 内可以多次进行增量压缩。
+- 自动压缩沿用当前 Run 的锁、取消信号、事件及用量归属；成功后以新摘要和保留尾部重建上下文，再继续
+  同一轮模型请求。它不创建新的 Session 或 Run，不重放已经执行的工具。
 - 手动 `session compact` 强制尝试覆盖至少一个旧帧。
 - 无可压缩前缀时产生 skipped 结果，不创建空记录。
-- 压缩 Run 使用同一 session lock、RunLifecycle、事件和 abort signal。
+- 手动压缩使用独立的压缩 Run，复用相同的规划、策略执行和提交路径。
 - TUI 把 `started/progress/completed/failed/skipped` 事件投影为运行活动和压缩时间线；压缩核心逻辑不依赖终端实现。
 
 ## 失败语义
@@ -148,5 +184,7 @@ schema 5 固定实际发送的文本、状态、图片、音频和视频内容�
 - `tests/core/test_context.py`
 - `tests/core/test_compaction.py`
 - `tests/application/test_compaction.py`
+- `tests/application/test_run_compaction.py`
+- `tests/plugins/test_sdk_compaction.py`
 - `tests/cli/test_compaction_config_commands.py`
 - `tests/cli/test_session_commands.py`

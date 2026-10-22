@@ -24,7 +24,9 @@ CALLS = {
     "session_controller": sdk.SessionControllerCall(
         "session", "primary", "activation", "mode", "activate"
     ),
-    "compaction": sdk.CompactionCall("session", "run", "", ()),
+    "compaction": sdk.CompactionCall(
+        "session", "run", "", (), agent_system_prompt="Agent system background"
+    ),
     "continuation": sdk.RunOutcome("session", "run", "completed", "user"),
     "tool_policy": sdk.ToolPolicyCall("session", "run", "call", "echo", "echo", "owner"),
     "prompt_policy": sdk.PromptPolicyCall("session", "run", "hello"),
@@ -93,6 +95,8 @@ def worker(monkeypatch, tmp_path):
             )
             assert method == expected
             assert params["contribution_id"] == "example"
+            if kind == "compaction":
+                assert params["call"]["agent_system_prompt"] == "Agent system background"
             return dict(payload) if isinstance(payload, dict) else payload
 
         monkeypatch.setattr(instance.client, "request", respond)

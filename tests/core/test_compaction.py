@@ -41,11 +41,11 @@ def test_compaction_plan_preserves_complete_tool_exchange_boundaries() -> None:
         _message("assistant", "working", 6),
     ]
 
-    plan = plan_compaction(messages, None, tail_token_budget=1, force=True)
+    plan = plan_compaction(messages, tail_token_budget=1, force=True)
 
     assert plan.messages_to_compact == messages[:4]
     assert plan.retained_messages == messages[4:]
-    assert plan.covered_message_ids == [message.message_id for message in messages[:4]]
+    assert plan.messages_to_compact + plan.retained_messages == messages
     assert conversation_turns(messages) == [messages[:4], messages[4:]]
 
 
@@ -81,7 +81,7 @@ def test_compaction_plan_uses_model_turn_ids_inside_one_long_user_task() -> None
     )
     messages = [user, first_assistant, first_result, second_assistant, second_result]
 
-    plan = plan_compaction(messages, None, tail_token_budget=1)
+    plan = plan_compaction(messages, tail_token_budget=1)
 
     assert compaction_frames(messages) == [
         [user, first_assistant, first_result],
@@ -91,7 +91,7 @@ def test_compaction_plan_uses_model_turn_ids_inside_one_long_user_task() -> None
     assert plan.retained_messages == messages[3:]
 
 
-def test_compaction_plan_preserves_every_frame_from_the_active_run() -> None:
+def test_compaction_plan_can_cover_history_and_earlier_frames_of_the_same_run() -> None:
     old = [
         _message("user", "old request", 1).model_copy(update={"run_id": "run_old"}),
         _message("assistant", "old answer", 2).model_copy(update={"run_id": "run_old"}),
@@ -108,13 +108,33 @@ def test_compaction_plan_preserves_every_frame_from_the_active_run() -> None:
 
     plan = plan_compaction(
         [*old, *active],
-        None,
         tail_token_budget=1,
-        protected_run_id="run_active",
     )
 
-    assert plan.messages_to_compact == old
-    assert plan.retained_messages == active
+    assert plan.messages_to_compact == [*old, *active[:2]]
+    assert plan.retained_messages == active[2:]
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_compaction_preserves_the_suffix_from_an_unfinished_tool_exchange(force) -> None:
+    old = _message("assistant", "completed", 1).model_copy(
+        update={"run_id": "run_1", "turn_id": "turn_1"}
+    )
+    pending = _message("assistant", "", 2).model_copy(
+        update={
+            "run_id": "run_1",
+            "turn_id": "turn_2",
+            "tool_calls": [ToolCallRequest(id="call_pending", name="Read")],
+        }
+    )
+    later = _message("assistant", "later frame", 3).model_copy(
+        update={"run_id": "run_1", "turn_id": "turn_3"}
+    )
+
+    plan = plan_compaction([old, pending, later], tail_token_budget=0, force=force)
+
+    assert plan.messages_to_compact == [old]
+    assert plan.retained_messages == [pending, later]
 
 
 def test_compaction_frames_keep_unidentified_tool_exchange_atomic() -> None:

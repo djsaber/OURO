@@ -509,7 +509,10 @@ canonical 历史、预算、计数和用量仍属于调用者的 Run。跨 worke
 
 ### 摘要策略
 
-`CompactionCall` 提供 session/run 身份、可选只读状态视图、已有摘要与待压缩材料，不传入主请求预算。`CompactionOutput.summary` 是规范化的非空摘要正文；插件自行定义提示词、原始格式与解析过程，正文无需使用内置策略的 XML 标签。
+`CompactionCall` 提供 session/run 身份、可选只读状态视图、`agent_system_prompt` 固定系统背景、已有压缩结果与
+待压缩材料，不传入主请求预算。`CompactionOutput.summary` 是继续执行的非空背景上下文；插件自行定义策略、
+提示词、原始格式与解析过程，正文无需使用内置策略的 XML 标签。使用 LLM 摘要策略时，Agent 系统背景与会话材料
+应作为 user 脚手架传入，摘要模型的 system 只放压缩指令。框架保留 Agent 固定系统上下文，仅替换上一轮压缩结果。
 
 Host 用实际正文重新投影主上下文，通过容量和状态校验后提交。策略可报告用量，失败或取消不激活部分摘要。具体边界见[上下文与压缩](context-and-compaction.md#摘要执行)。
 

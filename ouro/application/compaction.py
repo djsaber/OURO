@@ -9,6 +9,7 @@ from typing import Protocol, cast
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.harness import capture_harness
 from ouro.application.prompt_context import PromptContext, PromptContextResolver
+from ouro.application.skill_activations import compacted_skill_context
 from ouro.application.usage import UsageService
 from ouro.config.compaction import CompactionConfig
 from ouro.core.adapter import RuntimeAdapter
@@ -256,7 +257,6 @@ class ContextPreparationService:
                     semantic_tag="unattended-mode-reminder",
                 )
             )
-        injected_message_count = sum(fragment.target == "message" for fragment in added_context)
         budget = self._input_budget(active_adapter)
         active = await run_blocking(self.store.load_active_compaction, session.session_id)
         source_messages, view = await run_blocking(
@@ -324,7 +324,6 @@ class ContextPreparationService:
                     adapter=active_adapter,
                     view=final_view,
                     source_messages=source_messages,
-                    injected_message_count=injected_message_count,
                 )
             sequence = execution.sequence
             if execution.record is None and view.metrics.over_budget:
@@ -359,7 +358,6 @@ class ContextPreparationService:
             adapter=active_adapter,
             view=view,
             source_messages=source_messages,
-            injected_message_count=injected_message_count,
         )
 
     def record_provider_completion(
@@ -492,7 +490,6 @@ class ContextPreparationService:
         adapter: RuntimeAdapter,
         view: ContextView,
         source_messages: list[MessageRecord],
-        injected_message_count: int,
     ) -> tuple[ContextView, int]:
         context_id = new_id("ctx")
         prepared = view.model_copy(update={"context_id": context_id})
@@ -505,7 +502,6 @@ class ContextPreparationService:
             model_round=model_round,
             adapter=adapter,
             source_messages=source_messages,
-            injected_message_count=injected_message_count,
         )
         await self._observe_built_context(
             session=session,
@@ -525,12 +521,12 @@ class ContextPreparationService:
         model_round: int,
         adapter: RuntimeAdapter,
         source_messages: list[MessageRecord],
-        injected_message_count: int,
     ) -> None:
         """Persist one fully materialized context snapshot on the I/O worker."""
 
         if context.context_id is None:
             raise ValueError("prepared model context is missing its identity")
+        injected_message_count = len(context.model_messages) - len(source_messages)
         with self.store.session_mutation(session.session_id):
             if (
                 run.history_epoch
@@ -585,9 +581,6 @@ class ContextPreparationService:
         active_adapter = adapter or self.adapter
         budget = self._input_budget(active_adapter)
         active = await run_blocking(self.store.load_active_compaction, session.session_id)
-        materialized_messages = await run_blocking(
-            self._materialize_messages, messages, active_adapter
-        )
         _, initial_view = await run_blocking(
             self._project_context,
             session=session,
@@ -598,6 +591,12 @@ class ContextPreparationService:
             adapter=active_adapter,
             skill_instructions=skill_instructions,
             prompt_context=prompt_context,
+        )
+        # Lineage is validated against canonical history by _project_context.
+        # Only the uncovered suffix needs model projection and frame selection.
+        covered_count = len(active.covered_message_ids) if active else 0
+        materialized_messages = await run_blocking(
+            self._materialize_messages, messages[covered_count:], active_adapter
         )
         before_tokens = (
             estimated_tokens_before
@@ -615,11 +614,9 @@ class ContextPreparationService:
         plan = await run_blocking(
             plan_compaction,
             materialized_messages,
-            active,
             tail_token_budget=tail_budget,
             force=force,
             token_estimator=self.context_builder.token_estimator,
-            protected_run_id=run.run_id if run.kind == "agent" else None,
         )
         if not plan.messages_to_compact:
             if trigger == "auto" and before_tokens > budget:
@@ -675,6 +672,7 @@ class ContextPreparationService:
             run_id=run.run_id,
             strategy_id=self.config.strategy_id,
             trigger=trigger,
+            agent_system_prompt=initial_view.system_prompt,
             previous_summary=active.summary if active else None,
             messages=plan.messages_to_compact,
         )
@@ -695,7 +693,7 @@ class ContextPreparationService:
             summary = artifact.summary.strip()
             if not summary:
                 raise CompactionError("compaction strategy returned an empty summary")
-            source_prefix = messages[: len(plan.covered_message_ids)]
+            source_prefix = messages[: covered_count + len(plan.messages_to_compact)]
             record = CompactionRecord(
                 compaction_id=compaction_id,
                 session_id=session.session_id,
@@ -704,7 +702,7 @@ class ContextPreparationService:
                 strategy_version=strategy.version,
                 trigger=trigger,
                 summary=summary,
-                covered_message_ids=plan.covered_message_ids,
+                covered_message_ids=[message.message_id for message in source_prefix],
                 history_boundary_message_id=messages[-1].message_id,
                 source_digest=await run_blocking(compaction_source_digest, source_prefix),
                 model_provider=str(artifact.metadata.get("model_provider") or "") or None,
@@ -923,6 +921,8 @@ class ContextPreparationService:
         complete_messages, excluded = project_tool_exchanges(
             project_compacted_messages(messages, active)
         )
+        # The durable compaction boundary fixes this prefix, including after recovery.
+        added_context = [*added_context, *compacted_skill_context(messages, active)]
         # Budget only native state that can belong to this request. Protocol and
         # account compatibility stay inside the codec; execution epochs stay here.
         candidate_runs = {

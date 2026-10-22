@@ -55,6 +55,7 @@ def _request() -> CompactionRequest:
         run_id="run_sdk_compaction",
         strategy_id="plugin.summary",
         trigger="manual",
+        agent_system_prompt="Frozen Agent system background",
         messages=[
             MessageRecord.text(
                 session_id="ses_sdk_compaction",
@@ -68,6 +69,7 @@ def _request() -> CompactionRequest:
 async def test_plugin_summary_format_is_owned_by_the_plugin():
     def handler(call: sdk.CompactionCall) -> sdk.CompactionOutput:
         assert call.messages
+        assert call.agent_system_prompt == "Frozen Agent system background"
         return sdk.CompactionOutput(
             summary="## Continue\nThe plugin uses Markdown without XML tags."
         )

@@ -778,6 +778,7 @@ class ContextContribution:
 @dataclass(frozen=True)
 class CompactionCall:
     session_state: PluginSessionStateView | None = field(default=None, kw_only=True)
+    agent_system_prompt: str = field(default="", kw_only=True)
     session_id: str
     run_id: str | None
     previous_summary: str | None
