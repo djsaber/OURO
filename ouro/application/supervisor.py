@@ -45,7 +45,13 @@ from ouro.core.errors import OuroError, PersistenceError, SessionBusyError, Sess
 from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
 from ouro.core.session_controls import DelegatedTaskInput, HostSessionInput
-from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, RunStatus, SessionRecord
+from ouro.core.state import (
+    ACTIVE_RUN_STATUSES,
+    RESUMABLE_RUN_STATUSES,
+    RunRecord,
+    RunStatus,
+    SessionRecord,
+)
 from ouro.core.tools import ToolResult
 
 _CLOSED: Final = object()
@@ -425,8 +431,21 @@ class RuntimeSupervisor:
     async def continue_run(self, *, session_id: str, run_id: str | None = None) -> RunHandle:
         """Schedule a continuation against the history accepted by this Host request."""
         await self.start()
-        if session_id in self._jobs_by_session:
-            raise SessionBusyError(f"session already has a supervised run: {session_id}")
+        previous_job = self._jobs_by_session.get(session_id)
+        if previous_job is not None:
+            previous_id = self._snapshots[previous_job.handle.handle_id].run_id
+            if (
+                previous_id is None
+                or not previous_job.execution_started.is_set()
+                or (run_id is not None and previous_id != run_id)
+            ):
+                raise SessionBusyError(f"session already has a supervised run: {session_id}")
+            previous_run = await run_blocking(self.store.load_run, session_id, previous_id)
+            if previous_run.status not in RESUMABLE_RUN_STATUSES:
+                raise SessionBusyError(f"session already has a supervised run: {session_id}")
+            # Durable interruption is observable before the attempt releases its
+            # local slot and reservation. Resume only after that ownership settles.
+            await previous_job.done.wait()
         snapshot = await run_blocking(self.runtime.session_recovery.recover_runtime, session_id)
         run = continuable_run(snapshot)
         if run_id is not None and run.run_id != run_id:

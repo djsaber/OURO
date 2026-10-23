@@ -164,12 +164,18 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             elif self._restored_scroll_y is not None:
                 scroll_y = min(self._restored_scroll_y, max_scroll_y)
                 if self._history.render_complete:
-                    self._restored_scroll_y = None
+                    # Reflow may measure several viewport sizes in one frame.
+                    # Keep the original offset until the final layout is published.
+                    self.call_after_refresh(self._finish_scroll_restore, self._restored_scroll_y)
             else:
                 scroll_y = min(self.scroll_y, max_scroll_y)
             self.set_scroll(None, scroll_y)
             self.scroll_target_y = scroll_y
         return arrangement
+
+    def _finish_scroll_restore(self, scroll_y: float) -> None:
+        if self._restored_scroll_y == scroll_y and self._history.render_complete:
+            self._restored_scroll_y = None
 
     def anchor(self, anchor: bool = True) -> None:
         self._follow_tail = anchor

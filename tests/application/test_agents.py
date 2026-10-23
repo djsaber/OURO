@@ -863,6 +863,17 @@ async def test_continue_reuses_interrupted_child_run_and_refreshes_its_result(
     service, supervisor, store, provider = await _services(tmp_path)
     successful_stream = provider.stream
     attempts = 0
+    finishing = asyncio.Event()
+    release_finish = asyncio.Event()
+    finish_job = supervisor._finish_job
+
+    async def held_finish(job, snapshot):
+        if snapshot.status == "failed":
+            finishing.set()
+            await release_finish.wait()
+        await finish_job(job, snapshot)
+
+    monkeypatch.setattr(supervisor, "_finish_job", held_finish)
 
     async def interrupted_stream(**kwargs):
         nonlocal attempts
@@ -886,11 +897,21 @@ async def test_continue_reuses_interrupted_child_run_and_refreshes_its_result(
             )
         )
         await service.wait_agents((child.delegation_id,))
+        await asyncio.wait_for(finishing.wait(), 30)
         before = store.load_runtime_session(child.child_session_id)
         assert before.runs[0].status == "failed"
         store.save_run(before.runs[0].model_copy(update={"status": status}))
         parent = store.load_run("ses_root", "run_parent")
+        job = supervisor._jobs_by_session[child.child_session_id]
+        wait_done = job.done.wait
+
+        async def release_on_wait():
+            release_finish.set()
+            return await wait_done()
+
+        monkeypatch.setattr(job.done, "wait", release_on_wait)
         await service.continue_children(parent)
+        assert release_finish.is_set()
         async with asyncio.timeout(10):
             await service.wait_agents((child.delegation_id,))
         after = store.load_runtime_session(child.child_session_id)
@@ -907,6 +928,7 @@ async def test_continue_reuses_interrupted_child_run_and_refreshes_its_result(
         await service.continue_children(parent)
         assert attempts == 2
     finally:
+        release_finish.set()
         await service.close()
         await supervisor.shutdown()
 

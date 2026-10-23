@@ -403,6 +403,52 @@ async def test_single_session_registry_rejects_a_second_supervised_run(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_continuation_rejects_an_attempt_before_it_reopens_the_old_run(tmp_path, monkeypatch):
+    class InterruptedProvider(FauxProvider):
+        attempts = 0
+
+        async def stream(self, **kwargs):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("interrupted model request")
+            async for event in super().stream(**kwargs):
+                yield event
+
+    runtime = _runtime(tmp_path, InterruptedProvider())
+    supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
+    entered, release = asyncio.Event(), asyncio.Event()
+    continue_run = runtime.continue_run
+
+    async def held_continue(**kwargs):
+        entered.set()
+        await release.wait()
+        return await continue_run(**kwargs)
+
+    monkeypatch.setattr(runtime, "continue_run", held_continue)
+    try:
+        async with asyncio.timeout(30):
+            first = await supervisor.submit("initial")
+            failed = await supervisor.wait(first)
+            assert failed.status == "failed"
+            continuation = await supervisor.continue_run(
+                session_id=first.session_id, run_id=failed.run_id
+            )
+            await entered.wait()
+            # The previous terminal record is still durable, but this attempt owns
+            # the session already; another continue must not wait on or duplicate it.
+            with pytest.raises(SessionBusyError, match="supervised run"):
+                await supervisor.continue_run(session_id=first.session_id, run_id=failed.run_id)
+            release.set()
+            completed = await supervisor.wait(continuation)
+            assert completed.status == "completed"
+            assert completed.run_id == failed.run_id
+            assert len(runtime.store.load_runs(first.session_id)) == 1
+    finally:
+        release.set()
+        await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_slow_subscription_reports_lag_without_blocking_run(tmp_path) -> None:
     runtime = _runtime(tmp_path, FauxProvider())
     session = runtime.sessions.create(title="Events").session

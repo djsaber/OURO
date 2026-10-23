@@ -539,7 +539,7 @@ async def test_thinking_completion_and_modal_share_supported_choices(
 
         app.query_one(Composer).clear()
         app.action_thinking_settings()
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="MODEL THINKING")
         modal = {choice.value for choice in app.screen._choices}
         for value in ("disabled", "low", "high", "summary:auto", "summary:detailed"):
             assert value in modal
@@ -548,7 +548,9 @@ async def test_thinking_completion_and_modal_share_supported_choices(
         options = app.screen.query_one("#choice-list", OptionList)
         options.highlighted = options.get_option_index("summary:detailed")
         await pilot.press("enter")
-        await pilot.pause()
+        # Dismissal returns the choice; the navigation worker still owns its save.
+        await _wait_for_worker_group(app, pilot, group="navigation")
+        assert (await app._controller.session_reasoning()).requested.summary == "detailed"
         await app._set_reasoning("high")
         state = await app._controller.session_reasoning()
         assert state.requested == ReasoningRequest(
@@ -580,7 +582,7 @@ async def test_thinking_modal_remains_available_during_an_active_run(tmp_path: P
         await _wait_for_screen(app, ChoiceScreen, title="MODEL THINKING")
         app.screen.query_one("#choice-filter", Input).value = "high"
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_worker_group(app, pilot, group="navigation")
 
         reasoning = await app._controller.session_reasoning()
         assert reasoning.requested.effort == "high"
@@ -603,7 +605,7 @@ async def test_status_line_shows_thinking_level_and_highlights_peak_effort(tmp_p
         # Raising to high (the highest effort this endpoint supports) peaks the
         # indicator so the level is highlighted.
         await pilot.press("slash", *"thinking", "enter", *"high", "enter")
-        await pilot.pause()
+        await _wait_for_worker_group(app, pilot, group="composer-command")
         assert indicator._reasoning == "high"
         assert indicator._reasoning_peak is True
         assert "high" in indicator.render().plain
@@ -631,7 +633,7 @@ async def test_status_line_hides_thinking_when_disabled(tmp_path: Path) -> None:
         active_separator_count = indicator.render().plain.count(" • ")
 
         await pilot.press("slash", *"thinking", "enter", *"disabled", "enter")
-        await pilot.pause()
+        await _wait_for_worker_group(app, pilot, group="composer-command")
         assert indicator._reasoning is None
         # Disabling reasoning removes the trailing separator so the status line
         # shows only the activity, approval mode, and model endpoint.

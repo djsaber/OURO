@@ -16,6 +16,7 @@ from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
+from tests.application.helpers import wait_for_runtime_event
 from tests.plugins.test_worker_tool_groups import PLUGIN, package
 
 
@@ -79,8 +80,7 @@ async def test_public_dynamic_record_plugin_keeps_decisions_and_commits_each_sch
     try:
         assert (await service.enable(PLUGIN)).status == "active", service.diagnostics()
         task = asyncio.create_task(runtime.run("save two records"))
-        async with asyncio.timeout(5):
-            await requested.wait()
+        await wait_for_runtime_event(requested, task, description="initial RecordData schema")
         await service.execute_command(f"{PLUGIN}:record-fields", "topic")
         release.set()
         result = await task

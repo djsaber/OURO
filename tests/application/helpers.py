@@ -5,6 +5,33 @@ from contextlib import asynccontextmanager
 
 from ouro.application.supervisor import RuntimeSupervisor
 from ouro.core.callbacks import run_blocking
+from ouro.core.results import RunResult
+
+
+async def wait_for_runtime_event(
+    event: asyncio.Event, task: asyncio.Task[RunResult], *, description: str
+) -> None:
+    """Await a run's phase handshake, surfacing early termination immediately.
+
+    Startup includes real storage and plugin processes. The deadline guards a
+    hang rather than imposing a latency budget on those dependencies.
+    The caller retains ownership of the run and its test gates.
+    """
+    handshake = asyncio.create_task(event.wait())
+    try:
+        try:
+            async with asyncio.timeout(60):
+                await asyncio.wait((handshake, task), return_when=asyncio.FIRST_COMPLETED)
+        except TimeoutError:
+            raise AssertionError(f"Timed out waiting for {description}; task={task!r}") from None
+        if not event.is_set():
+            result = task.result()
+            raise AssertionError(
+                f"Run ended before {description}: {result.run.status}; {result.run.error}"
+            )
+    finally:
+        handshake.cancel()
+        await asyncio.gather(handshake, return_exceptions=True)
 
 
 async def wait_for_session_state(supervisor, session_id, read, *, event_types=frozenset()):

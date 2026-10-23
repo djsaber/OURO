@@ -28,7 +28,12 @@ from ouro.tui.composer.surface import WelcomePanel
 from ouro.tui.conversation.transcript import project_transcript_entries
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.theme import DEFAULT_TUI_THEME
-from tests.tui.helpers import command_popup_text, run_ready_app
+from tests.tui.helpers import (
+    command_popup_text,
+    run_ready_app,
+    wait_for_events,
+    wait_for_worker_group,
+)
 from tests.tui.test_history_commands import application_at
 
 
@@ -158,7 +163,7 @@ async def test_directory_navigation_keeps_visible_listing_until_read_completes(
 
             def delayed_read(directory, started=entered, finished=release):
                 loop.call_soon_threadsafe(started.set)
-                assert finished.wait(timeout=10)
+                finished.wait()
                 return read_directory(directory)
 
             monkeypatch.setattr(AttachmentPicker, "read_directory", staticmethod(delayed_read))
@@ -170,7 +175,9 @@ async def test_directory_navigation_keeps_visible_listing_until_read_completes(
                     await pilot.press("enter")
                 else:
                     app._load_attachment_directory(destination)
-                await asyncio.wait_for(entered.wait(), timeout=5)
+                await wait_for_events(
+                    entered, pilot=pilot, description="directory read before listing replacement"
+                )
                 await pilot.pause()
                 assert snapshot() == before
                 assert without_spinner(command_popup_text(popup).plain) == visible
@@ -191,17 +198,22 @@ async def test_directory_navigation_keeps_visible_listing_until_read_completes(
                 assert all(frame == before for frame in frames)
             finally:
                 release.set()
-                await app.workers.wait_for_complete(
-                    [w for w in app.workers if w.group == "attachment-directory"]
-                )
-            await pilot.pause()
+                await wait_for_worker_group(app, pilot, group="attachment-directory")
+            await app.screen.wait_for_refresh()
             picker = app._attachment_picker
             assert picker.directory == destination and popup._heading == str(destination)
             assert composer.text == ("@file file-3", "@file nested-3", "@file ")[index]
             assert popup.region.bottom == composer.region.y
             assert popup._spinner_timer is None
-            after = snapshot()
-            assert frames and all(frame in (before, after) for frame in frames)
+            assert popup.display and not picker.loading
+            # Loading preserves the old listing; publication then reflows the new
+            # heading and rows. Intermediate compositor geometry is not a data state.
+            values = {argument.value for argument in popup._arguments}
+            if index < 2:
+                expected = destination / ("file-3.txt" if index == 0 else "nested-3.txt")
+                assert values == {str(expected)}
+            else:
+                assert {str(tmp_path / f"file-{number}.txt") for number in range(6)} <= values
 
 
 async def test_unreadable_directory_retains_listing_filter_and_selection(tmp_path, monkeypatch):

@@ -14,6 +14,7 @@ from ouro.core.provider import ProviderStreamEvent, ToolCallDelta
 from ouro.core.session_controls import HostSessionInput
 from ouro.sdk.plugins import v5 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from tests.application.helpers import wait_for_runtime_event
 from tests.application.test_run_drivers import DRIVER, PLUGIN, host, plugin_source, set_driver_body
 from tests.application.test_runtime import GateProvider
 
@@ -79,7 +80,7 @@ async def test_custom_driver_delivers_steering_at_the_next_decision_in_the_same_
         running = asyncio.create_task(
             runtime.run("initial", session_id=session.session_id, driver_id=DRIVER)
         )
-        await asyncio.wait_for(provider.started.wait(), 5)
+        await wait_for_runtime_event(provider.started, running, description="driver model request")
         receipt = await runtime.run(
             "steering-marker", session_id=session.session_id, queue_mode="steer"
         )
@@ -143,7 +144,7 @@ async def test_explicit_input_boundary_preserves_queue_units_and_follow_up(
         running = asyncio.create_task(
             runtime.run("initial", session_id=session.session_id, driver_id=DRIVER)
         )
-        await asyncio.wait_for(provider.started.wait(), 5)
+        await wait_for_runtime_event(provider.started, running, description="driver model request")
         for prompt, queue_mode in (
             ("steer-one", "steer"),
             ("steer-two", "steer"),
@@ -198,7 +199,7 @@ async def test_undelivered_steering_is_retained_on_policy_rejection_or_cancellat
         running = asyncio.create_task(
             runtime.run("initial", session_id=session.session_id, driver_id=DRIVER)
         )
-        await asyncio.wait_for(provider.started.wait(), 5)
+        await wait_for_runtime_event(provider.started, running, description="driver model request")
         await runtime.run("steering-marker", session_id=session.session_id, queue_mode="steer")
         accepted = runtime.queued_inputs.eligible_session(
             store.load_session_record(session.session_id)
@@ -267,7 +268,7 @@ async def test_steering_waits_for_model_tool_results_and_survives_driver_restart
         running = asyncio.create_task(
             runtime.run("initial", session_id=session.session_id, driver_id=DRIVER)
         )
-        await asyncio.wait_for(provider.started.wait(), 5)
+        await wait_for_runtime_event(provider.started, running, description="driver model request")
         await runtime.run("steering-marker", session_id=session.session_id, queue_mode="steer")
         provider.release.set()
         waiting = await running
@@ -318,8 +319,9 @@ async def test_busy_session_keeps_the_selected_driver_for_queued_follow_up(tmp_p
         assert (await service.enable(PLUGIN)).status == "active"
         session = runtime.create_session(title="queued algorithms")
         running = asyncio.create_task(runtime.run("first", session_id=session.session_id))
-        async with asyncio.timeout(5):
-            await provider.first_started.wait()
+        await wait_for_runtime_event(
+            provider.first_started, running, description="model request before queued follow-up"
+        )
         await runtime.run("next", session_id=session.session_id, driver_id=DRIVER)
         provider.release_first.set()
         await running
