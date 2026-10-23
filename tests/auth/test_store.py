@@ -224,6 +224,39 @@ def _windows_acl(path: Path) -> str:
         kernel.LocalFree(ctypes.cast(sddl, wintypes.HLOCAL))
 
 
+def _windows_sid(trustee: str) -> str:
+    # SDDL may abbreviate a SID (for example, the local administrator as LA).
+    # Resolve identity through Windows instead of depending on its text spelling.
+    api = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    api.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.LPVOID)]
+    api.ConvertSidToStringSidW.argtypes = [wintypes.LPVOID, ctypes.POINTER(wintypes.LPWSTR)]
+    kernel.LocalFree.argtypes = [wintypes.HLOCAL]
+    kernel.LocalFree.restype = wintypes.HLOCAL
+    sid = wintypes.LPVOID()
+    text = wintypes.LPWSTR()
+    try:
+        if not api.ConvertStringSidToSidW(trustee, ctypes.byref(sid)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not api.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return text.value
+    finally:
+        if text:
+            kernel.LocalFree(ctypes.cast(text, wintypes.HLOCAL))
+        if sid:
+            kernel.LocalFree(sid)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows SIDs")
+@pytest.mark.parametrize(
+    ("trustee", "sid"),
+    [("BA", "S-1-5-32-544"), ("SY", "S-1-5-18"), ("WD", "S-1-1-0"), ("S-1-5-18", "S-1-5-18")],
+)
+def test_windows_sid_resolves_identity_independently_of_sddl_spelling(trustee, sid) -> None:
+    assert _windows_sid(trustee) == sid
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows ACLs")
 def test_windows_acl_on_directory_temporary_and_replaced_file(tmp_path, monkeypatch) -> None:
     store = FileCredentialStore(tmp_path)
@@ -259,7 +292,7 @@ def test_windows_acl_on_directory_temporary_and_replaced_file(tmp_path, monkeypa
         rules = re.findall(r"\(([^()]*)\)", acl)
         assert len(rules) == 1
         kind, flags, rights, object_type, inherited_type, trustee = rules[0].split(";")
-        assert trustee == sid
+        assert _windows_sid(trustee) == sid
         assert "ID" not in flags  # Not inherited.
         assert kind == "A"  # Allow.
         assert rights in {"FA", "0x1f01ff"}  # FullControl.

@@ -17,7 +17,7 @@ from ouro.tui.theme import theme_for
 from ouro.tui.widgets import AssistantTurn, ConversationView, ToolActivityRow
 from tests.application.helpers import wait_for_session_state
 from tests.application.test_agent_multi_host import application, interaction
-from tests.tui.helpers import release_on_exit, run_ready_app, wait_for_events, wait_until
+from tests.tui.helpers import release_on_exit, run_ready_app, wait_until
 from tests.tui.test_app import _wait_for_screen, _wait_for_worker_group
 from tests.tui.test_tasks import choose, streaming_application
 
@@ -216,26 +216,27 @@ async def test_task_owned_by_another_runtime_streams_through_tools_and_session_s
     monkeypatch.setattr(owner.tasks, "clock", lambda: due)
     await owner.start()
     try:
+        task = await owner.tasks.create(
+            TaskConfiguration(
+                title="Shared background task",
+                schedule=TaskSchedule(
+                    frequency="custom",
+                    unit="minutes",
+                    starts_at=due,
+                ),
+                target=AgentTaskTarget(
+                    prompt="Inspect and report", workspace=str(tmp_path), model="faux/faux"
+                ),
+            )
+        )
+        # start() launches the scheduler; it does not establish lock ownership.
+        # The producer handshake establishes the executing owner before another
+        # runtime can compete for the shared home's scheduler lock.
+        await asyncio.wait_for(provider.started.wait(), 60)
         async with (
             run_ready_app(app, size=(120, 40)) as pilot,
             release_on_exit(provider.release),
         ):
-            task = await owner.tasks.create(
-                TaskConfiguration(
-                    title="Shared background task",
-                    schedule=TaskSchedule(
-                        frequency="custom",
-                        unit="minutes",
-                        starts_at=due,
-                    ),
-                    target=AgentTaskTarget(
-                        prompt="Inspect and report", workspace=str(tmp_path), model="faux/faux"
-                    ),
-                )
-            )
-            await wait_for_events(
-                provider.started, pilot=pilot, description="background tool execution"
-            )
             task = await owner.tasks.get(task.task_id)
             assert app.query_one(ConversationView).showing_welcome
             await pilot.press("ctrl+t")
