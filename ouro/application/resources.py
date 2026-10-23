@@ -5,7 +5,11 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from ouro.application.dto import Diagnostic
-from ouro.application.file_inputs import FileInputProjector, with_attachment_read_paths
+from ouro.application.file_inputs import (
+    FileInputProjector,
+    PreparedFileInputs,
+    with_attachment_read_paths,
+)
 from ouro.application.queued_inputs import QueuedInputQueue
 from ouro.application.resource_models import (
     ResourceExportResult,
@@ -324,6 +328,17 @@ class ResourceService:
         input_budget_tokens: int | None = None,
     ) -> list[MessageRecord]:
         return self._projector().project(
+            messages, input_modalities=input_modalities, input_budget_tokens=input_budget_tokens
+        )
+
+    def prepare_model_messages(
+        self,
+        messages: list[MessageRecord],
+        *,
+        input_modalities: frozenset[MediaModality],
+        input_budget_tokens: int | None = None,
+    ) -> PreparedFileInputs:
+        return self._projector().prepare(
             messages, input_modalities=input_modalities, input_budget_tokens=input_budget_tokens
         )
 

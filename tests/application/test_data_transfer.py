@@ -14,8 +14,11 @@ from ouro.config.provider_template_store import ProviderTemplateStore
 from ouro.config.providers import ProviderConfigManager
 from ouro.config.skills import ManagedSkillRecord, SkillConfigManager
 from ouro.core.agents import AgentDefinition, DelegationRecord
+from ouro.core.context import ContextBuilder
+from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_digest
 from ouro.core.errors import ConfigError, PersistenceError, SessionBusyError
 from ouro.core.harness import HarnessState
+from ouro.core.media_context import MEDIA_CONTEXT_KEY, MediaElisionState
 from ouro.core.messages import MessageRecord
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_extensions import SessionExtensionStateRecord
@@ -211,11 +214,35 @@ def test_session_round_trip_across_backends_with_attachments(
     attachment = tmp_path / "attachment.txt"
     attachment.write_bytes(b"portable attachment")
     services.resources.import_resource(session.session_id, attachment)
+    history = services._store.load_session(session.session_id).messages
+    view = ContextBuilder().build(messages=history, tools=[])
+    context = ContextSnapshotRecord(
+        session_id=session.session_id,
+        run_id=_run.run_id,
+        turn_id="turn_test",
+        model_round=1,
+        provider_id="faux",
+        model_id="faux",
+        metrics=view.metrics,
+        source_messages=history,
+        context_digest=context_view_digest(view),
+        context_metadata={
+            MEDIA_CONTEXT_KEY: MediaElisionState(
+                history_epoch=session.history_epoch,
+                media_elided_through_message_id=history[-1].message_id,
+            ).model_dump(mode="json")
+        },
+    )
+    services._store.save_latest_context(context)
     _create_session(services._store, "ses_other")
     archive = tmp_path / "sessions.zip"
     assert transfer(source, "export", "sessions", archive, backend=source_backend).count == 2
     assert transfer(target, "import", "sessions", archive, backend=target_backend).count == 2
     imported = build_local_session_services(target, session_backend=target_backend)
+    assert imported._store.load_latest_context(session.session_id) == context.model_copy(
+        update={"context_metadata": {}}
+    )
+    assert services._store.load_latest_context(session.session_id) == context
     assert imported._store.load_session(session.session_id) == services._store.load_session(
         session.session_id
     )

@@ -9,11 +9,11 @@ from pathlib import Path
 from pydantic import Field
 
 from ouro.core.base import OuroModel
-from ouro.core.compaction import CompactionRecord
+from ouro.core.compaction import CompactionRecord, retain_compactions
 from ouro.core.errors import PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessVersion
-from ouro.core.message_frames import MessageTruncation, retain_compactions
+from ouro.core.message_frames import MessageTruncation
 from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.session_commits import (

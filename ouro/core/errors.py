@@ -93,6 +93,10 @@ class ResourceAttachmentError(ResourceError):
     """A resource cannot be safely projected into a model request."""
 
 
+class MediaCapacityError(OuroError):
+    """Required media cannot fit in a request without dropping pending input."""
+
+
 class CompactionError(OuroError):
     """Context compaction could not produce and activate a valid summary."""
 

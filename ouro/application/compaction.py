@@ -8,6 +8,7 @@ from typing import Protocol, cast
 
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.harness import capture_harness
+from ouro.application.media_context import MediaContextPreparation, ModelMessagePreparer
 from ouro.application.prompt_context import PromptContext, PromptContextResolver
 from ouro.application.skill_activations import compacted_skill_context
 from ouro.application.usage import UsageService
@@ -30,7 +31,6 @@ from ouro.core.compaction import (
     plan_compaction,
     project_compacted_messages,
 )
-from ouro.core.content import MediaModality
 from ouro.core.context import (
     ContextBuilder,
     ContextView,
@@ -56,6 +56,7 @@ from ouro.core.errors import (
     PersistenceError,
 )
 from ouro.core.events import EventRecord
+from ouro.core.media_context import MEDIA_CONTEXT_KEY, MediaElisionState
 from ouro.core.message_frames import project_tool_exchanges
 from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import (
@@ -71,16 +72,6 @@ from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolDefinition
 from ouro.prompts import AFK_CONTEXT_PROMPT
 from ouro.sessions import SessionStore
-
-
-class ModelMessageProjector(Protocol):
-    def __call__(
-        self,
-        messages: list[MessageRecord],
-        *,
-        input_modalities: frozenset[MediaModality],
-        input_budget_tokens: int | None = None,
-    ) -> list[MessageRecord]: ...
 
 
 class ContextMessageAppender(Protocol):
@@ -174,7 +165,7 @@ class ContextPreparationService:
         system_prompt: str,
         append_context_message: ContextMessageAppender,
         prompt_context_resolver: PromptContextResolver | None = None,
-        project_model_messages: ModelMessageProjector | None = None,
+        prepare_model_messages: ModelMessagePreparer | None = None,
         usage_service: UsageService | None = None,
     ) -> None:
         self.store = store
@@ -187,7 +178,7 @@ class ContextPreparationService:
         self.system_prompt = system_prompt
         self.prompt_context_resolver = prompt_context_resolver
         self.append_context_message = append_context_message
-        self.project_model_messages = project_model_messages
+        self.media_context = MediaContextPreparation(store, prepare_model_messages)
         self.usage_service = usage_service
 
     async def prepare(
@@ -595,8 +586,12 @@ class ContextPreparationService:
         # Lineage is validated against canonical history by _project_context.
         # Only the uncovered suffix needs model projection and frame selection.
         covered_count = len(active.covered_message_ids) if active else 0
-        materialized_messages = await run_blocking(
-            self._materialize_messages, messages[covered_count:], active_adapter
+        materialized_messages, _ = await run_blocking(
+            self._materialize_messages,
+            messages[covered_count:],
+            active_adapter,
+            session=session,
+            history=messages,
         )
         before_tokens = (
             estimated_tokens_before
@@ -947,7 +942,12 @@ class ContextPreparationService:
             for message in complete_messages
         ]
         source_messages = project_recovery_messages(complete_messages)
-        effective_messages = self._materialize_messages(source_messages, adapter)
+        effective_messages, media_state = self._materialize_messages(
+            source_messages,
+            adapter,
+            session=session,
+            history=messages,
+        )
         view = self._build_view(
             messages=effective_messages,
             tools=tools,
@@ -959,6 +959,7 @@ class ContextPreparationService:
         metadata = dict(view.context_metadata)
         metadata.update(
             {
+                MEDIA_CONTEXT_KEY: media_state.model_dump(mode="json"),
                 "personal_prompt": prompt_context.metadata(),
                 "compaction_id": active.compaction_id if active else None,
                 "compaction_strategy": active.strategy_id if active else None,
@@ -1002,11 +1003,14 @@ class ContextPreparationService:
         self,
         messages: list[MessageRecord],
         adapter: RuntimeAdapter,
-    ) -> list[MessageRecord]:
-        if self.project_model_messages is None:
-            return messages
-        return self.project_model_messages(
+        *,
+        session: SessionRecord,
+        history: list[MessageRecord],
+    ) -> tuple[list[MessageRecord], MediaElisionState]:
+        return self.media_context.project(
             messages,
+            session=session,
+            history=history,
             input_modalities=adapter.model.input_modalities,
             input_budget_tokens=self._input_budget(adapter),
         )

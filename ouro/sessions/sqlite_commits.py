@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import sqlite3
 
-from ouro.core.compaction import CompactionRecord
+from ouro.core.compaction import CompactionRecord, retain_compactions
 from ouro.core.errors import PersistenceError
 from ouro.core.harness import HarnessVersion
-from ouro.core.message_frames import MessageTruncation, retain_compactions
+from ouro.core.message_frames import MessageTruncation
 from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.session_commits import (

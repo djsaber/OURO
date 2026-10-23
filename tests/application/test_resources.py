@@ -13,6 +13,7 @@ from ouro.application.resources import ResourceService
 from ouro.application.runs import RunLifecycle
 from ouro.application.sessions import SessionService
 from ouro.core.errors import (
+    MediaCapacityError,
     PersistenceError,
     ResourceIntegrityError,
     ResourceInUseError,
@@ -613,6 +614,41 @@ def test_image_resource_projection_is_request_local_data_uri(tmp_path) -> None:
     assert all(not isinstance(block, ImageContent) for block in canonical.content)
 
 
+def test_repeated_media_resource_preserves_each_occurrence_and_elides_without_encoding(
+    tmp_path,
+    monkeypatch,
+):
+    _, store, resources, service = _services(tmp_path)
+    session_id = service.create().session.session_id
+    path = tmp_path / "image.png"
+    path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 16000)
+    resource = resources.import_resource(session_id, path).resource
+    old = MessageRecord.text(session_id=session_id, role="user", text="old image")
+    old.resource_refs = [resource.resource_id]
+    latest = old.model_copy(update={"message_id": "msg_latest"})
+    before = resources.project_model_messages([old], input_modalities=frozenset({"image"}))
+    both = resources.project_model_messages([old, latest], input_modalities=frozenset({"image"}))
+    assert both[0] == before[0]
+    assert any(isinstance(part, ImageContent) for part in both[1].content)
+    encoded = []
+    encode_image = base64.b64encode
+
+    def record_encode(raw):
+        encoded.append(len(raw))
+        return encode_image(raw)
+
+    monkeypatch.setattr(file_inputs.base64, "b64encode", record_encode)
+    prepared = resources.prepare_model_messages(
+        [old, latest], input_modalities=frozenset({"image"})
+    )
+    assert encoded == []
+    result = prepared.materialize(frozenset({old.message_id}))
+    assert encoded == [path.stat().st_size]
+    assert "[Historical image]" in result[0].text_content
+    assert "old image" in result[0].text_content
+    assert result[1] == both[1]
+
+
 @pytest.mark.parametrize("source_kind", ["inline", "resource"])
 @pytest.mark.parametrize(
     "role,image_input,keeps_image",
@@ -703,17 +739,17 @@ def test_request_image_budget_is_shared_before_resource_encoding(
         return encode_image(data)
 
     monkeypatch.setattr(file_inputs.base64, "b64encode", bounded_encode)
-    projected = resources.project_model_messages(
-        [earlier, latest], input_modalities=frozenset({"image"}) if image_input else frozenset()
-    )
-
-    assert encoded_sources == ([raw] if image_input else [])
-    assert [
-        sum(isinstance(part, ImageContent) for part in message.content) for message in projected
-    ] == ([0, 2] if image_input else [0, 0])
-    reason = "too much media data" if image_input else "This model cannot view images."
-    assert reason in projected[-1].text_content
-    assert reason in projected[0].text_content
+    if image_input:
+        with pytest.raises(MediaCapacityError, match="request media limit"):
+            resources.project_model_messages(
+                [earlier, latest], input_modalities=frozenset({"image"})
+            )
+    else:
+        projected = resources.project_model_messages(
+            [earlier, latest], input_modalities=frozenset()
+        )
+        assert all("This model cannot view images." in item.text_content for item in projected)
+    assert encoded_sources == []
     assert [earlier, latest] == before
 
 

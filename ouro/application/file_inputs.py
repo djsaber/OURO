@@ -14,7 +14,6 @@ from typing import Literal
 from ouro.core.attachment_projection import decode_slice, file_media_type, text_encoding
 from ouro.core.base import utc_now
 from ouro.core.content import (
-    MEDIA_CONTENT_COST,
     AudioContent,
     MediaContent,
     MediaModality,
@@ -22,7 +21,9 @@ from ouro.core.content import (
     media_format_omission,
     unsupported_content_text,
 )
+from ouro.core.errors import MediaCapacityError
 from ouro.core.input_content import InputFileReference
+from ouro.core.media_context import historical_media_text, media_chars, require_media_capacity
 from ouro.core.message_roles import MessageRole
 from ouro.core.messages import ContentBlock, ImageContent, MessageRecord, TextContent
 from ouro.core.resources import ResourceRecord
@@ -34,14 +35,67 @@ DEFAULT_REQUEST_MEDIA_CHARS = 20 * 1024 * 1024
 DEFAULT_ITEM_TEXT_BYTES = 8 * 1024
 
 
-def _media_budget_message(kind: MediaModality) -> str:
-    return (
-        f"The {kind} was not sent because there is too much media data to include at once. "
-        "Use fewer files or smaller versions."
-    )
+@dataclass(frozen=True)
+class _PreparedMedia:
+    kind: MediaModality
+    size: int
+    load: Callable[[], MediaContent]
+    omission: str | None = None
+
+    def materialize(self, *, elided: bool) -> TextContent | MediaContent:
+        reason = historical_media_text(self.kind) if elided else self.omission
+        return TextContent(text=f"\n{reason}\n") if reason else self.load()
 
 
-Blocks = list[TextContent | MediaContent]
+Blocks = list[ContentBlock | _PreparedMedia]
+
+
+@dataclass(frozen=True)
+class _PreparedMessage:
+    message: MessageRecord
+    content: Blocks
+    paths: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
+class PreparedFileInputs:
+    """Request-local content with resource media deferred until budget selection."""
+
+    messages: list[_PreparedMessage]
+    media_limit: int
+
+    @property
+    def media_sizes(self) -> dict[str, int]:
+        return {
+            item.message.message_id: sum(
+                part.size
+                for part in item.content
+                if isinstance(part, _PreparedMedia) and part.omission is None
+            )
+            for item in self.messages
+        }
+
+    def materialize(self, elided_ids: frozenset[str] = frozenset()) -> list[MessageRecord]:
+        require_media_capacity(
+            sum(size for identity, size in self.media_sizes.items() if identity not in elided_ids),
+            self.media_limit,
+        )
+        return [
+            with_attachment_read_paths(
+                item.message.model_copy(
+                    update={
+                        "content": [
+                            part.materialize(elided=item.message.message_id in elided_ids)
+                            if isinstance(part, _PreparedMedia)
+                            else part
+                            for part in item.content
+                        ]
+                    }
+                ),
+                item.paths,
+            )
+            for item in self.messages
+        ]
 
 
 def with_attachment_read_paths(message: MessageRecord, paths: Iterable[Path]) -> MessageRecord:
@@ -81,31 +135,47 @@ def _input_media_omission(
     return None
 
 
-def _bound_media_content(
+def _prepare_media_content(
     content: list[ContentBlock],
     *,
     role: MessageRole,
     modalities: frozenset[MediaModality],
-    media_budget: int,
-) -> tuple[list[ContentBlock], int]:
-    """Check input eligibility and charge inline media before reading resources."""
-    bounded: list[ContentBlock] = []
+) -> Blocks:
+    """Check eligibility without dropping media in response to later input."""
+    prepared: Blocks = []
     for block in content:
         if isinstance(block, MediaContent):
             reason = _input_media_omission(role, block.type, modalities)
             if reason is None and block.media_type:
                 reason = media_format_omission(block.type, block.media_type)
-            if reason is not None:
-                bounded.append(TextContent(text=f"\n{reason}\n"))
-                continue
-            separator = block.uri.find(",") if block.uri.startswith("data:") else -1
-            media_size = len(block.uri) - separator - 1 if separator >= 0 else len(block.uri)
-            if media_size > media_budget:
-                bounded.append(TextContent(text=f"\n{_media_budget_message(block.type)}\n"))
-                continue
-            media_budget -= media_size
-        bounded.append(block)
-    return bounded, media_budget
+            prepared.append(_inline_media(block, reason))
+        else:
+            prepared.append(block)
+    return prepared
+
+
+def _inline_media(block: MediaContent, reason: str | None) -> _PreparedMedia:
+    return _PreparedMedia(block.type, media_chars(block), lambda: block, reason)
+
+
+def prepare_inline_messages(
+    messages: list[MessageRecord], *, input_modalities: frozenset[MediaModality]
+) -> PreparedFileInputs:
+    return PreparedFileInputs(
+        [
+            _PreparedMessage(
+                message,
+                _prepare_media_content(
+                    message.content,
+                    role=message.role,
+                    modalities=input_modalities,
+                ),
+                (),
+            )
+            for message in messages
+        ],
+        DEFAULT_REQUEST_MEDIA_CHARS,
+    )
 
 
 @dataclass(frozen=True)
@@ -159,9 +229,15 @@ class FileInputProjector:
         workspace_only: bool,
     ) -> MessageRecord:
         """Persist the bounded file material in the ordinary scaffold content once."""
-        content = list(message.content)
+        content = _prepare_media_content(
+            message.content, role=message.role, modalities=input_modalities
+        )
         content_left = DEFAULT_INPUT_CONTENT_BUDGET
-        media_left = DEFAULT_REQUEST_MEDIA_CHARS
+        media_used = sum(
+            part.size
+            for part in content
+            if isinstance(part, _PreparedMedia) and part.omission is None
+        )
 
         def omission(kind: MediaModality) -> str | None:
             if kind in input_modalities:
@@ -175,19 +251,18 @@ class FileInputProjector:
         for item in message.input_attachments:
             if isinstance(item, InputFileReference):
                 try:
-                    blocks, used, media_used = self._reference_blocks(
+                    blocks, used = self._reference_blocks(
                         item,
                         context.resolve_path(item.path),
                         omission=omission,
                         content_budget=content_left,
-                        media_budget=media_left,
+                        media_used=media_used,
                     )
                 except (OSError, ValueError) as exc:
-                    blocks, used, media_used = (
+                    blocks, used = (
                         self._reference_only(
                             item, f"File unavailable: {exc}; contents not supplied"
                         ),
-                        0,
                         0,
                     )
                 content.append(
@@ -200,23 +275,35 @@ class FileInputProjector:
                     )
                 )
             else:
-                blocks, used, media_used = self._blocks(
+                blocks, used = self._blocks(
                     self._upload_source(message.session_id, item.resource_id, item.name),
                     omission=omission,
                     content_budget=content_left,
-                    media_budget=media_left,
                 )
                 content.append(TextContent(text="\n\n"))
             content.extend(blocks)
             content_left -= used
-            media_left -= media_used
-        return with_attachment_read_paths(
-            message.model_copy(update={"content": content}),
-            (
-                self._upload_source(message.session_id, identity).path
-                for identity in dict.fromkeys(message.resource_refs)
-            ),
+            size = sum(
+                part.size
+                for part in blocks
+                if isinstance(part, _PreparedMedia) and part.omission is None
+            )
+            media_used += size
+            require_media_capacity(media_used, DEFAULT_REQUEST_MEDIA_CHARS)
+        prepared = PreparedFileInputs(
+            [
+                _PreparedMessage(
+                    message,
+                    content,
+                    tuple(
+                        self._upload_source(message.session_id, identity).path
+                        for identity in dict.fromkeys(message.resource_refs)
+                    ),
+                )
+            ],
+            DEFAULT_REQUEST_MEDIA_CHARS,
         )
+        return prepared.materialize()[0]
 
     def _upload_source(self, session_id: str, resource_id: str, name: str | None = None) -> _Source:
         record = self.record(session_id, resource_id)
@@ -236,8 +323,8 @@ class FileInputProjector:
         *,
         omission: Callable[[MediaModality], str | None],
         content_budget: int,
-        media_budget: int,
-    ) -> tuple[Blocks, int, int]:
+        media_used: int,
+    ) -> tuple[Blocks, int]:
         for _attempt in range(2):
             if not path.is_file():
                 raise OSError("Path is not a regular file")
@@ -263,7 +350,26 @@ class FileInputProjector:
                     source,
                     omission=omission,
                     content_budget=content_budget,
-                    media_budget=media_budget,
+                )
+                blocks, used = result
+                require_media_capacity(
+                    media_used
+                    + sum(
+                        part.size
+                        for part in blocks
+                        if isinstance(part, _PreparedMedia) and part.omission is None
+                    ),
+                    DEFAULT_REQUEST_MEDIA_CHARS,
+                )
+                # References must be observed while this checked file handle is open.
+                result = (
+                    [
+                        _inline_media(part.load(), None)
+                        if isinstance(part, _PreparedMedia) and part.omission is None
+                        else part
+                        for part in blocks
+                    ],
+                    used,
                 )
                 after, current = os.fstat(stream.fileno()), path.stat()
 
@@ -274,6 +380,58 @@ class FileInputProjector:
                     return result
         raise OSError("File changed while preparing this input; select it again")
 
+    def prepare(
+        self,
+        messages: list[MessageRecord],
+        *,
+        input_modalities: frozenset[MediaModality],
+        input_budget_tokens: int | None,
+    ) -> PreparedFileInputs:
+        """Prepare text and measure eligible media without loading resource payloads.
+
+        Text previews retain their existing request budget. Media occurrences are
+        independent of later references and share one capacity check at materialization.
+        """
+        prepared = []
+        content_left = (
+            min(DEFAULT_INPUT_CONTENT_BUDGET, input_budget_tokens // 4)
+            if input_budget_tokens is not None
+            else DEFAULT_INPUT_CONTENT_BUDGET
+        )
+        seen: set[tuple[str, str]] = set()
+        for message in reversed(messages):
+            omission = partial(_input_media_omission, message.role, modalities=input_modalities)
+            content = _prepare_media_content(
+                message.content,
+                role=message.role,
+                modalities=input_modalities,
+            )
+            if message.semantic_tag != "attachments":
+                for identity in message.resource_refs:
+                    source = self._upload_source(message.session_id, identity)
+                    key = (message.session_id, identity)
+                    blocks, used = self._blocks(
+                        source,
+                        omission=omission,
+                        content_budget=content_left,
+                        repeated=key in seen,
+                    )
+                    content.append(TextContent(text="\n\n"))
+                    content.extend(blocks)
+                    content_left -= used
+                    seen.add(key)
+            prepared.append(
+                _PreparedMessage(
+                    message,
+                    content,
+                    tuple(
+                        self._upload_source(message.session_id, identity).path
+                        for identity in dict.fromkeys(message.resource_refs)
+                    ),
+                )
+            )
+        return PreparedFileInputs(list(reversed(prepared)), DEFAULT_REQUEST_MEDIA_CHARS)
+
     def project(
         self,
         messages: list[MessageRecord],
@@ -281,57 +439,11 @@ class FileInputProjector:
         input_modalities: frozenset[MediaModality],
         input_budget_tokens: int | None,
     ) -> list[MessageRecord]:
-        """Prepare bounded input and resource views without placing tool output.
-
-        Eligible tool media stay typed for provider-owned protocol placement.
-        Only sendable inline media and resource previews consume the media budget.
-        """
-        projected = []
-        content_left = (
-            min(DEFAULT_INPUT_CONTENT_BUDGET, input_budget_tokens // 4)
-            if input_budget_tokens is not None
-            else DEFAULT_INPUT_CONTENT_BUDGET
-        )
-        media_left = DEFAULT_REQUEST_MEDIA_CHARS
-        seen: set[tuple[str, str]] = set()
-        for message in reversed(messages):
-            omission = partial(_input_media_omission, message.role, modalities=input_modalities)
-            content, media_left = _bound_media_content(
-                message.content,
-                role=message.role,
-                modalities=input_modalities,
-                media_budget=media_left,
-            )
-            if message.semantic_tag != "attachments":
-                for identity in message.resource_refs:
-                    source = self._upload_source(message.session_id, identity)
-                    key = (message.session_id, identity)
-                    if key in seen:
-                        blocks, used, media_used = self._reference(
-                            source, "Repeated attachment; see the more recent file entry"
-                        )
-                    else:
-                        blocks, used, media_used = self._blocks(
-                            source,
-                            omission=omission,
-                            content_budget=content_left,
-                            media_budget=media_left,
-                        )
-                    content.append(TextContent(text="\n\n"))
-                    content.extend(blocks)
-                    content_left -= used
-                    media_left -= media_used
-                    seen.add(key)
-            projected.append(
-                with_attachment_read_paths(
-                    message.model_copy(update={"content": content}),
-                    (
-                        self._upload_source(message.session_id, identity).path
-                        for identity in dict.fromkeys(message.resource_refs)
-                    ),
-                )
-            )
-        return list(reversed(projected))
+        return self.prepare(
+            messages,
+            input_modalities=input_modalities,
+            input_budget_tokens=input_budget_tokens,
+        ).materialize()
 
     @staticmethod
     def _reference_only(item: InputFileReference, reason: str) -> Blocks:
@@ -347,10 +459,9 @@ class FileInputProjector:
         ]
 
     @staticmethod
-    def _reference(source: _Source, reason: str) -> tuple[Blocks, int, int]:
+    def _reference(source: _Source, reason: str) -> tuple[Blocks, int]:
         return (
             [TextContent(text=source.header() + "Representation: reference only. " + reason)],
-            0,
             0,
         )
 
@@ -360,8 +471,8 @@ class FileInputProjector:
         *,
         omission: Callable[[MediaModality], str | None],
         content_budget: int,
-        media_budget: int,
-    ) -> tuple[Blocks, int, int]:
+        repeated: bool = False,
+    ) -> tuple[Blocks, int]:
         if source.size > self.max_resource_bytes:
             return self._reference(
                 source,
@@ -387,28 +498,33 @@ class FileInputProjector:
                 kind for kind in constructors if detected.startswith(kind + "/")
             )
             reason = omission(kind) or media_format_omission(kind, detected)
-            if reason is not None:
-                return self._reference(source, reason)
-            encoded_size = 4 * ((source.size + 2) // 3)
-            if source.size > self.max_media_bytes:
-                return self._reference(
-                    source, f"The {kind} is too large to send. Use a smaller version."
+
+            def load_media() -> MediaContent:
+                if source.size > self.max_media_bytes:
+                    raise MediaCapacityError(
+                        f"Media file {source.name!r} exceeds the {self.max_media_bytes}-byte "
+                        "input limit. Use a smaller version. No model request was sent."
+                    )
+                raw = prefix if full else source.read(((0, source.size),))[0]
+                return constructors[kind](
+                    uri=f"data:{detected};base64,{base64.b64encode(raw).decode('ascii')}",
+                    media_type=detected,
                 )
-            cost = MEDIA_CONTENT_COST
-            if encoded_size > media_budget or cost > content_budget:
-                return self._reference(source, _media_budget_message(kind))
-            raw = prefix if full else source.read(((0, source.size),))[0]
+
             return (
                 [
                     TextContent(text=source.header()),
-                    constructors[kind](
-                        uri=f"data:{detected};base64,{base64.b64encode(raw).decode('ascii')}",
-                        media_type=detected,
+                    _PreparedMedia(
+                        kind,
+                        4 * ((source.size + 2) // 3),
+                        load_media,
+                        f"Representation: reference only. {reason}" if reason else None,
                     ),
                 ],
-                cost,
-                encoded_size,
+                0,
             )
+        if repeated:
+            return self._reference(source, "Repeated attachment; see the more recent file entry")
         text_budget = preview_budget
         encoding = text_encoding(prefix)
         if encoding is None:
@@ -460,5 +576,4 @@ class FileInputProjector:
                 )
             ],
             used,
-            0,
         )

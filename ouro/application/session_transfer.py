@@ -10,6 +10,7 @@ from ouro.application.queued_inputs import QUEUED_INPUTS_KEY, QueuedInput
 from ouro.core.base import OuroModel
 from ouro.core.errors import SessionBusyError
 from ouro.core.input_content import InputAttachment, InputFileReference
+from ouro.core.media_context import MEDIA_CONTEXT_KEY
 from ouro.core.resources import ResourceRecord
 from ouro.core.state import ACTIVE_RUN_STATUSES
 from ouro.resources.base import ResourceStore
@@ -207,6 +208,14 @@ class SessionTransferService:
                         f"stop the active Session before replacement: {identity}"
                     )
             if bundle.sessions:
+                # Import starts a new media projection phase; the saved request remains viewable.
+                for item in bundle.sessions:
+                    if item.latest_context is not None:
+                        metadata = dict(item.latest_context.context_metadata)
+                        metadata.pop(MEDIA_CONTEXT_KEY, None)
+                        item.latest_context = item.latest_context.model_copy(
+                            update={"context_metadata": metadata}
+                        )
                 contents: dict[str, dict[str, bytes]] = {}
                 for name, (session_id, resource) in _resource_files(bundle).items():
                     contents.setdefault(session_id, {})[resource.filename] = archive.files[name]

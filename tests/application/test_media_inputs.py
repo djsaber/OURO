@@ -6,9 +6,12 @@ import httpx
 import pytest
 
 from ouro.application import file_inputs
+from ouro.application.media_context import MediaContextPreparation
+from ouro.core.base import utc_now
 from ouro.core.content import AudioContent, ImageContent, MediaContent, VideoContent
+from ouro.core.errors import MediaCapacityError
 from ouro.core.input_content import InputAttachment, InputFileReference
-from ouro.core.messages import MessageRecord, ToolResultReference
+from ouro.core.messages import MessageRecord, ModelResponseRecord, ToolResultReference
 from ouro.providers.http_transport import HttpxProviderHTTPTransport
 from ouro.providers.openai_chat_completions import OpenAIChatCompletionsProvider
 from tests.application.test_resources import _services
@@ -244,10 +247,40 @@ def test_media_budget_is_checked_before_materializing_and_encoding_the_whole_res
     monkeypatch.setattr(file_inputs, "DEFAULT_REQUEST_MEDIA_CHARS", 1)
     monkeypatch.setattr(store, "read_ranges", bounded_read)
     monkeypatch.setattr(file_inputs.base64, "b64encode", fail_encode)
-    projected = resources.project_model_messages([message], input_modalities=frozenset({kind}))[0]
-    assert "too much media data" in projected.text_content
+    with pytest.raises(MediaCapacityError, match="No model request was sent"):
+        resources.project_model_messages([message], input_modalities=frozenset({kind}))
     assert max(length for _, length in reads) <= 4096
-    assert not any(isinstance(part, MediaContent) for part in projected.content)
+
+
+@pytest.mark.parametrize("source_kind", ["upload", "reference"])
+def test_oversized_attachment_batch_raises_without_silently_saving_partial_media(
+    tmp_path,
+    monkeypatch,
+    source_kind,
+):
+    _, _, resources, sessions = _services(tmp_path / "home")
+    session_id = sessions.create().session.session_id
+    path = tmp_path / "image.png"
+    raw = b"\x89PNG\r\n\x1a\n" + b"x" * 12000
+    path.write_bytes(raw)
+    item = (
+        InputFileReference(name=path.name, path=str(path))
+        if source_kind == "reference"
+        else InputAttachment(
+            resource_id=resources.import_resource(session_id, path).resource.resource_id,
+            name=path.name,
+        )
+    )
+    message = MessageRecord(session_id=session_id, role="user", input_attachments=[item, item])
+    monkeypatch.setattr(file_inputs, "DEFAULT_REQUEST_MEDIA_CHARS", 4 * ((len(raw) + 2) // 3))
+    with pytest.raises(MediaCapacityError, match="No model request was sent"):
+        resources.prepare_input(
+            message,
+            input_modalities=frozenset({"image"}),
+            workspace=str(tmp_path),
+            workspace_only=False,
+        )
+    assert message.content == []
 
 
 @pytest.mark.parametrize("name", ["fake.wav", "fake.mp3", "fake.mp4"])
@@ -357,12 +390,62 @@ def test_inline_audio_and_video_resource_share_one_request_budget(tmp_path, monk
         pytest.fail("inline audio has already consumed the media budget")
 
     monkeypatch.setattr(file_inputs.base64, "b64encode", fail_encode)
-    projected = resources.project_model_messages(
-        [earlier, latest], input_modalities=frozenset({"audio", "video"})
+    with pytest.raises(MediaCapacityError, match="request media limit"):
+        resources.project_model_messages(
+            [earlier, latest], input_modalities=frozenset({"audio", "video"})
+        )
+    assert latest.content == [audio]
+
+
+def test_mixed_media_elision_uses_one_budget_and_keeps_text_without_encoding_old_resources(
+    tmp_path,
+    monkeypatch,
+):
+    store, _, resources, sessions = _services(tmp_path / "home")
+    session = sessions.create().session
+    path = tmp_path / MEDIA[-1][1]
+    path.write_bytes(MEDIA[-1][2])
+    resource = resources.import_resource(session.session_id, path).resource
+    history = []
+    for index, content in enumerate(
+        [
+            [AudioContent(uri="data:audio/wav;base64,YXVkaW8=", media_type="audio/wav")],
+            [],
+        ]
+    ):
+        message = MessageRecord(session_id=session.session_id, role="user", content=content)
+        if index == 1:
+            message.resource_refs = [resource.resource_id]
+        now = utc_now()
+        reply = MessageRecord.text(
+            session_id=session.session_id,
+            role="assistant",
+            text=f"Observation {index}",
+            run_id="run_test",
+            turn_id=f"turn-{index}",
+        )
+        reply.model_response = ModelResponseRecord(
+            provider_id="p", model_id="m", started_at=now, ended_at=now
+        )
+        history.extend([message, reply])
+    image = ImageContent(uri="data:image/png;base64,YQ==", media_type="image/png")
+    history.append(MessageRecord(session_id=session.session_id, role="user", content=[image]))
+    monkeypatch.setattr(
+        file_inputs, "DEFAULT_REQUEST_MEDIA_CHARS", 4 * ((path.stat().st_size + 2) // 3) + 4
     )
-    assert projected[1].content == [audio]
-    assert "too much media data" in projected[0].text_content
-    assert (
-        str(resources.resource_path(session_id, resource.resource_id).as_posix())
-        in projected[0].text_content
+
+    def fail_encode(*args, **kwargs):
+        pytest.fail("elided resource media must not be encoded")
+
+    monkeypatch.setattr(file_inputs.base64, "b64encode", fail_encode)
+    projected, _ = MediaContextPreparation(store, resources.prepare_model_messages).project(
+        history,
+        session=session,
+        history=history,
+        input_modalities=frozenset({"image", "audio", "video"}),
+        input_budget_tokens=100000,
     )
+    assert "[Historical audio]" in projected[0].text_content
+    assert "[Historical video]" in projected[2].text_content
+    assert projected[1] == history[1] and projected[3] == history[3]
+    assert projected[-1].content == [image]

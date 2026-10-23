@@ -18,6 +18,8 @@ from ouro.core.context import (
 from ouro.core.errors import CompactionError, CompactionStateError
 from ouro.core.events import EventRecord
 from ouro.core.harness_calls import HarnessCallSnapshot
+from ouro.core.message_frames import context_frames as compaction_frames
+from ouro.core.message_frames import conversation_turns as conversation_turns
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ProviderFinishReason
 from ouro.core.state import RunRecord, SessionRecord
@@ -291,74 +293,6 @@ def plan_compaction(
     )
 
 
-def conversation_turns(messages: Sequence[MessageRecord]) -> list[list[MessageRecord]]:
-    """Group messages by user requests when no model-turn identity is available."""
-
-    turns: list[list[MessageRecord]] = []
-    current: list[MessageRecord] = []
-    for message in messages:
-        same_input = bool(
-            current
-            and message.metadata.get("session_input_batch_id")
-            and message.metadata.get("session_input_batch_id")
-            == current[-1].metadata.get("session_input_batch_id")
-        )
-        if message.role == "user" and current and not same_input:
-            turns.append(current)
-            current = []
-        current.append(message)
-    if current:
-        turns.append(current)
-    return turns
-
-
-def compaction_frames(messages: Sequence[MessageRecord]) -> list[list[MessageRecord]]:
-    """Group messages at durable model-turn boundaries.
-
-    Messages in a model/tool exchange share a ``turn_id``. A preceding user message has no
-    ``turn_id`` and joins the following identified frame. Messages outside a model/tool exchange
-    are grouped by user request. If an incomplete tool exchange is encountered, the remaining
-    suffix becomes one protected frame so compaction cannot separate it from recovery context.
-    """
-
-    frames: list[list[MessageRecord]] = []
-    current: list[MessageRecord] = []
-    current_turn_id: str | None = None
-    pending_messages: list[MessageRecord] = []
-
-    def flush_current() -> None:
-        nonlocal current, current_turn_id
-        if current:
-            frames.append(current)
-        current = []
-        current_turn_id = None
-
-    for message in messages:
-        if message.turn_id is not None:
-            if current and current_turn_id != message.turn_id:
-                flush_current()
-            if not current:
-                pending_frames = conversation_turns(pending_messages)
-                frames.extend(pending_frames[:-1])
-                current = list(pending_frames[-1]) if pending_frames else []
-                pending_messages = []
-                current_turn_id = message.turn_id
-            current.append(message)
-            continue
-
-        if current_turn_id is not None:
-            flush_current()
-        pending_messages.append(message)
-
-    flush_current()
-    frames.extend(conversation_turns(pending_messages))
-    for index, frame in enumerate(frames):
-        if _is_complete_frame(frame):
-            continue
-        return [*frames[:index], [message for tail in frames[index:] for message in tail]]
-    return frames
-
-
 def project_compacted_messages(
     messages: Sequence[MessageRecord],
     active: CompactionRecord | None,
@@ -419,23 +353,19 @@ def _messages_tokens(messages: Sequence[MessageRecord], estimator: TokenEstimato
     return sum(estimate_message_tokens(message, estimator) for message in messages)
 
 
-def _tool_call_ids(message: MessageRecord) -> set[str]:
-    if message.role != "assistant":
-        return set()
-    return {call.id for call in message.tool_calls if call.id}
-
-
-def _tool_result_id(message: MessageRecord) -> str | None:
-    return (
-        message.tool_result.tool_call_id
-        if message.tool_result is not None and message.tool_result.producer.kind == "model"
-        else None
-    )
-
-
-def _is_complete_frame(frame: Sequence[MessageRecord]) -> bool:
-    expected = {call_id for message in frame for call_id in _tool_call_ids(message)}
-    if not expected:
-        return True
-    seen = {result_id for message in frame if (result_id := _tool_result_id(message)) is not None}
-    return expected.issubset(seen)
+def retain_compactions(
+    compactions: Sequence[CompactionRecord], removed_message_ids: set[str]
+) -> list[CompactionRecord]:
+    """Remove summaries whose coverage, placement or previous summary was withdrawn."""
+    retained: list[CompactionRecord] = []
+    removed: set[str] = set()
+    for compaction in compactions:
+        if (
+            compaction.history_boundary_message_id in removed_message_ids
+            or removed_message_ids.intersection(compaction.covered_message_ids)
+            or compaction.previous_compaction_id in removed
+        ):
+            removed.add(compaction.compaction_id)
+        else:
+            retained.append(compaction)
+    return retained

@@ -346,8 +346,8 @@ class RuntimeService:
             prompt_context_resolver=prompt_context_resolver,
             append_context_message=self.run_lifecycle.append_input_message,
             usage_service=usage_service,
-            project_model_messages=(
-                resources.project_model_messages if resources is not None else None
+            prepare_model_messages=(
+                resources.prepare_model_messages if resources is not None else None
             ),
         )
         self.run_ownership = RunExecutionOwnership(store)
