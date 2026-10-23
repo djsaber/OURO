@@ -409,7 +409,13 @@ class AgentTreeSubscription(AsyncIterator[AgentTreeNotification]):
         expected = set(await run_blocking(self._projector.live_session_ids, self.root_session_id))
         current_children = set(self._subscriptions).difference({self.root_session_id})
         for session_id in sorted(expected.difference(current_children)):
-            await self._open_runtime_subscription(session_id)
+            try:
+                await self._open_runtime_subscription(session_id)
+            except SessionNotFoundError:
+                # Spawn reserves child IDs before publishing their Sessions.
+                # Keep observing the root; agent_spawned will retry attachment
+                # after materialization, without polling or restarting the tree.
+                continue
         if self._closed:
             return
         for session_id in sorted(current_children.difference(expected)):

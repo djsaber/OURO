@@ -43,12 +43,13 @@ def _runtime(tmp_path, provider) -> RuntimeService:
 class ConcurrencyProvider:
     provider_id = "concurrency"
 
-    def __init__(self) -> None:
+    def __init__(self, *, release_by_prompt: dict[str, asyncio.Event] | None = None) -> None:
         self.active = 0
         self.maximum = 0
         self.started: list[str] = []
         self.starts: asyncio.Queue[str] = asyncio.Queue()
         self.release = asyncio.Event()
+        self.release_by_prompt = release_by_prompt or {}
 
     async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, tools
@@ -58,7 +59,7 @@ class ConcurrencyProvider:
         self.active += 1
         self.maximum = max(self.maximum, self.active)
         try:
-            await self.release.wait()
+            await self.release_by_prompt.get(prompt, self.release).wait()
             yield ProviderStreamEvent(type="text_delta", text=prompt)
             yield ProviderStreamEvent(type="done")
         finally:
@@ -307,37 +308,51 @@ async def test_fifo_scheduler_respects_global_concurrency_limit(tmp_path) -> Non
 
 @pytest.mark.asyncio
 async def test_activity_subscription_exposes_initial_and_live_fine_grained_state(tmp_path) -> None:
-    provider = ConcurrencyProvider()
+    release_blocker = asyncio.Event()
+    provider = ConcurrencyProvider(release_by_prompt={"blocker": release_blocker})
     supervisor = RuntimeSupervisor(_runtime(tmp_path, provider), max_concurrency=1)
-    handle = await supervisor.submit("hello")
-    subscription = await supervisor.subscribe(handle.session_id, include_activity=True)
+    subscription = None
+    try:
+        async with asyncio.timeout(60):
+            blocker = await supervisor.submit("blocker")
+            assert await provider.starts.get() == "blocker"
+            handle = await supervisor.submit("hello")
+            subscription = await supervisor.subscribe(handle.session_id, include_activity=True)
 
-    assert subscription.initial_activity is not None
-    assert subscription.initial_activity.activity == "queued"
+            assert subscription.initial_activity is not None
+            assert subscription.initial_activity.activity == "queued"
 
-    observed: list[str] = []
-    while "waiting_model" not in observed:
-        notification = await asyncio.wait_for(subscription.get(), timeout=2)
-        if notification.kind == "activity" and notification.activity is not None:
-            observed.append(notification.activity.activity)
+            # Finish replay while the worker is occupied. Earlier live snapshots
+            # may otherwise be superseded by replay's durable event cursor.
+            release_blocker.set()
+            assert (await supervisor.wait(blocker)).status == "completed"
+            observed: list[str] = []
+            while "waiting_model" not in observed:
+                notification = await subscription.get()
+                if notification.kind == "activity" and notification.activity is not None:
+                    observed.append(notification.activity.activity)
 
-    assert "preparing_model" in observed
-    assert supervisor.activity(handle).activity == "waiting_model"
-    assert supervisor.activity(handle).context_status is not None
-    assert supervisor.activity(handle).context_status.metrics.estimated_input_tokens > 0
+            assert "preparing_model" in observed
+            assert supervisor.activity(handle).activity == "waiting_model"
+            assert supervisor.activity(handle).context_status is not None
+            assert supervisor.activity(handle).context_status.metrics.estimated_input_tokens > 0
 
-    provider.release.set()
-    terminal = await asyncio.wait_for(supervisor.wait(handle), timeout=2)
-    while "completed" not in observed:
-        notification = await asyncio.wait_for(subscription.get(), timeout=2)
-        if notification.kind == "activity" and notification.activity is not None:
-            observed.append(notification.activity.activity)
+            provider.release.set()
+            terminal = await supervisor.wait(handle)
+            while "completed" not in observed:
+                notification = await subscription.get()
+                if notification.kind == "activity" and notification.activity is not None:
+                    observed.append(notification.activity.activity)
 
-    assert terminal.status == "completed"
-    assert "streaming_text" in observed
-    assert supervisor.activity(handle).activity == "completed"
-    subscription.close()
-    await supervisor.shutdown()
+            assert terminal.status == "completed"
+            assert "streaming_text" in observed
+            assert supervisor.activity(handle).activity == "completed"
+    finally:
+        release_blocker.set()
+        provider.release.set()
+        if subscription is not None:
+            subscription.close()
+        await supervisor.shutdown()
 
 
 @pytest.mark.asyncio

@@ -6,11 +6,150 @@ import threading
 import pytest
 
 from ouro.application.agents.tree import AgentTreeProjector
+from ouro.application.contracts.agents import SpawnAgentRequest
+from ouro.core.errors import PersistenceError, SessionNotFoundError
 from ouro.core.events import EventRecord
 from ouro.core.state import SessionRecord
 from ouro.sessions import SQLiteSessionStore
 from tests.application.test_agents import _services
 from tests.application.test_session_event_following import supervisor_for
+
+
+@pytest.mark.parametrize("already_observing", [False, True])
+async def test_tree_observes_child_materialized_after_delegation_reservation(
+    tmp_path, monkeypatch, already_observing
+):
+    service, supervisor, store, provider = await _services(tmp_path)
+    creating = asyncio.Event()
+    release_creation = threading.Event()
+    release_stream = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    create = store.create_session
+    stream = provider.stream
+
+    def held_create(session):
+        if session.session_kind == "subagent":
+            loop.call_soon_threadsafe(creating.set)
+            release_creation.wait()
+        return create(session)
+
+    async def held_stream(**kwargs):
+        async for event in stream(**kwargs):
+            yield event
+            if event.type == "text_delta":
+                await release_stream.wait()
+
+    monkeypatch.setattr(store, "create_session", held_create)
+    monkeypatch.setattr(provider, "stream", held_stream)
+    subscription = None
+    spawning = None
+    try:
+        async with asyncio.timeout(60):
+            if already_observing:
+                subscription = await service.subscribe_agent_tree("ses_root")
+            spawning = asyncio.create_task(
+                service.spawn_agent(
+                    SpawnAgentRequest(
+                        request_id="observe-reserved-child",
+                        parent_session_id="ses_root",
+                        parent_run_id="run_parent",
+                        parent_tool_call_id="spawn_call",
+                        agent_id="reader",
+                        task="Read bounded evidence.",
+                        description="Observe reserved child",
+                        execution_mode="async",
+                    )
+                )
+            )
+            await creating.wait()
+            if subscription is None:
+                subscription = await service.subscribe_agent_tree("ses_root")
+                snapshot = subscription.initial_snapshot
+            else:
+                # An unrelated parent activity refresh may see the reserved ID
+                # before the Spawn protocol has published the child Session.
+                await supervisor.runtime.event_recorder.publish(
+                    session_id="ses_root",
+                    run_id="run_parent",
+                    event_type="model_text_delta",
+                    payload={"text": "parent remains active"},
+                )
+                notification = await subscription.get()
+                assert notification.kind == "snapshot", notification
+                snapshot = notification.snapshot
+            assert snapshot is not None
+            assert len(snapshot.nodes) == 1
+            assert snapshot.nodes[0].activity is None
+
+            release_creation.set()
+            child = await spawning
+            while True:
+                notification = await subscription.get()
+                assert notification.kind == "snapshot", notification
+                node = notification.snapshot.nodes[0]
+                if node.activity is not None and node.activity.activity == "streaming_text":
+                    break
+            assert node.delegation_id == child.delegation_id
+            assert node.session_id == child.child_session_id
+            release_stream.set()
+            while (
+                node.status != "completed"
+                or node.activity is None
+                or node.activity.activity != "completed"
+            ):
+                notification = await subscription.get()
+                assert notification.kind == "snapshot", notification
+                node = notification.snapshot.nodes[0]
+            assert node.activity is not None
+            assert node.activity.activity == "completed"
+    finally:
+        release_creation.set()
+        release_stream.set()
+        if spawning is not None:
+            await asyncio.gather(spawning, return_exceptions=True)
+        if subscription is not None:
+            subscription.close()
+        await service.close()
+        await supervisor.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("scope", "error_type"),
+    [("root", SessionNotFoundError), ("child", PersistenceError)],
+)
+async def test_tree_opening_preserves_required_session_errors(
+    tmp_path, monkeypatch, scope, error_type
+):
+    service, supervisor, _, _ = await _services(tmp_path)
+    try:
+        child = await service.spawn_agent(
+            SpawnAgentRequest(
+                request_id="observe-session-errors",
+                parent_session_id="ses_root",
+                parent_run_id="run_parent",
+                agent_id="reader",
+                task="Read bounded evidence.",
+                description="Observe session errors",
+            )
+        )
+        await service.wait_agents((child.delegation_id,))
+        target = "ses_root" if scope == "root" else child.child_session_id
+        failure = error_type("synthetic session observation failure")
+        subscribe = supervisor.subscribe_state
+
+        async def fail_target(session_id, **kwargs):
+            if session_id == target:
+                raise failure
+            return await subscribe(session_id, **kwargs)
+
+        monkeypatch.setattr(supervisor, "subscribe_state", fail_target)
+        with pytest.raises(error_type) as captured:
+            await service.subscribe_agent_tree("ses_root")
+        assert captured.value is failure
+        assert not service._tree_subscriptions
+    finally:
+        await service.close()
+        await supervisor.shutdown()
 
 
 def test_root_tree_facts_share_one_sqlite_read_connection(tmp_path, monkeypatch):

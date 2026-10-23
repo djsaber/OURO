@@ -335,19 +335,75 @@ async def test_replay_does_not_publish_older_live_activity_after_newer_events(
         await supervisor.shutdown()
 
 
-async def test_concurrent_submissions_do_not_replace_session_job(supervisor):
+@pytest.mark.parametrize("finish_before_second_admission", [False, True])
+async def test_concurrent_submissions_respect_session_job_lifetime(
+    store, monkeypatch, finish_before_second_admission
+):
+    provider = GateProvider()
+    supervisor = RuntimeSupervisor(
+        RuntimeService(
+            store=store,
+            adapter=RuntimeAdapter(
+                provider, ModelMetadata(model_id="gate", provider_id=provider.provider_id)
+            ),
+            tools=ToolRegistry(),
+        )
+    )
     session = SessionRecord(title="Concurrent submit")
     supervisor.store.create_session(session)
+    enqueue = supervisor._enqueue_job
+    arrivals = asyncio.Queue()
+    releases = []
+
+    async def held_enqueue(job, **kwargs):
+        release = asyncio.Event()
+        releases.append(release)
+        arrivals.put_nowait((job.handle, release))
+        await release.wait()
+        await enqueue(job, **kwargs)
+
+    monkeypatch.setattr(supervisor, "_enqueue_job", held_enqueue)
+    submissions = []
     try:
-        results = await asyncio.gather(
-            *(supervisor.submit("work", session_id=session.session_id) for _ in range(2)),
-            return_exceptions=True,
-        )
-        handles = [result for result in results if not isinstance(result, BaseException)]
-        assert len(handles) == 1
-        assert sum(isinstance(result, SessionBusyError) for result in results) == 1
-        assert (await supervisor.wait(handles[0])).status == "completed"
+        async with asyncio.timeout(60):
+            submissions = [
+                asyncio.create_task(supervisor.submit("work", session_id=session.session_id))
+                for _ in range(2)
+            ]
+            first, release_first = await arrivals.get()
+            second, release_second = await arrivals.get()
+            # Both submissions passed preflight before either registered a job.
+            # Admission must recheck ownership after its asynchronous reads.
+            release_first.set()
+            await provider.first_started.wait()
+            assert supervisor.status(first).status == "running"
+            if finish_before_second_admission:
+                provider.release_first.set()
+                assert (await supervisor.wait(first)).status == "completed"
+            release_second.set()
+
+            results = await asyncio.gather(*submissions, return_exceptions=True)
+            handles = [result for result in results if not isinstance(result, BaseException)]
+            if finish_before_second_admission:
+                assert len(handles) == 2
+                assert first in handles and second in handles
+                completed = [await supervisor.wait(handle) for handle in handles]
+                assert all(snapshot.status == "completed" for snapshot in completed)
+                assert len({snapshot.run_id for snapshot in completed}) == 2
+            else:
+                assert handles == [first]
+                assert sum(isinstance(result, SessionBusyError) for result in results) == 1
+                assert supervisor.status(first).status == "running"
+                provider.release_first.set()
+                assert (await supervisor.wait(first)).status == "completed"
     finally:
+        for release in releases:
+            release.set()
+        provider.release_first.set()
+        for submission in submissions:
+            if not submission.done():
+                submission.cancel()
+        await asyncio.gather(*submissions, return_exceptions=True)
         await supervisor.shutdown()
 
 
