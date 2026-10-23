@@ -423,6 +423,9 @@ class NextBoundaryRaceProvider:
         del model, system_prompt
         names = [item["name"] for item in (tools or [])]
         if "SpawnAgent" not in names:
+            # Keep completion after the parent has entered its model round.
+            # Otherwise the preceding boundary may already consume the result.
+            await self.root_blocked.wait()
             yield ProviderStreamEvent(type="text_delta", text="boundary child result")
             yield ProviderStreamEvent(type="done")
             return

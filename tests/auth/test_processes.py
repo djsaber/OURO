@@ -4,20 +4,31 @@ import asyncio
 import multiprocessing
 from pathlib import Path
 
+import ouro.auth.store as credential_store
 from ouro.auth.contracts import AuthError, CredentialGrant, CredentialRecord
 from ouro.auth.credentials import CredentialService
 from ouro.auth.store import FileCredentialStore
 from ouro.core.base import new_id
 
 
-def _refresh_worker(home, credential_id, start, results, counter) -> None:
+def _refresh_worker(home, credential_id, start, results, counter, contended) -> None:
+    try_lock = credential_store.try_lock_descriptor
+
+    def observe_contention(descriptor):
+        acquired = try_lock(descriptor)
+        if not acquired:
+            contended.set()
+        return acquired
+
+    credential_store.try_lock_descriptor = observe_contention
+
     async def run() -> None:
-        service = CredentialService(FileCredentialStore(Path(home)))
+        service = CredentialService(FileCredentialStore(Path(home)), lock_timeout=30)
 
         async def rotate(record: CredentialRecord) -> CredentialGrant:
             with counter.get_lock():
                 counter.value += 1
-            await asyncio.sleep(0.05)
+            assert await asyncio.to_thread(contended.wait, 30)
             return CredentialGrant(secret_payload={"token": "fixture-rotated"})
 
         results.put(("ready", 0))
@@ -83,6 +94,7 @@ def _cleanup(processes, queue=None) -> None:
 def test_two_processes_exchange_refresh_token_only_once(tmp_path: Path) -> None:
     context = multiprocessing.get_context("spawn")
     start, results, counter = context.Event(), context.Queue(), context.Value("i", 0)
+    contended = context.Event()
     credential_id = new_id("cred")
     store = FileCredentialStore(tmp_path)
     store.write(
@@ -96,7 +108,8 @@ def test_two_processes_exchange_refresh_token_only_once(tmp_path: Path) -> None:
     )
     processes = [
         context.Process(
-            target=_refresh_worker, args=(str(tmp_path), credential_id, start, results, counter)
+            target=_refresh_worker,
+            args=(str(tmp_path), credential_id, start, results, counter, contended),
         )
         for _ in range(2)
     ]

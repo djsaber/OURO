@@ -1,7 +1,6 @@
 import asyncio
 import sys
-import time
-from threading import Event, Timer, get_ident
+from threading import Event, get_ident
 
 import pytest
 
@@ -102,6 +101,7 @@ async def test_shared_agent_budget_query_runs_outside_the_event_loop(
 
     class AgentControls:
         def budget_reason(self, candidate: RunRecord, next_model_round: int):
+            assert get_ident() != caller_thread
             assert candidate == run
             assert next_model_round == 2
             worker_threads.append(get_ident())
@@ -110,15 +110,13 @@ async def test_shared_agent_budget_query_runs_outside_the_event_loop(
             return None
 
     monkeypatch.setattr(runtime, "_agent_controls", AgentControls())
-    watchdog = Timer(1, release.set)
-    watchdog.start()
     checking = asyncio.create_task(runtime._shared_budget_reason(run, 2))
     try:
-        assert await asyncio.to_thread(entered.wait, 2) is True
+        assert await asyncio.to_thread(entered.wait, 30) is True
         assert checking.done() is False
     finally:
         release.set()
-        watchdog.cancel()
+        await asyncio.gather(checking, return_exceptions=True)
     assert await checking is None
     assert worker_threads != [caller_thread]
 
@@ -158,23 +156,22 @@ async def test_requested_abort_finalization_reads_store_outside_the_event_loop(
     load_run = store.load_run
 
     def blocking_load_run(session_id: str, run_id: str) -> RunRecord:
+        assert get_ident() != caller_thread
         reader_threads.append(get_ident())
         entered.set()
         release.wait()
         return load_run(session_id, run_id)
 
     monkeypatch.setattr(store, "load_run", blocking_load_run)
-    watchdog = Timer(1, release.set)
-    watchdog.start()
     finalizing = asyncio.create_task(
         runtime._finalize_requested_abort(RunResult(session=session, run=run))
     )
     try:
-        assert await asyncio.to_thread(entered.wait, 2) is True
+        assert await asyncio.to_thread(entered.wait, 30) is True
         assert finalizing.done() is False
     finally:
         release.set()
-        watchdog.cancel()
+        await asyncio.gather(finalizing, return_exceptions=True)
     result = await finalizing
     assert result.run.status == "aborted"
     assert reader_threads
@@ -235,15 +232,9 @@ async def test_runtime_durable_boundaries_do_not_block_the_event_loop(
         tools=tools,
     )
 
-    ticks = [0]
-    finished = asyncio.Event()
+    loop = asyncio.get_running_loop()
     main_thread_id = get_ident()
-    observations: dict[str, tuple[int, int, int]] = {}
-
-    async def ticker() -> None:
-        while not finished.is_set():
-            ticks[0] += 1
-            await asyncio.sleep(0.001)
+    observations: dict[str, int] = {}
 
     original_save_run = store.save_run
     original_save_context = store.save_latest_context
@@ -252,9 +243,11 @@ async def test_runtime_durable_boundaries_do_not_block_the_event_loop(
     def delay(label: str) -> None:
         if label in observations:
             return
-        started = ticks[0]
-        time.sleep(0.06)
-        observations[label] = (get_ident(), started, ticks[0])
+        assert get_ident() != main_thread_id
+        responded = Event()
+        loop.call_soon_threadsafe(responded.set)
+        assert responded.wait(30), "event loop stalled while a persistence boundary was held"
+        observations[label] = get_ident()
 
     def save_run(record):
         if record.active_tool_batch is not None:
@@ -275,18 +268,15 @@ async def test_runtime_durable_boundaries_do_not_block_the_event_loop(
     monkeypatch.setattr(store, "save_run", save_run)
     monkeypatch.setattr(store, "save_latest_context", save_context)
     monkeypatch.setattr(store, "commit_session", commit)
-    ticker_task = asyncio.create_task(ticker())
     try:
         result = await runtime.run("Use the probe")
     finally:
-        finished.set()
-        await ticker_task
+        await runtime.close()
 
     assert result.final_text == "finished"
     assert observations.keys() == {"context_snapshot", "tool_checkpoint", "run_terminal"}
-    for thread_id, started, ended in observations.values():
+    for thread_id in observations.values():
         assert thread_id != main_thread_id
-        assert ended - started >= 2
 
 
 def test_abort_state_does_not_load_message_history(tmp_path, monkeypatch) -> None:

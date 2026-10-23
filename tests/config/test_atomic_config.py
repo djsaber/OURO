@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+import ouro.local_locks as local_locks
 from ouro.config.file import DOMAIN_CONFIG_FILES, JsonConfigFile
 from ouro.config.permissions import PermissionConfigManager
 from ouro.config.queued_inputs import QueuedInputConfigManager
@@ -77,12 +78,20 @@ def test_config_serialization_failure_preserves_existing_file(tmp_path):
     assert list(config.path.parent.iterdir()) == [config.path]
 
 
-def test_config_commands_preserve_concurrent_section_updates(tmp_path) -> None:
+def test_config_commands_preserve_concurrent_section_updates(tmp_path, monkeypatch) -> None:
     queued_inputs = QueuedInputConfigManager(tmp_path)
     permissions = PermissionConfigManager(tmp_path)
     first_read_entered = threading.Event()
     release_first_update = threading.Event()
     second_update_finished = threading.Event()
+    contended = threading.Event()
+    wait_for_lock = local_locks._wait_for_mutation_lock
+
+    def observed_wait(*args):
+        contended.set()
+        return wait_for_lock(*args)
+
+    monkeypatch.setattr(local_locks, "_wait_for_mutation_lock", observed_wait)
     original_read = queued_inputs.file.read
     read_count = 0
 
@@ -92,7 +101,7 @@ def test_config_commands_preserve_concurrent_section_updates(tmp_path) -> None:
         read_count += 1
         if read_count == 1:
             first_read_entered.set()
-            assert release_first_update.wait(timeout=2)
+            release_first_update.wait()
         return raw
 
     queued_inputs.file.read = blocking_read  # type: ignore[method-assign]
@@ -106,12 +115,15 @@ def test_config_commands_preserve_concurrent_section_updates(tmp_path) -> None:
             queued_inputs.update,
             consumption_mode="all_at_once",
         )
-        assert first_read_entered.wait(timeout=1)
-        second = executor.submit(update_permission)
-        assert not second_update_finished.wait(timeout=0.05)
-        release_first_update.set()
-        first.result(timeout=2)
-        second.result(timeout=2)
+        try:
+            assert first_read_entered.wait(timeout=30)
+            second = executor.submit(update_permission)
+            assert contended.wait(timeout=30)
+            assert not second_update_finished.is_set()
+        finally:
+            release_first_update.set()
+        first.result(timeout=30)
+        second.result(timeout=30)
 
     raw = JsonConfigFile(tmp_path).read()
     assert raw["queued_inputs"] == {"consumption_mode": "all_at_once"}

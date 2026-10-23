@@ -332,7 +332,7 @@ async def test_pause_stops_stream_and_resume_keeps_existing_input(goal_app, monk
             results = [await g.say("Discuss the current information.")]
         if resume != "message":
             assert results[-1].run.run_id == result.run.run_id
-        assert results[-1].run.status == "completed"
+        assert results[-1].run.status == "completed", results[-1].run.error
         assert (await g.goal())["status"] == ("complete" if resume == "command" else "paused")
         messages = g.runtime.store.load_session(g.session.session_id).messages
         inputs = [m for m in messages if m.role == "user" and m.semantic_tag != "goal-context"]

@@ -288,7 +288,15 @@ async def test_sync_parent_wakes_when_child_finishes_on_another_host(tmp_path, b
                 approval_id=pending.request_id,
                 approved=scenario == "changed" and index == 0,
             )
-            await second.supervisor.wait(handle)
+            terminal = await second.supervisor.wait(handle)
+            expected_status = (
+                "failed"
+                if scenario == "provider_failure"
+                else ("waiting_approval", "completed")[index]
+            )
+            assert terminal.status == expected_status, second.runtime.store.load_run(
+                pending.child_session_id, pending.child_run_id
+            ).error
         # A receipt ends at parking; durable Run observation spans continuation
         # on either Host without synchronous polling that competes with writes.
         await wait_for_parent_delivery(first.supervisor, root.session_id, run.run_id)
@@ -361,10 +369,33 @@ async def test_competing_hosts_resolve_one_approval_once_and_converge(
             )
             return await app.supervisor.wait(handle)
 
+        contended = asyncio.Event()
+        admitted = asyncio.Barrier(2)
+        for app in (first, second):
+            ownership = app.runtime.run_ownership
+            acquire = ownership.acquire
+            acquire_parked = ownership.acquire_parked
+
+            async def admit_together(
+                session_id, run_id, *, acquire_parked=acquire_parked, **kwargs
+            ):
+                if session_id == child.child_session_id and not contended.is_set():
+                    # Both callers must validate the parked approval before either
+                    # changes it; otherwise rejection can precede lock contention.
+                    await admitted.wait()
+                return await acquire_parked(session_id, run_id, **kwargs)
+
+            async def observe_contention(session_id, run_id, *, acquire=acquire, **kwargs):
+                result = await acquire(session_id, run_id, **kwargs)
+                if session_id == child.child_session_id and result is None:
+                    contended.set()
+                return result
+
+            monkeypatch.setattr(ownership, "acquire", observe_contention)
+            monkeypatch.setattr(ownership, "acquire_parked", admit_together)
         attempts = asyncio.gather(resolve(first), resolve(second), return_exceptions=True)
         try:
-            await asyncio.wait_for(entered.wait(), 5)
-            await asyncio.sleep(0.1)
+            await asyncio.wait_for(asyncio.gather(entered.wait(), contended.wait()), 30)
             release.set()
             results = await asyncio.wait_for(attempts, 5)
             assert len(executed) == 1
@@ -391,7 +422,9 @@ async def test_competing_hosts_resolve_one_approval_once_and_converge(
             assert len(executed) == 1
         finally:
             release.set()
-            await attempts
+            await admitted.abort()
+            attempts.cancel()
+            await asyncio.gather(attempts, return_exceptions=True)
             for subscription in subscriptions:
                 subscription.close()
 

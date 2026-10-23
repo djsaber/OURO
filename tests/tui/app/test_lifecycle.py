@@ -49,6 +49,7 @@ async def test_long_live_markdown_closes_without_blocking_the_ui_event_loop(
         block_starts = conversation_history_markdown_stream._block_starts
 
         def blocking_block_starts(source: str) -> list[int]:
+            assert threading.get_ident() != event_loop_thread
             parser_threads.append(threading.get_ident())
             entered.set()
             release.wait()
@@ -57,17 +58,15 @@ async def test_long_live_markdown_closes_without_blocking_the_ui_event_loop(
         monkeypatch.setattr(
             conversation_history_markdown_stream, "_block_starts", blocking_block_starts
         )
-        watchdog = threading.Timer(1, release.set)
-        watchdog.start()
         event_loop_thread = threading.get_ident()
         finishing = asyncio.create_task(conversation.finish_assistant())
 
         try:
-            parser_entered = await asyncio.to_thread(entered.wait, 2)
+            parser_entered = await asyncio.to_thread(entered.wait, 30)
             event_loop_remained_responsive = not finishing.done()
         finally:
             release.set()
-            watchdog.cancel()
+            await asyncio.gather(finishing, return_exceptions=True)
         await finishing
 
         assert parser_entered is True

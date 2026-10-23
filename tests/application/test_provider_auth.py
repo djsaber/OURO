@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import timedelta
 
 import pytest
 
+import ouro.local_locks as local_locks
 from ouro.application.provider_auth.service import ProviderAuthService
 from ouro.auth.authorization import TaskAuthorizationAttempt
 from ouro.auth.contracts import AuthError, CredentialGrant
@@ -18,6 +19,7 @@ from ouro.config.file import JsonConfigFile
 from ouro.config.provider_models import ProviderConnectionSpec, ProviderTypeSpec
 from ouro.config.providers.manager import ProviderConfigManager
 from tests.auth.test_driver_contracts import NOW, BrowserFixtureDriver, drivers
+from tests.concurrency import wait_until
 
 
 class ControlledDriver(BrowserFixtureDriver):
@@ -343,10 +345,18 @@ async def test_save_wins_cancellation_and_config_changes_wait_for_result(
     config, store, _, service, driver = auth_home()
     entered, release, config_changed = threading.Event(), threading.Event(), threading.Event()
     original_write = store.write
+    contended = threading.Event()
+    wait_for_lock = local_locks._wait_for_mutation_lock
+
+    def observed_wait(*args):
+        contended.set()
+        return wait_for_lock(*args)
+
+    monkeypatch.setattr(local_locks, "_wait_for_mutation_lock", observed_wait)
 
     def write(record):
         entered.set()
-        assert release.wait(5)
+        release.wait()
         if fail_save:
             raise AuthError("credential_store_error")
         original_write(record)
@@ -354,23 +364,33 @@ async def test_save_wins_cancellation_and_config_changes_wait_for_result(
     monkeypatch.setattr(store, "write", write)
     started = await begin(service, driver)
     driver.release.set()
-    assert await asyncio.to_thread(entered.wait, 5)
-    assert service.operation(started.operation_id).state == "pending"
-    cancelled = asyncio.create_task(service.cancel(started.operation_id))
 
     def change_config():
         config.update_provider(_provider_id(config), base_url="https://changed.invalid/v1")
         config_changed.set()
 
-    mutation = asyncio.create_task(asyncio.to_thread(change_config))
-    await asyncio.sleep(0.02)
-    assert not cancelled.done() and not config_changed.is_set()
-    cancelled.cancel()
-    release.set()
-    result = await cancelled
-    await mutation
-    assert result.state == ("failed" if fail_save else "succeeded")
-    assert result.error_code == ("credential_store_error" if fail_save else None)
+    tasks = []
+    try:
+        assert await asyncio.to_thread(entered.wait, 30)
+        assert service.operation(started.operation_id).state == "pending"
+        cancelled = asyncio.create_task(service.cancel(started.operation_id))
+        mutation = asyncio.create_task(asyncio.to_thread(change_config))
+        tasks.extend((cancelled, mutation))
+        await wait_until(
+            lambda: service._operations[started.operation_id].task.cancelling(),
+            description="cancellation reaching the active login",
+        )
+        assert await asyncio.to_thread(contended.wait, 30)
+        assert not cancelled.done() and not config_changed.is_set()
+        cancelled.cancel()
+        release.set()
+        result = await cancelled
+        await mutation
+        assert result.state == ("failed" if fail_save else "succeeded")
+        assert result.error_code == ("credential_store_error" if fail_save else None)
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def test_cleanup_failure_is_not_a_successful_login(auth_home):
@@ -535,7 +555,17 @@ async def test_configuration_lock_receives_remaining_credential_wait_budget(auth
     credential_id = provider.credential_ref.name
     started = await begin(service, driver)
     mutation = config.mutation
+    credential_lock = store.lock
+    clock = [100.0]
+    monkeypatch.setattr("ouro.auth.credentials.monotonic", lambda: clock[0])
+    monkeypatch.setattr("ouro.auth.commit.monotonic", lambda: clock[0])
     timeouts = []
+
+    @asynccontextmanager
+    async def elapsed_credential_lock(credential_id, *, timeout):
+        async with credential_lock(credential_id, timeout=timeout):
+            clock[0] += 0.15
+            yield
 
     @contextmanager
     def observe_budget(**kwargs):
@@ -545,13 +575,11 @@ async def test_configuration_lock_receives_remaining_credential_wait_budget(auth
 
     with held_config(config):
         monkeypatch.setattr(config, "mutation", observe_budget)
-        async with store.lock(credential_id, timeout=1):
-            driver.release.set()
-            await driver.started.wait()
-            await asyncio.sleep(0.15)
+        monkeypatch.setattr(store, "lock", elapsed_credential_lock)
+        driver.release.set()
         result = await service.wait(started.operation_id)
     assert result.error_code == "credential_lock_timeout"
-    assert len(timeouts) == 1 and 0 < timeouts[0] < 0.18
+    assert timeouts == [pytest.approx(0.25 - 0.15)]
     assert store.read(credential_id) is None
 
 

@@ -654,15 +654,25 @@ async def test_executor_cancels_async_tool_without_handler_polling() -> None:
 
 
 @pytest.mark.asyncio
-async def test_executor_owns_sync_tool_until_cancel_outcome_is_known() -> None:
+async def test_executor_owns_sync_tool_until_cancel_outcome_is_known(monkeypatch) -> None:
+    import ouro.tools.executor as executor_module
+
     registry = ToolRegistry()
     signal = AbortSignal()
     entered = threading.Event()
     release = threading.Event()
+    settling = asyncio.Event()
+    settle = executor_module.settle_owned_tasks
+
+    async def observe_settlement(*tasks):
+        settling.set()
+        return await settle(*tasks)
+
+    monkeypatch.setattr(executor_module, "settle_owned_tasks", observe_settlement)
 
     def handler(invocation: ToolInvocation, context) -> ToolResult:
         entered.set()
-        release.wait(timeout=2)
+        release.wait()
         return ToolResult(
             tool_call_id=invocation.tool_call_id,
             tool_name=invocation.tool_name,
@@ -681,13 +691,14 @@ async def test_executor_owns_sync_tool_until_cancel_outcome_is_known() -> None:
             signal=signal,
         )
     )
-    assert await asyncio.to_thread(entered.wait, 1)
-
-    signal.abort("stop sync tool")
-    await asyncio.sleep(0.05)
-    assert execution.done() is False
-
-    release.set()
+    try:
+        assert await asyncio.to_thread(entered.wait, 30)
+        signal.abort("stop sync tool")
+        await asyncio.wait_for(settling.wait(), 30)
+        assert execution.done() is False
+    finally:
+        release.set()
+        await asyncio.gather(execution, return_exceptions=True)
     outcome = await asyncio.wait_for(execution, timeout=1)
 
     assert outcome.status == "unknown_outcome"
@@ -748,6 +759,9 @@ async def test_executor_accepts_cooperative_cancellation_from_sync_tool() -> Non
 async def test_parallel_batch_waits_for_siblings_when_checkpoint_fails() -> None:
     registry = ToolRegistry()
     slow_finished = asyncio.Event()
+    slow_started = asyncio.Event()
+    checkpoint_failed = asyncio.Event()
+    release_slow = asyncio.Event()
 
     async def fast(invocation: ToolInvocation, context) -> ToolResult:
         return ToolResult(
@@ -756,7 +770,8 @@ async def test_parallel_batch_waits_for_siblings_when_checkpoint_fails() -> None
         )
 
     async def slow(invocation: ToolInvocation, context) -> ToolResult:
-        await asyncio.sleep(0.02)
+        slow_started.set()
+        await release_slow.wait()
         slow_finished.set()
         return ToolResult(
             tool_call_id=invocation.tool_call_id,
@@ -773,10 +788,12 @@ async def test_parallel_batch_waits_for_siblings_when_checkpoint_fails() -> None
 
     async def broken_checkpoint(outcome) -> None:
         if outcome.invocation.tool_name == "Fast":
+            await slow_started.wait()
+            checkpoint_failed.set()
             raise RuntimeError("checkpoint failed")
 
-    with pytest.raises(RuntimeError, match="checkpoint failed"):
-        await batch.execute(
+    execution = asyncio.create_task(
+        batch.execute(
             [
                 ToolInvocation(session_id="ses_1", run_id="run_1", tool_name="Fast"),
                 ToolInvocation(session_id="ses_1", run_id="run_1", tool_name="Slow"),
@@ -785,8 +802,18 @@ async def test_parallel_batch_waits_for_siblings_when_checkpoint_fails() -> None
             max_concurrency=2,
             on_outcome=broken_checkpoint,
         )
-
-    assert slow_finished.is_set()
+    )
+    try:
+        await asyncio.wait_for(checkpoint_failed.wait(), 30)
+        await asyncio.sleep(0)
+        assert not execution.done()
+        release_slow.set()
+        with pytest.raises(RuntimeError, match="checkpoint failed"):
+            await execution
+        assert slow_finished.is_set()
+    finally:
+        release_slow.set()
+        await asyncio.gather(execution, return_exceptions=True)
 
 
 @pytest.mark.asyncio

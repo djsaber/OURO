@@ -239,7 +239,7 @@ async def test_cancelled_sync_service_callback_cannot_start_late_sdk_operations(
 
     def slow_handler(value):
         started.set()
-        release.wait(5)
+        release.wait()
         try:
             asyncio.run(services.call(MEMORY, "memory", "search", "late"))
         except RuntimeError as exc:
@@ -258,6 +258,7 @@ async def test_cancelled_sync_service_callback_cannot_start_late_sdk_operations(
         assert failures == ["plugin invocation has finished"]
     finally:
         release.set()
+        await asyncio.gather(pending, return_exceptions=True)
         await registration.close()
     assert not memories[-1].filters
 

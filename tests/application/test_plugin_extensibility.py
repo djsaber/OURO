@@ -36,6 +36,7 @@ from ouro.tools import (
     builtin_tools,
 )
 from ouro.tools.builtin.shell import detect_command_shell
+from tests.concurrency import wait_until
 
 
 @pytest.mark.asyncio
@@ -292,19 +293,14 @@ async def test_observer_timeout_releases_catalog_lease_after_plugin_disable(tmp_
         ),
         release=lease.close,
     )
-    for _ in range(100):
-        observed = await application.plugins.execute_command("dev.ouro.observer_retire:inspect")
-        if observed.output == "started":
-            break
-        await asyncio.sleep(0.005)
+    observer = application.plugin_runtime._active["dev.ouro.observer_retire"].instance
+    await wait_until(lambda: observer.started, description="retiring observer callback entry")
+    observed = await application.plugins.execute_command("dev.ouro.observer_retire:inspect")
     assert observed.output == "started"
 
     assert (await application.plugins.disable("dev.ouro.observer_retire")).status == "disabled"
     stopped = home / "plugins" / "data" / "dev.ouro.observer_retire" / "stopped"
-    for _ in range(100):
-        if stopped.exists():
-            break
-        await asyncio.sleep(0.005)
+    await wait_until(lambda: stopped.exists(), description="retired observer stop callback")
 
     assert stopped.exists()
     assert stopped.read_text(encoding="utf-8") == "disable"
@@ -343,23 +339,23 @@ async def test_model_decision_uses_current_catalog_after_prompt_admission(tmp_pa
         old_generation = initial.generations[0].generation_id
 
     run_task = asyncio.create_task(runtime.run("slow marker input"))
-    for _ in range(100):
+    policy = application.plugin_runtime._active["dev.ouro.prompt_guard"].instance
+    try:
+        await asyncio.wait_for(policy.admission_started.wait(), 30)
         seen = await application.plugins.execute_command("dev.ouro.prompt_guard:inspect")
-        if json.loads(seen.output) is not None:
-            break
-        await asyncio.sleep(0.005)
-    assert json.loads(seen.output) is not None
-    assert store.list_sessions() == []
-
-    assert await application.plugin_runtime.restart("dev.ouro.prompt_guard") == "active"
-    with application.plugin_runtime.snapshot() as current:
-        assert current.generations[0].generation_id != old_generation
-
-    result = await run_task
-    assert result.run.status == "completed"
-    assert result.run.metadata["extension_generations"][0]["generation_id"] != old_generation
-
-    await application.close()
+        assert json.loads(seen.output) is not None
+        assert store.list_sessions() == []
+        assert await application.plugin_runtime.restart("dev.ouro.prompt_guard") == "active"
+        with application.plugin_runtime.snapshot() as current:
+            assert current.generations[0].generation_id != old_generation
+        policy.release_admission.set()
+        result = await run_task
+        assert result.run.status == "completed"
+        assert result.run.metadata["extension_generations"][0]["generation_id"] != old_generation
+    finally:
+        policy.release_admission.set()
+        await asyncio.gather(run_task, return_exceptions=True)
+        await application.close()
 
 
 @pytest.mark.asyncio
@@ -1593,7 +1589,7 @@ def _write_prompt_policy_plugin(source) -> None:
                 "contributes": {
                     "commands": [{"id": "inspect", "description": "Read policy observation."}],
                     "prompt_policies": [
-                        {"id": "blocked_marker", "priority": 10, "timeout_seconds": 2}
+                        {"id": "blocked_marker", "priority": 10, "timeout_seconds": 30}
                     ],
                 },
                 "permissions": [
@@ -1623,6 +1619,8 @@ class Plugin:
         self.context = context
         self.plugin_id = context.identity.plugin_id
         self.seen = None
+        self.admission_started = asyncio.Event()
+        self.release_admission = asyncio.Event()
 
     async def prepare(self):
         async def inspect_prompt(call):
@@ -1631,7 +1629,8 @@ class Plugin:
                 'execution_contract': call.execution_contracts.get(self.plugin_id),
             }
             if 'slow marker' in call.prompt:
-                await asyncio.sleep(0.1)
+                self.admission_started.set()
+                await self.release_admission.wait()
             if 'blocked marker' in call.prompt:
                 return PromptPolicyDecision(
                     action='deny', reason='prompt rejected by test guard'

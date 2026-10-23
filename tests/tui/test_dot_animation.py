@@ -21,6 +21,7 @@ from textual.widgets import TextArea
 from textual.worker import WorkerFailed
 
 from ouro.tui.welcome import welcome_catalog
+from tests.tui.helpers import wait_until
 
 WELCOME_STYLES = welcome_catalog(STYLES)
 
@@ -37,11 +38,13 @@ async def test_frame_computation_does_not_block_editing_or_publish_obsolete_size
     started, release = threading.Event(), threading.Event()
     threads = []
     original = PhosphorRaster.frame
+    event_loop_thread = threading.get_ident()
 
     def slow_frame(raster, *args, **kwargs):
+        assert threading.get_ident() != event_loop_thread
         threads.append(threading.get_ident())
         started.set()
-        assert release.wait(3), "frame computation blocked the input event loop"
+        release.wait()
         return original(raster, *args, **kwargs)
 
     app = ArtworkApp()
@@ -52,11 +55,7 @@ async def test_frame_computation_does_not_block_editing_or_publish_obsolete_size
         monkeypatch.setattr(PhosphorRaster, "frame", slow_frame)
         try:
             matrix.set_active(True)
-            for _ in range(100):
-                if started.is_set():
-                    break
-                await asyncio.sleep(0.01)
-            assert started.is_set()
+            await wait_until(started.is_set, pilot, description="off-loop frame computation")
             assert all(thread != threading.get_ident() for thread in threads)
             await pilot.press("a", "b", "backspace", "c")
             assert editor.text == "ac"
@@ -71,10 +70,11 @@ async def test_frame_computation_does_not_block_editing_or_publish_obsolete_size
         finally:
             release.set()
         matrix.set_active(False)
-        for _ in range(100):
-            if matrix._raster is not None and matrix._raster.columns == 32:
-                break
-            await asyncio.sleep(0.01)
+        await wait_until(
+            lambda: matrix._raster is not None and matrix._raster.columns == 32,
+            pilot,
+            description="frame for the latest viewport",
+        )
         assert matrix._raster is not None and matrix._raster.columns == 32
         assert all(line.cell_length == 32 for line in matrix._lines)
 
@@ -83,11 +83,13 @@ async def test_frame_computation_does_not_block_editing_or_publish_obsolete_size
 async def test_inflight_frame_cannot_publish_after_pause_or_unmount(monkeypatch, unmount):
     started, release, finished = threading.Event(), threading.Event(), threading.Event()
     original = PhosphorRaster.frame
+    event_loop_thread = threading.get_ident()
 
     def slow_frame(raster, *args, **kwargs):
+        assert threading.get_ident() != event_loop_thread
         started.set()
         try:
-            assert release.wait(3)
+            release.wait()
             return original(raster, *args, **kwargs)
         finally:
             finished.set()
@@ -103,11 +105,7 @@ async def test_inflight_frame_cannot_publish_after_pause_or_unmount(monkeypatch,
         monkeypatch.setattr(PhosphorRaster, "frame", slow_frame)
         matrix.set_active(True)
         try:
-            for _ in range(100):
-                if started.is_set():
-                    break
-                await asyncio.sleep(0.01)
-            assert started.is_set()
+            await wait_until(started.is_set, pilot, description="held frame before teardown")
             if unmount:
                 await asyncio.wait_for(matrix.remove(), 1)
                 assert not any(worker.node is matrix for worker in app.workers)

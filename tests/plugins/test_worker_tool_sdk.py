@@ -117,7 +117,7 @@ async def test_cancelled_sync_worker_tool_settles_thread_and_discards_late_state
     def execute(call):
         retained.append(call.session_state)
         entered.set()
-        release.wait(5)
+        release.wait()
         with pytest.raises(RuntimeError, match="finished"):
             call.session_state.replace(state_schema_version=1, payload={"late": True})
         return "late"

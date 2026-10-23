@@ -31,7 +31,7 @@ from ouro.tui.conversation.turn import AssistantTurn
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.state import RunPresentation
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
-from tests.tui.helpers import resize_terminal
+from tests.tui.helpers import resize_terminal, wait_until
 
 _MULTIBLOCK_ANSWER = """Here is the plan:
 
@@ -858,6 +858,7 @@ async def test_theme_refresh_is_off_loop_and_coalesces_rapid_theme_changes(
 
         def blocking_render(*args, **kwargs):
             nonlocal active_renders, maximum_active_renders
+            assert threading.get_ident() != event_loop_thread
             with guard:
                 active_renders += 1
                 maximum_active_renders = max(maximum_active_renders, active_renders)
@@ -890,24 +891,21 @@ async def test_theme_refresh_is_off_loop_and_coalesces_rapid_theme_changes(
             description="Latest preview",
             syntax_name="#bbccdd",
         )
-        watchdog = threading.Timer(1, release.set)
-        watchdog.start()
         event_loop_thread = threading.get_ident()
         app.apply_theme(first)
 
         try:
-            assert await asyncio.to_thread(entered.wait, 2)
+            assert await asyncio.to_thread(entered.wait, 30)
             app.apply_theme(latest)
-            await pilot.pause(0.05)
+            await pilot.pause()
             assert maximum_active_renders == 1
         finally:
             release.set()
-            watchdog.cancel()
-
-        for _attempt in range(40):
-            if not app.history._theme_render_active:
-                break
-            await pilot.pause(0.05)
+        await wait_until(
+            lambda: not app.history._theme_render_active,
+            pilot,
+            description="latest theme render completion",
+        )
 
         assert app.tui_theme == latest
         assert app.history._theme_render_active is False

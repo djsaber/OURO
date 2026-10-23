@@ -13,6 +13,7 @@ from ouro.auth.contracts import AuthError, CredentialGrant, CredentialIdentity, 
 from ouro.auth.credentials import CredentialService
 from ouro.auth.store import FileCredentialStore
 from ouro.core.base import new_id
+from tests.concurrency import wait_until
 
 
 def grant(value: str = "fixture-original") -> CredentialGrant:
@@ -338,7 +339,7 @@ async def test_close_waits_for_atomic_commit_and_lock_release(tmp_path, monkeypa
 
     def slow_write(record: CredentialRecord) -> None:
         started.set()
-        assert finish.wait(5)
+        finish.wait()
         write(record)
 
     monkeypatch.setattr(store, "write", slow_write)
@@ -346,15 +347,24 @@ async def test_close_waits_for_atomic_commit_and_lock_release(tmp_path, monkeypa
     commit = asyncio.create_task(
         service.commit(credential_id, "test-driver", grant(), expected_revision=0)
     )
-    assert await asyncio.to_thread(started.wait, 5)
-    close = asyncio.create_task(service.close())
-    await asyncio.sleep(0.05)
-    assert not close.done()
-    finish.set()
-    await close
-    assert (await commit).revision == 1
-    async with store.lock(credential_id, timeout=0.1):
-        assert store.read(credential_id).revision == 1
+    close = None
+    try:
+        assert await asyncio.to_thread(started.wait, 30)
+        close = asyncio.create_task(service.close())
+        await wait_until(
+            lambda: any(task.cancelling() for task in service._operations),
+            description="shutdown cancellation reaching the active commit",
+        )
+        assert not close.done()
+        finish.set()
+        await close
+        assert (await commit).revision == 1
+        async with store.lock(credential_id, timeout=0.1):
+            assert store.read(credential_id).revision == 1
+    finally:
+        finish.set()
+        await asyncio.gather(commit, *([close] if close else []), return_exceptions=True)
+        await service.close()
 
 
 async def test_shutdown_during_snapshot_read_cannot_admit_late_commit(
@@ -508,7 +518,10 @@ async def test_queued_commit_worker_cannot_write_after_cancellation_or_deadline(
     tmp_path, monkeypatch, stop
 ):
     store = FileCredentialStore(tmp_path)
-    service = CredentialService(store, lock_timeout=0.05)
+    service = CredentialService(store, lock_timeout=30)
+    clock = [100.0]
+    monkeypatch.setattr("ouro.auth.credentials.monotonic", lambda: clock[0])
+    monkeypatch.setattr("ouro.auth.commit.monotonic", lambda: clock[0])
     loop = asyncio.get_running_loop()
     acquired = asyncio.Event()
     busy, release = threading.Event(), threading.Event()
@@ -550,7 +563,7 @@ async def test_queued_commit_worker_cannot_write_after_cancellation_or_deadline(
         elif stop == "close":
             closing = asyncio.create_task(service.close())
         else:
-            await asyncio.sleep(0.07)
+            clock[0] += 31
         await asyncio.sleep(0)
         assert not task.done()
     finally:

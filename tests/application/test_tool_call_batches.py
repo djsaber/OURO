@@ -1189,13 +1189,16 @@ async def test_tool_failure_does_not_cancel_sibling_call(tmp_path) -> None:
 async def test_tool_definition_can_force_parallel_batch_to_run_sequentially(tmp_path) -> None:
     registry = ToolRegistry()
     order: list[str] = []
+    first_started, release_first = asyncio.Event(), asyncio.Event()
 
     async def first(invocation, context) -> ToolResult:
-        await asyncio.sleep(0.02)
+        first_started.set()
+        await release_first.wait()
         order.append(invocation.tool_call_id)
         return _result(invocation, "first")
 
     async def second(invocation, context) -> ToolResult:
+        assert order == ["call_1"], "the sequential tool must finish before its sibling starts"
         order.append(invocation.tool_call_id)
         return _result(invocation, "second")
 
@@ -1222,6 +1225,13 @@ async def test_tool_definition_can_force_parallel_batch_to_run_sequentially(tmp_
         ],
     )
 
-    await runtime.run("run both")
-
-    assert order == ["call_1", "call_2"]
+    running = asyncio.create_task(runtime.run("run both"))
+    try:
+        await asyncio.wait_for(first_started.wait(), 30)
+        release_first.set()
+        await running
+        assert order == ["call_1", "call_2"]
+    finally:
+        release_first.set()
+        await asyncio.gather(running, return_exceptions=True)
+        await runtime.close()

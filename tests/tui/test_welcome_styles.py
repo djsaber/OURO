@@ -29,7 +29,7 @@ from ouro.tui.view_models import TuiSystemStatus
 from ouro.tui.welcome import WelcomePage, WelcomeStyle, welcome_catalog
 from ouro.tui.welcome.components import WelcomeUsage
 from ouro.tui.welcome.host import WelcomeHost
-from tests.tui.helpers import resize_terminal, run_ready_app, two_route_application
+from tests.tui.helpers import resize_terminal, run_ready_app, two_route_application, wait_until
 
 WELCOME_STYLES = welcome_catalog(STYLES)
 
@@ -264,9 +264,9 @@ async def test_full_page_controls_viewport_input_layout_composition_and_style_sc
         selection = composer.selection
         surface = host.input_surface
         await host.set_welcome_style(package)
-        await pilot.pause(0.15)
         page = host.page
         assert isinstance(page, BytePage)
+        await wait_until(lambda: page.frames > 0, pilot, description="first welcome frame")
         assert page.frames > 0
         assert page.query_one(".byte-label", Static).render().plain == "OURO / BYTE FIELD"
         assert composer.selection == selection and app.focused is composer
@@ -275,7 +275,7 @@ async def test_full_page_controls_viewport_input_layout_composition_and_style_sc
         assert not host.query("#welcome-version")
         await pilot.pause()
         frames, layouts = page.frames, page.layouts
-        await pilot.pause(0.15)
+        await wait_until(lambda: page.frames > frames, pilot, description="next welcome frame")
         assert page.frames > frames and page.layouts == layouts
 
         for width, height in ((160, 48), (40, 16), (200, 60)):
@@ -309,7 +309,7 @@ async def test_full_page_controls_viewport_input_layout_composition_and_style_sc
         await pilot.pause(0.12)
         assert page.frames == frames and not page.active
         await pilot.press("escape")
-        await pilot.pause(0.12)
+        await wait_until(lambda: page.frames > frames, pilot, description="resumed welcome frames")
         assert page.frames > frames
         host.set_welcome_mode(False)
         frames = page.frames
@@ -524,14 +524,18 @@ async def test_particle_theme_pauses_when_hidden_and_releases_worker_on_replacem
         visual = panel.page
         assert visual.query_one(DotMatrix) is visual.matrix
         matrix = visual.matrix
-        await pilot.pause(0.12)
+        await wait_until(
+            lambda: matrix.elapsed > 0, pilot, description="particle animation started"
+        )
         assert matrix.elapsed > 0
         await open_welcome_picker(app, pilot)
         before = matrix.elapsed
         await pilot.pause(0.12)
         assert not matrix.active and matrix.elapsed == before
         await pilot.press("escape", "escape")
-        await pilot.pause(0.12)
+        await wait_until(
+            lambda: matrix.elapsed > before, pilot, description="particle animation resumed"
+        )
         assert matrix.elapsed > before
         panel.set_welcome_mode(False)
         before = matrix.elapsed

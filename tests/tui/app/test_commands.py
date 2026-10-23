@@ -11,6 +11,7 @@ from textual.widgets import Input, OptionList, Static
 
 from ouro.application.contracts.plugins import PluginCommandExecutionView, PluginCommandView
 from ouro.core.events import EventRecord
+from ouro.core.messages import MessageRecord
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
 from ouro.tui.composer.popup import CommandPopup
@@ -25,6 +26,7 @@ from tests.tui.helpers import (
     command_popup_text,
     resize_terminal,
     run_ready_app,
+    wait_for_history_render,
     wait_for_menu_action,
 )
 from tests.tui.helpers import wait_for_screen as _wait_for_screen
@@ -332,14 +334,21 @@ async def test_abort_and_quit_commands_have_independent_lifecycles(
 
 @pytest.mark.asyncio
 async def test_command_and_approval_menus_fit_resized_terminal(tmp_path: Path) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
+    application = _application(tmp_path)
+    session = application.runtime.create_session()
+    application.runtime.store.append_message(
+        MessageRecord.text(
+            session_id=session.session_id,
+            role="user",
+            text="Existing conversation",
+            sequence=1,
+        )
+    )
+    app = OuroTuiApp(application=application, resume_session_id=session.session_id)
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
-        await pilot.pause()
+        await wait_for_history_render(pilot)
         composer = app.query_one(Composer)
-        composer.load_text("start session")
-        await pilot.press("enter")
-        await _wait_for_worker_group(app, pilot, group="run")
 
         await resize_terminal(pilot, 80, 16)
         assert await pilot.click("#composer")

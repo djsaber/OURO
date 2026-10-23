@@ -1,5 +1,5 @@
 import asyncio
-import time
+import threading
 
 import pytest
 
@@ -163,20 +163,44 @@ async def test_concurrent_model_resolution_publishes_one_owned_adapter(tmp_path)
     selector = _key(provider_id, endpoint_id)
     default = RuntimeAdapter(FauxProvider(), ModelMetadata(model_id="faux", provider_id="faux"))
     built = []
+    building, release = asyncio.Event(), threading.Event()
+    contenders = asyncio.Queue()
+    loop = asyncio.get_running_loop()
 
     def build(options):
-        time.sleep(0.03)
+        loop.call_soon_threadsafe(building.set)
+        release.wait()
         adapter = build_runtime_adapter(options)
         built.append(adapter)
         return adapter
 
     catalog = ConfiguredModelCatalog(configs, default, adapter_builder=build)
+    lock = catalog._adapter_lock
+
+    class ObservedLock:
+        def __enter__(self):
+            if not lock.acquire(blocking=False):
+                loop.call_soon_threadsafe(contenders.put_nowait, None)
+                lock.acquire()
+
+        def __exit__(self, *_):
+            lock.release()
+
+    catalog._adapter_lock = ObservedLock()
+    resolving = asyncio.gather(
+        *(asyncio.to_thread(catalog.adapter_for, selector) for _ in range(5))
+    )
     try:
-        adapters = await asyncio.gather(
-            *(asyncio.to_thread(catalog.adapter_for, selector) for _ in range(5))
-        )
+        await asyncio.wait_for(building.wait(), 30)
+        async with asyncio.timeout(30):
+            for _ in range(4):
+                await contenders.get()
+        release.set()
+        adapters = await resolving
         assert len(built) == 1 and all(adapter is built[0] for adapter in adapters)
     finally:
+        release.set()
+        await asyncio.gather(resolving, return_exceptions=True)
         await catalog.close()
     with pytest.raises(RuntimeError, match="closed"):
         catalog.adapter_for(selector)

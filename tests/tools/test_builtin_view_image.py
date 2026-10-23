@@ -233,7 +233,7 @@ async def test_image_processing_keeps_event_loop_responsive_and_honors_cancellat
 
     def slow_read(path):
         entered.set()
-        release.wait(5)
+        release.wait()
         return original_read(path)
 
     monkeypatch.setattr(view_image, "_read_image", slow_read)

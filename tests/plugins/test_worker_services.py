@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import ouro.local_processes.commands as local_commands
 from ouro.local_application import open_local_plugins
 from ouro.plugins.invocation import plugin_invocation
 from ouro.plugins.registry import PluginCommandError
@@ -63,15 +64,24 @@ async def test_worker_exec_uses_host_owned_process_and_streams_back_into_busy_wo
         assert not plugins.runtime.has_resources(identity)
 
 
-async def test_disabling_worker_command_settles_its_reverse_host_process(tmp_path):
+async def test_disabling_worker_command_settles_its_reverse_host_process(tmp_path, monkeypatch):
+    owners = []
+    start_process = local_commands.start_process
+
+    async def start(*args, **kwargs):
+        owner = await start_process(*args, **kwargs)
+        owners.append(owner)
+        return owner
+
+    monkeypatch.setattr(local_commands, "start_process", start)
     async with open_local_plugins(tmp_path / "home") as plugins:
         plugins.install(EXAMPLES / "worker-exec")
         identity = "dev.ouro.examples.worker_exec"
         assert (await plugins.enable(identity)).status == "active"
-        ready, late = tmp_path / "ready", tmp_path / "late"
+        ready = tmp_path / "ready"
         code = (
-            f"import pathlib,time;pathlib.Path({str(ready)!r}).touch();"
-            f"time.sleep(1);pathlib.Path({str(late)!r}).touch()"
+            f"import pathlib,threading;pathlib.Path({str(ready)!r}).touch();"
+            "threading.Event().wait()"
         )
         command = asyncio.create_task(plugins.execute_command(f"{identity}:python", code))
         try:
@@ -82,11 +92,12 @@ async def test_disabling_worker_command_settles_its_reverse_host_process(tmp_pat
                 with pytest.raises(PluginCommandError):
                     await command
             assert not plugins.runtime.has_resources(identity)
-            await asyncio.sleep(1.1)
-            assert not late.exists()
+            assert len(owners) == 1 and owners[0].process.returncode is not None
         finally:
             command.cancel()
             await asyncio.gather(command, return_exceptions=True)
+            for owner in owners:
+                await owner.close()
 
 
 async def test_retiring_worker_crash_releases_resources_despite_an_old_catalog_lease(tmp_path):

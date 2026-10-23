@@ -31,7 +31,13 @@ from tests.tui.app.support import (
     _queued_subagent_approval_application,
     _wait_for_tool_approval,
 )
-from tests.tui.helpers import command_popup_text, release_on_exit, run_ready_app, wait_for_events
+from tests.tui.helpers import (
+    command_popup_text,
+    release_on_exit,
+    run_ready_app,
+    wait_for_events,
+    wait_for_menu_action,
+)
 from tests.tui.helpers import wait_for_screen as _wait_for_screen
 from tests.tui.helpers import wait_for_worker_group as _wait_for_worker_group
 from tests.tui.helpers import wait_until as _wait_until
@@ -474,15 +480,9 @@ async def test_queued_input_delivery_uses_shared_settings_menu_and_persists_mode
         screen.query_one("#choice-filter", Input).value = "All at once"
         await pilot.pause()
         await pilot.press("enter")
-        await _wait_until(
-            lambda: (
-                ConfigurationFacade(tmp_path).queued_input_config().consumption_mode
-                == "all_at_once"
-            ),
-            pilot,
-            description="queued input delivery mode to persist",
-        )
+        await wait_for_menu_action(pilot, screen)
 
+        assert ConfigurationFacade(tmp_path).queued_input_config().consumption_mode == "all_at_once"
         assert app.screen is screen
         assert screen._choices[0].marker == ""
         assert screen._choices[1].marker == DEFAULT_TUI_THEME.selected_choice_marker

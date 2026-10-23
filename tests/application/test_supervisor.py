@@ -873,13 +873,19 @@ async def test_wait_run_shares_stream_and_reloads_only_run_transitions(tmp_path,
     run = RunRecord(session_id=session.session_id, run_id="run_observed", status="running")
     runtime.store.save_run(run)
     subscription = await supervisor.subscribe(session.session_id)
+    attached = asyncio.Event()
+    subscribe = supervisor.subscribe
+
+    async def observe_attachment(*args, **kwargs):
+        result = await subscribe(*args, **kwargs)
+        attached.set()
+        return result
+
+    monkeypatch.setattr(supervisor, "subscribe", observe_attachment)
     waiter = asyncio.create_task(supervisor.wait_run(session.session_id, run.run_id))
     try:
-        async with asyncio.timeout(5):
-            while len(supervisor._subscriptions[session.session_id]) != 2:
-                await asyncio.sleep(0.01)
-        # Both attachments must finish replay before counting checkpoint reads.
-        await asyncio.sleep(0.05)
+        # Registration precedes replay. Count reads only after attachment returns.
+        await asyncio.wait_for(attached.wait(), 30)
         calls = []
         original = runtime.store.load_run
 

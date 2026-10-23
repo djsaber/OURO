@@ -449,6 +449,7 @@ async def test_history_projection_does_not_block_the_event_loop(
         project_transcript = conversation_view.project_transcript_entries
 
         def blocking_projection(*args, **kwargs):
+            assert threading.get_ident() != event_loop_thread
             projection_threads.append(threading.get_ident())
             entered.set()
             release.wait()
@@ -459,17 +460,15 @@ async def test_history_projection_does_not_block_the_event_loop(
             "project_transcript_entries",
             blocking_projection,
         )
-        watchdog = threading.Timer(1, release.set)
-        watchdog.start()
         event_loop_thread = threading.get_ident()
         loading = asyncio.create_task(app.query_one(ConversationView).load_messages((message,)))
 
         try:
-            projection_entered = await asyncio.to_thread(entered.wait, 2)
+            projection_entered = await asyncio.to_thread(entered.wait, 30)
             event_loop_remained_responsive = not loading.done()
         finally:
             release.set()
-            watchdog.cancel()
+            await asyncio.gather(loading, return_exceptions=True)
         await loading
 
         assert projection_entered is True

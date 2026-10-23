@@ -25,17 +25,18 @@ async def test_run_blocking_settles_owned_work_before_propagating_cancellation()
 
     def operation() -> None:
         started.set()
-        release.wait(timeout=1)
+        release.wait()
         finished.set()
 
     task = asyncio.create_task(run_blocking(operation))
-    assert await asyncio.to_thread(started.wait, 1)
-
-    task.cancel()
-    await asyncio.sleep(0)
-    assert not task.done()
-
-    release.set()
+    try:
+        assert await asyncio.to_thread(started.wait, 30)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
     with pytest.raises(asyncio.CancelledError):
         await task
     assert finished.is_set()

@@ -28,6 +28,7 @@ from ouro.tools import (
     ToolRegistry,
     ToolResult,
 )
+from tests.concurrency import wait_until
 
 
 @dataclass
@@ -40,6 +41,8 @@ class FakeSession:
     calls: list[tuple[str, dict[str, object]]] = field(default_factory=list)
     ping_count: int = 0
     initialize_gate: asyncio.Event | None = None
+    call_started: asyncio.Event = field(default_factory=asyncio.Event)
+    call_gate: asyncio.Event | None = None
 
     async def initialize(self) -> MCPServerInfo:
         if self.initialize_gate is not None:
@@ -62,6 +65,9 @@ class FakeSession:
 
     async def call_tool(self, name: str, arguments: dict[str, object]) -> MCPRemoteToolResult:
         self.calls.append((name, arguments))
+        self.call_started.set()
+        if self.call_gate is not None:
+            await self.call_gate.wait()
         if self.call_delay:
             await asyncio.sleep(self.call_delay)
         if self.call_error is not None:
@@ -445,10 +451,10 @@ async def test_remote_disconnect_recycles_session_and_restores_tools() -> None:
 
     with pytest.raises(MCPToolCallError, match="connection closed"):
         await registry.get("fs__read").execute(invocation)
-    for _ in range(100):
-        if factory.open_count == 2 and manager.get("fs").status == "connected":
-            break
-        await asyncio.sleep(0.01)
+    await wait_until(
+        lambda: factory.open_count == 2 and manager.get("fs").status == "connected",
+        description="MCP reconnect after a failed tool call",
+    )
 
     assert factory.open_count == 2
     assert registry.names() == ["fs__read"]
@@ -469,10 +475,10 @@ async def test_idle_transport_disconnect_reconnects_without_waiting_for_health_p
     await manager.start("fs")
 
     factory.connection_lost("MCP session transport failed: connection closed")
-    for _ in range(100):
-        if factory.open_count == 2 and manager.get("fs").status == "connected":
-            break
-        await asyncio.sleep(0.01)
+    await wait_until(
+        lambda: factory.open_count == 2 and manager.get("fs").status == "connected",
+        description="MCP reconnect after idle transport loss",
+    )
 
     assert factory.open_count == 2
     assert manager.get("fs").status == "connected"
@@ -514,10 +520,9 @@ async def test_tool_list_change_notification_atomically_refreshes_registry() -> 
 
     session.tools = [_remote_tool("write")]
     factory.tools_changed()
-    for _ in range(100):
-        if registry.names() == ["fs__write"]:
-            break
-        await asyncio.sleep(0.01)
+    await wait_until(
+        lambda: registry.names() == ["fs__write"], description="MCP tool registry refresh"
+    )
 
     assert registry.names() == ["fs__write"]
     assert manager.get("fs").tool_names == ("fs__write",)
@@ -526,7 +531,7 @@ async def test_tool_list_change_notification_atomically_refreshes_registry() -> 
 
 @pytest.mark.asyncio
 async def test_remote_tool_call_cooperates_with_abort_signal() -> None:
-    session = FakeSession(tools=[_remote_tool()], call_delay=30)
+    session = FakeSession(tools=[_remote_tool()], call_gate=asyncio.Event())
     registry = ToolRegistry()
     manager = MCPManager(registry=registry, client_factory=FakeFactory(session))
     manager.configure(_config())
@@ -545,17 +550,21 @@ async def test_remote_tool_call_cooperates_with_abort_signal() -> None:
             signal=signal,
         )
     )
-    await asyncio.sleep(0.01)
-    signal.abort("cancelled by test")
-
-    outcome = await execution
+    try:
+        await asyncio.wait_for(session.call_started.wait(), 30)
+        signal.abort("cancelled by test")
+        outcome = await asyncio.wait_for(execution, 30)
+    finally:
+        session.call_gate.set()
+        execution.cancel()
+        await asyncio.gather(execution, return_exceptions=True)
+        await manager.close()
     assert outcome.status == "aborted"
     assert outcome.result is not None
     assert outcome.result.structured == {
         "aborted": True,
         "reason": "cancelled by test",
     }
-    await manager.close()
 
 
 @pytest.mark.asyncio

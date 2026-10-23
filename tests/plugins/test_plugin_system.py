@@ -97,6 +97,7 @@ from ouro.tools import (
     ToolRegistry,
     ToolResult,
 )
+from tests.concurrency import wait_until
 
 MCP_SERVER_SCRIPT = Path(__file__).parents[1] / "mcp" / "fixtures" / "echo_server.py"
 
@@ -1761,9 +1762,13 @@ async def test_worker_timeout_and_task_cancellation_send_protocol_cancel(tmp_pat
     (tmp_path / "worker.py").write_text(
         """import json, pathlib, sys
 log = pathlib.Path('events.log')
+started = pathlib.Path('started.log')
 for line in sys.stdin:
     request = json.loads(line)
     method = request.get('method')
+    if method == 'slow':
+        with started.open('a', encoding='utf-8') as stream:
+            stream.write(str(request['id']) + '\\n')
     if method == 'cancel':
         with log.open('a', encoding='utf-8') as stream:
             stream.write('cancel:' + str(request['params']['id']) + '\\n')
@@ -1784,18 +1789,29 @@ for line in sys.stdin:
     with pytest.raises(TimeoutError):
         await client.request("slow", timeout=0.05)
     pending = asyncio.create_task(client.request("slow"))
-    await asyncio.sleep(0.05)
-    pending.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await pending
-
+    started = tmp_path / "started.log"
     log = tmp_path / "events.log"
-    for _ in range(50):
-        if log.exists() and len(log.read_text(encoding="utf-8").splitlines()) == 2:
-            break
-        await asyncio.sleep(0.01)
-    assert log.read_text(encoding="utf-8").splitlines() == ["cancel:1", "cancel:2"]
-    await client.close(timeout=0.2)
+    try:
+        await wait_until(
+            lambda: (
+                started.exists() and started.read_text(encoding="utf-8").splitlines() == ["1", "2"]
+            ),
+            description="worker reception of both slow requests",
+        )
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        await wait_until(
+            lambda: (
+                log.exists()
+                and log.read_text(encoding="utf-8").splitlines() == ["cancel:1", "cancel:2"]
+            ),
+            description="worker acknowledgement of timeout and task cancellation",
+        )
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+        await client.close()
     assert client.process is None
     assert diagnostics == []
 
@@ -1877,10 +1893,10 @@ for line in sys.stdin:
     cancel_log = (
         tmp_path / "home" / "plugins" / "data" / "dev.ouro.worker_prompt_cancel" / "cancel.log"
     )
-    for _ in range(50):
-        if cancel_log.exists() and cancel_log.stat().st_size:
-            break
-        await asyncio.sleep(0.01)
+    await wait_until(
+        lambda: cancel_log.exists() and bool(cancel_log.stat().st_size),
+        description="worker prompt-policy cancellation acknowledgement",
+    )
     assert cancel_log.read_text(encoding="utf-8").splitlines() == ["4"]
 
     invalid = await snapshot.prompt_policies.evaluate(
@@ -2360,10 +2376,7 @@ async def test_worker_exit_withdraws_generation_and_projects_failed(tmp_path) ->
         },
     )
     (source / "worker.py").write_text(
-        """import json, os, sys, threading, time
-def exit_soon():
-    time.sleep(0.05)
-    os._exit(0)
+        """import json, os, sys
 for line in sys.stdin:
     request = json.loads(line)
     method = request.get('method')
@@ -2374,8 +2387,8 @@ for line in sys.stdin:
         result = {'tools': {'run': {}}}
     if 'id' in request:
         print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
-    if method == 'lifecycle.start':
-        threading.Thread(target=exit_soon, daemon=True).start()
+    if method == 'test.exit':
+        os._exit(0)
 """,
         encoding="utf-8",
     )
@@ -2384,11 +2397,11 @@ for line in sys.stdin:
     service.install(source)
     assert (await service.enable("dev.ouro.worker_exit")).status == "active"
     old_catalog = runtime.snapshot()
-
-    for _ in range(50):
-        if service.show("dev.ouro.worker_exit").status == "failed":
-            break
-        await asyncio.sleep(0.01)
+    await runtime._active["dev.ouro.worker_exit"].instance.client.notify("test.exit")
+    await wait_until(
+        lambda: service.show("dev.ouro.worker_exit").status == "failed",
+        description="worker exit to withdraw its active generation",
+    )
     assert service.show("dev.ouro.worker_exit").status == "failed"
     with runtime.snapshot() as current:
         assert current.generations == ()
@@ -2844,7 +2857,12 @@ for line in sys.stdin:
         )
     )
     assert (await service.enable("dev.ouro.credentials")).status == "active"
-    await asyncio.sleep(0.05)
+    await wait_until(
+        lambda: any(
+            item.code == "worker_stderr" for item in service.diagnostics("dev.ouro.credentials")
+        ),
+        description="redacted worker stderr diagnostic",
+    )
     assert all(
         "calendar-secret-value" not in diagnostic.message
         for diagnostic in service.diagnostics("dev.ouro.credentials")
@@ -3111,9 +3129,14 @@ def create_plugin(context): return Plugin(context)
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
-    enabled = await service.enable("dev.ouro.degraded")
-    assert enabled.status == service.check("dev.ouro.degraded").status
-    await asyncio.sleep(0.01)
+    await service.enable("dev.ouro.degraded")
+    await wait_until(
+        lambda: any(
+            item.code == "plugin_background_task_failed"
+            for item in service.diagnostics("dev.ouro.degraded")
+        ),
+        description="supervised background task failure",
+    )
 
     assert service.show("dev.ouro.degraded").status == "degraded"
     assert service.check("dev.ouro.degraded").status == "degraded"

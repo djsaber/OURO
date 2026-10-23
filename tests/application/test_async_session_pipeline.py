@@ -426,6 +426,15 @@ async def test_spawn_submission_commit_serializes_with_agent_lifecycle(tmp_path,
         )
         await service.wait_agents([handle.delegation_id])
         save = store.save_delegation
+        contended = asyncio.Event()
+
+        class ObservedLock(asyncio.Lock):
+            async def acquire(self):
+                if self.locked():
+                    contended.set()
+                return await super().acquire()
+
+        service._result_locks[handle.delegation_id] = ObservedLock()
 
         def paused_save(record, **kwargs):
             if record.delegation_id == handle.delegation_id and record.control_state != "closed":
@@ -437,7 +446,7 @@ async def test_spawn_submission_commit_serializes_with_agent_lifecycle(tmp_path,
         tasks.append(asyncio.create_task(service._record_spawn_submission(handle.delegation_id)))
         assert await asyncio.to_thread(entered.wait, 2)
         tasks.append(asyncio.create_task(service.close_agent(handle.delegation_id)))
-        await asyncio.sleep(0.02)
+        await asyncio.wait_for(contended.wait(), 30)
         assert not tasks[1].done()
         release.set()
         await asyncio.gather(*tasks)

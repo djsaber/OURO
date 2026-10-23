@@ -12,7 +12,7 @@ from ouro.tui.composer.input import Composer
 from ouro.tui.composer.popup import CommandPopup
 from ouro.tui.composer.surface import WelcomePanel
 from ouro.tui.welcome import welcome_catalog
-from tests.tui.helpers import resize_terminal, run_ready_app, two_route_application
+from tests.tui.helpers import resize_terminal, run_ready_app, two_route_application, wait_until
 
 WELCOME_STYLES = welcome_catalog(STYLES)
 
@@ -75,4 +75,9 @@ async def test_animation_keeps_editor_layout_and_cursor_stable_during_cjk_edits(
                 assert app.cursor_position == composer.cursor_screen_offset
                 assert app.focused is composer
         assert composer.text == ""
+        await wait_until(
+            lambda: matrix.elapsed > elapsed, pilot, description="animation frame during editing"
+        )
         assert matrix.elapsed > elapsed
+        assert (composer.region, welcome.input_surface.region, matrix.region) == before
+        assert app.cursor_position == composer.cursor_screen_offset

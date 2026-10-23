@@ -12,7 +12,9 @@ from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
 @pytest.mark.parametrize("status", ["waiting_approval", "waiting_user", "waiting_child"])
-async def test_parked_run_handoff_waits_for_another_host_to_release(tmp_path, backend, status):
+async def test_parked_run_handoff_waits_for_another_host_to_release(
+    tmp_path, backend, status, monkeypatch
+):
     def store():
         return (
             LocalSessionStore(tmp_path)
@@ -29,6 +31,16 @@ async def test_parked_run_handoff_waits_for_another_host_to_release(tmp_path, ba
     first_store.save_run(run)
     first, second = RunExecutionOwnership(first_store), RunExecutionOwnership(second_store)
     lock = await first.acquire(session.session_id, run.run_id)
+    contended = asyncio.Event()
+    acquire = second.acquire
+
+    async def observe_contention(*args, **kwargs):
+        result = await acquire(*args, **kwargs)
+        if result is None:
+            contended.set()
+        return result
+
+    monkeypatch.setattr(second, "acquire", observe_contention)
     pending = asyncio.create_task(
         second.acquire_parked(
             session.session_id,
@@ -37,17 +49,21 @@ async def test_parked_run_handoff_waits_for_another_host_to_release(tmp_path, ba
         )
     )
     try:
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(contended.wait(), 30)
         assert not pending.done()
-    finally:
         await first.release(run.run_id, lock)
-    acquired = await asyncio.wait_for(pending, 2)
-    assert acquired is not None
-    await second.release(run.run_id, acquired)
+        acquired = await asyncio.wait_for(pending, 30)
+        assert acquired is not None
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+        if not pending.cancelled() and pending.exception() is None:
+            await second.release(run.run_id, pending.result())
+        await first.release(run.run_id, lock)
 
 
 @pytest.mark.parametrize("outcome", ["timeout", "resumed", "cancelled"])
-async def test_parked_handoff_never_steals_an_existing_owner(tmp_path, outcome):
+async def test_parked_handoff_never_steals_an_existing_owner(tmp_path, outcome, monkeypatch):
     store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord()
@@ -56,18 +72,30 @@ async def test_parked_handoff_never_steals_an_existing_owner(tmp_path, outcome):
     store.save_run(run)
     first, second = RunExecutionOwnership(store), RunExecutionOwnership(store)
     lock = await first.acquire(session.session_id, run.run_id)
+    contended, proceed = asyncio.Event(), asyncio.Event()
+    acquire = second.acquire
+
+    async def observe_contention(*args, **kwargs):
+        result = await acquire(*args, **kwargs)
+        assert result is None
+        contended.set()
+        await proceed.wait()
+        return result
+
+    monkeypatch.setattr(second, "acquire", observe_contention)
     pending = asyncio.create_task(
         second.acquire_parked(
             session.session_id,
             run.run_id,
             expected_status="waiting_approval",
-            timeout=0.1,
+            timeout=0 if outcome == "timeout" else 30,
         )
     )
     try:
-        await asyncio.sleep(0.01)
+        await asyncio.wait_for(contended.wait(), 30)
         if outcome == "resumed":
             store.save_run(run.model_copy(update={"status": "running"}))
+        proceed.set()
         if outcome == "cancelled":
             pending.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -76,6 +104,9 @@ async def test_parked_handoff_never_steals_an_existing_owner(tmp_path, outcome):
             assert await asyncio.wait_for(pending, 1) is None
         assert store.is_session_locked(session.session_id)
     finally:
+        proceed.set()
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
         await first.release(run.run_id, lock)
 
 

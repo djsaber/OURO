@@ -861,12 +861,10 @@ class RuntimeSupervisor:
             self._snapshots[active_job.handle.handle_id].status if active_job is not None else None
         )
         cached = self._activities.get(session_id)
-        initial = (
-            cached
-            if session_id in self._event_streams
-            or (active_job is not None and cached is not None and cached.run_id is None)
-            else None
-        )
+        # Local execution and an attached journal follower both maintain this
+        # projection. Rebuilding an active Run at its latest cursor discards
+        # stream activity that the bounded Run checkpoint cannot reconstruct.
+        initial = cached if session_id in self._event_streams or active_job is not None else None
         if initial is None:
             initial = await run_blocking(
                 self._load_activity, session_id, status_override=status_override

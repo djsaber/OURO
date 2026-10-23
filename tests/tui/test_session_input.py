@@ -21,7 +21,7 @@ from ouro.tui.composer.input import Composer
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.widgets.status import StatusLine
-from tests.tui.helpers import run_ready_app, two_route_application
+from tests.tui.helpers import run_ready_app, two_route_application, wait_until
 
 
 @pytest.mark.parametrize("target", ("message", "blank", "composer"))
@@ -297,8 +297,14 @@ async def test_session_frames_preserve_editor_and_menu_cursor_during_live_update
             menu = app.screen
             menu_input = menu.query_one(Input)
             assert app.focused is menu_input
+            assert app._projection is not None
+            previous_sequence = app._projection.last_sequence
             app.refresh(layout=True)
-            await asyncio.sleep(0.15)
+            await wait_until(
+                lambda: app._projection.last_sequence > previous_sequence,
+                pilot,
+                description="stream projection advancing while the menu has focus",
+            )
             await pilot.pause()
             assert app.screen is menu and app.focused is menu_input
             assert app.cursor_position == menu_input.cursor_screen_offset

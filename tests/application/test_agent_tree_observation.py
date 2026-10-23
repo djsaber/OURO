@@ -16,16 +16,19 @@ from tests.application.test_session_event_following import supervisor_for
 
 
 @pytest.mark.parametrize("already_observing", [False, True])
+@pytest.mark.parametrize("observe_after_text", [False, True])
 async def test_tree_observes_child_materialized_after_delegation_reservation(
-    tmp_path, monkeypatch, already_observing
+    tmp_path, monkeypatch, already_observing, observe_after_text
 ):
     service, supervisor, store, provider = await _services(tmp_path)
     creating = asyncio.Event()
     release_creation = threading.Event()
     release_stream = asyncio.Event()
+    text_observed = asyncio.Event()
     loop = asyncio.get_running_loop()
     create = store.create_session
     stream = provider.stream
+    observe = supervisor._observe_session_state
 
     def held_create(session):
         if session.session_kind == "subagent":
@@ -39,8 +42,21 @@ async def test_tree_observes_child_materialized_after_delegation_reservation(
             if event.type == "text_delta":
                 await release_stream.wait()
 
+    async def observe_after_child_text(session_id):
+        if observe_after_text and session_id != "ses_root" and release_creation.is_set():
+            await text_observed.wait()
+            await supervisor.runtime.drain_events()
+        return await observe(session_id)
+
     monkeypatch.setattr(store, "create_session", held_create)
     monkeypatch.setattr(provider, "stream", held_stream)
+    monkeypatch.setattr(supervisor, "_observe_session_state", observe_after_child_text)
+    text_sink = supervisor.runtime.add_event_sink(
+        lambda event: text_observed.set(),
+        event_filter=lambda event: (
+            event.session_id != "ses_root" and event.event_type == "model_text_delta"
+        ),
+    )
     subscription = None
     spawning = None
     try:
@@ -83,10 +99,18 @@ async def test_tree_observes_child_materialized_after_delegation_reservation(
 
             release_creation.set()
             child = await spawning
+            if observe_after_text:
+                # A fast child can emit before the tree attaches its state observer.
+                # Hold that ordering explicitly instead of relying on storage speed.
+                await text_observed.wait()
+                await supervisor.runtime.drain_events()
             while True:
                 notification = await subscription.get()
                 assert notification.kind == "snapshot", notification
                 node = notification.snapshot.nodes[0]
+                if observe_after_text:
+                    assert node.activity is not None
+                    assert node.activity.activity == "streaming_text"
                 if node.activity is not None and node.activity.activity == "streaming_text":
                     break
             assert node.delegation_id == child.delegation_id
@@ -109,6 +133,7 @@ async def test_tree_observes_child_materialized_after_delegation_reservation(
             await asyncio.gather(spawning, return_exceptions=True)
         if subscription is not None:
             subscription.close()
+        await text_sink.close()
         await service.close()
         await supervisor.shutdown()
 

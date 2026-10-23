@@ -1,5 +1,5 @@
 import multiprocessing
-import time
+import threading
 
 import pytest
 
@@ -9,7 +9,7 @@ from ouro.local_locks import FileAccessLock
 def hold_access(path, exclusive, ready):
     with FileAccessLock(path, exclusive=exclusive):
         ready.set()
-        time.sleep(15)
+        threading.Event().wait()
 
 
 @pytest.mark.parametrize("exclusive", [False, True])

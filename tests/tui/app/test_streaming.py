@@ -9,6 +9,7 @@ import pytest
 from rich.segment import Segment
 from textual.strip import Strip
 
+import ouro.tui.conversation.reasoning as tui_reasoning
 import ouro.tui.conversation.tools as tui_widgets_tools
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
@@ -312,13 +313,25 @@ async def test_reasoning_stream_lines_match_whole_block_rendering(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_live_surface_resets_round_content_and_reasoning_clock(tmp_path: Path) -> None:
+async def test_live_surface_resets_round_content_and_reasoning_clock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    clock = [100.0]
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    monkeypatch.setattr(tui_reasoning, "datetime", FixedDateTime)
+    monkeypatch.setattr(tui_reasoning, "monotonic", lambda: clock[0])
     app = OuroTuiApp(application=_application(tmp_path))
     async with run_ready_app(app) as pilot:
         conversation = app.query_one(ConversationView)
         conversation.begin_model_request(run_id="previous_run")
         await conversation.append_reasoning(
-            "Previous thought", started_at=datetime.now(UTC) - timedelta(seconds=30)
+            "Previous thought", started_at=now - timedelta(seconds=30)
         )
         await conversation.append_assistant("Previous answer")
         turn = conversation.query_one(AssistantTurn)
@@ -331,13 +344,15 @@ async def test_live_surface_resets_round_content_and_reasoning_clock(tmp_path: P
         assert turn.reasoning._timer is None
 
         conversation.begin_model_request(run_id="next_run")
-        await conversation.append_reasoning("Next thought", started_at=datetime.now(UTC))
+        await conversation.append_reasoning("Next thought", started_at=now)
         await pilot.pause()
         assert conversation.query_one(AssistantTurn) is turn
         assert turn.run_id == "next_run"
         assert turn.reasoning.text == "Next thought"
         assert turn.reasoning.duration_seconds is None
-        assert turn.reasoning._elapsed_seconds() < 5
+        assert turn.reasoning._elapsed_seconds() == 0
+        clock[0] += 2
+        assert turn.reasoning._elapsed_seconds() == 2
         assert turn.reasoning._timer is not None
         await conversation.finish_assistant()
         assert turn.reasoning._timer is None

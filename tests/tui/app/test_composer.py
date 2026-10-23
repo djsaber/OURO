@@ -438,12 +438,6 @@ async def test_input_draft_persistence_debounces_to_the_latest_revision(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        tui_app_module,
-        "_INPUT_DRAFT_SAVE_DEBOUNCE_SECONDS",
-        0.1,
-        raising=False,
-    )
     app = OuroTuiApp(application=_application(tmp_path))
     saved: list[TuiInputDrafts] = []
 
@@ -453,15 +447,35 @@ async def test_input_draft_persistence_debounces_to_the_latest_revision(
             await app._input_draft_save_task
         monkeypatch.setattr(app._input_draft_store, "save", saved.append)
 
-        app._remember_input_draft(None, "a")
-        await asyncio.sleep(0.04)
-        assert saved == []
+        cycles = asyncio.Queue()
+        gates = []
 
-        app._remember_input_draft(None, "ab")
-        await asyncio.sleep(0.04)
-        app._remember_input_draft(None, "abc")
-        assert app._input_draft_save_task is not None
-        await app._input_draft_save_task
+        async def expire_debounce():
+            gate = asyncio.Event()
+            gates.append(gate)
+            cycles.put_nowait(gate)
+            await gate.wait()
+            raise TimeoutError
+
+        try:
+            with monkeypatch.context() as patch:
+                # Drive debounce expiry explicitly; editing must reset the window.
+                patch.setattr(tui_app_module, "_INPUT_DRAFT_SAVE_DEBOUNCE_SECONDS", None)
+                patch.setattr(app._input_draft_save_requested, "wait", expire_debounce)
+                app._remember_input_draft(None, "a")
+                for text in ("ab", "abc"):
+                    gate = await asyncio.wait_for(cycles.get(), 30)
+                    assert saved == []
+                    app._remember_input_draft(None, text)
+                    gate.set()
+                gate = await asyncio.wait_for(cycles.get(), 30)
+                assert saved == []
+                gate.set()
+                assert app._input_draft_save_task is not None
+                await app._input_draft_save_task
+        finally:
+            for gate in gates:
+                gate.set()
 
         assert len(saved) == 1
         assert saved[0].draft_for(None) == "abc"

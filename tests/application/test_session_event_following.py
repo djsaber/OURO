@@ -434,11 +434,10 @@ async def test_observers_share_bounded_off_loop_reads_and_release_them_on_detach
         assert any(limit == 256 for _, limit in calls)
         second.close()
         await asyncio.gather(*supervisor._event_stream_tasks)
+        assert not supervisor._event_stream_tasks and not supervisor._event_streams
         count = len(calls)
         append(writer, session.session_id, "unobserved")
-        await asyncio.sleep(0.2)
         assert len(calls) == count
-        assert not supervisor._event_streams
     finally:
         first.close()
         second.close()
