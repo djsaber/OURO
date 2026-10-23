@@ -193,7 +193,7 @@ Session 的可变 `controls` 投影与返回的 Harness 控制状态隔离，修
 此查询不引入跨操作缓存，不加载消息或事件历史，也不创建版本或回执。
 
 Session 单记录查询、当前 Harness 查询和应用层阶段快照复用同一读取实现；需要 Session 与 Harness 的调用者
-使用成对查询，不再先取含 controls 投影的 Session 再读取同一版本。显式版本查询保持原有行为。
+使用成对查询，避免为 controls 投影重复读取同一版本；显式版本查询按指定版本读取。
 提交准备同样复用成对读取；文件决定完成/恢复仍独立读取并验证持久检查点，不能复用提交准备的内存值跳过核验。
 
 `SessionCommit` 在同一 mutation 边界检查 history_epoch、版本、消息头和实际使用的队列/控制前置条件，
@@ -315,7 +315,7 @@ Harness 版本和提交回执随同一 Session tree 或外键事务封存，不�
 文件与数据库不承诺掉电级联合事务。其他会话拥有的独立副本保持可用。
 
 Host 可以继续用“已归档或存在索引/canonical 错误”限制普通删除菜单的可见范围；一旦用户明确确认删除，确认本身就是
-破坏性操作授权。Application 的 Catalog-scope trash 不再读取目标 canonical observation，也不以 `catalog_error`、health
+破坏性操作授权。Application 的 Catalog-scope trash 不读取目标 canonical observation，也不以 `catalog_error`、health
 或其新旧程度重新授权；这些可重建语义信息不能阻止底层按稳定 ID 执行真实删除。实体存在性、范围内 live-owner 锁与
 后端原子发布仍是必须保留的结构约束。
 

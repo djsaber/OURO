@@ -7,11 +7,11 @@ from threading import Event
 
 import pytest
 
-from ouro.application import file_inputs
+import ouro.application.inputs.files as file_inputs
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.resources import ResourceService
-from ouro.application.runs import RunLifecycle
-from ouro.application.sessions import SessionService
+from ouro.application.runs.lifecycle import RunLifecycle
+from ouro.application.sessions.service import SessionService
 from ouro.core.errors import (
     MediaCapacityError,
     PersistenceError,

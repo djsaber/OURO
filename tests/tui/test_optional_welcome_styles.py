@@ -11,9 +11,9 @@ import pytest
 
 import ouro.tui.welcome_packages as theme_packages
 from ouro.tui.app import OuroTuiApp
+from ouro.tui.composer.surface import WelcomePanel
 from ouro.tui.preferences import TuiPreferencesStore
 from ouro.tui.welcome import WELCOME_STYLES, unavailable_styles
-from ouro.tui.widgets import WelcomePanel
 from tests.tui.helpers import run_ready_app, two_route_application
 
 

@@ -10,15 +10,17 @@ from rich.text import Text
 from textual import events
 from textual.widgets import OptionList, Static
 
-from ouro.application.plugin_configuration_models import (
+from ouro.application.contracts.plugin_configuration import (
     InlinePluginCredential,
     PluginCredentialSlotView,
 )
-from ouro.application.plugins import PluginService
-from ouro.plugins.store import PluginPackageStore
-from ouro.tui.plugin_configuration_schema import configuration_fields, schema_placeholder
-from ouro.tui.plugin_configuration_screen import PluginConfigurationScreen
-from ouro.tui.screens import ChoiceScreen, ConfirmationScreen, EditableChoiceScreen
+from ouro.application.plugins.service import PluginService
+from ouro.plugins.installation.store import PluginPackageStore
+from ouro.tui.features.plugins.configuration import PluginConfigurationScreen
+from ouro.tui.features.plugins.schema import configuration_fields, schema_placeholder
+from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.menus.confirmation import ConfirmationScreen
+from ouro.tui.menus.editable import EditableChoiceScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME
 from tests.plugins.test_plugin_system import _write_native_plugin
 from tests.tui.test_choice_menu_performance import ChoiceApp

@@ -9,10 +9,10 @@ from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessVersion
 from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.sessions.base import SessionSnapshot
-from ouro.sessions.local_files import LocalSessionStore
 from ouro.sessions.portable import PortableSession, SessionBundle
-from ouro.sessions.sqlite import SQLiteSessionStore
 
 
 def history_bundle() -> SessionBundle:

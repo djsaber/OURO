@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from ouro.application.summary_compaction import LLMSummaryCompactionStrategy
+from ouro.application.context.summary import LLMSummaryCompactionStrategy
 from ouro.auth.contracts import AuthError, CredentialGrant
 from ouro.auth.credentials import CredentialService
 from ouro.auth.managed_requests import RequestTarget
@@ -13,7 +13,7 @@ from ouro.auth.store import FileCredentialStore
 from ouro.config import provider_models
 from ouro.config.compaction import CompactionConfigManager
 from ouro.config.provider_models import ProviderConnectionSpec, ProviderTypeSpec
-from ouro.config.providers import ProviderConfigManager
+from ouro.config.providers.manager import ProviderConfigManager
 from ouro.core.errors import ConfigError
 from ouro.core.state import SessionRecord
 from ouro.local_application import LocalApplication, ProviderServicePolicy, build_local_runtime
@@ -75,7 +75,8 @@ def managed_runtime(tmp_path, monkeypatch):
             pass
 
     monkeypatch.setattr(
-        "ouro.providers.openai_chat_completions.HttpxProviderHTTPTransport", Transport
+        "ouro.providers.openai_chat_completions.adapter.HttpxProviderHTTPTransport",
+        Transport,
     )
     return configs, drivers, policies, requests
 

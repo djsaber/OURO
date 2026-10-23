@@ -8,6 +8,10 @@
 ResourceService。
 Desktop 只拥有界面状态和交互，不复制运行规则或解析 canonical 文件。
 
+窗口关闭或观察断开不丢失 canonical 状态；后台执行和应用退出分别遵循 Supervisor 的生命周期契约。
+大事件流与消息历史增量加载，慢界面不能阻塞运行。长生命周期资源必须支持取消、超时和显式关闭；
+敏感信息不得进入公开 DTO、事件或日志。
+
 ## 前置条件
 
 - `ConfigurationFacade` 与 Host DTO 保持稳定。
@@ -74,7 +78,7 @@ Desktop 只拥有界面状态和交互，不复制运行规则或解析 canonica
 
 ## 风险与控制
 
-- UI 直接读文件：架构测试禁止 Desktop import `sessions.local_*` 和 config manager。
+- UI 直接读文件：架构测试禁止 Desktop import `ouro.sessions.backends` 和 config manager。
 - 高频事件卡顿：仅 delta projection 可合并，durable event 不丢失。
 - 状态重复：UI projection 以 application snapshot/event sequence 为准。
 - 首版范围膨胀：先完成会话与运行闭环，再接资源和扩展管理。

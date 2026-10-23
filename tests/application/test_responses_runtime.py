@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 
-from ouro.application.sessions import SessionService
+from ouro.application.sessions.service import SessionService
 from ouro.auth.managed_requests import RequestTarget
 from ouro.config import ProviderConfigManager, provider_models
 from ouro.config.compaction import CompactionConfigManager
@@ -110,11 +110,11 @@ async def responses_runtime(tmp_path, monkeypatch, request):
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
         monkeypatch.setattr(
-            "ouro.providers.openai_responses.HttpxProviderHTTPTransport",
+            "ouro.providers.openai_responses.adapter.HttpxProviderHTTPTransport",
             lambda: HttpxProviderHTTPTransport(client),
         )
         monkeypatch.setattr(
-            "ouro.providers.openai_chat_completions.HttpxProviderHTTPTransport",
+            "ouro.providers.openai_chat_completions.adapter.HttpxProviderHTTPTransport",
             lambda: HttpxProviderHTTPTransport(client),
         )
 

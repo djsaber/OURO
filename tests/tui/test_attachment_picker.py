@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from ouro.tui.attachment_picker import AttachmentEntry, AttachmentPicker
+from ouro.tui.composer.attachment_picker import AttachmentEntry, AttachmentPicker
 
 
 def test_directory_scan_reuses_entry_metadata_and_sorts_directories_first(tmp_path, monkeypatch):

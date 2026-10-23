@@ -4,30 +4,32 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
+import rich.text as conversation_history_text
 from rich.console import Console
 from textual.app import App, ComposeResult
 from textual.widgets import Input
 
-import ouro.tui.conversation_history as conversation_history
+import ouro.tui.conversation.history as conversation_history
+import ouro.tui.conversation.markdown_stream as conversation_history_markdown_stream
 import ouro.tui.markdown as tui_markdown
-from ouro.application.supervisor_models import RuntimeToolCallActivity
-from ouro.tui.conversation_history import (
-    AssistantMarkdownStream,
+from ouro.application.contracts.execution import RuntimeToolCallActivity
+from ouro.tui.conversation.history import ConversationHistory
+from ouro.tui.conversation.history_models import CompactionPresentation, TranscriptEntry
+from ouro.tui.conversation.history_rendering import (
     AssistantTailLines,
-    CompactionPresentation,
-    ConversationHistory,
-    ToolNavigationRequested,
-    TranscriptEntry,
     _compaction_summary,
     _format_user_message_timestamp,
     _MessageContent,
     _reasoning_label_text,
     _run_summary,
-    split_markdown_blocks,
 )
+from ouro.tui.conversation.markdown_stream import AssistantMarkdownStream, split_markdown_blocks
+from ouro.tui.conversation.messages import ToolNavigationRequested
+from ouro.tui.conversation.tools import ToolActivityRow
+from ouro.tui.conversation.turn import AssistantTurn
+from ouro.tui.conversation.view import ConversationView
 from ouro.tui.state import RunPresentation
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
-from ouro.tui.widgets import AssistantTurn, ConversationView, ToolActivityRow
 from tests.tui.helpers import resize_terminal
 
 _MULTIBLOCK_ANSWER = """Here is the plan:
@@ -209,7 +211,7 @@ class _HistoryApp(App[None]):
     def __init__(self) -> None:
         super().__init__()
         self.history = ConversationHistory(
-            lambda tool, **_kwargs: conversation_history.Text(tool.tool_name)
+            lambda tool, **_kwargs: conversation_history_text.Text(tool.tool_name)
         )
         self.navigation: list[tuple[str, str]] = []
 
@@ -1107,20 +1109,24 @@ def test_stream_accumulates_fragmented_lines_without_rebuilding_source() -> None
 def test_long_open_block_stops_reparsing_after_bounded_prefix(monkeypatch) -> None:
     stream = AssistantMarkdownStream()
     parse_calls: list[int] = []
-    real_block_starts = conversation_history._block_starts
+    real_block_starts = conversation_history_markdown_stream._block_starts
 
     def counting_block_starts(source: str) -> list[int]:
         parse_calls.append(len(source))
         return real_block_starts(source)
 
-    monkeypatch.setattr(conversation_history, "_block_starts", counting_block_starts)
+    monkeypatch.setattr(
+        conversation_history_markdown_stream, "_block_starts", counting_block_starts
+    )
 
     stream.append("```text\n")
     for _ in range(64):
         stream.append("x" * 1024 + "\n")
 
     assert parse_calls
-    assert max(parse_calls) <= conversation_history._LIVE_MARKDOWN_BOUNDARY_MAX_CHARS
+    assert (
+        max(parse_calls) <= conversation_history_markdown_stream._LIVE_MARKDOWN_BOUNDARY_MAX_CHARS
+    )
     calls_before_close = len(parse_calls)
     blocks = stream.close()
     assert len(parse_calls) == calls_before_close + 1

@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from ouro.application.runtime import RuntimeService
+from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import utc_now
 from ouro.core.errors import SessionBusyError

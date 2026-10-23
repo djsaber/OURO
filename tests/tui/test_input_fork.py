@@ -5,7 +5,7 @@ from html import escape
 
 import pytest
 
-from ouro.application.skill_activations import SkillInvocationRequest
+from ouro.application.inputs.skills import SkillInvocationRequest
 from ouro.core.input_content import (
     InputAttachment,
     InputContent,
@@ -13,7 +13,7 @@ from ouro.core.input_content import (
     InputSkillReference,
 )
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.widgets import Composer
+from ouro.tui.composer.input import Composer
 from tests.application.test_skill_activations import CapturingProvider
 from tests.tui.helpers import run_ready_app
 from tests.tui.test_history_commands import application_at

@@ -330,8 +330,8 @@ in-process 通过受约束 resolver 获取本插件声明且绑定的 slot；wor
 
 ## 7. Application 查询、预检与应用
 
-`PluginService` 是 Host 的统一入口，配置用例实现位于 `ouro/application/plugin_configuration.py`，
-公开数据模型位于 `ouro/application/plugin_configuration_models.py`。
+`PluginService` 是 Host 的统一入口，配置用例实现位于 `ouro/application/plugins/configuration.py`，
+公开数据模型位于 `ouro/application/contracts/plugin_configuration.py`。
 
 | 方法 | 返回值 | 副作用 |
 |---|---|---|

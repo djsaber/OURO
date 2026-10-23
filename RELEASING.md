@@ -18,13 +18,17 @@ For a release:
    omit implementation details, redundant explanations and a commit-by-commit history. Preserve
    earlier entries and label historical development versions without inventing release dates.
    Verify the [capability overview](docs/overview.md) and affected specs against the release candidate.
-2. Update `pyproject.toml` and `ouro.__version__`, align plugin host-version ranges, and regenerate `uv.lock`.
+2. Update the core's `pyproject.toml` and `ouro.__version__`, align plugin host-version ranges, and
+   regenerate `uv.lock`. The theme extension has its own version in `packages/tui-themes/pyproject.toml`;
+   update it when releasing that distribution, and verify its core range and the core's `themes` pin.
 3. Run the full commands from `CONTRIBUTING.md`, including the coverage floor.
-4. Build with `uv build` and inspect both wheel and source archive for secrets and unintended files.
+4. Build with `uv build --all-packages` and inspect each distribution's wheel and source archive for
+   secrets and unintended files.
 5. Test both the base wheel and its `themes` extra from separate clean environments using
-   `dev/check_distribution.py` as described in `CONTRIBUTING.md`. Verify that `arrayfunc` is absent
-   from the base installation and available to the theme installation. Run platform checks on the
-   actual target systems; preserve documented compiler requirements for optional source builds.
+   `dev/check_distribution.py` as described in `CONTRIBUTING.md`. Verify that the base installation
+   works without `ouro-tui-themes` or NumPy, and that the theme installation includes both. Run
+   platform checks on the actual target systems; source builds of native dependencies follow their
+   own toolchain requirements.
 6. Commit the release metadata, create an annotated `vX.Y.Z` tag, and publish release notes from
    the reviewed changelog entry. Keep guides and specs focused on current behavior; release history
    belongs in the changelog.
@@ -38,9 +42,11 @@ Before uploading, validate the user-facing README with `twine check --strict`, v
 work from an installed distribution, and use absolute links that also work on PyPI. Keep screenshots
 in `docs/assets/`, capture real application state without private data, and link the published image
 through an immutable release tag. Verify that all public links resolve before uploading. Keep the exact
-version's wheel and source archive aligned with its release commit and tag. Pass those two filenames
-explicitly to `uv publish` so older files in `dist/` are not uploaded. After uploading, verify PyPI's
-version metadata, description and file hashes, and check installation from the published index.
+version's wheel and source archive aligned with its release commit and tag. Pass the exact wheel
+and source archive filenames for each distribution being released to `uv publish` so older files
+in `dist/` are not uploaded. An unchanged theme release already on PyPI need not be republished.
+After uploading, verify PyPI's version metadata, description and file hashes, and check both base
+and `themes` installation from the published index.
 
 During `0.x` development, use a new minor version for a capability milestone or incompatible public
 contract change, and a patch version for compatible fixes. Plugin API, worker protocol, package and

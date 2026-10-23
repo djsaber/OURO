@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from ouro.application.runtime import RuntimeService
+from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.tools import ToolCallRequest

@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 from textual.app import App, ComposeResult
 
-from ouro.application.agent_models import AgentTreeNode
-from ouro.application.supervisor_models import RuntimeActivitySnapshot
+from ouro.application.contracts.agents import AgentTreeNode
+from ouro.application.contracts.execution import RuntimeActivitySnapshot
 from ouro.tui.subagent_navigation import SubagentNavigationPanel
 
 

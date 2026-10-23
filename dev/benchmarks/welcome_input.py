@@ -25,8 +25,8 @@ from textual import events
 from textual.app import App
 from textual.drivers.headless_driver import HeadlessDriver
 
+from ouro.tui.composer.input import Composer
 from ouro.tui.welcome import welcome_catalog
-from ouro.tui.widgets import Composer
 
 WELCOME_STYLES = welcome_catalog(STYLES)
 

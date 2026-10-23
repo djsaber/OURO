@@ -5,12 +5,13 @@ import threading
 
 import pytest
 
-from ouro.application.skill_activations import SkillInvocationRequest
+from ouro.application.inputs.skills import SkillInvocationRequest
 from ouro.core.input_content import InputContent, InputFileReference, InputSkillReference
 from ouro.skills import SkillManager
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.input_drafts import TuiInputDraftStore
-from ouro.tui.widgets import CommandPopup, Composer
+from ouro.tui.composer.drafts import TuiInputDraftStore
+from ouro.tui.composer.input import Composer
+from ouro.tui.composer.popup import CommandPopup
 from tests.tui.helpers import run_ready_app
 from tests.tui.test_history_commands import application_at
 

@@ -82,11 +82,11 @@ def create_plugin(context): return Plugin()
 
 async def run_one(backend, mode, scenario, delay_ms):
     from dev.benchmarks.session_pipeline import Probe, application
-    from ouro.application.plugin_commands import consume_plugin_command, submit_plugin_command
+    from ouro.application.plugins.commands import consume_plugin_command, submit_plugin_command
     from ouro.core.messages import MessageRecord
     from ouro.core.state import SessionRecord
     from ouro.tui.app import OuroTuiApp
-    from ouro.tui.widgets import _BUSY_ACTIVITIES, ActivityIndicator
+    from ouro.tui.widgets.activity import _BUSY_ACTIVITIES, ActivityIndicator
 
     with tempfile.TemporaryDirectory(prefix="ouro-command-probe-") as tmp:
         root = Path(tmp)

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from ouro.application.agent_definitions import AgentDefinitionService
-from ouro.application.configuration import ConfigurationFacade
-from ouro.application.runtime import RuntimeService
+from ouro.application.agents.definitions import AgentDefinitionService
+from ouro.application.configuration.facade import ConfigurationFacade
+from ouro.application.runtime.service import RuntimeService
 from ouro.config.agents import AgentDefinitionsConfigManager
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import AgentSpawnPolicy, ToolSelection

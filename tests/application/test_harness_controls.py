@@ -12,7 +12,7 @@ from ouro.core.session_commits import SessionCommit, SessionCommitConflict, Sess
 from ouro.core.session_controls import AttributedSessionControlTransition
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import SessionRecord
-from ouro.plugins.api import adapt_sdk_contributions
+from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.sdk.plugins import v5 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore

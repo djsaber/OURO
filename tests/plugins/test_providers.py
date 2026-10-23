@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from ouro.config.providers import ProviderConfigManager
+from ouro.config.providers.manager import ProviderConfigManager
 from ouro.core.billing import UsageFilter
 from ouro.core.content import AudioContent, ImageContent, TextContent, VideoContent
 from ouro.core.messages import (
@@ -17,7 +17,8 @@ from ouro.core.messages import (
 from ouro.core.request_context import ProviderRequestContext
 from ouro.core.tools import ToolCallProducer, ToolCallRequest
 from ouro.local_application import LocalApplication, open_local_plugins
-from ouro.plugins.package import PluginPackageError, validate_plugin_package
+from ouro.plugins.installation.package import validate_plugin_package
+from ouro.plugins.installation.paths import PluginPackageError
 
 PLUGIN = "test.protocol.provider"
 PROTOCOL = f"{PLUGIN}/providers/probe"
@@ -324,7 +325,7 @@ async def test_registered_existing_adapter_preserves_native_events():
     from pydantic import TypeAdapter
 
     from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta, Usage
-    from ouro.plugins.catalog import ContributionBinding
+    from ouro.plugins.catalog.snapshot import ContributionBinding
     from ouro.plugins.providers import PluginProvider, adapt_provider
     from ouro.providers import FauxProvider
     from ouro.sdk.plugins.providers import (

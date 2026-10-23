@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from ouro.application.configuration import ConfigurationFacade
+from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.cli.main import main
 from ouro.config import ProviderRuntimeOptions
 from ouro.config.compaction import CompactionConfigManager
 from ouro.config.endpoints import endpoint_config_from_mapping, endpoint_config_to_raw
-from ouro.config.provider_runtime import merge_runtime_options
+from ouro.config.providers.runtime import merge_runtime_options
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata
 from ouro.providers import build_runtime_adapter

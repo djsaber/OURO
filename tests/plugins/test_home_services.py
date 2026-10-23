@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from ouro.application.task_scheduler import TaskScheduler
+from ouro.application.tasks.scheduler import TaskScheduler
 from ouro.automation.local_files import LocalTaskRepository
 from ouro.sdk.plugins import v5 as sdk
 from tests.application.test_tasks import task_runtime

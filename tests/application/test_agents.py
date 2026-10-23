@@ -8,18 +8,18 @@ from threading import Event, get_ident
 
 import pytest
 
-from ouro.application.agent_definitions import AgentDefinitionService
-from ouro.application.agent_models import SpawnAgentRequest
-from ouro.application.agents import AgentService
-from ouro.application.resources import ResourceService
-from ouro.application.runtime import RuntimeService
-from ouro.application.supervisor import RuntimeSupervisor
-from ouro.application.supervisor_models import (
+from ouro.application.agents.definitions import AgentDefinitionService
+from ouro.application.agents.service import AgentService
+from ouro.application.contracts.agents import SpawnAgentRequest
+from ouro.application.contracts.execution import (
     RunHandle,
     RuntimeActivitySnapshot,
     RuntimeNotification,
     RuntimeStatusSnapshot,
 )
+from ouro.application.resources import ResourceService
+from ouro.application.runtime.service import RuntimeService
+from ouro.application.supervisor import RuntimeSupervisor
 from ouro.config.agents import AgentDefinitionsConfigManager
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import (
@@ -38,8 +38,8 @@ from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStrea
 from ouro.core.session_commits import SessionCommit
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolInvocation
-from ouro.providers.anthropic_messages_codec import messages_to_anthropic_messages
-from ouro.providers.openai_responses_codec import responses_input
+from ouro.providers.anthropic_messages.codec import messages_to_anthropic_messages
+from ouro.providers.openai_responses.codec import responses_input
 from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolInputRequest, ToolRegistry, ToolResult

@@ -31,13 +31,11 @@ from textual.widget import Widget
 from textual.widgets import Input, TextArea
 from textual.worker import Worker
 
-from ouro.application.agent_models import AgentTreeNode
-from ouro.application.agent_tree import AgentTreeSubscription
-from ouro.application.models import AvailableModel, ModelReasoningState
-from ouro.application.queued_inputs import QueuedInputMode, QueuedUserInputView
-from ouro.application.session_content import active_stream_tail as _active_stream_tail
-from ouro.application.session_content import restore_session_content
-from ouro.application.session_models import (
+from ouro.application.agents.tree import AgentTreeSubscription
+from ouro.application.contracts.agents import AgentTreeNode
+from ouro.application.contracts.execution import RuntimeActivitySnapshot
+from ouro.application.contracts.models import AvailableModel, ModelReasoningState
+from ouro.application.contracts.sessions import (
     SessionCatalogEntry,
     SessionHistoryAnchor,
     SessionHistoryWindow,
@@ -45,9 +43,11 @@ from ouro.application.session_models import (
     SessionObservationSnapshot,
     SessionSummary,
 )
-from ouro.application.session_observation import SessionObservation, observation_event
-from ouro.application.skill_activations import SkillInvocationRequest
-from ouro.application.supervisor_models import RuntimeActivitySnapshot
+from ouro.application.inputs.queue import QueuedInputMode, QueuedUserInputView
+from ouro.application.inputs.skills import SkillInvocationRequest
+from ouro.application.observations.content import active_stream_tail as _active_stream_tail
+from ouro.application.observations.content import restore_session_content
+from ouro.application.observations.sessions import SessionObservation, observation_event
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.attachment_input import editable_input_content
 from ouro.core.base import new_id
@@ -61,13 +61,6 @@ from ouro.core.reasoning import REASONING_EFFORTS, ReasoningRequest
 from ouro.core.state import DEFAULT_SESSION_TITLE
 from ouro.deployment import SessionBackend, TaskBackend
 from ouro.local_application import LocalApplication
-from ouro.tui.attachment_editor import file_count_label
-from ouro.tui.attachment_paths import (
-    PASTED_TEXT_ATTACHMENT_THRESHOLD,
-    pasted_files,
-    pasted_text_file,
-)
-from ouro.tui.attachment_picker import AttachmentPicker
 from ouro.tui.clipboard import ClipboardWriteError, write_system_clipboard
 from ouro.tui.commands import (
     REFERENCE_COMMANDS,
@@ -79,35 +72,33 @@ from ouro.tui.commands import (
     matching_commands,
     resolve_command,
 )
-from ouro.tui.configuration_workflows import (
+from ouro.tui.composer.attachment_editor import file_count_label
+from ouro.tui.composer.attachment_paths import (
+    PASTED_TEXT_ATTACHMENT_THRESHOLD,
+    pasted_files,
+    pasted_text_file,
+)
+from ouro.tui.composer.attachment_picker import AttachmentPicker
+from ouro.tui.composer.drafts import TuiInputDrafts, TuiInputDraftStore, TuiPendingInput
+from ouro.tui.composer.input import COMPOSER_MAX_HEIGHT, COMPOSER_MIN_HEIGHT, Composer
+from ouro.tui.composer.popup import COMMAND_POPUP_MAX_HEIGHT, COMMAND_POPUP_MIN_HEIGHT, CommandPopup
+from ouro.tui.composer.queue import QueuedInputPanel
+from ouro.tui.composer.recovery import recover_input_drafts, release_unused_draft_resources
+from ouro.tui.composer.skill_picker import SkillPicker
+from ouro.tui.composer.surface import WelcomePanel
+from ouro.tui.controller import TuiController
+from ouro.tui.conversation.history import ConversationHistory
+from ouro.tui.conversation.history_models import ConversationHistoryState, TranscriptEntry
+from ouro.tui.conversation.markdown_stream import AssistantMarkdownStream
+from ouro.tui.conversation.messages import MessageCopyRequested, ToolNavigationRequested
+from ouro.tui.conversation.tools import is_terminal_tool
+from ouro.tui.conversation.transcript import project_transcript_entries
+from ouro.tui.conversation.view import ConversationView, PreparedTranscript
+from ouro.tui.features.configuration.workflows import (
     SYSTEM_SETTING_ACTIONS,
     ConfigurationWorkflowsApp,
 )
-from ouro.tui.controller import (
-    TUI_APPROVAL_PRESETS,
-    LoadedSession,
-    TuiBootstrap,
-    TuiController,
-    TuiLifecycleStatus,
-    TuiSessionObservation,
-    TuiSystemStatus,
-    project_mcp_system_status,
-    project_usage_system_status,
-)
-from ouro.tui.conversation_history import (
-    AssistantMarkdownStream,
-    ConversationHistory,
-    ConversationHistoryState,
-    MessageCopyRequested,
-    ToolNavigationRequested,
-    TranscriptEntry,
-)
-from ouro.tui.draft_recovery import recover_input_drafts, release_unused_draft_resources
-from ouro.tui.input_drafts import TuiInputDrafts, TuiInputDraftStore, TuiPendingInput
-from ouro.tui.menu_labels import MODEL_THINKING_LABEL, THINKING_LABELS, TOOL_APPROVAL_LABEL
-from ouro.tui.menu_sorting import sorted_models
-from ouro.tui.menu_styles import MENU_CSS
-from ouro.tui.model_menus import (
+from ouro.tui.features.providers.model_menus import (
     UNAVAILABLE_MODEL_LABEL,
     approval_choices,
     model_display_label,
@@ -115,23 +106,29 @@ from ouro.tui.model_menus import (
     reasoning_request,
     reasoning_values,
 )
-from ouro.tui.plan_confirmation import project_plan_confirmation
+from ouro.tui.interactions.approval import (
+    INTERACTION_PANEL_MAX_HEIGHT,
+    INTERACTION_PANEL_MIN_HEIGHT,
+)
+from ouro.tui.interactions.bar import InteractionBar
+from ouro.tui.interactions.forms import project_question_form
+from ouro.tui.interactions.plan import PlanConfirmationPanel
+from ouro.tui.interactions.plan_form import project_plan_confirmation
+from ouro.tui.interactions.questions import AskUserPanel
+from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.menus.editable import EditableChoiceScreen
+from ouro.tui.menus.help import help_choices
+from ouro.tui.menus.labels import MODEL_THINKING_LABEL, THINKING_LABELS, TOOL_APPROVAL_LABEL
+from ouro.tui.menus.models import Choice, MenuDestination
+from ouro.tui.menus.multiple import MultiChoiceScreen
+from ouro.tui.menus.sorting import sorted_models
+from ouro.tui.menus.styles import MENU_CSS
 from ouro.tui.preferences import (
     MAX_RECENT_WORKSPACES,
     SessionGrouping,
     TuiPreferences,
     TuiPreferencesStore,
 )
-from ouro.tui.question_forms import project_question_form
-from ouro.tui.screens import (
-    Choice,
-    ChoiceScreen,
-    EditableChoiceScreen,
-    MenuDestination,
-    MultiChoiceScreen,
-    help_choices,
-)
-from ouro.tui.skill_picker import SkillPicker
 from ouro.tui.state import (
     PendingInteraction,
     TuiSessionProjection,
@@ -141,12 +138,21 @@ from ouro.tui.state import (
     project_run_presentation,
     project_run_presentations,
 )
+from ouro.tui.status import project_mcp_system_status, project_usage_system_status
 from ouro.tui.subagent_navigation import SubagentNavigationPanel
 from ouro.tui.theme import (
     DEFAULT_TUI_THEME,
     THEME_SATURATION_LEVELS,
     TUI_THEMES,
     TuiTheme,
+)
+from ouro.tui.view_models import (
+    TUI_APPROVAL_PRESETS,
+    LoadedSession,
+    TuiBootstrap,
+    TuiLifecycleStatus,
+    TuiSessionObservation,
+    TuiSystemStatus,
 )
 from ouro.tui.welcome import (
     DEFAULT_WELCOME_STYLE,
@@ -155,28 +161,9 @@ from ouro.tui.welcome import (
     welcome_catalog,
 )
 from ouro.tui.welcome_packages import load_theme_styles
-from ouro.tui.widgets import (
-    COMMAND_POPUP_MAX_HEIGHT,
-    COMMAND_POPUP_MIN_HEIGHT,
-    COMPOSER_MAX_HEIGHT,
-    COMPOSER_MIN_HEIGHT,
-    INTERACTION_PANEL_MAX_HEIGHT,
-    INTERACTION_PANEL_MIN_HEIGHT,
-    ActivityIndicator,
-    AskUserPanel,
-    BrandHeader,
-    CommandPopup,
-    Composer,
-    ConversationView,
-    InteractionBar,
-    PlanConfirmationPanel,
-    PreparedTranscript,
-    QueuedInputPanel,
-    StatusLine,
-    WelcomePanel,
-    is_terminal_tool,
-    project_transcript_entries,
-)
+from ouro.tui.widgets.activity import ActivityIndicator
+from ouro.tui.widgets.brand import BrandHeader
+from ouro.tui.widgets.status import StatusLine
 
 _LOG = logging.getLogger(__name__)
 

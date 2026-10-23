@@ -1,0 +1,143 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+from ouro.application.context.prompts import PromptContext
+from ouro.application.models.catalog import AdapterBuilder, ConfiguredModelCatalog
+from ouro.config import (
+    CompactionConfig,
+    CompactionConfigManager,
+    PermissionConfigManager,
+    PromptConfigManager,
+    ProviderConfigManager,
+    ProviderRuntimeOptions,
+    QueuedInputConfig,
+    QueuedInputConfigManager,
+    RunBudgetConfigManager,
+    ToolExecutionConfig,
+    ToolExecutionConfigManager,
+)
+from ouro.core.adapter import RuntimeAdapter
+from ouro.core.context import compose_system_prompt
+from ouro.core.run_budget import RunBudgetPolicy
+from ouro.core.tools import PermissionMode
+from ouro.skills import SkillMetadata, discover_skill_catalog
+
+RuntimeProviderOptions = ProviderRuntimeOptions
+
+
+@dataclass(frozen=True)
+class RuntimeConfigurationSnapshot:
+    provider_options: ProviderRuntimeOptions
+    system_prompt: str
+    additional_system_prompt: str
+    permission_overrides: dict[str, PermissionMode]
+    plugin_permission_overrides: dict[str, PermissionMode]
+    compaction: CompactionConfig
+    tool_execution: ToolExecutionConfig
+    run_budget: RunBudgetPolicy
+    queued_inputs: QueuedInputConfig
+    skills: tuple[SkillMetadata, ...]
+
+
+class RuntimeConfigurationResolver:
+    """Resolve startup configuration and explicitly refreshable request settings."""
+
+    def __init__(self, root: str | Path | None = None) -> None:
+        self.root = ProviderConfigManager(root).root
+        self._providers = ProviderConfigManager(self.root)
+        self._prompts = PromptConfigManager(self.root)
+        self._permissions = PermissionConfigManager(self.root)
+        self._compaction = CompactionConfigManager(self.root)
+        self._tool_execution = ToolExecutionConfigManager(self.root)
+        self._run_budget = RunBudgetConfigManager(self.root)
+        self._queued_inputs = QueuedInputConfigManager(self.root)
+
+    def snapshot(
+        self,
+        *,
+        provider_options: ProviderRuntimeOptions | None = None,
+        system_prompt: str | None = None,
+    ) -> RuntimeConfigurationSnapshot:
+        prompts = self._prompts.snapshot().config
+        permissions = self._permissions.snapshot()
+        return RuntimeConfigurationSnapshot(
+            provider_options=self._providers.resolve_runtime_options(
+                provider_options or ProviderRuntimeOptions()
+            ),
+            system_prompt=prompts.resolve_system_prompt(system_prompt),
+            additional_system_prompt=prompts.additional_system_prompt,
+            permission_overrides=permissions.tools,
+            plugin_permission_overrides=permissions.plugins,
+            compaction=self._compaction.snapshot(),
+            tool_execution=self._tool_execution.snapshot(),
+            run_budget=self._run_budget.snapshot(),
+            queued_inputs=self._queued_inputs.snapshot(),
+            skills=self.skills(),
+        )
+
+    def skills(self) -> tuple[SkillMetadata, ...]:
+        """Discover the current directory entries and source policy on demand."""
+
+        return tuple(discover_skill_catalog(home=self.root).skills)
+
+    def prompt_context(self, *, system_prompt: str | None = None) -> PromptContext:
+        prompts = self._prompts.snapshot().config
+        replacement = next((entry for entry in prompts.replacements if entry.enabled), None)
+        return PromptContext(
+            system_prompt=compose_system_prompt(
+                prompts.resolve_system_prompt(system_prompt), prompts.additional_system_prompt
+            ),
+            source=(
+                "override"
+                if system_prompt is not None
+                else "replacement"
+                if replacement
+                else "default"
+            ),
+            revision=prompts.revision,
+            replacement_id=(
+                replacement.id if replacement is not None and system_prompt is None else None
+            ),
+            addition_ids=tuple(entry.id for entry in prompts.additions if entry.enabled),
+        )
+
+    def model_catalog(
+        self,
+        default_adapter: RuntimeAdapter,
+        *,
+        adapter_builder: AdapterBuilder,
+        default_overrides: ProviderRuntimeOptions | None = None,
+        default_options: ProviderRuntimeOptions | None = None,
+    ) -> ConfiguredModelCatalog:
+        return ConfiguredModelCatalog(
+            self._providers,
+            default_adapter,
+            adapter_builder=adapter_builder,
+            default_overrides=default_overrides,
+            default_options=default_options,
+        )
+
+    def compaction_provider_options(
+        self,
+        config: CompactionConfig,
+    ) -> ProviderRuntimeOptions | None:
+        model = config.model
+        if not model.has_configured_route:
+            return None
+        if model.use_default_model:
+            provider_id, endpoint_id = self._providers.require_default_route().split("/", 1)
+        else:
+            assert model.provider_id is not None
+            assert model.endpoint_id is not None
+            provider_id, endpoint_id = model.provider_id, model.endpoint_id
+        return self._providers.resolve_runtime_options(
+            ProviderRuntimeOptions(
+                provider_id=provider_id,
+                endpoint_id=endpoint_id,
+            )
+        )
+
+    def default_model_route(self) -> str:
+        return self._providers.require_default_route()

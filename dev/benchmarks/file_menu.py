@@ -12,10 +12,10 @@ from time import perf_counter
 
 from textual.app import App
 
-from ouro.tui.attachment_picker import AttachmentPicker
 from ouro.tui.commands import TuiCommand
+from ouro.tui.composer.attachment_picker import AttachmentPicker
+from ouro.tui.composer.popup import CommandPopup
 from ouro.tui.theme import DEFAULT_TUI_THEME
-from ouro.tui.widgets import CommandPopup
 
 
 class MenuApp(App):

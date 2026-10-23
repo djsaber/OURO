@@ -4,15 +4,15 @@ import asyncio
 
 import pytest
 
-from ouro.application.plugins import PluginService
-from ouro.application.runtime import RuntimeService
+from ouro.application.plugins.service import PluginService
+from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.observers import ObserverRegistry
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.tools import ToolCallRequest
-from ouro.plugins.contributions import ContributionCoordinator
-from ouro.plugins.runtime import PluginRuntimeResource
-from ouro.plugins.store import PluginPackageStore
+from ouro.plugins.contributions.preparation import ContributionCoordinator
+from ouro.plugins.installation.store import PluginPackageStore
+from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry

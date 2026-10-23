@@ -8,10 +8,10 @@ import pytest
 from ouro.core.errors import ConfigError, PersistenceError
 from ouro.core.input_content import InputContent
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.draft_recovery import recover_input_drafts
-from ouro.tui.input_drafts import TuiInputDrafts, TuiInputDraftStore, TuiPendingInput
+from ouro.tui.composer.drafts import TuiInputDrafts, TuiInputDraftStore, TuiPendingInput
+from ouro.tui.composer.input import Composer
+from ouro.tui.composer.recovery import recover_input_drafts
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
-from ouro.tui.widgets import Composer
 from tests.tui.helpers import release_on_exit, run_ready_app, wait_for_worker_group, wait_until
 from tests.tui.test_history_commands import application_at
 

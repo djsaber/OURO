@@ -5,8 +5,8 @@ import pytest
 from ouro.core.errors import PersistenceError
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.commands import matching_commands, resolve_command
-from ouro.tui.conversation_history import ConversationHistory
-from ouro.tui.widgets import Composer
+from ouro.tui.composer.input import Composer
+from ouro.tui.conversation.history import ConversationHistory
 from tests.session_summaries import add_session_summaries
 from tests.tui.helpers import run_ready_app, two_route_application
 

@@ -10,8 +10,8 @@ import argparse
 import asyncio
 from pathlib import Path
 
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.application.runtime.environment import RuntimeEnvironment
+from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent

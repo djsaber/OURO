@@ -7,7 +7,7 @@ import pytest
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.providers import FauxProvider
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.conversation_history import ConversationHistory
+from ouro.tui.conversation.history import ConversationHistory
 from tests.tui.helpers import run_ready_app
 from tests.tui.test_tasks import streaming_application
 

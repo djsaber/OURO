@@ -8,8 +8,10 @@ from ouro_tui_themes.styles import STYLES
 from textual import events
 
 from ouro.tui.app import OuroTuiApp
+from ouro.tui.composer.input import Composer
+from ouro.tui.composer.popup import CommandPopup
+from ouro.tui.composer.surface import WelcomePanel
 from ouro.tui.welcome import welcome_catalog
-from ouro.tui.widgets import CommandPopup, Composer, WelcomePanel
 from tests.tui.helpers import resize_terminal, run_ready_app, two_route_application
 
 WELCOME_STYLES = welcome_catalog(STYLES)

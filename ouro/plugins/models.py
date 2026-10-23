@@ -11,7 +11,7 @@ from pydantic import ConfigDict, Field, field_serializer, field_validator, model
 
 from ouro import __version__
 from ouro.core.base import Metadata, MetadataField, OuroModel, utc_now
-from ouro.plugins.configuration_values import (
+from ouro.plugins.configuration.values import (
     configuration_dict,
     copy_configuration_values,
     freeze_configuration,

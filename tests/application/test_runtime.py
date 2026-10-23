@@ -6,10 +6,10 @@ from threading import Event, Timer, get_ident
 import pytest
 
 from ouro.application.resources import ResourceService
-from ouro.application.runs import abort_run_state
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_environment import RuntimeEnvironment
-from ouro.application.sessions import SessionService
+from ouro.application.runs.lifecycle import abort_run_state
+from ouro.application.runtime.environment import RuntimeEnvironment
+from ouro.application.runtime.service import RuntimeService
+from ouro.application.sessions.service import SessionService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.context import ContextBuilder
 from ouro.core.context_providers import (
@@ -68,7 +68,7 @@ from ouro.tools import (
     ToolResult,
     builtin_tools,
 )
-from ouro.tools.builtin_shell import detect_command_shell
+from ouro.tools.builtin.shell import detect_command_shell
 from tests.application.helpers import running_runtime_task
 
 

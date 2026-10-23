@@ -3,8 +3,8 @@ import threading
 
 import pytest
 
-from ouro.application.model_generation import ModelGenerationService
-from ouro.application.models import FixedRuntimeAdapterCatalog
+from ouro.application.models.catalog import FixedRuntimeAdapterCatalog
+from ouro.application.models.generation import ModelGenerationService
 from ouro.application.usage import UsageService
 from ouro.billing import LocalUsageLedger
 from ouro.core.adapter import RuntimeAdapter

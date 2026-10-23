@@ -7,6 +7,8 @@ from datetime import timedelta
 
 import pytest
 
+import ouro.sessions.backends.files.commits as file_commits
+import ouro.sessions.backends.sqlite.commits as sqlite_commits
 from ouro.application.harness import capture_session_harness
 from ouro.core.context import ContextBuilder
 from ouro.core.context_budget import ContextBudget
@@ -23,7 +25,7 @@ from ouro.core.session_commits import (
 from ouro.core.session_controls import SessionControlActivation, SessionControlState
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore, file_commits, sqlite_commits
+from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 
 
 @pytest.fixture(params=["files", "sqlite"])
@@ -96,7 +98,7 @@ def test_request_context_survives_harness_changes_but_not_history_withdrawal(sto
 
 
 def test_file_session_enumeration_excludes_unpublished_creation(tmp_path, monkeypatch):
-    import ouro.sessions.local_files as files
+    import ouro.sessions.backends.files.store as files
 
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -263,7 +265,7 @@ def test_run_event_queue_and_state_share_one_decision(store):
 
 @pytest.mark.parametrize("failure_point", ["checkpoint", "decision", "receipt"])
 def test_file_decision_recovers_without_reexecuting_operation(tmp_path, monkeypatch, failure_point):
-    from ouro.sessions import file_commits
+    import ouro.sessions.backends.files.commits as file_commits
 
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -346,7 +348,7 @@ def test_sqlite_failure_rolls_back_the_entire_decision(tmp_path):
 def test_file_recovery_finishes_a_partially_applied_decision(tmp_path, monkeypatch, failure_point):
     from pathlib import Path
 
-    from ouro.sessions.file_commits import FileSessionCommits
+    from ouro.sessions.backends.files.commits import FileSessionCommits
 
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -412,7 +414,7 @@ def test_file_recovery_finishes_a_partially_applied_decision(tmp_path, monkeypat
 
 
 def test_sqlite_session_snapshot_uses_one_harness_version(tmp_path, monkeypatch):
-    from ouro.sessions.sqlite_commits import SQLiteSessionCommits
+    from ouro.sessions.backends.sqlite.commits import SQLiteSessionCommits
 
     store = SQLiteSessionStore(tmp_path / "sessions.db")
     store.initialize()

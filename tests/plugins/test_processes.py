@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from ouro.plugins.catalog import GenerationGate, PluginGenerationUnavailableError
+from ouro.plugins.catalog.gates import GenerationGate, PluginGenerationUnavailableError
 from ouro.plugins.invocation import plugin_invocation
 from ouro.plugins.processes import PluginProcessService
 from ouro.sdk.plugins.processes import ProcessRequest

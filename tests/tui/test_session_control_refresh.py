@@ -6,32 +6,39 @@ import pytest
 
 from ouro.core.events import EventRecord
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.controller import TuiSessionControlStatus
-from ouro.tui.widgets import ActivityIndicator
-from tests.tui.helpers import run_ready_app
-from tests.tui.test_app import BlockingStreamProvider, _wait_for_worker_group, _wait_until
+from ouro.tui.view_models import TuiSessionControlStatus
+from ouro.tui.widgets.activity import ActivityIndicator
+from tests.tui.app.providers import BlockingStreamProvider
+from tests.tui.helpers import release_on_exit, run_ready_app, wait_for_events
+from tests.tui.helpers import wait_for_worker_group as _wait_for_worker_group
+from tests.tui.helpers import wait_until as _wait_until
 from tests.tui.test_tasks import streaming_application
 
 
-async def test_pause_command_stops_blocked_execution_without_a_new_input(tmp_path):
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_pause_command_stops_blocked_execution_without_a_new_input(tmp_path, backend):
     provider = BlockingStreamProvider()
-    application = streaming_application(tmp_path, provider)
+    application = streaming_application(tmp_path, provider, backend=backend)
     app = OuroTuiApp(application=application)
     async with run_ready_app(app) as pilot:
         await application.plugins.enable("dev.ouro.goal")
-        await app._dispatch_command("/goal Retain this objective")
-        await asyncio.wait_for(provider.first_chunk_sent.wait(), 5)
-        session_id = app._controller.session_id
-        before = application.runtime.store.load_session(session_id).messages
-        await app._dispatch_command("/goal pause")
-        await _wait_for_worker_group(app, pilot, group="plugin-command")
-        snapshot = application.runtime.store.load_runtime_session(session_id)
-        assert snapshot.runs[-1].status == "aborted"
-        assert snapshot.messages == before
-        goal = await application.plugins.execute_command(
-            "dev.ouro.goal:goal", "status", session_id=session_id
-        )
-        assert goal.data["goal"]["status"] == "paused"
+        async with release_on_exit(provider.release):
+            await app._dispatch_command("/goal Retain this objective")
+            await wait_for_events(
+                provider.first_chunk_sent, pilot=pilot, description="goal model stream before pause"
+            )
+            session_id = app._controller.session_id
+            before = application.runtime.store.load_session(session_id).messages
+            await app._dispatch_command("/goal pause")
+            await _wait_for_worker_group(app, pilot, group="plugin-command")
+            snapshot = application.runtime.store.load_runtime_session(session_id)
+            assert snapshot.runs[-1].status == "aborted"
+            assert snapshot.messages == before
+            goal = await application.plugins.execute_command(
+                "dev.ouro.goal:goal", "status", session_id=session_id
+            )
+            assert goal.data["goal"]["status"] == "paused"
+            assert not provider.release.is_set()
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
@@ -47,15 +54,18 @@ async def test_command_mode_visible_while_first_model_response_is_blocked(
         if existing_session:
             session = application.runtime.create_session(title="Existing conversation")
             await app._open_session(session.session_id)
-        await app._dispatch_command("/goal Verify immediate mode display")
         try:
-            await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=5)
+            await app._dispatch_command("/goal Verify immediate mode display")
+            await wait_for_events(
+                provider.first_chunk_sent,
+                pilot=pilot,
+                description="goal model stream before finish",
+            )
             assert [s.label for s in await app._controller.session_control_statuses()] == ["Goal"]
             await _wait_until(
                 lambda: app.query_one(ActivityIndicator)._session_control_labels == ("Goal",),
                 pilot,
                 description="committed mode before the model finishes",
-                timeout=1,
             )
         finally:
             provider.release.set()
@@ -79,10 +89,14 @@ async def test_slow_command_status_read_does_not_block_model_execution(tmp_path,
             return await read_statuses()
 
         monkeypatch.setattr(app._controller, "session_control_statuses", delayed_statuses)
-        await app._dispatch_command("/goal Continue while presentation is slow")
         try:
-            await asyncio.wait_for(entered.wait(), timeout=2)
-            await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
+            await app._dispatch_command("/goal Continue while presentation is slow")
+            await wait_for_events(
+                entered,
+                provider.first_chunk_sent,
+                pilot=pilot,
+                description="model execution while command status read remains blocked",
+            )
             assert not release.is_set()
         finally:
             release.set()
@@ -134,9 +148,11 @@ async def test_command_submission_after_navigation_does_not_refresh_destination(
 
         monkeypatch.setattr(application.plugins, "execute_command", delayed_command)
         monkeypatch.setattr(app._controller, "session_control_statuses", statuses)
-        await app._dispatch_command("/plan on")
         try:
-            await asyncio.wait_for(committed.wait(), timeout=2)
+            await app._dispatch_command("/plan on")
+            await wait_for_events(
+                committed, pilot=pilot, description="command commit before navigation"
+            )
             await app._new_session()
         finally:
             release.set()
@@ -164,7 +180,9 @@ async def test_pending_status_read_cannot_overwrite_reopened_session(tmp_path, m
         app._schedule_session_controls_refresh()
         task = app._session_controls_refresh_task
         try:
-            await asyncio.wait_for(entered.wait(), timeout=2)
+            await wait_for_events(
+                entered, pilot=pilot, description="pending status read before reopening session"
+            )
             await app._new_session()
             await app._open_session(session.session_id)
         finally:

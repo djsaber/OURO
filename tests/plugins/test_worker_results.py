@@ -5,12 +5,13 @@ from pathlib import Path
 
 import pytest
 
+import ouro.plugins.worker.codec as worker_module
 from ouro.core.harness import HarnessState
 from ouro.core.harness_calls import HarnessCallSnapshot
-from ouro.plugins import worker as worker_module
 from ouro.plugins.harness_calls import PluginStateView
 from ouro.plugins.manifest import PluginManifest
-from ouro.plugins.worker import WorkerPluginInstance, WorkerProtocolError
+from ouro.plugins.worker.codec import WorkerProtocolError
+from ouro.plugins.worker.instance import WorkerPluginInstance
 from ouro.sdk.plugins import v5 as sdk
 
 CALLS = {

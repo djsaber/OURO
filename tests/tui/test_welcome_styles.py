@@ -19,14 +19,16 @@ from textual.widgets import Input, OptionList, Static
 
 from ouro.core.errors import ConfigError, PersistenceError
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.controller import TuiSystemStatus
+from ouro.tui.composer.input import Composer
+from ouro.tui.composer.popup import CommandPopup
+from ouro.tui.composer.surface import WelcomePanel
+from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
-from ouro.tui.screens import ChoiceScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
+from ouro.tui.view_models import TuiSystemStatus
 from ouro.tui.welcome import WelcomePage, WelcomeStyle, welcome_catalog
 from ouro.tui.welcome.components import WelcomeUsage
 from ouro.tui.welcome.host import WelcomeHost
-from ouro.tui.widgets import CommandPopup, Composer, WelcomePanel
 from tests.tui.helpers import resize_terminal, run_ready_app, two_route_application
 
 WELCOME_STYLES = welcome_catalog(STYLES)

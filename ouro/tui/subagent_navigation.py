@@ -10,7 +10,7 @@ from textual import events
 from textual.message import Message
 from textual.widgets import Static
 
-from ouro.application.agent_models import AgentTreeNode
+from ouro.application.contracts.agents import AgentTreeNode
 from ouro.tui.theme import theme_for
 
 _MAX_VISIBLE_CHILDREN = 10

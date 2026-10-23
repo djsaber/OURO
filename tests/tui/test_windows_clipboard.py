@@ -9,7 +9,7 @@ import pytest
 
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
-from ouro.tui.widgets import Composer
+from ouro.tui.composer.input import Composer
 from tests.tui.helpers import run_ready_app
 from tests.tui.test_history_commands import application_at
 

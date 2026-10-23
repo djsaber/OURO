@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from ouro.application.models import AvailableModel
+from ouro.application.contracts.models import AvailableModel
 from ouro.core.events import EventRecord
 from ouro.core.state import RunRecord
 from ouro.tui.state import (

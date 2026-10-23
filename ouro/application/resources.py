@@ -4,20 +4,20 @@ from collections.abc import Iterable, Iterator
 from contextlib import ExitStack
 from pathlib import Path
 
-from ouro.application.dto import Diagnostic
-from ouro.application.file_inputs import (
-    FileInputProjector,
-    PreparedFileInputs,
-    with_attachment_read_paths,
-)
-from ouro.application.queued_inputs import QueuedInputQueue
-from ouro.application.resource_models import (
+from ouro.application.contracts.base import Diagnostic
+from ouro.application.contracts.resources import (
     ResourceExportResult,
     ResourceListResult,
     ResourceMutationResult,
     ResourceRemoveResult,
     ResourceView,
 )
+from ouro.application.inputs.files import (
+    FileInputProjector,
+    PreparedFileInputs,
+    with_attachment_read_paths,
+)
+from ouro.application.inputs.queue import QueuedInputQueue
 from ouro.core.base import new_id, utc_now
 from ouro.core.content import MediaModality
 from ouro.core.errors import (

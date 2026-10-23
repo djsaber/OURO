@@ -3,7 +3,8 @@ from __future__ import annotations
 import pytest
 
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.widgets import CommandPopup, Composer
+from ouro.tui.composer.input import Composer
+from ouro.tui.composer.popup import CommandPopup
 from tests.tui.helpers import run_ready_app
 from tests.tui.test_history_commands import application_at
 

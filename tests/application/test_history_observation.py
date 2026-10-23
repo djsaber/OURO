@@ -4,13 +4,13 @@ from threading import Event
 import pytest
 
 from ouro.application.events import RuntimeEventRecorder
-from ouro.application.queued_inputs import QUEUED_INPUTS_KEY
-from ouro.application.runtime_activity import (
+from ouro.application.inputs.queue import QUEUED_INPUTS_KEY
+from ouro.application.observations.activity import (
     project_runtime_activity_state,
     reduce_runtime_activity,
 )
-from ouro.application.session_content import SessionContentProjection
-from ouro.application.sessions import SessionService
+from ouro.application.observations.content import SessionContentProjection
+from ouro.application.sessions.service import SessionService
 from ouro.core.errors import PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord

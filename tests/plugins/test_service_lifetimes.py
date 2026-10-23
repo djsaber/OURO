@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from ouro.application.plugins import PluginService
+from ouro.application.plugins.service import PluginService
 from ouro.core.observers import ObserverRegistry
-from ouro.plugins.contributions import ContributionCoordinator
-from ouro.plugins.runtime import PluginRuntimeResource
-from ouro.plugins.store import PluginPackageStore
+from ouro.plugins.contributions.preparation import ContributionCoordinator
+from ouro.plugins.installation.store import PluginPackageStore
+from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.tools import ToolRegistry
 from tests.plugins.fixtures.service_lifetime import BRANCH, LEAF, MEMORY, METHODS
 

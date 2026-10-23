@@ -5,9 +5,9 @@ import threading
 
 import pytest
 
+from ouro.application.contracts.execution import ShutdownPolicy
+from ouro.application.inputs.requests import UserInputRequest
 from ouro.application.supervisor import RuntimeSupervisor
-from ouro.application.supervisor_models import ShutdownPolicy
-from ouro.application.user_inputs import UserInputRequest
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ProviderStreamEvent
 from tests.tui.test_tasks import streaming_application

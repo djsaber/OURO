@@ -5,8 +5,8 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from ouro.application.configuration import ConfigurationFacade
-from ouro.application.configuration_models import (
+from ouro.application.configuration.facade import ConfigurationFacade
+from ouro.application.contracts.configuration import (
     LoadedSkillView,
     SkillDiagnosticView,
     SkillManagementView,

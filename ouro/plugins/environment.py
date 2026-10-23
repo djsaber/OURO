@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ouro.core.callbacks import run_blocking
-from ouro.plugins.catalog import GenerationGate
+from ouro.plugins.catalog.gates import GenerationGate
 from ouro.plugins.instructions import AgentInstructionLoader
 from ouro.plugins.invocation import current_invocation
 from ouro.sdk.plugins.environment import AgentInstructionDocument

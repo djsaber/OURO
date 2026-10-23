@@ -13,11 +13,14 @@ from textual.geometry import Size
 from textual.widgets import Input, Static
 from textual.worker import WorkerCancelled
 
+import ouro.tui.conversation.history as conversation_history
+import ouro.tui.conversation.markdown_stream as conversation_history_markdown_stream
 from ouro.core.events import EventRecord
-from ouro.tui import conversation_history
 from ouro.tui.app import OuroTuiApp, RuntimeEventsReady
-from ouro.tui.screens import ChoiceScreen
-from ouro.tui.widgets import Composer, ConversationView, StatusLine
+from ouro.tui.composer.input import Composer
+from ouro.tui.conversation.view import ConversationView
+from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.widgets.status import StatusLine
 from tests.tui.helpers import run_ready_app, two_route_application
 
 
@@ -45,7 +48,8 @@ async def test_stream_refresh_preserves_pointer_focus_and_terminal_blur(tmp_path
         await pilot.pause()
         if target == "message":
             await pilot.click(
-                conversation.query_one(conversation_history.ConversationHistory), offset=(3, 0)
+                conversation.query_one(conversation_history.ConversationHistory),
+                offset=(3, 0),
             )
         elif target == "blank":
             await pilot.click(conversation, offset=(3, conversation.size.height - 1))
@@ -97,14 +101,19 @@ async def test_session_dispatches_input_while_stream_rendering_is_pending(
         assert app.focused is composer
         bounds = composer.region
         started, release = threading.Event(), threading.Event()
-        original = getattr(conversation_history, operation)
+        render_module = (
+            conversation_history_markdown_stream
+            if operation == "_block_starts"
+            else conversation_history
+        )
+        original = getattr(render_module, operation)
 
         def slow_render(*args, **kwargs):
             started.set()
             assert release.wait(5), "test did not release the background renderer"
             return original(*args, **kwargs)
 
-        monkeypatch.setattr(conversation_history, operation, slow_render)
+        monkeypatch.setattr(render_module, operation, slow_render)
         for sequence, (kind, payload) in enumerate(
             (
                 ("run_started", {"trigger": "user"}),
@@ -364,7 +373,7 @@ async def test_closing_session_cancels_pending_presentation_without_waiting_for_
     session = application.runtime.sessions.create(title="Close during render").session
     app = OuroTuiApp(application=application, resume_session_id=session.session_id)
     started, release, finished = threading.Event(), threading.Event(), threading.Event()
-    original = conversation_history._block_starts
+    original = conversation_history_markdown_stream._block_starts
 
     def slow_parse(source):
         started.set()
@@ -376,7 +385,7 @@ async def test_closing_session_cancels_pending_presentation_without_waiting_for_
 
     try:
         async with run_ready_app(app, size=(100, 30)):
-            monkeypatch.setattr(conversation_history, "_block_starts", slow_parse)
+            monkeypatch.setattr(conversation_history_markdown_stream, "_block_starts", slow_parse)
             app._queue_runtime_event(
                 EventRecord(
                     session_id=session.session_id,

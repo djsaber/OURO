@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from ouro.tools import Tool, ToolExecutionContext, ToolInvocation, builtin_grep, builtin_tools
+import ouro.tools.builtin.grep as builtin_grep
+from ouro.tools import Tool, ToolExecutionContext, ToolInvocation, builtin_tools
 
 
 def _tools() -> dict[str, Tool]:

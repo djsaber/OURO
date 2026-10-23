@@ -9,7 +9,7 @@ import pytest
 from ouro.core.provider import ProviderRetryPolicy
 from ouro.providers.authentication import ProviderRequestPolicy, request_failure
 from ouro.providers.http_transport import HttpxProviderHTTPTransport, ProviderTransportError
-from ouro.providers.openai_responses import OpenAIResponsesProvider
+from ouro.providers.openai_responses.adapter import OpenAIResponsesProvider
 from tests.providers.responses_fixtures import delta
 from tests.providers.test_request_authentication import PROVIDERS, collect
 

@@ -13,8 +13,9 @@ from ouro.core.observers import (
     RuntimeEventView,
 )
 from ouro.core.run_drivers import DriverFinished
-from ouro.plugins.catalog import ExtensionCatalogBase, GenerationGate, build_extension_catalog
-from ouro.plugins.contributions import ContributionOwner, PreparedContributionSet
+from ouro.plugins.catalog.gates import GenerationGate
+from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_catalog
+from ouro.plugins.contributions.models import ContributionOwner, PreparedContributionSet
 from ouro.plugins.models import PluginGenerationRecord
 from ouro.plugins.registry import PluginCommand, PluginCommandRegistry
 from ouro.plugins.run_drivers import RunDriverRegistration

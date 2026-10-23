@@ -1,20 +1,28 @@
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest
 
-from ouro.application.configuration import ConfigurationFacade
+from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import ConfigError
 from ouro.local_application import LocalApplication
 from ouro.providers import FauxProvider
 from ouro.tui.app import OuroTuiApp
+from ouro.tui.composer.input import Composer
 from ouro.tui.controller import TuiController
-from ouro.tui.screens import ChoiceScreen
-from ouro.tui.widgets import Composer, ConversationView, StatusLine
-from tests.tui.helpers import run_ready_app, two_route_application
+from ouro.tui.conversation.history import ConversationHistory
+from ouro.tui.conversation.view import ConversationView
+from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.widgets.status import StatusLine
+from tests.tui.helpers import (
+    run_ready_app,
+    two_route_application,
+    wait_for_history_render,
+    wait_for_menu_action,
+    wait_for_screen,
+)
 
 
 @pytest.mark.parametrize("with_history", [False, True])
@@ -69,19 +77,22 @@ async def test_tui_restores_history_and_observation_without_the_old_model(
         async with run_ready_app(app, size=(100, 32)) as pilot:
             if entry == "picker":
                 await pilot.press("ctrl+o")
-                async with asyncio.timeout(5):
-                    while not isinstance(app.screen, ChoiceScreen):
-                        await pilot.pause()
+                await wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
+                menu = app.screen
+                assert isinstance(menu, ChoiceScreen)
                 await pilot.press("enter")
-                async with asyncio.timeout(5):
-                    while app._projection is None:
-                        await pilot.pause()
+                await wait_for_menu_action(pilot, menu)
+            # Session activation commits content before its background layout completes.
+            await wait_for_history_render(pilot)
             assert not isinstance(app.screen, ChoiceScreen)
             assert app._controller.session_id == session_id
             assert app._projection is not None
             assert app.query_one(StatusLine)._context_metrics == durable
             assert app.query_one(Composer).disabled is False
-            assert "Saved" in app.export_screenshot()
+            history = app.query_one(ConversationHistory)
+            assert history.user_turns == ("Saved conversation",)
+            assert "Saved conversation" in history.rendered_text
+            assert "Hello from OURO." in history.rendered_text
             assert app.query_one(ConversationView).showing_welcome is False
             assert app._reasoning_state is None
 

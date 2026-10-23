@@ -17,6 +17,7 @@ The application loads style metadata from the installed compatible release and i
 renderers only when selected. Missing extensions or unavailable dependencies preserve
 the saved selection while displaying `basic`; restarting after installation restores it.
 
-Core and extension releases use the same version and are built together from the OURO
-workspace with `uv build --all-packages`. Both wheels must be available when installing
-the `themes` extra. The extension declares its compatible core version and NumPy requirement.
+Core and extension versions are independent. The core's `themes` extra pins a compatible extension
+release; the extension declares its supported core range and NumPy requirement. Build both packages
+from the OURO workspace with `uv build --all-packages`. Local installation checks use both wheels;
+published installations resolve the extension version selected by the core package.

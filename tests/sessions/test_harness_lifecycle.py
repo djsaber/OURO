@@ -4,8 +4,8 @@ from contextlib import closing
 
 import pytest
 
-from ouro.application.queued_inputs import QueuedInputQueue
-from ouro.application.sessions import SessionService
+from ouro.application.inputs.queue import QueuedInputQueue
+from ouro.application.sessions.service import SessionService
 from ouro.core.errors import PersistenceError, SessionBranchError
 from ouro.core.harness import HarnessState
 from ouro.core.messages import MessageRecord

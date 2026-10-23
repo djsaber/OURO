@@ -18,7 +18,7 @@ Runtime/Supervisor 执行；插件目标调用显式声明可调度的服务方�
 
 当前能力以 OURO 进程存活为调度条件。关闭进程后不调度、不唤醒计算机，不注册操作系统计划任务或独立
 daemon。任务之间的依赖图、工作流步骤、独立预算策略、自动失败重试和分布式调度不属于本规格；
-[未来平台规格](../plans/platform.md)中的 Durable Task/Workflow 仍是独立的未来能力。
+[高级智能体规划](../plans/advanced-agents.md)中的依赖工作流是独立的未来能力。
 
 ## 2. 概念与身份
 
@@ -346,7 +346,7 @@ SQLite 初始化使用 `<home>/tasks.init.lock` 协调多 Host 同时建库，�
 ### 9.1 导航与管理
 
 `Ctrl+P` 分页菜单中的 `Task` 分组直接列出 `Task list`、`Create task`、`Delete task`、`Update status`，
-不再包一层管理入口。`Ctrl+T` 直接进入任务清单，使用共用菜单导航，重复操作不叠加窗口，不替换尚未保存的
+各操作无需经过额外的管理菜单。`Ctrl+T` 直接进入任务清单，使用共用菜单导航，重复操作不叠加窗口，不替换尚未保存的
 配置编辑器。`Update status` 刷新应用投影，不触发立即执行或手工补跑。
 
 任务详情提供当前状态、下次计划、打开会话、执行历史、中断、编辑、停用/启用、删除和刷新。任务会话尚未
@@ -396,7 +396,7 @@ SQLite 初始化使用 `<home>/tasks.init.lock` 协调多 Host 同时建库，�
 | 会话列表、任务详情及执行历史三种入口均能恢复流，后台保持静默且可追加指令 | 同上：`test_background_run_stays_silent_and_attaching_restores_live_stream` 的三个入口参数 |
 | 已排队任务可在模型开始前中断 | 同上：`test_tui_cancels_a_queued_task_before_it_can_start` |
 | 多行组件的换行、粘贴、保存、重开、取消和固定高度视口 | [内联编辑组件测试](../../tests/tui/test_inline_editor.py) |
-| 共用菜单刷新与页面切换、层级依赖边界 | [TUI 共用交互测试](../../tests/tui/test_app.py)、[架构边界测试](../../tests/architecture/test_boundaries.py) |
+| 共用菜单刷新与页面切换、层级依赖边界 | [TUI 共用交互测试](../../tests/tui/app/)、[架构边界测试](../../tests/architecture/test_boundaries.py) |
 
 验证本领域行为的命令：
 

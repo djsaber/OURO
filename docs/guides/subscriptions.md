@@ -1,14 +1,16 @@
 # 模型订阅支持
 
-OURO 通过产品连接声明、认证驱动和协议适配器组合接入订阅服务。首批内建产品为
+OURO 通过产品连接声明、认证驱动和协议适配器组合接入订阅服务。内建产品
 `openai-codex`，使用浏览器登录、受限本地文件保存凭据和 Responses 协议；API Key 产品保持独立。
 此集成采用已验证的公开 Codex OAuth 客户端兼容流程，不表示 OpenAI 官方对 OURO 的支持承诺。
 
-模型列表、默认模型、推理等级和本地预算由[预置供应商配置](../specs/provider-presets.md)统一说明。模板声明不等于账户可用性或逐项真实验收；图像输入可用，设备码与结构化输出未开放。CLI/TUI 会披露订阅服务的本地预算限制。
+模型列表、默认模型、推理等级和本地预算由[预置供应商配置](../specs/provider-presets.md)统一说明。
+模板启用图像输入，OURO 使用 Responses 编码器提交图片；这不等于每个账户和模型均已完成真实验收。
+设备码与结构化输出未开放。CLI/TUI 会披露订阅服务的本地预算限制。
 
 ## 创建与登录
 
-首次正式闭环验收建议使用独立 home。以下 PowerShell 命令不改变已有 OURO 配置；后续所有命令使用
+首次配置建议使用独立 home。以下 PowerShell 命令不改变已有 OURO 配置；后续所有命令使用
 同一个 home。Provider ID 由 OURO 生成，与显示名称不同；若已有实例，先用 `provider list --json` 取得其 ID，再直接登录，不要重复 add 或 replace。
 
 ```powershell
@@ -44,7 +46,7 @@ Authentication 可查看状态、登录和注销。未登录仍能启动和进�
 账户 scope，不使历史续接失效。失效凭据要求重新登录；认证失败不会切换到 API Key 或另一计费服务。
 订阅请求仍记录实际 token，用量金额未知时不显示为零费用。
 
-## 注销验收
+## 注销
 
 ```powershell
 uv run --frozen ouro provider auth logout $subscriptionProviderId --home "$subscriptionHome" --json
@@ -56,7 +58,9 @@ uv run --frozen ouro provider check $subscriptionProviderId --home "$subscriptio
 
 ## 证据范围
 
-仓库记录的真实验收范围为 Windows、浏览器授权与 gpt-5.5 默认参数组合。验证分为互相补充的三层：
+仓库中的真实验收记录使用 Windows、浏览器授权与当时的 gpt-5.5 默认参数组合，不代表当前默认模型或服务可用性。
+当前模板默认值见[预置供应商配置](../specs/provider-presets.md)，待验证范围见
+[订阅验证计划](../plans/subscription-validation.md)。已有证据分为三层：
 
 | 层次 | 覆盖范围 |
 |---|---|

@@ -7,9 +7,9 @@ from contextlib import closing
 
 import pytest
 
-import ouro.application.sessions as session_service_module
-from ouro.application.session_models import SessionCatalogQuery, SessionView
-from ouro.application.sessions import SessionService
+import ouro.application.sessions.service as session_service_module
+from ouro.application.contracts.sessions import SessionCatalogQuery, SessionView
+from ouro.application.sessions.service import SessionService
 from ouro.core.agents import (
     AgentCatalogSnapshot,
     AgentDefinition,

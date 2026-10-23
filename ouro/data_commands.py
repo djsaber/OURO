@@ -5,11 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from ouro.application.data_transfer import (
-    DATA_KINDS,
-    DataTransferRequest,
-    DataTransferResult,
-)
+from ouro.application.transfer.service import DATA_KINDS, DataTransferRequest, DataTransferResult
 
 
 def add_data_arguments(parser: argparse.ArgumentParser) -> None:

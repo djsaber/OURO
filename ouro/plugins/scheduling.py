@@ -12,7 +12,7 @@ from ouro.core.tasks import (
     TaskConflictError,
     TaskRecord,
 )
-from ouro.plugins.catalog import GenerationGate
+from ouro.plugins.catalog.gates import GenerationGate
 from ouro.plugins.invocation import current_invocation
 from ouro.sdk.plugins import scheduling as sdk
 from ouro.sdk.plugins.models import ModelReasoning

@@ -9,7 +9,7 @@ from threading import Barrier
 
 import pytest
 
-from ouro.application.session_recovery import SessionRecoveryService
+from ouro.application.sessions.recovery import SessionRecoveryService
 from ouro.core.base import utc_now
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextBuilder, ContextMetrics

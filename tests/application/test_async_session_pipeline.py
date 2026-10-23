@@ -7,11 +7,11 @@ from threading import Event, get_ident
 
 import pytest
 
-from ouro.application.agent_models import SpawnAgentRequest
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_activity import queued_runtime_activity
+from ouro.application.contracts.agents import SpawnAgentRequest
+from ouro.application.contracts.execution import RuntimeNotification
+from ouro.application.observations.activity import queued_runtime_activity
+from ouro.application.runtime.service import RuntimeService
 from ouro.application.supervisor import RuntimeSupervisor
-from ouro.application.supervisor_models import RuntimeNotification
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.callbacks import run_blocking
 from ouro.core.errors import OuroError, SessionBusyError

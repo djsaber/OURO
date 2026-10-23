@@ -3,7 +3,7 @@
 > 文档类型：现行规格
 > 范围：Responses adapter、配置/工厂注册、请求认证、内容编码、SSE 事件投影与完整续接封装。浏览器订阅产品已内建注册；Windows/browser/gpt-5.5 真实持久凭据 CLI 闭环已验收。
 
-产品接入契约与待验证能力见[订阅认证规格](subscription-authentication.md#s7-responses-与-continuation)和[验证计划](../plans/subscription-validation.md)。模块位于 `ouro/providers/openai_responses_codec.py`、`openai_responses_items.py`、`openai_responses_stream.py` 与 `openai_responses_errors.py`。它们只依赖 canonical 消息/事件和纯协议数据，不依赖 OAuth、配置、HTTP 客户端或实验目录。
+产品接入契约与待验证能力见[订阅认证规格](subscription-authentication.md#s7-responses-与-continuation)和[验证计划](../plans/subscription-validation.md)。模块位于 `ouro/providers/openai_responses/codec.py`、`openai_responses_items.py`、`openai_responses_stream.py` 与 `openai_responses_errors.py`。它们只依赖 canonical 消息/事件和纯协议数据，不依赖 OAuth、配置、HTTP 客户端或实验目录。
 
 ## 请求内容
 

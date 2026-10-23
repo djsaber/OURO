@@ -7,7 +7,7 @@ from datetime import timedelta
 
 import pytest
 
-from ouro.application.provider_auth import ProviderAuthService
+from ouro.application.provider_auth.service import ProviderAuthService
 from ouro.auth.authorization import TaskAuthorizationAttempt
 from ouro.auth.contracts import AuthError, CredentialGrant
 from ouro.auth.credentials import CredentialService
@@ -16,7 +16,7 @@ from ouro.auth.store import FileCredentialStore
 from ouro.config import provider_models
 from ouro.config.file import JsonConfigFile
 from ouro.config.provider_models import ProviderConnectionSpec, ProviderTypeSpec
-from ouro.config.providers import ProviderConfigManager
+from ouro.config.providers.manager import ProviderConfigManager
 from tests.auth.test_driver_contracts import NOW, BrowserFixtureDriver, drivers
 
 

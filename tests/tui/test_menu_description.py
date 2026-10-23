@@ -3,7 +3,8 @@ from __future__ import annotations
 from textual.app import App
 from textual.widgets import Input, Static
 
-from ouro.tui.screens import Choice, ChoiceScreen
+from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.menus.models import Choice
 
 
 async def test_menu_description_survives_filtering_and_back_navigation():

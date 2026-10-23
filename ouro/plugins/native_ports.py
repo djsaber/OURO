@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 
 from ouro.core.model_generation import ModelGenerationPort, ModelGenerationRequest, ModelTextDelta
-from ouro.plugins.catalog import GenerationGate
+from ouro.plugins.catalog.gates import GenerationGate
 from ouro.plugins.invocation import current_invocation
 from ouro.sdk.plugins.models import ModelOutput, ModelRequest, ModelResult, ModelUsage
 from ouro.sdk.plugins.run_drivers import (

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from ouro.application.sessions import SessionService
+from ouro.application.sessions.service import SessionService
 from ouro.core.messages import MessageRecord
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore

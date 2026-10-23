@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from ouro.application.runtime import RuntimeService
-from ouro.application.sessions import SessionService
+from ouro.application.runtime.service import RuntimeService
+from ouro.application.sessions.service import SessionService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import SessionBusyError
 from ouro.core.messages import MessageRecord

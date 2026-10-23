@@ -2,9 +2,9 @@ import asyncio
 from dataclasses import replace
 
 from ouro.tui.app import OuroTuiApp
+from ouro.tui.composer.surface import WelcomePanel
 from ouro.tui.preferences import TuiPreferencesStore
 from ouro.tui.welcome import WELCOME_STYLES
-from ouro.tui.widgets import WelcomePanel
 from tests.tui.helpers import run_ready_app, two_route_application
 
 

@@ -22,7 +22,7 @@
 
 ### A1. 领域与存储
 
-- [ ] 定义 MemoryRecord：identity、content、source refs、status、confidence、timestamps、revision。
+- [ ] 定义 MemoryRecord：identity、content、来源 Session/Message、status、confidence、提取时间、revision 和用户修改记录。
 - [ ] 定义 candidate/confirmed/disabled/deleted 状态。
 - [ ] 在记忆插件私有目录建立 canonical store 与可重建检索索引。
 - [ ] 删除源 Session 时保持引用一致性或明确脱链策略。
@@ -62,6 +62,7 @@
 - [ ] 定义工作流自身的依赖和并发策略，实际派发服从原生共享容量及权限上限。
 - [ ] 定义完成、失败、取消和重试传播规则，未知外部结果不自动重放。
 - [ ] 重启后按持久业务图与原生执行事实继续，使用 Driver checkpoint 承接原生等待，不新增通用操作日志。
+- [ ] 就绪节点、依赖与重试决策持久化，不以递归调用 RuntimeService 或拼接 prompt 代替业务图。
 
 ### B3. Host 控制
 

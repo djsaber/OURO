@@ -4,7 +4,7 @@ from ouro.core.content import AudioContent, TextContent, VideoContent
 from ouro.core.messages import ModelMessage, ToolResultReference
 from ouro.core.provider import ModelMetadata
 from ouro.core.tools import ToolCallRequest
-from ouro.providers.openai_chat_completions import OpenAIChatCompletionsProvider
+from ouro.providers.openai_chat_completions.adapter import OpenAIChatCompletionsProvider
 from tests.providers.test_openai_chat_completions import FakeStreamingTransport, FakeTransport
 from tests.providers.test_tool_result_content import encode
 

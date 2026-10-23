@@ -8,7 +8,7 @@ from ouro.core.messages import MessageRecord, TextContent, ToolResultReference
 from ouro.core.state import SessionRecord
 from ouro.core.tools import ToolCallRequest
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
-from ouro.sessions.message_journal import reverse_jsonl
+from ouro.sessions.backends.files.journal import reverse_jsonl
 
 
 @pytest.fixture(params=["files", "sqlite"])
@@ -201,7 +201,7 @@ def test_cut_preserves_valid_compaction_chain_and_allows_new_compaction(store):
 
 
 def test_local_cut_recovers_after_failure_between_truncation_and_projection(tmp_path, monkeypatch):
-    from ouro.sessions.file_commits import FileSessionCommits
+    from ouro.sessions.backends.files.commits import FileSessionCommits
 
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -227,7 +227,7 @@ def test_local_cut_recovers_after_failure_between_truncation_and_projection(tmp_
 
 
 def test_sqlite_cut_rolls_back_if_projection_fails(tmp_path, monkeypatch):
-    from ouro.sessions.sqlite_commits import SQLiteSessionCommits
+    from ouro.sessions.backends.sqlite.commits import SQLiteSessionCommits
 
     store = SQLiteSessionStore(tmp_path / "rollback.sqlite")
     store.initialize()
@@ -251,7 +251,7 @@ def test_sqlite_cut_rolls_back_if_projection_fails(tmp_path, monkeypatch):
 
 
 def test_local_cut_reads_only_suffix_and_never_rewrites_prefix(tmp_path, monkeypatch):
-    import ouro.sessions.file_commits as module
+    import ouro.sessions.backends.files.commits as module
 
     store = LocalSessionStore(tmp_path)
     store.initialize()

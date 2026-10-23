@@ -126,8 +126,8 @@ TUI 独占草稿内容、保存设置、恢复和保留策略；框架只负责�
 
 ## 源码参考
 
-以下是 2026-10-07 源码调研所用的固定提交入口，供核对类型化输入、模态检查和消息转换等设计依据。
-这些参考不替代 OURO 规格，也不表示已运行上游或完成真实端点兼容性验收。
+以下参考固定到具体提交，用于对照类型化输入、模态检查和消息转换的职责划分。
+OURO 的有效契约由本项目规格定义；参考实现不构成真实端点兼容性验收证据。
 
 - Codex CLI：[用户输入](https://github.com/openai/codex/blob/18e28fe1b96db7e1d6b13584bec37c41f71b8b0e/codex-rs/protocol/src/user_input.rs)、[上下文归一化](https://github.com/openai/codex/blob/18e28fe1b96db7e1d6b13584bec37c41f71b8b0e/codex-rs/core/src/context_manager/normalize.rs)。
 - OpenCode：[会话输入](https://github.com/anomalyco/opencode/blob/ecc4916b5a9608c30e6dd58a67f2137b594407ca/packages/opencode/src/session/prompt.ts)。

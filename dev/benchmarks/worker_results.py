@@ -27,7 +27,7 @@ from unittest.mock import patch
 async def measure(args):
     sys.path.insert(0, str(args.source.resolve()))
     from ouro.plugins.manifest import PluginManifest
-    from ouro.plugins.worker import WorkerPluginInstance
+    from ouro.plugins.worker.instance import WorkerPluginInstance
     from ouro.sdk.plugins import v5 as sdk
 
     package = args.source / "examples/plugins/worker-tool"

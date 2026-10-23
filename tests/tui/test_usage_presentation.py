@@ -6,9 +6,10 @@ from textual.widgets import Static
 from ouro.core.billing import UsageFilter
 from ouro.core.usage_queries import UsageSummary, UsageSummaryGroup, UsageTotals
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.controller import TuiSystemStatus, project_usage_system_status
+from ouro.tui.composer.surface import WelcomePanel
+from ouro.tui.status import project_usage_system_status
+from ouro.tui.view_models import TuiSystemStatus
 from ouro.tui.welcome.components import WelcomeUsage
-from ouro.tui.widgets import WelcomePanel
 from tests.tui.helpers import run_ready_app, two_route_application
 
 

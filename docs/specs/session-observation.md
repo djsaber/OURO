@@ -266,7 +266,7 @@ Run 的 `model_endpoint_id` 记录最近一次已提交模型请求的端点身�
 - root 与至少两个 child 交错流、多次切换、切换窗口新事件测试；
 - root tree 全层级节点、跨 Run 分组、十节点窗口及 root/child/child 方向键直切测试；
 - 导航加载单飞、加载期间最新目标覆盖，以及节点悬停预览和点击切换测试；
-- 导航面板与命令/审批 inline panel 的层叠几何、运行/结束/失败状态色测试；
+- 导航面板与命令/审批 inline panel 的层叠几何和可操作性测试；运行/结束/失败状态色按[测试策略](../development/testing.md)人工验收；
 - active Run 期间切换测试；
 - 执行端、独立观察端和重载历史的结束标签一致性，覆盖完成、失败、中断、双存储后端和连续 Run 排序：
   `tests/tui/test_run_summaries.py`。

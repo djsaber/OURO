@@ -30,7 +30,6 @@ from ouro.config.prompts import (
     PromptEntry,
     PromptKind,
 )
-from ouro.config.provider_codec import provider_config_to_public_dict
 from ouro.config.provider_models import (
     BUILTIN_FAUX_PROVIDER_ID,
     CONFIGURABLE_PROVIDER_TYPES,
@@ -45,17 +44,18 @@ from ouro.config.provider_models import (
     ProviderTemplateUpdateResult,
     ProviderType,
 )
-from ouro.config.provider_template_store import (
-    ProviderTemplateCatalogSnapshot,
-    ProviderTemplateEntry,
-    ProviderTemplateStore,
-)
 from ouro.config.provider_templates import (
     ProviderTemplate,
     get_provider_template,
     provider_templates,
 )
-from ouro.config.providers import ProviderConfigManager
+from ouro.config.providers.codec import provider_config_to_public_dict
+from ouro.config.providers.manager import ProviderConfigManager
+from ouro.config.providers.template_store import (
+    ProviderTemplateCatalogSnapshot,
+    ProviderTemplateEntry,
+    ProviderTemplateStore,
+)
 from ouro.config.queued_inputs import (
     QueuedInputConfig,
     QueuedInputConfigManager,

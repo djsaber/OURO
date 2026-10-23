@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from ouro.application.runtime import RuntimeService
+from ouro.application.runtime.service import RuntimeService
 from ouro.config.compaction import CompactionConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.cancellation import AbortSignal
@@ -14,7 +14,7 @@ from ouro.core.compaction import CompactionAbortedError, CompactionPolicy, Compa
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
 from ouro.core.state import SessionRecord
-from ouro.plugins.api import adapt_sdk_contributions
+from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.sdk.plugins import v5 as sdk
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry

@@ -5,10 +5,10 @@ from collections.abc import Iterator
 
 import pytest
 
-from ouro.application.agent_definitions import AgentDefinitionService
-from ouro.application.agent_recovery import AgentRecoveryService
-from ouro.application.agents import AgentService
-from ouro.application.runtime import RuntimeService
+from ouro.application.agents.definitions import AgentDefinitionService
+from ouro.application.agents.recovery import AgentRecoveryService
+from ouro.application.agents.service import AgentService
+from ouro.application.runtime.service import RuntimeService
 from ouro.application.supervisor import RuntimeSupervisor
 from ouro.config.agents import AgentDefinitionsConfigManager
 from ouro.core.adapter import RuntimeAdapter

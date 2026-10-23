@@ -15,8 +15,8 @@ from packaging.requirements import Requirement
 
 import ouro
 from ouro.tui.app import OuroTuiApp
+from ouro.tui.composer.surface import WelcomePanel
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
-from ouro.tui.widgets import WelcomePanel
 
 
 async def check_tui(*, themes: bool) -> None:

@@ -6,8 +6,8 @@ import json
 import sys
 import webbrowser
 
-from ouro.application.provider_auth import AuthError, ProviderAuthService
-from ouro.application.provider_auth_models import CredentialView, LoginChallenge, LoginOperation
+from ouro.application.contracts.provider_auth import CredentialView, LoginChallenge, LoginOperation
+from ouro.application.provider_auth.service import AuthError, ProviderAuthService
 from ouro.cli.errors import error_exit_code
 from ouro.core.errors import ConfigError, OuroError
 from ouro.local_application import open_local_provider_auth

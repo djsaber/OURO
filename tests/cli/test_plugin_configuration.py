@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 
-from ouro.application.plugins import PluginService
+from ouro.application.plugins.service import PluginService
 from ouro.cli.main import main
-from ouro.plugins.store import PluginPackageStore
+from ouro.plugins.installation.store import PluginPackageStore
 from tests.application.test_plugin_configuration import _package
 
 

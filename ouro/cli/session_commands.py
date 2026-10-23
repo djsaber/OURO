@@ -6,12 +6,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ouro.application.session_models import (
+from ouro.application.contracts.sessions import (
     SessionCatalogQuery,
     SessionCatalogStatus,
     SessionSort,
 )
-from ouro.application.sessions import SessionService
+from ouro.application.sessions.service import SessionService
 from ouro.cli.context_output import (
     NO_PREPARED_CONTEXT,
     render_context_snapshot,

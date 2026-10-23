@@ -9,8 +9,8 @@ import pytest
 
 from ouro.core.provider import ModelMetadata, ProviderRetryPolicy
 from ouro.providers.http_transport import HttpxProviderHTTPTransport, ProviderResponseTimeout
-from ouro.providers.openai_chat_completions import OpenAIChatCompletionsProvider
-from ouro.providers.openai_responses import OpenAIResponsesProvider
+from ouro.providers.openai_chat_completions.adapter import OpenAIChatCompletionsProvider
+from ouro.providers.openai_responses.adapter import OpenAIResponsesProvider
 from tests.providers.responses_fixtures import call, delta, item_event, message, reasoning, terminal
 from tests.providers.test_request_authentication import PROVIDERS
 

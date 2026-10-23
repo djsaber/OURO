@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from ouro.application.runtime import RuntimeService
+from ouro.application.runtime.service import RuntimeService
 from ouro.cli.approval_commands import (
     abort_run_command,
     approve_tool_command,
@@ -17,7 +17,7 @@ from ouro.mcp import MCPConfigStore, MCPRuntimeResource, MCPServerConfigUpdate
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
-from ouro.tools.builtin_shell import detect_command_shell
+from ouro.tools.builtin.shell import detect_command_shell
 
 MCP_ECHO_SERVER = Path(__file__).parents[1] / "mcp" / "fixtures" / "echo_server.py"
 

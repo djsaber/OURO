@@ -17,7 +17,7 @@ from ouro.local_application import (
     open_local_agent_definitions,
 )
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
-from ouro.sessions.local_index import LocalSessionIndex
+from ouro.sessions.backends.files.index import LocalSessionIndex
 
 
 async def test_local_application_discovers_skills_after_startup(tmp_path):

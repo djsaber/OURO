@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from ouro.application.configuration import ConfigurationFacade
+from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.cli.main import main
 from ouro.config import ProviderConfigManager, ProviderRuntimeOptions
 

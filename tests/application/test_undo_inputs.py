@@ -3,7 +3,7 @@ from threading import Event
 
 import pytest
 
-from ouro.application.runtime import RuntimeService
+from ouro.application.runtime.service import RuntimeService
 from ouro.application.supervisor import RuntimeSupervisor
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import PersistenceError, SessionBusyError

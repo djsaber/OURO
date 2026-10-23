@@ -7,16 +7,17 @@ from datetime import timedelta
 import pytest
 from textual import events
 
+import ouro.tui.conversation.history as history_module
 from ouro.core.base import utc_now
 from ouro.core.errors import SessionNotFoundError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.session_commits import SessionCommit
 from ouro.core.state import RunRecord
-from ouro.tui import conversation_history as history_module
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.conversation_history import ConversationHistory
-from ouro.tui.widgets import Composer, ConversationView
+from ouro.tui.composer.input import Composer
+from ouro.tui.conversation.history import ConversationHistory
+from ouro.tui.conversation.view import ConversationView
 from tests.tui.helpers import release_on_exit, run_ready_app, wait_until
 from tests.tui.test_background_navigation import NavigationProvider
 from tests.tui.test_tasks import streaming_application

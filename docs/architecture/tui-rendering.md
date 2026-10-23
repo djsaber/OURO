@@ -75,7 +75,7 @@ Markdown/SyntaxTheme 均从该对象取得视觉语义。
 补全使用同一份候选快照及预先计算的空输入提示；命令或查询文本不一致时，通过当前命令目录重新计算，保证同步编辑反馈。
 
 Actions、会话、模型、Provider、插件、技能、任务及配置页面共用 ChoiceScreen 和 OptionList。
-`menu_styles.py` 统一声明弹出菜单样式：`ModalScreen` 遮罩与 `#choice-panel` 均使用
+`menus/styles.py` 统一声明弹出菜单样式：`ModalScreen` 遮罩与 `#choice-panel` 均使用
 `$ouro-background` 不透明背景，与主页面同色；面板、标题、说明、筛选框、选项列表和提示栏均无边框。
 标题使用 `accent` 与粗体，选项焦点使用 accent 前景及 `highlight` / `input_highlight` 背景。
 子屏活动期间，父菜单隐藏 `#choice-panel` 并将屏幕背景设为透明；返回时同步恢复背景、面板及输入焦点，
@@ -349,7 +349,8 @@ Markdown 通过局部 element 映射为段落、标题和表格单元格提供 `
 Rich `markdown.*` 命名样式和 SyntaxTheme 由 TuiTheme 的纯投影方法提供。markdown.py 只消费投影结果，不定义第二份
 颜色或样式语义。该模块不读取 Session、Application、文件、环境变量或 Widget 状态。
 
-`conversation_history.py` 负责 TranscriptEntry、Padding、interaction metadata、Strip 转换和缓存，不定义 Markdown
+`conversation/history_models.py` 定义历史条目与渲染记录，`history_rendering.py` 负责行呈现，
+`history.py` 拥有异步渲染、Strip 缓存和滚动状态；这些模块不定义 Markdown
 颜色或 Pygments theme。
 
 完成块、重新加载历史和后台批量渲染调用同一个 Markdown factory。活动 Markdown tail 使用追加式纯文本，在稳定块
@@ -498,11 +499,11 @@ ConversationHistory revision 规则丢弃，不建立第二套渲染或取消协
 |---|---|
 | `ouro/tui/theme.py` | 完整 TuiTheme、Token 校验、内置主题、CSS/Rich/Syntax 投影与 theme_for |
 | `ouro/tui/markdown.py` | 消费主题投影，建立 assistant Markdown renderable 并处理降级 |
-| `ouro/tui/conversation_history.py` | 捕获 TuiTheme、生成 Strip、维护缓存 identity |
+| `ouro/tui/conversation/history.py` | 捕获 TuiTheme、生成 Strip、维护缓存 identity |
 | `ouro/tui/app.py` | 接收和切换 TuiTheme，应用 CSS variables，协调主题刷新 |
 | `ouro/tui/entry.py` | 将 Python API 的 theme 参数传给 App |
-| `ouro/tui/menu_styles.py` | 共享菜单背景、无边框布局、文字层级和选项焦点样式 |
-| `ouro/tui/widgets.py` 与其他 TUI 组件 | 从 owning App 取得主题并构造 Rich Text、glyph 与 spinner |
+| `ouro/tui/menus/styles.py` | 共享菜单背景、无边框布局、文字层级和选项焦点样式 |
+| `ouro/tui/widgets/` 与其他 TUI 组件 | 从 owning App 取得主题并构造 Rich Text、glyph 与 spinner |
 
 `ouro.application`、`ouro.core` 以及 Session、Runtime、Provider、Plugin 领域模块不依赖 TuiTheme；
 只有 `ouro.tui` 内的对应界面适配代码消费主题。

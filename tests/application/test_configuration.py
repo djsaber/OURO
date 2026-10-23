@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from ouro.application.configuration import ConfigurationFacade
-from ouro.application.configuration_models import CompactionConfigInput
+from ouro.application.configuration.facade import ConfigurationFacade
+from ouro.application.contracts.configuration import CompactionConfigInput
 from ouro.config import openai_chat_completions_effort_reasoning
 from ouro.config.prompts import PromptDraft
 from ouro.core.errors import ConfigError
@@ -334,7 +334,7 @@ def test_provider_template_catalog_exposes_deprecated_and_filters_disabled(
     tmp_path,
     monkeypatch,
 ) -> None:
-    import ouro.config.provider_template_store as store_module
+    import ouro.config.providers.template_store as store_module
     from ouro.config.provider_templates import provider_templates
 
     facade = ConfigurationFacade(tmp_path)
@@ -503,7 +503,7 @@ def test_removed_provider_template_rejects_update_without_changing_provider(
     tmp_path,
     monkeypatch,
 ) -> None:
-    import ouro.config.provider_template_store as store_module
+    import ouro.config.providers.template_store as store_module
     from ouro.config.provider_templates import provider_templates
 
     facade = ConfigurationFacade(tmp_path)

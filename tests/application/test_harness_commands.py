@@ -6,17 +6,17 @@ from dataclasses import replace
 
 import pytest
 
-from ouro.application.plugin_commands import execute_plugin_command
-from ouro.application.queued_inputs import QueuedInputQueue
+from ouro.application.inputs.queue import QueuedInputQueue
+from ouro.application.plugins.commands import execute_plugin_command
 from ouro.application.session_controls import SessionControlError
-from ouro.application.sessions import SessionService
+from ouro.application.sessions.service import SessionService
 from ouro.core.errors import PersistenceError
 from ouro.core.messages import MessageRecord
 from ouro.core.observers import ObserverRegistry
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict, SessionCommitStep
 from ouro.core.state import SessionRecord
-from ouro.plugins.api import adapt_sdk_contributions
-from ouro.plugins.catalog import ExtensionCatalogBase, build_extension_catalog
+from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_catalog
+from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.plugins.registry import PluginCommandRegistry
 from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.sdk.plugins import v5 as sdk

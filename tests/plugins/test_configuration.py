@@ -5,13 +5,14 @@ import json
 import pytest
 from pydantic import ValidationError
 
-import ouro.plugins.package as package_module
-from ouro.application.plugins import PluginService
-from ouro.plugins.configuration import credential_binding_issues
-from ouro.plugins.installer import PluginInstaller
+import ouro.plugins.installation.package as package_module
+from ouro.application.plugins.service import PluginService
+from ouro.plugins.configuration.service import credential_binding_issues
+from ouro.plugins.installation.installer import PluginInstaller
+from ouro.plugins.installation.package import validate_plugin_package
+from ouro.plugins.installation.paths import PluginPackageError
+from ouro.plugins.installation.store import PluginPackageStore
 from ouro.plugins.manifest import PluginManifest
-from ouro.plugins.package import PluginPackageError, validate_plugin_package
-from ouro.plugins.store import PluginPackageStore
 from tests.plugins.test_plugin_system import _write_native_plugin
 
 

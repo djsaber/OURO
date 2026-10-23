@@ -7,14 +7,12 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 
 from ouro.core.base import new_id
-from ouro.plugins.api import adapt_sdk_contributions
-from ouro.plugins.catalog import GenerationGate, bind_generation_gate
-from ouro.plugins.contributions import (
-    ContributionCoordinator,
-    ContributionOwner,
-    PreparedContributionSet,
-    bind_execution_contract,
-)
+from ouro.plugins.catalog.bindings import bind_generation_gate
+from ouro.plugins.catalog.gates import GenerationGate
+from ouro.plugins.contributions.binding import bind_execution_contract
+from ouro.plugins.contributions.models import ContributionOwner, PreparedContributionSet
+from ouro.plugins.contributions.preparation import ContributionCoordinator
+from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.plugins.invocation import current_invocation
 from ouro.plugins.manifest import PluginManifest, ToolContributionSpec
 from ouro.plugins.models import PluginGenerationRecord

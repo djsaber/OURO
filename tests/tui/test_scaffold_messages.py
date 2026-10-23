@@ -12,14 +12,17 @@ from ouro.core.events import EventRecord
 from ouro.core.input_content import InputAttachment
 from ouro.core.messages import MessageRecord
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.conversation_history import ConversationHistory, _MessageContent
+from ouro.tui.composer.input import Composer
+from ouro.tui.conversation.history import ConversationHistory
+from ouro.tui.conversation.history_rendering import _MessageContent
+from ouro.tui.conversation.transcript import project_transcript_entries
+from ouro.tui.conversation.view import ConversationView
+from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.preferences import TuiPreferencesStore
-from ouro.tui.screens import ChoiceScreen
 from ouro.tui.state import TuiSessionProjection
 from ouro.tui.theme import DEFAULT_TUI_THEME
-from ouro.tui.widgets import Composer, ConversationView, project_transcript_entries
+from tests.tui.app.support import _application, _persist_direct_child_session
 from tests.tui.helpers import choose_menu, run_ready_app, wait_for_screen, wait_until
-from tests.tui.test_app import _application, _persist_direct_child_session
 from tests.tui.test_background_navigation import NavigationProvider, submit
 from tests.tui.test_tasks import streaming_application
 

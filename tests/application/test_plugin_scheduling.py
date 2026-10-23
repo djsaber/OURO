@@ -13,7 +13,7 @@ import pytest
 from ouro.core.tasks import AgentTaskRun, AgentTaskTarget, TaskConfiguration, TaskSchedule
 from ouro.local_application import LocalApplication
 from ouro.plugins.invocation import plugin_invocation
-from ouro.plugins.worker import WorkerProtocolError
+from ouro.plugins.worker.codec import WorkerProtocolError
 from tests.application.test_plugin_tasks import (
     NOW,
     PLUGIN,

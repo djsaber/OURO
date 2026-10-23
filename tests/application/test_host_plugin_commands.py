@@ -12,13 +12,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from ouro.application.plugin_commands import (
+from ouro.application.plugins.commands import (
     AmbiguousPluginCommandError,
     consume_plugin_command,
     submit_plugin_command,
 )
-from ouro.application.plugins import PluginService
-from ouro.application.runtime import RuntimeService
+from ouro.application.plugins.service import PluginService
+from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import PersistenceError
 from ouro.core.messages import MessageRecord
@@ -27,14 +27,14 @@ from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict, SessionCommitStep
 from ouro.core.session_controls import SessionInputBatchRequest, SessionInputRequest
 from ouro.core.state import RunRecord
-from ouro.plugins.catalog import ExtensionCatalogBase, build_extension_catalog
+from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_catalog
+from ouro.plugins.installation.store import PluginPackageStore
 from ouro.plugins.registry import (
     PluginCommand,
     PluginCommandError,
     PluginCommandRegistry,
     PluginCommandResult,
 )
-from ouro.plugins.store import PluginPackageStore
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
@@ -713,9 +713,9 @@ def test_plugin_command_application_runs_with_host_imports_blocked(tmp_path):
                     raise AssertionError(f"Host import: {fullname}")
 
         sys.meta_path.insert(0, BlockHosts())
-        from ouro.application.plugin_commands import consume_plugin_command, submit_plugin_command
-        from ouro.application.runtime import RuntimeService
-        from ouro.application.plugin_models import PluginCommandExecutionView, PluginCommandView
+        from ouro.application.plugins.commands import consume_plugin_command, submit_plugin_command
+        from ouro.application.runtime.service import RuntimeService
+        from ouro.application.contracts.plugins import PluginCommandExecutionView, PluginCommandView
         from ouro.core.adapter import RuntimeAdapter
         from ouro.core.provider import ModelMetadata, ProviderStreamEvent
         from ouro.providers import FauxProvider

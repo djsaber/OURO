@@ -17,8 +17,8 @@ from ouro.tools.base import (
     ToolResult,
 )
 from ouro.tools.batch_executor import ToolBatchExecutor
-from ouro.tools.builtin import builtin_tools
-from ouro.tools.builtin_agents import agent_control_tools
+from ouro.tools.builtin.agents import agent_control_tools
+from ouro.tools.builtin.registration import builtin_tools
 from ouro.tools.executor import ToolExecutor
 from ouro.tools.registry import ToolRegistry
 

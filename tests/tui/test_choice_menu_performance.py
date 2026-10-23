@@ -7,7 +7,8 @@ from rich.table import Table
 from textual.app import App
 from textual.widgets import OptionList
 
-from ouro.tui.screens import Choice, ChoiceScreen
+from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.menus.models import Choice
 from tests.tui.helpers import resize_terminal
 
 

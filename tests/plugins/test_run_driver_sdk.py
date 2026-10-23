@@ -3,11 +3,11 @@ from types import SimpleNamespace
 import pytest
 
 from ouro.core import run_drivers as core
-from ouro.plugins.catalog import GenerationGate
+from ouro.plugins.catalog.gates import GenerationGate
 from ouro.plugins.invocation import current_invocation, plugin_invocation
 from ouro.plugins.native_ports import PluginNativePorts
 from ouro.plugins.run_drivers import adapt_run_driver
-from ouro.plugins.worker_drivers import WorkerDriverBridge
+from ouro.plugins.worker.drivers import WorkerDriverBridge
 from ouro.sdk.plugins import v5 as sdk
 from ouro.sdk.plugins.worker_drivers import WorkerRunContext
 

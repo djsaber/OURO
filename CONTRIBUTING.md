@@ -22,8 +22,9 @@ uv build --all-packages
 
 The full suite includes optional theme renderers. `--all-groups` selects development groups;
 `--extra themes` installs the complete `ouro-tui-themes` workspace package, including the shared
-dot-matrix engine, official styles and NumPy. Core and extension distributions share a release
-version and declare matching dependencies; publish both distributions for the `themes` extra.
+dot-matrix engine, official styles and NumPy. Core and extension distributions have independent
+versions: the core's `themes` extra selects an extension release, and the extension declares its
+supported core range. Build both workspace packages and publish any required, unpublished release.
 See the [theme installation guide](docs/guides/running.md#欢迎页主题).
 
 The single CI static-check job runs on Windows with theme dependencies installed. The explicit

@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import json
 
-from ouro.application.session_models import (
-    SessionContextSnapshot,
-    SessionContextStatus,
-)
+from ouro.application.contracts.sessions import SessionContextSnapshot, SessionContextStatus
 from ouro.core.context import ContextMetrics
 
 NO_PREPARED_CONTEXT = "No Provider context has been prepared for this Session."

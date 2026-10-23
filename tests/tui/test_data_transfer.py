@@ -5,7 +5,7 @@ import asyncio
 import pytest
 from textual.widgets import Input, OptionList
 
-from ouro.application.data_transfer import DataTransferRequest
+from ouro.application.transfer.service import DataTransferRequest
 from ouro.cli.main import main
 from ouro.config.prompts import PromptConfigManager, PromptDraft
 from ouro.core.harness import HarnessState
@@ -17,11 +17,13 @@ from ouro.core.tools import ToolCallRequest
 from ouro.local_application import build_local_data_transfer_service, build_local_session_services
 from ouro.transfer.archive import DataTransferError, read_archive
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.archive_paths import ArchivePathScreen
 from ouro.tui.commands import resolve_command
-from ouro.tui.data_transfer import DataTransferScreen
-from ouro.tui.screens import ChoiceScreen, MultiChoiceScreen
-from ouro.tui.widgets import Composer, ConversationHistory
+from ouro.tui.composer.input import Composer
+from ouro.tui.conversation.history import ConversationHistory
+from ouro.tui.features.transfer.paths import ArchivePathScreen
+from ouro.tui.features.transfer.workflows import DataTransferScreen
+from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.menus.multiple import MultiChoiceScreen
 from tests.tui.helpers import wait_for_screen, wait_until
 
 

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from ouro.application.resources import ResourceService
-from ouro.application.runtime import RuntimeService
-from ouro.application.sessions import SessionService
+from ouro.application.runtime.service import RuntimeService
+from ouro.application.sessions.service import SessionService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata

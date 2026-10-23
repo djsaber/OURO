@@ -1,16 +1,16 @@
 import pytest
 
-from ouro.application.runtime_activity import (
+from ouro.application.contracts.execution import (
+    RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS,
+    RuntimeActivitySnapshot,
+    RuntimeToolCallActivity,
+)
+from ouro.application.observations.activity import (
     overlay_run_activity,
     project_runtime_activity,
     queued_runtime_activity,
     reduce_runtime_activity,
     runtime_activity_changed,
-)
-from ouro.application.supervisor_models import (
-    RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS,
-    RuntimeActivitySnapshot,
-    RuntimeToolCallActivity,
 )
 from ouro.core.context import ContextMetrics
 from ouro.core.context_budget import ContextBudget

@@ -6,7 +6,7 @@ import sys
 import textwrap
 from unittest.mock import patch
 
-from ouro.application.plugins import PluginService
+from ouro.application.plugins.service import PluginService
 from tests.plugins.test_lifecycle import PLUGIN_ID, LifecyclePlugin, create_runtime
 from tests.plugins.test_plugin_system import _write_native_plugin
 

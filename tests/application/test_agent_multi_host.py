@@ -5,15 +5,15 @@ import multiprocessing
 
 import pytest
 
-from ouro.application.agent_models import SpawnAgentRequest
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.application.contracts.agents import SpawnAgentRequest
+from ouro.application.runtime.environment import RuntimeEnvironment
+from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.local_application import LocalApplication
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ProcessResult, ToolExecutionContext, ToolRegistry
-from ouro.tools.builtin_shell import CommandShell, builtin_command_tool
+from ouro.tools.builtin.shell import CommandShell, builtin_command_tool
 from tests.application.helpers import wait_for_agent_interactions, wait_for_parent_delivery
 
 

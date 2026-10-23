@@ -8,8 +8,8 @@ from ouro.core.base import OuroModel
 from ouro.core.errors import PersistenceError
 from ouro.core.resources import ResourceRecord, SessionResourceReference
 from ouro.resources import ResourceStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.sessions.base import SessionRepository, SessionSnapshot
-from ouro.sessions.sqlite import SQLiteSessionStore
 
 
 class SQLiteImportReport(OuroModel):

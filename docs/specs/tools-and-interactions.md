@@ -40,7 +40,7 @@
 
 Read、ViewImage、Write、Edit、Glob、Grep、TodoList 和命令行工具各自以参数模型定义字段、默认值、约束和描述。
 公开 JSON Schema 从模型生成，处理器在入口解析为类型化参数，再执行文件、进程或 Session 操作。
-各工具复用 `ouro.tools.builtin_common` 的参数语义；公共模块不依赖具体工具实现。
+各工具复用 `ouro.tools.builtin.common` 的参数语义；公共模块不依赖具体工具实现。
 
 - JSON 整数接受 `1`、`1.0` 等无小数部分的数值，并解析为 Python `int`；不接受布尔值、数字字符串或有损转换。
 - 布尔字段只接受布尔值；这些工具及 TodoList 条目拒绝未知字段。参数错误必须在副作用前返回。

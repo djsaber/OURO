@@ -1,10 +1,10 @@
 import pytest
 
-from ouro.application.configuration import ConfigurationFacade
+from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.config.endpoints import ProviderEndpointConfig
 from ouro.config.provider_models import ProviderConfig, ProviderRuntimeOptions
-from ouro.config.provider_runtime import merge_runtime_options
 from ouro.config.provider_templates import provider_templates
+from ouro.config.providers.runtime import merge_runtime_options
 from ouro.core.errors import ConfigError
 from ouro.providers.factory import build_runtime_adapter
 

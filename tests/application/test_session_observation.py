@@ -5,8 +5,8 @@ import threading
 
 import pytest
 
-from ouro.application.session_content import active_stream_tail, restore_session_content
-from ouro.application.session_observation import observation_event
+from ouro.application.observations.content import active_stream_tail, restore_session_content
+from ouro.application.observations.sessions import observation_event
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.session_commits import SessionCommit, SessionCommitStep

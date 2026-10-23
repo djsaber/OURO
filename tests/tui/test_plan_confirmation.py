@@ -6,7 +6,7 @@ from typing import Literal
 import pytest
 
 from ouro.sdk.plugins.interactions import PlanConfirmationRequest
-from ouro.tui.plan_confirmation import project_plan_confirmation
+from ouro.tui.interactions.plan_form import project_plan_confirmation
 from ouro.tui.state import PendingInteraction
 
 

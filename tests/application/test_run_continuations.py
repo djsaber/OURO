@@ -7,17 +7,17 @@ from dataclasses import replace
 
 import pytest
 
+from ouro.application.contracts.plugins import PluginCommandView
 from ouro.application.harness import capture_harness
-from ouro.application.plugin_commands import (
+from ouro.application.inputs.queue import QueuedInputQueue
+from ouro.application.plugins.commands import (
     AmbiguousPluginCommandError,
     consume_plugin_command,
     submit_plugin_command,
 )
-from ouro.application.plugin_models import PluginCommandView
-from ouro.application.queued_inputs import QueuedInputQueue
-from ouro.application.run_continuations import RunContinuationService
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.application.runs.continuations import RunContinuationService
+from ouro.application.runtime.environment import RuntimeEnvironment
+from ouro.application.runtime.service import RuntimeService
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.continuations import (

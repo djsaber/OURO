@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from ouro.application.configuration import ConfigurationFacade
-from ouro.application.plugin_models import PluginCommandExecutionView, PluginCommandView
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.application.configuration.facade import ConfigurationFacade
+from ouro.application.contracts.plugins import PluginCommandExecutionView, PluginCommandView
+from ouro.application.runtime.environment import RuntimeEnvironment
+from ouro.application.runtime.service import RuntimeService
 from ouro.config import reasoning_effort_preset
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import ToolSelection
@@ -30,18 +30,18 @@ from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.skills import discover_skill_catalog
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult, builtin_tools
-from ouro.tui.controller import (
+from ouro.tui.controller import TuiController
+from ouro.tui.status import project_usage_system_status
+from ouro.tui.view_models import (
     TuiAgentDefinitionConfiguration,
     TuiAgentRuntimeConfiguration,
     TuiCompactionConfiguration,
-    TuiController,
     TuiEndpointConfiguration,
     TuiMCPServerConfiguration,
     TuiPluginInstallConfiguration,
     TuiProviderConfiguration,
     TuiSystemStatus,
     TuiToolExecutionConfiguration,
-    project_usage_system_status,
 )
 from tests.tui.helpers import StaticRouteCatalog, two_route_application
 

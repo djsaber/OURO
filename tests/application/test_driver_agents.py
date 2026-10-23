@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from ouro.application.agent_definitions import AgentDefinitionService
-from ouro.application.agents import AgentService
-from ouro.application.plugins import PluginService
-from ouro.application.runtime import RuntimeService
+from ouro.application.agents.definitions import AgentDefinitionService
+from ouro.application.agents.service import AgentService
+from ouro.application.plugins.service import PluginService
+from ouro.application.runtime.service import RuntimeService
 from ouro.application.supervisor import RuntimeSupervisor
 from ouro.config.agents import AgentDefinitionsConfigManager
 from ouro.config.tool_execution import ToolExecutionConfig
@@ -18,9 +18,9 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import ToolSelection
 from ouro.core.observers import ObserverRegistry
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
-from ouro.plugins.contributions import ContributionCoordinator
-from ouro.plugins.runtime import PluginRuntimeResource
-from ouro.plugins.store import PluginPackageStore
+from ouro.plugins.contributions.preparation import ContributionCoordinator
+from ouro.plugins.installation.store import PluginPackageStore
+from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult

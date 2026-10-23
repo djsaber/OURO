@@ -4,7 +4,7 @@ from threading import Event
 import pytest
 
 from ouro.application.harness import capture_harness
-from ouro.application.runtime import RuntimeService, _QueuedInputSelectionChanged
+from ouro.application.runtime.service import RuntimeService, _QueuedInputSelectionChanged
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import utc_now
 from ouro.core.harness import HarnessState

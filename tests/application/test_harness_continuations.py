@@ -6,8 +6,8 @@ from dataclasses import replace
 
 import pytest
 
-from ouro.application.queued_inputs import QueuedInputQueue
-from ouro.application.run_continuations import RunContinuationService
+from ouro.application.inputs.queue import QueuedInputQueue
+from ouro.application.runs.continuations import RunContinuationService
 from ouro.core.continuations import RunContinuationRegistry
 from ouro.core.errors import PersistenceError
 from ouro.core.session_controls import SessionControlActivation, SessionControlState
@@ -18,7 +18,7 @@ from ouro.core.state import (
     RunRecord,
     SessionRecord,
 )
-from ouro.plugins.api import adapt_sdk_contributions
+from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.sdk.plugins import v5 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore

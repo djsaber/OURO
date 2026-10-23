@@ -6,7 +6,7 @@ import math
 from collections.abc import Awaitable, Callable
 from typing import Literal
 
-from ouro.plugins.catalog import GenerationGate
+from ouro.plugins.catalog.gates import GenerationGate
 from ouro.plugins.invocation import current_invocation
 from ouro.sdk.plugins.processes import ProcessOutput, ProcessRequest, ProcessResult
 from ouro.tools.base import ToolExecutionContext

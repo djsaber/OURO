@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from ouro.application.session_models import SessionHistoryAnchor
-from ouro.application.sessions import SessionService
+from ouro.application.contracts.sessions import SessionHistoryAnchor
+from ouro.application.sessions.service import SessionService
 from ouro.core.compaction import CompactionRecord, compaction_source_digest
 from ouro.core.context import ContextMetrics
 from ouro.core.context_snapshots import ContextSnapshotRecord

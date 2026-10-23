@@ -4,7 +4,7 @@ import base64
 
 import pytest
 
-from ouro.application.skill_activations import SkillInvocationRequest
+from ouro.application.inputs.skills import SkillInvocationRequest
 from ouro.core import input_content
 from ouro.core.errors import SessionBranchError
 from ouro.core.messages import ImageContent

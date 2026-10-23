@@ -41,10 +41,10 @@
 | 核查面 | 当前实现与判断 |
 |---|---|
 | 扩展能力是否仅限于固定清单 | [服务端口](../../../ouro/sdk/plugins/services.py)支持 JSON 调用及可撤销 handler 注册；[Driver 端口](../../../ouro/sdk/plugins/run_drivers.py)允许普通异步代码组合模型、工具和 Agent；[动态工具组](../../../ouro/plugins/tool_groups.py)允许运行期整组更新。保留原生贡献类型清单不等于限制业务扩展面 |
-| 原生执行是否被另建一套 | 默认和自定义 Driver 共用 [NativeRunDriverContext](../../../ouro/application/run_drivers.py)、[模型请求](../../../ouro/application/model_requests.py)与原生工具批次；独立生成复用模型执行和用量账本，不伪造 Session/Run。该责任划分应保留 |
-| worker 是否只有被动回调 | [双向请求分派](../../../ouro/plugins/worker.py)继承 Host 记录的父调用上下文，业务任务不占用 reader；模型、服务、进程、调度和 Driver 均有公开 worker 适配。R1、R2 已补齐 worker 升级、取消、初始化及失败交接组合验证 |
+| 原生执行是否被另建一套 | 默认和自定义 Driver 共用 [NativeRunDriverContext](../../../ouro/application/runs/drivers.py)、[模型请求](../../../ouro/application/models/requests.py)与原生工具批次；独立生成复用模型执行和用量账本，不伪造 Session/Run。该责任划分应保留 |
+| worker 是否只有被动回调 | [双向请求分派](../../../ouro/plugins/worker/)继承 Host 记录的父调用上下文，业务任务不占用 reader；模型、服务、进程、调度和 Driver 均有公开 worker 适配。R1、R2 已补齐 worker 升级、取消、初始化及失败交接组合验证 |
 | 升级与恢复是否混淆 | [精确 Driver 装载](../../../ouro/plugins/driver_contracts.py)、调用租约、持久 checkpoint 与 [Task 领取绑定](../../../ouro/plugins/tasks.py)分别负责实现选择、资源寿命和恢复。不能为减少类型数量而删掉这些独立事实；R1 已将原代次闭包租约贯通服务及注册回调入口 |
-| 关闭与数据是否形成永久运行负担 | [代次释放](../../../ouro/plugins/generation.py)、受管理进程、home 调度所有权和私有数据共享／独占锁均有明确职责。保留用户数据及待完成引用不等于继续驻留执行；停止失败保留资源与失败状态是必要事实。进程内任意 Python 的强制终止仍不属于承诺 |
+| 关闭与数据是否形成永久运行负担 | [代次释放](../../../ouro/plugins/lifecycle/generation.py)、受管理进程、home 调度所有权和私有数据共享／独占锁均有明确职责。保留用户数据及待完成引用不等于继续驻留执行；停止失败保留资源与失败状态是必要事实。进程内任意 Python 的强制终止仍不属于承诺 |
 | 维护成本是否合理 | SDK 独立、Core 不依赖插件安装和 worker 实现、内置业务使用公开 SDK，由架构检查约束。调用闭包、生命周期准入和启动规划在原有责任层内收敛；仅凭模块数量或文件长度，不能推导应引入通用 DI、事件总线、Scope 层级或工作流 DSL |
 
 本轮没有证据要求整体替换 Catalog、全面惰性加载、建立持久引用索引或通用数据迁移平台。
@@ -117,8 +117,8 @@ P1 表示影响执行正确性或阻断有效能力组合，应优先修正；P2
 [`ServiceEndpoint._invoke`](../../../ouro/plugins/services.py)在调用期间仅通过 `target.acquire()`
 租用目标插件，没有同时租用其传递依赖。注册回调入口
 [`_BoundHandler.__call__`](../../../ouro/plugins/services.py)也只租用回调 owner。
-构造端点时传入的是 [`active.acquire`](../../../ouro/plugins/runtime.py)，因此这里并没有隐藏的依赖闭包租约。
-相比之下，[Catalog 贡献绑定](../../../ouro/plugins/catalog.py)和[计划任务绑定](../../../ouro/plugins/tasks.py)
+构造端点时传入的是 [`active.acquire`](../../../ouro/plugins/lifecycle/runtime.py)，因此这里并没有隐藏的依赖闭包租约。
+相比之下，[Catalog 贡献绑定](../../../ouro/plugins/catalog/snapshot.py)和[计划任务绑定](../../../ouro/plugins/tasks.py)
 会保留依赖闭包。
 
 复现使用三个进程内插件：B 依赖 A，C 依赖 B。C 通过公开服务端口调用 B，B 等待一个受控事件后调用 A。
@@ -157,11 +157,11 @@ Catalog 和 Task 复用具备部分获取回滚的租约获取操作。每个调
 
 ### 修正前代码事实与复现
 
-[`PluginRuntimeResource._transition_state_locked`](../../../ouro/plugins/runtime.py)在持有 mutation lock
+[`PluginRuntimeResource._transition_state_locked`](../../../ouro/plugins/lifecycle/runtime.py)在持有 mutation lock
 期间等待发布后的后台服务交接。Background Service 的 `start` 调用 `models.generate`，若模型使用插件 Provider，
-则进入 [`RuntimeService.bind_provider`](../../../ouro/application/runtime.py)。绑定先调用
+则进入 [`RuntimeService.bind_provider`](../../../ouro/application/runtime/service.py)。绑定先调用
 `PluginRuntimeResource.synchronize()`；当持久状态变化尚未被记录为已观察时，它再次等待同一把 mutation lock。
-外层在 [`await asyncio.shield(handover)`](../../../ouro/plugins/runtime.py) 等待启动回调，形成
+外层在 [`await asyncio.shield(handover)`](../../../ouro/plugins/lifecycle/runtime.py) 等待启动回调，形成
 `生命周期持锁 → 等待 start → 等待 Provider 绑定 → 等待生命周期锁` 的闭环。
 
 复现使用 `LocalApplication`、本地模拟 Provider 和公开 SDK。在插件 Background Service 的启动函数中执行一次
@@ -201,9 +201,9 @@ TimeoutError:
 
 ### 修正前代码事实与复现
 
-[`RuntimeService._continue_run_driver`](../../../ouro/application/runtime.py)仅在默认 Driver 分支中
+[`RuntimeService._continue_run_driver`](../../../ouro/application/runtime/service.py)仅在默认 Driver 分支中
 构造 `NativeRunTurns`，接入 `_consume_turn_boundary_inputs`。自定义 Driver 使用的
-[`NativeRunDriverContext`](../../../ouro/application/run_drivers.py)没有相应输入消费入口，
+[`NativeRunDriverContext`](../../../ouro/application/runs/drivers.py)没有相应输入消费入口，
 公开 [`RunDriverContext`](../../../ouro/sdk/plugins/run_drivers.py)也未提供可供替代算法调用的交付端口。
 
 复现使用公开 [`review-driver`](../../../examples/plugins/review-driver/review_driver_plugin.py)示例。
@@ -248,7 +248,7 @@ semantic tag 和资源引用的脱离持久对象的副本。worker 经有效父
 ### 修正前代码事实与复现
 
 [`RuntimeSupervisor.submit`](../../../ouro/application/supervisor.py)先调用 `reconcile_session`，
-随后才检查 `_jobs_by_session`。而 [`SessionRecoveryService._recover_snapshot`](../../../ouro/application/session_recovery.py)
+随后才检查 `_jobs_by_session`。而 [`SessionRecoveryService._recover_snapshot`](../../../ouro/application/sessions/recovery.py)
 主要根据 Session 执行锁识别活跃执行，尚未取得执行锁的本地排队任务可能被当成中断任务。
 
 复现步骤：
@@ -291,8 +291,8 @@ v0.1.0 基线；此处应作为当前框架缺陷修正，而非作为新增插�
 
 ### 修正前代码事实与复现
 
-[`PluginRuntimeResource.start`](../../../ouro/plugins/runtime.py)遍历所有 desired roots，逐项调用
-[`activate`](../../../ouro/plugins/runtime.py)。每次激活计算依赖方闭包，并将其中已经活跃的插件再次纳入重建。
+[`PluginRuntimeResource.start`](../../../ouro/plugins/lifecycle/runtime.py)遍历所有 desired roots，逐项调用
+[`activate`](../../../ouro/plugins/lifecycle/runtime.py)。每次激活计算依赖方闭包，并将其中已经活跃的插件再次纳入重建。
 启动和显式重启因此共用了不适合批量启动的工作规划。
 
 三个默认启用的插件中，B 依赖 A，C 依赖 B。一次 `start()` 创建的 A、B、C 实例数量分别为 `1、2、3`。
@@ -427,7 +427,7 @@ uv run --frozen pytest @nativePaths -q --no-cov
 - 连续审批测试只等待第二个请求进入投影，随即断言焦点；实际 UI 同步尚未结束。测试现在等待审批面板可接受
   键盘输入，保留请求顺序、文件副作用和最终完成状态的断言。
 - 从任务历史进入另一个 Runtime 正在执行的 Session 时，历史记录已有 assistant 内容，但画面偶发缺失。
-  通过失败快照和确定性回归确认，[`append_many_rendered`](../../../ouro/tui/conversation_history.py) 的首次追加路径会在布局／渲染前返回，随后 live 内容被
+  通过失败快照和确定性回归确认，[`append_many_rendered`](../../../ouro/tui/conversation/history.py) 的首次追加路径会在布局／渲染前返回，随后 live 内容被
   移除。修正由历史组件复用已有初始渲染等待，完成交接后返回；未增加业务重试、固定延时或新的渲染状态层。
   任务导航测试同时等待选择动作完成，再验证画面。新增回归在修正前稳定失败。
 - Windows 原生控制台探针固定重设缓冲区尺寸，在当前隐藏控制台触发 `ERROR_INVALID_PARAMETER`。本机探针观察到
@@ -437,7 +437,7 @@ uv run --frozen pytest @nativePaths -q --no-cov
 
 历史渲染、跨 Runtime 会话、原生控制台、连续审批和工具呈现的带覆盖率定向回归 **80 项全部通过**。
 随后完整回归在 **4,457 项通过、6 项跳过**后，因缓存子会话切换用例失败而提前停止。其缓存内容已替换，
-保存的滚动位置却仍等待后续布局，形成新内容与旧位置的交接间隙。[滚动恢复](../../../ouro/tui/widgets.py)现在立即发布保存的位置，仍由原有
+保存的滚动位置却仍等待后续布局，形成新内容与旧位置的交接间隙。[滚动恢复](../../../ouro/tui/widgets/)现在立即发布保存的位置，仍由原有
 布局方法按目标内容的实际尺寸校正，未增加新的切换状态层。该次提前停止不作为完整通过或覆盖率记录。
 
 [双 TUI 观察测试](../../../tests/tui/test_live_session_attachment.py)另有准备阶段期限受界面渲染负载影响的问题。已将执行中的工具准备放到两个观察界面挂载前，

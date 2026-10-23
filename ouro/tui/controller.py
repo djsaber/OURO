@@ -1,14 +1,18 @@
+"""Application operations consumed by the terminal Host."""
+
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from pathlib import Path
-from typing import Literal, cast, get_args
 
 from pydantic import JsonValue
 
-from ouro.application.agent_models import (
+from ouro.application.agents.service import AgentService
+from ouro.application.agents.tree import AgentTreeSubscription
+from ouro.application.configuration.facade import ConfigurationFacade
+from ouro.application.contracts.agents import (
     AgentDefinitionCatalogView,
     AgentDefinitionDetail,
     AgentInteractionView,
@@ -16,10 +20,7 @@ from ouro.application.agent_models import (
     AgentTreeNode,
     AgentTreeSnapshot,
 )
-from ouro.application.agent_tree import AgentTreeSubscription
-from ouro.application.agents import AgentService
-from ouro.application.configuration import ConfigurationFacade
-from ouro.application.configuration_models import (
+from ouro.application.contracts.configuration import (
     AgentRuntimeConfigView,
     CompactionConfigInput,
     CompactionConfigView,
@@ -27,7 +28,6 @@ from ouro.application.configuration_models import (
     MCPRuntimeServerView,
     MCPServerConfigInput,
     MCPServerConfigView,
-    MCPTransportInput,
     ProviderCatalogView,
     ProviderEndpointCatalogView,
     ProviderEndpointView,
@@ -35,7 +35,6 @@ from ouro.application.configuration_models import (
     ProviderView,
     QueuedInputConfigView,
     SkillCatalogView,
-    SkillInstallScopeInput,
     SkillManagementView,
     SkillPolicyView,
     SkillValidationView,
@@ -43,36 +42,23 @@ from ouro.application.configuration_models import (
     SystemPromptConfigView,
     ToolExecutionConfigView,
 )
-from ouro.application.data_transfer import (
-    DataKind,
-    DataTransferItem,
-    DataTransferRequest,
-    DataTransferResult,
-)
-from ouro.application.dto import ApplicationStartupReport
-from ouro.application.events import RuntimeEventSinkRegistration
-from ouro.application.models import AvailableModel, ModelReasoningState
-from ouro.application.plugin_commands import consume_plugin_command, submit_plugin_command
-from ouro.application.plugin_configuration_models import (
+from ouro.application.contracts.execution import RunHandle
+from ouro.application.contracts.models import AvailableModel, ModelReasoningState
+from ouro.application.contracts.plugin_configuration import (
     PluginConfigurationCandidate,
     PluginConfigurationPreview,
     PluginConfigurationResult,
     PluginConfigurationView,
 )
-from ouro.application.plugin_models import (
+from ouro.application.contracts.plugins import (
     PluginActionResult,
-    PluginCommandExecutionView,
     PluginCommandView,
     PluginDetail,
     PluginSummary,
 )
-from ouro.application.provider_auth import ProviderAuthService
-from ouro.application.queued_inputs import QueuedInputMode, QueuedUserInputView
-from ouro.application.runtime import RuntimeService
-from ouro.application.session_models import (
+from ouro.application.contracts.sessions import (
     SessionBranchResult,
     SessionCatalogEntry,
-    SessionContextStatus,
     SessionDetail,
     SessionHistoryAnchor,
     SessionHistoryWindow,
@@ -81,31 +67,29 @@ from ouro.application.session_models import (
     SessionUndoResult,
     SessionView,
 )
-from ouro.application.session_observation import SessionObservation
-from ouro.application.skill_activations import SkillInvocationRequest
-from ouro.application.supervisor_models import RunHandle
-from ouro.application.tasks import TaskService
-from ouro.application.user_inputs import UserInputRequest
-from ouro.config import (
-    EndpointReasoningConfig,
-    ProviderProtocol,
-    ProviderType,
-    QueuedInputConsumptionMode,
+from ouro.application.events import RuntimeEventSinkRegistration
+from ouro.application.inputs.queue import QueuedInputMode, QueuedUserInputView
+from ouro.application.inputs.requests import UserInputRequest
+from ouro.application.inputs.skills import SkillInvocationRequest
+from ouro.application.plugins.commands import consume_plugin_command, submit_plugin_command
+from ouro.application.provider_auth.service import ProviderAuthService
+from ouro.application.runtime.service import RuntimeService
+from ouro.application.tasks.service import TaskService
+from ouro.application.transfer.service import (
+    DataKind,
+    DataTransferItem,
+    DataTransferRequest,
+    DataTransferResult,
 )
+from ouro.config import QueuedInputConsumptionMode
 from ouro.config.endpoints import EndpointChanges
 from ouro.config.prompts import PromptDraft, PromptKind
-from ouro.core.agents import ExecutionMode, ToolSelection
-from ouro.core.approvals import (
-    SESSION_APPROVAL_MODES,
-    SessionApprovalMode,
-    ToolPermissionControl,
-)
+from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.attachment_input import is_editable_user_input
 from ouro.core.base import Metadata, new_id
 from ouro.core.billing import UsageFilter
 from ouro.core.callbacks import run_blocking
-from ouro.core.compaction import CompactionCommandResult, CompactionRecord
-from ouro.core.context import ContextMetrics
+from ouro.core.compaction import CompactionCommandResult
 from ouro.core.errors import ConfigError, PersistenceError, SessionNotFoundError
 from ouro.core.events import EventRecord
 from ouro.core.input_content import InputAttachment, InputFile, InputFileReference
@@ -117,140 +101,45 @@ from ouro.core.results import RunResult
 from ouro.core.session_commits import SessionCommitConflict
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tasks import TaskConfiguration, TaskCounts, TaskExecution, TaskRecord
-from ouro.core.tool_batches import ToolExecutionMode
-from ouro.core.tools import PermissionMode, ToolEffect, ToolSource
+from ouro.core.tools import PermissionMode
 from ouro.core.usage_queries import UsageSummary, UsageTotals
 from ouro.deployment import SessionBackend, TaskBackend
 from ouro.local_application import LocalApplication
 from ouro.mcp import MCPServerConfig
 from ouro.skills import SkillMetadata
 from ouro.tui.state import PendingInteraction
-
-EventPublisher = Callable[[EventRecord], None]
-LifecyclePublisher = Callable[["TuiLifecycleStatus"], None]
-
-TuiApprovalPreset = Literal["inherit", "auto", "approval", "deny", "afk"]
-TUI_APPROVAL_PRESETS = cast(tuple[TuiApprovalPreset, ...], get_args(TuiApprovalPreset))
-
-
-@dataclass(frozen=True)
-class TuiLifecycleStatus:
-    activity: str
-    detail: str
-
-
-@dataclass(frozen=True)
-class McpServerStatus:
-    server_id: str
-    name: str
-    transport: str
-    status: str
-    tool_count: int = 0
-    error: str | None = None
-
-
-@dataclass(frozen=True)
-class TuiDailyUsage:
-    date: str
-    request_count: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_tokens: int = 0
-
-    @property
-    def total_tokens(self) -> int:
-        return self.input_tokens + self.output_tokens
-
-
-@dataclass(frozen=True)
-class TuiSystemStatus:
-    workspace: str | None = None
-    model_names: tuple[str, ...] = ()
-    model_count: int = 0
-    skill_count: int = 0
-    skill_names: tuple[str, ...] = ()
-    plugin_active_count: int = 0
-    plugin_total_count: int = 0
-    plugin_issue_count: int = 0
-    plugin_active_names: tuple[str, ...] = ()
-    mcp_connected_count: int = 0
-    mcp_total_count: int = 0
-    mcp_tool_count: int = 0
-    mcp_connecting_count: int = 0
-    mcp_failed_count: int = 0
-    usage_request_count: int = 0
-    usage_input_tokens: int = 0
-    usage_output_tokens: int = 0
-    usage_cache_read_tokens: int = 0
-    usage_daily: tuple[TuiDailyUsage, ...] = ()
-    task_counts: TaskCounts = field(default_factory=TaskCounts)
-    task_error: str | None = None
-
-
-def project_usage_system_status(
-    status: TuiSystemStatus,
-    usage: UsageSummary,
-) -> TuiSystemStatus:
-    """Project canonical ledger totals and recent daily detail into the Host view."""
-
-    totals = usage.totals
-    return replace(
-        status,
-        usage_request_count=totals.request_count,
-        usage_input_tokens=totals.input_tokens,
-        usage_output_tokens=totals.output_tokens,
-        usage_cache_read_tokens=totals.cache_read_tokens,
-        usage_daily=tuple(
-            TuiDailyUsage(
-                date=cast(str, group.key[0]),
-                request_count=group.totals.request_count,
-                input_tokens=group.totals.input_tokens,
-                output_tokens=group.totals.output_tokens,
-                cache_read_tokens=group.totals.cache_read_tokens,
-            )
-            for group in usage.groups[-10:]
-        ),
-    )
-
-
-def project_mcp_system_status(
-    status: TuiSystemStatus,
-    servers: tuple[McpServerStatus, ...],
-) -> TuiSystemStatus:
-    """Project one live MCP snapshot into the shared TUI system summary."""
-
-    connected_count = 0
-    tool_count = 0
-    connecting_count = 0
-    failed_count = 0
-    for server in servers:
-        if server.status == "connected":
-            connected_count += 1
-            tool_count += server.tool_count
-        elif server.status in {"starting", "reconnecting"}:
-            connecting_count += 1
-        elif server.status == "failed":
-            failed_count += 1
-    return replace(
-        status,
-        mcp_connected_count=connected_count,
-        mcp_total_count=len(servers),
-        mcp_tool_count=tool_count,
-        mcp_connecting_count=connecting_count,
-        mcp_failed_count=failed_count,
-    )
-
-
-_PLUGIN_ISSUE_STATUSES = frozenset(
-    {
-        "invalid",
-        "incompatible",
-        "needs_configuration",
-        "degraded",
-        "blocked",
-        "failed",
-    }
+from ouro.tui.status import (
+    project_mcp_system_status,
+    project_plugin_system_status,
+    project_usage_system_status,
 )
+from ouro.tui.view_models import (
+    TUI_APPROVAL_PRESETS,
+    EventPublisher,
+    LifecyclePublisher,
+    LoadedSession,
+    McpServerStatus,
+    TuiAgentDefinitionConfiguration,
+    TuiAgentRuntimeConfiguration,
+    TuiApprovalPreset,
+    TuiBootstrap,
+    TuiCompactionConfiguration,
+    TuiEndpointConfiguration,
+    TuiLifecycleStatus,
+    TuiMCPServerConfiguration,
+    TuiNewSession,
+    TuiPluginCommandExecution,
+    TuiPluginInstallConfiguration,
+    TuiProviderConfiguration,
+    TuiSessionControlStatus,
+    TuiSessionObservation,
+    TuiSkillInstallConfiguration,
+    TuiSkillInvocationOption,
+    TuiSystemStatus,
+    TuiToolConfiguration,
+    TuiToolExecutionConfiguration,
+)
+
 _CHILD_CONTROL_EVENT_TYPES = frozenset(
     {
         "approval_requested",
@@ -265,235 +154,6 @@ _CHILD_CONTROL_EVENT_TYPES = frozenset(
         "run_paused",
     }
 )
-
-
-def project_plugin_system_status(
-    status: TuiSystemStatus,
-    plugins: tuple[PluginSummary, ...],
-) -> TuiSystemStatus:
-    """Project the canonical plugin catalog into the shared TUI summary."""
-
-    active_names: list[str] = []
-    issue_count = 0
-    for plugin in plugins:
-        if plugin.status in {"active", "ready"}:
-            active_names.append(plugin.name)
-        if plugin.status in _PLUGIN_ISSUE_STATUSES:
-            issue_count += 1
-    return replace(
-        status,
-        plugin_active_count=len(active_names),
-        plugin_total_count=len(plugins),
-        plugin_issue_count=issue_count,
-        plugin_active_names=tuple(sorted(active_names)),
-    )
-
-
-@dataclass(frozen=True)
-class TuiProviderConfiguration:
-    """Supplier-level configuration intent collected by the TUI."""
-
-    display_name: str
-    provider_type: ProviderType
-    base_url: str | None
-    api_path: str | None
-    api_key: str | None
-    api_key_env: str | None
-    timeout: float
-    headers: dict[str, object] | None = field(default=None, repr=False)
-    provider_options: dict[str, object] | None = None
-    enabled: bool = True
-    make_default: bool = False
-    auth_driver: str | None = None
-    protocol: ProviderProtocol | None = None
-
-
-@dataclass(frozen=True)
-class TuiEndpointConfiguration:
-    """One provider-owned callable endpoint collected by the TUI."""
-
-    display_name: str | None
-    model_id: str
-    context_window: int
-    max_output_tokens: int | None
-    supports_tools: bool = True
-    supports_image_input: bool = False
-    supports_audio_input: bool = False
-    supports_video_input: bool = False
-    supports_streaming: bool = True
-    supports_structured_output: bool = True
-    reasoning: EndpointReasoningConfig | None = None
-    request_options: dict[str, object] | None = None
-
-
-@dataclass(frozen=True)
-class TuiToolConfiguration:
-    name: str
-    display_name: str
-    source: ToolSource | Literal["unavailable"]
-    effect: ToolEffect
-    default_permission: PermissionMode | None
-    plugin_id: str | None
-    plugin_name: str | None
-    plugin_permission_override: PermissionMode | None
-    permission_override: PermissionMode | None
-    permission_control: ToolPermissionControl
-    available: bool = True
-
-    @property
-    def inherited_permission(self) -> PermissionMode | None:
-        if self.permission_control == "tool":
-            return self.default_permission
-        return self.plugin_permission_override or self.default_permission
-
-    @property
-    def effective_permission(self) -> PermissionMode | None:
-        if self.permission_control == "tool":
-            return self.default_permission
-        return self.permission_override or self.inherited_permission
-
-
-@dataclass(frozen=True)
-class TuiToolExecutionConfiguration:
-    mode: ToolExecutionMode
-    max_concurrency: int
-    workspace_only: bool
-    max_output_chars: int
-
-
-@dataclass(frozen=True)
-class TuiAgentRuntimeConfiguration:
-    expected_revision: int
-    allowed_agent_id_patterns: tuple[str, ...]
-    allowed_model_patterns: tuple[str, ...]
-    allowed_execution_modes: tuple[ExecutionMode, ...]
-    allow_write: bool
-    allow_network: bool
-    allow_mcp: bool
-    allow_external_paths: bool
-
-
-@dataclass(frozen=True)
-class TuiAgentDefinitionConfiguration:
-    agent_id: str
-    name: str
-    description: str
-    system_prompt: str
-    tool_selection: ToolSelection
-    model: str | None
-
-
-@dataclass(frozen=True)
-class TuiMCPServerConfiguration:
-    server_id: str | None
-    name: str
-    transport: MCPTransportInput
-    target: str | None
-    args: list[str] | None
-    env: dict[str, str] | None
-    inherit_env: list[str] | None
-    cwd: str | None
-    headers: dict[str, str] | None
-    credential_refs: dict[str, str] | None
-    enabled: bool
-    auto_start: bool
-    auto_reconnect: bool
-    max_reconnect_attempts: int
-    reconnect_backoff_seconds: float
-    timeout_seconds: float
-    health_check_interval_seconds: float
-    permission_mode: PermissionMode
-    tool_effect_overrides: dict[str, ToolEffect] | None
-
-
-@dataclass(frozen=True)
-class TuiSkillInstallConfiguration:
-    source: str
-    scope: SkillInstallScopeInput
-    selector: str | None = None
-    install_all: bool = False
-    force: bool = False
-    ref: str | None = None
-
-
-@dataclass(frozen=True)
-class TuiPluginInstallConfiguration:
-    source: str
-    ref: str | None = None
-    subdirectory: str | None = None
-
-
-@dataclass(frozen=True)
-class TuiSkillInvocationOption:
-    name: str
-    description: str
-    argument_hint: str | None = None
-
-
-@dataclass(frozen=True)
-class TuiCompactionConfiguration:
-    strategy_id: str
-    fallback_strategy_id: str | None
-    auto_enabled: bool
-    trigger_ratio: float
-    target_ratio: float
-    model_key: str | None
-    temperature: float | None
-    max_output_tokens: int | None
-    reasoning: ReasoningRequest | None
-
-
-@dataclass(frozen=True)
-class TuiSessionControlStatus:
-    controller_id: str
-    label: str
-
-
-@dataclass(frozen=True)
-class TuiPluginCommandExecution:
-    execution: PluginCommandExecutionView
-    run_results: tuple[RunResult, ...] = ()
-
-
-@dataclass(frozen=True)
-class TuiBootstrap:
-    models: tuple[AvailableModel, ...]
-    current_model: AvailableModel
-    sessions: tuple[SessionCatalogEntry, ...]
-    startup_report: ApplicationStartupReport
-    mcp_servers: tuple[McpServerStatus, ...] = ()
-    system_status: TuiSystemStatus = TuiSystemStatus()
-
-
-@dataclass(frozen=True)
-class LoadedSession:
-    detail: SessionDetail
-    messages: tuple[MessageRecord, ...]
-    events: tuple[EventRecord, ...]
-    runs: tuple[RunRecord, ...] = ()
-    context_status: SessionContextStatus | None = None
-    effective_context_metrics: ContextMetrics | None = None
-    compactions: tuple[CompactionRecord, ...] = ()
-    queued_inputs: tuple[QueuedUserInputView, ...] = ()
-    session_controls: tuple[TuiSessionControlStatus, ...] = ()
-    event_high_water: int = 0
-    history_before_cursor: int | None = None
-    approval_preset: TuiApprovalPreset = "inherit"
-    reasoning_state: ModelReasoningState | None = None
-
-
-@dataclass(frozen=True)
-class TuiSessionObservation:
-    loaded: LoadedSession
-    subscription: SessionObservation
-    control_session: SessionView
-
-
-@dataclass(frozen=True)
-class TuiNewSession:
-    model: AvailableModel
-    initial_model: str | None
-    workspace: str | None
 
 
 class TuiController:

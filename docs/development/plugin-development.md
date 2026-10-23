@@ -285,7 +285,7 @@ deactivate 暂存变更，与控制关系一起提交。replace 在同一草稿�
 deactivate 调用的 `replacement_controller_id` 明确给出本次 replace 的目标 canonical controller id；
 普通 release 时为 None。需要区分自身切换与退出时据此决定业务草稿如何处理，不解析 reason 文本，
 不保存 activation 副本推断执行顺序。替换仍限定在同一 owner 内；目标 controller 的 payload 由目标解释。
-SDK 和 worker 使用同一字段。控制器和 Continuation 不再输出 owner/state revision，提交冲突由原生
+SDK 和 worker 使用同一字段。控制器和 Continuation 的输出不包含 owner/state revision，提交冲突由原生
 Harness 版本、history_epoch 和消息头前置条件处理。
 
 绑定 controller 的 Continuation Policy 会收到所有 terminal `RunOutcome`。非 `completed` Run 只能返回

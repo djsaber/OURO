@@ -7,8 +7,8 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any, Literal, Unpack
 
-from ouro.application.configuration import ConfigurationFacade
-from ouro.application.configuration_models import (
+from ouro.application.configuration.facade import ConfigurationFacade
+from ouro.application.contracts.configuration import (
     ProviderEndpointView,
     ProviderTemplateUpdateView,
     ProviderTemplateView,

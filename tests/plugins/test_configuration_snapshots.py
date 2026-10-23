@@ -5,11 +5,11 @@ import json
 
 import pytest
 
-from ouro.application.plugins import PluginService
-from ouro.plugins.installer import PluginInstaller
+from ouro.application.plugins.service import PluginService
+from ouro.plugins.installation.installer import PluginInstaller
+from ouro.plugins.installation.store import PluginPackageStore
+from ouro.plugins.lifecycle.readiness import configuration_errors
 from ouro.plugins.models import PluginConfigurationRevision, create_configuration_revision
-from ouro.plugins.readiness import configuration_errors
-from ouro.plugins.store import PluginPackageStore
 from tests.plugins.test_plugin_system import _runtime, _write_native_plugin
 
 

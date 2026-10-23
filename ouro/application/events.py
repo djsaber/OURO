@@ -7,7 +7,7 @@ from functools import lru_cache
 from inspect import isawaitable, iscoroutinefunction
 from typing import Any, Protocol, cast
 
-from ouro.application.event_models import validate_runtime_event_payload
+from ouro.application.contracts.events import validate_runtime_event_payload
 from ouro.application.harness import capture_harness
 from ouro.application.observers import ObserverDispatcher
 from ouro.application.usage import UsageService

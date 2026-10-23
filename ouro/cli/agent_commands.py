@@ -5,7 +5,7 @@ import json
 import sys
 from typing import Any
 
-from ouro.application.agent_models import SpawnAgentRequest
+from ouro.application.contracts.agents import SpawnAgentRequest
 from ouro.cli.errors import error_exit_code
 from ouro.core.agents import ToolSelection
 from ouro.core.errors import ConfigError, OuroError

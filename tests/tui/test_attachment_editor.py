@@ -3,7 +3,7 @@ from __future__ import annotations
 from textual.app import App, ComposeResult
 
 from ouro.core.input_content import InputAttachment, InputContent
-from ouro.tui.attachment_editor import AttachmentTextArea
+from ouro.tui.composer.attachment_editor import AttachmentTextArea
 
 
 class EditorApp(App[None]):

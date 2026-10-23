@@ -9,9 +9,9 @@ from itertools import pairwise
 
 import pytest
 
-from ouro.application.plugin_commands import consume_plugin_command, submit_plugin_command
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.application.plugins.commands import consume_plugin_command, submit_plugin_command
+from ouro.application.runtime.environment import RuntimeEnvironment
+from ouro.application.runtime.service import RuntimeService
 from ouro.application.session_controls import SessionControlConflictError
 from ouro.application.usage import UsageService
 from ouro.billing import LocalUsageLedger
@@ -24,7 +24,7 @@ from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStrea
 from ouro.core.state import SessionRecord
 from ouro.core.tools import ToolCallRequest
 from ouro.local_application import LocalApplication
-from ouro.providers.openai_responses_codec import responses_input
+from ouro.providers.openai_responses.codec import responses_input
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 

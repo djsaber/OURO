@@ -15,7 +15,7 @@ from ouro.cli.main import main
 from ouro.cli.parser import build_parser
 from ouro.config import provider_models
 from ouro.config.provider_models import ProviderConnectionSpec, ProviderTypeSpec
-from ouro.config.providers import ProviderConfigManager
+from ouro.config.providers.manager import ProviderConfigManager
 from ouro.local_application import open_local_provider_auth
 from tests.application.test_provider_auth import ControlledDriver
 from tests.auth.test_driver_contracts import drivers

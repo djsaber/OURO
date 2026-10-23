@@ -20,8 +20,8 @@ from ouro.core.provider import ModelMetadata, ProviderRetryPolicy
 from ouro.core.tools import ToolCallRequest
 from ouro.providers.authentication import ProviderRequestPolicy
 from ouro.providers.http_transport import HttpxProviderHTTPTransport, ProviderTransportError
-from ouro.providers.openai_responses import OpenAIResponsesProvider
-from ouro.providers.openai_responses_codec import tool_arguments
+from ouro.providers.openai_responses.adapter import OpenAIResponsesProvider
+from ouro.providers.openai_responses.codec import tool_arguments
 
 CODEX_REQUEST_POLICY = ProviderRequestPolicy(
     billing_mode="subscription",

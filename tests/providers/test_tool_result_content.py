@@ -5,9 +5,9 @@ import pytest
 from ouro.core.content import ImageContent, TextContent
 from ouro.core.messages import MessageRecord, ModelMessage, ToolResultReference
 from ouro.core.tools import ToolCallProducer, ToolCallRequest
-from ouro.providers.anthropic_messages_codec import messages_to_anthropic_messages
-from ouro.providers.openai_chat_completions_codec import messages_to_chat_completions
-from ouro.providers.openai_responses_codec import responses_input
+from ouro.providers.anthropic_messages.codec import messages_to_anthropic_messages
+from ouro.providers.openai_chat_completions.codec import messages_to_chat_completions
+from ouro.providers.openai_responses.codec import responses_input
 
 URI = "data:image/png;base64,aW1hZ2U="
 

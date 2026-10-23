@@ -5,7 +5,7 @@ from rich.text import Text
 from textual.app import App
 
 from ouro.tui.commands import TuiCommand, TuiCommandArgument
-from ouro.tui.widgets import CommandPopup
+from ouro.tui.composer.popup import CommandPopup
 from tests.tui.helpers import resize_terminal
 
 

@@ -5,13 +5,13 @@ from pathlib import Path
 
 import pytest
 
-import ouro.config.provider_template_store as store_module
-from ouro.config.provider_template_store import (
+import ouro.config.providers.template_store as store_module
+from ouro.config.provider_templates import ProviderTemplate, provider_templates
+from ouro.config.providers.template_store import (
     SCHEMA_VERSION,
     ProviderTemplateStore,
     template_fingerprint,
 )
-from ouro.config.provider_templates import ProviderTemplate, provider_templates
 from ouro.core.errors import ConfigError
 
 _INLINE_BY_ID = {template.template_id: template for template in provider_templates()}

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from ouro.tools import Tool, ToolDefinition, ToolInvocation, ToolResult, builtin_tools
-from ouro.tools.builtin_shell import detect_command_shell
+from ouro.tools.builtin.shell import detect_command_shell
 from ouro.tools.executor import ToolExecutor
 from ouro.tools.registry import ToolRegistry
 

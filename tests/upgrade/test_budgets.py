@@ -7,7 +7,7 @@ from contextlib import closing
 
 import pytest
 
-from ouro.application.runtime_activity import queued_runtime_activity, reduce_runtime_activity
+from ouro.application.observations.activity import queued_runtime_activity, reduce_runtime_activity
 from ouro.core.context import ContextMetrics
 from ouro.core.events import EventRecord
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore

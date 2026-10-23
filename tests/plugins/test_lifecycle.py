@@ -8,15 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from ouro.application.plugins import PluginService
+from ouro.application.plugins.service import PluginService
 from ouro.core.observers import ContextPreparedObservation, ObserverRegistry
 from ouro.plugins.builtin import BuiltinPluginDefinition, BuiltinPluginRegistry
-from ouro.plugins.contributions import ContributionCoordinator
+from ouro.plugins.contributions.preparation import ContributionCoordinator
+from ouro.plugins.installation.store import PluginPackageStore
+from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.registry import PluginCommandError, PluginCommandRegistry
 from ouro.plugins.resources import OwnedTaskGroup
-from ouro.plugins.runtime import PluginRuntimeResource
-from ouro.plugins.store import PluginPackageStore
 from ouro.sdk.plugins import v5 as sdk
 from ouro.tools import ToolRegistry
 

@@ -34,7 +34,7 @@
 | 失败工具的 TUI 实时与重开呈现：2 项 | 环境变化产生局部工具失败，不能直接作为整个 child 的失败来源；已结算工具属于历史而非活动批次 | 夹具显式制造模型失败；检查历史中的失败工具、空活动批次及实时/重开后的动画停止 |
 | 队列撤回：1 项 | 两次异步提交尚未依次接受，就假定了队列中的编号顺序 | 等待第一条输入实际接受后再提交第二条；保留选择、草稿恢复和取消事件断言，不添加固定延时或延长超时 |
 
-- [x] 本次复测：[跨 Host](../../../tests/application/test_agent_multi_host.py)、[TUI 实时附件](../../../tests/tui/test_live_session_attachment.py)及[队列撤回](../../../tests/tui/test_app.py)共 27 项通过。
+- [x] 本次复测：[跨 Host](../../../tests/application/test_agent_multi_host.py)、[TUI 实时附件](../../../tests/tui/test_live_session_attachment.py)及[队列撤回](../../../tests/tui/app/)共 27 项通过。
 - [x] 相关项复测：[插件扩展](../../../tests/application/test_plugin_extensibility.py)、[插件命令](../../../tests/application/test_host_plugin_commands.py)及[用量归属](../../../tests/application/test_harness_usage.py)共 56 项通过。
 - [x] 共 83 项针对性测试通过；未再次执行全量。pytest 失败缓存中的 17 个节点均为重命名前的旧名称，与当前收集到的 4,281 个用例无交集，不是仍然失败的现行用例。
 
@@ -95,7 +95,7 @@ Agent 循环根据已有事实和当前可用能力作出决策、执行行动�
 - [x] 绑定失败和取消有统一释放入口，恢复验证后登记，租约释放回调不保留已移除的整组 Run 引用。
 - [x] 内部工具使用固定执行与恢复签名，SDK 可选上下文在装配时适配；执行链保留同步隔离和取消收尾。见[工具契约](../../specs/tools-and-interactions.md#工具契约)。
 
-**已完成验证。** RunResources 未登记时独立创建控制快照的初始化问题已修复：控制快照构造与资源登记各自承担明确职责。实现见 [RuntimeService](../../../ouro/application/runtime.py)，[用量归属回归](../../../tests/application/test_harness_usage.py)通过。验证保留业务断言与环境校验；TUI 布局与焦点不属于本计划的架构改造。
+**已完成验证。** RunResources 未登记时独立创建控制快照的初始化问题已修复：控制快照构造与资源登记各自承担明确职责。实现见 [RuntimeService](../../../ouro/application/runtime/service.py)，[用量归属回归](../../../tests/application/test_harness_usage.py)通过。验证保留业务断言与环境校验；TUI 布局与焦点不属于本计划的架构改造。
 
 ## 整体框架审视
 
@@ -114,7 +114,7 @@ Agent 循环根据已有事实和当前可用能力作出决策、执行行动�
 
 ## 会话连续性与局部操作恢复
 
-**证据。** [Catalog.matches](../../../ouro/plugins/catalog.py)比较完整插件集合；[snapshot_for 与恢复目录重建](../../../ouro/plugins/runtime.py)恢复旧包、配置和依赖；[Runtime 恢复入口](../../../ouro/application/runtime.py)依赖这些绑定。现行[持久 Run 规格](../../specs/plugins.md#15-durable-run)对不匹配的 builtin 还要求使用新 Session 开始新工作。
+**证据。** [Catalog.matches](../../../ouro/plugins/catalog/snapshot.py)比较完整插件集合；[snapshot_for 与恢复目录重建](../../../ouro/plugins/lifecycle/runtime.py)恢复旧包、配置和依赖；[Runtime 恢复入口](../../../ouro/application/runtime/service.py)依赖这些绑定。现行[持久 Run 规格](../../specs/plugins.md#15-durable-run)对不匹配的 builtin 还要求使用新 Session 开始新工作。
 
 **建议方向。** 以可读取的会话事实为连续性基础，在同一 Session 内用当前环境继续允许的工作。Run 保留真实执行身份和生命周期；不为延续聊天而伪造原操作完成，也不要求用户通过复制历史或创建新 Session 绕过组件更新。
 
@@ -132,7 +132,7 @@ Agent 循环根据已有事实和当前可用能力作出决策、执行行动�
 | 等待审批或回答 | 保留交互身份、问题和已接受输入；无法承接时明确结束原操作，旧批准不转授新动作，旧回答不自动成为新授权 |
 | 已开始，结果未知 | 保留未知状态与可用核查依据，恢复机制不自动重放；有明确查询协议时查询，否则如实报告无法自动确认 |
 
-工具帧可通过真实的“结果未知”反馈闭合，外部结果仍保持未知。复用 [RunRecoveryService](../../../ouro/application/recovery.py) 的中断反馈路径，完成必要收尾后再进入下一次允许的决策；消息帧完整不能被解释为副作用已确认。
+工具帧可通过真实的“结果未知”反馈闭合，外部结果仍保持未知。复用 [RunRecoveryService](../../../ouro/application/runs/recovery.py) 的中断反馈路径，完成必要收尾后再进入下一次允许的决策；消息帧完整不能被解释为副作用已确认。
 
 默认允许结束无法承接的旧操作，不以尽可能恢复所有旧操作为目标。只有具体工具存在真实承接需求时，才定义其最小稳定契约与支持范围。优先采用协议能够验证的少量字段；同名、相同 schema 或相同版本号不能单独证明授权含义未变，也不引入通用代码语义兼容推断。
 
@@ -140,7 +140,7 @@ Agent 循环根据已有事实和当前可用能力作出决策、执行行动�
 
 ## 环境生效边界与插件生命周期
 
-**证据。** [插件运行时](../../../ouro/plugins/runtime.py)同时维护 active、retired 和恢复 Catalog，并拥有后台服务交接；[Catalog.acquire](../../../ouro/plugins/catalog.py)为整个目录中的代次取得租约。长期等待的 Run 和队列因此可以延长整组环境的寿命。
+**证据。** [插件运行时](../../../ouro/plugins/lifecycle/runtime.py)同时维护 active、retired 和恢复 Catalog，并拥有后台服务交接；[Catalog.acquire](../../../ouro/plugins/catalog/snapshot.py)为整个目录中的代次取得租约。长期等待的 Run 和队列因此可以延长整组环境的寿命。
 
 **建议方向。** 普通环境更新在明确的决策边界生效。一次模型请求使用一致的能力描述，响应形成的具体调用有明确执行绑定；下一次决策可以使用当前能力。已开始的调用由原 owner 收尾，权限撤销仍在行动边界生效。
 
@@ -157,7 +157,7 @@ Agent 循环根据已有事实和当前可用能力作出决策、执行行动�
 
 ## Harness、输入队列与自动继续
 
-**证据。** [HarnessState](../../../ouro/core/harness.py)和[扩展状态](../../../ouro/core/session_extensions.py)已有持久 owner 边界；[QueuedInput](../../../ouro/application/queued_inputs.py)携带完整环境绑定；[RunContinuationService](../../../ouro/application/run_continuations.py)已有结算方案，但 Runtime 先恢复旧 Catalog，继续动作的提交也会检查当前 registration。
+**证据。** [HarnessState](../../../ouro/core/harness.py)和[扩展状态](../../../ouro/core/session_extensions.py)已有持久 owner 边界；[QueuedInput](../../../ouro/application/inputs/queue.py)携带完整环境绑定；[RunContinuationService](../../../ouro/application/runs/continuations.py)已有结算方案，但 Runtime 先恢复旧 Catalog，继续动作的提交也会检查当前 registration。
 
 **建议方向。** 业务事实、控制权和环境实现各自负责。目标、进展和用户输入不因插件退出而消失；执行资格由当前有效规则判断。已经接受的决定按其事实结算，不重新调用插件推导一遍，也不把曾经接受输入视为永久执行授权。
 
@@ -171,7 +171,7 @@ Agent 循环根据已有事实和当前可用能力作出决策、执行行动�
 
 ## 子 Agent 的任务承诺与当前能力
 
-**证据。** [子智能体规格](../../specs/subagents.md)要求 parent Run 冻结完整 AgentCatalog，Delegation 冻结定义和 EffectiveToolRefs，child 的 resume/follow-up 使用该契约；[恢复对账](../../../ouro/application/agent_recovery.py)还验证父子记录之间的冻结契约一致性。
+**证据。** [子智能体规格](../../specs/subagents.md)要求 parent Run 冻结完整 AgentCatalog，Delegation 冻结定义和 EffectiveToolRefs，child 的 resume/follow-up 使用该契约；[恢复对账](../../../ouro/application/agents/recovery.py)还验证父子记录之间的冻结契约一致性。
 
 **建议方向。** Delegation 记录实际委派的任务、父子身份、工作范围、预算及权限上限。可用工具和执行实现属于运行时能力。父子记录一致性保护真实派遣事实，不能直接推导出工具实现必须永久不变。
 
@@ -184,7 +184,7 @@ Agent 循环根据已有事实和当前可用能力作出决策、执行行动�
 
 ## 历史上下文、当前能力与数据契约
 
-**证据。** [上下文准备](../../../ouro/application/compaction.py)已经投影完整工具帧、压缩历史与可使用的 Provider continuation；[Core 内循环](../../../ouro/core/inner_loop.py)通过端口获取上下文和模型请求。历史记录无需天然承担当前工具可调用性的证明。
+**证据。** [上下文准备](../../../ouro/application/context/compaction.py)已经投影完整工具帧、压缩历史与可使用的 Provider continuation；[Core 内循环](../../../ouro/core/inner_loop.py)通过端口获取上下文和模型请求。历史记录无需天然承担当前工具可调用性的证明。
 
 **建议方向。** 历史描述过去发生的事，当前能力描述下一步可做的事。前缀缓存、token 估算和 Provider 私有续接服务效率，不能成为会话依赖整个环境不变的理由。
 
@@ -201,7 +201,7 @@ Agent 循环根据已有事实和当前可用能力作出决策、执行行动�
 
 ## 执行准备与资源所有权
 
-**证据。** [InnerAgentLoop](../../../ouro/core/inner_loop.py)已有上下文、Run 和轮次端口；[RuntimeService](../../../ouro/application/runtime.py)组合输入、恢复与执行；[RunResources](../../../ouro/application/run_resources.py)聚合进程内绑定和工具协调器。
+**证据。** [InnerAgentLoop](../../../ouro/core/inner_loop.py)已有上下文、Run 和轮次端口；[RuntimeService](../../../ouro/application/runtime/service.py)组合输入、恢复与执行；[RunResources](../../../ouro/application/runtime/resources.py)聚合进程内绑定和工具协调器。
 
 **建议方向。** 复用单一 Agent 循环、现有应用用例与原子提交机制，让执行准备、持久事实和资源收尾各有明确所有者。按职责与生命周期收敛依赖，保持普通执行路径直接可追踪。
 

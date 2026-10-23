@@ -17,18 +17,18 @@ from ouro.config.provider_models import (
     validate_reasoning_protocol_compatibility,
     validate_request_options,
 )
-from ouro.config.provider_runtime import validate_runtime_auth
+from ouro.config.providers.runtime import validate_runtime_auth
 from ouro.config.reasoning import EndpointReasoningConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.billing import BillingMode
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata, Provider
 from ouro.core.reasoning import ReasoningRequest
-from ouro.providers.anthropic_messages import AnthropicMessagesProvider
+from ouro.providers.anthropic_messages.adapter import AnthropicMessagesProvider
 from ouro.providers.authentication import ProviderRequestPolicy
 from ouro.providers.faux import FauxProvider
-from ouro.providers.openai_chat_completions import OpenAIChatCompletionsProvider
-from ouro.providers.openai_responses import OpenAIResponsesProvider
+from ouro.providers.openai_chat_completions.adapter import OpenAIChatCompletionsProvider
+from ouro.providers.openai_responses.adapter import OpenAIResponsesProvider
 from ouro.providers.reasoning import ReasoningPayloadEncoder
 
 

@@ -9,7 +9,7 @@ from ouro.core.agents import (
     AgentSpawnPolicy,
 )
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
-from ouro.tools.builtin_agents import agent_control_tools
+from ouro.tools.builtin.agents import agent_control_tools
 
 
 def test_spawn_schema_uses_the_run_frozen_execution_modes() -> None:

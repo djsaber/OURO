@@ -192,7 +192,12 @@ def test_authorization_attempt_does_not_own_credential_storage_or_commit() -> No
 
 
 def test_application_auth_only_uses_injected_drivers_and_credential_service() -> None:
-    for path in APPLICATION_DIR.glob("provider_auth*.py"):
+    paths = [
+        *(APPLICATION_DIR / "provider_auth").rglob("*.py"),
+        APPLICATION_DIR / "contracts" / "provider_auth.py",
+    ]
+    assert paths
+    for path in paths:
         imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
         assert not any(
             module.startswith(
@@ -236,7 +241,7 @@ def test_auth_drivers_do_not_own_storage_configuration_or_host_interaction() -> 
 
 
 def test_agent_service_is_application_owned_and_not_exposed_to_plugins_or_tools() -> None:
-    assert (APPLICATION_DIR / "agents.py").exists()
+    assert (APPLICATION_DIR / "agents" / "service.py").exists()
     violations: list[str] = []
     for directory in ("plugins", "sdk", "tools"):
         for path in sorted((PROJECT_ROOT / "ouro" / directory).rglob("*.py")):
@@ -245,12 +250,12 @@ def test_agent_service_is_application_owned_and_not_exposed_to_plugins_or_tools(
             if "AgentService" in source:
                 violations.append(f"{path.relative_to(PROJECT_ROOT)} names AgentService")
             for module in _imported_modules(tree):
-                if module == "ouro.application.agents":
+                if module == "ouro.application.agents.service":
                     violations.append(f"{path.relative_to(PROJECT_ROOT)} imports {module}")
 
-    for path in sorted((PROJECT_ROOT / "ouro" / "cli").glob("*.py")):
+    for path in sorted((PROJECT_ROOT / "ouro" / "cli").rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        if "ouro.application.agents" in _imported_modules(tree):
+        if "ouro.application.agents.service" in _imported_modules(tree):
             violations.append(f"{path.relative_to(PROJECT_ROOT)} bypasses LocalApplication")
 
     assert violations == []
@@ -296,9 +301,9 @@ def test_auth_cli_only_uses_application_and_local_composition() -> None:
 
 
 def test_auth_tui_only_uses_application_contracts() -> None:
-    path = PROJECT_ROOT / "ouro" / "tui" / "provider_auth_screens.py"
+    path = PROJECT_ROOT / "ouro" / "tui" / "features" / "providers" / "authentication.py"
     imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
-    assert "ouro.application.provider_auth" in imports
+    assert "ouro.application.provider_auth.service" in imports
     assert not any(
         module.startswith(("ouro.auth", "ouro.config", "ouro.providers", "ouro.local_io"))
         for module in imports
@@ -307,7 +312,7 @@ def test_auth_tui_only_uses_application_contracts() -> None:
 
 def test_cli_does_not_reach_through_runtime_to_session_store() -> None:
     violations: list[str] = []
-    for path in (PROJECT_ROOT / "ouro" / "cli").glob("*.py"):
+    for path in (PROJECT_ROOT / "ouro" / "cli").rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if _attribute_path(node) in {"runtime.store", "self._runtime.store"}:
@@ -317,7 +322,9 @@ def test_cli_does_not_reach_through_runtime_to_session_store() -> None:
 
 
 def test_plugin_local_composition_is_not_owned_by_application_service() -> None:
-    application_plugins = ast.parse((APPLICATION_DIR / "plugins.py").read_text(encoding="utf-8"))
+    application_plugins = ast.parse(
+        (APPLICATION_DIR / "plugins" / "service.py").read_text(encoding="utf-8")
+    )
     application_imports = _imported_modules(application_plugins)
     assert "ouro.local_application" not in application_imports
 
@@ -327,7 +334,8 @@ def test_plugin_local_composition_is_not_owned_by_application_service() -> None:
     cli_imports = _imported_modules(cli_plugins)
     assert "ouro.local_application" in cli_imports
     assert not any(
-        module.startswith(("ouro.plugins.store", "ouro.plugins.runtime")) for module in cli_imports
+        module.startswith(("ouro.plugins.installation.store", "ouro.plugins.lifecycle.runtime"))
+        for module in cli_imports
     )
 
 
@@ -406,7 +414,7 @@ def _attribute_path(node: ast.AST) -> str | None:
 
 def test_providers_borrow_only_the_request_authentication_port():
     violations = []
-    for path in (PROJECT_ROOT / "ouro" / "providers").glob("*.py"):
+    for path in (PROJECT_ROOT / "ouro" / "providers").rglob("*.py"):
         for module in _imported_modules(ast.parse(path.read_text(encoding="utf-8"))):
             if module.startswith("ouro.auth") and module != "ouro.auth.request_auth":
                 violations.append(f"{path.name}: {module}")
@@ -415,10 +423,10 @@ def test_providers_borrow_only_the_request_authentication_port():
 
 def test_openai_responses_codec_is_independent_of_authentication_transport_and_experiments():
     for name in (
-        "openai_responses_codec.py",
-        "openai_responses_items.py",
-        "openai_responses_stream.py",
-        "openai_responses_errors.py",
+        "openai_responses/codec.py",
+        "openai_responses/items.py",
+        "openai_responses/stream.py",
+        "openai_responses/errors.py",
     ):
         path = PROJECT_ROOT / "ouro" / "providers" / name
         modules = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
@@ -435,3 +443,44 @@ def test_openai_responses_codec_is_independent_of_authentication_transport_and_e
             )
             for module in modules
         ), name
+
+
+def test_application_contracts_do_not_depend_on_application_services() -> None:
+    paths = sorted((APPLICATION_DIR / "contracts").rglob("*.py"))
+    assert paths
+    for path in paths:
+        for module in _imported_modules(ast.parse(path.read_text(encoding="utf-8"))):
+            if module.startswith("ouro.application."):
+                assert module.startswith("ouro.application.contracts."), (path, module)
+            assert not module.startswith(("ouro.tui", "ouro.cli", "ouro.sessions.backends")), (
+                path,
+                module,
+            )
+
+
+def test_welcome_and_view_records_do_not_depend_on_the_controller() -> None:
+    tui = PROJECT_ROOT / "ouro" / "tui"
+    paths = [tui / "view_models.py", *(tui / "welcome").rglob("*.py")]
+    for path in paths:
+        imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+        assert not any(module.startswith("ouro.tui.controller") for module in imports), path
+
+
+def test_plugin_loading_and_wire_codecs_do_not_depend_on_host_composition() -> None:
+    plugins = PROJECT_ROOT / "ouro" / "plugins"
+    for relative in ("inprocess/loading.py", "worker/codec.py"):
+        path = plugins / relative
+        imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+        assert not any(
+            module.startswith(
+                (
+                    "ouro.plugins.contributions.inventory",
+                    "ouro.plugins.lifecycle",
+                    "ouro.plugins.worker.client",
+                    "ouro.plugins.worker.instance",
+                    "ouro.application",
+                    "ouro.local_processes",
+                )
+            )
+            for module in imports
+        ), relative

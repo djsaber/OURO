@@ -7,31 +7,25 @@ from datetime import UTC, datetime
 
 import pytest
 
-from ouro.application.queued_inputs import QueuedUserInputView
-from ouro.application.supervisor_models import ShutdownPolicy
+from ouro.application.contracts.execution import ShutdownPolicy
+from ouro.application.inputs.queue import QueuedUserInputView
 from ouro.core.billing import UsageFilter
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ProviderStreamEvent
 from ouro.core.usage_queries import UsageSummary, UsageTotals
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.conversation_history import ConversationHistory
-from ouro.tui.screens import ChoiceScreen
-from ouro.tui.widgets import (
-    ActivityIndicator,
-    CommandPopup,
-    Composer,
-    ConversationView,
-    InteractionBar,
-    QueuedInputPanel,
-    WelcomePanel,
-)
+from ouro.tui.composer.input import Composer
+from ouro.tui.composer.popup import CommandPopup
+from ouro.tui.composer.queue import QueuedInputPanel
+from ouro.tui.composer.surface import WelcomePanel
+from ouro.tui.conversation.history import ConversationHistory
+from ouro.tui.conversation.view import ConversationView
+from ouro.tui.interactions.bar import InteractionBar
+from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.widgets.activity import ActivityIndicator
+from tests.tui.app.support import _application, _approval_application, _persist_direct_child_session
 from tests.tui.helpers import run_ready_app, wait_until
-from tests.tui.test_app import (
-    _application,
-    _approval_application,
-    _persist_direct_child_session,
-    _wait_for_screen,
-)
+from tests.tui.helpers import wait_for_screen as _wait_for_screen
 from tests.tui.test_live_session_attachment import visible
 from tests.tui.test_tasks import choose, streaming_application
 
@@ -99,10 +93,17 @@ async def test_idle_submission_does_not_present_follow_up_queue(
     application = streaming_application(tmp_path, provider, backend=backend)
     previous_turns = ()
     if destination == "completed":
-        previous = asyncio.create_task(application.runtime.run("Previous input"))
-        assert await asyncio.wait_for(provider.started.get(), 5) == "Previous input"
-        provider.finish("Previous input")
-        session_id = (await previous).session.session_id
+
+        async def complete_previous_stream():
+            assert await provider.started.get() == "Previous input"
+            provider.finish("Previous input")
+
+        # Prepare a completed turn through producer handshakes, not a startup
+        # latency budget. Own both tasks so failure or cancellation settles them.
+        async with asyncio.timeout(60), asyncio.TaskGroup() as preparation:
+            previous = preparation.create_task(application.runtime.run("Previous input"))
+            preparation.create_task(complete_previous_stream())
+        session_id = previous.result().session.session_id
         previous_turns = ("Previous input",)
     elif destination == "empty":
         session_id = application.runtime.sessions.create().session.session_id

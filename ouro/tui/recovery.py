@@ -16,15 +16,11 @@ from textual.worker import Worker
 
 from ouro.core.errors import OuroError
 from ouro.deployment import SessionBackend, TaskBackend
-from ouro.tui.menu_styles import MENU_CSS
+from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.menus.confirmation import ConfirmationScreen
+from ouro.tui.menus.models import Choice, ChoiceCancelHandler, ChoiceSelectionHandler
+from ouro.tui.menus.styles import MENU_CSS
 from ouro.tui.preferences import TuiPreferencesStore
-from ouro.tui.screens import (
-    Choice,
-    ChoiceCancelHandler,
-    ChoiceScreen,
-    ChoiceSelectionHandler,
-    ConfirmationScreen,
-)
 from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES, TuiTheme, theme_for
 from ouro_upgrade.engine import pending_operation, upgrade
 from ouro_upgrade.errors import UpgradeError

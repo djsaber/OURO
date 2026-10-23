@@ -5,7 +5,7 @@ from threading import Event, get_ident
 
 import pytest
 
-from ouro.application.run_ownership import RunExecutionOwnership
+from ouro.application.runs.ownership import RunExecutionOwnership
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 

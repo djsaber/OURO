@@ -4,13 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from ouro.application.data_transfer import DataTransferRequest
+from ouro.application.transfer.service import DataTransferRequest
 from ouro.core.agents import AgentDefinition, DelegationRecord
 from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.local_application import build_local_data_transfer_service, build_local_session_services
-from ouro.sessions.sqlite import SQLiteSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.transfer.archive import DataTransferError
 
 

@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import JsonValue
 
-from ouro.application.supervisor_models import RuntimeToolCallActivity
+from ouro.application.contracts.execution import RuntimeToolCallActivity
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
 
 ToolLineState = Literal["pending", "active", "done", "muted"]

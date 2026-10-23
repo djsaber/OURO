@@ -5,20 +5,23 @@ from datetime import UTC, datetime
 
 import pytest
 
-from ouro.application.agent_models import SpawnAgentRequest
+from ouro.application.contracts.agents import SpawnAgentRequest
 from ouro.core.provider import ProviderStreamEvent
 from ouro.core.tasks import AgentTaskTarget, TaskConfiguration, TaskSchedule
 from ouro.providers import FauxProvider
 from ouro.tools import Tool, ToolDefinition, ToolResult
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.conversation_history import ConversationHistory
-from ouro.tui.screens import ChoiceScreen
+from ouro.tui.conversation.history import ConversationHistory
+from ouro.tui.conversation.tools import ToolActivityRow
+from ouro.tui.conversation.turn import AssistantTurn
+from ouro.tui.conversation.view import ConversationView
+from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.theme import theme_for
-from ouro.tui.widgets import AssistantTurn, ConversationView, ToolActivityRow
 from tests.application.helpers import wait_for_session_state
 from tests.application.test_agent_multi_host import application, interaction
 from tests.tui.helpers import release_on_exit, run_ready_app, wait_until
-from tests.tui.test_app import _wait_for_screen, _wait_for_worker_group
+from tests.tui.helpers import wait_for_screen as _wait_for_screen
+from tests.tui.helpers import wait_for_worker_group as _wait_for_worker_group
 from tests.tui.test_tasks import choose, streaming_application
 
 

@@ -10,7 +10,7 @@ from textual.document._document import Document
 from textual.expand_tabs import expand_text_tabs_from_widths
 from textual.geometry import Offset
 
-from ouro.tui.conversation_history import AssistantTailLines, _MessageContent
+from ouro.tui.conversation.history_rendering import AssistantTailLines, _MessageContent
 from ouro.tui.markdown import assistant_markdown
 from ouro.tui.text_inputs import TuiTextArea
 from ouro.tui.text_wrapping import ProseText, wrap_offsets

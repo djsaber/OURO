@@ -13,14 +13,14 @@ from ouro.core.messages import (
     ToolResultReference,
 )
 from ouro.core.tools import ToolCallRequest
-from ouro.providers.openai_responses_codec import (
+from ouro.providers.openai_responses.codec import (
     continuation_from_output,
     responses_input,
     responses_tools,
     responses_usage,
 )
-from ouro.providers.openai_responses_errors import OpenAIResponsesError
-from ouro.providers.openai_responses_stream import OpenAIResponsesStreamDecoder
+from ouro.providers.openai_responses.errors import OpenAIResponsesError
+from ouro.providers.openai_responses.stream import OpenAIResponsesStreamDecoder
 from tests.providers.responses_fixtures import SCOPE, call, message, reasoning, terminal
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from ouro import local_application
-from ouro.application.provider_auth import ProviderAuthService
+from ouro.application.provider_auth.service import ProviderAuthService
 from ouro.auth.contracts import AuthError
 from ouro.auth.credentials import CredentialService
 from ouro.core.errors import ConfigError

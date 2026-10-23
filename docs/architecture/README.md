@@ -29,6 +29,8 @@ LocalApplication：本地组合与生命周期所有者
 
 这是职责图，不是通用依赖注入框架。实际允许依赖由[递归依赖矩阵](../../tests/architecture/test_boundaries.py)约束；同一领域内部的协议与实现边界也有独立测试。
 
+包内目录、实现归属、导入规则和扩展边界见[代码组织与扩展边界](code-organization.md)。
+
 ## 模块职责
 
 | 模块 | 负责的变化方向 |

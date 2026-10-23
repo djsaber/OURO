@@ -95,8 +95,9 @@ handled by the native interaction and message identities.
   one durable decision; callbacks only stage changes.
 - The Plan Markdown file is a Host-owned artifact; plugin private data does not contain canonical
   Session state.
-- Each Run uses its frozen Catalog execution contract. A tool invocation already in progress keeps
-  its frozen activation/revision; later model rounds observe updated state.
+- Each model decision acquires the current Catalog. Its tool invocations retain that binding while
+  in progress; later decisions observe updated state. Waiting interactions retain their precise
+  execution contract without keeping an entire old Catalog alive.
 - Normal review, rejection, AFK resolution, deactivation, and process recovery converge through the
   same resumable checkpoint and Session-controller release path.
 
@@ -106,7 +107,8 @@ handled by the native interaction and message identities.
 - [`plan_plugin.py`](plan_plugin.py): tools, command, controller, Context Provider, Tool Policy, and
   resumable review.
 - [`state.py`](state.py): versioned Plan state and persistence.
-- [`interaction.py`](interaction.py): review options and Host-resolution parsing.
+- [`ouro.sdk.plugins.interactions`](../../sdk/plugins/interactions.py): shared review options and
+  Host-resolution records used by the plugin and hosts.
 
 The implementation and manifest are the source of truth for tool descriptions, JSON schemas,
 policy decisions, state transitions, and error text.

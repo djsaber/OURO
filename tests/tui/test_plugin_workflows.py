@@ -5,12 +5,15 @@ import asyncio
 import pytest
 from textual.widgets import Input, OptionList
 
-from ouro.application.plugin_models import PluginDetail, PluginInstallView, PluginProvenanceView
+from ouro.application.contracts.plugins import PluginDetail, PluginInstallView, PluginProvenanceView
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.plugin_workflows import _plugin_action_choices
-from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
+from ouro.tui.features.plugins.workflows import _plugin_action_choices
+from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.menus.confirmation import ConfirmationScreen
+from ouro.tui.menus.models import Choice
+from tests.tui.app.support import _application
 from tests.tui.helpers import run_ready_app
-from tests.tui.test_app import _application, _wait_for_screen
+from tests.tui.helpers import wait_for_screen as _wait_for_screen
 
 
 def _detail() -> PluginDetail:

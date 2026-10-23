@@ -6,12 +6,12 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from ouro.application.configuration_views import provider_template_view
+from ouro.application.configuration.views import provider_template_view
 from ouro.config.provider_headers import ContextHeaderValue, LiteralHeaderValue
-from ouro.config.provider_runtime import runtime_options_from_config
-from ouro.config.provider_template_store import ProviderTemplateStore
 from ouro.config.provider_templates import ProviderTemplate, get_provider_template
-from ouro.config.providers import ProviderConfigManager
+from ouro.config.providers.manager import ProviderConfigManager
+from ouro.config.providers.runtime import runtime_options_from_config
+from ouro.config.providers.template_store import ProviderTemplateStore
 from ouro.core.messages import ModelMessage
 from ouro.core.request_context import ProviderRequestContext
 from ouro.providers.factory import build_runtime_adapter

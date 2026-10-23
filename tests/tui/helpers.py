@@ -13,9 +13,10 @@ from textual.app import App
 from textual.geometry import Size
 from textual.widgets import Input
 
-from ouro.application.models import AvailableModel, close_runtime_adapters
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.application.contracts.models import AvailableModel
+from ouro.application.models.catalog import close_runtime_adapters
+from ouro.application.runtime.environment import RuntimeEnvironment
+from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata
@@ -23,9 +24,9 @@ from ouro.local_application import LocalApplication
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
-from ouro.tui.conversation_history import ConversationHistory
-from ouro.tui.screens import ChoiceScreen
-from ouro.tui.widgets import CommandPopup
+from ouro.tui.composer.popup import CommandPopup
+from ouro.tui.conversation.history import ConversationHistory
+from ouro.tui.menus.choice import ChoiceScreen
 
 
 def surface_state(app: App) -> str:

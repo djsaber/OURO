@@ -52,7 +52,7 @@ async def test_openai_preset_sends_native_responses_tools_and_reasoning(
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
         monkeypatch.setattr(
-            "ouro.providers.openai_responses.HttpxProviderHTTPTransport",
+            "ouro.providers.openai_responses.adapter.HttpxProviderHTTPTransport",
             lambda: HttpxProviderHTTPTransport(client),
         )
         adapter = build_runtime_adapter(

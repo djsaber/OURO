@@ -16,9 +16,9 @@ from ouro.core.observers import (
     ToolCallFinishedObservation,
     ToolCallRequestedObservation,
 )
-from ouro.plugins.api import adapt_sdk_contributions
+from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.plugins.manifest import PluginContributes
-from ouro.plugins.worker import (
+from ouro.plugins.worker.codec import (
     WorkerProtocolError,
     _decode_worker_observer,
     _worker_observation_payload,

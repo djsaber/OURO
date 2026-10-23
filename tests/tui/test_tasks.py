@@ -9,10 +9,10 @@ from rich.text import Text
 from textual import events
 from textual.widgets import Input, OptionList, Static
 
-from ouro.application.configuration import ConfigurationFacade
-from ouro.application.models import AvailableModel
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.application.configuration.facade import ConfigurationFacade
+from ouro.application.contracts.models import AvailableModel
+from ouro.application.runtime.environment import RuntimeEnvironment
+from ouro.application.runtime.service import RuntimeService
 from ouro.automation.schedule import next_occurrence
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
@@ -23,18 +23,18 @@ from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.commands import resolve_command
-from ouro.tui.controller import TuiSystemStatus
-from ouro.tui.conversation_history import ConversationHistory
-from ouro.tui.screens import ChoiceScreen, ConfirmationScreen
-from ouro.tui.task_screens import TaskConfigurationScreen
+from ouro.tui.composer.input import Composer
+from ouro.tui.composer.queue import QueuedInputPanel
+from ouro.tui.composer.surface import WelcomePanel
+from ouro.tui.conversation.history import ConversationHistory
+from ouro.tui.conversation.turn import AssistantTurn
+from ouro.tui.conversation.view import ConversationView
+from ouro.tui.features.tasks.screens import TaskConfigurationScreen
+from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.menus.confirmation import ConfirmationScreen
 from ouro.tui.theme import theme_for
-from ouro.tui.widgets import (
-    AssistantTurn,
-    Composer,
-    ConversationView,
-    QueuedInputPanel,
-    WelcomePanel,
-)
+from ouro.tui.view_models import TuiSystemStatus
+from tests.tui.app.support import _application
 from tests.tui.helpers import (
     release_on_exit,
     run_ready_app,
@@ -42,7 +42,7 @@ from tests.tui.helpers import (
     wait_for_menu_action,
     wait_until,
 )
-from tests.tui.test_app import _application, _wait_for_screen
+from tests.tui.helpers import wait_for_screen as _wait_for_screen
 
 
 async def choose(pilot, app, value, *, identity=None):
@@ -118,7 +118,7 @@ def test_new_task_uses_system_wall_time_and_edit_preserves_explicit_zone(
     timezone,
     expected,
 ):
-    monkeypatch.setattr("ouro.tui.task_screens.get_localzone_name", lambda: timezone)
+    monkeypatch.setattr("ouro.tui.features.tasks.screens.get_localzone_name", lambda: timezone)
     model = AvailableModel(
         key="test/plain",
         provider_id="test",

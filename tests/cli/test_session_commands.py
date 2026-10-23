@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from ouro.application.runtime import RuntimeService
+from ouro.application.runtime.service import RuntimeService
 from ouro.cli.main import main
 from ouro.cli.parser import build_parser
 from ouro.cli.session_commands import _print_compaction_result

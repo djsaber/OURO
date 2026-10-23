@@ -25,8 +25,10 @@
 ## 架构与契约
 
 - [架构总览](architecture/README.md)：包职责、调用链、状态与资源所有权。
+- [代码组织与扩展边界](architecture/code-organization.md)：应用能力、Host、协议和插件宿主的模块归属。
 - [会话连续性与动态环境](architecture/session-continuity.md)：可信事实、当前能力、局部操作承诺与环境生效边界。
 - [文件输入架构](architecture/file-input.md)：会话附件、原路径引用与模型内容的准备和持久化。
+- [工具执行结果与模型呈现](architecture/tool-results.md)：执行事实、类型化内容和协议投影的边界。
 - [认证架构](architecture/authentication.md)：授权、凭据、请求认证和协议边界。
 - [TUI 渲染设计](architecture/tui-rendering.md)：主题、Markdown、缓存与渲染生命周期。
 - [正式规格（Specs）索引](specs/README.md)：运行时、会话、Provider、扩展、Host 与性能的权威契约。

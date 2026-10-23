@@ -9,8 +9,8 @@ import httpx
 import pytest
 
 from ouro.providers.http_transport import HttpxProviderHTTPTransport
-from ouro.providers.openai_responses_errors import OpenAIResponsesError
-from ouro.providers.openai_responses_stream import OpenAIResponsesStreamDecoder, responses_events
+from ouro.providers.openai_responses.errors import OpenAIResponsesError
+from ouro.providers.openai_responses.stream import OpenAIResponsesStreamDecoder, responses_events
 from tests.providers.responses_fixtures import (
     SCOPE,
     call,

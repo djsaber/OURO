@@ -8,18 +8,19 @@ import pytest
 from textual.app import App
 from textual.widgets import Input, OptionList
 
-from ouro.application.configuration import ConfigurationFacade
+from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.auth.authorization import TaskAuthorizationAttempt
 from ouro.auth.contracts import AuthError
 from ouro.local_application import LocalApplication
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.provider_auth_screens import (
+from ouro.tui.features.providers.authentication import (
     ProviderAuthenticationScreen,
     ProviderCredentialsScreen,
     ProviderLoginScreen,
 )
-from ouro.tui.provider_screens import ProviderConfigurationScreen, profile_for_provider
-from ouro.tui.screens import ChoiceScreen, ConfirmationScreen
+from ouro.tui.features.providers.screens import ProviderConfigurationScreen, profile_for_provider
+from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.menus.confirmation import ConfirmationScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME
 from tests.application.test_provider_auth import auth_home as auth_home
 from tests.application.test_runtime_authentication import managed_runtime as managed_runtime
@@ -152,7 +153,7 @@ async def test_method_challenge_success_logout_and_no_challenge_in_terminal_ui(
     provider_id = _provider_id(config)
     opened = []
     monkeypatch.setattr(
-        "ouro.tui.provider_auth_screens.webbrowser.open",
+        "ouro.tui.features.providers.authentication.webbrowser.open",
         lambda url, **kw: opened.append(url) or True,
     )
     menu = ProviderAuthenticationScreen(
@@ -311,7 +312,9 @@ async def test_browser_launch_failure_leaves_challenge_and_cancellation_availabl
 ):
     driver = GatedDriver(BrowserFixtureDriver())
     config, _, _, service, _ = auth_home(driver)
-    monkeypatch.setattr("ouro.tui.provider_auth_screens.webbrowser.open", lambda *a, **kw: False)
+    monkeypatch.setattr(
+        "ouro.tui.features.providers.authentication.webbrowser.open", lambda *a, **kw: False
+    )
     login = ProviderLoginScreen(
         service,
         _provider_id(config),

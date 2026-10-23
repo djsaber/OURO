@@ -6,8 +6,8 @@ from contextvars import ContextVar
 
 import pytest
 
-import ouro.plugins.worker as worker_module
-from ouro.plugins.worker import JsonRpcWorkerClient
+import ouro.plugins.worker.client as worker_client
+from ouro.plugins.worker.client import JsonRpcWorkerClient
 
 
 @pytest.fixture
@@ -158,14 +158,14 @@ async def test_saturated_reverse_calls_fail_without_blocking_responses(worker_pr
 
 async def test_concurrent_worker_start_has_one_process_owner(worker_program, monkeypatch):
     owners = []
-    launch = worker_module.start_process
+    launch = worker_client.start_process
 
     async def observed_launch(*args, **kwargs):
         owner = await launch(*args, **kwargs)
         owners.append(owner)
         return owner
 
-    monkeypatch.setattr(worker_module, "start_process", observed_launch)
+    monkeypatch.setattr(worker_client, "start_process", observed_launch)
     client = JsonRpcWorkerClient(
         ["{python}", worker_program.name], cwd=worker_program.parent, diagnostic=lambda *_: None
     )
@@ -211,7 +211,7 @@ async def test_worker_cleanup_failure_retains_owner_for_explicit_retry(worker_pr
 async def test_worker_close_waits_for_a_start_already_owning_a_process(worker_program, monkeypatch):
     launched, release = asyncio.Event(), asyncio.Event()
     owners = []
-    launch = worker_module.start_process
+    launch = worker_client.start_process
 
     async def held_launch(*args, **kwargs):
         owner = await launch(*args, **kwargs)
@@ -220,7 +220,7 @@ async def test_worker_close_waits_for_a_start_already_owning_a_process(worker_pr
         await release.wait()
         return owner
 
-    monkeypatch.setattr(worker_module, "start_process", held_launch)
+    monkeypatch.setattr(worker_client, "start_process", held_launch)
     client = JsonRpcWorkerClient(
         ["{python}", worker_program.name], cwd=worker_program.parent, diagnostic=lambda *_: None
     )

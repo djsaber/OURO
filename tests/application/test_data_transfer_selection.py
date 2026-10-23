@@ -5,7 +5,7 @@ from zipfile import ZipFile
 
 import pytest
 
-from ouro.application.data_transfer import DataTransferRequest
+from ouro.application.transfer.service import DataTransferRequest
 from ouro.core.messages import MessageRecord
 from ouro.local_application import build_local_data_transfer_service, build_local_session_services
 from ouro.transfer.archive import DataTransferError

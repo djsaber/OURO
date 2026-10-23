@@ -11,15 +11,15 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from ouro.application.runs import reserve_run
-from ouro.application.runtime import RuntimeService
+from ouro.application.runs.lifecycle import reserve_run
+from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import AgentCatalogSnapshot, DelegatedConstraints
 from ouro.core.observers import ContextPreparedObservation
 from ouro.core.provider import ModelMetadata
 from ouro.core.session_controls import HostSessionInput
 from ouro.core.state import RunRecord
-from ouro.plugins.catalog import ExtensionCatalogBase, build_extension_catalog
+from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_catalog
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
@@ -43,7 +43,7 @@ def test_headless_runtime_completes_and_closes_with_tui_imports_blocked():
                 return None
 
         sys.meta_path.insert(0, NoTuiImports())
-        from ouro.application.runtime import RuntimeService
+        from ouro.application.runtime.service import RuntimeService
         from ouro.core.adapter import RuntimeAdapter
         from ouro.core.provider import ModelMetadata
         from ouro.providers import FauxProvider
@@ -213,7 +213,7 @@ async def test_cancelled_binding_releases_owned_lease(runtime, monkeypatch):
         entered.set()
         await asyncio.Future()
 
-    monkeypatch.setattr("ouro.application.runtime.run_blocking", hold)
+    monkeypatch.setattr("ouro.application.runtime.service.run_blocking", hold)
     pending = asyncio.create_task(app._attach_extension_snapshot(run))
     await asyncio.wait_for(entered.wait(), 2)
     assert catalog.lease_count == 1

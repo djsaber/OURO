@@ -16,14 +16,14 @@ OURO 是本地优先的个人智能体运行时。会话历史、运行状态、
 | 运行 | 默认与可替换 Run Driver、共享模型 / 工具 / Agent 执行端口、顺序或并行批次、取消、预算、恢复、follow-up / steer 排队输入 | [运行时](specs/runtime.md) |
 | 会话 | 创建、继续、重命名、归档、置顶、搜索、分支、事件回放、回收站、游标查询和消息撤销 | [持久化](specs/session-persistence.md)、[撤销](specs/session-undo.md) |
 | 存储 | 文件与 SQLite 会话后端，共用契约；显式校验导入、原子提交和恢复 | [会话持久化](specs/session-persistence.md) |
-| 模型 | Faux、OpenAI Chat Completions、OpenAI Responses、Anthropic Messages；Provider / Endpoint、模板与自定义连接、推理能力配置 | [Provider 配置](specs/provider-configuration.md)、[协议](specs/provider-protocols.md) |
+| 模型 | Faux、OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 及具名插件协议；Provider / Endpoint、模板与自定义连接、推理能力配置 | [Provider 配置](specs/provider-configuration.md)、[协议](specs/provider-protocols.md) |
 | 认证 | 静态引用、受管理凭据、浏览器订阅授权、刷新、注销、请求认证与跨进程协调 | [认证架构](architecture/authentication.md) |
 | 上下文 | 原子模型帧、分层 AGENTS.md、Skills、动态 Context Provider、真实请求快照、摘要压缩和硬预算 | [上下文与压缩](specs/context-and-compaction.md) |
-| 工具与交互 | Read、Write、Edit、Glob、Grep、TodoList、宿主 Shell、AskUser；权限、审批、结构化输入和 AFK | [工具与交互](specs/tools-and-interactions.md)、[AFK](specs/afk.md) |
-| 子智能体 | 内置 general 与用户定义、冻结派遣目录、单层 sync / async 子会话、结果交付、根交互路由和恢复对账 | [子智能体](specs/subagents.md) |
+| 工具与交互 | Read、ViewImage、Write、Edit、Glob、Grep、TodoList、宿主 Shell、AskUser；权限、审批、结构化输入和 AFK | [工具与交互](specs/tools-and-interactions.md)、[AFK](specs/afk.md) |
+| 子智能体 | 内置 general 与用户定义、决策绑定的派遣目录、单层 sync / async 子会话、结果交付、根交互路由和恢复对账 | [子智能体](specs/subagents.md) |
 | 扩展 | 插件安装与版本选择、不可变包、精确依赖租约、15 类原生贡献、具名服务与动态工具、双向 worker、受管理进程及后台服务；Goal / Plan、Skills 与 MCP | [插件](specs/plugins.md)、[Skills](specs/skills.md)、[MCP](specs/mcp.md) |
 | 插件配置 | 自包含 JSON Schema、独立凭据引用、静态预检、带编辑基线的完整提交、不可变快照；CLI 与 TUI 复用统一应用管线 | [插件配置](specs/plugin-configuration.md) |
-| 资源 | 会话独立附件、原路径引用、完整性校验、复制与导出，以及有界文本 / 原生图片输入 | [资源与监督](specs/resources-and-supervision.md) |
+| 资源 | 会话独立附件、原路径引用、完整性校验、复制与导出；有界文本及按端点与协议能力编码的图片 / 音频 / 视频输入 | [附件](specs/attachments.md)、[资源与监督](specs/resources-and-supervision.md) |
 | 自动任务 | 时区和日历计划、原子领取、会话任务与插件 handler、审批挂起、执行历史与恢复；文件 / SQLite 任务后端 | [自动任务](specs/automated-tasks.md) |
 | 用量 | 请求级 token / 费用账本、计费归属、过滤汇总、审计修改和选择性重置 | [用量与计费](specs/usage-and-billing.md) |
 | 数据传输 | 各配置域、原生 Skills、完整会话树和附件的验证导入导出及跨会话后端传输 | [数据传输](specs/data-transfer.md) |

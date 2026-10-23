@@ -8,7 +8,7 @@ from typing import Literal, Self
 from pydantic import Field, ValidationError, model_validator
 
 from ouro.config.file import JsonConfigFile, atomic_config_update
-from ouro.config.providers import ProviderConfigManager
+from ouro.config.providers.manager import ProviderConfigManager
 from ouro.core.agents import AgentDefinition, AgentSpawnPolicy
 from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError

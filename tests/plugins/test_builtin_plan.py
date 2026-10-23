@@ -10,9 +10,9 @@ from pathlib import Path
 import pytest
 
 from ouro.application.harness import capture_harness
-from ouro.application.plugin_commands import submit_plugin_command
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.application.plugins.commands import submit_plugin_command
+from ouro.application.runtime.environment import RuntimeEnvironment
+from ouro.application.runtime.service import RuntimeService
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.application.usage import UsageService
 from ouro.core.adapter import RuntimeAdapter
@@ -27,7 +27,7 @@ from ouro.core.session_controls import AttributedSessionControlTransition
 from ouro.core.state import SessionRecord
 from ouro.core.tools import ToolCallRequest
 from ouro.local_application import LocalApplication
-from ouro.providers.openai_responses_codec import responses_input
+from ouro.providers.openai_responses.codec import responses_input
 from ouro.sessions import LocalSessionStore
 from ouro.tools import (
     Tool,

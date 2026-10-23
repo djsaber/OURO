@@ -3,24 +3,16 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from ouro.application.agent_models import AgentInteractionView
-from ouro.application.models import AvailableModel
-from ouro.application.session_content import (
-    InteractionKind as InteractionKind,
-)
-from ouro.application.session_content import (
-    PendingInteraction as PendingInteraction,
-)
-from ouro.application.session_content import (
-    ProjectionUpdate as ProjectionUpdate,
-)
-from ouro.application.session_content import SessionContentProjection
-from ouro.application.session_content import (
-    canonical_event_order as canonical_event_order,
-)
+from ouro.application.contracts.agents import AgentInteractionView
+from ouro.application.contracts.models import AvailableModel
+from ouro.application.observations.content import InteractionKind as InteractionKind
+from ouro.application.observations.content import PendingInteraction as PendingInteraction
+from ouro.application.observations.content import ProjectionUpdate as ProjectionUpdate
+from ouro.application.observations.content import SessionContentProjection
+from ouro.application.observations.content import canonical_event_order as canonical_event_order
 from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, RunStatus
-from ouro.tui.model_menus import model_display_label
+from ouro.tui.features.providers.model_menus import model_display_label
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
 
 TuiSessionProjection = SessionContentProjection

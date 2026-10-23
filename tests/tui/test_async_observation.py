@@ -7,11 +7,11 @@ from types import SimpleNamespace
 import pytest
 
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.conversation_history import ConversationHistory
-from ouro.tui.widgets import Composer
+from ouro.tui.composer.input import Composer
+from ouro.tui.conversation.history import ConversationHistory
 from tests.application.test_session_event_following import append
+from tests.tui.app.support import _application
 from tests.tui.helpers import run_ready_app
-from tests.tui.test_app import _application
 from tests.tui.test_tasks import streaming_application
 
 
@@ -180,7 +180,7 @@ async def test_late_prepared_selection_cannot_replace_the_newer_view(tmp_path, m
 async def test_history_render_does_not_hold_the_content_cursor(
     tmp_path, monkeypatch, streaming_snapshot
 ):
-    import ouro.tui.conversation_history as history_module
+    import ouro.tui.conversation.history as history_module
     from ouro.core.messages import MessageRecord
 
     application = _application(tmp_path)

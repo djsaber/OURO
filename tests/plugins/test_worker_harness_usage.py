@@ -8,7 +8,7 @@ from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.session_controls import RunControlBinding
 from ouro.plugins.harness_calls import PluginStateView
 from ouro.plugins.manifest import PluginManifest
-from ouro.plugins.worker import WorkerPluginInstance
+from ouro.plugins.worker.instance import WorkerPluginInstance
 from ouro.sdk.plugins import v5 as sdk
 
 

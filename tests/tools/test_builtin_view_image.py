@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
+import ouro.tools.builtin.view_image as view_image
 from ouro.core.cancellation import AbortSignal
 from ouro.core.content import ImageContent
 from ouro.tools import (
@@ -16,7 +17,6 @@ from ouro.tools import (
     ToolRegistry,
     builtin_tools,
 )
-from ouro.tools import builtin_view_image as view_image
 from ouro.tools.schema import tool_argument_error
 
 

@@ -175,7 +175,7 @@ Skill 资源遍历在下降前剪枝忽略目录，不枚举其内部文件再�
 - `tests/application/test_compaction.py`
 - `tests/core/test_observers.py`
 - `tests/application/test_events.py`
-- `tests/tui/test_app.py`
+- `tests/tui/app/`
 - `tests/application/test_tool_call_batches.py`
 - `tests/application/test_resources.py`
 - `tests/core/test_callbacks.py`

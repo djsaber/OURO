@@ -5,15 +5,15 @@ from itertools import permutations
 import httpx
 import pytest
 
-from ouro.application import file_inputs
-from ouro.application.media_context import MediaContextPreparation
+import ouro.application.inputs.files as file_inputs
+from ouro.application.context.media import MediaContextPreparation
 from ouro.core.base import utc_now
 from ouro.core.content import AudioContent, ImageContent, MediaContent, VideoContent
 from ouro.core.errors import MediaCapacityError
 from ouro.core.input_content import InputAttachment, InputFileReference
 from ouro.core.messages import MessageRecord, ModelResponseRecord, ToolResultReference
 from ouro.providers.http_transport import HttpxProviderHTTPTransport
-from ouro.providers.openai_chat_completions import OpenAIChatCompletionsProvider
+from ouro.providers.openai_chat_completions.adapter import OpenAIChatCompletionsProvider
 from tests.application.test_resources import _services
 from tests.application.test_tool_result_content import RecordingProvider
 from tests.tui.test_history_commands import application_at

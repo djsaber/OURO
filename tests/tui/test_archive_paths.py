@@ -5,7 +5,7 @@ import pytest
 from textual.app import App
 from textual.widgets import OptionList
 
-from ouro.tui.archive_paths import ArchivePathScreen
+from ouro.tui.features.transfer.paths import ArchivePathScreen
 from tests.tui.helpers import wait_for_menu_action, wait_until
 
 

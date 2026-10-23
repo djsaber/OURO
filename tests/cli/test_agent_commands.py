@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from ouro.application.configuration import ConfigurationFacade
+from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.cli.main import main
 from ouro.local_application import LocalApplication
 

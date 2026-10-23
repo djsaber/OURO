@@ -6,11 +6,11 @@ import httpx
 import pytest
 
 from ouro.core.provider import ModelMetadata, ProviderRetryPolicy
-from ouro.providers.anthropic_messages import AnthropicMessagesProvider
+from ouro.providers.anthropic_messages.adapter import AnthropicMessagesProvider
 from ouro.providers.authentication import ProviderRequestPolicy
 from ouro.providers.http_transport import HttpxProviderHTTPTransport, ProviderTransportError
-from ouro.providers.openai_chat_completions import OpenAIChatCompletionsProvider
-from ouro.providers.openai_responses import OpenAIResponsesProvider
+from ouro.providers.openai_chat_completions.adapter import OpenAIChatCompletionsProvider
+from ouro.providers.openai_responses.adapter import OpenAIResponsesProvider
 from tests.auth.test_driver_contracts import BrowserFixtureDriver, DeviceFixtureDriver
 from tests.auth.test_request_auth import authenticated
 from tests.providers.responses_fixtures import delta, message, terminal

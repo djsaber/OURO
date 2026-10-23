@@ -7,8 +7,8 @@ from multiprocessing.connection import Connection
 import pytest
 
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.conversation_history import ConversationHistory
-from ouro.tui.widgets import Composer
+from ouro.tui.composer.input import Composer
+from ouro.tui.conversation.history import ConversationHistory
 from tests.tui.helpers import run_ready_app, wait_until
 from tests.tui.test_background_navigation import NavigationProvider, submit
 from tests.tui.test_tasks import streaming_application

@@ -7,8 +7,9 @@ from textual.widgets import Static
 from ouro.core.input_content import InputContent, InputFileReference, InputSkillReference
 from ouro.skills import SkillLoader
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.attachment_picker import AttachmentEntry, AttachmentPicker
-from ouro.tui.widgets import CommandPopup, Composer
+from ouro.tui.composer.attachment_picker import AttachmentEntry, AttachmentPicker
+from ouro.tui.composer.input import Composer
+from ouro.tui.composer.popup import CommandPopup
 from tests.tui.helpers import command_popup_text, resize_terminal, run_ready_app
 from tests.tui.test_history_commands import application_at
 

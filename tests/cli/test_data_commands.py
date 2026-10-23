@@ -4,10 +4,10 @@ import json
 
 import pytest
 
-from ouro.application.data_transfer import DataTransferRequest
+from ouro.application.transfer.service import DataTransferRequest
 from ouro.cli.main import main
 from ouro.config.prompts import PromptConfigManager, PromptDraft
-from ouro.config.providers import ProviderConfigManager
+from ouro.config.providers.manager import ProviderConfigManager
 from ouro.local_application import build_local_data_transfer_service, build_local_session_services
 
 

@@ -24,7 +24,7 @@ AgentTree/interaction projection。本规格陈述由自动化证据约束的当
 - 子智能体权限不超过父级可下放能力；审批只能处理 ask，不能突破 hard deny。
 - OURO 提供不可编辑、不可删除的通用 AgentDefinition，并允许用户管理自定义 definition；两者进入同一目录、
   校验、冻结、派遣和恢复管道。
-- AgentDefinition 目录与 SpawnAgent（Host 展示名“派遣子智能体”）的 agent_id 参数从同一 Run 快照生成，避免配置、
+- AgentDefinition 目录与 SpawnAgent（Host 展示名“派遣子智能体”）的 agent_id 参数从同一模型决策绑定的目录快照生成，避免配置、
   工具 schema 与实际解析结果漂移。
 - 新能力保持 core、application、tools、plugins 和 Host 的既有依赖方向。
 
@@ -1057,4 +1057,4 @@ CLI 的 completed-parent spawn 固定 notify-only；会启动 parent next-bounda
 - [工具与人机协同](tools-and-interactions.md)
 - [资源与后台运行监督](resources-and-supervision.md)
 - [插件系统](plugins.md)
-- [个人智能体平台能力](../plans/platform.md)
+- [长期记忆与依赖工作流规划](../plans/advanced-agents.md)

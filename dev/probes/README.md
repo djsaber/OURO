@@ -4,15 +4,16 @@
 不启动 OURO Runtime，不读取其他客户端缓存，也不读写 OURO_HOME、配置或 Session。
 Token 和完整 Responses output 只保留在本进程内存中；退出后必须重新登录。
 浏览器授权和 Token 解码/交换/刷新复用 `ouro/auth/drivers` 的实现；公开上游 client id
-只由本实验显式注入。设备轮询和验证编排仍属于实验层；默认模式的完整 output item 收集复用正式 `providers/openai_responses_items.py`，`--adapter` 模式直接使用正式 Responses adapter。
+只由本实验显式注入。设备轮询和验证编排属于实验层；默认模式的完整 output item 收集复用正式 `ouro/providers/openai_responses/items.py`，`--adapter` 模式直接使用正式 Responses adapter。
 
 ## 运行
 
-在仓库根目录运行，`--model` 指定本次要核验的精确模型，不表示 OURO 已支持该模型：
+在仓库根目录运行。将 `<model_id>` 替换为本次要核验且账户可访问的精确模型 ID；探针不预先声明其支持范围。
+当前模板值见[预置供应商配置](../../docs/specs/provider-presets.md)。
 
 ```powershell
-uv run --frozen python -m dev.probes.openai_codex --live --method device --model gpt-5.5
-uv run --frozen python -m dev.probes.openai_codex --live --method browser --model gpt-5.5 --open-browser
+uv run --frozen python -m dev.probes.openai_codex --live --method device --model <model_id>
+uv run --frozen python -m dev.probes.openai_codex --live --method browser --model <model_id> --open-browser
 ```
 
 程序将登录地址/设备码显示到 stderr。设备码需在 ChatGPT 安全设置中启用；浏览器方法监听
@@ -45,7 +46,7 @@ stdout 只输出一次 JSON 摘要；退出码 0 表示本次全部通过，1 �
 130 表示取消。可将 stdout 单独重定向到本地文件，**不要合并 stderr**，后者含登录交互材料：
 
 ```powershell
-uv run --frozen python -m dev.probes.openai_codex --live --method device --model gpt-5.5 > probe-result.json
+uv run --frozen python -m dev.probes.openai_codex --live --method device --model <model_id> > probe-result.json
 ```
 
 摘要只包含固定来源 revision、模型、已完成阶段、事件类型计数、output/content 类型、文本字符数、
@@ -64,7 +65,7 @@ Token、账户标识、授权码、回调 URL、模型文本、工具 arguments�
 在已有浏览器实验通过后，使用以下命令验证正式 `OpenAIResponsesProvider` 的真实请求：
 
 ```powershell
-uv run --frozen python -m dev.probes.openai_codex --live --method browser --model gpt-5.5 --adapter --max-output-tokens 8192 --open-browser
+uv run --frozen python -m dev.probes.openai_codex --live --method browser --model <model_id> --adapter --max-output-tokens 8192 --open-browser
 ```
 
 `--adapter` 仍是内存实验，不注册产品、不读取或保存凭据文件。认证头由正式 OpenAI driver 编码；

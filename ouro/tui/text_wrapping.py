@@ -11,6 +11,8 @@ from rich.measure import Measurement
 from rich.text import Text
 from unicode_segmentation_rs import line_break_units
 
+_SINGLE_LINE_TRANSLATION = str.maketrans("\r\n\t", "   ")
+
 
 def wrap_offsets(text: str, width: int) -> list[int]:
     """Return source offsets for a single, tab-expanded line.

@@ -89,8 +89,9 @@ def distribution(values):
 
 async def measure(backend, count, home):
     # Imports follow --root selection so the probe is identical across checkouts.
-    from ouro.application.runtime import RuntimeService
-    from ouro.application.runtime_environment import RuntimeEnvironment
+    import ouro.tui.conversation.history_rendering as history_module
+    from ouro.application.runtime.environment import RuntimeEnvironment
+    from ouro.application.runtime.service import RuntimeService
     from ouro.core.adapter import RuntimeAdapter
     from ouro.core.messages import MessageRecord
     from ouro.core.provider import ModelMetadata, ProviderStreamEvent
@@ -98,9 +99,8 @@ async def measure(backend, count, home):
     from ouro.local_application import LocalApplication
     from ouro.sessions import LocalSessionStore, SQLiteSessionStore
     from ouro.tools import ToolRegistry
-    from ouro.tui import conversation_history as history_module
     from ouro.tui.app import OuroTuiApp
-    from ouro.tui.conversation_history import ConversationHistory
+    from ouro.tui.conversation.history import ConversationHistory
     from ouro.tui.state import TuiSessionProjection
 
     class Provider:

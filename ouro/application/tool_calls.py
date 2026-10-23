@@ -11,10 +11,10 @@ from typing import Literal, Protocol, cast
 
 from pydantic import JsonValue, TypeAdapter
 
-from ouro.application.dto import Diagnostic
+from ouro.application.contracts.base import Diagnostic
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.harness import capture_harness
-from ouro.application.runs import RunLifecycle
+from ouro.application.runs.lifecycle import RunLifecycle
 from ouro.application.session_controls import (
     SessionControlCoordinator,
     SessionControlError,

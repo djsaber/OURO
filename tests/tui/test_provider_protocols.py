@@ -6,18 +6,19 @@ from dataclasses import replace
 import pytest
 from textual.widgets import OptionList
 
-from ouro.application.configuration import ConfigurationFacade
+from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.config import EndpointReasoningConfig, reasoning_effort_preset, reasoning_summary_preset
 from ouro.core.errors import ConfigError
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.provider_screens import (
+from ouro.tui.features.providers.screens import (
     CUSTOM_PROVIDER_PROFILES,
     EndpointConfigurationScreen,
     ProviderConfigurationScreen,
     ProviderSetupProfile,
     profile_for_provider,
 )
-from ouro.tui.screens import ChoiceScreen, EditableChoiceScreen
+from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.menus.editable import EditableChoiceScreen
 from tests.tui.helpers import (
     choose_menu,
     run_ready_app,

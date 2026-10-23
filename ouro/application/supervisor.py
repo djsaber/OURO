@@ -10,24 +10,9 @@ from typing import Final, Protocol
 
 from pydantic import JsonValue
 
-from ouro.application.dto import Diagnostic
-from ouro.application.event_models import project_runtime_event
-from ouro.application.run_ownership import RunReservation
-from ouro.application.runs import maybe_active_run
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_activity import (
-    project_runtime_activity_state,
-    queued_runtime_activity,
-    reduce_runtime_activity,
-    runtime_activity_changed,
-    runtime_activity_for_status,
-)
-from ouro.application.session_editing import continuable_run
-from ouro.application.session_event_stream import SessionEventStream
-from ouro.application.session_models import SessionHistoryAnchor
-from ouro.application.session_observation import SessionObservation, redact_observation
-from ouro.application.session_state_subscription import SessionStateSubscription
-from ouro.application.supervisor_models import (
+from ouro.application.contracts.base import Diagnostic
+from ouro.application.contracts.events import project_runtime_event
+from ouro.application.contracts.execution import (
     HostInputReceipt,
     RunHandle,
     RuntimeActivitySnapshot,
@@ -37,7 +22,22 @@ from ouro.application.supervisor_models import (
     SupervisorRunStatus,
     SupervisorStartResult,
 )
-from ouro.application.user_inputs import UserInputRequest, UserInputSubmission
+from ouro.application.contracts.sessions import SessionHistoryAnchor
+from ouro.application.inputs.requests import UserInputRequest, UserInputSubmission
+from ouro.application.observations.activity import (
+    project_runtime_activity_state,
+    queued_runtime_activity,
+    reduce_runtime_activity,
+    runtime_activity_changed,
+    runtime_activity_for_status,
+)
+from ouro.application.observations.events import SessionEventStream
+from ouro.application.observations.sessions import SessionObservation, redact_observation
+from ouro.application.observations.subscription import SessionStateSubscription
+from ouro.application.runs.lifecycle import maybe_active_run
+from ouro.application.runs.ownership import RunReservation
+from ouro.application.runtime.service import RuntimeService
+from ouro.application.sessions.editing import continuable_run
 from ouro.core.agents import AgentWaitResolution
 from ouro.core.base import utc_now
 from ouro.core.callbacks import run_blocking

@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import Field
 
 from ouro.core.base import OuroModel
-from ouro.plugins.package import NATIVE_MANIFEST, load_plugin_manifest
+from ouro.plugins.installation.package import NATIVE_MANIFEST, load_plugin_manifest
 
 CompatibilityOutcome = Literal["supported", "converted", "ignored", "incompatible"]
 

@@ -13,8 +13,8 @@ import httpx
 from dev.probes.codex_oauth import ProbeError, required_text
 from ouro.auth.contracts import CredentialGrant
 from ouro.providers.http_transport import HttpxProviderHTTPTransport, ProviderTransportError
-from ouro.providers.openai_responses_errors import OpenAIResponsesError
-from ouro.providers.openai_responses_items import OpenAIResponsesItemAccumulator
+from ouro.providers.openai_responses.errors import OpenAIResponsesError
+from ouro.providers.openai_responses.items import OpenAIResponsesItemAccumulator
 
 RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
 _EVENT_TYPES = frozenset(

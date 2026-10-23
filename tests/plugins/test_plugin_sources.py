@@ -8,8 +8,9 @@ import zipfile
 
 import pytest
 
-from ouro.plugins.package import PackageLimits, PluginPackageError
-from ouro.plugins.sources import ArchivePluginSource, GitPluginSource
+from ouro.plugins.installation.package import PackageLimits
+from ouro.plugins.installation.paths import PluginPackageError
+from ouro.plugins.installation.sources import ArchivePluginSource, GitPluginSource
 
 
 def _git(repository, *arguments: str) -> None:

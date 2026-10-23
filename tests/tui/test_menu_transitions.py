@@ -9,10 +9,13 @@ from textual.app import App
 from textual.widgets import Input, OptionList, Static
 
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.screens import Choice, ChoiceScreen, MultiChoiceScreen
+from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.menus.models import Choice
+from ouro.tui.menus.multiple import MultiChoiceScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME
+from tests.tui.app.support import _application
 from tests.tui.helpers import resize_terminal, run_ready_app, wait_until
-from tests.tui.test_app import _application, _wait_for_screen
+from tests.tui.helpers import wait_for_screen as _wait_for_screen
 
 
 @pytest.mark.parametrize("close", (False, True))

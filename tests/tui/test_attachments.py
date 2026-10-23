@@ -12,24 +12,22 @@ from textual._xterm_parser import XTermParser
 from textual.app import App
 from textual.worker import WorkerCancelled
 
+import ouro.tui.composer.attachment_paths as attachment_paths
 from ouro.core.attachment_input import separate_attachments
 from ouro.core.errors import PersistenceError, UnsafeResourcePathError
 from ouro.core.input_content import InputAttachment, InputContent
 from ouro.core.messages import MessageRecord
-from ouro.tui import attachment_paths
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.attachment_paths import pasted_files
-from ouro.tui.attachment_picker import AttachmentPicker
-from ouro.tui.input_drafts import TuiInputDraftStore
+from ouro.tui.composer.attachment_paths import pasted_files
+from ouro.tui.composer.attachment_picker import AttachmentPicker
+from ouro.tui.composer.drafts import TuiInputDraftStore
+from ouro.tui.composer.input import Composer
+from ouro.tui.composer.popup import CommandPopup
+from ouro.tui.composer.queue import QueuedInputPanel
+from ouro.tui.composer.surface import WelcomePanel
+from ouro.tui.conversation.transcript import project_transcript_entries
+from ouro.tui.conversation.view import ConversationView
 from ouro.tui.theme import DEFAULT_TUI_THEME
-from ouro.tui.widgets import (
-    CommandPopup,
-    Composer,
-    ConversationView,
-    QueuedInputPanel,
-    WelcomePanel,
-    project_transcript_entries,
-)
 from tests.tui.helpers import command_popup_text, run_ready_app
 from tests.tui.test_history_commands import application_at
 

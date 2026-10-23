@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-import ouro.sessions.local_files as local_files_module
-from ouro.application.session_recovery import SessionRecoveryService
+import ouro.sessions.backends.files.store as local_files_module
+from ouro.application.sessions.recovery import SessionRecoveryService
 from ouro.core.approvals import ApprovalRecord
 from ouro.core.base import utc_now
 from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
@@ -621,7 +621,7 @@ def test_stream_delta_events_group_commit_at_durable_boundary(monkeypatch, tmp_p
         fsync_calls += 1
         original_fsync(descriptor)
 
-    monkeypatch.setattr("ouro.sessions.local_files.os.fsync", count_fsync)
+    monkeypatch.setattr("ouro.sessions.backends.files.store.os.fsync", count_fsync)
     store.append_ordered_event(
         EventRecord(session_id=session.session_id, event_type="model_text_delta")
     )

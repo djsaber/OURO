@@ -136,7 +136,7 @@ def test_repeated_local_queries_only_index_appended_records(tmp_path, monkeypatc
             indexed.append(value)
         return original(value, *args, **kwargs)
 
-    monkeypatch.setattr("ouro.sessions.message_index.json.loads", count)
+    monkeypatch.setattr("ouro.sessions.backends.files.message_index.json.loads", count)
     for _ in range(20):
         assert store.find_queued_input_message(session.session_id, "absent") is None
         assert store.load_message(session.session_id, history[-1].message_id) == history[-1]

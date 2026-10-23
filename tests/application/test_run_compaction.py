@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from ouro.application.runtime import RuntimeService
-from ouro.application.sessions import SessionService
-from ouro.application.skill_activations import SkillInvocationRequest
+from ouro.application.inputs.skills import SkillInvocationRequest
+from ouro.application.runtime.service import RuntimeService
+from ouro.application.sessions.service import SessionService
 from ouro.config.compaction import CompactionConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.compaction import (
@@ -17,9 +17,9 @@ from ouro.core.context import ContextBuilder
 from ouro.core.messages import ModelMessage
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.run_budget import RunBudgetPolicy
-from ouro.providers.anthropic_messages_codec import messages_to_anthropic_messages
-from ouro.providers.openai_chat_completions_codec import messages_to_chat_completions
-from ouro.providers.openai_responses_codec import responses_input
+from ouro.providers.anthropic_messages.codec import messages_to_anthropic_messages
+from ouro.providers.openai_chat_completions.codec import messages_to_chat_completions
+from ouro.providers.openai_responses.codec import responses_input
 from ouro.sessions import LocalSessionStore
 from ouro.skills import SkillLoader
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult

@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_configuration import RuntimeConfigurationResolver
-from ouro.application.skill_activations import SkillActivationService, SkillInvocationRequest
+from ouro.application.inputs.skills import SkillActivationService, SkillInvocationRequest
+from ouro.application.runtime.configuration import RuntimeConfigurationResolver
+from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import PromptRejectedError, SkillActivationError
 from ouro.core.messages import ModelMessage, SkillActivationContent

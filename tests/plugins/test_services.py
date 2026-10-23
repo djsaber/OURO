@@ -9,12 +9,12 @@ from jsonschema import ValidationError
 from ouro.core.callbacks import CallbackOutcomeUnknown
 from ouro.core.observers import ObserverRegistry
 from ouro.plugins.builtin import BuiltinPluginDefinition, BuiltinPluginRegistry
-from ouro.plugins.catalog import PluginGenerationUnavailableError
-from ouro.plugins.contributions import ContributionCoordinator
+from ouro.plugins.catalog.gates import PluginGenerationUnavailableError
+from ouro.plugins.contributions.preparation import ContributionCoordinator
+from ouro.plugins.installation.store import PluginPackageStore
 from ouro.plugins.invocation import plugin_invocation
+from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.plugins.manifest import PluginManifest
-from ouro.plugins.runtime import PluginRuntimeResource
-from ouro.plugins.store import PluginPackageStore
 from ouro.sdk.plugins import v5 as sdk
 from ouro.sdk.plugins.services import ServiceContribution
 from ouro.tools import ToolRegistry

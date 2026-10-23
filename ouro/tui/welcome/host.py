@@ -10,7 +10,7 @@ from textual.layout import ArrangeResult, Layout, WidgetPlacement
 from textual.layouts.vertical import VerticalLayout
 from textual.widget import Widget
 
-from ouro.tui.controller import TuiSystemStatus
+from ouro.tui.view_models import TuiSystemStatus
 from ouro.tui.welcome.model import WelcomePage, WelcomeStyle
 
 

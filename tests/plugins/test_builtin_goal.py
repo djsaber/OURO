@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from ouro.application.harness import capture_harness
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.application.runtime.environment import RuntimeEnvironment
+from ouro.application.runtime.service import RuntimeService
 from ouro.application.session_controls import SessionControlCoordinator, SessionControlError
 from ouro.application.usage import UsageService
 from ouro.billing import LocalUsageLedger
@@ -30,8 +30,8 @@ from ouro.core.session_controls import AttributedSessionControlTransition
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolCallRequest, ToolInvocation
 from ouro.local_application import LocalApplication
-from ouro.plugins.api import adapt_sdk_contributions
 from ouro.plugins.harness_calls import invoke_plugin_callback
+from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.plugins.resources import ScopedPluginDataStore
 from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.sdk.plugins import v5 as sdk

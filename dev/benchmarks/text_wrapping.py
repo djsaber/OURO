@@ -20,7 +20,7 @@ from time import perf_counter
 from rich.console import Console
 from textual.app import App, ComposeResult
 
-from ouro.tui.conversation_history import AssistantTailLines
+from ouro.tui.conversation.history_rendering import AssistantTailLines
 from ouro.tui.text_inputs import TuiTextArea
 from ouro.tui.text_wrapping import ProseText, wrap_offsets
 

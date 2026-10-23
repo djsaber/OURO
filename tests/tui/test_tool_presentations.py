@@ -7,12 +7,13 @@ from rich.cells import cell_len
 from rich.console import Console
 from textual.app import App, ComposeResult
 
-from ouro.application.agent_models import AgentTreeNode
-from ouro.application.supervisor_models import RuntimeActivitySnapshot, RuntimeToolCallActivity
-from ouro.tui.conversation_history import ConversationHistory, TranscriptEntry
+from ouro.application.contracts.agents import AgentTreeNode
+from ouro.application.contracts.execution import RuntimeActivitySnapshot, RuntimeToolCallActivity
+from ouro.tui.conversation.history import ConversationHistory
+from ouro.tui.conversation.history_models import TranscriptEntry
+from ouro.tui.conversation.tools import _tool_activity_text
 from ouro.tui.theme import DEFAULT_TUI_THEME
 from ouro.tui.tool_presentations import present_tool
-from ouro.tui.widgets import _tool_activity_text
 
 
 def _tool(

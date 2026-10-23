@@ -45,13 +45,13 @@ Provider 的 `auth_driver: str` 默认为 `"static"`；CredentialRef 的 `manage
 
 产品档案声明默认及允许的 `(protocol, auth_driver)` 组合，以及服务规则引用；不能将两组独立允许列表的任意组合视为可用。config 解析并传递引用和纯配置数据，由组合根解析实现；不另存用户可编辑的 service_profile。auth 方法类型及 browser/device 列表来自驱动描述，不持久化重复的 auth.method。
 
-config 是结构与合法组合的唯一校验者：static 只接受既有静态引用；受管理驱动要求 managed ref；未知字段、不允许组合和冲突的 CLI API Key 覆盖在写盘或构造运行参数前失败。允许的最终目标由 S5 处理，不再在各层复制主机校验。
+config 是结构与合法组合的唯一校验者：static 只接受既有静态引用；受管理驱动要求 managed ref；未知字段、不允许组合和冲突的 CLI API Key 覆盖在写盘或构造运行参数前失败。允许的最终目标由 S5 统一校验。
 
 组合根构建时识别内建 static 策略，并校验产品声明所引用的 managed driver/service policy 均已注册。服务规则复用协议参数能力和少量明确策略；传给认证端口的允许目标是纯数据，不让 auth import providers。注册表仅在装配时建立；没有插件热加载或运行时 schema 注册。config 不导入具体 driver；Application 不自行加载 driver 实现。
 
 未登录可以持久化完整 Provider 与 managed ref，此时 credential 记录可以不存在。未登录的默认 Provider 不能导致 Host 无法启动、进入设置或注销；秘密解析延迟到需要网络认证时。
 
-模板 API Key 分支可声明 credential_env，OAuth 分支无需该字段；模板只提供 auth_driver 默认值，不保存 credential id 或账户。实例 managed ref 由创建用例生成。普通模板更新保留实例认证选择和引用，变更认证方式必须显式执行。模板绑定、指纹、严格 codec 与公开 DTO 同步更新。
+模板 API Key 分支可声明 credential_env，OAuth 分支无需该字段；模板只提供 auth_driver 默认值，不保存 credential id 或账户。实例 managed ref 由创建用例生成。普通模板更新保留实例认证选择和引用，变更认证方式必须显式执行。模板绑定、指纹、严格 codec 与公开 DTO 使用一致的认证字段定义。
 
 可选字段使用确定默认值。模板/凭据存储只接受当前格式，不兼容时明确失败，不自动清理或迁移数据。
 
@@ -126,7 +126,15 @@ transport 保留内部 HTTP status、Retry-After 和所需错误 code；provider
 
 Responses codec 映射 system prompt → instructions、消息 → input、tool call/result → function_call/function_call_output，保持 call_id 与 item id 的区别；reasoning intent 通过已校验 profile 映射。不得用 Codex 的 Agent 提示词或内置工具替换 OURO 的提示词与工具契约。
 
-Codex 服务规则当前采用 SSE、store=false、完整本地上下文，不依赖 previous_response_id。温度、结构化输出等服务能力以实际核验结果为准。max_output_tokens 为可空正整数，缺失和 null 均不设置输出上限、不预留输出空间，有限值用于本地上下文预算；实测 Codex 订阅后端拒绝该字段，此集成接受没有请求级输出硬上限，由受信服务策略声明 supports_output_limit=false，adapter 不发送输出上限，实际输出可能超过本地预算。默认服务策略在配置非空时发送上限；不按厂商或 OAuth 分支，不新增独立预留参数，不在 HTTP 失败后自动调整。当前探针通过启动提示及 output_limit_enforced=false 明确披露限制；正式 Provider/Template DTO 携带只读服务 notice，CLI/TUI 创建、查看和管理入口展示该限制。正式 adapter 的验证方法见[协议探针](../../dev/probes/README.md#正式-adapter-验证)，产品支持边界见[使用指南](../guides/subscriptions.md#证据范围)。图像未验收时 capability 为不支持。
+Codex 服务策略采用 SSE、store=false、完整本地上下文，不依赖 previous_response_id。max_output_tokens 为可空正整数，
+缺失和 null 均不设置输出上限、不预留输出空间。Codex 策略声明 supports_output_limit=false，adapter 不发送输出上限，
+有限配置只参与本地上下文预算，实际输出可能超过该预算。默认服务策略在配置非空时发送上限；协议适配器读取服务策略，
+不按厂商或 OAuth 分支，也不在 HTTP 失败后自动调整。
+
+探针通过启动提示及 output_limit_enforced=false 披露限制；Provider/Template DTO 携带只读服务 notice，
+CLI/TUI 创建、查看和管理入口展示该限制。模板启用图像输入，使用 Responses input_image 编码；结构化输出未声明支持。
+本地能力声明与真实后端验证分别记录：模板值见[预置供应商配置](provider-presets.md)，验证方法见
+[协议探针](../../dev/probes/README.md#正式-adapter-验证)，真实证据范围见[使用指南](../guides/subscriptions.md#证据范围)。
 
 | Responses 输入/事件 | canonical 行为 |
 |---|---|

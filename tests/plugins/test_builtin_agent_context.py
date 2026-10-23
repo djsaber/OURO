@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.application.runtime.environment import RuntimeEnvironment
+from ouro.application.runtime.service import RuntimeService
 from ouro.builtin_plugins import LOCAL_BUILTIN_PLUGINS
 from ouro.builtin_plugins.agent_context import AGENT_CONTEXT_PLUGIN
 from ouro.builtin_plugins.agent_context.agent_context_plugin import (
@@ -17,13 +17,13 @@ from ouro.builtin_plugins.agent_context.instructions import render_agent_instruc
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.local_application import LocalApplication
-from ouro.plugins.catalog import GenerationGate
+from ouro.plugins.catalog.gates import GenerationGate
 from ouro.plugins.environment import PluginEnvironmentService
 from ouro.plugins.instructions import AgentInstructionError, AgentInstructionLoader
 from ouro.providers import FauxProvider
-from ouro.providers.anthropic_messages_codec import messages_to_anthropic_messages
-from ouro.providers.openai_chat_completions_codec import messages_to_chat_completions
-from ouro.providers.openai_responses_codec import responses_input
+from ouro.providers.anthropic_messages.codec import messages_to_anthropic_messages
+from ouro.providers.openai_chat_completions.codec import messages_to_chat_completions
+from ouro.providers.openai_responses.codec import responses_input
 from ouro.sdk.plugins import v5 as sdk
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry

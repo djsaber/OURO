@@ -7,20 +7,22 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
-from ouro.application.supervisor_models import RuntimeToolCallActivity
+from ouro.application.contracts.execution import RuntimeToolCallActivity
 from ouro.core.messages import MessageRecord, TextContent
 from ouro.core.provider import ProviderStreamEvent
 from ouro.core.state import RunRecord
 from ouro.core.tools import ToolCallRequest
 from ouro.providers import FauxProvider
-from ouro.tools.builtin_files import builtin_file_tools
+from ouro.tools.builtin.files import builtin_file_tools
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.conversation_history import ConversationHistory, TranscriptEntry
+from ouro.tui.conversation.history import ConversationHistory
+from ouro.tui.conversation.history_models import TranscriptEntry
+from ouro.tui.conversation.view import ConversationView
+from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
-from ouro.tui.screens import ChoiceScreen
 from ouro.tui.state import RunPresentation
 from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
-from ouro.tui.widgets import ConversationView
+from tests.tui.app.support import _persist_direct_child_session
 from tests.tui.helpers import (
     choose_menu,
     release_on_exit,
@@ -30,7 +32,6 @@ from tests.tui.helpers import (
     wait_for_screen,
     wait_until,
 )
-from tests.tui.test_app import _persist_direct_child_session
 from tests.tui.test_tasks import streaming_application
 
 
@@ -157,7 +158,7 @@ async def test_trace_toggle_reuses_markdown_and_hidden_tool_updates_stay_hidden(
         def reject_markdown(*args, **kwargs):
             raise AssertionError("Trace toggle must reuse Markdown strips")
 
-        monkeypatch.setattr("ouro.tui.conversation_history.assistant_markdown", reject_markdown)
+        monkeypatch.setattr("ouro.tui.markdown.assistant_markdown", reject_markdown)
         tool = entries[3].tool.model_copy(update={"status": "failed"})
         history.update_tools((tool,), run_id="run")
         assert "Read" not in history.rendered_text
@@ -436,11 +437,11 @@ async def test_canonical_trace_projection_is_shared_by_all_session_kinds(tmp_pat
 
 
 async def test_completion_publishes_fold_and_summary_together(monkeypatch):
-    import ouro.tui.conversation_history as rendering
+    import ouro.tui.conversation.history as history_module
 
     app = TraceApp()
     started, release = Event(), Event()
-    render = rendering._render_entry_requests
+    render = history_module._render_entry_requests
 
     def blocked_render(*args, **kwargs):
         started.set()
@@ -452,7 +453,7 @@ async def test_completion_publishes_fold_and_summary_together(monkeypatch):
         entries = trace_entries()
         await history.load(entries[:-1])
         before = history.rendered_text
-        monkeypatch.setattr(rendering, "_render_entry_requests", blocked_render)
+        monkeypatch.setattr(history_module, "_render_entry_requests", blocked_render)
         try:
             history.append_many((entries[-1], TranscriptEntry(kind="notice", text="Done")))
             async with asyncio.timeout(5):

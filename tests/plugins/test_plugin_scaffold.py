@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from ouro.plugins.scaffold import create_plugin_scaffold
+from ouro.plugins.installation.scaffold import create_plugin_scaffold
 
 
 def test_scaffold_refuses_to_replace_an_existing_destination(tmp_path) -> None:

@@ -9,9 +9,11 @@ from ouro.core.billing import UsageFilter
 from ouro.core.messages import MessageRecord
 from ouro.core.usage_queries import UsageSummary, UsageTotals
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.widgets import Composer, ConversationView, WelcomePanel
+from ouro.tui.composer.input import Composer
+from ouro.tui.composer.surface import WelcomePanel
+from ouro.tui.conversation.view import ConversationView
+from tests.tui.app.support import _application
 from tests.tui.helpers import run_ready_app
-from tests.tui.test_app import _application
 
 
 def application_with_session(tmp_path):

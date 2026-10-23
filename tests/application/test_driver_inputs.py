@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from ouro.application.plugin_commands import consume_plugin_command, submit_plugin_command
+from ouro.application.plugins.commands import consume_plugin_command, submit_plugin_command
 from ouro.config.queued_inputs import QueuedInputConfig
 from ouro.core.prompt_policies import (
     PromptPolicyDecision,

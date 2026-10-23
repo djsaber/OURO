@@ -161,7 +161,7 @@ uv run --frozen python -m dev.benchmarks.session_terminal --home .ouro-dev/manua
 
 ```powershell
 uv run --frozen python -m dev.benchmarks.run_resources --label current-environment
-uv run --frozen python -m dev.benchmarks.session_harness_reads
+uv run --frozen python -m dev.benchmarks.session_harness_reads --label current-environment
 ```
 
 资源基准覆盖正常终结、等待/恢复、显式租约转交和关闭；每场景使用 100/1,000 个 Run。计时与 tracemalloc 分开，
@@ -171,7 +171,7 @@ uv run --frozen python -m dev.benchmarks.session_harness_reads
 ## Harness 状态与撤销
 
 ```powershell
-uv run --frozen python -m dev.benchmarks.harness_lifecycle --repeat 3
+uv run --frozen python -m dev.benchmarks.harness_lifecycle --label current-environment --repeat 3
 ```
 
 覆盖两后端、100/10,000 条保留消息、固定短撤回后缀以及不同 owner 状态规模；记录状态版本、原生同步次数、
@@ -211,7 +211,7 @@ uv run --frozen python -m dev.benchmarks.plugin_startup_graph --counts 3 10 30 -
 不计导入、夹具构造和关闭，不清除 OS 缓存；不启动 worker，不代表网络或整个旧版本的性能。
 
 ```powershell
-uv run --frozen python -m dev.benchmarks.worker_results
+uv run --frozen python -m dev.benchmarks.worker_results --label current-environment
 uv run --frozen python dev/benchmarks/plugin_commands.py --repeat 3
 uv run --frozen python dev/benchmarks/plugin_commands.py --mode tui --store-delay-ms 5 --repeat 3
 ```

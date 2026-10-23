@@ -6,13 +6,13 @@ import json
 import pytest
 from pydantic import SecretStr
 
-from ouro.application.plugins import PluginService
+from ouro.application.plugins.service import PluginService
 from ouro.core.redaction import SensitiveValueRedactor
-from ouro.plugins.api import BoundCredentialResolver
 from ouro.plugins.credentials import InlinePluginCredential, parse_credential_bindings
+from ouro.plugins.inprocess.context import BoundCredentialResolver
+from ouro.plugins.installation.package import validate_plugin_package
 from ouro.plugins.mcp import PluginMCPResource
 from ouro.plugins.models import PluginConfigurationRevision, create_configuration_revision
-from ouro.plugins.package import validate_plugin_package
 from tests.plugins.test_plugin_system import _runtime, _write_native_plugin
 
 

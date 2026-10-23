@@ -3,23 +3,25 @@
 > 文档类型：现行订阅接入设计；未验证扩展单独列出
 > 当前产品：OpenAI / ChatGPT 订阅接入；架构面向后续多厂商接入。
 
-本文解释边界、取舍与扩展方式。精确行为由[模型订阅认证规格](../specs/subscription-authentication.md)统一定义，实施顺序见[实施计划](../plans/subscription-validation.md)。现行能力仍以[Provider 配置规格](../specs/provider-configuration.md)为准。
+本文解释认证组合的职责、依赖和资源所有权。精确行为由[模型订阅认证规格](../specs/subscription-authentication.md)统一定义，配置契约见[Provider 配置规格](../specs/provider-configuration.md)。
 
 凭据生命周期见[凭据核心规格](../specs/credentials.md)，单次授权见[驱动规格](../specs/authorization.md)，登录及条件提交见[认证用例](../specs/provider-authentication.md)。三种模型协议共享[请求认证端口](../specs/request-authentication.md)，Responses 的内容与续接由[编解码规格](../specs/responses-codec.md)定义。CLI/TUI 使用同一 Application 服务；浏览器产品的验证范围见[使用指南](../guides/subscriptions.md#证据范围)。
 
-## 目标与结论
+## 认证组合
 
 认证与模型调用边界可组合，当前组合是 OpenAI OAuth 驱动、ChatGPT 订阅产品档案和 Responses adapter。接入其他厂商主要增加驱动、产品数据和必要的服务适配；使用相同线协议时复用 adapter。Core、Application 和 Host 不包含厂商品牌判断。
 
-保留 OURO 的 Provider 实例、产品类型、线协议分离，继续使用 `provider_id/endpoint_id` 路由。登录、凭据刷新和协议编码各有唯一所有者，模型选择、工具、审批、会话、压缩与 Run 生命周期继续由现有运行时负责。
+Provider 实例、产品类型与线协议彼此独立，模型路由使用 `provider_id/endpoint_id`。登录、凭据刷新和协议编码各有唯一所有者，模型选择、工具、审批、会话、压缩与 Run 生命周期由通用运行时负责。
 
 OAuth 是取得授权的方式，订阅是服务端的权益和计费方式，两者不等价。当前 OpenAI 接入使用账户具备的 Codex 权益，不能把 access token 当成普通 Platform API Key，也不意味着可使用所有 ChatGPT 功能或所有 OpenAI 模型。[OpenAI 认证文档](https://learn.chatgpt.com/docs/auth)
 
-当前产品覆盖浏览器登录、受管理凭据、刷新/注销、SSE、文本、自定义工具、多轮续接与实际 token 用量。设备码仅属于隔离探针和待验证扩展。图像和结构化输出仅在目标后端验证后声明支持。账户池、自动付费回退、动态认证插件、代理服务、远端会话管理与 WebSocket 优化不属于当前范围。
+浏览器订阅组合覆盖登录、受管理凭据、刷新/注销、SSE、文本、自定义工具、多轮续接与实际 token 用量。
+图像由 Endpoint 能力声明和 Responses 编码器接入，真实后端验证与本地编码支持分开记录；结构化输出未声明支持。
+设备码属于隔离探针。账户池、自动付费回退、动态认证插件、代理服务、远端会话管理与 WebSocket 优化不属于该组合的能力。
 
-## 调研依据
+## 参考实现
 
-调研固定到以下源码，避免将后续上游变更混入本设计的证据：
+参考资料固定到具体源码提交，用于核对授权协议及认证与传输的职责划分：
 
 | 项目 | 提交 |
 |---|---|
@@ -36,11 +38,11 @@ OpenCode 主仓库的内置 Codex 插件提供浏览器 PKCE 和设备码登录�
 
 | 模块 | 当前职责 |
 |---|---|
-| `config/provider_models.py`、`provider_codec.py` | 产品、协议、认证驱动和凭据引用的结构与组合校验 |
+| `config/provider_models.py`、`config/providers/codec.py` | 产品、协议、认证驱动和凭据引用的结构与组合校验 |
 | `config/credentials.py`、`providers/factory.py` | 静态引用解析、协议选择与请求认证端口注入 |
-| `application/models.py` | 模型路由与 adapter 生命周期；请求认证独立取得当前凭据 |
+| `application/models/catalog.py` | 模型路由与 adapter 生命周期；请求认证独立取得当前凭据 |
 | `config/provider_templates/` | 产品默认连接与模型数据，模板不保存账户 |
-| `application/configuration_views.py` | 对 Host 投影安全配置和认证状态 |
+| `application/configuration/views.py` | 对 Host 投影安全配置和认证状态 |
 | `providers/http_transport.py`、`retrying.py` | HTTP/SSE、统一尝试预算和输出前认证恢复 |
 | `core/messages.py` | 不透明 continuation；Responses envelope 与 scope 由协议层解释 |
 | `core/billing.py`、`application/usage.py` | 请求计费归属、未知金额和 priced/unpriced 计数 |
@@ -68,14 +70,14 @@ flowchart TD
 | 责任层 | 唯一职责 | 不负责 |
 |---|---|---|
 | `config` | 配置结构、产品组合、默认值与模板持久化 | 网络登录、Token 存取、运行状态 |
-| `application/provider_auth.py` | Provider 登录用例、内存 operation、取消与 Host DTO | OAuth 报文、HTTP 对象、刷新调度 |
+| `application/provider_auth/service.py` | Provider 登录用例、内存 operation、取消与 Host DTO | OAuth 报文、HTTP 对象、刷新调度 |
 | `auth/credentials.py` | 凭据生命周期、刷新协调、注销与版本竞争 | Provider 配置、模型路由、Session/Run |
 | `auth/drivers/` | 供应商授权/刷新协议及认证材料编码 | UI、模板写入、工具执行 |
 | `auth/store.py` | 凭据记录、原子保存、受限权限与互斥原语 | 认证流程、权益判断 |
 | `providers` | 请求编码、响应解码、协议注册、服务请求差异 | 登录操作、凭据文件、模型选择 |
 | `local_application` | 显式构建、共享实例、关闭顺序 | 厂商业务与协议实现 |
 
-`auth/contracts.py` 放纯类型和端口，不导入具体 driver/store。依赖方向为 `auth → core/local_io/local_locks`，以及 `application/providers/local_application → auth`；Application/providers 仅使用公开契约及通用服务。config 保持原有依赖，不读取 driver 注册表或启动客户端。现有 Core 零外层依赖和 Application 不依赖 providers 的规则保持不变。
+`auth/contracts.py` 放纯类型和端口，不导入具体 driver/store。依赖方向为 `auth → core/local_io/local_locks/local_permissions`，以及 `application/providers/local_application → auth`；Application/providers 仅使用公开契约及通用服务。config 不读取 driver 注册表或启动客户端。Core 不依赖外层包，Application 不依赖具体 Provider 实现。
 
 产品档案保存声明式的认证与服务规则引用；config 只解析引用及配置数据，组合根负责解析对应实现并注入 factory。Factory 只按 `protocol` 选择 adapter，既不读取产品类型，也不猜测实例名称。服务规则按已选协议提供必要的参数约束和错误分类；允许目标以 auth 契约中的纯数据交给 RequestAuthenticator，auth 不反向依赖 providers。
 
@@ -88,15 +90,15 @@ flowchart TD
 | `CredentialStore` | 将凭据持久化与生命周期分离，支持测试及后续系统存储 |
 | `RequestAuthenticator` | 三种模型协议均可组合静态或受管理认证，避免缓存 Token 过期 |
 
-`CredentialService` 是有状态的具体服务，不再拆 token broker、refresh manager、revocation service。方法描述是数据，不为每个字段建立一层接口。服务规则沿用已注册协议的类型化参数能力和少量策略，不建立独立的 profile 生命周期、第二套模板或可执行 JSON 转换语言。
+`CredentialService` 统一拥有凭据取得、刷新协调和注销生命周期。方法描述是数据，不为每个字段建立一层接口。服务规则使用已注册协议的类型化参数能力和明确策略，不具有独立的 profile 生命周期或可执行 JSON 转换语言。
 
 所有真实协议 adapter 使用同一个请求认证端口。API Key 沿用现有 resolver，并由静态实现编码对应认证头；静态路径不需要伪造登录/刷新 driver。managed 实现借用 CredentialService，同一次请求尝试的认证头、凭据 revision 和续接 scope 来自一次取得的内部快照。认证实现与线协议独立组合，后续使用 Messages 的订阅服务复用同一端口。
 
-授权方式与协议可以独立演进；产品档案约束哪些组合实际可用。注册表当前只是进程构建时的显式映射，不具备运行时发现、热更新、插件 generation 或动态 schema。
+授权方式与协议可以独立演进；产品档案约束哪些组合实际可用。认证驱动注册表是进程构建时的显式映射，不具备运行时发现、热更新、插件 generation 或动态 schema。
 
-## 配置收敛
+## 配置边界
 
-配置使用 `provider_type`、`protocol`、`credential_ref` 和单一 `auth_driver` 引用。不再同时持久化 `auth.method`；OAuth 类型及 browser/device 方法由驱动描述。服务规则由产品档案解析，不增加可任意组合的用户 `service_profile` 字段。
+配置使用 `provider_type`、`protocol`、`credential_ref` 和单一 `auth_driver` 引用。OAuth 类型及 browser/device 方法由驱动描述，配置不重复保存 `auth.method`。服务规则由产品档案解析，不接受可任意组合的用户 `service_profile` 字段。
 
 订阅产品与 API 产品各自创建实例，路由使用框架生成的 `<provider_id>/<endpoint_id>`，不从显示名称或模型 ID 推导。当前产品类型 `openai-codex`、认证驱动同名、协议 `openai-responses`，三者名称相似但职责独立。完整 schema 和字段约束只在规格中定义。
 
@@ -128,9 +130,9 @@ flowchart TD
 
 保留外部浏览器、S256 PKCE、loopback 回调和 TLS，这些是 OAuth 客户端的基本正确性要求。[RFC 8252](https://www.rfc-editor.org/rfc/rfc8252)、[RFC 9700](https://www.rfc-editor.org/rfc/rfc9700)
 
-## 状态与资源的收敛
+## 状态与资源所有权
 
-登录 operation 只在 Application 内存中存在。凭据只有一份权威记录，刷新可用性由有效期推导，不再持久化 ready/refresh_due 等镜像状态。状态查询不登录、不刷新，也不承诺模型可访问。
+登录 operation 只在 Application 内存中存在。凭据只有一份权威记录，刷新可用性由有效期推导，不持久化 ready/refresh_due 等镜像状态。状态查询不登录、不刷新，也不承诺模型可访问。
 
 同一 credential 的刷新、注销和提交使用同一互斥及 revision。刷新在锁内完成重读、换取和原子保存；注销排在已开始的刷新之后清空秘密并递增 revision，因此不需要另设 epoch 来阻止迟到写入。交互式等待浏览器不持锁，完成时才比较 begin 时的版本；并发修改产生明确冲突，旧凭据保持不变。
 

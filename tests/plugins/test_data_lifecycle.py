@@ -3,12 +3,12 @@ import sys
 
 import pytest
 
-from ouro.application.plugins import PluginService
+from ouro.application.plugins.service import PluginService
 from ouro.core.plugin_contracts import PluginImplementation
 from ouro.core.run_drivers import RunDriverBinding
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.plugins.installation.store import PluginPackageStore
 from ouro.plugins.models import BuiltinPluginActivationOverride
-from ouro.plugins.store import PluginPackageStore
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from tests.plugins.test_lifecycle import PLUGIN_ID, LifecyclePlugin, create_runtime
 

@@ -21,7 +21,7 @@ from ouro.core.provider import ModelMetadata, ProviderRetryPolicy
 from ouro.core.reasoning import ReasoningRequest
 from ouro.providers.factory import build_runtime_adapter
 from ouro.providers.http_transport import HttpxProviderHTTPTransport, ProviderTransportError
-from ouro.providers.openai_responses import OpenAIResponsesProvider
+from ouro.providers.openai_responses.adapter import OpenAIResponsesProvider
 from tests.auth.test_request_auth import authenticated
 from tests.providers.responses_fixtures import delta, message, reasoning, terminal
 
@@ -436,7 +436,7 @@ async def test_responses_visible_reasoning_reaches_adapter_without_becoming_answ
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         monkeypatch.setattr(
-            "ouro.providers.openai_responses.HttpxProviderHTTPTransport",
+            "ouro.providers.openai_responses.adapter.HttpxProviderHTTPTransport",
             lambda: HttpxProviderHTTPTransport(client),
         )
         adapter = build_runtime_adapter(

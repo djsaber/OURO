@@ -162,7 +162,7 @@ Run；Run 是执行归属，不是压缩边界。摘要覆盖不删除或改写 
 
 提示词、原始输出格式、解析、分块和格式相关重试由生成策略负责。框架不检查 `<summary>` 标签，不依据输出参数预测摘要正文大小，不要求插件沿用内置提示词。
 
-内置 `builtin.llm_summary` 位于 `application/summary_compaction.py`，使用独立模型请求，不进入主 Agent 循环，
+内置 `builtin.llm_summary` 位于 `ouro/application/context/summary.py`，使用独立模型请求，不进入主 Agent 循环，
 不创建持久化 Session，不携带普通工具。摘要模型的 system 仅含其压缩指令；Agent 系统背景以
 `role=user, semantic_tag=agent-system-context` 脚手架传入，已有摘要与待压缩会话以
 `role=user, semantic_tag=conversation-to-summarize` 传入。两者都是待理解的材料，不能混入摘要模型的系统指令。

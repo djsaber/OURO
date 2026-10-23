@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 from textual.app import App, ComposeResult
 
-from ouro.tui.question_forms import project_question_form
-from ouro.tui.widgets import AskUserPanel
+from ouro.tui.interactions.forms import project_question_form
+from ouro.tui.interactions.questions import AskUserPanel
 
 
 class _QuestionPanelApp(App[None]):

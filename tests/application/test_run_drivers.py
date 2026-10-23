@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from ouro.application.plugins import PluginService
-from ouro.application.runtime import RuntimeService
+from ouro.application.plugins.service import PluginService
+from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.observers import ObserverRegistry
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
-from ouro.plugins.contributions import ContributionCoordinator
-from ouro.plugins.runtime import PluginRuntimeResource
-from ouro.plugins.store import PluginPackageStore
+from ouro.plugins.contributions.preparation import ContributionCoordinator
+from ouro.plugins.installation.store import PluginPackageStore
+from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
@@ -261,7 +261,7 @@ async def test_driver_wait_uses_retained_implementation_after_upgrade(tmp_path, 
 
 
 async def test_driver_cannot_leave_a_native_operation_running_after_return(tmp_path):
-    from ouro.application.run_drivers import NativeRunDriverContext
+    from ouro.application.runs.drivers import NativeRunDriverContext
     from ouro.core.cancellation import AbortSignal
     from ouro.core.plugin_contracts import PluginImplementation
     from ouro.core.run_drivers import DriverFinished, RunDriverBinding

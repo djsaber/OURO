@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from ouro.application.sessions import SessionService
+from ouro.application.sessions.service import SessionService
 from ouro.cli.main import main
 from ouro.sessions import LocalSessionStore
 from ouro.transfer.archive import read_archive

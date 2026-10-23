@@ -5,10 +5,10 @@ from typing import Any, cast
 
 import pytest
 
-from ouro.application.configuration import ConfigurationFacade
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_environment import RuntimeEnvironment
-from ouro.application.summary_compaction import LLMSummaryCompactionStrategy
+from ouro.application.configuration.facade import ConfigurationFacade
+from ouro.application.context.summary import LLMSummaryCompactionStrategy
+from ouro.application.runtime.environment import RuntimeEnvironment
+from ouro.application.runtime.service import RuntimeService
 from ouro.cli.main import main
 from ouro.cli.run import RuntimeProviderOptions, build_default_runtime, run_json, run_print
 from ouro.config import ProviderConfigManager, openai_chat_completions_effort_reasoning
@@ -20,7 +20,7 @@ from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 from ouro.providers import FauxProvider, OpenAIChatCompletionsProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
-from ouro.tools.builtin_shell import detect_command_shell
+from ouro.tools.builtin.shell import detect_command_shell
 
 MCP_ECHO_SERVER = Path(__file__).parents[1] / "mcp" / "fixtures" / "echo_server.py"
 

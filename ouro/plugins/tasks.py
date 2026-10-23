@@ -7,13 +7,13 @@ from datetime import datetime
 from pydantic import JsonValue
 
 from ouro.core.plugin_tasks import PluginTaskCall, PluginTaskTarget
-from ouro.plugins.catalog import (
+from ouro.plugins.catalog.gates import (
     GenerationLease,
     PluginGenerationUnavailableError,
     acquire_generations,
 )
-from ouro.plugins.generation import PluginGeneration
 from ouro.plugins.implementation_contracts import plugin_implementation
+from ouro.plugins.lifecycle.generation import PluginGeneration
 from ouro.plugins.services import ServiceEndpoint
 from ouro.sdk.plugins.scheduled import ScheduledInvocation
 

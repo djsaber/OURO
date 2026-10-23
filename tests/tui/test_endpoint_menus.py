@@ -1,9 +1,9 @@
 import pytest
 
-from ouro.application.configuration import ConfigurationFacade
+from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.core.errors import ConfigError
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.screens import ChoiceScreen
+from ouro.tui.menus.choice import ChoiceScreen
 from tests.tui.helpers import run_ready_app, two_route_application
 
 

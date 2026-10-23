@@ -9,8 +9,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import patch
 
-from ouro.application.plugins import PluginService
-from ouro.application.task_scheduler import TaskScheduler
+from ouro.application.plugins.service import PluginService
+from ouro.application.tasks.scheduler import TaskScheduler
 from tests.application.test_tasks import task_runtime
 from tests.plugins.test_plugin_system import _runtime, _write_native_plugin
 

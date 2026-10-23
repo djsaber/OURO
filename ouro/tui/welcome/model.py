@@ -10,8 +10,8 @@ from textual.geometry import Region, Size
 from textual.reactive import reactive
 from textual.widget import Widget
 
-from ouro.tui.controller import TuiSystemStatus
 from ouro.tui.theme import TuiTheme, theme_for
+from ouro.tui.view_models import TuiSystemStatus
 
 WELCOME_STYLE_ID_PATTERN = r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
 

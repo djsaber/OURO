@@ -13,9 +13,9 @@ from types import ModuleType
 
 import pytest
 
-import ouro.plugins.worker as worker_module
-from ouro.application.plugins import PluginOperationNotAllowedError, PluginService
-from ouro.application.skill_activations import SkillActivationService, SkillInvocationRequest
+import ouro.local_processes as worker_module_local_processes
+from ouro.application.inputs.skills import SkillActivationService, SkillInvocationRequest
+from ouro.application.plugins.service import PluginOperationNotAllowedError, PluginService
 from ouro.core.base import utc_now
 from ouro.core.compaction import CompactionStrategyRegistry
 from ouro.core.context_providers import ContextProviderCall
@@ -43,26 +43,31 @@ from ouro.plugins.builtin import (
     BuiltinPluginDefinition,
     BuiltinPluginRegistry,
 )
-from ouro.plugins.candidates import PluginRuntimeCandidate
-from ouro.plugins.catalog import (
-    ExtensionCatalogBase,
-    GenerationGate,
-    PluginGenerationUnavailableError,
-    build_extension_catalog,
-)
+from ouro.plugins.catalog.gates import GenerationGate, PluginGenerationUnavailableError
+from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_catalog
 from ouro.plugins.compatibility import inspect_community_package
-from ouro.plugins.contribution_types import contribution_type_adapters
-from ouro.plugins.contributions import (
-    ContributionCoordinator,
+from ouro.plugins.contributions.inventory import contribution_type_adapters
+from ouro.plugins.contributions.models import (
     ContributionOwner,
     PluginContributions,
     PreparedContributionSet,
 )
+from ouro.plugins.contributions.preparation import ContributionCoordinator
 from ouro.plugins.credentials import parse_credential_bindings
 from ouro.plugins.dependencies import (
     PluginDependencyError,
     resolve_plugin_dependencies,
 )
+from ouro.plugins.installation.package import validate_plugin_package
+from ouro.plugins.installation.paths import PluginPackageError
+from ouro.plugins.installation.store import (
+    PluginPackageStore,
+    PluginStateFormatError,
+    PluginStoreError,
+    PluginStoreIOError,
+)
+from ouro.plugins.lifecycle.candidates import PluginRuntimeCandidate
+from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.plugins.manifest import PluginContributes, PluginManifest
 from ouro.plugins.mcp import PluginMCPResource
 from ouro.plugins.models import (
@@ -72,21 +77,14 @@ from ouro.plugins.models import (
     PluginStateDocument,
     create_configuration_revision,
 )
-from ouro.plugins.package import PluginPackageError, validate_plugin_package
 from ouro.plugins.registry import (
     PluginCommand,
     PluginCommandError,
     PluginCommandRegistry,
     PluginCommandResult,
 )
-from ouro.plugins.runtime import PluginRuntimeResource
-from ouro.plugins.store import (
-    PluginPackageStore,
-    PluginStateFormatError,
-    PluginStoreError,
-    PluginStoreIOError,
-)
-from ouro.plugins.worker import JsonRpcWorkerClient, WorkerProtocolError
+from ouro.plugins.worker.client import JsonRpcWorkerClient
+from ouro.plugins.worker.codec import WorkerProtocolError
 from ouro.sdk.plugins.v5 import ContributionSet
 from ouro.sessions import LocalSessionStore
 from ouro.skills import SkillMetadata
@@ -2010,7 +2008,7 @@ async def test_cancelled_worker_close_retains_the_process_cleanup(tmp_path, monk
         encoding="utf-8",
     )
     entered, finish = asyncio.Event(), asyncio.Event()
-    close = worker_module.LocalProcess.close
+    close = worker_module_local_processes.LocalProcess.close
     attempts = []
 
     async def close_after_release(owner):
@@ -2019,7 +2017,7 @@ async def test_cancelled_worker_close_retains_the_process_cleanup(tmp_path, monk
         await finish.wait()
         await close(owner)
 
-    monkeypatch.setattr(worker_module.LocalProcess, "close", close_after_release)
+    monkeypatch.setattr(worker_module_local_processes.LocalProcess, "close", close_after_release)
     client = JsonRpcWorkerClient(
         ["{python}", "./worker.py"], cwd=tmp_path, diagnostic=lambda _code, _message: None
     )

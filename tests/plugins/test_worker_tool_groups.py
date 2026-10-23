@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from ouro.application.plugins import PluginService
+from ouro.application.plugins.service import PluginService
 from ouro.core.interactions import AnswerResolution, UnattendedResolution
 from ouro.core.observers import ObserverRegistry
-from ouro.plugins.catalog import PluginGenerationUnavailableError
-from ouro.plugins.contributions import ContributionCoordinator
+from ouro.plugins.catalog.gates import PluginGenerationUnavailableError
+from ouro.plugins.contributions.preparation import ContributionCoordinator
+from ouro.plugins.installation.store import PluginPackageStore
 from ouro.plugins.invocation import plugin_invocation
-from ouro.plugins.runtime import PluginRuntimeResource
-from ouro.plugins.store import PluginPackageStore
+from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.tools import ToolInputRequest, ToolInvocation, ToolRegistry
 
 PLUGIN = "dev.ouro.examples.dynamic_records"

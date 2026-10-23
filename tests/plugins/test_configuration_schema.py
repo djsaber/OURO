@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from ouro.plugins.configuration_schema import ConfigurationSchema, ConfigurationSchemaError
+from ouro.plugins.configuration.schema import ConfigurationSchema, ConfigurationSchemaError
 
 
 def test_normalization_materializes_defaults_without_overwriting_explicit_values() -> None:

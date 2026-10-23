@@ -91,15 +91,15 @@ OURO 应当形成**稳定的执行内核、可以替换和组合的能力模块�
 
 | 问题 | 当前证据 | 根因与重构方向 |
 |---|---|---|
-| 扩展面封闭 | [Manifest](../../../ouro/plugins/manifest.py) 的 `PluginCapability`、[贡献清单](../../../ouro/plugins/contribution_types.py) 固定 13 类；现行规格禁止插件定义扩展点 | 清单已集中管理领域适配，本身不是缺陷。保留原生贡献类型，补充插件服务及其注册接口，使新业务不必进入全局清单 |
-| 原生服务难以组合 | [SDK](../../../ouro/sdk/plugins/v3.py) 的 `PluginContext` 主要提供配置、私有文件、凭据、task、日志；没有模型、工具执行、Agent、调度和会话查询端口 | 将“不能暴露实现对象”扩大成“不能使用原生能力”。补充受作用域和权限约束的公开端口 |
+| 扩展面封闭 | [Manifest](../../../ouro/plugins/manifest.py) 的 `PluginCapability`、[贡献清单](../../../ouro/plugins/contributions/inventory.py) 固定 13 类；现行规格禁止插件定义扩展点 | 清单已集中管理领域适配，本身不是缺陷。保留原生贡献类型，补充插件服务及其注册接口，使新业务不必进入全局清单 |
+| 原生服务难以组合 | 当时的 SDK（`ouro/sdk/plugins/v3.py`；当前入口见 [SDK v5](../../../ouro/sdk/plugins/v5.py)） 的 `PluginContext` 主要提供配置、私有文件、凭据、task、日志；没有模型、工具执行、Agent、调度和会话查询端口 | 将“不能暴露实现对象”扩大成“不能使用原生能力”。补充受作用域和权限约束的公开端口 |
 | 控制能力绑定固定模式 | SDK 的 Turn Policy 仅有 `allow/continue`；Continuation 在 Run 结束后返回固定意图；[内循环](../../../ouro/core/inner_loop.py) 固定执行模型／工具轮次 | 现有能力适合部分工作流，但不等于可替换的 Agent 控制。分离可靠执行机制与下一步选择策略 |
-| worker 只有受调用方向 | [worker](../../../ouro/plugins/worker.py) 的 `_read_stdout` 接受响应及 `diagnostic.emit`；无类型化原生服务反向调用 | worker 无法成为与进程内能力等价的协作模块。增加有明确方法契约的双向通道 |
+| worker 只有受调用方向 | [worker](../../../ouro/plugins/worker/) 的 `_read_stdout` 接受响应及 `diagnostic.emit`；无类型化原生服务反向调用 | worker 无法成为与进程内能力等价的协作模块。增加有明确方法契约的双向通道 |
 | 依赖表达不等于能力协作 | [依赖实现](../../../ouro/plugins/dependencies.py) 与 [执行契约](../../../ouro/plugins/execution_contracts.py) 记录插件版本及依赖锁，SDK 无对应服务导入／导出 | 依赖只用于激活顺序和恢复校验。需要可解析、可撤销、可诊断的服务绑定 |
-| 启用成本需要实测 | [runtime](../../../ouro/plugins/runtime.py) 的 `start()` 遍历 desired roots；[代次资源](../../../ouro/plugins/generation_resources.py) 在激活期准备 MCP | 启用时加载是可成立的简化选择。先确保未启用插件零运行资源、重资源按需获取，不把完整惰性激活系统作为必做重构 |
+| 启用成本需要实测 | [runtime](../../../ouro/plugins/lifecycle/runtime.py) 的 `start()` 遍历 desired roots；[代次资源](../../../ouro/plugins/lifecycle/generation_resources.py) 在激活期准备 MCP | 启用时加载是可成立的简化选择。先确保未启用插件零运行资源、重资源按需获取，不把完整惰性激活系统作为必做重构 |
 | 跨进程语义不完整 | PluginRuntime 的 active、gate 和 mutation lock 属于进程；已有 TaskScheduler 则通过 repository 领取 home 范围 owner | 状态文件锁不等于全 home 已关闭，也不保证后台单例。定义多 Host 的传播及完成边界 |
 | 升级策略不支持长期生态 | [插件规格](../../specs/plugins.md) 明确不提供旧 API／协议适配和迁移；API 3.0 仍位于 `v2` 路径 | 开发期策略适合快速破坏式迭代，不能成为长期数据与生态承诺。建立有限、可维护的版本政策 |
-| 部分产品交互跨越插件边界 | [Plan TUI 适配](../../../ouro/tui/plan_confirmation.py) 导入 builtin Plan 协议 | 提供用户插件可调用的等价交互通道；共享协议放入公开契约，产品呈现可留在 Host。Agent Context 使用公开环境端口 |
+| 部分产品交互跨越插件边界 | [Plan TUI 适配](../../../ouro/tui/interactions/plan_form.py) 导入 builtin Plan 协议 | 提供用户插件可调用的等价交互通道；共享协议放入公开契约，产品呈现可留在 Host。Agent Context 使用公开环境端口 |
 
 `PluginService._durable_references()` 还会遍历 Session 和 Run 查找保留引用，虽然不加载完整消息历史，规模仍随历史运行数增长。这是管理冷路径的现状，先测量实际延迟；只有证据表明不可接受时，再增加可重建索引，不能预先增加双后端索引一致性负担。
 

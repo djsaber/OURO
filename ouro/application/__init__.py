@@ -1,7 +1,10 @@
 """Application services that orchestrate OURO core runtime boundaries."""
 
-from ouro.application.agent_definitions import AgentDefinitionService
-from ouro.application.agent_models import (
+from ouro.application.agents.definitions import AgentDefinitionService
+from ouro.application.agents.service import AgentService
+from ouro.application.agents.tree import AgentTreeSubscription
+from ouro.application.configuration.facade import ConfigurationFacade
+from ouro.application.contracts.agents import (
     AgentDefinitionCatalogView,
     AgentDefinitionDetail,
     AgentDefinitionView,
@@ -16,28 +19,28 @@ from ouro.application.agent_models import (
     AgentWaitResultView,
     SpawnAgentRequest,
 )
-from ouro.application.agent_tree import AgentTreeSubscription
-from ouro.application.agents import AgentService
-from ouro.application.configuration import ConfigurationFacade
-from ouro.application.configuration_models import (
+from ouro.application.contracts.base import ApplicationStartupReport
+from ouro.application.contracts.configuration import (
     ConfigurationOverview,
     MCPConfigCatalogView,
     MCPConnectionCheckView,
     MCPServerConfigView,
 )
-from ouro.application.dto import ApplicationStartupReport
-from ouro.application.event_models import RuntimeEventCategory, RuntimeEventView
-from ouro.application.events import RuntimeEventRecorder, RuntimeEventSinkRegistration
-from ouro.application.models import ModelReasoningState
-from ouro.application.queued_inputs import QueuedUserInputView
-from ouro.application.resources import ResourceService
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_configuration import (
-    RuntimeConfigurationResolver,
-    RuntimeConfigurationSnapshot,
-    RuntimeProviderOptions,
+from ouro.application.contracts.events import RuntimeEventCategory, RuntimeEventView
+from ouro.application.contracts.execution import (
+    RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS,
+    HostInputReceipt,
+    RunHandle,
+    RuntimeActivity,
+    RuntimeActivitySnapshot,
+    RuntimeNotification,
+    RuntimeStatusSnapshot,
+    RuntimeToolCallActivity,
+    ShutdownPolicy,
+    SupervisorStartResult,
 )
-from ouro.application.session_models import (
+from ouro.application.contracts.models import ModelReasoningState
+from ouro.application.contracts.sessions import (
     ReplayFrame,
     SessionBranchResult,
     SessionCatalogEntry,
@@ -56,20 +59,17 @@ from ouro.application.session_models import (
     SessionTrashResult,
     SessionView,
 )
-from ouro.application.sessions import SessionService, SessionTitleGenerator
-from ouro.application.supervisor import RuntimeSubscription, RuntimeSupervisor
-from ouro.application.supervisor_models import (
-    RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS,
-    HostInputReceipt,
-    RunHandle,
-    RuntimeActivity,
-    RuntimeActivitySnapshot,
-    RuntimeNotification,
-    RuntimeStatusSnapshot,
-    RuntimeToolCallActivity,
-    ShutdownPolicy,
-    SupervisorStartResult,
+from ouro.application.events import RuntimeEventRecorder, RuntimeEventSinkRegistration
+from ouro.application.inputs.queue import QueuedUserInputView
+from ouro.application.resources import ResourceService
+from ouro.application.runtime.configuration import (
+    RuntimeConfigurationResolver,
+    RuntimeConfigurationSnapshot,
+    RuntimeProviderOptions,
 )
+from ouro.application.runtime.service import RuntimeService
+from ouro.application.sessions.service import SessionService, SessionTitleGenerator
+from ouro.application.supervisor import RuntimeSubscription, RuntimeSupervisor
 from ouro.application.usage import UsageService
 from ouro.core.results import RunResult
 from ouro.core.usage_queries import (

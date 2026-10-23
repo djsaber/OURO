@@ -7,11 +7,7 @@ import pytest
 
 from ouro.core.errors import ConfigError
 from ouro.core.input_content import InputAttachment, InputFileReference, InputSkillReference
-from ouro.tui.input_drafts import (
-    MAX_SESSION_DRAFTS,
-    TuiInputDrafts,
-    TuiInputDraftStore,
-)
+from ouro.tui.composer.drafts import MAX_SESSION_DRAFTS, TuiInputDrafts, TuiInputDraftStore
 
 
 def test_input_drafts_round_trip_and_keep_a_bounded_session_mru(tmp_path: Path) -> None:

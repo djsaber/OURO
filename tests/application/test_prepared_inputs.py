@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from ouro.application.queued_inputs import input_operation_id
+from ouro.application.inputs.queue import input_operation_id
 from ouro.application.resources import ResourceService
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.application.runtime.environment import RuntimeEnvironment
+from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import new_id
 from ouro.core.errors import PersistenceError

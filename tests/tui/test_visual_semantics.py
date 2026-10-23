@@ -6,13 +6,16 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
-from ouro.application.supervisor_models import RuntimeToolCallActivity
-from ouro.tui.controller import TuiSystemStatus
-from ouro.tui.conversation_history import _reasoning_label_text
-from ouro.tui.screens import Choice, ChoiceScreen, grouped_choice_options
+from ouro.application.contracts.execution import RuntimeToolCallActivity
+from ouro.tui.conversation.history_rendering import _reasoning_label_text
+from ouro.tui.conversation.tools import _tool_activity_text
+from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.menus.models import Choice
+from ouro.tui.menus.rows import grouped_choice_options
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
+from ouro.tui.view_models import TuiSystemStatus
 from ouro.tui.welcome.components import WelcomeSystem, WelcomeTips
-from ouro.tui.widgets import ActivityIndicator, _tool_activity_text
+from ouro.tui.widgets.activity import ActivityIndicator
 
 
 def _assert_separators(text: Text, theme: TuiTheme) -> None:

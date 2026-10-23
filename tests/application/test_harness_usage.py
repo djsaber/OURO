@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import pytest
 
 from ouro.application.harness import capture_harness
-from ouro.application.runtime import RuntimeService
+from ouro.application.runtime.service import RuntimeService
 from ouro.application.usage import UsageService
 from ouro.billing import LocalUsageLedger
 from ouro.core.adapter import RuntimeAdapter
@@ -19,9 +19,9 @@ from ouro.core.session_controls import (
     SessionControlState,
 )
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.plugins.catalog import ExtensionCatalogBase, build_extension_catalog
+from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_catalog
 from ouro.plugins.harness_calls import PluginStateView
-from ouro.plugins.runtime import PluginRuntimeResource
+from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.plugins.session_controllers import (
     PluginSessionController,
     PluginSessionControllerOutput,

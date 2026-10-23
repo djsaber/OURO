@@ -6,17 +6,21 @@ import json
 import pytest
 from pydantic import SecretStr
 
-from ouro.application.plugin_configuration import (
+import ouro.plugins.installation.store as store_module
+import ouro.plugins.lifecycle.runtime as runtime_module
+from ouro.application.contracts.plugin_configuration import PluginConfigurationCandidate
+from ouro.application.plugins.configuration import (
     PluginConfigurationConflictError,
     PluginConfigurationValidationError,
 )
-from ouro.application.plugin_configuration_models import PluginConfigurationCandidate
-from ouro.application.plugins import PluginService
-from ouro.plugins import runtime as runtime_module
-from ouro.plugins import store as store_module
+from ouro.application.plugins.service import PluginService
 from ouro.plugins.credentials import InlinePluginCredential
+from ouro.plugins.installation.store import (
+    PluginPackageStore,
+    PluginStateConflictError,
+    PluginStateFormatError,
+)
 from ouro.plugins.models import create_configuration_revision
-from ouro.plugins.store import PluginPackageStore, PluginStateConflictError, PluginStateFormatError
 from tests.plugins.test_plugin_system import _runtime, _write_native_plugin
 
 

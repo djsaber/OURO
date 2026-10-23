@@ -3,10 +3,10 @@ from threading import get_ident
 
 import pytest
 
-from ouro.application.configuration import ConfigurationFacade
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_configuration import RuntimeConfigurationResolver
-from ouro.application.sessions import SessionService
+from ouro.application.configuration.facade import ConfigurationFacade
+from ouro.application.runtime.configuration import RuntimeConfigurationResolver
+from ouro.application.runtime.service import RuntimeService
+from ouro.application.sessions.service import SessionService
 from ouro.config.prompts import PromptConfigManager, PromptDraft
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.context_providers import (

@@ -3,7 +3,7 @@
 > 文档类型：现行规格
 > 范围：可注入驱动的 Application 登录与凭据管理，CLI/TUI 认证入口、三种模型协议和 Runtime 共用认证服务；本地组合内建 OpenAI 浏览器订阅驱动。
 
-`application/provider_auth.py` 编排认证用例，`provider_auth_models.py` 定义公开 DTO，`provider_auth_bindings.py` 拥有配置绑定快照与提交检查。持久化及 revision 以[凭据核心规格](credentials.md)为准；网络授权以[认证驱动与授权规格](authorization.md)为准。未验证能力与扩展条件见[验证计划](../plans/subscription-validation.md)。
+`ouro/application/provider_auth/service.py` 编排认证用例，`ouro/application/contracts/provider_auth.py` 定义公开 DTO，`ouro/application/provider_auth/bindings.py` 拥有配置绑定快照与提交检查。持久化及 revision 以[凭据核心规格](credentials.md)为准；网络授权以[认证驱动与授权规格](authorization.md)为准。未验证能力与扩展条件见[验证计划](../plans/subscription-validation.md)。
 
 ## 依赖与所有权
 

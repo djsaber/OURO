@@ -8,8 +8,9 @@ from textual._xterm_parser import XTermParser
 from textual.app import App
 from textual.widgets import Input, OptionList, Static
 
-from ouro.tui.inline_editor import MultilineEditableChoiceScreen, multiline_edit_prompt
-from ouro.tui.screens import Choice, EditableChoiceScreen
+from ouro.tui.menus.editable import EditableChoiceScreen
+from ouro.tui.menus.inline_editor import MultilineEditableChoiceScreen, multiline_edit_prompt
+from ouro.tui.menus.models import Choice
 from ouro.tui.theme import DEFAULT_TUI_THEME
 from tests.tui.helpers import resize_terminal
 

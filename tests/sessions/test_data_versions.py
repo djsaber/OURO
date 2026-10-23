@@ -9,8 +9,8 @@ import pytest
 from ouro.core.errors import UnsupportedDataVersionError
 from ouro.core.state import SessionRecord
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.sqlite.store import SQLITE_SCHEMA_VERSION
 from ouro.sessions.layout import DATA_LAYOUT_VERSION
-from ouro.sessions.sqlite import SQLITE_SCHEMA_VERSION
 
 
 @pytest.mark.parametrize("version", [None, 2, 3, 4, 5, 6, 7, 8, DATA_LAYOUT_VERSION + 1])

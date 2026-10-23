@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from ouro.application.plugins import PluginService
-from ouro.application.runtime import RuntimeService
+from ouro.application.plugins.service import PluginService
+from ouro.application.runtime.service import RuntimeService
 from ouro.application.supervisor import RuntimeSupervisor
-from ouro.application.task_execution import TaskExecutionCoordinator
-from ouro.application.task_scheduler import TaskScheduler
-from ouro.application.tasks import TaskService
+from ouro.application.tasks.execution import TaskExecutionCoordinator
+from ouro.application.tasks.scheduler import TaskScheduler
+from ouro.application.tasks.service import TaskService
 from ouro.automation.local_files import LocalTaskRepository
 from ouro.automation.sqlite import SQLiteTaskRepository
 from ouro.core.adapter import RuntimeAdapter
@@ -25,9 +25,9 @@ from ouro.core.tasks import (
     TaskConfiguration,
     TaskSchedule,
 )
-from ouro.plugins.contributions import ContributionCoordinator
-from ouro.plugins.runtime import PluginRuntimeResource
-from ouro.plugins.store import PluginPackageStore
+from ouro.plugins.contributions.preparation import ContributionCoordinator
+from ouro.plugins.installation.store import PluginPackageStore
+from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry

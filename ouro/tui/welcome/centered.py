@@ -11,7 +11,7 @@ from textual.layout import ArrangeResult, Layout, WidgetPlacement
 from textual.widget import Widget
 from textual.widgets import Static
 
-from ouro.tui.controller import TuiSystemStatus
+from ouro.tui.view_models import TuiSystemStatus
 from ouro.tui.welcome.components import WelcomeSystem, WelcomeTips, WelcomeUsage, WelcomeVersion
 from ouro.tui.welcome.model import WelcomePage
 

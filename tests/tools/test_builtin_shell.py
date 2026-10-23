@@ -22,11 +22,7 @@ from ouro.tools import (
     ToolRegistry,
     builtin_tools,
 )
-from ouro.tools.builtin_shell import (
-    CommandShell,
-    builtin_command_tool,
-    detect_command_shell,
-)
+from ouro.tools.builtin.shell import CommandShell, builtin_command_tool, detect_command_shell
 from ouro.tools.schema import tool_argument_error
 
 

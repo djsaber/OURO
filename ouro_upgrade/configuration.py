@@ -7,9 +7,9 @@ from collections.abc import Callable
 from typing import Any
 
 from ouro.config.endpoints import ProviderEndpointConfig
-from ouro.config.provider_codec import provider_config_from_mapping
 from ouro.config.provider_models import BUILTIN_FAUX_PROVIDER_ID
-from ouro.config.provider_template_store import template_fingerprint
+from ouro.config.providers.codec import provider_config_from_mapping
+from ouro.config.providers.template_store import template_fingerprint
 from ouro.core.errors import ConfigError
 from ouro_upgrade.errors import UpgradeDataError, require
 from ouro_upgrade.files import read_json

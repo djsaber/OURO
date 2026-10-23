@@ -74,7 +74,7 @@ async def test_output_limit_follows_service_capability_not_billing_or_auth(
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
         monkeypatch.setattr(
-            f"ouro.providers.{module}.HttpxProviderHTTPTransport",
+            f"ouro.providers.{module}.adapter.HttpxProviderHTTPTransport",
             lambda: HttpxProviderHTTPTransport(client),
         )
         adapter = build_runtime_adapter(

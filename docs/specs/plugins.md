@@ -616,7 +616,7 @@ Tools、Commands、Observers、Context、Prompt Policy、Turn Policy、Compactio
 Continuation、Tool Policy 和 Session Controller 是 snapshot-bound；Background Service 是 activation-singleton。Session Controller 的
 activation 本身属于 durable Session state，不属于进程级插件 activation。
 
-`ouro/plugins/contribution_types.py` 是唯一 Host-owned 清单。每条记录组合 SDK、worker、prepare、
+`ouro/plugins/contributions/inventory.py` 是唯一 Host-owned 清单。每条记录组合 SDK、worker、prepare、
 optional、contract、resource 与 projection facet；facet 保留各类型独立语义，Catalog、Coordinator、worker 与
 generation resource 主流程只遍历清单，不维护第二份 capability 分支。新增 Host capability 必须通过该清单接入。
 该清单没有注册 API，用户插件不能追加类型。
@@ -1215,40 +1215,22 @@ correlation id，并经过敏感值脱敏。每个 generation 的 diagnostic 必
 
 ## 20. 模块边界
 
-职责划分：
+插件实现按安装、配置、贡献、目录、生命周期和执行方式划分，具体目录及导入规则由
+[代码组织](../architecture/code-organization.md)统一维护。各边界的职责为：
 
-```text
-ouro/plugins/
-  builtin.py         # immutable builtin definition registry
-  candidates.py      # unified builtin/user runtime candidate
-  manifest.py        # package schema
-  models.py          # install/activation/generation/catalog records
-  sources.py         # source adapters
-  scaffold.py        # minimal validated user-plugin scaffold
-  package.py         # static package validation
-  store.py           # immutable code and mutable state/data
-  readiness.py       # configuration and credential-binding readiness
-  contribution_types.py # internal ContributionTypeAdapter definitions
-  catalog.py         # immutable ExtensionCatalog, invocation gates and contribution bindings
-  dependencies.py    # dependency graph and reconciliation inputs
-  generation.py      # candidate/active resource ownership and shutdown
-  resources.py       # generation-owned tasks and private data access
-  generation_resources.py # resource adapters used during candidate preparation
-  runtime.py         # candidate publication, service handover and retirement
-  worker.py          # worker protocol/process adapter
-  compatibility.py   # community inspection/import
+| 边界 | 职责 |
+|---|---|
+| `ouro/plugins/installation/` | 来源读取、静态包校验、安装代码与持久状态 |
+| `ouro/plugins/configuration/` | 配置 schema、取值校验、修订和不可变配置快照 |
+| `ouro/plugins/contributions/` | 贡献契约、声明校验和类型适配 |
+| `ouro/plugins/catalog/` | 不可变目录、贡献绑定与调用门控 |
+| `ouro/plugins/lifecycle/` | 候选构建、激活、资源交接、退役及关闭 |
+| `ouro/plugins/inprocess/`、`ouro/plugins/worker/` | 同一公开契约的进程内适配与 worker 协议实现 |
+| `ouro/sdk/plugins/v5.py` | 面向插件作者的公开接口 |
+| `ouro/application/plugins/` | Host 中立的管理、命令和配置用例 |
+| `ouro/builtin_plugins/` | 产品自带的插件实现，由应用组合根装配 |
 
-ouro/sdk/plugins/v5.py
-  # public plugin API only
-
-ouro/application/plugins.py
-  # Host-neutral use cases and DTO orchestration
-
-ouro/builtin_plugins/
-  # product-owned plugin implementations assembled only by the application composition root
-```
-
-不要求为目录结构预建空文件。只有在对应职责开始实现时拆分；拆分目的是明确变化轴，不是追求文件数量。
+Host 通过 Application 用例访问插件能力；插件依赖公开 SDK，不依赖框架的安装、目录或生命周期实现。
 
 ## 21. 验收矩阵
 

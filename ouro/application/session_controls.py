@@ -5,7 +5,7 @@ from typing import Any, cast
 from pydantic import JsonValue
 
 from ouro.application.harness import capture_session_harness
-from ouro.application.queued_inputs import QueuedInputQueue
+from ouro.application.inputs.queue import QueuedInputQueue
 from ouro.application.usage import UsageService
 from ouro.core.base import new_id, utc_now
 from ouro.core.callbacks import run_blocking

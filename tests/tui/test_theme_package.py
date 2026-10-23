@@ -14,8 +14,8 @@ import ouro_tui_themes.dot_matrix.requirements as theme_styles
 
 from ouro.core.errors import ConfigError
 from ouro.tui.app import OuroTuiApp
+from ouro.tui.composer.surface import WelcomePanel
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
-from ouro.tui.widgets import WelcomePanel
 from tests.tui.helpers import run_ready_app, two_route_application
 
 

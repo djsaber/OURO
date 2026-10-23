@@ -4,12 +4,12 @@ from threading import Barrier, Event, local
 
 import pytest
 
-from ouro.application.plugins import PluginService
+from ouro.application.plugins.service import PluginService
 from ouro.core.plugin_contracts import PluginImplementation
 from ouro.core.run_drivers import RunDriverBinding
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.plugins.installer import PluginInstaller
-from ouro.plugins.store import PluginPackageStore
+from ouro.plugins.installation.installer import PluginInstaller
+from ouro.plugins.installation.store import PluginPackageStore
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from tests.plugins.test_plugin_system import _write_native_plugin
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from ouro.config.providers import ProviderConfigManager
+from ouro.config.providers.manager import ProviderConfigManager
 from ouro.local_application import LocalApplication, open_local_plugins
 
 PLUGIN = "test.background.model"

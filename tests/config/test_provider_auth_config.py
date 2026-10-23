@@ -5,22 +5,22 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from ouro.application.configuration import ConfigurationFacade
-from ouro.application.configuration_views import provider_view
+from ouro.application.configuration.facade import ConfigurationFacade
+from ouro.application.configuration.views import provider_view
 from ouro.auth.contracts import AuthError, CredentialRecord
 from ouro.config import provider_models
 from ouro.config.credentials import CredentialRef, CredentialResolver
 from ouro.config.endpoints import ProviderEndpointConfig
-from ouro.config.provider_codec import provider_config_from_mapping, provider_config_to_public_dict
 from ouro.config.provider_models import (
     ProviderConnectionSpec,
     ProviderRuntimeOptions,
     ProviderTypeSpec,
     resolve_provider_connection,
 )
-from ouro.config.provider_template_store import SCHEMA_VERSION, ProviderTemplateStore
 from ouro.config.provider_templates import ProviderTemplate, get_provider_template
-from ouro.config.providers import ProviderConfigManager
+from ouro.config.providers.codec import provider_config_from_mapping, provider_config_to_public_dict
+from ouro.config.providers.manager import ProviderConfigManager
+from ouro.config.providers.template_store import SCHEMA_VERSION, ProviderTemplateStore
 from ouro.core.base import new_id
 from ouro.core.errors import ConfigError, CredentialError
 from ouro.providers.factory import build_runtime_adapter

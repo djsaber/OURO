@@ -17,7 +17,7 @@ from ouro.tools import (
     ToolResult,
     builtin_tools,
 )
-from ouro.tools.builtin_shell import detect_command_shell
+from ouro.tools.builtin.shell import detect_command_shell
 
 
 def _registry() -> ToolRegistry:

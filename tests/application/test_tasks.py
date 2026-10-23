@@ -7,11 +7,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from ouro.application.runtime import RuntimeService
+from ouro.application.runtime.service import RuntimeService
 from ouro.application.supervisor import RuntimeSupervisor
-from ouro.application.task_execution import TaskExecutionCoordinator
-from ouro.application.task_scheduler import TaskScheduler
-from ouro.application.tasks import TaskService
+from ouro.application.tasks.execution import TaskExecutionCoordinator
+from ouro.application.tasks.scheduler import TaskScheduler
+from ouro.application.tasks.service import TaskService
 from ouro.automation.local_files import LocalTaskRepository
 from ouro.automation.sqlite import SQLiteTaskRepository
 from ouro.core.adapter import RuntimeAdapter

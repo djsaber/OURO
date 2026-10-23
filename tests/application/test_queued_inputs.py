@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from pydantic import ValidationError
 
-from ouro.application.queued_inputs import QUEUED_INPUTS_KEY, QueuedInputQueue
+from ouro.application.inputs.queue import QUEUED_INPUTS_KEY, QueuedInputQueue
 from ouro.core.messages import MessageRecord, SkillActivationContent
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_controls import HostSessionInput, SessionInputRequest

@@ -23,10 +23,10 @@ from pathlib import Path
 
 from textual import events
 
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_activity import queued_runtime_activity, runtime_activity_changed
-from ouro.application.runtime_environment import RuntimeEnvironment
-from ouro.application.supervisor_models import RuntimeToolCallActivity
+from ouro.application.contracts.execution import RuntimeToolCallActivity
+from ouro.application.observations.activity import queued_runtime_activity, runtime_activity_changed
+from ouro.application.runtime.environment import RuntimeEnvironment
+from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
@@ -35,8 +35,9 @@ from ouro.local_application import LocalApplication
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.conversation_history import ConversationHistory
-from ouro.tui.widgets import _BUSY_ACTIVITIES, ActivityIndicator, Composer
+from ouro.tui.composer.input import Composer
+from ouro.tui.conversation.history import ConversationHistory
+from ouro.tui.widgets.activity import _BUSY_ACTIVITIES, ActivityIndicator
 
 
 class ScriptedProvider:

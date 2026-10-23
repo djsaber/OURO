@@ -6,12 +6,12 @@ from zipfile import ZipFile
 
 import pytest
 
-from ouro.application.data_transfer import DataTransferRequest
+from ouro.application.transfer.service import DataTransferRequest
 from ouro.config.agents import AgentDefinitionsConfigManager
 from ouro.config.file import JsonConfigFile
 from ouro.config.prompts import PromptConfigManager, PromptDraft
-from ouro.config.provider_template_store import ProviderTemplateStore
-from ouro.config.providers import ProviderConfigManager
+from ouro.config.providers.manager import ProviderConfigManager
+from ouro.config.providers.template_store import ProviderTemplateStore
 from ouro.config.skills import ManagedSkillRecord, SkillConfigManager
 from ouro.core.agents import AgentDefinition, DelegationRecord
 from ouro.core.context import ContextBuilder
@@ -27,7 +27,7 @@ from ouro.core.tools import ToolCallRequest
 from ouro.local_application import build_local_data_transfer_service, build_local_session_services
 from ouro.mcp.configuration import MCPConfigStore, MCPServerConfigUpdate
 from ouro.resources.local import LocalResourceStore
-from ouro.sessions.sqlite import SQLiteSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.transfer.archive import (
     ArchiveManifest,
     DataArchive,
@@ -178,7 +178,7 @@ def test_invalid_configuration_archive_cannot_change_target(tmp_path):
 
 
 def test_runtime_rejects_obsolete_shared_config_without_blocking_provider_inspection(tmp_path):
-    from ouro.application.runtime_configuration import RuntimeConfigurationResolver
+    from ouro.application.runtime.configuration import RuntimeConfigurationResolver
 
     JsonConfigFile(tmp_path).write({"providers": {"default": "faux"}})
     assert ProviderConfigManager(tmp_path).snapshot().default_provider_id == "faux"

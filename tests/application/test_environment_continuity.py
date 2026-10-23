@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from ouro.application.agent_definitions import AgentDefinitionService
-from ouro.application.runs import reserve_run
-from ouro.application.runtime import RuntimeService
+from ouro.application.agents.definitions import AgentDefinitionService
+from ouro.application.runs.lifecycle import reserve_run
+from ouro.application.runtime.service import RuntimeService
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import PromptRejectedError
@@ -22,7 +22,7 @@ from ouro.core.session_controls import (
 from ouro.core.state import RunRecord
 from ouro.core.tool_policies import ToolPolicyDecision, ToolPolicyRegistration, ToolPolicyRegistry
 from ouro.core.tools import ToolInputRequest, ToolInvocation
-from ouro.plugins.catalog import ExtensionCatalogBase, build_extension_catalog
+from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_catalog
 from ouro.plugins.session_controllers import (
     PluginSessionController,
     PluginSessionControllerOutput,

@@ -5,9 +5,9 @@ from functools import partial
 
 import pytest
 
-import ouro.application.model_requests as model_requests_module
-from ouro.application.model_requests import ModelRequestPorts, RunModelRequests
-from ouro.application.runtime import RuntimeService
+import ouro.application.models.requests as model_requests_module
+from ouro.application.models.requests import ModelRequestPorts, RunModelRequests
+from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.cancellation import AbortSignal
 from ouro.core.model_execution import ModelExecutionResult, execute_model_request

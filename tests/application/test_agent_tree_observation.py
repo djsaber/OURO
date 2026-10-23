@@ -5,7 +5,7 @@ import threading
 
 import pytest
 
-from ouro.application.agent_tree import AgentTreeProjector
+from ouro.application.agents.tree import AgentTreeProjector
 from ouro.core.events import EventRecord
 from ouro.core.state import SessionRecord
 from ouro.sessions import SQLiteSessionStore

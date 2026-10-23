@@ -12,8 +12,8 @@ from textual.widgets import OptionList, Static
 from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
 from ouro.deployment import access_home, ensure_home_available
 from ouro.tui import recovery
+from ouro.tui.menus.confirmation import ConfirmationScreen
 from ouro.tui.recovery import DataRecoveryApp
-from ouro.tui.screens import ConfirmationScreen
 from ouro_upgrade.engine import upgrade
 from ouro_upgrade.errors import UpgradeError
 from ouro_upgrade.progress import UpgradeProgress

@@ -127,14 +127,14 @@ logout/forget 只清除本地秘密，不撤销远端会话；共享引用和无
 
 Application 状态与条件提交的权威契约见[Provider 认证用例规格](provider-authentication.md)。
 证据见 `tests/cli/test_provider_auth_commands.py`、`tests/application/test_local_provider_auth.py` 及架构依赖测试。
-Runtime 共享认证、通用 TUI 管理及内建浏览器订阅驱动均已接线；现有模型协议的请求认证见[请求认证规格](request-authentication.md)。
+Runtime 和 TUI 共用应用层认证服务，浏览器订阅驱动由本地组合根装配；模型协议的请求认证见[请求认证规格](request-authentication.md)。
 模型请求的安全错误码由 run_failed.payload.error_code 传入 run --json 的 events；Host 无需解析错误文本推断认证原因。
 
 ## Agent 控制面
 
 definition list/show/tools/create/update/delete/copy 通过 provider-independent 的本地 composition 打开
 `AgentDefinitionService` 与同一 live Tool catalog；CLI 不读取或修改 config JSON。mutation 使用 expected revision，
-builtin general 只可查询或复制，不可编辑、删除或覆盖；目录变更从 next Run 生效。
+builtin general 只可查询或复制，不可编辑、删除或覆盖；定义变更从下一次模型决策生效（`effective_from=next_decision`），已发出的请求及其调用使用该轮绑定的目录。
 
 Application 的 Agent runtime 配置接口覆盖完整 AgentSpawnPolicy。CLI 开放 agent/model pattern、sync/async 执行模式
 及 write/network/MCP/external-paths 能力开关；固定的 depth=1 与 bound lifecycle 只展示，不提供无效修改参数。

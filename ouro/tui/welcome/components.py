@@ -11,9 +11,9 @@ from textual.timer import Timer
 from textual.widgets import Static
 
 from ouro import __version__
-from ouro.tui.controller import TuiSystemStatus
 from ouro.tui.state import format_compact_count
 from ouro.tui.theme import TuiTheme, label_text, theme_for
+from ouro.tui.view_models import TuiSystemStatus
 
 
 def _compact_names(names: tuple[str, ...], *, limit: int = 3) -> str:

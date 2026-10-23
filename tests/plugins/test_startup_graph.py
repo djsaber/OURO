@@ -4,16 +4,16 @@ from unittest.mock import patch
 
 import pytest
 
-from ouro.application.plugins import PluginService
+from ouro.application.plugins.service import PluginService
 from ouro.core.observers import ObserverRegistry
 from ouro.plugins.builtin import BuiltinPluginDefinition, BuiltinPluginRegistry
-from ouro.plugins.contributions import ContributionCoordinator
+from ouro.plugins.contributions.preparation import ContributionCoordinator
 from ouro.plugins.dependencies import BuiltinPluginContract, plan_desired_plugin_activation
+from ouro.plugins.installation.store import PluginPackageStore
+from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.models import BuiltinPluginActivationOverride, PluginStateDocument
 from ouro.plugins.registry import PluginCommandRegistry
-from ouro.plugins.runtime import PluginRuntimeResource
-from ouro.plugins.store import PluginPackageStore
 from ouro.sdk.plugins import v5 as sdk
 from ouro.skills import SkillMetadata
 from ouro.tools import ToolRegistry

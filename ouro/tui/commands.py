@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ouro.tui.menu_labels import APPROVAL_DESCRIPTIONS, MODEL_THINKING_LABEL, TOOL_APPROVAL_LABEL
+from ouro.tui.menus.labels import APPROVAL_DESCRIPTIONS, MODEL_THINKING_LABEL, TOOL_APPROVAL_LABEL
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
 
 

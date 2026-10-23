@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from ouro.application.harness import capture_harness
-from ouro.application.runtime import RuntimeService
+from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import PersistenceError
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
@@ -15,13 +15,13 @@ from ouro.core.session_commits import SessionCommit, SessionCommitConflict
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolInvocation
-from ouro.plugins.api import adapt_sdk_contributions
+from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.plugins.manifest import PluginManifest
-from ouro.plugins.worker import WorkerPluginInstance
+from ouro.plugins.worker.instance import WorkerPluginInstance
 from ouro.providers import FauxProvider
 from ouro.sdk.plugins import v5 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
-from ouro.sessions.file_commits import FileSessionCommits
+from ouro.sessions.backends.files.commits import FileSessionCommits
 from ouro.tools import ToolExecutionContext, ToolExecutor, ToolRegistry
 from tests.application.helpers import running_runtime_task
 from tests.harness_state import replace_harness_state

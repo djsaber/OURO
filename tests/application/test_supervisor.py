@@ -5,10 +5,10 @@ import json
 
 import pytest
 
-from ouro.application.runtime import RuntimeService
-from ouro.application.sessions import SessionService
+from ouro.application.contracts.execution import ShutdownPolicy
+from ouro.application.runtime.service import RuntimeService
+from ouro.application.sessions.service import SessionService
 from ouro.application.supervisor import RuntimeSupervisor
-from ouro.application.supervisor_models import ShutdownPolicy
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import AgentCatalogSnapshot
 from ouro.core.errors import PersistenceError, SessionBusyError

@@ -4,9 +4,9 @@ import pytest
 from textual import events
 from textual.widgets import OptionList, Static
 
-from ouro.application.configuration import ConfigurationFacade
+from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.provider_screens import (
+from ouro.tui.features.providers.screens import (
     CUSTOM_PROVIDER_PROFILES,
     ProviderConfigurationScreen,
     profile_for_provider,

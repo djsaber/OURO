@@ -5,11 +5,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ouro.application.dto import ApplicationStartupReport
+from ouro.application.contracts.base import ApplicationStartupReport
 from ouro.application.events import RuntimeEventSink
-from ouro.application.queued_inputs import QueuedInputMode
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_configuration import RuntimeProviderOptions
+from ouro.application.inputs.queue import QueuedInputMode
+from ouro.application.runtime.configuration import RuntimeProviderOptions
+from ouro.application.runtime.service import RuntimeService
 from ouro.cli.errors import error_exit_code
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.errors import OuroError

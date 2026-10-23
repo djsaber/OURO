@@ -9,16 +9,15 @@ from textual.widgets import Input, OptionList, Static
 from ouro.core.errors import PersistenceError
 from ouro.core.state import SessionRecord
 from ouro.tui.app import OuroTuiApp, _session_choices
+from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.menus.editable import EditableChoiceScreen
+from ouro.tui.menus.multiple import MultiChoiceScreen
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
-from ouro.tui.screens import ChoiceScreen, EditableChoiceScreen, MultiChoiceScreen
+from tests.tui.app.support import _application, _persist_direct_child_session
 from tests.tui.helpers import choose_menu, run_ready_app
-from tests.tui.test_app import (
-    _application,
-    _persist_direct_child_session,
-    _wait_for_screen,
-    _wait_for_worker_group,
-    _wait_until,
-)
+from tests.tui.helpers import wait_for_screen as _wait_for_screen
+from tests.tui.helpers import wait_for_worker_group as _wait_for_worker_group
+from tests.tui.helpers import wait_until as _wait_until
 
 
 def test_workspace_groups_preserve_catalog_order_and_distinguish_full_paths(tmp_path: Path) -> None:

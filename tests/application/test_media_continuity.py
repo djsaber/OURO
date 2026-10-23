@@ -2,7 +2,7 @@ import base64
 
 import pytest
 
-from ouro.application import file_inputs
+import ouro.application.inputs.files as file_inputs
 from ouro.core.content import ImageContent
 from ouro.core.media_context import MEDIA_CONTEXT_KEY
 from ouro.core.provider import ProviderStreamEvent

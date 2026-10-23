@@ -20,7 +20,7 @@ from time import perf_counter
 started = perf_counter()
 import ouro.cli.main
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.widgets import Composer
+from ouro.tui.conversation.view import Composer
 imported = perf_counter()
 
 async def sample():

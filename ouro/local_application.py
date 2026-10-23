@@ -7,36 +7,36 @@ from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
-from ouro.application.agent_definitions import AgentDefinitionService
-from ouro.application.agents import AgentService
-from ouro.application.configuration import ConfigurationFacade
-from ouro.application.configuration_models import MCPRuntimeServerView
-from ouro.application.data_transfer import (
+from ouro.application.agents.definitions import AgentDefinitionService
+from ouro.application.agents.service import AgentService
+from ouro.application.configuration.facade import ConfigurationFacade
+from ouro.application.contracts.base import ApplicationStartupReport, Diagnostic
+from ouro.application.contracts.configuration import MCPRuntimeServerView
+from ouro.application.events import RuntimeEventSink
+from ouro.application.models.catalog import AdapterBuilder, ConfiguredModelCatalog
+from ouro.application.models.generation import ModelGenerationService
+from ouro.application.plugins.service import PluginService
+from ouro.application.provider_auth.service import ProviderAuthService
+from ouro.application.resources import ResourceService
+from ouro.application.runtime.configuration import (
+    RuntimeConfigurationResolver,
+    RuntimeProviderOptions,
+)
+from ouro.application.runtime.environment import RuntimeEnvironment
+from ouro.application.runtime.service import RuntimeService
+from ouro.application.sessions.service import SessionService
+from ouro.application.supervisor import RuntimeSupervisor
+from ouro.application.tasks.execution import TaskExecutionCoordinator
+from ouro.application.tasks.scheduler import TaskScheduler
+from ouro.application.tasks.service import TaskService
+from ouro.application.transfer.service import (
     DataKind,
     DataTransferItem,
     DataTransferRequest,
     DataTransferResult,
     DataTransferService,
 )
-from ouro.application.dto import ApplicationStartupReport, Diagnostic
-from ouro.application.events import RuntimeEventSink
-from ouro.application.model_generation import ModelGenerationService
-from ouro.application.models import AdapterBuilder, ConfiguredModelCatalog
-from ouro.application.plugins import PluginService
-from ouro.application.provider_auth import ProviderAuthService
-from ouro.application.resources import ResourceService
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_configuration import (
-    RuntimeConfigurationResolver,
-    RuntimeProviderOptions,
-)
-from ouro.application.runtime_environment import RuntimeEnvironment
-from ouro.application.session_transfer import SessionTransferService
-from ouro.application.sessions import SessionService
-from ouro.application.supervisor import RuntimeSupervisor
-from ouro.application.task_execution import TaskExecutionCoordinator
-from ouro.application.task_scheduler import TaskScheduler
-from ouro.application.tasks import TaskService
+from ouro.application.transfer.sessions import SessionTransferService
 from ouro.application.usage import UsageService
 from ouro.auth.credentials import CredentialService
 from ouro.auth.driver_contracts import AuthDriver
@@ -50,7 +50,7 @@ from ouro.builtin_plugins import LOCAL_BUILTIN_PLUGINS
 from ouro.config import CompactionConfig, CredentialRef, CredentialResolver
 from ouro.config.agents import AgentDefinitionsConfigManager
 from ouro.config.provider_models import SUPPORTED_PROVIDER_TYPES, provider_type_spec
-from ouro.config.providers import ProviderConfigManager
+from ouro.config.providers.manager import ProviderConfigManager
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.cancellation import settle_owned_tasks
 from ouro.core.compaction import CompactionStrategyRegistry
@@ -71,11 +71,11 @@ from ouro.deployment import (
 )
 from ouro.local_providers import build_plugin_provider
 from ouro.mcp import MCPRuntimeResource, MCPServerConfig, MCPServerRecord
-from ouro.plugins.contributions import ContributionCoordinator
+from ouro.plugins.contributions.preparation import ContributionCoordinator
+from ouro.plugins.installation.store import PluginPackageStore
+from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.plugins.providers import ProviderBinder, ProviderBinding
 from ouro.plugins.registry import PluginCommandRegistry
-from ouro.plugins.runtime import PluginRuntimeResource
-from ouro.plugins.store import PluginPackageStore
 from ouro.providers import build_runtime_adapter
 from ouro.providers.authentication import ProviderRequestPolicy
 from ouro.resources import LocalResourceStore

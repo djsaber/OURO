@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from ouro.core.callbacks import run_blocking
-from tests.tui.test_app import _multi_approval_application, _question_application
+from tests.tui.app.support import _multi_approval_application, _question_application
 
 
 @pytest.mark.parametrize("kind", ["approval", "question"])

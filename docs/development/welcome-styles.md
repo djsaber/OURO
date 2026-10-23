@@ -174,7 +174,7 @@ Host 在离开欢迎页、打开覆盖菜单或替换页面时调用 `set_active
 ```bash
 uv run --frozen pytest tests/architecture/test_welcome_boundaries.py tests/tui/test_optional_welcome_styles.py tests/tui/test_welcome_package_recovery.py
 uv run --frozen --extra themes pytest tests/tui/test_theme_package.py tests/tui/test_welcome_styles.py tests/tui/test_welcome_layout.py tests/tui/test_welcome_refresh.py tests/tui/test_preferences.py
-uv run --frozen --extra themes pytest tests/tui/test_app.py -k 'welcome or theme or composer_growth or session_input_surface or startup'
+uv run --frozen --extra themes pytest tests/tui/app/ -k 'welcome or theme or composer_growth or session_input_surface or startup'
 uv run --frozen --extra themes pytest tests/tui/test_dot_animation.py tests/tui/test_particle_fields.py tests/tui/test_particle_raster.py tests/tui/test_particle_samplers.py
 ```
 

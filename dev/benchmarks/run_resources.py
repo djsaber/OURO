@@ -24,10 +24,10 @@ from unittest.mock import patch
 
 
 def make_runtime(root, backend="files"):
-    from ouro.application.runtime import RuntimeService
+    from ouro.application.runtime.service import RuntimeService
     from ouro.core.adapter import RuntimeAdapter
     from ouro.core.provider import ModelMetadata
-    from ouro.plugins.catalog import ExtensionCatalogBase, build_extension_catalog
+    from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_catalog
     from ouro.providers import FauxProvider
     from ouro.sessions import LocalSessionStore, SQLiteSessionStore
     from ouro.tools import ToolRegistry
@@ -136,7 +136,7 @@ async def resource_probe(root, count, scenario, *, memory):
 
 
 async def prepared_probe(root, backend):
-    from ouro.application.runs import reserve_run
+    from ouro.application.runs.lifecycle import reserve_run
     from ouro.core.agents import DelegatedConstraints
     from ouro.core.session_controls import HostSessionInput
 

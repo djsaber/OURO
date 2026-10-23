@@ -7,7 +7,7 @@ import pytest
 
 from ouro.tui.controller import TuiController
 from ouro.tui.state import TuiSessionProjection
-from tests.tui.test_app import _approval_application
+from tests.tui.app.support import _approval_application
 
 
 @pytest.mark.parametrize("approved", [False, True])

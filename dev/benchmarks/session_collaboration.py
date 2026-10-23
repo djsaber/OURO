@@ -12,19 +12,19 @@ from functools import wraps
 from pathlib import Path
 from time import perf_counter
 
+import ouro.tui.conversation.history_rendering as history_module
 from dev.benchmarks.session_observation import distribution, process_resources
 from dev.benchmarks.session_pipeline import Probe
-from ouro.application.agent_tree import AgentTreeProjector
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.application.agents.tree import AgentTreeProjector
+from ouro.application.runtime.environment import RuntimeEnvironment
+from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.local_application import LocalApplication
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
-from ouro.tui import conversation_history as history_module
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.conversation_history import ConversationHistory
+from ouro.tui.conversation.history import ConversationHistory
 
 
 class Provider:

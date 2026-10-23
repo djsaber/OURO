@@ -4,7 +4,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from ouro.application.runtime import RuntimeService
+from ouro.application.runtime.service import RuntimeService
 from ouro.config.reasoning import reasoning_effort_preset
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata
@@ -14,7 +14,7 @@ from ouro.providers.http_transport import HttpxProviderHTTPTransport
 from ouro.providers.reasoning import ReasoningPayloadEncoder
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
-from ouro.tui.widgets import project_transcript_entries
+from ouro.tui.conversation.transcript import project_transcript_entries
 
 
 @pytest.mark.parametrize("store_type", [LocalSessionStore, SQLiteSessionStore])

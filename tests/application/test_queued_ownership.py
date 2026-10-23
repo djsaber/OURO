@@ -4,11 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from ouro.application.runtime import RuntimeService
-from ouro.application.session_recovery import SessionRecoveryService
-from ouro.application.sessions import SessionService
+from ouro.application.contracts.execution import ShutdownPolicy
+from ouro.application.runtime.service import RuntimeService
+from ouro.application.sessions.recovery import SessionRecoveryService
+from ouro.application.sessions.service import SessionService
 from ouro.application.supervisor import RuntimeSupervisor
-from ouro.application.supervisor_models import ShutdownPolicy
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import SessionBusyError
 from ouro.core.provider import ModelMetadata

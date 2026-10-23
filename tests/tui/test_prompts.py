@@ -4,11 +4,12 @@ from textual import events
 from textual.app import App
 from textual.widgets import Input, OptionList
 
-from ouro.application.configuration import ConfigurationFacade
+from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.config.prompts import PromptConfigManager, PromptDraft, PromptEntry
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.prompt_screens import PromptEntryScreen
-from ouro.tui.screens import ChoiceScreen, ConfirmationScreen
+from ouro.tui.features.prompts.screens import PromptEntryScreen
+from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.menus.confirmation import ConfirmationScreen
 from tests.tui.helpers import (
     choose_menu,
     run_ready_app,

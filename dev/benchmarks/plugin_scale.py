@@ -18,8 +18,8 @@ import ouro
 from dev.benchmarks.harness_lifecycle import process_io
 from dev.benchmarks.plugin_lifecycle import process_handles
 from ouro.local_application import open_local_plugins
-from ouro.plugins.installer import PluginInstaller
-from ouro.plugins.store import PluginPackageStore
+from ouro.plugins.installation.installer import PluginInstaller
+from ouro.plugins.installation.store import PluginPackageStore
 
 _PLUGIN = """from ouro.sdk.plugins.v5 import CommandContribution, ContributionSet
 

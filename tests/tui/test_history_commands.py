@@ -3,10 +3,10 @@ import asyncio
 import pytest
 from textual.worker import WorkerCancelled
 
+from ouro.application.inputs.skills import SkillInvocationRequest
 from ouro.application.resources import ResourceService
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_environment import RuntimeEnvironment
-from ouro.application.skill_activations import SkillInvocationRequest
+from ouro.application.runtime.environment import RuntimeEnvironment
+from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import PersistenceError
 from ouro.core.events import EventRecord
@@ -22,9 +22,10 @@ from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.skills import discover_skill_catalog
 from ouro.tools import ToolRegistry
 from ouro.tui.app import OuroTuiApp, _active_stream_tail
-from ouro.tui.input_drafts import TuiInputDraftStore
+from ouro.tui.composer.drafts import TuiInputDraftStore
+from ouro.tui.composer.input import Composer
+from ouro.tui.conversation.view import ConversationView
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
-from ouro.tui.widgets import Composer, ConversationView
 from tests.tui.helpers import run_ready_app
 
 

@@ -9,7 +9,7 @@ from jsonschema import Draft202012Validator
 from pydantic import ConfigDict, TypeAdapter
 
 from ouro.core.callbacks import invoke_owned_callback
-from ouro.plugins.catalog import GenerationGate, PluginGenerationUnavailableError
+from ouro.plugins.catalog.gates import GenerationGate, PluginGenerationUnavailableError
 from ouro.plugins.invocation import current_invocation, plugin_invocation
 from ouro.plugins.manifest import ServiceExportSpec, ServiceMethodSpec
 from ouro.sdk.plugins.scheduled import ScheduledInvocation

@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 
-from ouro.application.configuration import ConfigurationFacade
+from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.config import ProviderConfigManager
 from ouro.core.base import utc_now
 from ouro.core.tasks import AgentTaskTarget, TaskConfiguration, TaskSchedule

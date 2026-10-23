@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ouro.application.configuration import ConfigurationFacade
+from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.cli.errors import error_exit_code
 from ouro.core.errors import OuroError
 from ouro.mcp import MCPServerConfigUpdate

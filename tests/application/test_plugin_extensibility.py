@@ -7,9 +7,9 @@ import shutil
 import pytest
 
 from ouro.application.observers import ObserverDispatcher
-from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_configuration import RuntimeConfigurationResolver
-from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.application.runtime.configuration import RuntimeConfigurationResolver
+from ouro.application.runtime.environment import RuntimeEnvironment
+from ouro.application.runtime.service import RuntimeService
 from ouro.config.queued_inputs import QueuedInputConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.cancellation import AbortSignal
@@ -23,7 +23,7 @@ from ouro.core.tool_policies import (
 )
 from ouro.core.tools import ToolInvocation
 from ouro.local_application import LocalApplication
-from ouro.plugins.api import adapt_sdk_contributions
+from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.providers import FauxProvider
 from ouro.sdk.plugins import v5 as sdk
 from ouro.sessions import LocalSessionStore
@@ -35,7 +35,7 @@ from ouro.tools import (
     ToolResult,
     builtin_tools,
 )
-from ouro.tools.builtin_shell import detect_command_shell
+from ouro.tools.builtin.shell import detect_command_shell
 
 
 @pytest.mark.asyncio

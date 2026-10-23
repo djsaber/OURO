@@ -3,13 +3,13 @@ import time
 
 import pytest
 
-from ouro.application.models import ConfiguredModelCatalog
+from ouro.application.models.catalog import ConfiguredModelCatalog
 from ouro.config import ProviderConfigManager, ProviderRuntimeOptions
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata
 from ouro.providers import FauxProvider, build_runtime_adapter
-from ouro.providers.openai_responses import OpenAIResponsesProvider
+from ouro.providers.openai_responses.adapter import OpenAIResponsesProvider
 
 
 def _add_provider(configs, display_name, **options):

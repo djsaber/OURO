@@ -7,18 +7,18 @@ from contextlib import asynccontextmanager, nullcontext, redirect_stdout
 from io import StringIO
 from pathlib import Path
 
-from ouro.application.plugin_configuration import (
-    PluginConfigurationConflictError,
-    PluginConfigurationValidationError,
-)
-from ouro.application.plugin_configuration_models import (
+from ouro.application.contracts.plugin_configuration import (
     PluginConfigurationCandidate,
     PluginConfigurationPreview,
     PluginConfigurationResult,
     parse_credential_bindings,
 )
-from ouro.application.plugin_models import PluginActionResult
-from ouro.application.plugins import PluginService
+from ouro.application.contracts.plugins import PluginActionResult
+from ouro.application.plugins.configuration import (
+    PluginConfigurationConflictError,
+    PluginConfigurationValidationError,
+)
+from ouro.application.plugins.service import PluginService
 from ouro.core.base import OuroModel
 from ouro.core.errors import OuroError
 from ouro.core.redaction import redact_text

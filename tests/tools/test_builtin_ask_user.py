@@ -2,7 +2,7 @@ import pytest
 
 from ouro.core.tools import ToolInvocation
 from ouro.tools import ToolExecutor, ToolRegistry
-from ouro.tools.builtin_ask_user import (
+from ouro.tools.builtin.ask_user import (
     AskUserArguments,
     AskUserRequest,
     builtin_ask_user_tool,

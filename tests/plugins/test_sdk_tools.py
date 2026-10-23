@@ -10,7 +10,7 @@ from ouro.core.cancellation import AbortSignal
 from ouro.core.content import ImageContent, TextContent
 from ouro.core.interactions import AnswerResolution
 from ouro.core.tools import ToolInputRequest, ToolInvocation
-from ouro.plugins.api import adapt_sdk_contributions
+from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.sdk.plugins import v5 as sdk
 from ouro.tools import ToolExecutionContext, ToolExecutor, ToolRegistry
 

@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from ouro.application.models import AvailableModel
-from ouro.application.runtime import RuntimeService
+from ouro.application.contracts.models import AvailableModel
+from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent

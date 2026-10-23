@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from ouro.config.provider_codec import provider_config_from_mapping
-from ouro.config.provider_template_store import (
+from ouro.config.provider_templates import get_provider_template
+from ouro.config.providers.codec import provider_config_from_mapping
+from ouro.config.providers.manager import ProviderConfigManager
+from ouro.config.providers.template_store import (
     SCHEMA_VERSION,
     ProviderTemplateStore,
     template_fingerprint,
 )
-from ouro.config.provider_templates import get_provider_template
-from ouro.config.providers import ProviderConfigManager
 from ouro.config.reasoning import EndpointReasoningConfig
 from ouro.core.errors import ConfigError, UnsupportedDataVersionError
 from ouro.core.provider import ModelMetadata
