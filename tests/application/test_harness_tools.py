@@ -23,6 +23,7 @@ from ouro.sdk.plugins import v5 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.file_commits import FileSessionCommits
 from ouro.tools import ToolExecutionContext, ToolExecutor, ToolRegistry
+from tests.application.helpers import running_runtime_task
 from tests.harness_state import replace_harness_state
 
 
@@ -269,24 +270,26 @@ async def test_waiting_request_without_state_changes_still_checks_its_captured_v
     app = runtime(store, tool, {})
     session = SessionRecord()
     store.create_session(session)
-    task = asyncio.create_task(app.run("wait", session_id=session.session_id))
-    try:
-        await asyncio.wait_for(entered.wait(), 5)
-        replace_harness_state(
-            store,
-            SessionExtensionStateRecord(
-                session_id=session.session_id,
-                owner_id="example.wait",
-                state_schema_version=1,
-                payload="changed concurrently",
-            ),
+    async with running_runtime_task(app, app.run("wait", session_id=session.session_id)) as task:
+        try:
+            await entered.wait()
+            replace_harness_state(
+                store,
+                SessionExtensionStateRecord(
+                    session_id=session.session_id,
+                    owner_id="example.wait",
+                    state_schema_version=1,
+                    payload="changed concurrently",
+                ),
+            )
+        finally:
+            release.set()
+        result = await task
+        assert result.run.status == "failed"
+        assert store.load_session_record(session.session_id).status != "waiting_user"
+        assert (
+            store.load_harness(session.session_id).state.states[0].payload == "changed concurrently"
         )
-    finally:
-        release.set()
-    result = await task
-    assert result.run.status == "failed"
-    assert store.load_session_record(session.session_id).status != "waiting_user"
-    assert store.load_harness(session.session_id).state.states[0].payload == "changed concurrently"
 
 
 @pytest.mark.parametrize(

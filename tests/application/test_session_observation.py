@@ -47,7 +47,8 @@ async def test_snapshot_handoff_replays_beyond_buffer_from_applied_cursor(stores
         reads += 1
         snapshot = read(session_id)
         loop.call_soon_threadsafe(entered.set)
-        assert release.wait(5)
+        # The test owns this boundary; disk writes must not make it self-release.
+        release.wait()
         return snapshot
 
     monkeypatch.setattr(supervisor.runtime, "observation_snapshot", held_snapshot)
@@ -55,9 +56,10 @@ async def test_snapshot_handoff_replays_beyond_buffer_from_applied_cursor(stores
         supervisor.observe_session(session.session_id, max_buffer=3, page_size=7)
     )
     try:
-        await asyncio.wait_for(entered.wait(), 5)
-        for index in range(100, 120):
-            append(writer, session.session_id, f"{index},")
+        async with asyncio.timeout(60):
+            await entered.wait()
+            for index in range(100, 120):
+                await asyncio.to_thread(append, writer, session.session_id, f"{index},")
         release.set()
         observation = await opening
         initial = await observation.get()
@@ -74,6 +76,7 @@ async def test_snapshot_handoff_replays_beyond_buffer_from_applied_cursor(stores
         assert not supervisor._event_streams
     finally:
         release.set()
+        await asyncio.gather(opening, return_exceptions=True)
         await supervisor.shutdown()
 
 

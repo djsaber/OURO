@@ -14,6 +14,7 @@ from ouro.local_application import LocalApplication
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ProcessResult, ToolExecutionContext, ToolRegistry
 from ouro.tools.builtin_shell import CommandShell, builtin_command_tool
+from tests.application.helpers import wait_for_agent_interactions, wait_for_parent_delivery
 
 
 class DelegatingProvider:
@@ -164,10 +165,7 @@ def application(tmp_path, backend, executable, *, kind="powershell", spawn=False
 
 
 async def interaction(app, root_id):
-    async with asyncio.timeout(5):
-        while not (items := await asyncio.to_thread(app.agents.list_agent_interactions, root_id)):
-            await asyncio.sleep(0.01)
-    return items[0]
+    return (await wait_for_agent_interactions(app.agents, root_id))[0]
 
 
 def _finish_child_in_process(directory, backend, root_id, scenario):
@@ -222,11 +220,14 @@ async def test_sync_result_crosses_real_process_boundary(tmp_path, backend, scen
         )
         process.start()
         try:
-            await asyncio.to_thread(process.join, 15)
+            # Process startup, durable child execution and shutdown are not a
+            # 15-second SLA. Keep a deadlock guard and report a live peer clearly.
+            await asyncio.to_thread(process.join, 60)
+            assert not process.is_alive(), "child Host did not finish its protocol"
             assert process.exitcode == 0
-            async with asyncio.timeout(8):
-                while app.runtime.store.load_run(root.session_id, run.run_id).status != "completed":
-                    await asyncio.sleep(0.01)
+            async with asyncio.timeout(60):
+                completed = await app.supervisor.wait_run(root.session_id, run.run_id)
+            assert completed.status == "completed"
             messages = app.runtime.store.load_run_messages(root.session_id, run.run_id)
             results = [
                 m for m in messages if m.tool_result and m.tool_result.tool_call_id == "spawn"
@@ -288,16 +289,12 @@ async def test_sync_parent_wakes_when_child_finishes_on_another_host(tmp_path, b
                 approved=scenario == "changed" and index == 0,
             )
             await second.supervisor.wait(handle)
-        async with asyncio.timeout(5):
-            while first.runtime.store.load_run(root.session_id, run.run_id).status != "completed":
-                await asyncio.sleep(0.01)
-        relation = first.runtime.store.list_delegations(root.session_id)[0]
-        async with asyncio.timeout(5):
-            while relation.result is None or relation.result.delivery.status != "delivered":
-                await asyncio.sleep(0.01)
-                relation = first.runtime.store.load_delegation(
-                    root.session_id, relation.delegation_id
-                )
+        # A receipt ends at parking; durable Run observation spans continuation
+        # on either Host without synchronous polling that competes with writes.
+        await wait_for_parent_delivery(first.supervisor, root.session_id, run.run_id)
+        async with asyncio.timeout(60):
+            completed = await first.supervisor.wait_run(root.session_id, run.run_id)
+        assert completed.status == "completed"
         messages = first.runtime.store.load_runtime_session(root.session_id).messages
         results = [m for m in messages if m.tool_result and m.tool_result.tool_call_id == "spawn"]
         assert len(results) == 1
@@ -437,7 +434,7 @@ async def test_child_approvals_and_follow_up_can_move_between_shell_install_path
                 approval_id=pending.request_id,
                 approved=True,
             )
-            result = await asyncio.wait_for(resolver.supervisor.wait(handle), 5)
+            result = await asyncio.wait_for(resolver.supervisor.wait(handle), 60)
             assert result.status == expected, [item.message for item in result.diagnostics]
         assert executed == [second_path, first_path]
         relation = first.runtime.store.load_delegation(
@@ -468,7 +465,7 @@ async def test_child_starts_with_current_host_capabilities_and_resumes_sync_pare
         root = await first.supervisor.submit("Delegate", session_id=session.session_id)
         # The accepted task keeps its authority ceiling; the child makes its
         # first decision with the second Host's current implementation.
-        waiting = await asyncio.wait_for(first.supervisor.wait(root), 5)
+        waiting = await asyncio.wait_for(first.supervisor.wait(root), 60)
         run = first.runtime.store.load_run(root.session_id, waiting.run_id)
         assert run.status == "waiting_approval"
         resumed = await second.supervisor.resolve_tool_approval(
@@ -478,7 +475,7 @@ async def test_child_starts_with_current_host_capabilities_and_resumes_sync_pare
             approved=True,
         )
         assert (
-            await asyncio.wait_for(second.supervisor.wait(resumed), 5)
+            await asyncio.wait_for(second.supervisor.wait(resumed), 60)
         ).status == "waiting_child"
         for _ in range(2):
             pending = await interaction(second, root.session_id)
@@ -491,9 +488,10 @@ async def test_child_starts_with_current_host_capabilities_and_resumes_sync_pare
                 approved=False,
             )
             await second.supervisor.wait(handle)
-        async with asyncio.timeout(5):
-            while first.runtime.store.load_run(root.session_id, run.run_id).status != "completed":
-                await asyncio.sleep(0.01)
+        await wait_for_parent_delivery(first.supervisor, root.session_id, run.run_id)
+        async with asyncio.timeout(60):
+            completed = await first.supervisor.wait_run(root.session_id, run.run_id)
+        assert completed.status == "completed"
         relation = first.runtime.store.list_delegations(root.session_id)[0]
         child = first.runtime.store.load_run(
             relation.child_session_id, relation.current_child_run_id

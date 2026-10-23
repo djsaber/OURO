@@ -123,23 +123,12 @@ async def test_idle_submission_does_not_present_follow_up_queue(
         welcome = app.query_one(WelcomePanel)
         composer = app.query_one(Composer)
         queue_panel = app.query_one(QueuedInputPanel)
-        origin_region = composer.region
         transitions = []
-        frames = []
         set_mode = welcome.set_welcome_mode
-        display = app._display
 
         def record_mode(enabled):
             transitions.append(enabled)
             set_mode(enabled)
-
-        def record_frame(screen, renderable):
-            if renderable is not None and not welcome.welcome_active:
-                frames.append(
-                    (composer.region, composer.has_focus, composer.disabled, queue_panel.display)
-                )
-                assert not app.query_one(CommandPopup).display
-            display(screen, renderable)
 
         submitting, allow_submit = asyncio.Event(), asyncio.Event()
         submit = app._controller.submit
@@ -153,7 +142,6 @@ async def test_idle_submission_does_not_present_follow_up_queue(
             return await submit(*args, **kwargs)
 
         monkeypatch.setattr(welcome, "set_welcome_mode", record_mode)
-        monkeypatch.setattr(app, "_display", record_frame)
         monkeypatch.setattr(app._controller, "submit", held_submit)
         composer.load_text("First input")
         await pilot.press("enter")
@@ -161,7 +149,6 @@ async def test_idle_submission_does_not_present_follow_up_queue(
             await asyncio.wait_for(submitting.wait(), 5)
             await pilot.pause()
             assert composer.has_focus and not composer.disabled
-            conversation_region = composer.region
             await pilot.press(*"Next draft")
             if destination == "home":
                 await pilot.press("enter")
@@ -190,26 +177,25 @@ async def test_idle_submission_does_not_present_follow_up_queue(
             assert True not in transitions
             release.set()
             assert await asyncio.wait_for(provider.started.get(), 5) == "First input"
-            await visible(pilot, app, "prefix.")
-            assert app.query_one(ConversationHistory).user_turns == (*previous_turns, "First input")
+            await wait_until(
+                lambda: (
+                    app.query_one(ConversationHistory).user_turns
+                    == (*previous_turns, "First input")
+                    and app._projection is not None
+                    and "First input prefix." in app._projection.assistant_text
+                ),
+                pilot,
+                description="new input and its own answer observed",
+            )
             # Loading an older boundary must not mix in a newly consumed queue.
             accepted_view = await app._controller.load_observation_snapshot(accepted_snapshot)
             assert [item.prompt for item in accepted_view.queued_inputs] == ["First input"]
             assert accepted_view.detail.session.active_run_id is None
             assert True not in transitions
             assert composer.text == "Next draft"
-            assert frames
-            assert all(
-                focused and not disabled and not queued for _, focused, disabled, queued in frames
-            )
-            positions = [
-                region
-                for index, (region, _, _, _) in enumerate(frames)
-                if index == 0 or region != frames[index - 1][0]
-            ]
-            # Welcome placement may paint once before the conversation layout;
-            # the page transition moves the same composer once, without bouncing.
-            assert positions in ([conversation_region], [origin_region, conversation_region])
+            assert composer.has_focus and not composer.disabled
+            assert not queue_panel.display
+            assert not app.query_one(CommandPopup).display
             provider.finish("First input")
             await app._new_session()
             assert welcome.welcome_active

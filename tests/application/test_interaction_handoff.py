@@ -32,8 +32,18 @@ async def test_immediate_interaction_waits_for_announcing_run_to_release(
         runtime.run("ask", approval_mode="approval" if kind == "approval" else "inherit")
     )
     response = None
+    contending = asyncio.Event()
+    acquire = runtime.run_ownership.acquire
+
+    async def observed_acquire(*args, **kwargs):
+        lock = await acquire(*args, **kwargs)
+        if asyncio.current_task() is response and lock is None:
+            contending.set()
+        return lock
+
+    monkeypatch.setattr(runtime.run_ownership, "acquire", observed_acquire)
     try:
-        await asyncio.wait_for(entered.wait(), 3)
+        await asyncio.wait_for(entered.wait(), 60)
         session = (await run_blocking(runtime.store.list_sessions))[0]
         snapshot = await run_blocking(runtime.store.load_runtime_session, session.session_id)
         run = snapshot.runs[-1]
@@ -44,13 +54,13 @@ async def test_immediate_interaction_waits_for_announcing_run_to_release(
                 session_id=session.session_id, run_id=run.run_id, answer="Safely"
             )
         )
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(contending.wait(), 60)
         assert not response.done()
         if cancel_owner:
             running.cancel()
         release.set()
         initial, resumed = await asyncio.wait_for(
-            asyncio.gather(running, response, return_exceptions=True), 5
+            asyncio.gather(running, response, return_exceptions=True), 60
         )
         if cancel_owner:
             assert isinstance(initial, asyncio.CancelledError)

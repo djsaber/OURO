@@ -14,15 +14,16 @@ from ouro.tui.app import OuroTuiApp
 from ouro.tui.conversation_history import ConversationHistory
 from ouro.tui.screens import ChoiceScreen
 from ouro.tui.theme import theme_for
-from ouro.tui.widgets import ConversationView, ToolActivityRow
+from ouro.tui.widgets import AssistantTurn, ConversationView, ToolActivityRow
+from tests.application.helpers import wait_for_session_state
 from tests.application.test_agent_multi_host import application, interaction
-from tests.tui.helpers import run_ready_app
+from tests.tui.helpers import release_on_exit, run_ready_app, wait_for_events, wait_until
 from tests.tui.test_app import _wait_for_screen, _wait_for_worker_group
 from tests.tui.test_tasks import choose, streaming_application
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
-async def test_failed_child_tools_stop_animating_live_and_after_reopening(tmp_path, backend):
+async def test_failed_child_tools_remain_failed_live_and_after_reopening(tmp_path, backend):
     owner = application(tmp_path, backend, "C:/PowerShell/pwsh.exe")
     viewer = application(
         tmp_path, backend, "C:/Windows/powershell.exe", kind="windows_powershell", fail_child=True
@@ -53,11 +54,13 @@ async def test_failed_child_tools_stop_animating_live_and_after_reopening(tmp_pa
                 approval_id=pending.request_id,
                 approved=True,
             )
-            outcome = await asyncio.wait_for(viewer.supervisor.wait(handle), 5)
+            outcome = await asyncio.wait_for(viewer.supervisor.wait(handle), 60)
             assert outcome.status == "failed"
-            async with asyncio.timeout(8):
-                while app._projection.activity.status != "failed":
-                    await pilot.pause()
+            await wait_until(
+                lambda: app._projection.activity.status == "failed",
+                pilot,
+                description="failed child observed",
+            )
             for reopen in (False, True):
                 if reopen:
                     await app._open_session(parent.session.session_id)
@@ -72,7 +75,7 @@ async def test_failed_child_tools_stop_animating_live_and_after_reopening(tmp_pa
                 assert app._projection.activity.tool_calls == ()
                 assert not app.query_one(ConversationView)._tools
                 assert not list(app.query(ToolActivityRow))
-                assert "PowerShell" in app.export_screenshot()
+                assert "PowerShell" in visible_text(app)
                 assert app._projection.activity.activity == "failed"
 
 
@@ -116,10 +119,14 @@ class LiveToolProvider:
         self.deltas.put_nowait(ProviderStreamEvent(type="text_delta", text=value))
 
 
+def visible_text(app):
+    return app.query_one(ConversationHistory).rendered_text + app.query_one(AssistantTurn).source
+
+
 async def visible(pilot, app, text):
-    async with asyncio.timeout(8):
-        while text not in app.export_screenshot():
-            await pilot.pause()
+    await wait_until(
+        lambda: text in visible_text(app), pilot, description=f"attached transcript: {text}"
+    )
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
@@ -137,14 +144,15 @@ async def test_two_tuis_follow_tools_and_consecutive_runs_without_duplicate_summ
     )
     session = owner.runtime.sessions.create(title="Two TUI observers").session
     first, second = OuroTuiApp(application=owner), OuroTuiApp(application=viewer)
-    async with owner:
+    async with owner, release_on_exit(provider.release):
         # Prepare the executing tool before mounting its two observers. This test
         # exercises attachment and live updates, not startup under UI render load.
         handle = await owner.supervisor.submit("Inspect", session_id=session.session_id)
-        await asyncio.wait_for(provider.started.wait(), 5)
+        await asyncio.wait_for(provider.started.wait(), 60)
         async with (
             run_ready_app(first, size=(100, 30)) as first_pilot,
             run_ready_app(second, size=(100, 30)) as second_pilot,
+            release_on_exit(provider.release),
         ):
             for app in (first, second):
                 await app._open_session(session.session_id)
@@ -158,21 +166,23 @@ async def test_two_tuis_follow_tools_and_consecutive_runs_without_duplicate_summ
                     )
                 provider.text(text)
                 provider.deltas.put_nowait(ProviderStreamEvent(type="done"))
-                result = await asyncio.wait_for(owner.supervisor.wait(handle), 5)
+                result = await asyncio.wait_for(owner.supervisor.wait(handle), 60)
                 run_ids.append(result.run_id)
                 for app, pilot in ((first, first_pilot), (second, second_pilot)):
-                    async with asyncio.timeout(8):
-                        while (
-                            app._projection.activity.status != "completed"
-                            or app._projection.activity.run_id != result.run_id
-                            or sum(
+                    await wait_until(
+                        lambda app=app, result=result, index=index: (
+                            app._projection.activity.status == "completed"
+                            and app._projection.activity.run_id == result.run_id
+                            and sum(
                                 entry.kind == "run"
                                 for entry in app.query_one(ConversationHistory).entries
                             )
-                            < index + 1
-                        ):
-                            await pilot.pause()
-                    await visible(pilot, app, text.split()[0])
+                            == index + 1
+                        ),
+                        pilot,
+                        description="completed run and its summary observed",
+                    )
+                    await visible(pilot, app, text)
                     assert text in app._projection.assistant_text
                     summaries = [
                         entry.run
@@ -206,7 +216,10 @@ async def test_task_owned_by_another_runtime_streams_through_tools_and_session_s
     monkeypatch.setattr(owner.tasks, "clock", lambda: due)
     await owner.start()
     try:
-        async with run_ready_app(app, size=(120, 40)) as pilot:
+        async with (
+            run_ready_app(app, size=(120, 40)) as pilot,
+            release_on_exit(provider.release),
+        ):
             task = await owner.tasks.create(
                 TaskConfiguration(
                     title="Shared background task",
@@ -220,8 +233,9 @@ async def test_task_owned_by_another_runtime_streams_through_tools_and_session_s
                     ),
                 )
             )
-            async with asyncio.timeout(8):
-                await provider.started.wait()
+            await wait_for_events(
+                provider.started, pilot=pilot, description="background tool execution"
+            )
             task = await owner.tasks.get(task.task_id)
             assert app.query_one(ConversationView).showing_welcome
             await pilot.press("ctrl+t")
@@ -257,13 +271,16 @@ async def test_task_owned_by_another_runtime_streams_through_tools_and_session_s
             await app._open_session(other.session_id)
             assert previous.closed
             provider.text("While away. ")
-            async with asyncio.timeout(5):
-                while not any(
+            await wait_for_session_state(
+                owner.supervisor,
+                task.session_id,
+                lambda: any(
                     event.payload.get("text") == "While away. "
                     for event in owner.runtime.store.load_session(task.session_id).events
-                ):
-                    await pilot.pause()
-            assert "While" not in app.export_screenshot()
+                ),
+                event_types=frozenset({"model_text_delta"}),
+            )
+            assert "While" not in visible_text(app)
             await app._open_session(task.session_id)
             await visible(pilot, app, "While")
             provider.text("After return.")
@@ -271,9 +288,11 @@ async def test_task_owned_by_another_runtime_streams_through_tools_and_session_s
             assert app._projection.activity.status == "running"
 
             provider.deltas.put_nowait(ProviderStreamEvent(type="done"))
-            async with asyncio.timeout(8):
-                while app._projection.activity.status != "completed":
-                    await pilot.pause()
+            await wait_until(
+                lambda: app._projection.activity.status == "completed",
+                pilot,
+                description="background task completion observed",
+            )
             for text in ("Live", "While", "After"):
                 await visible(pilot, app, text)
             assert provider.turns == 2

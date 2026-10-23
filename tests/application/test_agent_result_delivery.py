@@ -6,6 +6,7 @@ import pytest
 
 from ouro.core.errors import PersistenceError
 from ouro.core.provider import ProviderStreamEvent
+from tests.application.helpers import wait_for_session_state
 from tests.application.test_agent_multi_host import application, interaction
 
 
@@ -109,20 +110,28 @@ async def test_async_cross_host_result_retries_without_duplicate_parent_input(
             approved=False,
         )
         assert (await second.supervisor.wait(child)).status == ("failed" if failed else "completed")
-        async with asyncio.timeout(8):
-            while True:
+
+        def delivered_and_completed():
+            with first.runtime.store.session_read(session.session_id):
                 relation = first.runtime.store.load_delegation(
                     session.session_id, pending.delegation_id
                 )
                 runs = first.runtime.store.load_runs(session.session_id)
-                if (
-                    relation.result is not None
-                    and relation.result.delivery.status == "delivered"
-                    and len(runs) == 2
-                    and runs[-1].status == "completed"
-                ):
-                    break
-                await asyncio.sleep(0.01)
+            if (
+                relation.result is not None
+                and relation.result.delivery.status == "delivered"
+                and len(runs) == 2
+                and runs[-1].status == "completed"
+            ):
+                return relation, runs
+            return None
+
+        relation, runs = await wait_for_session_state(
+            first.supervisor,
+            session.session_id,
+            delivered_and_completed,
+            event_types=frozenset({"agent_result_delivered", "run_completed"}),
+        )
         assert fault_seen.is_set()
         assert len(attempts) >= 2
         assert len(set(attempts)) == 1
@@ -170,9 +179,10 @@ async def test_exhausted_delivery_stays_pending_and_targeted_recovery_retries(
         monkeypatch.setattr(app.supervisor, "route_host_input", unavailable)
         handle = await app.supervisor.submit("Delegate", session_id=session.session_id)
         await app.supervisor.wait(handle)
-        async with asyncio.timeout(8):
-            while len(attempts) < 4 or app.agents._execution._tasks:
-                await asyncio.sleep(0.02)
+        # The parent has admitted its child and armed settlement. Await those
+        # owned tasks, including all retries and diagnostic publication.
+        async with asyncio.timeout(60):
+            await asyncio.gather(*tuple(app.agents._execution._tasks.values()))
         relation = app.runtime.store.list_delegations(session.session_id)[0]
         assert relation.result.terminal_status == "completed"
         assert relation.result.delivery.status == "pending"

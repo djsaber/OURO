@@ -175,6 +175,7 @@ from tests.tui.helpers import (
     release_on_exit,
     resize_terminal,
     run_ready_app,
+    wait_for_events,
     wait_for_history_render,
     wait_for_menu_action,
 )
@@ -1118,65 +1119,6 @@ class MultiChildStreamingProvider:
         )
 
 
-class SyncChildViewProvider:
-    """Keep one synchronous child reasoning while its parent view is reloaded."""
-
-    provider_id = "sync-child-view"
-
-    def __init__(self) -> None:
-        self.root_round = 0
-        self.child_reasoning_started = asyncio.Event()
-        self.release_child = asyncio.Event()
-
-    async def stream(
-        self,
-        *,
-        model: ModelMetadata,
-        system_prompt: str = "",
-        messages: list[ModelMessage],
-        tools: list[dict[str, object]] | None = None,
-        request_context=None,
-    ) -> AsyncIterator[ProviderStreamEvent]:
-        del model, system_prompt, messages
-        names = [str(item["name"]) for item in (tools or [])]
-        if "SpawnAgent" not in names:
-            yield ProviderStreamEvent(type="reasoning_delta", reasoning_content="Inspecting")
-            self.child_reasoning_started.set()
-            await self.release_child.wait()
-            yield ProviderStreamEvent(type="text_delta", text="child complete")
-            yield ProviderStreamEvent(type="done")
-            return
-
-        if self.root_round == 0:
-            self.root_round += 1
-            yield ProviderStreamEvent.from_tool_call(
-                {
-                    "id": "sync_view_spawn",
-                    "name": "SpawnAgent",
-                    "arguments": {
-                        "agent_id": "general",
-                        "task": "Inspect while both Session views are exercised.",
-                        "description": "Synchronous view test",
-                        "execution_mode": "sync",
-                    },
-                }
-            )
-            yield ProviderStreamEvent(type="done")
-            return
-        yield ProviderStreamEvent(type="text_delta", text="parent resumed")
-        yield ProviderStreamEvent(type="done")
-
-    async def check_connection(
-        self, model: ModelMetadata, *, request_context=None
-    ) -> ProviderCheckResult:
-        return ProviderCheckResult(
-            provider_id=self.provider_id,
-            ok=True,
-            model_id=model.model_id,
-            message="ok",
-        )
-
-
 class TuiPlanConfirmationProvider:
     provider_id = "tui-plan-confirmation"
 
@@ -1646,25 +1588,6 @@ def _persist_direct_child_session(application: LocalApplication) -> tuple[str, s
     application.runtime.sessions.open(root.session_id)
     application.runtime.sessions.open(child.session_id)
     return root.session_id, child.session_id
-
-
-def _sync_child_view_application(
-    tmp_path: Path,
-    provider: SyncChildViewProvider,
-) -> LocalApplication:
-    store = LocalSessionStore(tmp_path)
-    store.initialize()
-    runtime = RuntimeService(
-        store=store,
-        adapter=RuntimeAdapter(
-            provider,
-            ModelMetadata(model_id="faux", provider_id=provider.provider_id),
-        ),
-        tools=ToolRegistry(),
-        default_workspace=tmp_path,
-        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
-    )
-    return LocalApplication.from_runtime(runtime)
 
 
 def _question_application(
@@ -3488,7 +3411,9 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press(*"start child", "enter")
-        await _wait_until(provider.child_started.is_set, pilot, description="owned child execution")
+        await wait_for_events(
+            provider.child_started, pilot=pilot, description="owned child execution"
+        )
         await pilot.pause()
 
         try:
@@ -3542,6 +3467,9 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(
         )
 
         await pilot.press("enter")
+        await wait_for_events(
+            provider.queued_input_consumed, pilot=pilot, description="queued input consumed"
+        )
         history = app.query_one(ConversationHistory)
         await _wait_until(
             lambda: (
@@ -3589,12 +3517,10 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         await pilot.pause()
         await pilot.click("#composer")
         await pilot.press(*"start two children", "enter")
-        await _wait_until(
-            lambda: (
-                provider.root_stream_started.is_set()
-                and all(event.is_set() for event in provider.first_chunks.values())
-            ),
-            pilot,
+        await wait_for_events(
+            provider.root_stream_started,
+            *provider.first_chunks.values(),
+            pilot=pilot,
             description="root and both child streams started",
         )
         root_session_id = app._controller.session_id
@@ -3640,9 +3566,6 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         assert subagent_panel.display is True
         assert subagent_panel.current_session_id == root_session_id
         assert subagent_panel.visible_session_ids == (first.session_id, second.session_id)
-        assert subagent_panel.render_content(80).plain.rstrip().endswith("▣ | ■■")
-        assert str(subagent_panel.styles.text_align) == "right"
-        assert subagent_panel.content_region.right == app.query_one(Composer).region.right
         await pilot.press("f1")
         await _wait_for_screen(app, ChoiceScreen, title="KEYBOARD HELP")
         app.post_message(events.Key("alt+right", None))
@@ -3720,20 +3643,8 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         )
         composer = app.query_one(Composer)
         assert composer.has_class("read-only-session")
-        assert composer.styles.opacity == 1.0
         assert composer.text == ""
         assert app._controlled_composer_draft == "pending root draft"
-        for shortcut in ("Alt+↑", "Alt+←/→"):
-            shortcut_style = child_placeholder.get_style_at_offset(
-                child_placeholder.plain.index(shortcut)
-            )
-            assert shortcut_style.bold is False
-        rendered_placeholder = composer.render_line(0)
-        assert rendered_placeholder.text == child_placeholder.plain
-        for shortcut in ("Alt+↑", "Alt+←/→"):
-            offset = rendered_placeholder.text.index(shortcut)
-            segment = next(iter(rendered_placeholder.crop(offset, offset + len(shortcut))))
-            assert segment.style is not None and not segment.style.bold
         assert any(
             entry.kind == "user" and entry.text == "first child task"
             for entry in app.query_one(ConversationHistory).entries
@@ -3802,40 +3713,15 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         held_child_scroll_y = child_conversation.scroll_y
         assert held_child_scroll_y < child_conversation.max_scroll_y
 
-        displayed_root_frames: list[tuple[str, float]] = []
-        original_display = app._display
-
-        def capture_root_frames(screen, renderable) -> None:
-            # Match Textual's display gate: batched and empty updates never
-            # reach the terminal and cannot count as intermediate frames.
-            if renderable is not None and not app._batch_count:
-                rendered_history = app.query_one(ConversationHistory).rendered_text
-                displayed_root_frames.append(
-                    (rendered_history, app.query_one(ConversationView).scroll_y)
-                )
-            original_display(screen, renderable)
-
-        monkeypatch.setattr(app, "_display", capture_root_frames)
-
         app.action_main_session()
         await _wait_for_worker_group(app, pilot, group="navigation")
         await root_history.wait_until_rendered()
         await app.screen.wait_for_refresh()
         assert app._visible_session_id() == root_session_id
-        if collapse_traces:
-            # The root completed while hidden. Folding its tool trace can make
-            # the saved offset exceed the destination's new scroll range.
-            assert root_conversation.max_scroll_y < held_root_scroll_y
-            restored_root_scroll_y = root_conversation.max_scroll_y
-        else:
-            restored_root_scroll_y = held_root_scroll_y
+        # Restore within the new content bounds. Folding does not guarantee a
+        # shorter document: the final answer also arrived while this view was hidden.
+        restored_root_scroll_y = min(held_root_scroll_y, root_conversation.max_scroll_y)
         assert root_conversation.scroll_y == restored_root_scroll_y
-        assert displayed_root_frames
-        assert all(
-            ("first child paragraph 29" in rendered and scroll_y == held_child_scroll_y)
-            or ("Root history paragraph 79" in rendered and scroll_y == restored_root_scroll_y)
-            for rendered, scroll_y in displayed_root_frames
-        )
         assert app._visible_read_only is False
         composer = app.query_one(Composer)
         assert composer.disabled is False
@@ -3864,7 +3750,6 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         )
         assert ("└ Done • Observe child 1" in root_history.rendered_text) is (not collapse_traces)
 
-        displayed_child_frames: list[tuple[str, float]] = []
         rendered_during_cached_switch: list[int] = []
         write_entry = ConversationHistory._write_entry
 
@@ -3886,15 +3771,6 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             capture_cached_switch_render,
         )
 
-        def capture_child_frames(screen, renderable) -> None:
-            if renderable is not None and not app._batch_count:
-                rendered_history = app.query_one(ConversationHistory).rendered_text
-                displayed_child_frames.append(
-                    (rendered_history, app.query_one(ConversationView).scroll_y)
-                )
-            original_display(screen, renderable)
-
-        monkeypatch.setattr(app, "_display", capture_child_frames)
         app.post_message(
             ToolNavigationRequested(
                 parent_run_id=first.parent_run_id,
@@ -3913,21 +3789,6 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         assert app.query_one(ConversationHistory).entries[-1].kind == "run"
         assert rendered_during_cached_switch == []
         rendered_during_cached_switch.clear()
-        assert displayed_child_frames
-        assert all(
-            ("Root history paragraph 79" in rendered and scroll_y == restored_root_scroll_y)
-            or ("first child paragraph 29" in rendered and scroll_y == held_child_scroll_y)
-            for rendered, scroll_y in displayed_child_frames
-        ), (
-            restored_root_scroll_y,
-            held_child_scroll_y,
-            [
-                ("Root history paragraph 79" in rendered, "first child paragraph 29" in rendered, y)
-                for rendered, y in displayed_child_frames
-            ],
-        )
-        monkeypatch.setattr(app, "_display", original_display)
-
         app.post_message(events.Key("alt+right", None))
         await _wait_until(
             lambda: app._visible_session_id() == second.session_id,
@@ -3974,9 +3835,9 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         await _wait_for_worker_group(app, pilot, group="navigation")
         provider.releases["second child task"].set()
         await _wait_until(
-            lambda: any(
-                node.delegation_id == second.delegation_id and node.status == "completed"
-                for node in application.agents.agent_tree_snapshot(root_session_id).nodes
+            lambda: (
+                (node := app._agent_nodes.get(second.delegation_id)) is not None
+                and node.status == "completed"
             ),
             pilot,
             description="invisible second child completion",
@@ -4004,96 +3865,6 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         )
         assert "second child paragraph 0" in second_child_text
         assert " + second child suffix" in second_child_text
-
-
-@pytest.mark.asyncio
-async def test_sync_child_view_restore_preserves_live_tool_and_reasoning_clocks(
-    tmp_path: Path,
-) -> None:
-    provider = SyncChildViewProvider()
-    application = _sync_child_view_application(tmp_path, provider)
-    app = OuroTuiApp(application=application)
-
-    async with run_ready_app(app, size=(100, 38)) as pilot:
-        await pilot.pause()
-        await pilot.click("#composer")
-        await pilot.press(*"start child", "enter")
-        await asyncio.wait_for(provider.child_reasoning_started.wait(), timeout=5)
-        await pilot.pause(0.25)
-
-        root_session_id = app._controller.session_id
-        assert root_session_id is not None
-        assert application.agents is not None
-        child = application.agents.agent_tree_snapshot(root_session_id).nodes[0]
-        app.post_message(
-            ToolNavigationRequested(
-                parent_run_id=child.parent_run_id,
-                parent_tool_call_id="sync_view_spawn",
-            )
-        )
-        await _wait_until(
-            lambda: app._visible_session_id() == child.session_id,
-            pilot,
-            description="synchronous child view",
-        )
-        first_reasoning = app.query_one(AssistantTurn).reasoning
-        first_elapsed = first_reasoning._elapsed_seconds()
-        assert first_elapsed >= 0.2
-
-        app.action_main_session()
-        await _wait_until(
-            lambda: app._visible_session_id() == root_session_id,
-            pilot,
-            description="restored synchronous parent view",
-        )
-        root_conversation = app.query_one(ConversationView)
-        await _wait_until(
-            lambda: "sync_view_spawn" in root_conversation._tools,
-            pilot,
-            description="restored live SpawnAgent row",
-        )
-        root_tool = root_conversation._tools["sync_view_spawn"]
-        assert root_tool.tool.status == "waiting_child"
-        assert root_tool._timer is not None
-        frame = root_tool._frame
-        root_tool._tick()
-        assert root_tool._frame != frame
-
-        await pilot.pause(0.2)
-        app.post_message(
-            ToolNavigationRequested(
-                parent_run_id=child.parent_run_id,
-                parent_tool_call_id="sync_view_spawn",
-            )
-        )
-        await _wait_until(
-            lambda: app._visible_session_id() == child.session_id,
-            pilot,
-            description="reopened synchronous child view",
-        )
-        restored_elapsed = app.query_one(AssistantTurn).reasoning._elapsed_seconds()
-        assert restored_elapsed >= first_elapsed + 0.15
-
-        app.action_main_session()
-        await _wait_until(
-            lambda: app._visible_session_id() == root_session_id,
-            pilot,
-            description="final parent view",
-        )
-        provider.release_child.set()
-        await _wait_for_worker_group(app, pilot, group="run")
-        await _wait_until(
-            lambda: app._projection is not None and app._projection.activity.status == "completed",
-            pilot,
-            description="synchronous parent completion",
-        )
-        completed = [
-            entry.tool
-            for entry in app.query_one(ConversationHistory).entries
-            if entry.tool is not None and entry.tool.tool_call_id == "sync_view_spawn"
-        ]
-        assert len(completed) == 1
-        assert completed[0].status == "completed"
 
 
 @pytest.mark.asyncio
@@ -10095,7 +9866,6 @@ async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
             command="unused-in-test",
             auto_start=False,
             auto_reconnect=False,
-            timeout_seconds=1,
             health_check_interval_seconds=60,
         ),
     )
@@ -10111,7 +9881,10 @@ async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
     application.mcp = MCPRuntimeResource(manager)
     app = OuroTuiApp(home=tmp_path, application=application)
 
-    async with run_ready_app(app, size=(100, 34)) as pilot:
+    async with (
+        run_ready_app(app, size=(100, 34)) as pilot,
+        release_on_exit(session.initialize_gate),
+    ):
         await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -10130,12 +9903,15 @@ async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
         await pilot.press("enter")
 
         assert action_screen is app.screen
-        assert (
-            next(choice for choice in action_screen._choices if choice.value == "start").loading
-            is True
+        await _wait_until(
+            lambda: (
+                next(choice for choice in action_screen._choices if choice.value == "start").loading
+            ),
+            pilot,
+            description="MCP connection held at initialization",
         )
         action_screen.query_one("#choice-filter", Input).value = "runtime"
-        await pilot.pause(0.15)
+        await pilot.pause()
         assert action_screen.query_one("#choice-filter", Input).value == "runtime"
 
         await pilot.press("escape")

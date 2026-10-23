@@ -4,6 +4,44 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from ouro.application.supervisor import RuntimeSupervisor
+from ouro.core.callbacks import run_blocking
+
+
+async def wait_for_session_state(supervisor, session_id, read, *, event_types=frozenset()):
+    """Read a durable predicate only at subscription invalidations, off-loop."""
+    subscription = None
+    try:
+        async with asyncio.timeout(60):
+            subscription = await supervisor.subscribe_state(session_id, event_types=event_types)
+            while True:
+                result = await run_blocking(read)
+                if result:
+                    return result
+                notification = await subscription.get()
+                assert notification.diagnostic is None, notification.diagnostic
+    finally:
+        if subscription is not None:
+            subscription.close()
+
+
+async def wait_for_agent_interactions(service, root_id, *, count=1):
+    """Wait for the canonical interaction projection, not a polling deadline."""
+    subscription = None
+    try:
+        async with asyncio.timeout(60):
+            subscription = await service.subscribe_agent_tree(root_id)
+            snapshot = subscription.initial_snapshot
+            while True:
+                if snapshot is not None and snapshot.pending_interaction_count == count:
+                    items = await run_blocking(service.list_agent_interactions, root_id)
+                    if len(items) == count:
+                        return items
+                notification = await subscription.get()
+                assert notification.diagnostic is None, notification.diagnostic
+                snapshot = notification.snapshot
+    finally:
+        if subscription is not None:
+            subscription.close()
 
 
 async def wait_for_parent_delivery(

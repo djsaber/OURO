@@ -23,8 +23,10 @@ from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
 from ouro.tui.widgets import ConversationView
 from tests.tui.helpers import (
     choose_menu,
+    release_on_exit,
     resize_terminal,
     run_ready_app,
+    wait_for_events,
     wait_for_screen,
     wait_until,
 )
@@ -328,45 +330,51 @@ async def test_real_tool_loop_stays_visible_until_completion_and_matches_reload(
     application = streaming_application(tmp_path, provider, backend=backend)
     application.runtime.tools.register(builtin_file_tools()[0])
     app = OuroTuiApp(home=tmp_path, application=application)
-    try:
-        async with run_ready_app(app, size=(100, 32)) as pilot:
-            await app._set_reasoning_expanded("expand")
-            session = application.runtime.sessions.create(title="Tool trace").session
-            await app._open_session(session.session_id)
-            app._submit_run("Read sample.txt", "follow_up")
-            await asyncio.wait_for(provider.started.wait(), 6)
-            history = app.query_one(ConversationHistory)
-            async with asyncio.timeout(6):
-                while "Investigating" not in history.rendered_text:
-                    await pilot.pause()
-            assert not any(entry.kind == "run" for entry in history.entries)
-            provider.release.set()
-            async with asyncio.timeout(6):
-                while not any(entry.kind == "run" for entry in history.entries):
-                    await pilot.pause()
-            await history.wait_until_rendered()
-            assert "Investigating" not in history.rendered_text
-            assert "Earlier thought" not in history.rendered_text
-            assert "Final thought" in history.rendered_text
-            assert "Final answer" in history.rendered_text
-            assert "Final paragraph" in history.rendered_text
-            assert next(entry.tool for entry in history.entries if entry.tool).status == "completed"
-
-            # Live and durable thinking timers have different clock boundaries.
-            # Compare the transcript independently of that existing label.
-            def visible_content():
-                return [
-                    line
-                    for line in history.rendered_text.splitlines()
-                    if f"Thought{app.tui_theme.section_separator}" not in line
-                ]
-
-            live = visible_content()
-            await app._open_session(session.session_id)
-            await history.wait_until_rendered()
-            assert visible_content() == live
-    finally:
+    async with (
+        run_ready_app(app, size=(100, 32)) as pilot,
+        release_on_exit(provider.release),
+    ):
+        await app._set_reasoning_expanded("expand")
+        session = application.runtime.sessions.create(title="Tool trace").session
+        await app._open_session(session.session_id)
+        app._submit_run("Read sample.txt", "follow_up")
+        await wait_for_events(
+            provider.started, pilot=pilot, description="tool loop resumed model stream"
+        )
+        history = app.query_one(ConversationHistory)
+        await wait_until(
+            lambda: "Investigating" in history.rendered_text,
+            pilot,
+            description="live tool trace",
+        )
+        assert not any(entry.kind == "run" for entry in history.entries)
         provider.release.set()
+        await wait_until(
+            lambda: any(entry.kind == "run" for entry in history.entries),
+            pilot,
+            description="completed tool trace",
+        )
+        await history.wait_until_rendered()
+        assert "Investigating" not in history.rendered_text
+        assert "Earlier thought" not in history.rendered_text
+        assert "Final thought" in history.rendered_text
+        assert "Final answer" in history.rendered_text
+        assert "Final paragraph" in history.rendered_text
+        assert next(entry.tool for entry in history.entries if entry.tool).status == "completed"
+
+        # Live and durable thinking timers have different clock boundaries.
+        # Compare the transcript independently of that existing label.
+        def visible_content():
+            return [
+                line
+                for line in history.rendered_text.splitlines()
+                if f"Thought{app.tui_theme.section_separator}" not in line
+            ]
+
+        live = visible_content()
+        await app._open_session(session.session_id)
+        await history.wait_until_rendered()
+        assert visible_content() == live
 
 
 @pytest.mark.parametrize("kind", ["main", "subagent", "task"])

@@ -24,11 +24,24 @@ from ouro.tools import ToolRegistry
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.commands import resolve_command
 from ouro.tui.controller import TuiSystemStatus
+from ouro.tui.conversation_history import ConversationHistory
 from ouro.tui.screens import ChoiceScreen, ConfirmationScreen
 from ouro.tui.task_screens import TaskConfigurationScreen
 from ouro.tui.theme import theme_for
-from ouro.tui.widgets import Composer, ConversationView, QueuedInputPanel, WelcomePanel
-from tests.tui.helpers import run_ready_app, wait_for_menu_action, wait_until
+from ouro.tui.widgets import (
+    AssistantTurn,
+    Composer,
+    ConversationView,
+    QueuedInputPanel,
+    WelcomePanel,
+)
+from tests.tui.helpers import (
+    release_on_exit,
+    run_ready_app,
+    wait_for_events,
+    wait_for_menu_action,
+    wait_until,
+)
 from tests.tui.test_app import _application, _wait_for_screen
 
 
@@ -559,7 +572,10 @@ async def test_background_run_stays_silent_and_attaching_restores_live_stream(
     application = streaming_application(tmp_path, provider)
     runtime = application.runtime
     app = OuroTuiApp(application=application)
-    async with run_ready_app(app, size=(120, 40)) as pilot:
+    async with (
+        run_ready_app(app, size=(120, 40)) as pilot,
+        release_on_exit(provider.release),
+    ):
         await pilot.pause()
         now = datetime.now(UTC)
         monkeypatch.setattr(application.tasks, "clock", lambda: now)
@@ -572,8 +588,7 @@ async def test_background_run_stays_silent_and_attaching_restores_live_stream(
                 ),
             )
         )
-        async with asyncio.timeout(8):
-            await provider.started.wait()
+        await wait_for_events(provider.started, pilot=pilot, description="background model stream")
         await pilot.pause()
         assert app._controller.session_id is None
         assert app.query_one(ConversationView).showing_welcome
@@ -598,26 +613,43 @@ async def test_background_run_stays_silent_and_attaching_restores_live_stream(
                 title=theme_for(app).section_separator.join(("TASK EXECUTIONS", "LATEST 50")),
             )
             await pilot.press("enter")
-        async with asyncio.timeout(5):
-            while app._projection is None or app._projection.session_id != current.session_id:
-                await pilot.pause()
+        await wait_until(
+            lambda: (
+                app._projection is not None and app._projection.session_id == current.session_id
+            ),
+            pilot,
+            description="attached task Session",
+        )
         assert not app._visible_read_only
-        async with asyncio.timeout(5):
-            while "Before" not in app.export_screenshot():
-                await pilot.pause()
+
+        def transcript():
+            return (
+                app.query_one(ConversationHistory).rendered_text
+                + app.query_one(AssistantTurn).source
+            )
+
+        await wait_until(
+            lambda: "Before attachment." in transcript(), pilot, description="live task text"
+        )
         app.query_one(Composer).load_text("Follow up from the task session")
         await pilot.press("enter")
-        async with asyncio.timeout(5):
-            while not app.query_one(QueuedInputPanel).display:
-                await pilot.pause()
+        await wait_until(
+            lambda: app.query_one(QueuedInputPanel).display,
+            pilot,
+            description="queued task follow-up",
+        )
         provider.release.set()
-        async with asyncio.timeout(8):
-            while app._projection.activity.status != "completed":
-                await pilot.pause()
-            while not all(text in app.export_screenshot() for text in ("Before", "After")):
-                await pilot.pause()
-            while app.query_one(QueuedInputPanel).display:
-                await pilot.pause()
+        await wait_until(
+            lambda: (
+                app._projection.activity.status == "completed"
+                and all(
+                    text in transcript() for text in ("Before attachment.", "After attachment.")
+                )
+                and not app.query_one(QueuedInputPanel).display
+            ),
+            pilot,
+            description="completed task follow-up and transcript",
+        )
         assert app._controller.session_id == current.session_id
         snapshot = runtime.store.load_session(current.session_id)
         assert any(

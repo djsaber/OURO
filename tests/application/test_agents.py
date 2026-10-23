@@ -43,7 +43,7 @@ from ouro.providers.openai_responses_codec import responses_input
 from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolInputRequest, ToolRegistry, ToolResult
-from tests.application.helpers import wait_for_parent_delivery
+from tests.application.helpers import wait_for_agent_interactions, wait_for_parent_delivery
 
 
 class CapturingChildProvider:
@@ -2310,10 +2310,7 @@ async def test_simultaneous_child_inputs_remain_isolated(tmp_path) -> None:
             for index in range(2)
         )
     )
-    async with asyncio.timeout(3):
-        while len(service.list_agent_interactions(root.session_id)) != 2:
-            await asyncio.sleep(0.01)
-    interactions = service.list_agent_interactions(root.session_id)
+    interactions = await wait_for_agent_interactions(service, root.session_id, count=2)
     interaction_by_session = {item.child_session_id: item for item in interactions}
     assert set(interaction_by_session) == {child.child_session_id for child in children}
     first = children[0]
@@ -2412,7 +2409,7 @@ async def test_unattended_child_input_fails_deterministically_without_parking(tm
             description="Unattended child",
         )
     )
-    async with asyncio.timeout(3):
+    async with asyncio.timeout(60):
         result = await service.wait_agents((child.delegation_id,))
 
     assert result.completed is True
@@ -3538,42 +3535,48 @@ async def test_next_boundary_delivery_racing_parent_round_is_committed_once(tmp_
     runtime.bind_extensions(agent_definitions=definitions, agent_controls=service)
     await service.start()
 
-    parent_handle = await supervisor.submit("Start a next-boundary child.")
-    await asyncio.wait_for(provider.root_blocked.wait(), timeout=3)
-    relations = store.list_delegations(parent_handle.session_id)
-    assert len(relations) == 1
-    child = relations[0]
+    try:
+        async with asyncio.timeout(60):
+            parent_handle = await supervisor.submit("Start a next-boundary child.")
+            await provider.root_blocked.wait()
+            relations = store.list_delegations(parent_handle.session_id)
+            assert len(relations) == 1
+            child = relations[0]
 
-    waited = await service.wait_agents((child.delegation_id,))
+            waited = await service.wait_agents((child.delegation_id,))
 
-    delivered = store.load_delegation(parent_handle.session_id, child.delegation_id)
-    assert waited.completed is True
-    assert delivered.result is not None
-    assert delivered.result.delivery.status == "delivered"
-    assert delivered.result.delivery.target_queue_id == delivered.result.delivery.delivery_id
-    queued = store.load_session_record(parent_handle.session_id).metadata["follow_up_queue"]
-    assert [item["queue_id"] for item in queued] == [delivered.result.delivery.delivery_id]
+            delivered = store.load_delegation(parent_handle.session_id, child.delegation_id)
+            assert waited.completed is True
+            assert delivered.result is not None
+            assert delivered.result.delivery.status == "delivered"
+            assert (
+                delivered.result.delivery.target_queue_id == delivered.result.delivery.delivery_id
+            )
+            queued = store.load_session_record(parent_handle.session_id).metadata["follow_up_queue"]
+            assert [item["queue_id"] for item in queued] == [delivered.result.delivery.delivery_id]
 
-    provider.root_release.set()
-    parent = await supervisor.wait(parent_handle)
-    assert parent.status == "completed"
-    snapshot = store.load_runtime_session(parent_handle.session_id)
-    delivery_messages = [
-        message
-        for message in snapshot.messages
-        if message.metadata.get("host_source_id")
-        == f"ouro.subagents/results/{delivered.result.delivery.delivery_id}"
-    ]
-    assert len(delivery_messages) == 1
-    assert delivery_messages[0].role == "user"
-    assert len(snapshot.runs) == 1
-    assert snapshot.messages[-1].text_content == "parent consumed child result"
-    await service.reconcile()
-    assert len(store.load_runtime_session(parent_handle.session_id).messages) == len(
-        snapshot.messages
-    )
-    await service.close()
-    await supervisor.shutdown()
+            provider.root_release.set()
+            parent = await supervisor.wait(parent_handle)
+            assert parent.status == "completed"
+            snapshot = store.load_runtime_session(parent_handle.session_id)
+            delivery_messages = [
+                message
+                for message in snapshot.messages
+                if message.metadata.get("host_source_id")
+                == f"ouro.subagents/results/{delivered.result.delivery.delivery_id}"
+            ]
+            assert len(delivery_messages) == 1
+            assert delivery_messages[0].role == "user"
+            assert len(snapshot.runs) == 1
+            assert snapshot.messages[-1].text_content == "parent consumed child result"
+            await service.reconcile()
+            assert len(store.load_runtime_session(parent_handle.session_id).messages) == len(
+                snapshot.messages
+            )
+    finally:
+        provider.root_release.set()
+        await service.close()
+        await supervisor.shutdown()
 
 
 @pytest.mark.asyncio

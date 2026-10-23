@@ -110,12 +110,11 @@ async def test_run_execution_ownership_tracks_lock_and_signal_lifecycle(tmp_path
     await ownership.release(run.run_id, lock)
     await asyncio.wait_for(settlement, timeout=1)
 
-    aborted = run.model_copy(update={"status": "aborted", "abort_requested": True})
-    store.save_run(aborted)
-    for _ in range(100):
-        if signal.is_aborted():
-            break
-        await asyncio.sleep(0.01)
+    # The poller captures the cancellation request once. Its signal does not
+    # promise terminal settlement or keep refreshing after cancellation. The
+    # runtime finalizes the Run only after the execution owner has settled.
+    async with asyncio.timeout(30):
+        await signal.wait()
     assert signal.is_aborted()
     result = ownership.aborted_result(
         session_id=session.session_id,
@@ -125,7 +124,8 @@ async def test_run_execution_ownership_tracks_lock_and_signal_lifecycle(tmp_path
         tool_results=[],
     )
     assert result is not None
-    assert result.run.status == "aborted"
+    assert result.run.abort_requested is True
+    assert result.run.status == "running"
 
     await ownership.release_signal(run.run_id, signal)
     assert ownership.signal_for(run.run_id) is None

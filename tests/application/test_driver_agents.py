@@ -184,12 +184,12 @@ async def test_driver_parallel_agents_review_and_conditional_approved_action(
             await plugins.start()
             await agents.start()
             await runtime.reconcile_session(pending.session.session_id)
-        async with asyncio.timeout(10):
-            while True:
-                result = store.load_run(pending.session.session_id, pending.run.run_id)
-                if result.status in {"waiting_approval", "completed", "failed"}:
-                    break
-                await asyncio.sleep(0.01)
+        async with asyncio.timeout(60):
+            result = await supervisor.wait_run(
+                pending.session.session_id,
+                pending.run.run_id,
+                until=frozenset({"waiting_approval"}),
+            )
         assert result.status == ("waiting_approval" if act else "completed"), result.error
         async with asyncio.timeout(5):
             while plugins.catalog().lease_count:

@@ -128,15 +128,33 @@ async def test_two_process_tuis_keep_execution_and_slow_observation_independent(
             assert applied == before and pending <= 128 and draft == "v"
             provider.text("Beta", "Background progress. ")
             provider.text("Gamma", "Independent progress. ")
-            for index in range(400):
-                provider.text("Alpha", f"piece {index}, ")
-                # Separate persisted stream windows while the other process holds its page.
-                await asyncio.sleep(0.012)
-                if index in (100, 200, 300):
-                    await app._open_session(sessions[index // 100 - 1])
+            committed = await application.supervisor.subscribe(sessions[0])
+            try:
+                async with asyncio.timeout(60):
+                    for index in range(129):
+                        marker = f"piece {index}, "
+                        provider.text("Alpha", marker)
+                        # A provider fragment is not a durable event: the adapter
+                        # coalesces adjacent text. Await each committed marker
+                        # before producing the next to cross the 128-event buffer
+                        # deterministically, regardless of timer granularity/load.
+                        while True:
+                            notification = await committed.get()
+                            assert notification.diagnostic is None, notification.diagnostic
+                            event = notification.event
+                            if (
+                                event is not None
+                                and event.event_type == "model_text_delta"
+                                and marker in (event.text or "")
+                            ):
+                                break
+                        if index in (32, 64, 96):
+                            await app._open_session(sessions[index // 32 - 1])
+            finally:
+                committed.close()
             await app._open_session(sessions[0])
             await wait_until(
-                lambda: "piece 399," in app._projection.assistant_text,
+                lambda: "piece 128," in app._projection.assistant_text,
                 pilot,
                 description="owner continues while remote observer is held",
             )

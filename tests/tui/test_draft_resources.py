@@ -12,7 +12,7 @@ from ouro.tui.draft_recovery import recover_input_drafts
 from ouro.tui.input_drafts import TuiInputDrafts, TuiInputDraftStore, TuiPendingInput
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.widgets import Composer
-from tests.tui.helpers import run_ready_app
+from tests.tui.helpers import release_on_exit, run_ready_app, wait_for_worker_group, wait_until
 from tests.tui.test_history_commands import application_at
 
 
@@ -167,9 +167,23 @@ async def test_both_pages_keep_input_when_draft_save_fails(tmp_path, existing, m
     application = application_at(tmp_path)
     origin = application.runtime.create_session().session_id if existing else None
     app = OuroTuiApp(application=application, resume_session_id=origin)
-    async with run_ready_app(app) as pilot:
+    recovery_started = threading.Event()
+    release_recovery = threading.Event()
+    recovering = False
+    restore = app._restore_unsent_input
+
+    def restore_input(*args):
+        nonlocal recovering
+        restore(*args)
+        recovering = True
+
+    monkeypatch.setattr(app, "_restore_unsent_input", restore_input)
+    async with run_ready_app(app) as pilot, release_on_exit(release_recovery):
 
         def fail(_drafts):
+            if recovering:
+                recovery_started.set()
+                release_recovery.wait()
             raise PersistenceError("draft disk unavailable")
 
         with monkeypatch.context() as patch:
@@ -177,9 +191,17 @@ async def test_both_pages_keep_input_when_draft_save_fails(tmp_path, existing, m
             composer = app.query_one(Composer)
             composer.load_text("keep my input")
             await pilot.press("enter")
-            workers = [w for w in app.workers if w.group == "run"]
-            if workers:
-                await asyncio.wait_for(app.workers.wait_for_complete(workers), 10)
+            await wait_for_worker_group(app, pilot, group="run")
+            await wait_until(
+                recovery_started.is_set, pilot, description="restored draft save in flight"
+            )
+            # Restoring rejected input schedules another debounced save. Keep
+            # the injected disk fault in force until that owned write settles;
+            # restoring the method cannot replace a callable already in flight.
+            save_task = app._input_draft_save_task
+            assert save_task is not None and not save_task.done()
+            release_recovery.set()
+            await asyncio.shield(save_task)
             assert composer.input_content.text == "keep my input"
             assert len(application.runtime.store.list_sessions()) == int(existing)
             if existing:

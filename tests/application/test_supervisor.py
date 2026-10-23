@@ -47,12 +47,14 @@ class ConcurrencyProvider:
         self.active = 0
         self.maximum = 0
         self.started: list[str] = []
+        self.starts: asyncio.Queue[str] = asyncio.Queue()
         self.release = asyncio.Event()
 
     async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, tools
         prompt = messages[-1].text_content
         self.started.append(prompt)
+        self.starts.put_nowait(prompt)
         self.active += 1
         self.maximum = max(self.maximum, self.active)
         try:
@@ -283,20 +285,24 @@ async def test_fifo_scheduler_respects_global_concurrency_limit(tmp_path) -> Non
     provider = ConcurrencyProvider()
     supervisor = RuntimeSupervisor(_runtime(tmp_path, provider), max_concurrency=2)
 
-    handles = [await supervisor.submit(f"prompt-{index}") for index in range(4)]
-    for _ in range(100):
-        if len(provider.started) == 2:
-            break
-        await asyncio.sleep(0.01)
+    try:
+        # Disk-backed admission has no one-second latency contract. The gates
+        # establish overlap; the deadline only protects against a deadlock.
+        async with asyncio.timeout(60):
+            handles = [await supervisor.submit(f"prompt-{index}") for index in range(4)]
+            assert await provider.starts.get() == "prompt-0"
+            assert await provider.starts.get() == "prompt-1"
+            assert provider.started == ["prompt-0", "prompt-1"]
+            assert provider.active == 2
+            provider.release.set()
+            snapshots = await asyncio.gather(*(supervisor.wait(handle) for handle in handles))
 
-    assert provider.started == ["prompt-0", "prompt-1"]
-    assert provider.maximum == 2
-    provider.release.set()
-    snapshots = await asyncio.gather(*(supervisor.wait(handle) for handle in handles))
-
-    assert provider.started == ["prompt-0", "prompt-1", "prompt-2", "prompt-3"]
-    assert all(snapshot.status == "completed" for snapshot in snapshots)
-    await supervisor.shutdown()
+        assert provider.started == ["prompt-0", "prompt-1", "prompt-2", "prompt-3"]
+        assert provider.maximum == 2
+        assert all(snapshot.status == "completed" for snapshot in snapshots)
+    finally:
+        provider.release.set()
+        await supervisor.shutdown()
 
 
 @pytest.mark.asyncio
@@ -403,16 +409,21 @@ async def test_slow_subscription_reports_lag_without_blocking_run(tmp_path) -> N
     supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
     subscription = await supervisor.subscribe(session.session_id, max_buffer=1)
 
-    handle = await supervisor.submit("hello", session_id=session.session_id)
-    terminal = await asyncio.wait_for(supervisor.wait(handle), timeout=2)
-    notification = await subscription.get()
+    try:
+        async with asyncio.timeout(60):
+            handle = await supervisor.submit("hello", session_id=session.session_id)
+            # Never consume the one-slot buffer until the producer completes:
+            # completion proves independence from the subscriber, not speed.
+            terminal = await supervisor.wait(handle)
+            notification = await subscription.get()
 
-    assert terminal.status == "completed"
-    assert notification.kind == "diagnostic"
-    assert notification.diagnostic is not None
-    assert notification.diagnostic.code == "runtime_subscription_lagged"
-    subscription.close()
-    await supervisor.shutdown()
+        assert terminal.status == "completed"
+        assert notification.kind == "diagnostic"
+        assert notification.diagnostic is not None
+        assert notification.diagnostic.code == "runtime_subscription_lagged"
+    finally:
+        subscription.close()
+        await supervisor.shutdown()
 
 
 @pytest.mark.asyncio

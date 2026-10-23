@@ -18,6 +18,7 @@ from ouro.sdk.plugins import v5 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 from ouro.tools.builtin_todolist import builtin_todolist_tool
+from tests.application.helpers import running_runtime_task
 
 
 def _result(invocation, content: str, *, is_error: bool = False) -> ToolResult:
@@ -1050,26 +1051,26 @@ async def test_parallel_batch_marks_only_handlers_that_actually_started(tmp_path
         ],
     )
 
-    run_task = asyncio.create_task(runtime.run("run three"))
-    # This is a synchronization guard, not a one-second product SLA. Reaching
-    # the handlers includes real durable Session I/O and can exceed one second
-    # on Windows while still making normal forward progress.
-    await asyncio.wait_for(two_started.wait(), timeout=5)
-    session = runtime.store.list_sessions()[0]
-    snapshot = runtime.store.load_session(session.session_id)
-    active = next(run for run in snapshot.runs if run.status == "running")
-    assert active.active_tool_batch is not None
-    assert [call.status for call in active.active_tool_batch.calls] == [
-        "running",
-        "running",
-        "ready",
-    ]
-    started_events = [event for event in snapshot.events if event.event_type == "tool_call_started"]
-    assert [event.payload["tool_call_id"] for event in started_events] == started
-
-    release.set()
-    result = await asyncio.wait_for(run_task, timeout=2)
-    assert result.run.status == "completed"
+    async with running_runtime_task(runtime, runtime.run("run three")) as run_task:
+        try:
+            await two_started.wait()
+            session = runtime.store.list_sessions()[0]
+            snapshot = runtime.store.load_session(session.session_id)
+            active = next(run for run in snapshot.runs if run.status == "running")
+            assert active.active_tool_batch is not None
+            assert [call.status for call in active.active_tool_batch.calls] == [
+                "running",
+                "running",
+                "ready",
+            ]
+            started_events = [
+                event for event in snapshot.events if event.event_type == "tool_call_started"
+            ]
+            assert [event.payload["tool_call_id"] for event in started_events] == started
+        finally:
+            release.set()
+        result = await run_task
+        assert result.run.status == "completed"
 
 
 @pytest.mark.asyncio

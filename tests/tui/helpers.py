@@ -69,6 +69,23 @@ async def wait_until(
         ) from None
 
 
+async def wait_for_events(*events: asyncio.Event, pilot, description: str) -> None:
+    """Await producer handshakes without coupling disk I/O to UI polling.
+
+    These events hold a scenario at a known phase until the test releases it.
+    The deadline is a deadlock watchdog, not a model/startup performance budget.
+    """
+
+    try:
+        async with asyncio.timeout(60):
+            await asyncio.gather(*(event.wait() for event in events))
+    except TimeoutError:
+        raise AssertionError(
+            f"Timed out waiting for {description}; "
+            f"events={[event.is_set() for event in events]}; {surface_state(pilot.app)}"
+        ) from None
+
+
 async def wait_for_screen(
     app: App,
     screen_type: type[ChoiceScreen],

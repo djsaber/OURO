@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import ctypes
 import json
 import os
+import re
 import stat
 import subprocess
+from ctypes import wintypes
 from pathlib import Path
 
 import pytest
@@ -181,33 +185,43 @@ def test_posix_modes_apply_to_directory_temporary_and_replaced_file(tmp_path, mo
     )
 
 
-def _windows_acl(path: Path) -> dict:
-    # Pass the path through the environment; do not interpolate filesystem names into code.
-    result = subprocess.run(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "$ErrorActionPreference='Stop'; $a=Get-Acl -LiteralPath $env:OURO_TEST_ACL_PATH; "
-            "$sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; "
-            "@{protected=$a.AreAccessRulesProtected; sid=$sid; rules=@($a.GetAccessRules("
-            "$true,$true,[System.Security.Principal.SecurityIdentifier]) | ForEach-Object { "
-            "@{sid=$_.IdentityReference.Value; inherited=$_.IsInherited; "
-            "rights=[int]$_.FileSystemRights; type=[string]$_.AccessControlType}})} "
-            "| ConvertTo-Json -Depth 4",
-        ],
-        env={
-            **{key: value for key, value in os.environ.items() if key.lower() != "psmodulepath"},
-            "OURO_TEST_ACL_PATH": str(path),
-        },
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=15,
-    )
-    assert result.returncode == 0, result.stderr
-    return json.loads(result.stdout)
+def _windows_acl(path: Path) -> str:
+    # Inspect the actual DACL without starting PowerShell for every file. These
+    # read APIs are independent of the production permission-writing helper.
+    api = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    api.GetFileSecurityW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    api.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPWSTR),
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel.LocalFree.argtypes = [wintypes.HLOCAL]
+    kernel.LocalFree.restype = wintypes.HLOCAL
+    size = wintypes.DWORD()
+    api.GetFileSecurityW(str(path), 4, None, 0, ctypes.byref(size))
+    if ctypes.get_last_error() != 122:  # ERROR_INSUFFICIENT_BUFFER
+        raise ctypes.WinError(ctypes.get_last_error())
+    descriptor = ctypes.create_string_buffer(size.value)
+    if not api.GetFileSecurityW(str(path), 4, descriptor, size, ctypes.byref(size)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    sddl = wintypes.LPWSTR()
+    if not api.ConvertSecurityDescriptorToStringSecurityDescriptorW(
+        descriptor, 1, 4, ctypes.byref(sddl), None
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return sddl.value
+    finally:
+        kernel.LocalFree(ctypes.cast(sddl, wintypes.HLOCAL))
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows ACLs")
@@ -215,7 +229,17 @@ def test_windows_acl_on_directory_temporary_and_replaced_file(tmp_path, monkeypa
     store = FileCredentialStore(tmp_path)
     original = record()
     replace = store_module.replace_path_with_retry
-    paths: list[dict] = []
+    identity = subprocess.run(
+        ["whoami.exe", "/user", "/fo", "csv", "/nh"],
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",  # Only the ASCII SID is used; account names may use an OEM code page.
+        check=True,
+        timeout=60,
+    )
+    sid = next(csv.reader(identity.stdout.splitlines()))[1]
+    assert sid.startswith("S-1-")
+    paths: list[str] = []
 
     def checked_replace(source: Path, target: Path) -> None:
         paths.append(_windows_acl(source))
@@ -231,13 +255,15 @@ def test_windows_acl_on_directory_temporary_and_replaced_file(tmp_path, monkeypa
         ]
     )
     for acl in paths:
-        assert acl["protected"] is True
-        assert len(acl["rules"]) == 1
-        rule = acl["rules"][0]
-        assert rule["sid"] == acl["sid"]
-        assert rule["inherited"] is False
-        assert rule["type"] == "Allow"
-        assert rule["rights"] == 2032127  # FullControl
+        assert acl.startswith("D:") and "P" in acl.split("(", 1)[0]
+        rules = re.findall(r"\(([^()]*)\)", acl)
+        assert len(rules) == 1
+        kind, flags, rights, object_type, inherited_type, trustee = rules[0].split(";")
+        assert trustee == sid
+        assert "ID" not in flags  # Not inherited.
+        assert kind == "A"  # Allow.
+        assert rights in {"FA", "0x1f01ff"}  # FullControl.
+        assert object_type == inherited_type == ""
 
 
 def test_linked_credential_file_is_rejected(tmp_path: Path) -> None:

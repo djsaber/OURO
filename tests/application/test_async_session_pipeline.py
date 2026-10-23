@@ -114,7 +114,7 @@ async def test_queued_input_and_cancellation_keep_store_off_loop(store, monkeypa
     calls = _record_loop_store_calls(supervisor.store, monkeypatch)
     try:
         handle = await supervisor.submit("first", session_id=session.session_id)
-        await asyncio.wait_for(provider.first_started.wait(), timeout=2)
+        await asyncio.wait_for(provider.first_started.wait(), timeout=60)
         await runtime.run("queued", session_id=session.session_id)
         pending = await run_blocking(runtime.pending_user_inputs, session.session_id)
         assert len(pending) == 1
