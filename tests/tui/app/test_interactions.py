@@ -24,7 +24,7 @@ from tests.tui.app.support import (
     _question_application,
     _wait_for_tool_approval,
 )
-from tests.tui.helpers import run_ready_app
+from tests.tui.helpers import run_ready_app, wait_for_observed_status
 from tests.tui.helpers import wait_for_worker_group as _wait_for_worker_group
 from tests.tui.helpers import wait_until as _wait_until
 
@@ -109,11 +109,8 @@ async def test_approval_panel_selects_with_arrows_and_resumes_run(tmp_path: Path
         assert panel.selected_approved is True
 
         await pilot.press("enter")
-        await _wait_until(
-            lambda: app._projection is not None and app._projection.activity.status == "completed",
-            pilot,
-            description="approved run completion",
-        )
+        await _wait_for_worker_group(app, pilot, group="interaction")
+        await wait_for_observed_status(pilot, status="completed")
 
         assert target.read_text(encoding="utf-8") == "written"
         assert app._projection.pending_interaction is None
@@ -144,15 +141,9 @@ async def test_approval_panel_keeps_selected_action_visible_in_short_terminal(
         assert panel.selected_approved is False
         assert "Deny" in app.export_screenshot()
         await pilot.press("enter")
-        await _wait_until(
-            lambda: (
-                app._projection is not None
-                and app._projection.activity.status == "completed"
-                and not panel.display
-            ),
-            pilot,
-            description="denied tool from short terminal",
-        )
+        await _wait_for_worker_group(app, pilot, group="interaction")
+        await wait_for_observed_status(pilot, status="completed")
+        assert not panel.display
         assert not target.exists()
 
 
@@ -189,11 +180,8 @@ async def test_parallel_approvals_advance_one_at_a_time_without_stalling(tmp_pat
         assert second.exists() is False
 
         await pilot.press("enter")
-        await _wait_until(
-            lambda: app._projection is not None and app._projection.activity.status == "completed",
-            pilot,
-            description="parallel approval completion",
-        )
+        await _wait_for_worker_group(app, pilot, group="interaction")
+        await wait_for_observed_status(pilot, status="completed")
 
         assert first.read_text(encoding="utf-8") == "first"
         assert second.read_text(encoding="utf-8") == "second"

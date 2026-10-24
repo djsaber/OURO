@@ -24,7 +24,7 @@ from ouro.tui.interactions.bar import InteractionBar
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.widgets.activity import ActivityIndicator
 from tests.tui.app.support import _application, _approval_application, _persist_direct_child_session
-from tests.tui.helpers import run_ready_app, wait_until
+from tests.tui.helpers import run_ready_app, wait_for_events, wait_for_observed_status, wait_until
 from tests.tui.helpers import wait_for_screen as _wait_for_screen
 from tests.tui.test_live_session_attachment import visible
 from tests.tui.test_tasks import choose, streaming_application
@@ -464,7 +464,9 @@ async def test_usage_refresh_does_not_update_hidden_welcome_and_reentry_reads_cu
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
-async def test_two_owned_sessions_keep_streaming_across_welcome_and_reentry(tmp_path, backend):
+async def test_two_owned_sessions_keep_streaming_across_welcome_and_reentry(
+    tmp_path, monkeypatch, backend
+):
     provider = NavigationProvider()
     app = OuroTuiApp(application=streaming_application(tmp_path, provider, backend=backend))
     async with run_ready_app(app, size=(100, 32)) as pilot:
@@ -483,13 +485,30 @@ async def test_two_owned_sessions_keep_streaming_across_welcome_and_reentry(tmp_
         assert not alpha_worker.is_finished
 
         provider.finish("Beta")
-        await asyncio.wait_for(beta_worker.wait(), 8)
+        await asyncio.wait_for(beta_worker.wait(), 60)
         assert app._controller.session_id == alpha
         assert app._projection.session_id == alpha
         assert app._projection.activity.status == "running"
-        provider.finish("Alpha")
-        await asyncio.wait_for(alpha_worker.wait(), 8)
-        await pilot.pause()
+        entered, release = asyncio.Event(), asyncio.Event()
+        run_record = app._controller.run_record
+
+        async def held_run_record(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await run_record(*args, **kwargs)
+
+        monkeypatch.setattr(app._controller, "run_record", held_run_record)
+        try:
+            provider.finish("Alpha")
+            await asyncio.wait_for(alpha_worker.wait(), 60)
+            await wait_for_events(entered, pilot=pilot, description="terminal summary read")
+            # Execution and the terminal projection precede the summary read
+            # and transcript freeze. Neither is the content-application receipt.
+            assert app._projection.activity.status == "completed"
+            assert app._observation_subscription.applied_sequence < app._projection.last_sequence
+        finally:
+            release.set()
+        await wait_for_observed_status(pilot, status="completed")
         entries = app.query_one(ConversationHistory).entries
         answers = [entry.text for entry in entries if entry.kind == "assistant"]
         assert answers == ["Alpha prefix. While away. After return."]
@@ -532,12 +551,7 @@ async def test_three_running_sessions_keep_content_and_drafts_during_overlapping
         assert not workers[0].is_finished
         provider.finish("Alpha")
         await asyncio.gather(*(worker.wait() for worker in workers))
-        async with asyncio.timeout(8):
-            while (
-                app._projection.activity.status != "completed"
-                or app._observation_subscription.applied_sequence < app._projection.last_sequence
-            ):
-                await pilot.pause()
+        await wait_for_observed_status(pilot, status="completed")
         assert app.query_one(Composer).text == "Alpha draft"
         entries = app.query_one(ConversationHistory).entries
         assert [entry.text for entry in entries if entry.kind == "assistant"] == [

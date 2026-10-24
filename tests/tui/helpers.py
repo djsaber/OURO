@@ -35,6 +35,7 @@ def surface_state(app: App) -> str:
     workers = [(worker.name, worker.group, worker.state.name) for worker in app.workers]
     focused = app.focused
     projection = getattr(app, "_projection", None)
+    observation = getattr(app, "_observation_subscription", None)
     activity = getattr(projection, "activity", None)
     pending = [item.tool_call_id for item in getattr(projection, "pending_interactions", ())]
     bound = getattr(focused, "_interaction", None)
@@ -44,6 +45,8 @@ def surface_state(app: App) -> str:
         f"session={getattr(projection, 'session_id', None)!r}, "
         f"status={getattr(activity, 'status', None)!r}, "
         f"activity={getattr(activity, 'activity', None)!r}, "
+        f"applied={getattr(observation, 'applied_sequence', None)!r}, "
+        f"projected={getattr(projection, 'last_sequence', None)!r}, "
         f"bound={getattr(bound, 'tool_call_id', None)!r}, "
         f"disabled={getattr(focused, 'disabled', None)!r}, workers={workers!r}"
     )
@@ -131,8 +134,13 @@ async def wait_for_menu_action(pilot, menu: ChoiceScreen, *, timeout: float = 15
     )
 
 
-async def wait_for_worker_group(app: App, pilot, *, group: str, timeout: float = 15.0) -> None:
-    """Await one finite operation after its initiating UI messages have drained."""
+async def wait_for_worker_group(app: App, pilot, *, group: str, timeout: float = 60.0) -> None:
+    """Await a finite operation, including I/O, after its UI messages drain.
+
+    As with provider handshakes, the deadline is a hang guard, not an execution
+    speed requirement. Completion still needs a separate observation wait
+    before asserting the asynchronously delivered transcript.
+    """
 
     try:
         async with asyncio.timeout(timeout):
@@ -144,6 +152,34 @@ async def wait_for_worker_group(app: App, pilot, *, group: str, timeout: float =
         raise AssertionError(
             f"Timed out waiting for worker group {group!r}; {surface_state(app)}"
         ) from None
+
+
+async def wait_for_observed_status(pilot, *, status: str) -> None:
+    """Wait for the visible session's status and its content application receipt.
+
+    The producer and the projection can finish before the transcript is frozen.
+    Acknowledgement advances only after that entire observation batch is applied.
+    """
+
+    app = pilot.app
+    subscription = app._observation_subscription
+    assert subscription is not None
+
+    def applied() -> bool:
+        projection = app._projection
+        return (
+            projection is not None
+            and projection.session_id == subscription.session_id
+            and app._observation_subscription is subscription
+            and projection.activity.status == status
+            and subscription.applied_sequence >= projection.last_sequence
+        )
+
+    await wait_until(
+        applied,
+        pilot,
+        description=f"session {subscription.session_id} applied {status} observation",
+    )
 
 
 @asynccontextmanager
