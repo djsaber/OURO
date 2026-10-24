@@ -30,6 +30,7 @@ from ouro.core.tasks import (
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
+from tests.application.helpers import wait_for_runtime_event
 
 NOW = datetime(2026, 9, 7, 9, tzinfo=UTC)
 
@@ -84,8 +85,11 @@ def configuration(home, *, title=None, **target_changes) -> TaskConfiguration:
 
 
 async def settle(tasks, execution, task_id, *, status="completed"):
-    async with asyncio.timeout(10):
+    async with asyncio.timeout(60):
         while True:
+            # Reconcile on invalidation, as the scheduler does. Polling storage
+            # competes with the same durable writes this helper is waiting for.
+            tasks.changed.clear()
             await execution.reconcile()
             task = await tasks.get(task_id)
             entries = await tasks.executions(task_id)
@@ -94,7 +98,7 @@ async def settle(tasks, execution, task_id, *, status="completed"):
             )
             if current is not None and current.status == status:
                 return task
-            await asyncio.sleep(0.01)
+            await tasks.changed.wait()
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
@@ -318,13 +322,31 @@ class SelectivelyBlockingProvider:
     def __init__(self):
         self.started = asyncio.Event()
         self.release = asyncio.Event()
+        self.stopped = asyncio.Event()
 
     async def stream(self, *, model, messages, system_prompt="", tools=None, request_context=None):
         if "scheduled" in messages[-1].text_content:
             self.started.set()
-            await self.release.wait()
+            try:
+                await self.release.wait()
+            finally:
+                self.stopped.set()
         yield ProviderStreamEvent(type="text_delta", text="reply")
         yield ProviderStreamEvent(type="done")
+
+
+async def wait_for_scheduled_stream(provider, execution):
+    assert len(execution._handles) == 1
+    handle = next(iter(execution._handles.values()))
+    completion = asyncio.create_task(execution.supervisor.wait(handle))
+    try:
+        await wait_for_runtime_event(
+            provider.started, completion, description="scheduled model stream"
+        )
+    finally:
+        # This task only watches the receipt; execution remains Supervisor-owned.
+        completion.cancel()
+        await asyncio.gather(completion, return_exceptions=True)
 
 
 @pytest.mark.parametrize("task_backend", ["files", "sqlite"])
@@ -337,20 +359,21 @@ async def test_target_edit_during_execution_applies_only_to_next_occurrence(tmp_
         now,
     ):
         task = await tasks.create(configuration(tmp_path))
-        await execution.tick()
-        async with asyncio.timeout(5):
-            await provider.started.wait()
-        accepted = (await tasks.executions(task.task_id))[0]
-        active = await tasks.get(task.task_id)
-        replacement = active.configuration.model_copy(
-            update={
-                "target": active.configuration.target.model_copy(
-                    update={"prompt": "New instruction"}
-                )
-            }
-        )
-        await tasks.update(task.task_id, replacement, expected_revision=active.revision)
-        provider.release.set()
+        try:
+            await execution.tick()
+            await wait_for_scheduled_stream(provider, execution)
+            accepted = (await tasks.executions(task.task_id))[0]
+            active = await tasks.get(task.task_id)
+            replacement = active.configuration.model_copy(
+                update={
+                    "target": active.configuration.target.model_copy(
+                        update={"prompt": "New instruction"}
+                    )
+                }
+            )
+            await tasks.update(task.task_id, replacement, expected_revision=active.revision)
+        finally:
+            provider.release.set()
         await settle(tasks, execution, task.task_id)
         completed = (await tasks.executions(task.task_id))[0]
         assert completed.target == accepted.target
@@ -374,22 +397,29 @@ async def test_background_concurrency_preserves_interactive_execution_and_abort(
     async with task_runtime(tmp_path, provider=provider) as (tasks, execution, supervisor, now):
         first = await tasks.create(configuration(tmp_path, title="First"))
         second = await tasks.create(configuration(tmp_path, title="Second"))
-        await execution.tick()
-        async with asyncio.timeout(5):
-            await provider.started.wait()
-        await execution.tick()
-        assert (
-            len(await tasks.executions(first.task_id)) + len(await tasks.executions(second.task_id))
-            == 1
-        )
-        foreground = await supervisor.submit("Interactive question")
-        async with asyncio.timeout(5):
-            assert (await supervisor.wait(foreground)).status == "completed"
-        supervisor.release_handle(foreground)
-        active = tasks.repository.active()
-        await supervisor.abort(active[0].target.session_id)
-        await settle(tasks, execution, active[0].task_id, status="interrupted")
-        provider.release.set()
+        try:
+            await execution.tick()
+            await wait_for_scheduled_stream(provider, execution)
+            await execution.tick()
+            assert (
+                len(await tasks.executions(first.task_id))
+                + len(await tasks.executions(second.task_id))
+                == 1
+            )
+            foreground = await supervisor.submit("Interactive question")
+            async with asyncio.timeout(60):
+                assert (await supervisor.wait(foreground)).status == "completed"
+            supervisor.release_handle(foreground)
+            # Foreground progress must be independent of the blocked background
+            # stream, regardless of how long persistence takes.
+            assert not provider.stopped.is_set()
+            active = tasks.repository.active()
+            await supervisor.abort(active[0].target.session_id)
+            await settle(tasks, execution, active[0].task_id, status="interrupted")
+            assert provider.stopped.is_set()
+            assert not provider.release.is_set()
+        finally:
+            provider.release.set()
 
 
 async def test_launch_failure_is_visible_and_does_not_block_other_tasks(tmp_path):

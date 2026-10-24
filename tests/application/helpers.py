@@ -3,13 +3,17 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 
+from ouro.application.contracts.execution import RuntimeStatusSnapshot
 from ouro.application.supervisor import RuntimeSupervisor
 from ouro.core.callbacks import run_blocking
 from ouro.core.results import RunResult
 
 
 async def wait_for_runtime_event(
-    event: asyncio.Event, task: asyncio.Task[RunResult], *, description: str
+    event: asyncio.Event,
+    task: asyncio.Task[RunResult] | asyncio.Task[RuntimeStatusSnapshot],
+    *,
+    description: str,
 ) -> None:
     """Await a run's phase handshake, surfacing early termination immediately.
 
@@ -26,9 +30,12 @@ async def wait_for_runtime_event(
             raise AssertionError(f"Timed out waiting for {description}; task={task!r}") from None
         if not event.is_set():
             result = task.result()
-            raise AssertionError(
-                f"Run ended before {description}: {result.run.status}; {result.run.error}"
+            outcome = (
+                f"{result.run.status}; {result.run.error}"
+                if isinstance(result, RunResult)
+                else f"{result.status}; {result.diagnostics}"
             )
+            raise AssertionError(f"Run ended before {description}: {outcome}")
     finally:
         handshake.cancel()
         await asyncio.gather(handshake, return_exceptions=True)

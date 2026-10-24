@@ -27,6 +27,7 @@ from ouro.local_application import LocalApplication
 from ouro.providers.openai_responses.codec import responses_input
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
+from tests.application.helpers import wait_for_runtime_event
 
 PLUGIN_ID = "dev.ouro.goal"
 
@@ -302,11 +303,12 @@ async def test_pause_stops_stream_and_resume_keeps_existing_input(goal_app, monk
     await g.command("Finish the retained work")
     task = asyncio.create_task(g.consume())
     try:
-        await asyncio.wait_for(started.wait(), 5)
+        await wait_for_runtime_event(started, task, description="goal model stream")
         before = g.runtime.store.load_session(g.session.session_id).messages
-        await asyncio.wait_for(g.submit("pause"), 5)
-        assert stopped.is_set()
-        result = await asyncio.wait_for(task, 5)
+        async with asyncio.timeout(60):
+            await g.submit("pause")
+            assert stopped.is_set()
+            result = await task
         assert result.run.status == "aborted"
         assert (await g.goal())["status"] == "paused"
         assert g.pending() == []
@@ -341,8 +343,8 @@ async def test_pause_stops_stream_and_resume_keeps_existing_input(goal_app, monk
         ]
     finally:
         if not task.done():
-            await g.runtime.abort_run(session_id=g.session.session_id)
-        await task
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.parametrize("mode", ["one_by_one", "all_at_once"])
@@ -715,8 +717,8 @@ async def test_pause_during_tool_execution_preserves_completed_results(goal_app,
     await g.command("Check then change the information")
     task = asyncio.create_task(g.consume())
     try:
-        async with asyncio.timeout(30):
-            await started.wait()
+        await wait_for_runtime_event(started, task, description="goal tool execution")
+        async with asyncio.timeout(60):
             await g.submit("pause")
             assert stopped.is_set()
             paused = await task
@@ -743,5 +745,5 @@ async def test_pause_during_tool_execution_preserves_completed_results(goal_app,
         assert not any(m.semantic_tag in {"goal-paused", "goal-resumed"} for m in messages)
     finally:
         if not task.done():
-            await g.runtime.abort_run(session_id=g.session.session_id)
-        await task
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
