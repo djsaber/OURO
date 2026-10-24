@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from contextlib import AsyncExitStack
 from contextvars import ContextVar
 from threading import Event, get_ident
 
@@ -43,7 +44,11 @@ from ouro.providers.openai_responses.codec import responses_input
 from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolInputRequest, ToolRegistry, ToolResult
-from tests.application.helpers import wait_for_agent_interactions, wait_for_parent_delivery
+from tests.application.helpers import (
+    wait_for_agent_interactions,
+    wait_for_parent_delivery,
+    wait_for_run_event,
+)
 
 
 class CapturingChildProvider:
@@ -740,6 +745,22 @@ async def test_terminal_agent_settlement_queries_store_outside_the_event_loop(
     assert event_loop_thread not in reader_threads
 
 
+@pytest.fixture
+async def active_subagent_services():
+    """Own the gated provider and services even when startup or assertions fail."""
+    async with AsyncExitStack() as cleanup:
+
+        async def create(*args, **kwargs):
+            result = await _active_subagent_services(*args, **kwargs)
+            service, supervisor, _, provider, _, _ = result
+            cleanup.push_async_callback(supervisor.shutdown)
+            cleanup.push_async_callback(service.close)
+            cleanup.callback(provider.release.set)
+            return result
+
+        yield create
+
+
 async def _active_subagent_services(
     tmp_path,
     *,
@@ -937,8 +958,10 @@ async def test_continue_reuses_interrupted_child_run_and_refreshes_its_result(
 
 
 @pytest.mark.asyncio
-async def test_root_continue_resumes_its_interrupted_child_without_new_runs(tmp_path, monkeypatch):
-    service, supervisor, store, provider, root, parent = await _active_subagent_services(tmp_path)
+async def test_root_continue_resumes_its_interrupted_child_without_new_runs(
+    tmp_path, monkeypatch, active_subagent_services
+):
+    service, supervisor, store, provider, root, parent = await active_subagent_services(tmp_path)
     root_input = MessageRecord.text(
         session_id=root.session_id,
         run_id=parent.run_id,
@@ -1526,8 +1549,10 @@ async def test_idle_child_follow_up_waits_for_previous_execution_receipt(
 
 
 @pytest.mark.asyncio
-async def test_active_child_message_uses_steer_without_new_run(tmp_path) -> None:
-    service, supervisor, store, provider, root, parent = await _active_subagent_services(tmp_path)
+async def test_active_child_message_uses_steer_without_new_run(
+    tmp_path, active_subagent_services
+) -> None:
+    service, supervisor, store, provider, root, parent = await active_subagent_services(tmp_path)
 
     child = await service.spawn_agent(
         SpawnAgentRequest(
@@ -1539,7 +1564,13 @@ async def test_active_child_message_uses_steer_without_new_run(tmp_path) -> None
             description="Steering test",
         )
     )
-    await asyncio.wait_for(provider.started.wait(), timeout=2)
+    await wait_for_run_event(
+        provider.started,
+        supervisor,
+        child.child_session_id,
+        child.child_run_id,
+        description="active child model stream",
+    )
     assert child.child_session_id is not None
     assert child.child_run_id is not None
     tree_subscription = await service.subscribe_agent_tree(root.session_id)
@@ -1791,8 +1822,9 @@ async def test_sync_follow_up_result_stays_pending_after_parent_abort(tmp_path) 
 async def test_interrupt_racing_natural_completion_commits_one_result(
     tmp_path,
     execution_mode,
+    active_subagent_services,
 ) -> None:
-    service, supervisor, store, provider, root, parent = await _active_subagent_services(tmp_path)
+    service, supervisor, store, provider, root, parent = await active_subagent_services(tmp_path)
     child = await service.spawn_agent(
         SpawnAgentRequest(
             request_id="host/interrupt-completion-race",
@@ -1804,7 +1836,13 @@ async def test_interrupt_racing_natural_completion_commits_one_result(
             execution_mode=execution_mode,
         )
     )
-    await asyncio.wait_for(provider.started.wait(), timeout=2)
+    await wait_for_run_event(
+        provider.started,
+        supervisor,
+        child.child_session_id,
+        child.child_run_id,
+        description="active child model stream",
+    )
 
     interrupt = asyncio.create_task(
         service.interrupt_agent(child.delegation_id, reason="Injected race")
@@ -1833,8 +1871,10 @@ async def test_interrupt_racing_natural_completion_commits_one_result(
 
 
 @pytest.mark.asyncio
-async def test_close_rejects_active_child_and_is_idempotent_after_interrupt(tmp_path) -> None:
-    service, supervisor, store, provider, root, parent = await _active_subagent_services(tmp_path)
+async def test_close_rejects_active_child_and_is_idempotent_after_interrupt(
+    tmp_path, active_subagent_services
+) -> None:
+    service, supervisor, store, provider, root, parent = await active_subagent_services(tmp_path)
     child = await service.spawn_agent(
         SpawnAgentRequest(
             request_id="host/close-active-child",
@@ -1845,7 +1885,13 @@ async def test_close_rejects_active_child_and_is_idempotent_after_interrupt(tmp_
             description="Close active child",
         )
     )
-    await asyncio.wait_for(provider.started.wait(), timeout=2)
+    await wait_for_run_event(
+        provider.started,
+        supervisor,
+        child.child_session_id,
+        child.child_run_id,
+        description="active child model stream",
+    )
 
     with pytest.raises(SessionBusyError, match="interrupted before close"):
         await service.close_agent(child.delegation_id)
@@ -1869,8 +1915,10 @@ async def test_close_rejects_active_child_and_is_idempotent_after_interrupt(tmp_
 
 
 @pytest.mark.asyncio
-async def test_interrupt_aborts_queued_child_before_model_execution(tmp_path) -> None:
-    service, supervisor, store, provider, root, parent = await _active_subagent_services(tmp_path)
+async def test_interrupt_aborts_queued_child_before_model_execution(
+    tmp_path, active_subagent_services
+) -> None:
+    service, supervisor, store, provider, root, parent = await active_subagent_services(tmp_path)
     active = await service.spawn_agent(
         SpawnAgentRequest(
             request_id="host/active-before-queued",
@@ -1881,7 +1929,13 @@ async def test_interrupt_aborts_queued_child_before_model_execution(tmp_path) ->
             description="Active child",
         )
     )
-    await asyncio.wait_for(provider.started.wait(), timeout=2)
+    await wait_for_run_event(
+        provider.started,
+        supervisor,
+        active.child_session_id,
+        active.child_run_id,
+        description="active child model stream",
+    )
     queued = await service.spawn_agent(
         SpawnAgentRequest(
             request_id="host/queued-interrupt",
@@ -1917,8 +1971,9 @@ async def test_interrupt_aborts_queued_child_before_model_execution(tmp_path) ->
 async def test_parent_abort_cascades_bound_child_and_preserves_result(
     tmp_path,
     execution_mode,
+    active_subagent_services,
 ) -> None:
-    service, supervisor, store, provider, root, parent = await _active_subagent_services(tmp_path)
+    service, supervisor, store, provider, root, parent = await active_subagent_services(tmp_path)
     child = await service.spawn_agent(
         SpawnAgentRequest(
             request_id="host/cascade-child",
@@ -1930,7 +1985,13 @@ async def test_parent_abort_cascades_bound_child_and_preserves_result(
             execution_mode=execution_mode,
         )
     )
-    await asyncio.wait_for(provider.started.wait(), timeout=2)
+    await wait_for_run_event(
+        provider.started,
+        supervisor,
+        child.child_session_id,
+        child.child_run_id,
+        description="active child model stream",
+    )
     await supervisor.runtime.abort_run(
         session_id=root.session_id,
         run_id=parent.run_id,
@@ -1951,8 +2012,9 @@ async def test_parent_abort_cascades_bound_child_and_preserves_result(
 async def test_bound_cascade_timeout_emits_diagnostic_and_keeps_unknown_child(
     tmp_path,
     monkeypatch,
+    active_subagent_services,
 ) -> None:
-    service, supervisor, store, provider, root, parent = await _active_subagent_services(
+    service, supervisor, store, provider, root, parent = await active_subagent_services(
         tmp_path,
         cascade_timeout_seconds=0.01,
     )
@@ -1966,7 +2028,13 @@ async def test_bound_cascade_timeout_emits_diagnostic_and_keeps_unknown_child(
             description="Cascade timeout child",
         )
     )
-    await asyncio.wait_for(provider.started.wait(), timeout=2)
+    await wait_for_run_event(
+        provider.started,
+        supervisor,
+        child.child_session_id,
+        child.child_run_id,
+        description="active child model stream",
+    )
 
     async def blocked_abort(*_args, **_kwargs):
         await asyncio.Event().wait()
@@ -2538,8 +2606,9 @@ async def test_tree_projects_missing_child_run_as_recoverable(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_concurrent_spawns_are_scheduled_and_subagent_cannot_spawn_nested_agent(
     tmp_path,
+    active_subagent_services,
 ) -> None:
-    service, supervisor, _, provider, root, parent = await _active_subagent_services(tmp_path)
+    service, supervisor, _, provider, root, parent = await active_subagent_services(tmp_path)
     handles = await asyncio.gather(
         *(
             service.spawn_agent(
@@ -2557,7 +2626,13 @@ async def test_concurrent_spawns_are_scheduled_and_subagent_cannot_spawn_nested_
     )
     assert len(handles) == 2
     assert len({handle.delegation_id for handle in handles}) == 2
-    await asyncio.wait_for(provider.started.wait(), timeout=2)
+    await wait_for_run_event(
+        provider.started,
+        supervisor,
+        handles[0].child_session_id,
+        handles[0].child_run_id,
+        description="active child model stream",
+    )
 
     with pytest.raises(ValueError, match="maximum subagent depth is 1"):
         await service.spawn_agent(
@@ -2580,8 +2655,9 @@ async def test_concurrent_spawns_are_scheduled_and_subagent_cannot_spawn_nested_
 @pytest.mark.asyncio
 async def test_shared_root_budget_pauses_queued_child_and_aggregates_each_run_once(
     tmp_path,
+    active_subagent_services,
 ) -> None:
-    service, supervisor, store, provider, root, parent = await _active_subagent_services(tmp_path)
+    service, supervisor, store, provider, root, parent = await active_subagent_services(tmp_path)
     parent = parent.model_copy(
         update={
             "metadata": {
@@ -2601,7 +2677,13 @@ async def test_shared_root_budget_pauses_queued_child_and_aggregates_each_run_on
             description="First budget child",
         )
     )
-    await asyncio.wait_for(provider.started.wait(), timeout=2)
+    await wait_for_run_event(
+        provider.started,
+        supervisor,
+        first.child_session_id,
+        first.child_run_id,
+        description="active child model stream",
+    )
     second = await service.spawn_agent(
         SpawnAgentRequest(
             request_id="host/root-budget-second",
@@ -3862,8 +3944,10 @@ async def test_late_child_delivery_is_rejected_at_parent_acceptance_after_undo(
         await supervisor.shutdown()
 
 
-async def test_undo_completed_parent_cancels_bound_child_without_rewriting_parent_audit(tmp_path):
-    service, supervisor, store, provider, root, parent = await _active_subagent_services(tmp_path)
+async def test_undo_completed_parent_cancels_bound_child_without_rewriting_parent_audit(
+    tmp_path, active_subagent_services
+):
+    service, supervisor, store, provider, root, parent = await active_subagent_services(tmp_path)
     user = MessageRecord.text(
         session_id=root.session_id,
         run_id=parent.run_id,
@@ -3883,7 +3967,13 @@ async def test_undo_completed_parent_cancels_bound_child_without_rewriting_paren
                 execution_mode="async",
             )
         )
-        await asyncio.wait_for(provider.started.wait(), 5)
+        await wait_for_run_event(
+            provider.started,
+            supervisor,
+            handle.child_session_id,
+            handle.child_run_id,
+            description="active child model stream",
+        )
         completed = parent.model_copy(update={"status": "completed", "ended_at": utc_now()})
         current = store.load_session_record(root.session_id)
         store.commit_session(

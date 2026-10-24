@@ -14,7 +14,12 @@ from ouro.local_application import LocalApplication
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ProcessResult, ToolExecutionContext, ToolRegistry
 from ouro.tools.builtin.shell import CommandShell, builtin_command_tool
-from tests.application.helpers import wait_for_agent_interactions, wait_for_parent_delivery
+from tests.application.helpers import (
+    wait_for_activity,
+    wait_for_agent_interactions,
+    wait_for_parent_delivery,
+    wait_for_run_event,
+)
 
 
 class DelegatingProvider:
@@ -97,7 +102,13 @@ async def test_late_owner_settlement_cannot_rewind_shared_session_activity(
             child.child_session_id, include_activity=True
         )
         try:
-            await asyncio.wait_for(parked.wait(), 5)
+            await wait_for_run_event(
+                parked,
+                first.supervisor,
+                child.child_session_id,
+                child.child_run_id,
+                description="parked approval before owner settlement",
+            )
             pending = await interaction(second, parent.session.session_id)
             handle = await second.agents.resolve_agent_approval(
                 pending.delegation_id,
@@ -119,9 +130,7 @@ async def test_late_owner_settlement_cannot_rewind_shared_session_activity(
                 approved=False,
             )
             assert (await second.supervisor.wait(handle)).status == "completed"
-            async with asyncio.timeout(5):
-                while first.supervisor.activity(child.child_session_id).status != "completed":
-                    await asyncio.sleep(0.01)
+            await wait_for_activity(subscription, status="completed")
             owner = first.supervisor._jobs_by_session[child.child_session_id]
             release.set()
             await owner.done.wait()
@@ -397,7 +406,8 @@ async def test_competing_hosts_resolve_one_approval_once_and_converge(
         try:
             await asyncio.wait_for(asyncio.gather(entered.wait(), contended.wait()), 30)
             release.set()
-            results = await asyncio.wait_for(attempts, 5)
+            async with asyncio.timeout(60):
+                results = await attempts
             assert len(executed) == 1
             assert (
                 sum(getattr(result, "status", None) == "waiting_approval" for result in results)
@@ -413,12 +423,12 @@ async def test_competing_hosts_resolve_one_approval_once_and_converge(
                 approved=False,
             )
             assert (await first.supervisor.wait(handle)).status == "completed"
-            async with asyncio.timeout(5):
-                while any(
-                    app.supervisor.activity(child.child_session_id).status != "completed"
-                    for app in (first, second)
-                ):
-                    await asyncio.sleep(0.01)
+            await asyncio.gather(
+                *(
+                    wait_for_activity(subscription, status="completed")
+                    for subscription in subscriptions
+                )
+            )
             assert len(executed) == 1
         finally:
             release.set()

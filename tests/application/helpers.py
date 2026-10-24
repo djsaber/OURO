@@ -7,11 +7,12 @@ from ouro.application.contracts.execution import RuntimeStatusSnapshot
 from ouro.application.supervisor import RuntimeSupervisor
 from ouro.core.callbacks import run_blocking
 from ouro.core.results import RunResult
+from ouro.core.state import RunRecord
 
 
 async def wait_for_runtime_event(
     event: asyncio.Event,
-    task: asyncio.Task[RunResult] | asyncio.Task[RuntimeStatusSnapshot],
+    task: asyncio.Task[RunResult] | asyncio.Task[RuntimeStatusSnapshot] | asyncio.Task[RunRecord],
     *,
     description: str,
 ) -> None:
@@ -30,15 +31,39 @@ async def wait_for_runtime_event(
             raise AssertionError(f"Timed out waiting for {description}; task={task!r}") from None
         if not event.is_set():
             result = task.result()
+            if isinstance(result, RunResult):
+                result = result.run
             outcome = (
-                f"{result.run.status}; {result.run.error}"
-                if isinstance(result, RunResult)
+                f"{result.status}; {result.error}"
+                if isinstance(result, RunRecord)
                 else f"{result.status}; {result.diagnostics}"
             )
             raise AssertionError(f"Run ended before {description}: {outcome}")
     finally:
         handshake.cancel()
         await asyncio.gather(handshake, return_exceptions=True)
+
+
+async def wait_for_run_event(event, supervisor, session_id, run_id, *, description):
+    """Observe a known durable Run without taking ownership of its execution."""
+    completion = asyncio.create_task(supervisor.wait_run(session_id, run_id))
+    try:
+        await wait_for_runtime_event(event, completion, description=description)
+    finally:
+        completion.cancel()
+        await asyncio.gather(completion, return_exceptions=True)
+
+
+async def wait_for_activity(subscription, *, status):
+    """Await the observer's own projection, including an already-current snapshot."""
+    async with asyncio.timeout(60):
+        activity = subscription.initial_activity
+        while activity is None or activity.status != status:
+            notification = await subscription.get()
+            assert notification.diagnostic is None, notification.diagnostic
+            if notification.activity is not None:
+                activity = notification.activity
+        return activity
 
 
 async def wait_for_session_state(supervisor, session_id, read, *, event_types=frozenset()):

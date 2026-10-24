@@ -25,6 +25,11 @@ from ouro.mcp import MCPConfigStore, MCPRuntimeResource, MCPServerConfigUpdate
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
+from tests.application.helpers import (
+    wait_for_run_event,
+    wait_for_runtime_event,
+    wait_for_session_state,
+)
 
 
 def _runtime(tmp_path, provider) -> RuntimeService:
@@ -823,9 +828,11 @@ async def test_host_input_accepted_after_final_drain_gets_scheduled(
         return await enqueue(job, **kwargs)
 
     monkeypatch.setattr(supervisor, "_enqueue_job", dispatch)
+    completion = None
     try:
         first = await supervisor.submit("First")
-        await asyncio.wait_for(finished.wait(), 5)
+        completion = asyncio.create_task(supervisor.wait(first))
+        await wait_for_runtime_event(finished, completion, description="first run's final drain")
         receipt = await supervisor.route_host_input(
             HostSessionInput(
                 prompt="Durable follow-up", host_source_id="test/input", queue_id="stable"
@@ -833,16 +840,23 @@ async def test_host_input_accepted_after_final_drain_gets_scheduled(
             session_id=first.session_id,
         )
         release.set()
-        await supervisor.wait(first)
-        async with asyncio.timeout(5):
-            while True:
-                message = runtime.store.find_queued_input_message(
-                    first.session_id, receipt.queue_id
-                )
-                runs = runtime.store.load_runs(first.session_id)
-                if message is not None and len(runs) == 2 and runs[-1].status == "completed":
-                    break
-                await asyncio.sleep(0.01)
+        async with asyncio.timeout(60):
+            await completion
+
+        def completed_input():
+            message = runtime.store.find_queued_input_message(first.session_id, receipt.queue_id)
+            if message is not None and message.run_id is not None:
+                run = runtime.store.load_run(first.session_id, message.run_id)
+                if run.status == "completed":
+                    return message
+            return None
+
+        message = await wait_for_session_state(
+            supervisor,
+            first.session_id,
+            completed_input,
+            event_types=frozenset({"queued_input_consumed", "run_completed"}),
+        )
         replay = await supervisor.route_host_input(
             HostSessionInput(
                 prompt="Durable follow-up", host_source_id="test/input", queue_id="stable"
@@ -860,6 +874,9 @@ async def test_host_input_accepted_after_final_drain_gets_scheduled(
         assert len(runtime.store.load_runs(first.session_id)) == 2
     finally:
         release.set()
+        if completion is not None:
+            completion.cancel()
+            await asyncio.gather(completion, return_exceptions=True)
         await supervisor.shutdown()
 
 
@@ -922,19 +939,32 @@ async def test_host_input_private_job_can_be_aborted_without_retaining_receipt(t
     supervisor = RuntimeSupervisor(runtime)
     session = runtime.sessions.create(current_model=runtime.current_model().key).session
     try:
-        await supervisor.route_host_input(
+        receipt = await supervisor.route_host_input(
             HostSessionInput(prompt="Host work", host_source_id="test/host"),
             session_id=session.session_id,
         )
-        await asyncio.wait_for(provider.started.wait(), 5)
+        message = await wait_for_session_state(
+            supervisor,
+            session.session_id,
+            lambda: runtime.store.find_queued_input_message(session.session_id, receipt.queue_id),
+            event_types=frozenset({"queued_input_consumed"}),
+        )
+        await wait_for_run_event(
+            provider.started,
+            supervisor,
+            session.session_id,
+            message.run_id,
+            description="private host input model stream",
+        )
+        job = supervisor._jobs_by_session[session.session_id]
         assert (await supervisor.abort(session.session_id)).status == "aborted"
-        async with asyncio.timeout(5):
-            while session.session_id in supervisor._jobs_by_session:
-                await asyncio.sleep(0.01)
+        async with asyncio.timeout(60):
+            await job.done.wait()
+        assert session.session_id not in supervisor._jobs_by_session
         assert supervisor._completion_events == {}
         assert supervisor._snapshots == {}
     finally:
-        await supervisor.shutdown()
+        await supervisor.shutdown(ShutdownPolicy(mode="abort"))
 
 
 @pytest.mark.parametrize("overflow", [False, True])

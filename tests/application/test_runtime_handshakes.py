@@ -1,20 +1,22 @@
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
 from ouro.application.contracts.base import Diagnostic
-from ouro.application.contracts.execution import RuntimeStatusSnapshot
+from ouro.application.contracts.execution import RuntimeActivitySnapshot, RuntimeStatusSnapshot
 from ouro.core.results import RunResult
 from ouro.core.state import RunRecord, SessionRecord
-from tests.application.helpers import wait_for_runtime_event
+from tests.application.helpers import wait_for_activity, wait_for_runtime_event
 
 
-@pytest.mark.parametrize("supervised", [False, True])
-async def test_runtime_handshake_reports_early_failure_without_waiting_for_event(supervised):
+@pytest.mark.parametrize("kind", ["runtime", "supervisor", "durable"])
+async def test_runtime_handshake_reports_early_failure_without_waiting_for_event(kind):
     session = SessionRecord()
     failure = "Storage unavailable"
-    result = (
-        RuntimeStatusSnapshot(
+    run = RunRecord(session_id=session.session_id, status="failed", error=failure)
+    if kind == "supervisor":
+        result = RuntimeStatusSnapshot(
             session_id=session.session_id,
             status="failed",
             diagnostics=(
@@ -26,12 +28,10 @@ async def test_runtime_handshake_reports_early_failure_without_waiting_for_event
                 ),
             ),
         )
-        if supervised
-        else RunResult(
-            session=session,
-            run=RunRecord(session_id=session.session_id, status="failed", error=failure),
-        )
-    )
+    elif kind == "runtime":
+        result = RunResult(session=session, run=run)
+    else:
+        result = run
 
     async def finish():
         return result
@@ -68,3 +68,23 @@ async def test_runtime_handshake_propagates_execution_exception():
     task = asyncio.create_task(fail())
     with pytest.raises(OSError, match="Cannot open session"):
         await wait_for_runtime_event(asyncio.Event(), task, description="model stream")
+
+
+@pytest.mark.parametrize("already_completed", [False, True])
+async def test_activity_wait_observes_initial_snapshot_or_next_notification(already_completed):
+    completed = RuntimeActivitySnapshot(
+        session_id="ses_observed", status="completed", activity="completed"
+    )
+    reads = 0
+
+    async def get():
+        nonlocal reads
+        reads += 1
+        assert not already_completed, "An already-current snapshot needs no future notification"
+        return SimpleNamespace(activity=completed, diagnostic=None)
+
+    subscription = SimpleNamespace(
+        initial_activity=completed if already_completed else None, get=get
+    )
+    assert await wait_for_activity(subscription, status="completed") is completed
+    assert reads == (0 if already_completed else 1)
