@@ -33,24 +33,23 @@ async def test_historical_startup_returns_version_failure_without_opening_homepa
 
 
 @pytest.mark.parametrize("resume", [False, True])
-async def test_homepage_does_not_read_historical_context_until_session_is_opened(
+async def test_startup_defers_request_content_until_explicit_full_read(
     historical_home: Path, resume: bool
 ) -> None:
     upgrade(historical_home)
-    context = historical_home / "sessions/ses_fixture/context.json"
+    context = next((historical_home / "sessions/ses_fixture/request-content").glob("*.json"))
     context.write_bytes((FIXTURES / "files/sessions/ses_fixture/context.json").read_bytes())
     app = OuroTuiApp(
         application=two_route_application(historical_home),
         resume_session_id="ses_fixture" if resume else None,
     )
-    if resume:
-        async with app.run_test(size=(100, 32)):
-            await wait_until(lambda: app.startup_data_error is not None)
-        assert isinstance(app.startup_data_error, UnsupportedDataVersionError)
-    else:
-        async with run_ready_app(app, size=(100, 32)):
-            assert app._controller._started
-            assert app.startup_data_error is None
+    async with run_ready_app(app, size=(100, 32)):
+        assert app._controller._started
+        assert app.startup_data_error is None
+    from ouro.sessions import LocalSessionStore
+
+    with pytest.raises(UnsupportedDataVersionError):
+        LocalSessionStore(historical_home).load_latest_context("ses_fixture")
 
 
 async def test_bootstrap_failure_closes_started_services_before_return(

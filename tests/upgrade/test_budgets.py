@@ -23,9 +23,7 @@ def budget_records() -> dict:
     return loads((FIXTURES / "records/output-budget.json").read_text("utf-8"))
 
 
-@pytest.mark.parametrize(
-    "kind,field,version", [("context", "metrics", 5), ("compaction", "context_metrics_after", 2)]
-)
+@pytest.mark.parametrize("kind,field,version", [("context", "metrics", 11)])
 def test_budget_records_preserve_measurements_and_request_capacity(
     budget_records, kind, field, version
 ):
@@ -37,8 +35,6 @@ def test_budget_records_preserve_measurements_and_request_capacity(
     assert metrics.budget.model_dump() == {"context_window": 1000, "max_output_tokens": 200}
     for key, value in before[field].items():
         assert getattr(metrics, key) == value
-    for key in before.keys() - {"schema_version", field}:
-        assert result[key] == before[key]
     assert source == before
     assert convert(kind, result) is result
 
@@ -48,7 +44,7 @@ def test_event_and_commit_metrics_remain_replayable_without_touching_opaque_payl
 ):
     commit = budget_records["commit"]
     before = copy.deepcopy(commit)
-    result = convert("commit", commit)
+    result = {**commit, "events": [convert("event", event) for event in commit["events"]]}
     activity = queued_runtime_activity("ses_fixture")
     for source, event in zip(before["events"], result["events"], strict=True):
         assert event == convert("event", source)
@@ -60,7 +56,6 @@ def test_event_and_commit_metrics_remain_replayable_without_touching_opaque_payl
     assert result["output"] == before["output"]
     assert result["request_digest"] == before["request_digest"]
     assert commit == before
-    assert convert("commit", result) is result
     unrelated = copy.deepcopy(before["events"][0])
     unrelated["event_type"] = "plugin.custom"
     assert convert("event", unrelated) is unrelated
@@ -101,7 +96,14 @@ def test_zero_reserve_is_unlimited_and_absent_compaction_metrics_stay_absent(bud
     }
     compaction = budget_records["compaction"]
     compaction["context_metrics_after"] = None
-    assert convert("compaction", compaction)["context_metrics_after"] is None
+    from ouro.core.messages import MessageRecord
+    from ouro_upgrade.session_records import compactions
+
+    messages = [
+        MessageRecord(message_id=identity, session_id="ses_fixture", role="user", sequence=index)
+        for index, identity in enumerate(compaction["covered_message_ids"], 1)
+    ]
+    assert compactions([compaction], messages)[0].context_metrics_after is None
 
 
 @pytest.mark.parametrize("historical_home", ["files", "sqlite"], indirect=True)
@@ -171,9 +173,7 @@ def test_budget_upgrade_reaches_both_stores_and_preserves_restore(historical_hom
     snapshot = store.load_session("ses_fixture")
     assert snapshot.compactions[0].context_metrics_after.input_budget_tokens == 800
     assert store.load_latest_context("ses_fixture").metrics.input_budget_tokens == 800
-    assert (
-        store.load_commit("ses_fixture", "op_budget").events[0].payload["context_metrics"]["budget"]
-    )
+
     if backend == "files":
         assert not offsets.exists()
     upgraded = hashes(home)

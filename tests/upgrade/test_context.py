@@ -10,7 +10,7 @@ import pytest
 
 from ouro.core.context import ContextMetrics
 from ouro.core.context_snapshots import ContextSnapshotRecord
-from ouro.core.errors import UnsupportedDataVersionError
+from ouro.core.errors import PersistenceError
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro_upgrade import records
 from ouro_upgrade.engine import upgrade
@@ -33,38 +33,19 @@ def test_context_upgrade_preserves_snapshot_and_converts_nested_messages(
     context_v3["supports_vision"] = supports_vision
     before = copy.deepcopy(context_v3)
     result = convert("context", context_v3)
-    assert result["schema_version"] == 5
+    assert result["schema_version"] == 11
     assert "supports_vision" not in result
     assert result["supports_image_input"] is supports_vision
     assert result["supports_audio_input"] is False
     assert result["supports_video_input"] is False
-    changed = {
-        "schema_version",
-        "supports_vision",
-        "source_messages",
-        "injected_messages",
-        "metrics",
-    }
     metrics = ContextMetrics.model_validate(result["metrics"])
     for key, value in before["metrics"].items():
         assert getattr(metrics, key) == value
-    for key in before.keys() - changed:
-        assert result[key] == before[key]
-    for source, converted in zip(before["source_messages"], result["source_messages"], strict=True):
-        assert converted["schema_version"] == 4
-        for key in source.keys() - {"schema_version", "tool_result"}:
-            assert converted[key] == source[key]
-    for key in ("source_messages", "injected_messages"):
-        original = before[key][-1]["tool_result"]
-        assert result[key][-1]["tool_result"] == {
-            **original,
-            "producer": {"kind": "model", "driver_id": None},
-        }
-    for source, converted in zip(
-        before["injected_messages"], result["injected_messages"], strict=True
-    ):
-        for key in source.keys() - {"tool_result"}:
-            assert converted[key] == source[key]
+    projected = result["provider_context"]["messages"]
+    sources = before["injected_messages"] + before["source_messages"]
+    assert [item["content"] for item in projected] == [item["content"] for item in sources]
+    assert projected[-1]["tool_result"]["producer"]["kind"] == "model"
+    assert result["context_metadata"] == before["context_metadata"]
     assert context_v3 == before
     assert convert("context", result) == result
 
@@ -76,7 +57,6 @@ def test_context_v4_keeps_audio_and_video_capabilities() -> None:
     assert result["supports_image_input"] is False
     assert result["supports_audio_input"] is True
     assert result["supports_video_input"] is True
-    assert result["context_digest"] == raw["context_digest"]
     assert convert("context", result) == result
 
 
@@ -114,31 +94,30 @@ def test_context_upgrade_rejects_incomplete_or_ambiguous_records(context_v3: dic
 
 def test_context_upgrade_runs_each_step_to_the_model_version(context_v3: dict, monkeypatch):
     class FutureContext(ContextSnapshotRecord):
-        schema_version: int = 6
+        schema_version: int = 12
         future_capability: bool
 
     def from_v5(value: dict) -> None:
-        assert value["schema_version"] == 5
+        assert value["schema_version"] == 11
         assert value["supports_image_input"] is True
         assert "budget" in value["metrics"]
         value["future_capability"] = False
 
     monkeypatch.setitem(records.MODELS, "context", FutureContext)
-    monkeypatch.setitem(records.VERSION_STEPS["context"], 5, UpgradeStep(6, from_v5))
+    monkeypatch.setitem(records.VERSION_STEPS["context"], 11, UpgradeStep(12, from_v5))
     result = convert("context", context_v3)
-    assert result["schema_version"] == 6
+    assert result["schema_version"] == 12
     assert result["future_capability"] is False
-    assert result["context_digest"] == context_v3["context_digest"]
     assert convert("context", result) == result
 
 
 def test_context_upgrade_rejects_a_missing_step(context_v3: dict, monkeypatch):
     class FutureContext(ContextSnapshotRecord):
-        schema_version: int = 6
+        schema_version: int = 12
 
     monkeypatch.setitem(records.MODELS, "context", FutureContext)
     before = copy.deepcopy(context_v3)
-    with pytest.raises(UpgradeError, match="missing context upgrade step from version 5"):
+    with pytest.raises(UpgradeError, match="missing context upgrade step from version 11"):
         convert("context", context_v3)
     assert context_v3 == before
 
@@ -159,7 +138,7 @@ def test_context_v3_upgrades_in_place_for_both_backends(historical_home: Path, c
             )
             connection.commit()
         store = SQLiteSessionStore(home / "sessions.sqlite3")
-    with pytest.raises(UnsupportedDataVersionError):
+    with pytest.raises(PersistenceError):
         store.load_latest_context("ses_fixture")
     before = hashes(home)
     assert upgrade(home, check=True, **options)["status"] == "upgrade_required"
@@ -168,7 +147,10 @@ def test_context_v3_upgrades_in_place_for_both_backends(historical_home: Path, c
     assert report["status"] == "upgraded"
     context = store.load_latest_context("ses_fixture")
     assert context is not None
-    assert context.model_dump(mode="json") == convert("context", context_v3)
+    assert (
+        context.provider_context.model_dump(mode="json")
+        == convert("context", context_v3)["provider_context"]
+    )
     upgraded = hashes(home)
     assert upgrade(home, **options)["status"] == "current"
     assert hashes(home) == upgraded

@@ -13,14 +13,12 @@ from ouro.automation.file_records import StoredExecution, StoredTask
 from ouro.core.agents import DelegationRecord
 from ouro.core.base import VersionedOuroModel
 from ouro.core.billing import ProviderUsageEntry, UsageLedgerEvent
-from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextMetrics
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessVersion
 from ouro.core.messages import MessageRecord
 from ouro.core.resources import SessionResourceReference
-from ouro.core.session_commits import SessionCommitResult
 from ouro.core.state import RunRecord, SessionRecord
 from ouro_upgrade.errors import UpgradeDataError
 from ouro_upgrade.steps import UpgradeStep, advance, migrate
@@ -31,11 +29,9 @@ MODELS: dict[str, type[BaseModel]] = {
     "message": MessageRecord,
     "event": EventRecord,
     "context": ContextSnapshotRecord,
-    "compaction": CompactionRecord,
     "harness": HarnessVersion,
     "delegation": DelegationRecord,
     "resource": SessionResourceReference,
-    "commit": SessionCommitResult,
     "task": StoredTask,
     "execution": StoredExecution,
     "usage": ProviderUsageEntry,
@@ -192,11 +188,6 @@ def _context_v4_to_v5(value: dict[str, Any]) -> None:
     _context_metrics(value["metrics"])
 
 
-def _compaction_v1_to_v2(value: dict[str, Any]) -> None:
-    if value.get("context_metrics_after") is not None:
-        _context_metrics(value["context_metrics_after"])
-
-
 def _run_v2_to_v5(value: dict[str, Any]) -> None:
     _add(
         value,
@@ -250,6 +241,59 @@ def _execution_v1_to_v3(value: dict[str, Any]) -> None:
     _add(record, "cancel_requested", False)
 
 
+def _session_v2_to_v5(value: dict[str, Any]) -> None:
+    _add(value, "context_selection", {"compaction_id": value.pop("active_compaction_id")})
+
+
+def _run_v5_to_v10(value: dict[str, Any]) -> None:
+    if value.get("active_tool_batch") is not None:
+        raise UpgradeDataError("historical tool batch requires Session conversion")
+    value.pop("usage")
+    value.pop("usage_entry_ids")
+
+
+def _message_v4_to_v8(value: dict[str, Any]) -> None:
+    if value.get("tool_calls") or value.get("tool_result") is not None:
+        raise UpgradeDataError("historical tool message requires Session conversion")
+
+
+def _context_v5_to_v11(value: dict[str, Any]) -> None:
+    fields = (
+        "role",
+        "content",
+        "semantic_tag",
+        "tool_calls",
+        "tool_result",
+        "provider_continuation",
+    )
+    messages = value.pop("injected_messages")
+    for message in messages:
+        if message.get("tool_result") is not None and "producer" not in message["tool_result"]:
+            _producer(message["tool_result"])
+    for message in value.pop("source_messages"):
+        if message.get("schema_version") not in (3, 4):
+            raise UpgradeDataError("unsupported historical context message version")
+        if message.get("tool_result") is not None and "producer" not in message["tool_result"]:
+            _producer(message["tool_result"])
+        messages.append({key: message[key] for key in fields if key in message})
+    _add(
+        value,
+        "provider_context",
+        {
+            "system_prompt": value.pop("system_prompt"),
+            "messages": messages,
+            "tools": value.pop("tool_definitions"),
+        },
+    )
+    value["provider_done_at"] = value.pop("completed_at")
+    value.pop("context_digest")
+    value.pop("provider_reported_input_tokens")
+
+
+def _resource_v2_to_v3(value: dict[str, Any]) -> None:
+    _add(value, "internal", False)
+
+
 def _usage_v1_to_v2(value: dict[str, Any]) -> None:
     _add(value, "plugin_id", None)
 
@@ -259,10 +303,15 @@ def _usage_event_v1_to_v2(value: dict[str, Any]) -> None:
 
 
 VERSION_STEPS: dict[str, dict[int, UpgradeStep]] = {
-    "context": {3: UpgradeStep(4, _context_v3_to_v4), 4: UpgradeStep(5, _context_v4_to_v5)},
-    "compaction": {1: UpgradeStep(2, _compaction_v1_to_v2)},
-    "run": {2: UpgradeStep(5, _run_v2_to_v5)},
-    "message": {3: UpgradeStep(4, _message_v3_to_v4)},
+    "context": {
+        3: UpgradeStep(4, _context_v3_to_v4),
+        4: UpgradeStep(5, _context_v4_to_v5),
+        5: UpgradeStep(11, _context_v5_to_v11),
+    },
+    "resource": {2: UpgradeStep(3, _resource_v2_to_v3)},
+    "session": {2: UpgradeStep(5, _session_v2_to_v5)},
+    "run": {2: UpgradeStep(5, _run_v2_to_v5), 5: UpgradeStep(10, _run_v5_to_v10)},
+    "message": {3: UpgradeStep(4, _message_v3_to_v4), 4: UpgradeStep(8, _message_v4_to_v8)},
     "task": {1: UpgradeStep(3, _task_v1_to_v3)},
     "execution": {1: UpgradeStep(3, _execution_v1_to_v3)},
     "usage": {1: UpgradeStep(2, _usage_v1_to_v2)},
@@ -291,31 +340,8 @@ def convert(kind: str, raw: dict[str, Any]) -> dict[str, Any]:
 
 def _nested(kind: str, value: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]]:
     """Visit only schema-owned records, never dictionaries containing opaque data."""
-    if kind == "context":
-        for item in value.get("source_messages", ()):
-            yield "message", item
-    elif kind == "commit":
-        yield "session", value["session"]
-        for item in value.get("messages", ()):
-            yield "message", item
-        for item in value.get("events", ()):
-            yield "event", item
-        if value.get("truncation") is not None:
-            for key in ("first_removed", "last_retained"):
-                if value["truncation"].get(key) is not None:
-                    yield "message", value["truncation"][key]
-    elif kind == "usage_event":
-        if value.get("entry") is not None:
-            yield "usage", value["entry"]
-
-
-def _legacy_tool_results(kind: str, value: dict[str, Any]) -> Iterator[dict[str, Any]]:
-    # Injected model messages have no independent schema version.
-    if kind == "context":
-        for message in value.get("injected_messages", ()):
-            result = message.get("tool_result")
-            if result is not None and "producer" not in result:
-                yield result
+    if kind == "usage_event" and value.get("entry") is not None:
+        yield "usage", value["entry"]
 
 
 def _legacy_event_metrics(kind: str, value: dict[str, Any]) -> Iterator[dict[str, Any]]:
@@ -337,18 +363,14 @@ def _needs_upgrade(kind: str, value: dict[str, Any]) -> bool:
     if type(version) is not int or version != MODELS[kind].model_fields["schema_version"].default:
         # The transition executor rejects unsupported versions before transforming.
         return True
-    return (
-        any(_needs_upgrade(child, raw) for child, raw in _nested(kind, value))
-        or any(True for _ in _legacy_tool_results(kind, value))
-        or any(True for _ in _legacy_event_metrics(kind, value))
+    return any(_needs_upgrade(child, raw) for child, raw in _nested(kind, value)) or any(
+        True for _ in _legacy_event_metrics(kind, value)
     )
 
 
 def _convert_nested(kind: str, value: dict[str, Any]) -> None:
     for child, raw in _nested(kind, value):
         _convert_owned(child, raw)
-    for result in _legacy_tool_results(kind, value):
-        _producer(result)
     for metrics in _legacy_event_metrics(kind, value):
         _context_metrics(metrics)
 

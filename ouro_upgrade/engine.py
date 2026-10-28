@@ -16,6 +16,7 @@ from ouro.deployment import (
     resolve_task_backend,
 )
 from ouro_upgrade import configuration, databases, files
+from ouro_upgrade import sessions as session_upgrade
 from ouro_upgrade.errors import UpgradeError, require
 from ouro_upgrade.progress import ProgressCallback
 from ouro_upgrade.records import loads
@@ -83,7 +84,8 @@ def upgrade(
             work.progress("sessions")
             if sessions == "files":
                 units.run(
-                    UpgradeUnit("session_store", "files"), partial(files.sessions, work, units)
+                    UpgradeUnit("session_store", "files"),
+                    partial(session_upgrade.files, work, units),
                 )
             else:
                 units.run(
@@ -92,7 +94,8 @@ def upgrade(
                         databases.database,
                         work,
                         "sessions.sqlite3",
-                        partial(databases.sessions, units=units),
+                        partial(session_upgrade.sqlite, units=units),
+                        current=session_upgrade.current_sqlite,
                     ),
                 )
             work.progress("tasks")
@@ -101,13 +104,25 @@ def upgrade(
             else:
                 units.run(
                     UpgradeUnit("task_store", "sqlite"),
-                    partial(databases.database, work, "tasks.sqlite3", databases.tasks),
+                    partial(
+                        databases.database,
+                        work,
+                        "tasks.sqlite3",
+                        databases.tasks,
+                        current=databases.current_tasks,
+                    ),
                     remove=partial(databases.remove_database, work, "tasks.sqlite3"),
                 )
             work.progress("usage")
             units.run(
                 UpgradeUnit("usage", "billing/usage.sqlite3"),
-                partial(databases.database, work, "billing/usage.sqlite3", databases.usage),
+                partial(
+                    databases.database,
+                    work,
+                    "billing/usage.sqlite3",
+                    databases.usage,
+                    current=databases.current_usage,
+                ),
                 remove=partial(databases.remove_database, work, "billing/usage.sqlite3"),
             )
             report: dict[str, object] = {

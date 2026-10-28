@@ -9,8 +9,7 @@ not target models with edited version numbers. They contain no user data.
 at `aa94cc5`. Its synthetic inputs share the Session, Run and messages of the
 file fixture, with `supports_vision=true`, an inline PNG and opaque context
 metadata. Tests install this record in both file and SQLite homes, exercise
-both vision flag values, and verify snapshot preservation and nested message
-conversion. No user data is included.
+both vision flag values, and verify the request header and fixed Manifest content. No user data is included.
 
 `records/providers-vision.json` is serialized by `provider_config_to_raw` at
 `aa94cc5`. It contains image-enabled and text-only endpoints, a fake inline
@@ -32,8 +31,8 @@ No credentials are resolved and no user data is included.
 
 `records/output-budget.json` is serialized by the unmodified models at `af353d1`.
 It contains synthetic ContextSnapshot 4, Compaction 1, model request and compaction
-completion events, and a SessionCommitResult with embedded events. The request
-window and output reserve are finite; metadata and commit output retain opaque
+completion events, and a historical commit receipt with embedded events. The request
+window and output reserve are finite; metadata and receipt output retain opaque
 copies of the same metrics to verify ownership boundaries. Tests exercise file
 and SQLite publication, interrupted-write restoration, event replay and idempotence.
 
@@ -51,10 +50,15 @@ the test loader restores these dumps to temporary databases. SQLite dumps includ
 application/user version pragmas and preserve sequence values.
 
 The Session has three messages and a completed Run with a model tool batch.
+The frozen writer accepted inconsistent tool request, invocation and result IDs.
+The test loader composes a consistent scenario by aligning the invocation and result
+with the saved request and batch turn. The original bytes remain frozen; a separate
+regression verifies that conflicting execution identity prevents publication.
 The context and commit receipt retain copies of the messages. The disabled task
 has one completed execution and its original occurrence marker. The ledger
 records 99 tokens, resets them, then records 100 input / 7 output tokens and
 corrects input to 123 at revision 2. Its effective cost is 0.125 USD. All four
 audit events must remain, including the reset usage; only the corrected entry
-contributes to current totals. Metadata, arguments and commit output carry an
+contributes to effective billing totals. Raw request totals include the original
+99 and 100 token reports, including the report hidden by reset. Metadata, arguments and commit output carry an
 opaque `schema_version: 999` value which must remain unchanged.

@@ -187,8 +187,8 @@ def test_changed_source_is_rechecked_after_preparation(historical_home: Path):
 
 
 def test_failed_conversion_joins_prefetched_reads_before_returning(historical_home, monkeypatch):
-    directory = historical_home / "sessions/ses_fixture/operations"
-    raw = json.loads((directory / "op_fixture.json").read_text("utf-8"))
+    directory = historical_home / "tasks/records/task_fixture/executions"
+    raw = json.loads((next(directory.glob("*.json"))).read_text("utf-8"))
     for index in range(12):
         raw["operation_id"] = f"op_{index:02}"
         (directory / f"op_{index:02}.json").write_text(json.dumps(raw), encoding="utf-8")
@@ -204,7 +204,7 @@ def test_failed_conversion_joins_prefetched_reads_before_returning(historical_ho
 
     before = hashes(historical_home)
     monkeypatch.setattr(Path, "read_bytes", read)
-    with pytest.raises(UpgradeError, match="invalid SessionCommitResult"):
+    with pytest.raises(UpgradeError, match="invalid StoredExecution"):
         upgrade(historical_home)
     assert readers and all(not thread.is_alive() for thread in readers)
     assert hashes(historical_home) == before

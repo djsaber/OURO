@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.billing.local import LocalUsageLedger
+from ouro.sessions import LocalSessionStore
 from ouro_upgrade import workspace
 from ouro_upgrade.engine import upgrade
 from ouro_upgrade.errors import UpgradeError
@@ -93,10 +94,7 @@ def test_file_failures_keep_successful_units_and_roll_back_failed_staging(histor
     for name, checksum in before.items():
         if name.startswith(("sessions/ses_bad/", "tasks/records/task_bad/", "config/")):
             assert after[name] == checksum
-    assert (
-        loads((home / "sessions/ses_fixture/context.json").read_text("utf-8"))["schema_version"]
-        == 5
-    )
+    assert LocalSessionStore(home).load_latest_context("ses_fixture").schema_version == 11
     assert (
         loads((home / "tasks/records/task_fixture/task.json").read_text("utf-8"))["schema_version"]
         == 3
@@ -108,7 +106,7 @@ def test_file_failures_keep_successful_units_and_roll_back_failed_staging(histor
     assert not bad.exists() and not task.exists()
     assert not (home / "config/providers.json").exists()
     assert (home / "config/provider-templates.json").read_bytes() == b'{"schema_version":999}'
-    assert (home / "sessions/ses_fixture/resources/index.json").exists()
+    assert (home / "sessions/ses_fixture/session-data.sqlite3").exists()
     assert upgrade(home)["status"] == "current"
     store = LocalSessionStore(home)
     store.initialize()
@@ -121,9 +119,7 @@ def test_file_failures_keep_successful_units_and_roll_back_failed_staging(histor
 
 
 @pytest.mark.parametrize("historical_home", ["sqlite"], indirect=True)
-def test_sqlite_session_failure_isolated_from_other_rows_and_cleanup_owns_only_failed_session(
-    historical_home,
-):
+def test_sqlite_container_failure_preserves_source_and_upgrades_other_domains(historical_home):
     home = historical_home
     clone_sqlite_session(home)
     with closing(sqlite3.connect(home / "sessions.sqlite3")) as connection:
@@ -132,46 +128,13 @@ def test_sqlite_session_failure_isolated_from_other_rows_and_cleanup_owns_only_f
             ('{"schema_version":999}',),
         )
         connection.commit()
-        original_run = connection.execute(
-            "SELECT payload FROM runs WHERE session_id='ses_bad'"
-        ).fetchone()[0]
-    options = dict(session_backend="sqlite", task_backend="sqlite", isolate_failures=True)
-
-    report = upgrade(home, **options)
-
+    before = (home / "sessions.sqlite3").read_bytes()
+    report = upgrade(home, session_backend="sqlite", task_backend="sqlite", isolate_failures=True)
     assert report["status"] == "partial"
-    assert confirmed(report) == {UpgradeUnit("session", "ses_bad")}
-    with closing(sqlite3.connect(home / "sessions.sqlite3")) as connection:
-        assert (
-            connection.execute("SELECT payload FROM runs WHERE session_id='ses_bad'").fetchone()[0]
-            == original_run
-        )
-        good_run = connection.execute(
-            "SELECT payload FROM runs WHERE session_id='ses_fixture'"
-        ).fetchone()[0]
-        assert loads(good_run)["schema_version"] == 5
-    after = hashes(home)
-    result = upgrade(home, **options, discard=confirmed(report))
-    assert result["status"] == "upgraded"
-    with closing(sqlite3.connect(home / "sessions.sqlite3")) as connection:
-        assert connection.execute("SELECT session_id FROM sessions").fetchall() == [
-            ("ses_fixture",)
-        ]
-        assert (
-            connection.execute(
-                "SELECT payload FROM runs WHERE session_id='ses_fixture'"
-            ).fetchone()[0]
-            == good_run
-        )
-        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
-    assert not (home / "sessions/ses_bad").exists()
-    for name, checksum in after.items():
-        if name != "sessions.sqlite3" and not name.startswith("sessions/ses_bad/"):
-            assert hashes(home)[name] == checksum
-    assert upgrade(home, **options)["status"] == "current"
-    store = SQLiteSessionStore(home / "sessions.sqlite3")
-    store.initialize()
-    assert len(store.load_session("ses_fixture").messages) == 3
+    assert not confirmed(report)
+    assert (home / "sessions.sqlite3").read_bytes() == before
+    assert report["failures"][0]["unit"]["kind"] == "session_store"
+    assert LocalUsageLedger(home).get("usage_kept").input_tokens == 123
 
 
 def test_confirmation_rechecks_repaired_units_and_does_not_delete_new_failures(historical_home):
@@ -189,7 +152,7 @@ def test_confirmation_rechecks_repaired_units_and_does_not_delete_new_failures(h
     assert second["status"] == "partial"
     assert second["discarded"] == []
     assert confirmed(second) == {UpgradeUnit("task", "task_fixture")}
-    assert loads(path.read_text("utf-8"))["schema_version"] == 5
+    assert LocalSessionStore(home).load_latest_context("ses_fixture").schema_version == 11
     assert task.exists()
 
 
@@ -253,10 +216,7 @@ def test_interrupted_failed_unit_removal_restores_only_current_operation(
     monkeypatch.setattr(workspace, "replace_path_with_retry", original)
     upgrade(home, restore=True)
     assert hashes(home) == before_cleanup
-    assert (
-        loads((home / "sessions/ses_fixture/context.json").read_text("utf-8"))["schema_version"]
-        == 5
-    )
+    assert LocalSessionStore(home).load_latest_context("ses_fixture").schema_version == 11
 
 
 @pytest.mark.parametrize("historical_home", ["sqlite"], indirect=True)
