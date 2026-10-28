@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ouro.core.agents import AgentCatalogSnapshot, AgentControlRequest
-from ouro.core.tools import ToolInvocation, ToolResult
+from ouro.core.tools import ToolInvocation
 from ouro.tools.base import Tool, ToolDefinition, ToolExecutionContext
 
 
@@ -193,61 +193,37 @@ def _spawn_control_tool(
     )
 
 
-def _intent_result(invocation: ToolInvocation, request: AgentControlRequest) -> ToolResult:
-    return ToolResult(
-        tool_call_id=invocation.tool_call_id,
-        tool_name=invocation.tool_name,
-        agent_control_request=request,
-    )
-
-
-def _spawn(invocation: ToolInvocation, context: ToolExecutionContext) -> ToolResult:
+def _spawn(invocation: ToolInvocation, context: ToolExecutionContext) -> AgentControlRequest:
     arguments = invocation.arguments
     execution_mode = arguments.get("execution_mode", "sync")
-    return _intent_result(
-        invocation,
-        AgentControlRequest(
-            action="spawn",
-            request_id=_request_id(invocation),
-            agent_id=str(arguments["agent_id"]),
-            task=str(arguments["task"]),
-            description=str(arguments["description"]),
-            nickname=_optional_string(arguments.get("nickname")),
-            execution_mode=execution_mode,
-            resource_refs=tuple(str(item) for item in arguments.get("resource_refs", ())),
-        ),
+    return AgentControlRequest(
+        action="spawn",
+        agent_id=str(arguments["agent_id"]),
+        task=str(arguments["task"]),
+        description=str(arguments["description"]),
+        nickname=_optional_string(arguments.get("nickname")),
+        execution_mode=execution_mode,
+        resource_refs=tuple(str(item) for item in arguments.get("resource_refs", ())),
     )
 
 
-def _send(invocation: ToolInvocation, context: ToolExecutionContext) -> ToolResult:
+def _send(invocation: ToolInvocation, context: ToolExecutionContext) -> AgentControlRequest:
     arguments = invocation.arguments
-    return _intent_result(
-        invocation,
-        AgentControlRequest(
-            action="send",
-            request_id=_request_id(invocation),
-            delegation_id=str(arguments["delegation_id"]),
-            message=str(arguments["message"]),
-            input_mode=arguments.get("mode", "steer"),
-        ),
+    return AgentControlRequest(
+        action="send",
+        delegation_id=str(arguments["delegation_id"]),
+        message=str(arguments["message"]),
+        input_mode=arguments.get("mode", "steer"),
     )
 
 
-def _interrupt(invocation: ToolInvocation, context: ToolExecutionContext) -> ToolResult:
+def _interrupt(invocation: ToolInvocation, context: ToolExecutionContext) -> AgentControlRequest:
     arguments = invocation.arguments
-    return _intent_result(
-        invocation,
-        AgentControlRequest(
-            action="interrupt",
-            request_id=_request_id(invocation),
-            delegation_id=str(arguments["delegation_id"]),
-            reason=_optional_string(arguments.get("reason")),
-        ),
+    return AgentControlRequest(
+        action="interrupt",
+        delegation_id=str(arguments["delegation_id"]),
+        reason=_optional_string(arguments.get("reason")),
     )
-
-
-def _request_id(invocation: ToolInvocation) -> str:
-    return f"{invocation.run_id}/{invocation.tool_call_id}"
 
 
 def _optional_string(value: object) -> str | None:

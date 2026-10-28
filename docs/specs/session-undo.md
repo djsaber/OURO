@@ -142,7 +142,8 @@ SDK 与 worker 协议版本纳入执行契约；不支持的版本明确拒绝�
 
 操作身份优先复用已有 tool call、交互、队列或 continuation 结算身份，并区分挂起与恢复阶段；相同 tool call
 跨阶段不能误去重。需要独立身份的状态命令由应用层分配。只读回调不新增持久化操作记录。
-同一操作的重复提交返回已保存结果，不重复追加消息、队列、事件或版本。
+业务重试通过所属 Input、Call 或 continuation 的已提交事实确认结果，不重复追加消息、队列、事件或版本。
+SessionCommit 不持久保存完整返回值；重复提交与丢失返回的确认规则见[会话提交契约](session-persistence.md#sessionstore-契约)。
 
 ### CM-02：短提交与失效
 
@@ -184,8 +185,9 @@ SQLite 必须通过单一本地事务提交本次相关 canonical 数据。
 交互/队列更新与必要事件；确认完成。提交决定形成前的孤立快照不成为当前状态。
 完整决定包含重做所需的确定数据，恢复不得重新调用插件、模型或工具。
 
-所有 canonical 读取和写入入口必须在目标 Session 锁内完成未完成决定后再返回；不能有仅消息查询或状态
-查询绕过此边界。决定形成后的故障恢复到决定所指的新状态，不以“回退一半文件”补偿。
+canonical 查询在一致读边界内返回已提交事实；存在未决文件决定时明确报告需恢复，不隐式执行领域恢复写入。
+显式 mutation/恢复入口在目标 Session 锁内完成未决决定。决定形成后的故障恢复到决定所指的新状态，
+不以“回退一半文件”补偿。具体查询边界见[会话提交契约](session-persistence.md#sessionstore-契约)。
 目录/catalog 查询仍按现有只读投影契约工作，不为了本次恢复扫描所有会话。
 
 提交事件沿用现有日志和稳定提交身份去重，处理“事件已经 append、完成标记尚未写入”的故障窗口。
@@ -220,6 +222,8 @@ history_epoch 是所有会话效果入口的持久化校验，包括插件、工
 
 保留的旧 Run 状态只参与审计，不能参与当前活动 Run 选择或活动投影恢复。等待控制器交互的 invocation
 绑定 controller_id 与具体 interaction_activation_id；释放时必须同时匹配 activation 和当前 Run 代次。
+当前待处理 continuation 的失效与撤销同提交，不依赖以后扫描旧 Run；精确状态见
+[待处理 Run 契约](session-persistence.md#sessionstore-契约)。
 已接受撤销的调用取消必须结算其所属操作，按实际提交结果返回；不能把客户端取消解释为撤销未发生。
 
 ### UN-03：任意切口与 /continue
@@ -264,7 +268,7 @@ queue_id 从接受到消费保持稳定；消费后的消息必须能由该身�
 消费决定必须把队列移出待消费集合、消息追加、锚点和必要运行归属共同提交，消除 append/ack 中间态。
 不得让同一输入同时表现为“已取消”和“已消费”，恢复不得重新消费已有消息。
 
-整批启动/边界消费使用同一 SessionCommit，移除独立 acknowledge 写入。Host 接受身份复用原生提交回执；
+整批启动/边界消费使用同一 SessionCommit，移除独立 acknowledge 写入。Host 接受身份由独立 InputRecord 和小 InputState 保留；
 撤销 canonical 消息不删除该接受事实，同一 queue_id 的迟到重试不能恢复已撤回输入。
 
 取消仍待消费的直接用户输入只移除该项并返回完整输入，不改变 Harness、历史或其他排队输入。
@@ -334,13 +338,19 @@ TUI 在撤销成功后重载标准会话投影并恢复输入草稿；失败保�
 
 消息查询索引必须识别截断后同长度或更长的重写，覆盖跨 store reader 情形；不得仅按文件大小或固定短尾判断有效。
 压缩和上下文引用必须按保留消息可达性处理，不清空所有仍有效压缩，也不保留覆盖被撤回消息的摘要。
+摘要以覆盖终点决定是否失效，后续依赖摘要随此前置摘要一起移除；只撤销未覆盖尾部时继续保留正文和身份。
+展示锚点被删除时移到最后保留消息，并清除旧尾部的上下文估算；这不改变摘要覆盖，也不要求重新生成摘要。
+规则见[CompactionRecord](context-and-compaction.md#compactionrecord)。
+媒体选择随历史切口收缩：边界仍在保留前缀时保持原值，越过切口时定位到最后保留消息，空历史清除边界。
+这一调整与撤销同属 Session 提交，不因 epoch 改变而重新打开更早媒体。分支重映射保留边界；
+显式重新选择媒体与最近实际请求的查询互不改写。
 
 ## 10. 数据与接口版本
 
 ### DV-01：单一当前格式
 
 运行时只支持当前格式；受支持历史核心记录通过独立的[离线数据升级](data-upgrade.md)处理，旧插件状态与旧 API 不在其支持范围。
-Session/Event 使用 schema 2，Run schema 5，Message schema 4，File layout 9，SQLite schema 7；各版本域独立校验。
+各持久记录版本及后端布局由[会话持久化规格](session-persistence.md#canonical-数据与投影)统一维护，各版本域独立校验。
 不支持或缺失的存储版本在读取边界明确拒绝，不扫描历史文件、补默认值或转换后重试。
 由用户选择新目录或显式数据维护，不在运行时自动删除 canonical 数据。
 
@@ -362,7 +372,7 @@ Session/Event 使用 schema 2，Run schema 5，Message schema 4，File layout 9�
 会话分支复用既有 copy/reset/reject：按该策略一致转换复制的状态版本和当前状态，并重映射 Session/版本引用。
 reset 的 owner 状态不得通过分支内 undo 复活；reject 不得因新格式被绕过。无需新增分支 UI 或策略类型。
 
-完整快照/导出包含 canonical Session、Harness 版本及提交回执；跨后端转移保留已经撤销消息的输入接受事实。
+完整快照/导出包含 canonical Session、Harness 版本、输入事实与生命周期状态；跨后端转移保留已经撤销消息的输入接受事实，不携带完整提交回执。
 历史分支当前状态取所选消息之后的准确边界，分支头取当前状态。copy/reset/reject 覆盖保留锚点所引用的所有版本；
 同一 owner 的 reset 作用于这些版本，reject 不能被当前空状态绕过。重映射 Session/版本身份，
 按 Session 归属的 activation 身份与不透明 owner 数据一起保留，不能单独重写其中一侧的引用。
@@ -421,9 +431,9 @@ reset 的 owner 状态不得通过分支内 undo 复活；reject 不得因新格
 | 内置插件预算与 usage | `tests/application/test_harness_usage.py`、`tests/plugins/test_builtin_goal.py` |
 | 原生同步调用测量 | `tests/benchmarks/test_sqlite_sync.py`、`dev/benchmarks/harness_lifecycle.py` |
 
-文件后端的 checkpoint、decision、receipt、messages、session、events 和 completion 故障点，以及 SQLite
+文件后端的 checkpoint、decision、输入与调用事实、messages、Run/待处理成员、session、events 和决定清理故障点，以及 SQLite
 事务回滚须分别验证。决定已保存后的恢复不得重新调用插件；外部工具的文件副作用不属于 Harness 回滚范围。
-快照、分支和跨后端转移保留版本闭包与回执，延迟事件不得引用被撤回的消息。
+快照、分支和跨后端转移按各自语义保留版本闭包与必要业务去重事实，延迟事件不得引用被撤回的消息。
 
 Worker 取消与超时通过握手确认调用已进入 worker，再验证视图关闭、跨会话隔离和迟到回复处理。
 TUI 测试等待实际状态与界面投影完成；真实终端的绘制、按键与动画性能须单独测量，不能由 headless 测试推断。

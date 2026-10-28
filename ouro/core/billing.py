@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterable
 from datetime import datetime
 from typing import Literal, Self, cast
@@ -207,3 +208,27 @@ class UsageLedgerEvent(VersionedOuroModel):
             if self.usage_filter is None or self.entry is not None or self.entry_id is not None:
                 raise ValueError("reset event requires only a usage_filter")
         return self
+
+
+def provider_usage_entry_id(
+    *,
+    run_id: str | None,
+    request_id: str,
+    purpose: UsagePurpose,
+    provider_id: str,
+    endpoint_id: str | None,
+    model_id: str,
+    plugin_id: str | None = None,
+) -> str:
+    identity = "\0".join(
+        (
+            run_id or "",
+            plugin_id or "",
+            request_id,
+            purpose,
+            provider_id,
+            endpoint_id or "",
+            model_id,
+        )
+    )
+    return f"use_{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:32]}"

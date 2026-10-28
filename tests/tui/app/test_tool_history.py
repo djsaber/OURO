@@ -8,11 +8,21 @@ from pathlib import Path
 import pytest
 
 from ouro.application.contracts.execution import RuntimeToolCallActivity
-from ouro.core.messages import MessageRecord, TextContent, ToolExecutionTiming, ToolResultReference
+from ouro.core.messages import (
+    MessageRecord,
+    TextContent,
+    ToolExecutionTiming,
+    ToolMessageReference,
+    ToolResultReference,
+)
+from ouro.core.tool_facts import ToolCallIdentity
 from ouro.core.tools import ToolCallRequest
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.conversation.history import ConversationHistory
-from ouro.tui.conversation.transcript import _tool_activities_from_messages
+from ouro.tui.conversation.transcript import (
+    _tool_activities_from_messages,
+    project_transcript_entries,
+)
 from ouro.tui.conversation.view import ConversationView
 from tests.tui.app.support import _application
 from tests.tui.helpers import run_ready_app, wait_for_history_render
@@ -243,7 +253,7 @@ async def test_history_load_keeps_the_active_tool_batch_in_live_rows(tmp_path: P
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(
             (request,),
-            mutable_tool_calls=((run_id, tool_call_id),),
+            mutable_tool_calls=((run_id, None, tool_call_id),),
         )
         conversation.begin_model_request(run_id=run_id)
         await conversation.sync_tools((active,))
@@ -281,10 +291,61 @@ def test_history_does_not_infer_tool_execution_timing_from_message_boundaries() 
         tool_result=ToolResultReference(tool_call_id=call_id, tool_name="read"),
     )
 
-    activity = _tool_activities_from_messages((request, result))[call_id]
+    activity = _tool_activities_from_messages((request, result))[(None, None, call_id)]
 
     assert activity.started_at is None
     assert activity.ended_at is None
+
+
+@pytest.mark.parametrize(
+    "second_run, second_batch", [("run", "batch_second"), ("run_second", "batch")]
+)
+def test_history_keeps_reused_provider_call_ids_in_their_native_scope(
+    second_run: str, second_batch: str
+) -> None:
+    messages = []
+    for index, (run_id, batch_id) in enumerate((("run", "batch"), (second_run, second_batch))):
+        identity = ToolCallIdentity(run_id=run_id, batch_id=batch_id, tool_call_id="reused")
+        messages.extend(
+            [
+                MessageRecord(
+                    session_id="ses",
+                    run_id=run_id,
+                    role="assistant",
+                    call_refs=(identity,),
+                    tool_calls=[ToolCallRequest(id="reused", name="Read", arguments={"n": index})],
+                ),
+                MessageRecord(
+                    session_id="ses",
+                    run_id=run_id,
+                    role="tool_result",
+                    outcome_ref=ToolMessageReference(identity=identity, outcome_attempt=0),
+                    tool_result=ToolResultReference(
+                        tool_call_id="reused", tool_name="Read", is_error=bool(index)
+                    ),
+                ),
+            ]
+        )
+    entries, _ = project_transcript_entries(
+        tuple(messages),
+        (),
+        (),
+        mutable_tool_call_keys=frozenset(),
+        visible_scaffold_delegation_id=None,
+    )
+    tools = [entry.tool for entry in entries if entry.tool is not None]
+    assert [(tool.batch_id, tool.arguments, tool.status) for tool in tools] == [
+        ("batch", {"n": 0}, "completed"),
+        (second_batch, {"n": 1}, "failed"),
+    ]
+    selected, _ = project_transcript_entries(
+        tuple(messages),
+        (),
+        (),
+        mutable_tool_call_keys=frozenset({(second_run, second_batch, "reused")}),
+        visible_scaffold_delegation_id=None,
+    )
+    assert [entry.tool for entry in selected if entry.tool is not None] == [tools[0]]
 
 
 @pytest.mark.asyncio

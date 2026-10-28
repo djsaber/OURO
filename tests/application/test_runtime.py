@@ -6,9 +6,12 @@ import pytest
 
 from ouro.application.resources import ResourceService
 from ouro.application.runs.lifecycle import abort_run_state
+from ouro.application.runs.tool_batches import load_tool_batch
 from ouro.application.runtime.environment import RuntimeEnvironment
 from ouro.application.runtime.service import RuntimeService
 from ouro.application.sessions.service import SessionService
+from ouro.application.usage import UsageService
+from ouro.billing import LocalUsageLedger
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.context import ContextBuilder
 from ouro.core.context_providers import (
@@ -69,6 +72,8 @@ from ouro.tools import (
 )
 from ouro.tools.builtin.shell import detect_command_shell
 from tests.application.helpers import running_runtime_task
+from tests.run_facts import run_events, run_tool_results
+from tests.tool_batches import bind_tool_messages, persist_tool_batch
 
 
 def _tools() -> ToolRegistry:
@@ -236,8 +241,6 @@ async def test_runtime_durable_boundaries_do_not_block_the_event_loop(
     main_thread_id = get_ident()
     observations: dict[str, int] = {}
 
-    original_save_run = store.save_run
-    original_save_context = store.save_latest_context
     original_commit = store.commit_session
 
     def delay(label: str) -> None:
@@ -249,24 +252,15 @@ async def test_runtime_durable_boundaries_do_not_block_the_event_loop(
         assert responded.wait(30), "event loop stalled while a persistence boundary was held"
         observations[label] = get_ident()
 
-    def save_run(record):
-        if record.active_tool_batch is not None:
-            delay("tool_checkpoint")
-        elif record.status == "completed":
-            delay("run_terminal")
-        original_save_run(record)
-
-    def save_context(record):
-        delay("context_snapshot")
-        original_save_context(record)
-
     def commit(request):
+        if request.request_manifest is not None:
+            delay("context_snapshot")
         if any(run.active_tool_batch is not None for run in request.runs):
             delay("tool_checkpoint")
+        if any(run.status == "completed" for run in request.runs):
+            delay("run_terminal")
         return original_commit(request)
 
-    monkeypatch.setattr(store, "save_run", save_run)
-    monkeypatch.setattr(store, "save_latest_context", save_context)
     monkeypatch.setattr(store, "commit_session", commit)
     try:
         result = await runtime.run("Use the probe")
@@ -303,7 +297,7 @@ def test_abort_state_does_not_load_message_history(tmp_path, monkeypatch) -> Non
         reason="stop",
     )
 
-    assert changed is True
+    assert [event.event_type for event in changed] == ["run_aborted"]
     assert idle.status == "idle"
     assert aborted.status == "aborted"
 
@@ -692,7 +686,7 @@ async def test_prompt_policy_denies_before_message_and_run_persistence(tmp_path)
     assert rejected.value.policy_id == "secret"
     assert calls[0].prompt == "do not persist this prompt"
     assert calls[0].workspace == str(tmp_path.resolve())
-    snapshot = store.load_runtime_session(session.session_id)
+    snapshot = store.load_session(session.session_id)
     assert snapshot.messages == []
     assert snapshot.runs == []
     assert "do not persist this prompt" not in session.model_dump_json()
@@ -746,7 +740,7 @@ async def test_prompt_policy_failures_close_before_canonical_state(
     assert rejected.value.policy_failed is True
     assert rejected.value.failure_error_type in {"TimeoutError", "RuntimeError", "TypeError"}
     assert "unpersisted failure input" not in (rejected.value.failure_message or "")
-    snapshot = store.load_runtime_session(session.session_id)
+    snapshot = store.load_session(session.session_id)
     assert snapshot.messages == []
     assert snapshot.runs == []
     assert "unpersisted failure input" not in snapshot.session.model_dump_json()
@@ -777,7 +771,7 @@ async def test_prompt_policy_allow_precedes_normal_run_creation(tmp_path) -> Non
     result = await runtime.run("allowed prompt")
 
     assert calls == [result.run.run_id]
-    snapshot = store.load_runtime_session(result.session.session_id)
+    snapshot = store.load_session(result.session.session_id)
     assert snapshot.messages[0].text_content == "allowed prompt"
     assert snapshot.runs[0].run_id == result.run.run_id
 
@@ -893,7 +887,7 @@ async def test_prompt_policy_excludes_plugin_input_and_human_resolutions(tmp_pat
     )
     assert plugin_result.run.status == "completed"
     assert inspected_prompts == ["Write the approved file", "Ask for a file"]
-    plugin_snapshot = store.load_runtime_session(plugin_result.session.session_id)
+    plugin_snapshot = store.load_session(plugin_result.session.session_id)
     assert plugin_snapshot.messages[0].role == "user"
 
 
@@ -926,8 +920,8 @@ async def test_prompt_policy_denies_before_active_run_queue_persistence(tmp_path
         with pytest.raises(PromptRejectedError, match="blocked before queue"):
             await runtime.run("blocked follow-up", session_id=session.session_id)
 
-        snapshot = store.load_runtime_session(session.session_id)
-        assert "follow_up_queue" not in snapshot.session.metadata
+        snapshot = store.load_session(session.session_id)
+        assert not snapshot.session.pending_input_ids
         assert all(message.text_content != "blocked follow-up" for message in snapshot.messages)
         provider.release_first.set()
         await first
@@ -1000,7 +994,7 @@ async def test_runtime_validates_resource_before_starting_run_or_message(tmp_pat
         await runtime.run(
             "Use missing",
             session_id=session.session_id,
-            resource_refs=["res_" + "0" * 64],
+            resource_refs=["res_" + "0" * 32],
         )
 
     snapshot = store.load_session(session.session_id)
@@ -1064,7 +1058,9 @@ async def test_runtime_hot_path_does_not_load_complete_replay_snapshot(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_existing_session_loads_message_history_once_before_provider_stream(tmp_path) -> None:
+async def test_existing_session_loads_execution_metadata_once_before_provider_stream(
+    tmp_path,
+) -> None:
     class CountingStore(LocalSessionStore):
         runtime_snapshot_loads = 0
 
@@ -1105,7 +1101,9 @@ async def test_existing_session_loads_message_history_once_before_provider_strea
 
 
 @pytest.mark.asyncio
-async def test_runtime_persists_tool_call_deltas_before_model_response_completes(tmp_path) -> None:
+async def test_runtime_observes_tool_arguments_live_and_persists_only_complete_calls(
+    tmp_path,
+) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     provider = ToolDeltaGateProvider()
@@ -1118,20 +1116,24 @@ async def test_runtime_persists_tool_call_deltas_before_model_response_completes
         tools=_tools(),
     )
 
+    seen = []
+    delta_seen = asyncio.Event()
+
+    def observe(event):
+        if event.event_type == "model_tool_call_delta":
+            seen.append(event)
+            delta_seen.set()
+
+    runtime.add_event_sink(observe)
     async with running_runtime_task(runtime, runtime.run("Write a file")) as run_task:
         await provider.waiting_after_first_delta.wait()
         session = store.list_sessions()[0]
-        # The provider reader is deliberately independent from persistence, so
-        # reaching the provider-side gate no longer implies that the consumer has
-        # already committed the preceding delta.
-        await _wait_for_event(store, session.session_id, "model_tool_call_delta")
-
-        streaming_snapshot = store.load_session(session.session_id)
-        delta_events = [
-            event
-            for event in streaming_snapshot.events
-            if event.event_type == "model_tool_call_delta"
-        ]
+        await asyncio.wait_for(delta_seen.wait(), timeout=30)
+        assert not any(
+            event.event_type == "model_tool_call_delta"
+            for event in store.load_session(session.session_id).events
+        )
+        delta_events = seen
         assert run_task.done() is False
         assert [event.payload["arguments_delta"] for event in delta_events] == [
             '{"path":"out.txt",'
@@ -1148,11 +1150,13 @@ async def test_runtime_persists_tool_call_deltas_before_model_response_completes
 
         assert result.run.status == "waiting_approval"
         assert result.run.active_tool_batch is not None
-        assert result.run.active_tool_batch.calls[0].request.arguments == {
+        assert load_tool_batch(store, result.run).calls[0].request.arguments == {
             "path": "out.txt",
             "content": "hello",
         }
-        assert len(completed_delta_events) == 2
+        assert completed_delta_events == []
+        await runtime.event_recorder.drain()
+        assert len(seen) == 2
 
 
 @pytest.mark.asyncio
@@ -1188,7 +1192,7 @@ async def test_runtime_rejects_incomplete_streamed_tool_arguments_before_batch_c
 
     assert result.run.status == "failed"
     assert "tool call arguments are not valid JSON" in (result.run.error or "")
-    assert "model_tool_call_delta" in [event.event_type for event in snapshot.events]
+    assert "model_tool_call_delta" not in [event.event_type for event in snapshot.events]
     assert "tool_batch_planned" not in [event.event_type for event in snapshot.events]
 
 
@@ -1352,7 +1356,7 @@ async def test_runtime_reconciles_interrupted_tool_exchange_before_next_run(tmp_
             )
         ],
     )
-    run = run.model_copy(update={"active_tool_batch": batch})
+    run = run.model_copy(update={"active_tool_batch": batch.head()})
     session = session.model_copy(
         update={
             "active_run_id": run.run_id,
@@ -1362,7 +1366,8 @@ async def test_runtime_reconciles_interrupted_tool_exchange_before_next_run(tmp_
         }
     )
     store.create_session(session)
-    store.save_run(run)
+    run = persist_tool_batch(store, run, batch)
+    bind_tool_messages(store, run, batch, [assistant])
     store.append_message(assistant)
     provider = CapturingProvider()
     runtime = RuntimeService(
@@ -1417,8 +1422,14 @@ async def test_runtime_reconciles_failed_tool_exchange_before_next_run(tmp_path)
             "last_message_id": assistant.message_id,
         }
     )
+    batch = ToolCallBatchRecord(
+        turn_id=assistant.turn_id,
+        assistant_message_id=assistant.message_id,
+        calls=[ToolBatchCall(request=request, status="ready")],
+    )
     store.create_session(session)
-    store.save_run(run)
+    run = persist_tool_batch(store, run, batch)
+    bind_tool_messages(store, run, batch, [assistant])
     store.append_message(assistant)
     provider = CapturingProvider()
     runtime = RuntimeService(
@@ -1482,7 +1493,7 @@ async def test_runtime_commits_checkpointed_tool_result_during_recovery(tmp_path
         session_id=session.session_id,
         status="running",
         phase="result_commit",
-        active_tool_batch=batch,
+        active_tool_batch=batch.head(),
     )
     session = session.model_copy(
         update={
@@ -1493,7 +1504,8 @@ async def test_runtime_commits_checkpointed_tool_result_during_recovery(tmp_path
         }
     )
     store.create_session(session)
-    store.save_run(interrupted)
+    interrupted = persist_tool_batch(store, interrupted, batch)
+    bind_tool_messages(store, interrupted, batch, [assistant])
     store.append_message(assistant)
     provider = CapturingProvider()
     runtime = RuntimeService(
@@ -1511,87 +1523,40 @@ async def test_runtime_commits_checkpointed_tool_result_during_recovery(tmp_path
 
     assert snapshot.messages[1].text_content == "checkpointed content"
     assert recovered_run.active_tool_batch is not None
-    assert recovered_run.active_tool_batch.calls[0].status == "completed"
+    assert load_tool_batch(store, recovered_run).calls[0].status == "completed"
     assert (
-        recovered_run.active_tool_batch.calls[0].result_message_id
+        load_tool_batch(store, recovered_run).calls[0].result_message_id
         == snapshot.messages[1].message_id
     )
 
 
-@pytest.mark.asyncio
-async def test_runtime_discards_checkpointed_result_for_different_tool_call(
-    tmp_path,
-) -> None:
+def test_runtime_rejects_checkpointed_result_for_different_tool_call(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
-    session = SessionRecord(title="Recover invalid checkpoint", status="running")
-    request = ToolCallRequest(id="call_expected", name="Read", arguments={"path": "note.txt"})
-    invalid_checkpoint = ToolResult(
-        tool_call_id="call_other",
-        tool_name="Write",
-        content="wrong result",
-    )
-    assistant = MessageRecord.text(
-        session_id=session.session_id,
-        run_id="run_invalid_checkpoint",
-        turn_id="turn_invalid_checkpoint",
-        role="assistant",
-        text="",
-        sequence=1,
-    ).model_copy(update={"tool_calls": [request]})
+    session = SessionRecord(title="Reject invalid checkpoint")
+    store.create_session(session)
+    run = RunRecord(session_id=session.session_id, status="running")
     batch = ToolCallBatchRecord(
-        turn_id="turn_invalid_checkpoint",
-        assistant_message_id=assistant.message_id,
+        turn_id="turn_invalid",
+        assistant_message_id="message_invalid",
         phase="committing_results",
         calls=[
             ToolBatchCall(
-                request=request,
+                request=ToolCallRequest(id="call_expected", name="Read"),
                 status="completed",
-                result=invalid_checkpoint,
+                result=ToolResult(
+                    tool_call_id="call_other", tool_name="Write", content="wrong result"
+                ),
             )
         ],
     )
-    interrupted = RunRecord(
-        run_id="run_invalid_checkpoint",
-        session_id=session.session_id,
-        status="running",
-        phase="result_commit",
-        active_tool_batch=batch,
-    )
-    session = session.model_copy(
-        update={
-            "active_run_id": interrupted.run_id,
-            "last_run_id": interrupted.run_id,
-            "message_count": 1,
-            "last_message_id": assistant.message_id,
-        }
-    )
-    store.create_session(session)
-    store.save_run(interrupted)
-    store.append_message(assistant)
-    provider = CapturingProvider()
-    runtime = RuntimeService(
-        store=store,
-        adapter=RuntimeAdapter(
-            provider,
-            ModelMetadata(model_id="capture", provider_id="capture"),
-        ),
-        tools=_tools(),
-    )
-
-    await runtime.run("Continue", session_id=session.session_id)
+    with pytest.raises(ValueError, match="Outcome identity does not match its Call"):
+        persist_tool_batch(store, run, batch)
     snapshot = store.load_session(session.session_id)
-    recovered = snapshot.messages[1].tool_result
-    recovered_run = next(run for run in snapshot.runs if run.run_id == interrupted.run_id)
-
-    assert recovered is not None
-    assert recovered.tool_call_id == request.id
-    assert recovered.tool_name == request.name
-    assert recovered.is_error is True
-    assert recovered_run.active_tool_batch is not None
-    durable_result = recovered_run.active_tool_batch.calls[0].result
-    assert durable_result is not None
-    assert durable_result.structured["invalid_result_identity"] is True
+    assert snapshot.tool_facts.calls == ()
+    assert snapshot.tool_facts.outcomes == ()
+    assert snapshot.call_states == ()
+    assert snapshot.runs == []
 
 
 @pytest.mark.asyncio
@@ -1641,7 +1606,7 @@ async def test_runtime_context_provider_adds_context_to_provider(tmp_path) -> No
     assert seen_system_prompts == [DEFAULT_SYSTEM_PROMPT]
     assert seen_messages[0].role == "user"
     assert seen_messages[0].text_content == "extra context"
-    snapshot = store.load_runtime_session(result.session.session_id)
+    snapshot = store.load_session(result.session.session_id)
     assert not any(
         message.metadata.get("kind") == "context_provider" for message in snapshot.messages
     )
@@ -1695,11 +1660,12 @@ async def test_runtime_context_provider_appends_system_prompt_without_creating_m
 
     assert provider.system_prompt.endswith("<runtime-facts>\nfacts\n</runtime-facts>")
     assert seen_calls[0].workspace == str((tmp_path / "workspace").resolve())
-    snapshot = store.load_runtime_session(result.session.session_id)
+    snapshot = store.load_session(result.session.session_id)
     assert [message.role for message in snapshot.messages] == ["user", "assistant"]
     context_snapshot = store.load_latest_context(result.session.session_id)
     assert context_snapshot is not None
-    assert context_snapshot.injected_messages == []
+    assert context_snapshot.provider_context.messages == provider.messages
+    assert len(context_snapshot.provider_context.messages) == 1
 
 
 @pytest.mark.asyncio
@@ -1739,7 +1705,7 @@ async def test_runtime_persists_context_provider_message_with_provenance(tmp_pat
 
     result = await runtime.run("Use durable context")
 
-    snapshot = store.load_runtime_session(result.session.session_id)
+    snapshot = store.load_session(result.session.session_id)
     context_snapshot = store.load_latest_context(result.session.session_id)
     assert context_snapshot is not None
     scaffold = next(
@@ -1902,7 +1868,7 @@ async def test_context_provider_message_persistence_failure_blocks_model_request
     assert result.run.status == "paused"
     assert result.run.metadata["pause"]["reason"] == "context_blocked"
     assert provider.messages == []
-    snapshot = store.load_runtime_session(result.session.session_id)
+    snapshot = store.load_session(result.session.session_id)
     assert not any(
         message.metadata.get("kind") == "context_provider" for message in snapshot.messages
     )
@@ -2006,8 +1972,15 @@ async def test_required_context_provider_failure_pauses_before_model_request(tmp
 
 
 @pytest.mark.asyncio
-async def test_turn_policy_continues_inside_same_run_before_completion(tmp_path) -> None:
-    store = LocalSessionStore(tmp_path)
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_turn_policy_continues_inside_same_run_before_completion(
+    tmp_path, backend, monkeypatch
+) -> None:
+    store = (
+        LocalSessionStore(tmp_path)
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sessions.db")
+    )
     store.initialize()
     provider = FauxProvider(
         event_batches=[
@@ -2054,7 +2027,25 @@ async def test_turn_policy_continues_inside_same_run_before_completion(tmp_path)
         turn_policies=turn_policies,
     )
 
+    commit = store.commit_session
+    feedback_commits = []
+
+    def capture_commit(request):
+        if any(
+            step.message and step.message.semantic_tag == "turn-policy-feedback"
+            for step in request.steps
+        ):
+            feedback_commits.append(request)
+            assert [event.event_type for event in request.events] == ["turn_policy_continued"]
+        return commit(request)
+
+    async def drop_notifications(_events):
+        pass
+
+    monkeypatch.setattr(store, "commit_session", capture_commit)
+    monkeypatch.setattr(runtime.event_recorder, "publish_committed", drop_notifications)
     result = await runtime.run("finish the workflow")
+    assert len(feedback_commits) == 1
     snapshot = store.load_session(result.session.session_id)
 
     assert result.run.status == "completed"
@@ -2229,7 +2220,8 @@ async def test_runtime_returns_active_run_instead_of_starting_second_run(tmp_pat
     assert second.run.status == "waiting_approval"
     assert [run.status for run in snapshot.runs] == ["waiting_approval"]
     assert [message.text_content for message in snapshot.messages] == ["Write file", ""]
-    assert snapshot.session.metadata["follow_up_queue"][0]["prompt"] == "Another prompt"
+    queued = store.load_input(snapshot.session.session_id, snapshot.session.pending_input_ids[0])
+    assert queued is not None and queued.item.prompt == "Another prompt"
     assert [
         (item.prompt, item.mode) for item in runtime.pending_user_inputs(pending.session.session_id)
     ] == [
@@ -2263,10 +2255,10 @@ async def test_runtime_drains_queued_follow_up_after_active_run_completes(tmp_pa
         snapshot = store.load_session(session.session_id)
 
         assert queued.run.run_id == session.last_run_id
-        assert queued.events[-1].event_type == "follow_up_input_queued"
+        assert queued_snapshot.events[-1].event_type == "follow_up_input_queued"
         assert first.final_text == "first"
         assert provider.calls == 2
-        assert "follow_up_queue" not in snapshot.session.metadata
+        assert not snapshot.session.pending_input_ids
         assert [run.status for run in snapshot.runs] == ["completed", "completed"]
         assert [message.text_content for message in snapshot.messages] == [
             "First prompt",
@@ -2274,7 +2266,10 @@ async def test_runtime_drains_queued_follow_up_after_active_run_completes(tmp_pa
             "Second prompt",
             "second",
         ]
-        assert queued_snapshot.session.metadata["follow_up_queue"][0]["prompt"] == "Second prompt"
+        queued = store.load_input(
+            queued_snapshot.session.session_id, queued_snapshot.session.pending_input_ids[0]
+        )
+        assert queued is not None and queued.item.prompt == "Second prompt"
         assert runtime.pending_user_inputs(session.session_id) == ()
 
 
@@ -2415,6 +2410,7 @@ async def test_runtime_records_provider_usage(tmp_path) -> None:
     store.initialize()
     runtime = RuntimeService(
         store=store,
+        usage_service=UsageService(LocalUsageLedger(tmp_path / "billing")),
         adapter=RuntimeAdapter(
             FauxProvider(
                 [
@@ -2430,9 +2426,10 @@ async def test_runtime_records_provider_usage(tmp_path) -> None:
     result = await runtime.run("Say hi")
     snapshot = store.load_session(result.session.session_id)
 
-    assert result.run.usage["input_tokens"] == 3
-    assert result.run.usage["output_tokens"] == 2
-    assert snapshot.runs[0].usage["input_tokens"] == 3
+    assert result.usage["input_tokens"] == 3
+    assert result.usage["output_tokens"] == 2
+    assert runtime.usage.run_usage(result.session.session_id, result.run.run_id).input_tokens == 3
+    assert "usage" not in snapshot.runs[0].model_dump()
     assert "model_message_completed" in [event.event_type for event in snapshot.events]
     context_status = runtime.sessions.context_status(result.session.session_id)
     assert context_status is not None
@@ -2676,9 +2673,13 @@ async def test_runtime_aborts_active_provider_stream(tmp_path) -> None:
         tools=_tools(),
     )
 
+    prefix_seen = asyncio.Event()
+    runtime.add_event_sink(
+        lambda event: prefix_seen.set() if event.event_type == "model_text_delta" else None
+    )
     async with running_runtime_task(runtime, runtime.run("Wait for abort")) as run_task:
         session = await _wait_for_active_session(store)
-        await _wait_for_event(store, session.session_id, "model_text_delta")
+        await asyncio.wait_for(prefix_seen.wait(), timeout=30)
 
         await runtime.abort_run(
             session_id=session.session_id,
@@ -2696,7 +2697,7 @@ async def test_runtime_aborts_active_provider_stream(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_recovery_materializes_partial_output_from_event_journal(tmp_path) -> None:
+async def test_runtime_recovery_materializes_partial_output_from_current_draft(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     provider = WaitingProvider()
@@ -2709,9 +2710,13 @@ async def test_runtime_recovery_materializes_partial_output_from_event_journal(t
         tools=_tools(),
     )
 
+    prefix_seen = asyncio.Event()
+    runtime.add_event_sink(
+        lambda event: prefix_seen.set() if event.event_type == "model_text_delta" else None
+    )
     async with running_runtime_task(runtime, runtime.run("Wait for crash")) as run_task:
         session = await _wait_for_active_session(store)
-        await _wait_for_event(store, session.session_id, "model_text_delta")
+        await asyncio.wait_for(prefix_seen.wait(), timeout=30)
 
         run_task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -2723,7 +2728,7 @@ async def test_runtime_recovery_materializes_partial_output_from_event_journal(t
         assert recovered.session.status == "idle"
         assert [message.role for message in recovered.messages] == ["user", "assistant"]
         assert recovered.messages[-1].text_content == "begin"
-        assert recovered.messages[-1].metadata["recovered_from_event_journal"] is True
+        assert recovered.messages[-1].metadata["recovered_from_draft"] is True
         assert recovered.session.message_count == 2
         assert recovered.session.last_message_id == recovered.messages[-1].message_id
 
@@ -2857,13 +2862,14 @@ async def test_runtime_aborts_active_approved_command_tool(tmp_path) -> None:
         completed = next(
             event for event in snapshot.events if event.event_type == "tool_call_completed"
         )
-        assert completed.payload["status"] == "aborted"
+        assert completed.payload["status"] == "unknown_outcome"
         completed_event = next(
             event for event in snapshot.events if event.event_type == "tool_call_completed"
         )
         assert snapshot.runs[0].active_tool_batch is not None
         assert (
-            completed_event.payload["status"] == snapshot.runs[0].active_tool_batch.calls[0].status
+            completed_event.payload["status"]
+            == load_tool_batch(store, snapshot.runs[0]).calls[0].status
         )
         assert snapshot.session.message_count == len(snapshot.messages)
         assert snapshot.runs[0].active_tool_batch is not None
@@ -3025,7 +3031,7 @@ async def test_runtime_abort_owns_tool_cancellation_across_runtime_instances(tmp
         assert finalized.is_set()
         assert aborted.run.status == "aborted"
         assert result.run.status == "aborted"
-        assert completed.payload["status"] == "aborted"
+        assert completed.payload["status"] == "unknown_outcome"
         assert event_types.index("tool_call_completed") < event_types.index("tool_batch_aborted")
         assert event_types.index("tool_batch_aborted") < event_types.index("run_aborted")
         assert not any(message.role == "tool_result" for message in snapshot.messages)
@@ -3085,7 +3091,7 @@ async def test_runtime_approval_rejection_writes_tool_error(tmp_path) -> None:
     assert snapshot.messages[1].tool_calls[0].name == "Write"
     assert snapshot.messages[2].text_content == "not today"
     assert snapshot.messages[-1].text_content == "I will not write it."
-    assert resumed.tool_results[0].is_error is True
+    assert run_tool_results(store, resumed)[0].is_error is True
 
 
 @pytest.mark.asyncio
@@ -3215,7 +3221,7 @@ async def test_runtime_drains_follow_up_after_rejected_approval_releases_run_loc
         "hi",
     ]
     assert snapshot.messages[-1].text_content == "Follow-up handled."
-    assert "follow_up_queue" not in snapshot.session.metadata
+    assert not snapshot.session.pending_input_ids
 
 
 @pytest.mark.asyncio
@@ -3287,7 +3293,7 @@ async def test_runtime_drains_follow_up_after_user_answer_releases_run_lock(tmp_
         "continue",
     ]
     assert snapshot.messages[-1].text_content == "Follow-up handled."
-    assert "follow_up_queue" not in snapshot.session.metadata
+    assert not snapshot.session.pending_input_ids
 
 
 class ReasoningToolProvider:
@@ -3384,9 +3390,10 @@ async def test_runtime_keeps_internal_reasoning_out_of_provider_context(tmp_path
 @pytest.mark.asyncio
 async def test_runtime_releases_session_lock_when_startup_persistence_fails(tmp_path) -> None:
     class FailingStore(LocalSessionStore):
-        def save_run(self, run) -> None:
-            del run
-            raise PersistenceError("simulated save failure")
+        def commit_session(self, request):
+            if any(run.status == "running" for run in request.runs):
+                raise PersistenceError("simulated start commit failure")
+            return super().commit_session(request)
 
     store = FailingStore(tmp_path)
     store.initialize()
@@ -3399,7 +3406,7 @@ async def test_runtime_releases_session_lock_when_startup_persistence_fails(tmp_
         tools=_tools(),
     )
 
-    with pytest.raises(PersistenceError, match="simulated save failure"):
+    with pytest.raises(PersistenceError, match="simulated start commit failure"):
         await runtime.run("hello")
 
     session = store.list_sessions()[0]
@@ -3547,7 +3554,7 @@ async def test_runtime_automatically_compacts_and_persists_context_projection(tm
 
     assert result.run.status == "completed"
     assert provider.summary_calls >= 1
-    assert snapshot.session.active_compaction_id is not None
+    assert snapshot.session.context_selection.compaction_id is not None
     assert snapshot.active_compaction is not None
     assert len(snapshot.messages) == 26
     assert provider.business_messages[0].role == "system"
@@ -3589,7 +3596,7 @@ async def test_runtime_returns_unknown_tool_error_to_model_and_continues(tmp_pat
 
     assert result.run.status == "completed"
     assert result.final_text == "Recovered."
-    assert result.tool_results[0].structured["error_type"] == "UnknownTool"
+    assert run_tool_results(store, result)[0].structured["error_type"] == "UnknownTool"
     assert [message.role for message in snapshot.messages] == [
         "user",
         "assistant",
@@ -3662,7 +3669,9 @@ async def test_runtime_persists_provider_retry_schedule_as_observable_event(tmp_
     )
 
     result = await runtime.run("retry")
-    retry = next(event for event in result.events if event.event_type == "run_retry_scheduled")
+    retry = next(
+        event for event in run_events(store, result) if event.event_type == "run_retry_scheduled"
+    )
 
     assert result.final_text == "Recovered."
     assert retry.payload["attempt"] == 2

@@ -41,6 +41,13 @@ class UsageTotals(UsageQueryResult):
     billing_modes: tuple[BillingMode, ...] = ()
 
 
+class RunUsageTotals(UsageTotals):
+    """Raw consumption and report counts by purpose, independent of billing edits."""
+
+    agent_request_count: int = 0
+    compaction_request_count: int = 0
+
+
 class UsageSummaryGroup(UsageQueryResult):
     key: tuple[str | None, ...]
     totals: UsageTotals

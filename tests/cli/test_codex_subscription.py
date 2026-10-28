@@ -39,9 +39,6 @@ def test_registered_subscription_cli_setup_disclosure_and_missing_login(tmp_path
     assert main(["run", "Reply OK.", "--afk", "--json", *home]) == 1
     failed = json.loads(capsys.readouterr().out)
     assert failed["interaction_mode"] == "unattended"
-    assert any(
-        event["payload"].get("error_code") == "authentication_required"
-        for event in failed["events"]
-    )
+    assert failed["error_code"] == "authentication_required"
     assert main(["provider", "auth", "logout", provider_id, "--json", *home]) == 0
     assert json.loads(capsys.readouterr().out)["credential"]["state"] == "logged_out"

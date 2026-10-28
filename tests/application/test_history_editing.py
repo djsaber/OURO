@@ -6,15 +6,18 @@ from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import utc_now
 from ouro.core.errors import SessionBusyError
-from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
+from ouro.core.session_commits import SessionCommit
 from ouro.core.state import RunContinuationCheckpoint, RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest, ToolResult
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
+from tests.response_drafts import persist_response_draft
+from tests.run_facts import run_events
+from tests.tool_batches import bind_tool_messages, persist_tool_batch
 
 
 @pytest.fixture(params=["files", "sqlite"])
@@ -48,35 +51,27 @@ async def test_restart_after_continue_recovers_only_the_current_attempt(store, n
         session_id=session.session_id, run_id=run.run_id, role="user", text="task", sequence=1
     )
     store.append_message(user)
-    events = [
-        ("model_request_started", {"turn_id": "previous_turn"}),
-        ("model_text_delta", {"text": "discarded output"}),
-        ("run_status_changed", {"to_status": "running", "resumed": True}),
-    ]
+    previous = persist_response_draft(store, run, turn_id="previous_turn", text="discarded output")
+    store.commit_session(
+        SessionCommit(
+            before=store.load_session_record(session.session_id),
+            runs=(
+                store.load_run(session.session_id, run.run_id).model_copy(
+                    update={"current_request_id": None}
+                ),
+            ),
+            request_header=previous.model_copy(update={"response_closed_at": utc_now()}),
+        )
+    )
     if new_stream:
-        events.extend(
-            [
-                ("model_request_started", {"turn_id": "current_turn"}),
-                ("model_text_delta", {"text": "current output"}),
-            ]
-        )
-    for index, (kind, payload) in enumerate(events):
-        store.append_event(
-            EventRecord(
-                session_id=session.session_id,
-                run_id=run.run_id,
-                event_type=kind,
-                turn_id=payload.get("turn_id"),
-                payload=payload,
-                sequence=index + 1,
-            )
-        )
+        persist_response_draft(store, run, turn_id="current_turn", text="current output")
     try:
         recovered = runtime.session_recovery.recover_runtime(session.session_id)
         assert recovered.runs[0].status == "recoverable"
-        assert [message.text_content for message in recovered.messages] == (
-            ["task", "current output"] if new_stream else ["task"]
-        )
+        assert [
+            message.text_content
+            for message in store.load_run_messages(session.session_id, run.run_id)
+        ] == (["task", "current output"] if new_stream else ["task"])
     finally:
         await runtime.close()
 
@@ -157,7 +152,7 @@ async def test_continue_keeps_run_input_and_partial_history(store, status):
     runtime = runtime_for(store)
     try:
         result = await runtime.continue_run(session_id=session.session_id)
-        snapshot = store.load_runtime_session(session.session_id)
+        snapshot = store.load_session(session.session_id)
         assert result.run.status == "completed"
         assert result.run.run_id == run.run_id
         assert len(snapshot.runs) == 1
@@ -167,7 +162,9 @@ async def test_continue_keeps_run_input_and_partial_history(store, status):
         assert snapshot.messages[2].text_content == "Hello from OURO."
         assert snapshot.session.message_count == 3
         assert snapshot.session.history_epoch == 0
-        assert not any(event.event_type == "user_message_added" for event in result.events)
+        assert not any(
+            event.event_type == "user_message_added" for event in run_events(store, result)
+        )
         with pytest.raises(ValueError, match="completed"):
             await runtime.continue_run(session_id=session.session_id)
     finally:
@@ -190,7 +187,7 @@ async def test_session_continuation_recovers_an_interrupted_execution(store):
         result = await runtime.continue_session(session_id=session.session_id)
         assert result.run.status == "completed"
         assert result.run.run_id == run.run_id
-        assert store.load_runtime_session(session.session_id).messages[0] == prompt
+        assert store.load_session(session.session_id).messages[0] == prompt
     finally:
         await runtime.close()
 
@@ -200,7 +197,7 @@ async def test_undo_edits_original_session_without_loading_retained_messages(sto
     try:
         first = await runtime.run("first question")
         second = await runtime.run("edit this question", session_id=first.session.session_id)
-        before = store.load_runtime_session(first.session.session_id)
+        before = store.load_session(first.session.session_id)
 
         def forbid_full_load(*args, **kwargs):
             raise AssertionError("undo must only read a suffix")
@@ -210,7 +207,7 @@ async def test_undo_edits_original_session_without_loading_retained_messages(sto
             patch.setattr(store, "load_session", forbid_full_load)
             patch.setattr(store, "load_runs", forbid_full_load)
             removed = runtime.sessions.undo(first.session.session_id)
-        after = store.load_runtime_session(first.session.session_id)
+        after = store.load_session(first.session.session_id)
         assert removed.text_content == "edit this question"
         assert removed.run_id == second.run.run_id
         assert after.messages == before.messages[:2]
@@ -220,7 +217,7 @@ async def test_undo_edits_original_session_without_loading_retained_messages(sto
         assert revised.run.status == "completed"
         assert [
             m.text_content
-            for m in store.load_runtime_session(first.session.session_id).messages
+            for m in store.load_session(first.session.session_id).messages
             if m.role == "user"
         ] == ["first question", "revised question"]
     finally:
@@ -237,11 +234,11 @@ async def test_undo_incomplete_exchange_then_edit_and_continue_in_original_sessi
     try:
         first = await runtime.run("initial question")
         second = await runtime.run("continue", session_id=first.session.session_id)
-        before = store.load_runtime_session(first.session.session_id)
+        before = store.load_session(first.session.session_id)
         assert before.messages[1].metadata["incomplete"]
         selected = runtime.sessions.undo(first.session.session_id)
         assert selected.text_content == "continue"
-        assert store.load_runtime_session(first.session.session_id).messages == before.messages[:2]
+        assert store.load_session(first.session.session_id).messages == before.messages[:2]
         continued = await runtime.continue_run(session_id=first.session.session_id)
         assert continued.run.run_id != first.run.run_id
         assert continued.run.history_epoch == 1
@@ -251,9 +248,7 @@ async def test_undo_incomplete_exchange_then_edit_and_continue_in_original_sessi
         recovered = await runtime.continue_run(session_id=first.session.session_id)
         assert recovered.run.run_id == revised.run.run_id
         assert recovered.run.run_id != second.run.run_id
-        assert (
-            store.load_runtime_session(first.session.session_id).messages[0] == before.messages[0]
-        )
+        assert store.load_session(first.session.session_id).messages[0] == before.messages[0]
     finally:
         await runtime.close()
 
@@ -328,10 +323,11 @@ async def test_continue_settles_interrupted_terminal_checkpoint_before_reopening
                 == "resolved"
             )
             return
+        events = run_events(store, resumed)
         resolved = next(
-            event for event in resumed.events if event.event_type == "run_continuation_resolved"
+            event for event in events if event.event_type == "run_continuation_resolved"
         )
-        reopened = next(event for event in resumed.events if event.payload.get("resumed"))
+        reopened = next(event for event in events if event.payload.get("resumed"))
         assert resolved.payload["decision_id"] == checkpoint.decision_id
         assert resolved.sequence < reopened.sequence
     finally:
@@ -352,7 +348,7 @@ async def test_undo_empty_and_live_session_are_rejected_without_changes(store):
                 runtime.sessions.undo(session.session_id)
         finally:
             owner.release()
-        assert len(store.load_runtime_session(session.session_id).messages) == 2
+        assert len(store.load_session(session.session_id).messages) == 2
     finally:
         await runtime.close()
 
@@ -401,20 +397,17 @@ async def test_continue_keeps_checkpointed_tool_result_and_closes_unknown_outcom
         sequence=2,
     ).model_copy(update={"tool_calls": calls})
     checkpoint = ToolResult(tool_call_id=calls[0].id, tool_name="Read", content="saved evidence")
-    run = run.model_copy(
-        update={
-            "active_tool_batch": ToolCallBatchRecord(
-                assistant_message_id=assistant.message_id,
-                turn_id="turn_tools",
-                phase="recoverable",
-                calls=[
-                    ToolBatchCall(request=calls[0], status="completed", result=checkpoint),
-                    ToolBatchCall(request=calls[1], status="unknown_outcome"),
-                ],
-            )
-        }
+    batch = ToolCallBatchRecord(
+        assistant_message_id=assistant.message_id,
+        turn_id="turn_tools",
+        phase="recoverable",
+        calls=[
+            ToolBatchCall(request=calls[0], status="completed", result=checkpoint),
+            ToolBatchCall(request=calls[1], status="unknown_outcome"),
+        ],
     )
-    store.save_run(run)
+    run = persist_tool_batch(store, run, batch)
+    bind_tool_messages(store, run, batch, [assistant])
     store.append_messages([user, assistant])
     store.save_session(
         session.model_copy(
@@ -428,7 +421,7 @@ async def test_continue_keeps_checkpointed_tool_result_and_closes_unknown_outcom
     runtime = runtime_for(store)
     try:
         continued = await runtime.continue_run(session_id=session.session_id)
-        messages = store.load_runtime_session(session.session_id).messages
+        messages = store.load_session(session.session_id).messages
         assert continued.run.run_id == run.run_id
         assert continued.run.status == "completed"
         assert messages[:2] == [user, assistant]
@@ -466,9 +459,9 @@ async def test_continue_does_not_cut_incomplete_output_from_an_older_run(store):
         # A crash after committing the current input/output must not turn an
         # older retained recovery frame into the new truncation boundary.
         store.save_run(current.run.model_copy(update={"status": "failed"}))
-        before = store.load_runtime_session(old.session.session_id).messages
+        before = store.load_session(old.session.session_id).messages
         result = await runtime.continue_run(session_id=old.session.session_id)
-        after = store.load_runtime_session(old.session.session_id).messages
+        after = store.load_session(old.session.session_id).messages
         assert result.run.run_id == current.run.run_id
         assert after[: len(before)] == before
     finally:
@@ -504,8 +497,8 @@ async def test_failure_keeps_tool_checkpoint_for_same_run_continuation(store):
         phase="committing_results",
         calls=[ToolBatchCall(request=request, status="completed", result=saved_result)],
     )
-    run = run.model_copy(update={"active_tool_batch": batch})
-    store.save_run(run)
+    run = persist_tool_batch(store, run, batch)
+    bind_tool_messages(store, run, batch, [assistant])
     store.append_messages([user, assistant])
     store.save_session(
         session.model_copy(
@@ -519,18 +512,16 @@ async def test_failure_keeps_tool_checkpoint_for_same_run_continuation(store):
     )
     try:
         failed = await runtime.run_lifecycle.fail(
-            [],
-            0,
             session=session,
             run=run,
             error="result commit interrupted",
             final_text="",
-            tool_results=[],
+            had_tool_error=False,
         )
-        assert failed.run.active_tool_batch == batch
+        assert failed.run.active_tool_batch == batch.head()
         result = await runtime.continue_run(session_id=session.session_id)
         assert result.run.status == "completed"
-        messages = store.load_runtime_session(session.session_id).messages
+        messages = store.load_session(session.session_id).messages
         assert messages[2].text_content == "saved output"
         assert messages[2].tool_result.is_error is False
     finally:

@@ -14,6 +14,26 @@ from ouro.core.resources import ResourceRecord
 from ouro.local_io import replace_path_with_retry
 
 
+def read_resource_content(directory: Path, record: ResourceRecord) -> bytes:
+    """Read one selected immutable resource; publication owns its digest check."""
+    try:
+        content = checked_file(directory, record).read_bytes()
+    except FileNotFoundError as exc:
+        raise ResourceIntegrityError(f"resource file is missing: {record.resource_id}") from exc
+    if len(content) != record.size:
+        raise ResourceIntegrityError(f"resource size mismatch: {record.resource_id}")
+    return content
+
+
+def require_published_resource(directory: Path, record: ResourceRecord) -> None:
+    try:
+        if checked_file(directory, record).stat().st_size == record.size:
+            return
+    except FileNotFoundError:
+        pass
+    raise ResourceIntegrityError(f"resource is not published: {record.resource_id}")
+
+
 def session_resource_directory(root: Path, session_id: str) -> Path:
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", session_id) is None:
         raise UnsafeResourcePathError("invalid Session identity")

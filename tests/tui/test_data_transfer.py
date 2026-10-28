@@ -12,7 +12,7 @@ from ouro.core.harness import HarnessState
 from ouro.core.messages import MessageRecord
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_controls import SessionControlActivation, SessionControlState
-from ouro.core.state import SessionRecord
+from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolCallRequest
 from ouro.local_application import build_local_data_transfer_service, build_local_session_services
 from ouro.transfer.archive import DataTransferError, read_archive
@@ -24,6 +24,7 @@ from ouro.tui.features.transfer.paths import ArchivePathScreen
 from ouro.tui.features.transfer.workflows import DataTransferScreen
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.multiple import MultiChoiceScreen
+from tests.tool_batches import seed_tool_messages
 from tests.tui.helpers import wait_for_screen, wait_until
 
 
@@ -113,16 +114,20 @@ async def test_imported_history_opens_with_missing_dependencies_in_live_sqlite_h
         generation_id="missing-generation",
         execution_contract_hash="missing-contract",
     )
+    run = RunRecord(session_id=session.session_id, status="completed")
+    message = MessageRecord(
+        session_id=session.session_id,
+        run_id=run.run_id,
+        role="assistant",
+        tool_calls=[ToolCallRequest(name="missing_tool", arguments={})],
+    )
+    seed_tool_messages(store, message, [], run=run)
     store.commit_session(
         SessionCommit(
-            before=session,
+            before=store.load_session_record(session.session_id),
             steps=(
                 SessionCommitStep(
-                    message=MessageRecord(
-                        session_id=session.session_id,
-                        role="assistant",
-                        tool_calls=[ToolCallRequest(name="missing_tool", arguments={})],
-                    ),
+                    message=message,
                     harness=HarnessState(controls=SessionControlState(activations=[activation])),
                 ),
             ),

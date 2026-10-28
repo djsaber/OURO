@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from ouro.application.usage import UsageService
+from ouro.billing import LocalUsageLedger
 from ouro.core.provider import ProviderStreamEvent, Usage
 from ouro.core.run_budget import RunBudgetPolicy
 from ouro.plugins.invocation import current_invocation, plugin_invocation
@@ -13,6 +15,7 @@ from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolResult
 from tests.application.test_run_drivers import DRIVER, PLUGIN, host, plugin_source
 from tests.application.test_runtime import GateProvider
+from tests.run_facts import run_events, run_tool_results
 
 SERVICE = "dev.ouro.examples.review_service"
 ROOT = Path(__file__).parents[2]
@@ -91,7 +94,9 @@ async def test_dependency_service_uses_callers_model_tool_and_waiting_contract(
 async def test_nested_model_service_preserves_caller_usage_and_budget(tmp_path, kind):
     store = LocalSessionStore(tmp_path / "sessions")
     store.initialize()
-    runtime, plugins, service = host(tmp_path, store, [])
+    runtime, plugins, service = host(
+        tmp_path, store, [], usage_service=UsageService(LocalUsageLedger(tmp_path / "billing"))
+    )
     runtime.run_budget = RunBudgetPolicy(max_model_rounds=1)
     runtime.adapter.provider = FauxProvider(
         [
@@ -105,11 +110,15 @@ async def test_nested_model_service_preserves_caller_usage_and_budget(tmp_path, 
         assert (await service.enable(PLUGIN)).status == "active"
         result = await runtime.run("deploy", driver_id=DRIVER)
         assert result.run.status == "paused", result.run.error
-        assert any(event.payload.get("reason") == "model_rounds" for event in result.events)
+        assert any(
+            event.payload.get("reason") == "model_rounds" for event in run_events(store, result)
+        )
         assert result.run.model_round_count == 1
-        assert result.run.usage["input_tokens"] == 11
-        assert result.run.usage["output_tokens"] == 7
-        assert len(result.run.usage_entry_ids) == 1
+        assert result.usage["input_tokens"] == 11
+        assert result.usage["output_tokens"] == 7
+        assert (
+            runtime.usage.run_usage(result.session.session_id, result.run.run_id).request_count == 1
+        )
     finally:
         await runtime.close()
         await plugins.close()
@@ -139,7 +148,7 @@ async def test_service_cannot_relax_native_run_permissions(tmp_path, kind, restr
             "sessions.write" if restriction == "permission" else "read-only"
         ) in result.run.error
         assert result.run.model_round_count == 0
-        assert result.run.usage_entry_ids == []
+        assert result.usage is None
     finally:
         await runtime.close()
         await plugins.close()
@@ -249,8 +258,8 @@ async def test_tool_service_model_reentry_fails_without_starting_another_request
             result = await runtime.run("deploy", driver_id=DRIVER)
         assert result.run.status == "completed", result.run.error
         assert result.run.model_round_count == 2
-        assert result.tool_results[0].is_error
-        assert "sequentially" in result.tool_results[0].content
+        assert run_tool_results(store, result)[0].is_error
+        assert "sequentially" in run_tool_results(store, result)[0].content
     finally:
         await runtime.close()
         await plugins.close()

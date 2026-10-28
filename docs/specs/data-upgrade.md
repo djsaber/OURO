@@ -4,7 +4,11 @@
 
 ## 目标和责任边界
 
-`ouro-upgrade` 在指定的、已经停写的 home 内，将明确支持的历史核心数据升级为本机 OURO 的当前格式。
+当前会话架构的支持边界：`ouro_upgrade` 尚未适配[目标会话与计量契约](session-persistence.md#数据布局)。
+它仍按旧完整上下文、旧 Run/消息与用量表结构转换，不能将其输出视为当前运行时可接受的数据。
+下面的 Session/用量矩阵描述升级工具支持的转换范围，不代表当前运行时的数据格式。配置与任务转换独立。
+
+`ouro-upgrade` 在指定的、已经停写的 home 内，将明确支持的历史核心数据转换为升级工具声明的目标格式。
 数据保留原位置，Session 与任务后端保持原选择。工具随 `ouro-agent` 发行，可用
 `python -m ouro_upgrade` 调用；操作说明见[数据升级指南](../guides/data-upgrade.md)。
 

@@ -12,6 +12,7 @@ from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.sessions import LocalSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
+from tests.run_facts import run_events
 
 
 class _RespondingProvider:
@@ -254,7 +255,7 @@ async def test_continue_binds_selected_model_only_when_a_request_can_start(
         assert providers["beta"].models == ([] if budget_exhausted else ["beta-model"])
         assert [
             m.text_content
-            for m in runtime.store.load_runtime_session(first.session.session_id).messages
+            for m in runtime.store.load_session(first.session.session_id).messages
             if m.role == "user"
         ] == ["original task"]
     finally:
@@ -311,7 +312,11 @@ async def test_active_session_model_switch_applies_to_the_next_model_request(tmp
             alpha.release.set()
             result = await running
 
-        requests = [event for event in result.events if event.event_type == "model_request_started"]
+        requests = [
+            event
+            for event in run_events(store, result)
+            if event.event_type == "model_request_started"
+        ]
         assert switched.current_model == "beta/fast"
         assert [event.payload["model"] for event in requests] == ["alpha-model", "beta-model"]
         assert result.final_text == "beta-response"

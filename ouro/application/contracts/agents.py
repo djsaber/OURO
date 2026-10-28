@@ -57,11 +57,18 @@ class SpawnAgentRequest(ApplicationDTO):
     task: str = Field(min_length=1, max_length=20_000)
     description: str = Field(min_length=1, max_length=500)
     nickname: str | None = Field(default=None, max_length=80)
-    parent_tool_call_id: str | None = None
+    parent_batch_id: str | None = Field(default=None, min_length=1)
+    parent_tool_call_id: str | None = Field(default=None, min_length=1)
     execution_mode: ExecutionMode = "sync"
     lifecycle_binding: LifecycleBinding = "bound"
     unattended: bool = False
     resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
+
+    @model_validator(mode="after")
+    def validate_parent_call(self) -> Self:
+        if (self.parent_batch_id is None) != (self.parent_tool_call_id is None):
+            raise ValueError("model delegation requires both parent batch and tool call identity")
+        return self
 
     @field_validator("resource_refs")
     @classmethod
@@ -80,6 +87,7 @@ class AgentHandleView(ApplicationDTO):
     root_session_id: str
     parent_session_id: str
     parent_run_id: str
+    parent_batch_id: str | None = None
     parent_tool_call_id: str | None = None
     child_session_id: str | None = None
     child_run_id: str | None = None
@@ -112,6 +120,7 @@ class AgentTreeNode(ApplicationDTO):
     session_id: str
     parent_session_id: str
     parent_run_id: str
+    parent_batch_id: str | None = None
     parent_tool_call_id: str | None = None
     agent_id: str
     agent_name: str

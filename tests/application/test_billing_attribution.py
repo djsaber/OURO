@@ -55,7 +55,8 @@ def test_attribution_survives_reopen_correction_and_grouping_without_fabricated_
     service = UsageService(LocalUsageLedger(tmp_path))
     assert service.get_entry(paid.entry_id).billing_mode == "usage_based"
     assert service.get_entry(subscription.entry_id).metadata["billing_mode"] == "subscription"
-    assert record(service, "paid", "usage_based", 0.2).estimated_cost == 0.3
+    assert record(service, "paid", "usage_based", 0.2).estimated_cost == 0.2
+    assert service.get_entry(paid.entry_id).estimated_cost == 0.3
     with pytest.raises(PersistenceError, match="billing mode conflicts"):
         record(service, "paid", "subscription", 0.2)
     with pytest.raises(PersistenceError, match="billing mode conflicts"):
@@ -153,8 +154,8 @@ async def test_inflight_request_keeps_old_service_attribution_after_rebinding(
         assert first.run.status == "completed"
         assert len(entries) == 1 and entries[0].billing_mode == "subscription"
         assert entries[0].estimated_cost is None
-        assert first.run.usage["input_tokens"] == 10
-        assert "billing_mode" not in first.run.usage
+        assert first.usage["input_tokens"] == 10
+        assert "billing_mode" not in first.usage
         await login(application.provider_auth)
         # Capture the new request on its newly constructed transport too.
         monkeypatch.setattr(new_adapter.provider.transport, "post_json", delayed_response)

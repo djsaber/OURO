@@ -35,7 +35,8 @@ from ouro.plugins.registry import PluginCommand, PluginCommandRequest, PluginCom
 from ouro.plugins.run_drivers import RunDriverRegistration
 from ouro.plugins.session_controllers import PluginSessionController
 from ouro.sdk.plugins import providers as provider_sdk
-from ouro.tools import Tool, ToolExecutionContext, ToolInputRequest, ToolResult
+from ouro.tools import Tool, ToolExecutionContext
+from ouro.tools.base import ToolExecutionResult
 
 
 def bind_generation_gate(
@@ -108,7 +109,7 @@ def _gated_tool(tool: Tool, gate: GenerationGate) -> Tool:
     async def invoke(
         invocation,
         context: ToolExecutionContext,
-    ) -> ToolResult | ToolInputRequest:
+    ) -> ToolExecutionResult:
         async with gate.invocation():
             return await tool.execute(invocation, context=context)
 

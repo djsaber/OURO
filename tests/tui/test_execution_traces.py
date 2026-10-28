@@ -394,27 +394,32 @@ async def test_canonical_trace_projection_is_shared_by_all_session_kinds(tmp_pat
             ended_at=datetime.now(UTC),
         )
     )
-    application.runtime.store.append_messages(
-        [
-            MessageRecord(
-                session_id=session_id,
-                run_id=run_id,
-                role="assistant",
-                content=[TextContent(text="Investigating")],
-                tool_calls=[
-                    ToolCallRequest(id="read", name="Read", arguments={"path": "sample.txt"})
-                ],
-                reasoning_content="Earlier thought",
-            ),
-            MessageRecord(
-                session_id=session_id,
-                run_id=run_id,
-                role="assistant",
-                content=[TextContent(text="Final answer\n\nFinal paragraph")],
-                reasoning_content="Final thought",
-            ),
-        ]
+    messages = [
+        MessageRecord(
+            session_id=session_id,
+            run_id=run_id,
+            role="assistant",
+            content=[TextContent(text="Investigating")],
+            tool_calls=[ToolCallRequest(id="read", name="Read", arguments={"path": "sample.txt"})],
+            reasoning_content="Earlier thought",
+        ),
+        MessageRecord(
+            session_id=session_id,
+            run_id=run_id,
+            role="assistant",
+            content=[TextContent(text="Final answer\n\nFinal paragraph")],
+            reasoning_content="Final thought",
+        ),
+    ]
+    from tests.tool_batches import seed_tool_messages
+
+    seed_tool_messages(
+        application.runtime.store,
+        messages[0],
+        [],
+        run=application.runtime.store.load_run(session_id, run_id),
     )
+    application.runtime.store.append_messages(messages)
     app = OuroTuiApp(home=tmp_path, application=application)
     async with run_ready_app(app, size=(100, 32)):
         await app._open_session(root_id)

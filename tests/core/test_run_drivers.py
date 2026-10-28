@@ -72,11 +72,13 @@ def test_default_driver_uses_the_native_checkpoint_contract():
 @pytest.mark.parametrize(
     ("record_type", "schema", "current"),
     [
-        (RunRecord, 2, 5),
-        (RunRecord, 3, 5),
-        (RunRecord, 4, 5),
-        (MessageRecord, 2, 4),
-        (MessageRecord, 3, 4),
+        (RunRecord, 2, 10),
+        (RunRecord, 3, 10),
+        (RunRecord, 4, 10),
+        (RunRecord, 5, 10),
+        (MessageRecord, 2, 8),
+        (MessageRecord, 3, 8),
+        (MessageRecord, 4, 8),
     ],
 )
 def test_decoder_rejects_records_without_current_driver_provenance_schema(

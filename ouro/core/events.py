@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from ouro.core.base import Metadata, MetadataField, VersionedOuroModel, new_id, utc_now
+from ouro.core.response_drafts import ResponseStreamPosition
 
 EventType = Literal[
     "session_loaded",
@@ -20,6 +21,7 @@ EventType = Literal[
     "model_reasoning_delta",
     "model_tool_call_delta",
     "model_message_completed",
+    "model_response_committed",
     "tool_batch_planned",
     "tool_batch_rejected",
     "tool_batch_started",
@@ -65,9 +67,7 @@ EventType = Literal[
     "diagnostic",
 ]
 
-# These high-frequency facts may be committed with group durability: each
-# record remains transactionally visible and ordered, while the next
-# non-delta event establishes the durable storage boundary for the group.
+# Live model observations; only current text/reasoning prefixes are recoverable.
 MODEL_STREAM_DELTA_EVENT_TYPES = frozenset(
     {
         "model_text_delta",
@@ -89,3 +89,19 @@ class EventRecord(VersionedOuroModel):
     sequence: int = 0
     payload: dict[str, Any] = Field(default_factory=dict)
     metadata: Metadata = MetadataField
+    stream: ResponseStreamPosition | None = None
+
+    def storage_json(self) -> str:
+        """Encode the complete fact without absent optional fields or empty defaults."""
+        return self.model_dump_json(
+            exclude_none=True,
+            exclude={
+                name
+                for name, empty in (
+                    ("history_epoch", self.history_epoch == 0),
+                    ("payload", not self.payload),
+                    ("metadata", not self.metadata),
+                )
+                if empty
+            },
+        )

@@ -9,8 +9,15 @@ from typing import Any
 from ouro.core.cancellation import settle_owned_tasks
 
 
-class CallbackOutcomeUnknown(RuntimeError):
-    """A synchronous callback finished only after its caller was cancelled."""
+class CallbackCancelled(RuntimeError):
+    """Cancellation revoked publication; an owned callback may still have returned a value."""
+
+    def __init__(
+        self, result: object = None, *, reason: str = "callback completed after cancellation"
+    ) -> None:
+        super().__init__(reason)
+        self.result = result
+        self.reason = reason
 
 
 async def invoke_callback(
@@ -20,7 +27,7 @@ async def invoke_callback(
 ) -> Any:
     """Invoke a callback without letting synchronous work block the event loop."""
 
-    return await _invoke_callback(handler, args, kwargs, own_sync_cancellation=False)
+    return await _invoke_callback(handler, args, kwargs, owned=False)
 
 
 async def invoke_owned_callback(
@@ -29,11 +36,9 @@ async def invoke_owned_callback(
     on_cancel: Callable[[], None] | None = None,
     **kwargs: Any,
 ) -> Any:
-    """Invoke a callback while retaining ownership of cancelled synchronous work."""
+    """Own callback completion and revoke scoped access before cancellation settles."""
 
-    return await _invoke_callback(
-        handler, args, kwargs, own_sync_cancellation=True, on_cancel=on_cancel
-    )
+    return await _invoke_callback(handler, args, kwargs, owned=True, on_cancel=on_cancel)
 
 
 async def run_blocking[ResultT](
@@ -65,31 +70,54 @@ async def _invoke_callback(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
     *,
-    own_sync_cancellation: bool,
+    owned: bool,
     on_cancel: Callable[[], None] | None = None,
 ) -> Any:
     callback = partial(handler, *args, **kwargs)
     if inspect.iscoroutinefunction(handler):
         result = callback()
+    elif owned:
+        result = await _await_owned(
+            asyncio.create_task(asyncio.to_thread(callback)),
+            cancel_task=False,
+            on_cancel=on_cancel,
+        )
     else:
-        thread = asyncio.create_task(asyncio.to_thread(callback))
-        if not own_sync_cancellation:
-            result = await thread
-        else:
-            try:
-                result = await asyncio.shield(thread)
-            except asyncio.CancelledError:
-                # Revoke call-scoped access before waiting for an owned thread.
-                if on_cancel is not None:
-                    on_cancel()
-                await settle_owned_tasks(thread)
-                result = thread.result()
-                if inspect.iscoroutine(result):
-                    result.close()
-                raise CallbackOutcomeUnknown from None
+        result = await asyncio.to_thread(callback)
     if inspect.isawaitable(result):
-        return await result
+        if not owned:
+            return await result
+
+        async def await_result() -> Any:
+            return await result
+
+        return await _await_owned(
+            asyncio.create_task(await_result()), cancel_task=True, on_cancel=on_cancel
+        )
     return result
+
+
+async def _await_owned(
+    task: asyncio.Task[Any], *, cancel_task: bool, on_cancel: Callable[[], None] | None
+) -> Any:
+    try:
+        await asyncio.wait((task,))
+        return task.result()
+    except asyncio.CancelledError:
+        if on_cancel is not None:
+            on_cancel()
+        if cancel_task:
+            task.cancel()
+        await settle_owned_tasks(task)
+        # An actual cancellation has no returned value; a callback that suppressed
+        # it or finished in an owned thread retains only its observation.
+        if task.cancelled():
+            raise
+        result = task.result()
+        if inspect.iscoroutine(result):
+            result.close()
+            result = None
+        raise CallbackCancelled(result) from None
 
 
 async def invoke_bounded_callback[InputT](
@@ -105,7 +133,7 @@ async def invoke_bounded_callback[InputT](
 
 
 __all__ = [
-    "CallbackOutcomeUnknown",
+    "CallbackCancelled",
     "invoke_bounded_callback",
     "invoke_callback",
     "invoke_owned_callback",

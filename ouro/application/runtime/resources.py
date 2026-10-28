@@ -5,8 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ouro.core.agents import AgentCatalogSnapshot, DelegatedConstraints, EffectiveToolRef
-from ouro.core.state import RunRecord
+from ouro.core.agents import (
+    AgentCatalogSnapshot,
+    DelegatedConstraints,
+    DelegationRecord,
+    EffectiveToolRef,
+)
+from ouro.core.run_budget import RunBudgetPolicy
 
 if TYPE_CHECKING:
     from ouro.application.tool_calls import ToolCallCoordinator
@@ -23,25 +28,20 @@ class RunResources:
     tool_names: frozenset[str] | None = None
     tool_refs: tuple[EffectiveToolRef, ...] = ()
     constraints: DelegatedConstraints | None = None
+    agent_prompt: str = ""
+    budget: RunBudgetPolicy | None = None
     tool_calls: ToolCallCoordinator | None = None
 
-    def restore_tool_bindings(self, run: RunRecord) -> None:
-        if "effective_tool_names" not in run.metadata:
-            return
-        raw = run.metadata.get("effective_tool_names")
-        if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
-            raise ValueError("run has invalid effective tool names")
-        raw_refs = run.metadata.get("effective_tool_refs", [])
-        if not isinstance(raw_refs, list) or any(not isinstance(item, dict) for item in raw_refs):
-            raise ValueError("run has invalid effective tool references")
-        refs = tuple(EffectiveToolRef.model_validate(item) for item in raw_refs)
-        raw_constraints = run.metadata.get("delegated_constraints", {})
-        if not isinstance(raw_constraints, dict):
-            raise ValueError("run has invalid delegated constraints")
-        constraints = DelegatedConstraints.model_validate(raw_constraints)
-        self.tool_names = frozenset(raw)
-        self.tool_refs = refs
-        self.constraints = constraints
+    def bind_delegation(self, relation: DelegationRecord | None) -> None:
+        self.tool_names = (
+            frozenset(tool.public_name for tool in relation.effective_tools)
+            if relation is not None
+            else None
+        )
+        self.tool_refs = relation.effective_tools if relation is not None else ()
+        self.constraints = relation.constraints if relation is not None else None
+        self.agent_prompt = relation.definition.system_prompt if relation is not None else ""
+        self.budget = relation.budget if relation is not None else None
 
     def take_snapshot(self) -> ExtensionCatalogLease | None:
         """Transfer the lease without closing it; all other state stays Run-owned."""

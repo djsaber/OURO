@@ -16,6 +16,7 @@ from ouro.application.sessions.service import SessionService
 from ouro.core.callbacks import run_blocking
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
+from ouro.core.response_drafts import ResponseStreamPosition
 
 _INPUT_EVENTS = frozenset(
     {"user_message_added", "host_message_added", "plugin_message_added", "queued_input_consumed"}
@@ -47,6 +48,7 @@ def observation_event(event: RuntimeEventView) -> EventRecord:
         event_type=event.event_type,
         created_at=event.created_at,
         sequence=event.sequence,
+        stream=event.stream,
         payload=dict(event.data),
     )
 
@@ -89,6 +91,7 @@ class SessionObservation(AsyncIterator[SessionObservationBatch]):
         self._history_anchor = history_anchor
         self._pending: SessionObservationBatch | None = self._snapshot_batch(snapshot)
         self._applied_sequence = 0
+        self._draft_position: ResponseStreamPosition | None = None
         self._history_epoch = snapshot.session.history_epoch
         self._catching_up = False
         self._read_lock = asyncio.Lock()
@@ -146,6 +149,10 @@ class SessionObservation(AsyncIterator[SessionObservationBatch]):
             raise ValueError("Only this observation's pending batch can be acknowledged")
         self._applied_sequence = batch.event_high_water
         self._history_epoch = batch.history_epoch
+        events = batch.snapshot.events if batch.snapshot is not None else batch.events
+        for event in events:
+            if event.stream is not None and event.stream.cursor is not None:
+                self._draft_position = event.stream
         self._pending = None
 
     def close(self) -> None:
@@ -197,13 +204,14 @@ class SessionObservation(AsyncIterator[SessionObservationBatch]):
                     self.session_id,
                     after_sequence=self._applied_sequence,
                     limit=self._page_size,
+                    draft_position=self._draft_position,
                 )
                 if batch.history_epoch != self._history_epoch or any(
                     self._requires_snapshot(event) for event in batch.events
                 ):
                     return await self._reset()
                 self._catching_up = more
-                if batch.event_high_water > self._applied_sequence:
+                if batch.events or batch.event_high_water > self._applied_sequence:
                     return batch
             notification = await self._source.get()
             events: list[RuntimeEventView] = []
@@ -215,7 +223,18 @@ class SessionObservation(AsyncIterator[SessionObservationBatch]):
                     self._catching_up = True
                     break
                 event = notification.event
-                if event is not None and event.sequence > self._applied_sequence:
+                if event is not None and (
+                    event.sequence > self._applied_sequence
+                    or (
+                        event.stream is not None
+                        and (
+                            event.stream.cursor is None
+                            or self._draft_position is None
+                            or event.stream.context_id != self._draft_position.context_id
+                            or event.stream.cursor > (self._draft_position.cursor or 0)
+                        )
+                    )
+                ):
                     if self._requires_snapshot(event):
                         return await self._reset()
                     events.append(event)
@@ -250,7 +269,7 @@ class SessionObservation(AsyncIterator[SessionObservationBatch]):
             return SessionObservationBatch(
                 session_id=self.session_id,
                 history_epoch=self._history_epoch,
-                event_high_water=events[-1].sequence,
+                event_high_water=max(self._applied_sequence, *(event.sequence for event in events)),
                 events=tuple(events),
                 messages=messages,
             )

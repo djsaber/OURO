@@ -290,7 +290,7 @@ async def test_welcome_upload_stays_in_draft_until_message_is_sent(tmp_path, sou
         assert not app.query_one(WelcomePanel).has_class("welcome-page")
         assert not app.query_one(ConversationView).showing_welcome
         session_id = app._controller.session_id
-        snapshot = application.runtime.store.load_runtime_session(session_id)
+        snapshot = application.runtime.store.load_session(session_id)
         assert snapshot.runs and snapshot.messages[0].input_attachments
         assert app._active_title == snapshot.session.title == "New conversation"
         assert snapshot.session.title_source == "placeholder"
@@ -390,9 +390,9 @@ async def test_import_queue_cancel_and_draft_restart_restore_exact_input(tmp_pat
         assert [item.name for item in content.attachments] == [one.name, two.name]
         assert [item.text_offset for item in content.attachments] == [7, 7]
         session_id = app._controller.session_id
-        snapshot = runtime.store.load_runtime_session(session_id)
+        snapshot = runtime.store.load_session(session_id)
         assert not snapshot.runs and not snapshot.messages
-        _, queued, _ = runtime.queued_inputs.enqueue(
+        _, queued, _, _ = runtime.queued_inputs.enqueue(
             snapshot=snapshot,
             prompt=content.text,
             attachments=content.attachments,
@@ -514,9 +514,7 @@ async def test_accepted_input_is_not_restored_when_rendering_fails(tmp_path, mon
             await asyncio.wait_for(app.workers.wait_for_complete(workers), timeout=10)
         assert app.query_one(Composer).input_content.is_empty
         assert (
-            application.runtime.store.load_runtime_session(session.session_id)
-            .messages[0]
-            .input_attachments
+            application.runtime.store.load_session(session.session_id).messages[0].input_attachments
         )
 
 
@@ -554,7 +552,7 @@ async def test_submit_preflight_restores_original_session_after_navigation(tmp_p
         )
         assert app.query_one(Composer).input_content == InputContent(text="second draft")
         assert app._input_drafts.content_for(first.session_id) == content
-        assert not application.runtime.store.load_runtime_session(second.session_id).messages
+        assert not application.runtime.store.load_session(second.session_id).messages
 
 
 @pytest.mark.parametrize("existing", (False, True))
@@ -777,7 +775,7 @@ async def test_terminal_file_paste_uploads_and_submits_on_both_pages(tmp_path, e
             await asyncio.wait_for(app.workers.wait_for_complete(workers), timeout=10)
         await pilot.pause()
         assert app._controller.session_id == identity
-        snapshot = runtime.store.load_runtime_session(identity)
+        snapshot = runtime.store.load_session(identity)
         body = next(message for message in snapshot.messages if not message.scaffold)
         assert body.text_content == content.text
         assert body.input_attachments == content.attachments

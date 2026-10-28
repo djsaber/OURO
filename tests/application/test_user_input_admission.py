@@ -87,7 +87,7 @@ async def test_acceptance_and_retries_do_not_wait_for_execution_capacity(tmp_pat
         assert after.receipt.run_id == completed.run.run_id
         assert (await after.wait()).run.run_id == completed.run.run_id
         await asyncio.wait_for(first.wait(), 10)
-        messages = app.runtime.store.load_runtime_session(second.receipt.session_id).messages
+        messages = app.runtime.store.load_session(second.receipt.session_id).messages
         assert [message.text_content for message in messages if message.role == "user"] == [
             "second"
         ]
@@ -183,7 +183,7 @@ async def test_two_supervisors_accept_one_input_identity(tmp_path, backend):
         await asyncio.wait_for(provider.started.get(), 5)
         provider.release.set()
         await asyncio.gather(first.wait(), second.wait())
-        messages = app.runtime.store.load_runtime_session(first.receipt.session_id).messages
+        messages = app.runtime.store.load_session(first.receipt.session_id).messages
         assert len([m for m in messages if m.role == "user"]) == 1
         assert provider.maximum == 1
     finally:

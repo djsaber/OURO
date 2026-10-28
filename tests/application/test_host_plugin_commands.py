@@ -187,6 +187,11 @@ async def test_stop_command_commits_abort_intent_and_settles_execution(system, m
         result = await task
         assert submitted.execution.stop_requested_run_id == result.run.run_id
         assert result.run.status == "aborted"
+        events, _ = system.store.load_events_page(session.session_id, limit=100)
+        abort_events = [
+            event.event_type for event in events if event.event_type.startswith("run_abort")
+        ]
+        assert abort_events == ["run_abort_requested", "run_aborted"]
         assert system.store.load_session(session.session_id).messages == before
         assert [item async for item in consume_plugin_command(system.runtime, submitted)] == []
     finally:
@@ -214,6 +219,8 @@ async def test_failed_stop_command_does_not_publish_abort_intent(system, monkeyp
     with pytest.raises(PersistenceError, match="injected failure"):
         await service.execute_command("dev.example:example", session_id=session.session_id)
     assert not system.store.load_run(session.session_id, run.run_id).abort_requested
+    events, _ = system.store.load_events_page(session.session_id, limit=100)
+    assert not any(event.event_type == "run_abort_requested" for event in events)
 
 
 async def test_delayed_stop_delivery_does_not_cancel_resumed_execution(system, monkeypatch):

@@ -27,9 +27,8 @@ from ouro.core.agents import (
     AgentWaitRequest,
 )
 from ouro.core.base import new_id, utc_now
-from ouro.core.callbacks import run_blocking
+from ouro.core.callbacks import CallbackCancelled, run_blocking
 from ouro.core.cancellation import AbortSignal
-from ouro.core.content import append_content_text
 from ouro.core.errors import SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.harness_calls import HarnessCallSnapshot, HarnessStateChange, accept_state_changes
@@ -42,9 +41,13 @@ from ouro.core.observers import (
     freeze_json,
 )
 from ouro.core.redaction import redact_text
-from ouro.core.run_budget import RunBudgetReason
+from ouro.core.run_budget import RunPauseReason
 from ouro.core.run_drivers import DriverCheckpoint
-from ouro.core.session_controls import AttributedSessionControlTransition, SessionControlState
+from ouro.core.session_controls import (
+    AttributedSessionControlTransition,
+    SessionControlState,
+    SessionControlTransitionResult,
+)
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batch_transitions import tool_batch_suspension
 from ouro.core.tool_batches import (
@@ -53,6 +56,7 @@ from ouro.core.tool_batches import (
     ToolCallStatus,
     ToolExecutionMode,
 )
+from ouro.core.tool_facts import ToolCallIdentity
 from ouro.core.tool_policies import ToolPolicyCall, ToolPolicyMode, ToolPolicyRegistry
 from ouro.core.tool_requests import ToolBatchHandlingResult
 from ouro.core.tools import (
@@ -62,10 +66,13 @@ from ouro.core.tools import (
     ToolInputRequest,
     ToolInvocation,
     ToolResult,
+    ToolResultFeedback,
+    ToolResultValue,
     tool_definition_contract_hash,
 )
 from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.tools import ToolBatchExecutor, ToolExecutionContext, ToolExecutor, ToolRegistry
+from ouro.tools.base import ToolExecutionAborted, ToolExecutionInterrupted
 from ouro.tools.schema import tool_argument_error
 
 _JSON_VALUE_ADAPTER: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
@@ -94,13 +101,14 @@ class AgentControlExecutor(Protocol):
         self,
         run: RunRecord,
         next_model_round: int,
-    ) -> RunBudgetReason | None: ...
+    ) -> RunPauseReason | None: ...
 
     async def execute_control(
         self,
         request: AgentControlRequest,
         *,
         invocation: ToolInvocation,
+        identity: ToolCallIdentity,
         session: SessionRecord,
         run: RunRecord,
     ) -> AgentControlResult: ...
@@ -173,14 +181,12 @@ class ToolCallCoordinator:
 
     async def handle_batch(
         self,
-        emitted: list[EventRecord],
         sequence: int,
         session: SessionRecord,
         run: RunRecord,
         tool_calls: list[ToolCallRequest],
         *,
         turn_id: str,
-        message_sequence: int,
         assistant_text: str,
         assistant_reasoning: str,
         assistant_model_response: ModelResponseRecord | None,
@@ -188,17 +194,19 @@ class ToolCallCoordinator:
         abort_signal: AbortSignal,
         driver_checkpoint: DriverCheckpoint | None = None,
     ) -> ToolBatchHandlingResult:
-        assistant_message = await run_blocking(
-            self.runs.append_assistant_tool_batch_message,
-            session=session,
-            run=run,
-            tool_calls=tool_calls,
+        assistant_message = MessageRecord.text(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            role="assistant",
             text=assistant_text,
-            sequence=message_sequence,
             turn_id=turn_id,
-            reasoning_content=assistant_reasoning,
-            model_response=assistant_model_response,
-            provider_continuation=assistant_continuation,
+        ).model_copy(
+            update={
+                "tool_calls": list(tool_calls),
+                "reasoning_content": assistant_reasoning,
+                "model_response": assistant_model_response,
+                "provider_continuation": assistant_continuation,
+            }
         )
         batch = ToolCallBatchRecord(
             batch_id=driver_checkpoint.batch_id
@@ -210,13 +218,16 @@ class ToolCallCoordinator:
             max_concurrency=self.execution_config.max_concurrency,
             calls=[ToolBatchCall(request=request) for request in tool_calls],
         )
+        head = batch.head()
+        assistant_message.call_refs = tuple(
+            head.identity(run.run_id, request.id)
+            for request in sorted(tool_calls, key=lambda request: request.source_index)
+        )
         return await self._handle_batch(
-            emitted,
             sequence,
             session=session,
             run=run,
             batch=batch,
-            message_sequence=message_sequence + 1,
             prefix_messages=[assistant_message],
             abort_signal=abort_signal,
             driver_checkpoint=driver_checkpoint,
@@ -224,14 +235,12 @@ class ToolCallCoordinator:
 
     async def handle_driver_batch(
         self,
-        emitted: list[EventRecord],
         sequence: int,
         *,
         session: SessionRecord,
         run: RunRecord,
         tool_calls: tuple[ToolCallRequest, ...],
         turn_id: str,
-        message_sequence: int,
         abort_signal: AbortSignal,
         checkpoint: DriverCheckpoint,
     ) -> ToolBatchHandlingResult:
@@ -248,12 +257,10 @@ class ToolCallCoordinator:
             calls=[ToolBatchCall(request=request) for request in tool_calls],
         )
         return await self._handle_batch(
-            emitted,
             sequence,
             session=session,
             run=run,
             batch=batch,
-            message_sequence=message_sequence,
             prefix_messages=[],
             abort_signal=abort_signal,
             driver_checkpoint=checkpoint,
@@ -261,20 +268,18 @@ class ToolCallCoordinator:
 
     async def _handle_batch(
         self,
-        emitted: list[EventRecord],
         sequence: int,
         *,
         session: SessionRecord,
         run: RunRecord,
         batch: ToolCallBatchRecord,
-        message_sequence: int,
         prefix_messages: list[MessageRecord],
         abort_signal: AbortSignal,
         driver_checkpoint: DriverCheckpoint | None,
     ) -> ToolBatchHandlingResult:
         tool_calls = [call.request for call in batch.calls]
         turn_id = batch.turn_id
-        await run_blocking(
+        _, _, _, committed_events = await run_blocking(
             self.runs.save_batch_state,
             session=session,
             run=run,
@@ -282,20 +287,11 @@ class ToolCallCoordinator:
             status="running",
             phase="tool_preflight",
             driver_checkpoint=driver_checkpoint,
+            assistant_message=prefix_messages[0] if prefix_messages else None,
         )
-        sequence = await self.events.emit(
-            emitted,
-            sequence,
-            session_id=session.session_id,
-            run_id=run.run_id,
-            event_type="tool_batch_planned",
-            payload={
-                "batch_id": batch.batch_id,
-                "turn_id": turn_id,
-                "tool_call_count": len(tool_calls),
-                "execution_mode": batch.execution_mode,
-            },
-        )
+        await self.events.publish_committed(committed_events)
+        if committed_events:
+            sequence = committed_events[-1].sequence
 
         exclusive_tools = self._exclusive_tools_in_mixed_batch(tool_calls)
         if exclusive_tools:
@@ -322,9 +318,7 @@ class ToolCallCoordinator:
                 for request in tool_calls
             ]
             batch = batch.model_copy(update={"calls": rejected_calls, "updated_at": utc_now()})
-            sequence = await self.events.emit(
-                emitted,
-                sequence,
+            rejected_event = EventRecord(
                 session_id=session.session_id,
                 run_id=run.run_id,
                 event_type="tool_batch_rejected",
@@ -336,20 +330,19 @@ class ToolCallCoordinator:
                 },
             )
             executed = await self.execute_batch(
-                emitted,
                 sequence,
                 session=session,
                 run=run,
                 batch=batch,
-                message_sequence=message_sequence,
                 abort_signal=abort_signal,
+                events=(rejected_event,),
             )
             return executed.model_copy(update={"messages": [*prefix_messages, *executed.messages]})
 
         calls: list[ToolBatchCall] = []
+        pending_events: list[EventRecord] = []
         for request in tool_calls:
-            call, sequence = await self._preflight_call(
-                emitted,
+            call, sequence, call_events = await self._preflight_call(
                 sequence,
                 session=session,
                 run=run,
@@ -360,6 +353,7 @@ class ToolCallCoordinator:
                 abort_signal=abort_signal,
             )
             calls.append(call)
+            pending_events.extend(call_events)
         batch = batch.model_copy(update={"calls": calls, "updated_at": utc_now()})
 
         suspension = tool_batch_suspension(batch)
@@ -367,29 +361,18 @@ class ToolCallCoordinator:
             batch = batch.model_copy(
                 update={"phase": suspension.batch_phase, "updated_at": utc_now()}
             )
-            session, run = await run_blocking(
+            session, run, batch, committed_events = await run_blocking(
                 self.runs.save_batch_state,
                 session=session,
                 run=run,
                 batch=batch,
                 status=suspension.status,
                 phase=suspension.run_phase,
+                events=tuple(pending_events),
             )
-            assert run.active_tool_batch is not None
-            batch = run.active_tool_batch
-            sequence = await self.events.emit(
-                emitted,
-                sequence,
-                session_id=session.session_id,
-                run_id=run.run_id,
-                event_type="run_status_changed",
-                payload={
-                    "to_status": suspension.status,
-                    "status": suspension.status,
-                    "batch_id": batch.batch_id,
-                    "turn_id": batch.turn_id,
-                },
-            )
+            await self.events.publish_committed(committed_events)
+            if committed_events:
+                sequence = committed_events[-1].sequence
             return ToolBatchHandlingResult(
                 session=session,
                 run=run,
@@ -401,69 +384,54 @@ class ToolCallCoordinator:
             )
 
         batch = batch.model_copy(update={"phase": "ready", "updated_at": utc_now()})
-        await run_blocking(
+        _, _, _, committed_events = await run_blocking(
             self.runs.save_batch_state,
             session=session,
             run=run,
             batch=batch,
             status="running",
             phase="tool_execution",
+            events=tuple(pending_events),
         )
+        await self.events.publish_committed(committed_events)
+        if committed_events:
+            sequence = committed_events[-1].sequence
         executed = await self.execute_batch(
-            emitted,
             sequence,
             session=session,
             run=run,
             batch=batch,
-            message_sequence=message_sequence,
             abort_signal=abort_signal,
         )
         return executed.model_copy(update={"messages": [*prefix_messages, *executed.messages]})
 
     async def execute_batch(
         self,
-        emitted: list[EventRecord],
         sequence: int,
         *,
         session: SessionRecord,
         run: RunRecord,
         batch: ToolCallBatchRecord,
-        message_sequence: int,
         abort_signal: AbortSignal,
+        events: tuple[EventRecord, ...] = (),
     ) -> ToolBatchHandlingResult:
         ready_calls = [call for call in batch.calls if call.status == "ready" and call.invocation]
         batch = batch.model_copy(update={"phase": "executing", "updated_at": utc_now()})
-        await run_blocking(
+        _, _, _, committed_events = await run_blocking(
             self.runs.save_batch_state,
             session=session,
             run=run,
             batch=batch,
             status="running",
             phase="tool_execution",
+            events=events,
         )
-        sequence = await self.events.emit(
-            emitted,
-            sequence,
-            session_id=session.session_id,
-            run_id=run.run_id,
-            event_type="tool_batch_started",
-            payload={
-                "batch_id": batch.batch_id,
-                "turn_id": batch.turn_id,
-                "execution_mode": batch.execution_mode,
-                "tool_calls": [
-                    {
-                        "tool_call_id": call.request.id,
-                        "tool_name": call.request.name,
-                        "status": call.status,
-                        "source_index": call.request.source_index,
-                    }
-                    for call in batch.calls
-                ],
-            },
-        )
+        await self.events.publish_committed(committed_events)
+        if committed_events:
+            sequence = committed_events[-1].sequence
         checkpoint_batch = batch
         checkpoint_lock = asyncio.Lock()
+        aborted_events: list[EventRecord] = []
         unattended_resolutions: dict[str, UnattendedResolution] = {}
         resumed_harness: dict[str, HarnessCallSnapshot] = {}
         execution_started_at: dict[str, tuple[datetime, float]] = {}
@@ -489,7 +457,6 @@ class ToolCallCoordinator:
                     policy_reason,
                     sequence,
                 ) = await self._evaluate_tool_policies(
-                    emitted,
                     sequence,
                     session=session,
                     run=run,
@@ -545,44 +512,48 @@ class ToolCallCoordinator:
                     (call for call in checkpoint_batch.calls if call.status == "waiting_user"),
                     None,
                 )
-                await run_blocking(
+                _, _, checkpoint_batch, committed_events = await run_blocking(
                     self.runs.save_batch_state,
                     session=session,
                     run=run,
                     batch=checkpoint_batch,
                     status="waiting_user" if waiting_user is not None else "running",
                     phase="human_interaction" if waiting_user is not None else "tool_execution",
+                    changed_call_ids=frozenset({invocation.tool_call_id}),
+                    started_call_ids=frozenset({invocation.tool_call_id}),
                 )
-                sequence = await self.events.emit(
-                    emitted,
-                    sequence,
-                    session_id=session.session_id,
-                    run_id=run.run_id,
-                    event_type="tool_call_started",
-                    payload={
-                        "batch_id": batch.batch_id,
-                        "turn_id": batch.turn_id,
-                        "tool_call_id": invocation.tool_call_id,
-                        "tool_name": invocation.tool_name,
-                        "source_index": started_call.request.source_index,
-                    },
-                )
+                await self.events.publish_committed(committed_events)
+                if committed_events:
+                    sequence = committed_events[-1].sequence
                 execution_started_at[invocation.tool_call_id] = (utc_now(), monotonic())
+
+        async def preserve_late_result(invocation: ToolInvocation, value: ToolResultValue) -> None:
+            call = next(
+                item
+                for item in checkpoint_batch.calls
+                if item.request.id == invocation.tool_call_id
+            )
+            await run_blocking(
+                self.runs.save_late_tool_result,
+                identity=batch.head().identity(run.run_id, invocation.tool_call_id),
+                attempt=call.attempt,
+                invocation=invocation,
+                result=_complete_tool_result_timing(
+                    value, started=execution_started_at.get(invocation.tool_call_id)
+                ),
+            )
 
         async def checkpoint_outcome(outcome: ToolExecutionOutcome) -> None:
             nonlocal checkpoint_batch, sequence
             call_harness = resumed_harness.pop(
                 outcome.invocation.tool_call_id, execution_context.harness
             )
-            outcome = await self._stage_control_transitions(
-                outcome,
-                session=session,
-                harness=call_harness,
-            )
             outcome = await self._apply_agent_control(
                 outcome,
+                identity=batch.head().identity(run.run_id, outcome.invocation.tool_call_id),
                 session=session,
                 run=run,
+                context=execution_context,
             )
             if outcome.result is not None:
                 outcome = outcome.model_copy(
@@ -596,6 +567,24 @@ class ToolCallCoordinator:
                         )
                     }
                 )
+            if outcome.result is not None and outcome.status == "completed":
+                observed_call = next(
+                    item
+                    for item in checkpoint_batch.calls
+                    if item.request.id == outcome.invocation.tool_call_id
+                )
+                accepted = await run_blocking(
+                    self.runs.save_tool_result,
+                    identity=batch.head().identity(run.run_id, outcome.invocation.tool_call_id),
+                    attempt=observed_call.attempt,
+                    invocation=outcome.invocation,
+                    result=outcome.result,
+                )
+                if not accepted:
+                    raise SessionBusyError("tool result belongs to an inactive execution")
+            outcome = await self._stage_control_transitions(
+                outcome, session=session, harness=call_harness
+            )
             async with checkpoint_lock:
                 checkpoint_calls: list[ToolBatchCall] = []
                 completed_call: ToolBatchCall | None = None
@@ -625,6 +614,7 @@ class ToolCallCoordinator:
                                 outcome.agent_wait if waiting_for_child else item.agent_wait
                             ),
                             "result": result,
+                            "feedback": outcome.feedback,
                         }
                     )
 
@@ -632,9 +622,108 @@ class ToolCallCoordinator:
                 checkpoint_batch = checkpoint_batch.model_copy(
                     update={"calls": checkpoint_calls, "updated_at": utc_now()}
                 )
+                pending_events: list[EventRecord] = []
+                resolution = (
+                    unattended_resolutions.pop(completed_call.request.id, None)
+                    if completed_call is not None
+                    else None
+                )
+                if resolution is not None:
+                    assert completed_call is not None
+                    pending_events.append(
+                        EventRecord(
+                            session_id=session.session_id,
+                            run_id=run.run_id,
+                            event_type="ask_user_resolved",
+                            payload={
+                                "batch_id": batch.batch_id,
+                                "turn_id": batch.turn_id,
+                                "tool_call_id": completed_call.request.id,
+                                "tool_call_status": completed_call.status,
+                                "resolution": resolution.model_dump(mode="json"),
+                                "resolved_by": resolution.resolved_by,
+                                "resolver_id": resolution.resolver_id,
+                            },
+                        )
+                    )
+                if completed_call is not None and outcome.status == "approval_required":
+                    assert completed_call.approval is not None
+                    pending_events.append(
+                        EventRecord(
+                            session_id=session.session_id,
+                            run_id=run.run_id,
+                            event_type="approval_requested",
+                            payload={
+                                "batch_id": batch.batch_id,
+                                "turn_id": batch.turn_id,
+                                "approval_id": completed_call.approval.approval_id,
+                                "tool_call_id": completed_call.request.id,
+                                "tool_name": completed_call.request.name,
+                            },
+                        )
+                    )
+                elif completed_call is not None and outcome.status == "waiting_user":
+                    assert completed_call.input_request is not None
+                    pending_events.append(
+                        EventRecord(
+                            session_id=session.session_id,
+                            run_id=run.run_id,
+                            event_type="ask_user_requested",
+                            payload={
+                                "batch_id": batch.batch_id,
+                                "turn_id": batch.turn_id,
+                                "tool_call_id": completed_call.request.id,
+                                "tool_name": completed_call.request.name,
+                                "request": completed_call.input_request.data,
+                                "source_index": completed_call.request.source_index,
+                                **_interaction_tool_identity(completed_call.invocation),
+                            },
+                        )
+                    )
+                elif completed_call is not None and outcome.status == "waiting_child":
+                    assert completed_call.agent_wait is not None
+                    pending_events.append(
+                        EventRecord(
+                            session_id=session.session_id,
+                            run_id=run.run_id,
+                            event_type="agent_wait_requested",
+                            payload={
+                                "batch_id": batch.batch_id,
+                                "turn_id": batch.turn_id,
+                                "tool_call_id": completed_call.request.id,
+                                "wait_id": completed_call.agent_wait.wait_id,
+                                "delegation_id": completed_call.agent_wait.delegation_id,
+                            },
+                        )
+                    )
+                elif completed_call is not None and completed_call.result is not None:
+                    result = completed_call.result
+                    pending_events.append(
+                        EventRecord(
+                            session_id=session.session_id,
+                            run_id=run.run_id,
+                            event_type="tool_call_completed",
+                            payload={
+                                "batch_id": batch.batch_id,
+                                "turn_id": batch.turn_id,
+                                "tool_call_id": result.tool_call_id,
+                                "tool_name": result.tool_name,
+                                "status": completed_call.status,
+                                "is_error": result.is_error,
+                                "source_index": completed_call.request.source_index,
+                                "outcome_attempt": None
+                                if completed_call.status == "unknown_outcome"
+                                else completed_call.attempt,
+                                "feedback": completed_call.feedback.model_dump(mode="json")
+                                if completed_call.feedback
+                                else None,
+                            },
+                        )
+                    )
+
                 try:
                     suspension = tool_batch_suspension(checkpoint_batch)
-                    _, checkpoint_run = await run_blocking(
+                    _, _, checkpoint_batch, committed_events = await run_blocking(
                         self.runs.save_batch_state,
                         session=session,
                         run=run,
@@ -644,103 +733,19 @@ class ToolCallCoordinator:
                         phase=(
                             suspension.run_phase if suspension is not None else "tool_execution"
                         ),
+                        changed_call_ids=frozenset({outcome.invocation.tool_call_id}),
+                        events=tuple(pending_events),
                     )
-                    assert checkpoint_run.active_tool_batch is not None
-                    checkpoint_batch = checkpoint_run.active_tool_batch
+                    await self.events.publish_committed(committed_events)
+                    if committed_events:
+                        sequence = committed_events[-1].sequence
                 except SessionBusyError:
                     if not abort_signal.is_aborted():
                         raise
-                resolution = (
-                    unattended_resolutions.pop(completed_call.request.id, None)
-                    if completed_call is not None
-                    else None
-                )
-                if resolution is not None:
-                    assert completed_call is not None
-                    sequence = await self.events.emit(
-                        emitted,
-                        sequence,
-                        session_id=session.session_id,
-                        run_id=run.run_id,
-                        event_type="ask_user_resolved",
-                        payload={
-                            "batch_id": batch.batch_id,
-                            "turn_id": batch.turn_id,
-                            "tool_call_id": completed_call.request.id,
-                            "tool_call_status": completed_call.status,
-                            "resolution": resolution.model_dump(mode="json"),
-                            "resolved_by": resolution.resolved_by,
-                            "resolver_id": resolution.resolver_id,
-                        },
-                    )
-                if completed_call is not None and outcome.status == "approval_required":
-                    assert completed_call.approval is not None
-                    sequence = await self.events.emit(
-                        emitted,
-                        sequence,
-                        session_id=session.session_id,
-                        run_id=run.run_id,
-                        event_type="approval_requested",
-                        payload={
-                            "batch_id": batch.batch_id,
-                            "turn_id": batch.turn_id,
-                            "approval_id": completed_call.approval.approval_id,
-                            "tool_call_id": completed_call.request.id,
-                            "tool_name": completed_call.request.name,
-                        },
-                    )
-                elif completed_call is not None and outcome.status == "waiting_user":
-                    assert completed_call.input_request is not None
-                    sequence = await self.events.emit(
-                        emitted,
-                        sequence,
-                        session_id=session.session_id,
-                        run_id=run.run_id,
-                        event_type="ask_user_requested",
-                        payload={
-                            "batch_id": batch.batch_id,
-                            "turn_id": batch.turn_id,
-                            "tool_call_id": completed_call.request.id,
-                            "tool_name": completed_call.request.name,
-                            "request": completed_call.input_request.data,
-                            "source_index": completed_call.request.source_index,
-                            **_interaction_tool_identity(completed_call.invocation),
-                        },
-                    )
-                elif completed_call is not None and outcome.status == "waiting_child":
-                    assert completed_call.agent_wait is not None
-                    sequence = await self.events.emit(
-                        emitted,
-                        sequence,
-                        session_id=session.session_id,
-                        run_id=run.run_id,
-                        event_type="agent_wait_requested",
-                        payload={
-                            "batch_id": batch.batch_id,
-                            "turn_id": batch.turn_id,
-                            "tool_call_id": completed_call.request.id,
-                            "wait_id": completed_call.agent_wait.wait_id,
-                            "delegation_id": completed_call.agent_wait.delegation_id,
-                        },
-                    )
-                elif completed_call is not None and completed_call.result is not None:
-                    result = completed_call.result
-                    sequence = await self.events.emit(
-                        emitted,
-                        sequence,
-                        session_id=session.session_id,
-                        run_id=run.run_id,
-                        event_type="tool_call_completed",
-                        payload={
-                            "batch_id": batch.batch_id,
-                            "turn_id": batch.turn_id,
-                            "tool_call_id": result.tool_call_id,
-                            "tool_name": result.tool_name,
-                            "status": completed_call.status,
-                            "is_error": result.is_error,
-                            "source_index": completed_call.request.source_index,
-                            "result_data": result.structured,
-                        },
+                    aborted_events.extend(
+                        event
+                        for event in pending_events
+                        if event.event_type == "tool_call_completed"
                     )
 
         async def resolve_outcome(outcome: ToolExecutionOutcome) -> ToolExecutionOutcome:
@@ -778,7 +783,26 @@ class ToolCallCoordinator:
                 checkpoint_batch = checkpoint_batch.model_copy(
                     update={"calls": calls, "updated_at": utc_now()}
                 )
-                _, checkpoint_run = await run_blocking(
+                pending_events: list[EventRecord] = []
+                pending_events.append(
+                    EventRecord(
+                        session_id=session.session_id,
+                        run_id=run.run_id,
+                        event_type="ask_user_requested",
+                        payload={
+                            "batch_id": batch.batch_id,
+                            "turn_id": batch.turn_id,
+                            "tool_call_id": resolving_call.request.id,
+                            "tool_name": resolving_call.request.name,
+                            "request": request.data,
+                            "source_index": resolving_call.request.source_index,
+                            "interaction_mode": session.interaction_mode,
+                            "will_suspend": False,
+                            **_interaction_tool_identity(resolving_call.invocation),
+                        },
+                    )
+                )
+                _, _, checkpoint_batch, committed_events = await run_blocking(
                     self.runs.save_batch_state,
                     session=session,
                     run=run,
@@ -786,9 +810,13 @@ class ToolCallCoordinator:
                     status="running",
                     phase="human_interaction",
                     harness=execution_context.harness,
+                    events=tuple(pending_events),
+                    changed_call_ids=frozenset({outcome.invocation.tool_call_id}),
+                    started_call_ids=frozenset({outcome.invocation.tool_call_id}),
                 )
-                assert checkpoint_run.active_tool_batch is not None
-                checkpoint_batch = checkpoint_run.active_tool_batch
+                await self.events.publish_committed(committed_events)
+                if committed_events:
+                    sequence = committed_events[-1].sequence
                 resume_harness = await run_blocking(
                     capture_harness,
                     self.runs.store,
@@ -797,24 +825,6 @@ class ToolCallCoordinator:
                     usage_service=self.runs.usage_service,
                 )
                 resumed_harness[outcome.invocation.tool_call_id] = resume_harness
-                sequence = await self.events.emit(
-                    emitted,
-                    sequence,
-                    session_id=session.session_id,
-                    run_id=run.run_id,
-                    event_type="ask_user_requested",
-                    payload={
-                        "batch_id": batch.batch_id,
-                        "turn_id": batch.turn_id,
-                        "tool_call_id": resolving_call.request.id,
-                        "tool_name": resolving_call.request.name,
-                        "request": request.data,
-                        "source_index": resolving_call.request.source_index,
-                        "interaction_mode": session.interaction_mode,
-                        "will_suspend": False,
-                        **_interaction_tool_identity(resolving_call.invocation),
-                    },
-                )
             resolved = await self._resolve_unattended_input(
                 outcome,
                 resolution=resolution,
@@ -834,6 +844,7 @@ class ToolCallCoordinator:
                 usage_service=self.runs.usage_service,
             ),
             signal=abort_signal,
+            on_late_result=preserve_late_result,
             workspace=session.workspace or self.default_workspace,
             artifact_root=self.artifact_root,
             readable_roots=(self.readable_directory(session.session_id),)
@@ -857,24 +868,16 @@ class ToolCallCoordinator:
             aborted_batch = checkpoint_batch.model_copy(
                 update={"phase": "aborted", "updated_at": utc_now()}
             )
-            run = await run_blocking(
+            run, committed_events = await run_blocking(
                 self.runs.save_aborted_batch,
                 session_id=session.session_id,
                 run_id=run.run_id,
                 batch=aborted_batch,
+                events=tuple(aborted_events),
             )
-            sequence = await self.events.emit(
-                emitted,
-                sequence,
-                session_id=session.session_id,
-                run_id=run.run_id,
-                event_type="tool_batch_aborted",
-                payload={
-                    "batch_id": batch.batch_id,
-                    "turn_id": batch.turn_id,
-                    "tool_result_count": 0,
-                },
-            )
+            await self.events.publish_committed(committed_events)
+            if committed_events:
+                sequence = committed_events[-1].sequence
             return ToolBatchHandlingResult(
                 session=session,
                 run=run,
@@ -887,7 +890,7 @@ class ToolCallCoordinator:
             waiting_batch = checkpoint_batch.model_copy(
                 update={"phase": suspension.batch_phase, "updated_at": utc_now()}
             )
-            session, run = await run_blocking(
+            session, run, waiting_batch, committed_events = await run_blocking(
                 self.runs.save_batch_state,
                 session=session,
                 run=run,
@@ -895,21 +898,9 @@ class ToolCallCoordinator:
                 status=suspension.status,
                 phase=suspension.run_phase,
             )
-            assert run.active_tool_batch is not None
-            waiting_batch = run.active_tool_batch
-            sequence = await self.events.emit(
-                emitted,
-                sequence,
-                session_id=session.session_id,
-                run_id=run.run_id,
-                event_type="run_status_changed",
-                payload={
-                    "to_status": suspension.status,
-                    "status": suspension.status,
-                    "batch_id": batch.batch_id,
-                    "turn_id": batch.turn_id,
-                },
-            )
+            await self.events.publish_committed(committed_events)
+            if committed_events:
+                sequence = committed_events[-1].sequence
             if suspension.status == "waiting_child":
                 assert suspension.call.agent_wait is not None
                 if self.agent_controls is None:
@@ -936,7 +927,7 @@ class ToolCallCoordinator:
             }
         )
         try:
-            await run_blocking(
+            _, _, _, committed_events = await run_blocking(
                 self.runs.save_batch_state,
                 session=session,
                 run=run,
@@ -944,83 +935,27 @@ class ToolCallCoordinator:
                 status="running",
                 phase="result_commit",
             )
+            await self.events.publish_committed(committed_events)
+            if committed_events:
+                sequence = committed_events[-1].sequence
         except SessionBusyError:
             if not abort_signal.is_aborted():
                 raise
-        sequence = await self.events.emit(
-            emitted,
-            sequence,
-            session_id=session.session_id,
-            run_id=run.run_id,
-            event_type="tool_batch_results_committing",
-            payload={
-                "batch_id": batch.batch_id,
-                "turn_id": batch.turn_id,
-                "tool_result_count": sum(call.result is not None for call in batch.calls),
-            },
-        )
 
         ordered_calls = sorted(batch.calls, key=lambda item: item.request.source_index)
         results = [call.result for call in ordered_calls if call.result is not None]
-        messages = await run_blocking(
-            self.runs.append_tool_result_messages,
+        session, run, completed_batch, messages, committed_events = await run_blocking(
+            self.runs.publish_tool_batch,
             session=session,
             run=run,
-            results=results,
-            producer=batch.producer,
-            first_sequence=message_sequence,
-            turn_id=batch.turn_id,
+            batch=batch,
         )
-        result_messages = iter(messages)
-        committed_calls: list[ToolBatchCall] = []
-        for call in ordered_calls:
-            if call.result is None:
-                committed_calls.append(call)
-                continue
-            message = next(result_messages)
+        await self.events.publish_committed(committed_events)
+        if committed_events:
+            sequence = committed_events[-1].sequence
+        for call in completed_batch.calls:
+            assert call.result is not None
             await self.after(session, run, call.result, invocation=call.invocation)
-            committed_calls.append(
-                call.model_copy(update={"result_message_id": message.message_id})
-            )
-
-        terminal_phase = "aborted" if abort_signal.is_aborted() else "completed"
-        completed_batch = batch.model_copy(
-            update={
-                "phase": terminal_phase,
-                "calls": committed_calls,
-                "updated_at": utc_now(),
-            }
-        )
-        if terminal_phase == "aborted":
-            run = await run_blocking(
-                self.runs.save_aborted_batch,
-                session_id=session.session_id,
-                run_id=run.run_id,
-                batch=completed_batch,
-            )
-        else:
-            session, run = await run_blocking(
-                self.runs.save_batch_state,
-                session=session,
-                run=run,
-                batch=completed_batch,
-                status="running",
-                phase="model_streaming",
-            )
-        sequence = await self.events.emit(
-            emitted,
-            sequence,
-            session_id=session.session_id,
-            run_id=run.run_id,
-            event_type=(
-                "tool_batch_aborted" if terminal_phase == "aborted" else "tool_batch_completed"
-            ),
-            payload={
-                "batch_id": batch.batch_id,
-                "turn_id": batch.turn_id,
-                "tool_result_count": len(results),
-            },
-        )
         return ToolBatchHandlingResult(
             session=session,
             run=run,
@@ -1035,52 +970,55 @@ class ToolCallCoordinator:
         self,
         outcome: ToolExecutionOutcome,
         *,
+        identity: ToolCallIdentity,
         session: SessionRecord,
         run: RunRecord,
+        context: ToolExecutionContext,
     ) -> ToolExecutionOutcome:
-        result = outcome.result
-        if result is None or result.agent_control_request is None:
+        request = outcome.control_request
+        if request is None:
             return outcome
         invocation = outcome.invocation
-        if self.agent_controls is None:
+        controls = self.agent_controls
+        if controls is None:
             return _agent_control_error(
                 invocation,
                 error_type="AgentControlUnavailable",
                 error_message="Agent control is unavailable on this Host",
             )
         try:
-            control = await self.agent_controls.execute_control(
-                result.agent_control_request,
-                invocation=invocation,
-                session=session,
-                run=run,
+            control = await context.invoke_owned(
+                lambda: controls.execute_control(
+                    request,
+                    invocation=invocation,
+                    identity=identity,
+                    session=session,
+                    run=run,
+                )
             )
+        except ToolExecutionAborted:
+            return ToolExecutionOutcome(status="aborted", invocation=invocation)
+        except (CallbackCancelled, ToolExecutionInterrupted) as exc:
+            if isinstance(exc.result, AgentControlResult):
+                observed = _agent_control_outcome(invocation, exc.result)
+                if observed.result is not None and context.on_late_result is not None:
+                    await context.on_late_result(
+                        invocation,
+                        ToolResultValue.model_validate(
+                            observed.result.model_dump(include=set(ToolResultValue.model_fields))
+                        ),
+                    )
+            if isinstance(exc, ToolExecutionInterrupted) and exc.propagate_cancel:
+                raise asyncio.CancelledError from None
+            return ToolExecutionOutcome(status="unknown_outcome", invocation=invocation)
         except Exception as exc:  # noqa: BLE001 - application control boundary.
             return _agent_control_error(
                 invocation,
                 error_type=type(exc).__name__,
                 error_message=redact_text(str(exc)),
             )
-        settled = ToolResult(
-            tool_call_id=invocation.tool_call_id,
-            tool_name=invocation.tool_name,
-            is_error=control.is_error,
-            content=control.content,
-            structured=control.structured,
-            resource_refs=list(control.resource_refs),
-            ended_at=utc_now() if control.status == "completed" else None,
-        )
-        if control.status == "waiting_child":
-            return ToolExecutionOutcome(
-                status="waiting_child",
-                invocation=invocation,
-                agent_wait=control.wait,
-            )
-        return ToolExecutionOutcome(
-            status="completed",
-            invocation=invocation,
-            result=settled,
-        )
+        assert isinstance(control, AgentControlResult)
+        return _agent_control_outcome(invocation, control)
 
     async def _stage_control_transitions(
         self,
@@ -1100,24 +1038,16 @@ class ToolCallCoordinator:
             or invocation.generation_id is None
             or invocation.execution_contract_hash is None
         ):
-            return outcome.model_copy(
-                update={
-                    "result": result.model_copy(
-                        update={
-                            "is_error": True,
-                            "content": (
-                                "Tool Session control transition has no active "
-                                "plugin execution contract."
-                            ),
-                            "structured": {"error_type": "SessionControlContractError"},
-                            "session_control_transitions": [],
-                            "harness_change": None,
-                        }
-                    )
-                }
+            return _settled_control_outcome(
+                outcome,
+                ToolResultFeedback(
+                    error_type="SessionControlContractError",
+                    error_message=(
+                        "Tool Session control transition has no active plugin execution contract."
+                    ),
+                ),
             )
-        outputs: list[str] = []
-        applied: list[dict[str, object]] = []
+        applied: list[SessionControlTransitionResult] = []
         draft = accept_state_changes(
             harness, [result.harness_change] if result.harness_change else []
         )
@@ -1136,26 +1066,11 @@ class ToolCallCoordinator:
                     controllers=self.session_controllers,
                     workspace=session.workspace or self.default_workspace,
                 )
-                if settled.output:
-                    outputs.append(settled.output)
-                applied.append(settled.model_dump(mode="json"))
+                applied.append(settled)
         except SessionControlError as exc:
-            return outcome.model_copy(
-                update={
-                    "result": result.model_copy(
-                        update={
-                            "is_error": True,
-                            "content": str(exc),
-                            "structured": {
-                                **result.structured,
-                                "error_type": type(exc).__name__,
-                                "error_message": str(exc),
-                            },
-                            "session_control_transitions": [],
-                            "harness_change": None,
-                        }
-                    )
-                }
+            return _settled_control_outcome(
+                outcome,
+                ToolResultFeedback(error_type=type(exc).__name__, error_message=str(exc)),
             )
         change = HarnessStateChange(
             session_id=draft.session_id,
@@ -1168,20 +1083,8 @@ class ToolCallCoordinator:
             ),
             controls=draft.state.controls,
         )
-        return outcome.model_copy(
-            update={
-                "result": result.model_copy(
-                    update={
-                        "content": append_content_text(result.content, "\n".join(outputs)),
-                        "structured": {
-                            **result.structured,
-                            "session_controls": applied,
-                        },
-                        "session_control_transitions": [],
-                        "harness_change": change,
-                    }
-                )
-            }
+        return _settled_control_outcome(
+            outcome, ToolResultFeedback(controls=tuple(applied)), change=change
         )
 
     async def resolve_user_answer(
@@ -1190,7 +1093,6 @@ class ToolCallCoordinator:
         *,
         session: SessionRecord,
         run: RunRecord,
-        emitted: list[EventRecord],
         sequence: int,
         tool_call_id: str,
         answer: JsonValue,
@@ -1226,7 +1128,6 @@ class ToolCallCoordinator:
                 )
                 continue
             invocation, policy_mode, policy_reason, sequence = await self._evaluate_tool_policies(
-                emitted,
                 sequence,
                 session=session,
                 run=run,
@@ -1283,7 +1184,7 @@ class ToolCallCoordinator:
                         "input_resolution": resolution,
                     }
                 )
-                await run_blocking(
+                _, _, started_batch, committed_events = await run_blocking(
                     self.runs.save_batch_state,
                     session=session,
                     run=run,
@@ -1297,17 +1198,44 @@ class ToolCallCoordinator:
                     ),
                     status="running",
                     phase="tool_execution",
+                    changed_call_ids=frozenset({tool_call_id}),
+                    started_call_ids=frozenset({tool_call_id}),
                 )
+                await self.events.publish_committed(committed_events)
+                if committed_events:
+                    sequence = committed_events[-1].sequence
+                attempt = next(
+                    item.attempt for item in started_batch.calls if item.request.id == tool_call_id
+                )
+
+                async def preserve_resume_result(
+                    invocation: ToolInvocation,
+                    value: ToolResultValue,
+                    *,
+                    attempt: int = attempt,
+                    resumed_at: tuple[datetime, float] = resume_started,
+                ) -> None:
+                    await run_blocking(
+                        self.runs.save_late_tool_result,
+                        identity=batch.head().identity(run.run_id, tool_call_id),
+                        attempt=attempt,
+                        invocation=invocation,
+                        result=_complete_tool_result_timing(value, started=resumed_at),
+                    )
+
+                execution_context.on_late_result = preserve_resume_result
                 outcome = await self.executor.resume(
                     prepared.invocation,
                     resolution=resolution,
                     request=call.input_request,
                     context=execution_context,
                 )
-                outcome = await self._stage_control_transitions(
+                outcome = await self._apply_agent_control(
                     outcome,
+                    identity=batch.head().identity(run.run_id, tool_call_id),
                     session=session,
-                    harness=execution_context.harness,
+                    run=run,
+                    context=execution_context,
                 )
                 if outcome.result is not None:
                     outcome = outcome.model_copy(
@@ -1318,6 +1246,19 @@ class ToolCallCoordinator:
                             )
                         }
                     )
+                if outcome.result is not None and outcome.status == "completed":
+                    accepted = await run_blocking(
+                        self.runs.save_tool_result,
+                        identity=batch.head().identity(run.run_id, tool_call_id),
+                        attempt=attempt,
+                        invocation=outcome.invocation,
+                        result=outcome.result,
+                    )
+                    if not accepted:
+                        raise SessionBusyError("tool result belongs to an inactive execution")
+                outcome = await self._stage_control_transitions(
+                    outcome, session=session, harness=execution_context.harness
+                )
                 result = outcome.result
                 status = _tool_call_status_for_outcome(outcome)
                 waiting_for_more = outcome.status == "waiting_user"
@@ -1332,6 +1273,7 @@ class ToolCallCoordinator:
                             "input_resolution": None if waiting_for_more else resolution,
                             "input_revision": call.input_revision + int(waiting_for_more),
                             "result": result,
+                            "feedback": outcome.feedback,
                         }
                     )
                 )
@@ -1455,7 +1397,6 @@ class ToolCallCoordinator:
 
     async def _preflight_call(
         self,
-        emitted: list[EventRecord],
         sequence: int,
         *,
         session: SessionRecord,
@@ -1465,7 +1406,8 @@ class ToolCallCoordinator:
         request: ToolCallRequest,
         producer: ToolCallProducer,
         abort_signal: AbortSignal,
-    ) -> tuple[ToolBatchCall, int]:
+    ) -> tuple[ToolBatchCall, int, tuple[EventRecord, ...]]:
+        pending_events: list[EventRecord] = []
         try:
             definition = self.registry.get(request.name).definition
             metadata = definition.metadata
@@ -1513,22 +1455,6 @@ class ToolCallCoordinator:
                 definition.interaction_controller_id if definition is not None else None
             ),
         )
-        sequence = await self.events.emit(
-            emitted,
-            sequence,
-            session_id=session.session_id,
-            run_id=run.run_id,
-            event_type="tool_call_requested",
-            payload={
-                "batch_id": batch_id,
-                "turn_id": turn_id,
-                "tool_call_id": request.id,
-                "tool_name": request.name,
-                "arguments": request.arguments,
-                "producer": producer.model_dump(mode="json"),
-                "source_index": request.source_index,
-            },
-        )
         arguments = cast(
             "Mapping[str, FrozenJson]",
             freeze_json(request.arguments),
@@ -1555,12 +1481,15 @@ class ToolCallCoordinator:
                 structured={"aborted": True},
                 ended_at=utc_now(),
             )
-            return ToolBatchCall(
-                request=request, status="aborted", invocation=invocation, result=result
-            ), sequence
+            return (
+                ToolBatchCall(
+                    request=request, status="aborted", invocation=invocation, result=result
+                ),
+                sequence,
+                tuple(pending_events),
+            )
 
         invocation, policy_mode, policy_reason, sequence = await self._evaluate_tool_policies(
-            emitted,
             sequence,
             session=session,
             run=run,
@@ -1575,19 +1504,19 @@ class ToolCallCoordinator:
         )
         if outcome.status == "approval_required":
             assert outcome.approval is not None
-            sequence = await self.events.emit(
-                emitted,
-                sequence,
-                session_id=session.session_id,
-                run_id=run.run_id,
-                event_type="approval_requested",
-                payload={
-                    "batch_id": batch_id,
-                    "turn_id": turn_id,
-                    "approval_id": outcome.approval.approval_id,
-                    "tool_call_id": request.id,
-                    "tool_name": request.name,
-                },
+            pending_events.append(
+                EventRecord(
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    event_type="approval_requested",
+                    payload={
+                        "batch_id": batch_id,
+                        "turn_id": turn_id,
+                        "approval_id": outcome.approval.approval_id,
+                        "tool_call_id": request.id,
+                        "tool_name": request.name,
+                    },
+                )
             )
             if session.interaction_mode == "unattended":
                 approval = outcome.approval.model_copy(
@@ -1614,75 +1543,92 @@ class ToolCallCoordinator:
                         else "completed"
                     )
                 )
-                sequence = await self.events.emit(
-                    emitted,
+                pending_events.append(
+                    EventRecord(
+                        session_id=session.session_id,
+                        run_id=run.run_id,
+                        event_type="approval_resolved",
+                        payload={
+                            "batch_id": batch_id,
+                            "turn_id": turn_id,
+                            "approval_id": approval.approval_id,
+                            "tool_call_id": request.id,
+                            "tool_call_status": status,
+                            "approved": True,
+                            "reason": None,
+                            "resolved_by": approval.resolved_by,
+                            "resolver_id": approval.resolver_id,
+                        },
+                    )
+                )
+                return (
+                    ToolBatchCall(
+                        request=request,
+                        status=status,
+                        invocation=prepared.invocation,
+                        approval=approval,
+                        result=prepared.result,
+                    ),
                     sequence,
+                    tuple(pending_events),
+                )
+            return (
+                ToolBatchCall(
+                    request=request,
+                    status="awaiting_approval",
+                    invocation=outcome.invocation,
+                    approval=outcome.approval,
+                ),
+                sequence,
+                tuple(pending_events),
+            )
+        if outcome.status == "waiting_user":
+            pending_events.append(
+                EventRecord(
                     session_id=session.session_id,
                     run_id=run.run_id,
-                    event_type="approval_resolved",
+                    event_type="ask_user_requested",
                     payload={
                         "batch_id": batch_id,
                         "turn_id": turn_id,
-                        "approval_id": approval.approval_id,
                         "tool_call_id": request.id,
-                        "tool_call_status": status,
-                        "approved": True,
-                        "reason": None,
-                        "resolved_by": approval.resolved_by,
-                        "resolver_id": approval.resolver_id,
+                        "tool_name": request.name,
+                        "request": outcome.input_request.data
+                        if outcome.input_request is not None
+                        else None,
+                        **_interaction_tool_identity(outcome.invocation),
                     },
                 )
-                return ToolBatchCall(
-                    request=request,
-                    status=status,
-                    invocation=prepared.invocation,
-                    approval=approval,
-                    result=prepared.result,
-                ), sequence
-            return ToolBatchCall(
-                request=request,
-                status="awaiting_approval",
-                invocation=outcome.invocation,
-                approval=outcome.approval,
-            ), sequence
-        if outcome.status == "waiting_user":
-            sequence = await self.events.emit(
-                emitted,
-                sequence,
-                session_id=session.session_id,
-                run_id=run.run_id,
-                event_type="ask_user_requested",
-                payload={
-                    "batch_id": batch_id,
-                    "turn_id": turn_id,
-                    "tool_call_id": request.id,
-                    "tool_name": request.name,
-                    "request": outcome.input_request.data
-                    if outcome.input_request is not None
-                    else None,
-                    **_interaction_tool_identity(outcome.invocation),
-                },
             )
-            return ToolBatchCall(
-                request=request,
-                status="waiting_user",
-                invocation=outcome.invocation,
-                input_request=outcome.input_request,
-            ), sequence
+            return (
+                ToolBatchCall(
+                    request=request,
+                    status="waiting_user",
+                    invocation=outcome.invocation,
+                    input_request=outcome.input_request,
+                ),
+                sequence,
+                tuple(pending_events),
+            )
         if outcome.status == "ready":
-            return ToolBatchCall(
-                request=request, status="ready", invocation=outcome.invocation
-            ), sequence
-        return ToolBatchCall(
-            request=request,
-            status="failed" if outcome.result and outcome.result.is_error else "completed",
-            invocation=outcome.invocation,
-            result=outcome.result,
-        ), sequence
+            return (
+                ToolBatchCall(request=request, status="ready", invocation=outcome.invocation),
+                sequence,
+                tuple(pending_events),
+            )
+        return (
+            ToolBatchCall(
+                request=request,
+                status="failed" if outcome.result and outcome.result.is_error else "completed",
+                invocation=outcome.invocation,
+                result=outcome.result,
+            ),
+            sequence,
+            tuple(pending_events),
+        )
 
     async def _evaluate_tool_policies(
         self,
-        emitted: list[EventRecord],
         sequence: int,
         *,
         session: SessionRecord,
@@ -1748,7 +1694,6 @@ class ToolCallCoordinator:
             )
         if policy.mode is not None or policy.failures:
             sequence = await self.events.emit(
-                emitted,
                 sequence,
                 session_id=session.session_id,
                 run_id=run.run_id,
@@ -1803,11 +1748,11 @@ def _tool_input_result_content(answer: object) -> str:
     return json.dumps(answer, ensure_ascii=False, separators=(",", ":"))
 
 
-def _complete_tool_result_timing(
-    result: ToolResult,
+def _complete_tool_result_timing[ResultT: ToolResultValue](
+    result: ResultT,
     *,
     started: tuple[datetime, float] | None,
-) -> ToolResult:
+) -> ResultT:
     if started is None:
         instant = result.ended_at or result.started_at
         return result.model_copy(update={"started_at": instant, "ended_at": instant})
@@ -1817,6 +1762,23 @@ def _complete_tool_result_timing(
         update={
             "started_at": started_at,
             "ended_at": started_at + timedelta(seconds=elapsed),
+        }
+    )
+
+
+def _settled_control_outcome(
+    outcome: ToolExecutionOutcome,
+    feedback: ToolResultFeedback,
+    *,
+    change: HarnessStateChange | None = None,
+) -> ToolExecutionOutcome:
+    assert outcome.result is not None
+    return outcome.model_copy(
+        update={
+            "result": feedback.materialize(outcome.result).model_copy(
+                update={"harness_change": change, "session_control_transitions": []}
+            ),
+            "feedback": feedback,
         }
     )
 
@@ -1835,6 +1797,28 @@ def _tool_call_status_for_outcome(outcome: ToolExecutionOutcome) -> ToolCallStat
     if outcome.result is not None and outcome.result.is_error:
         return "failed"
     return "completed"
+
+
+def _agent_control_outcome(
+    invocation: ToolInvocation, control: AgentControlResult
+) -> ToolExecutionOutcome:
+    if control.status == "waiting_child":
+        return ToolExecutionOutcome(
+            status="waiting_child", invocation=invocation, agent_wait=control.wait
+        )
+    return ToolExecutionOutcome(
+        status="completed",
+        invocation=invocation,
+        result=ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+            is_error=control.is_error,
+            content=control.content,
+            structured=control.structured,
+            resource_refs=list(control.resource_refs),
+            ended_at=utc_now(),
+        ),
+    )
 
 
 def _agent_control_error(

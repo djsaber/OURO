@@ -31,8 +31,14 @@ from ouro.application.contracts.sessions import (
     SessionUndoResult,
     SessionView,
 )
-from ouro.application.inputs.queue import input_operation_id, project_pending_user_inputs
-from ouro.application.runs.lifecycle import abort_run_state, find_run
+from ouro.application.inputs.queue import QueuedInputQueue, project_pending_user_inputs
+from ouro.application.observations.activity import (
+    project_batch_activity,
+    project_batch_interactions,
+)
+from ouro.application.observations.drafts import read_draft_events, resolve_fact_event
+from ouro.application.runs.lifecycle import abort_run_state
+from ouro.application.runs.tool_batches import load_tool_batch
 from ouro.application.sessions.editing import undo_user_input
 from ouro.application.sessions.history import (
     apply_extension_branch_policies,
@@ -44,12 +50,14 @@ from ouro.application.sessions.history import (
     select_history_suffix,
 )
 from ouro.application.sessions.recovery import SessionRecoveryService
+from ouro.application.usage import UsageService
 from ouro.core.agents import DelegationRecord
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.base import new_id, utc_now
 from ouro.core.compaction import CompactionRecord
-from ouro.core.context import ContextMetrics, ContextView
-from ouro.core.context_snapshots import context_view_digest
+from ouro.core.context import ContextMetrics
+from ouro.core.context_selection import ContextSelection
+from ouro.core.context_snapshots import ModelRequestHeader
 from ouro.core.errors import (
     PersistenceError,
     SessionBranchError,
@@ -58,12 +66,14 @@ from ouro.core.errors import (
 )
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SESSION_INTERACTION_MODES, SessionInteractionMode
-from ouro.core.messages import MessageRecord, ModelMessage
+from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import ReasoningRequest
+from ouro.core.response_drafts import ResponseStreamPosition
 from ouro.core.results import RunResult
 from ouro.core.session_commits import SessionCommitConflict
 from ouro.core.session_titles import normalize_session_title, with_session_title
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord, SessionTitleSource
+from ouro.core.tool_facts import ToolCallFacts
 from ouro.sessions import SessionIndexEntry, SessionLock, SessionSnapshot, SessionStore
 
 if TYPE_CHECKING:
@@ -88,10 +98,12 @@ class SessionService:
         store: SessionStore,
         *,
         resources: ResourceService | None = None,
+        usage_service: UsageService | None = None,
     ) -> None:
         self._store = store
         self._resources = resources
-        self._recovery = SessionRecoveryService(store)
+        self._usage = usage_service
+        self._recovery = SessionRecoveryService(store, usage_service=usage_service)
 
     def create(
         self,
@@ -155,25 +167,18 @@ class SessionService:
             self._store.load_session_record(session_id)
         except FileNotFoundError:
             return False
-        return self._store.load_commit(session_id, input_operation_id(input_id)) is not None
+        return self._store.load_input_state(session_id, input_id) is not None
 
     def run_result(self, session_id: str, run_id: str) -> RunResult:
         """Read one durable Run without exposing SessionStore to Hosts."""
 
-        snapshot = self._store.load_runtime_session(session_id)
-        try:
-            run = find_run(snapshot.runs, run_id)
-        except KeyError as exc:
-            raise PersistenceError(f"Run not found: {run_id}") from exc
-        final_text = next(
-            (
-                message.text_content
-                for message in reversed(snapshot.messages)
-                if message.run_id == run_id and message.role == "assistant"
-            ),
-            "",
-        )
-        return RunResult(session=snapshot.session, run=run, final_text=final_text)
+        with self._store.session_read(session_id):
+            session = self._store.load_session_record(session_id)
+            run = self.run_record(session_id, run_id)
+            response = self._store.find_last_assistant_message(session_id, run_id)
+            return RunResult(
+                session=session, run=run, final_text=response.text_content if response else ""
+            )
 
     def run_record(self, session_id: str, run_id: str) -> RunRecord:
         """Read exact durable Run facts without loading message or event history."""
@@ -192,7 +197,17 @@ class SessionService:
     def context_status(self, session_id: str) -> SessionContextStatus | None:
         self._require_session(session_id)
         record = self._store.load_latest_context_header(session_id)
-        return SessionContextStatus.from_record(record) if record is not None else None
+        return self._context_status(record) if record is not None else None
+
+    def _context_status(self, record: ModelRequestHeader) -> SessionContextStatus:
+        usage = (
+            self._usage.request_usage(record)
+            if self._usage is not None and record.usage_entry_id is not None
+            else None
+        )
+        return SessionContextStatus.from_record(
+            record, reported_input_tokens=usage.input_tokens if usage is not None else None
+        )
 
     def effective_context_metrics(self, session_id: str) -> ContextMetrics | None:
         """Return the newest effective context estimate, including manual compaction.
@@ -227,7 +242,7 @@ class SessionService:
         with self._store.session_read(session_id):
             session = self._load_session_record(session_id)
             compactions = self._store.load_compactions(session_id)
-        active_id = session.active_compaction_id
+        active_id = session.context_selection.compaction_id
         if active_id is not None and not any(
             item.compaction_id == active_id for item in compactions
         ):
@@ -251,28 +266,16 @@ class SessionService:
         record = self._store.load_latest_context(session_id)
         if record is None:
             return None
-        source_messages = record.source_messages
-        context = ContextView(
-            context_id=record.context_id,
-            system_prompt=record.system_prompt,
-            model_messages=[
-                *record.injected_messages,
-                *(ModelMessage.from_record(message) for message in source_messages),
-            ],
-            tool_definitions=record.tool_definitions,
-            metrics=record.metrics,
-            context_metadata=record.context_metadata,
-        )
-        digest = context_view_digest(context)
-        if digest != record.context_digest:
-            raise PersistenceError(
-                f"context snapshot {record.context_id} does not match its stored digest"
-            )
         return SessionContextSnapshot(
-            status=SessionContextStatus.from_record(record),
-            provider_context=context.provider_context(),
-            context_digest=digest,
+            status=self._context_status(record),
+            provider_context=record.provider_context,
         )
+
+    def set_context_selection(
+        self, session_id: str, selection: ContextSelection
+    ) -> SessionMutationResult:
+        """Choose retained history and media for the next request, preserving the last one."""
+        return self._update_session(session_id, context_selection=selection)
 
     def export(self, session_id: str) -> SessionExport:
         snapshot = self._load_snapshot(session_id, recover=False)
@@ -284,7 +287,6 @@ class SessionService:
             compactions=tuple(snapshot.compactions),
             extension_states=tuple(snapshot.extension_states),
             harness_versions=tuple(snapshot.harness_versions),
-            commits=tuple(snapshot.commits),
         )
 
     def history_window(
@@ -343,10 +345,8 @@ class SessionService:
     ) -> SessionObservationSnapshot:
         """Read a canonical snapshot and event cursor under one store boundary.
 
-        Terminal Run events are intentionally omitted because canonical messages
-        already represent their transcript.  Events for the active Run remain so
-        a Host can rebuild partial text, tools, and pending interactions before
-        subscribing from ``event_high_water``.
+        Messages own published output. Current Draft, Call states and request
+        headers restore live content and interactions without replaying Run history.
         """
 
         try:
@@ -357,7 +357,6 @@ class SessionService:
                     messages = tuple(snapshot.messages)
                     runs = tuple(snapshot.runs)
                     compactions = tuple(snapshot.compactions)
-                    events = tuple(snapshot.active_run_events)
                     high_water = snapshot.event_high_water
                     active = snapshot.active_compaction
                     before_cursor = None
@@ -370,11 +369,35 @@ class SessionService:
                     recent_run_id = session.active_run_id or session.last_run_id
                     if recent_run_id and not any(run.run_id == recent_run_id for run in runs):
                         runs = (*runs, self._store.load_run(session_id, recent_run_id))
-                    events = self._active_run_events(session_id, session.active_run_id)
                     high_water = self._store.latest_event_sequence(session_id)
                     active = self._store.load_active_compaction(session_id)
                     before_cursor = window.before_cursor
                 context = self._store.load_latest_context_header(session_id)
+                events = read_draft_events(
+                    self._store,
+                    session_id,
+                    sequence=high_water,
+                    history_epoch=session.history_epoch,
+                )
+                queued_inputs = project_pending_user_inputs(
+                    session, QueuedInputQueue(self._store).eligible_session(session)
+                )
+                recent_run_id = session.active_run_id or session.last_run_id
+                recent_run = next((run for run in runs if run.run_id == recent_run_id), None)
+                if recent_run is not None and recent_run.history_epoch != session.history_epoch:
+                    recent_run = None
+                batch = load_tool_batch(self._store, recent_run) if recent_run is not None else None
+                active_tool_calls = project_batch_activity(batch)
+                pending_interactions = project_batch_interactions(recent_run, batch)
+                current_request = context
+                if (
+                    recent_run is not None
+                    and recent_run.current_request_id is not None
+                    and (context is None or context.context_id != recent_run.current_request_id)
+                ):
+                    current_request = self._store.load_request_header(
+                        session_id, recent_run.current_request_id
+                    )
         except FileNotFoundError as exc:
             raise SessionNotFoundError(f"session not found: {session_id}") from exc
         metrics = context.metrics if context is not None else None
@@ -383,30 +406,19 @@ class SessionService:
                 metrics = active.context_metrics_after
         return SessionObservationSnapshot(
             session=SessionView.from_record(session),
-            queued_inputs=project_pending_user_inputs(session),
+            queued_inputs=queued_inputs,
             messages=messages,
             events=events,
             runs=runs,
             compactions=compactions,
             event_high_water=high_water,
-            context_status=SessionContextStatus.from_record(context) if context else None,
+            context_status=self._context_status(context) if context else None,
             effective_context_metrics=metrics,
             history_before_cursor=before_cursor,
+            active_tool_calls=active_tool_calls,
+            pending_interactions=pending_interactions,
+            current_request=current_request,
         )
-
-    def _active_run_events(self, session_id: str, run_id: str | None) -> tuple[EventRecord, ...]:
-        if run_id is None:
-            return ()
-        events: list[EventRecord] = []
-        cursor = 0
-        while True:
-            page, next_cursor = self._store.load_events_page(
-                session_id, run_id=run_id, cursor=cursor, limit=256
-            )
-            events.extend(page)
-            if next_cursor is None:
-                return tuple(events)
-            cursor = next_cursor
 
     def message_page(
         self,
@@ -429,7 +441,12 @@ class SessionService:
             )
 
     def observation_events(
-        self, session_id: str, *, after_sequence: int, limit: int
+        self,
+        session_id: str,
+        *,
+        after_sequence: int,
+        limit: int,
+        draft_position: ResponseStreamPosition | None = None,
     ) -> tuple[SessionObservationBatch, bool]:
         """Read a bounded durable suffix and its input messages in one history boundary."""
         with self._store.session_read(session_id):
@@ -437,6 +454,21 @@ class SessionService:
             events, more = self._store.load_events_after(
                 session_id, after_sequence=after_sequence, limit=limit
             )
+            events = [
+                resolve_fact_event(self._store, event, history_epoch=session.history_epoch)
+                for event in events
+            ]
+            if not more:
+                draft = read_draft_events(
+                    self._store,
+                    session_id,
+                    sequence=events[-1].sequence if events else after_sequence,
+                    history_epoch=session.history_epoch,
+                    after=draft_position,
+                    limit=limit,
+                )
+                events.extend(draft)
+                more = len(draft) == limit
             ids = dict.fromkeys(
                 identity
                 for event in events
@@ -995,20 +1027,82 @@ class SessionService:
                 [
                     resource_id
                     for message in selected_messages
-                    for resource_id in message.resource_refs
+                    for resource_id in message.referenced_resource_ids
                 ]
                 + list(resource_refs)
             )
         )
+        copied_messages, message_id_map = copy_branch_messages(
+            branch.session_id,
+            selected_messages,
+        )
+        copied_inputs = []
+        copied_input_states = []
+        selected_ids = {message.message_id for message in selected_messages}
+        input_ids = dict.fromkeys(
+            identity for message in selected_messages if (identity := message.input_id) is not None
+        )
+        for identity in input_ids:
+            record = self._store.load_input(source_session_id, identity)
+            if record is None:
+                raise SessionBranchError("selected history references a missing input fact")
+            state = self._store.load_input_state(source_session_id, identity)
+            if state is None or state.status not in {"consumed", "withdrawn"}:
+                raise SessionBranchError("selected history has no consumed input fact")
+            copied_inputs.append(record.model_copy(update={"session_id": branch.session_id}))
+            resource_ids.extend(record.item.resource_refs)
+            copied_input_states.append(
+                state.model_copy(
+                    update={
+                        "session_id": branch.session_id,
+                        "status": "consumed",
+                        "message_ids": tuple(
+                            message_id_map[value]
+                            for value in state.message_ids
+                            if value in selected_ids
+                        ),
+                    }
+                )
+            )
+        copied_calls = []
+        copied_starts = []
+        copied_outcomes = []
+        call_attempts = {
+            identity: 0 for message in selected_messages for identity in message.referenced_call_ids
+        }
+        for message in selected_messages:
+            reference = message.outcome_ref
+            if reference is not None and reference.outcome_attempt is not None:
+                call_attempts[reference.identity] = max(
+                    call_attempts[reference.identity], reference.outcome_attempt
+                )
+        for call_identity, referenced_attempt in call_attempts.items():
+            call = self._store.load_tool_call(source_session_id, call_identity)
+            if call is None:
+                raise SessionBranchError("selected history references a missing Call")
+            copied_calls.append(call.model_copy(update={"session_id": branch.session_id}))
+            call_state = self._store.load_tool_call_state(source_session_id, call_identity)
+            last_attempt = max(
+                call_state.attempt if call_state is not None else 0, referenced_attempt
+            )
+            for attempt in range(1, last_attempt + 1):
+                start = self._store.load_tool_call_start(source_session_id, call_identity, attempt)
+                if start is None:
+                    raise SessionBranchError("selected Call is missing a started fact")
+                copied_starts.append(start.model_copy(update={"session_id": branch.session_id}))
+            for attempt in range(last_attempt + 1):
+                outcome = self._store.load_tool_outcome(source_session_id, call_identity, attempt)
+                if outcome is not None:
+                    copied_outcomes.append(
+                        outcome.as_fact().model_copy(update={"session_id": branch.session_id})
+                    )
+                    resource_ids.extend(outcome.value.referenced_resource_ids)
+        resource_ids = list(dict.fromkeys(resource_ids))
         if resource_ids and self._resources is None:
             raise SessionBranchError(
                 "branch contains resource references; ResourceService must copy their records "
                 "before this branch can be published"
             )
-        copied_messages, message_id_map = copy_branch_messages(
-            branch.session_id,
-            selected_messages,
-        )
         resource_references = (
             self._resources.branch_references(source_session_id, resource_ids)
             if self._resources is not None
@@ -1039,16 +1133,34 @@ class SessionService:
             selected_messages,
             copied_messages,
             compactions,
-            source.active_compaction_id,
+            source.context_selection.compaction_id,
             message_id_map,
+        )
+        selection = source.context_selection.retain_prefix(
+            selected_messages[-1] if selected_messages else None
+        )
+        if (boundary := selection.media_elided_through) is not None:
+            selection = selection.model_copy(
+                update={
+                    "media_elided_through": boundary.model_copy(
+                        update={
+                            "message_id": message_id_map[boundary.message_id],
+                        }
+                    ),
+                }
+            )
+        selection = selection.model_copy(
+            update={
+                "compaction_id": copied_compactions[-1].compaction_id
+                if copied_compactions
+                else None,
+            }
         )
         branch = branch.model_copy(
             update={
                 "last_message_id": copied_messages[-1].message_id if copied_messages else None,
                 "message_count": len(copied_messages),
-                "active_compaction_id": (
-                    copied_compactions[-1].compaction_id if copied_compactions else None
-                ),
+                "context_selection": selection,
             }
         )
         self._store.create_session_snapshot(
@@ -1057,6 +1169,13 @@ class SessionService:
             resource_references=resource_references,
             harness_versions=versions,
             compactions=copied_compactions,
+            inputs=tuple(copied_inputs),
+            input_states=tuple(copied_input_states),
+            tool_facts=ToolCallFacts(
+                calls=tuple(copied_calls),
+                starts=tuple(copied_starts),
+                outcomes=tuple(copied_outcomes),
+            ),
             resource_contents=self._resources.contents_for(source_session_id, resource_references)
             if self._resources is not None
             else (),

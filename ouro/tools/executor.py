@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Coroutine, Mapping
-from typing import Any, Literal
+from collections.abc import Mapping
+from typing import Literal
 
+from ouro.core.agents import AgentControlRequest
 from ouro.core.approvals import (
     ApprovalRecord,
     SessionApprovalMode,
@@ -12,15 +13,21 @@ from ouro.core.approvals import (
     restrict_tool_permission,
 )
 from ouro.core.base import utc_now
-from ouro.core.callbacks import CallbackOutcomeUnknown
-from ouro.core.cancellation import AbortSignal, settle_owned_tasks
+from ouro.core.callbacks import CallbackCancelled
+from ouro.core.cancellation import AbortSignal
 from ouro.core.interactions import ToolInputResolution
 from ouro.core.redaction import redact_text
 from ouro.core.tool_policies import ToolPolicyMode
-from ouro.core.tools import PermissionMode, ToolDefinition, tool_definition_contract_hash
+from ouro.core.tools import (
+    PermissionMode,
+    ToolDefinition,
+    ToolResultValue,
+    tool_definition_contract_hash,
+)
 from ouro.tools.base import (
     ToolExecutionAborted,
     ToolExecutionContext,
+    ToolExecutionInterrupted,
     ToolExecutionOutcome,
     ToolInputRequest,
     ToolInvocation,
@@ -192,13 +199,15 @@ class ToolExecutor:
             )
         context = context or ToolExecutionContext(signal=signal)
         try:
-            execution_result = await _invoke_until_aborted(
-                context,
+            execution_result = await context.invoke_owned(
                 lambda: tool.execute(invocation, context=context),
             )
         except ToolExecutionAborted as exc:
             return _cancelled_outcome(invocation, status="aborted", reason=exc.reason)
-        except (CallbackOutcomeUnknown, _ToolOutcomeUnknown) as exc:
+        except (CallbackCancelled, ToolExecutionInterrupted) as exc:
+            await _record_late_result(invocation, exc.result, context)
+            if isinstance(exc, ToolExecutionInterrupted) and exc.propagate_cancel:
+                raise asyncio.CancelledError from None
             reason = getattr(exc, "reason", None) or context.abort_reason
             return _cancelled_outcome(
                 invocation,
@@ -225,6 +234,10 @@ class ToolExecutor:
                 ended_at=utc_now(),
             )
             return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
+        if isinstance(execution_result, AgentControlRequest):
+            return ToolExecutionOutcome(
+                status="control_requested", invocation=invocation, control_request=execution_result
+            )
         if isinstance(execution_result, ToolInputRequest):
             return ToolExecutionOutcome(
                 status="waiting_user",
@@ -266,8 +279,7 @@ class ToolExecutor:
             )
         context = context or ToolExecutionContext(signal=signal)
         try:
-            execution_result = await _invoke_until_aborted(
-                context,
+            execution_result = await context.invoke_owned(
                 lambda: tool.resume(
                     invocation,
                     resolution,
@@ -277,7 +289,10 @@ class ToolExecutor:
             )
         except ToolExecutionAborted as exc:
             return _cancelled_outcome(invocation, status="aborted", reason=exc.reason)
-        except (CallbackOutcomeUnknown, _ToolOutcomeUnknown) as exc:
+        except (CallbackCancelled, ToolExecutionInterrupted) as exc:
+            await _record_late_result(invocation, exc.result, context)
+            if isinstance(exc, ToolExecutionInterrupted) and exc.propagate_cancel:
+                raise asyncio.CancelledError from None
             reason = getattr(exc, "reason", None) or context.abort_reason
             return _cancelled_outcome(
                 invocation,
@@ -301,6 +316,10 @@ class ToolExecutor:
                 ended_at=utc_now(),
             )
             return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
+        if isinstance(execution_result, AgentControlRequest):
+            return ToolExecutionOutcome(
+                status="control_requested", invocation=invocation, control_request=execution_result
+            )
         if isinstance(execution_result, ToolInputRequest):
             return ToolExecutionOutcome(
                 status="waiting_user",
@@ -311,48 +330,20 @@ class ToolExecutor:
         return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
 
 
-async def _invoke_until_aborted(
+async def _record_late_result(
+    invocation: ToolInvocation,
+    value: object,
     context: ToolExecutionContext,
-    invoke: Callable[[], Coroutine[Any, Any, object]],
-) -> object:
-    """Own one tool task until completion or a fully-observed cancellation outcome."""
-
-    context.raise_if_aborted()
-    signal = context.signal
-    if signal is None:
-        return await invoke()
-
-    execution = asyncio.create_task(invoke())
-    abort_waiter = asyncio.create_task(signal.wait(poll_interval=context.poll_interval))
-    try:
-        done, _ = await asyncio.wait(
-            (execution, abort_waiter),
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-    except asyncio.CancelledError:
-        execution.cancel()
-        abort_waiter.cancel()
-        await settle_owned_tasks(execution, abort_waiter)
-        raise
-
-    if abort_waiter in done:
-        execution.cancel()
-        if await settle_owned_tasks(execution):
-            raise asyncio.CancelledError
-        try:
-            execution.result()
-        except (CallbackOutcomeUnknown, _ToolOutcomeUnknown) as exc:
-            raise _ToolOutcomeUnknown(context.abort_reason) from exc
-        except (asyncio.CancelledError, ToolExecutionAborted) as exc:
-            raise ToolExecutionAborted(context.abort_reason) from exc
-        except Exception as exc:
-            raise _ToolOutcomeUnknown(context.abort_reason) from exc
-        raise _ToolOutcomeUnknown(context.abort_reason)
-
-    abort_waiter.cancel()
-    if await settle_owned_tasks(abort_waiter):
-        raise asyncio.CancelledError
-    return execution.result()
+) -> None:
+    if context.on_late_result is None or not isinstance(value, ToolResult):
+        return
+    if value.tool_call_id != invocation.tool_call_id or value.tool_name != invocation.tool_name:
+        raise ValueError("late tool result identity does not match its invocation")
+    result = _validated_tool_result(invocation, value, context)
+    observed = ToolResultValue.model_validate(
+        result.model_dump(include=set(ToolResultValue.model_fields))
+    )
+    await context.on_late_result(invocation, observed)
 
 
 def _cancelled_outcome(
@@ -372,12 +363,6 @@ def _cancelled_outcome(
         ended_at=utc_now(),
     )
     return ToolExecutionOutcome(status=status, invocation=invocation, result=result)
-
-
-class _ToolOutcomeUnknown(Exception):
-    def __init__(self, reason: str) -> None:
-        super().__init__(reason)
-        self.reason = reason
 
 
 def _error_outcome(

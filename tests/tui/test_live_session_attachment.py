@@ -280,7 +280,7 @@ async def test_task_owned_by_another_runtime_streams_through_tools_and_session_s
                 task.session_id,
                 lambda: any(
                     event.payload.get("text") == "While away. "
-                    for event in owner.runtime.store.load_session(task.session_id).events
+                    for event in owner.runtime.sessions.observation_snapshot(task.session_id).events
                 ),
                 event_types=frozenset({"model_text_delta"}),
             )

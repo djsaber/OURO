@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 
 import pytest
 
+import ouro.sessions.backends.files.store as file_store
 from ouro.core.errors import PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessVersion
@@ -19,15 +21,21 @@ def history_bundle() -> SessionBundle:
     session = SessionRecord(session_id="ses_transfer")
     runs = [RunRecord(session_id=session.session_id, status="completed") for _ in range(2)]
     messages = [
-        MessageRecord.text(session_id=session.session_id, role="user", text="历史\nmessage")
-        for _ in range(100)
+        MessageRecord.text(
+            session_id=session.session_id, role="user", text="历史\nmessage", sequence=index + 1
+        )
+        for index in range(100)
     ]
     session = session.model_copy(
-        update={"message_count": len(messages), "last_message_id": messages[-1].message_id}
+        update={
+            "message_count": len(messages),
+            "last_message_id": messages[-1].message_id,
+            "run_count": len(runs),
+        }
     )
     return SessionBundle(
         sessions=[
-            PortableSession(
+            PortableSession.from_snapshot(
                 snapshot=SessionSnapshot(
                     session=session,
                     messages=messages,
@@ -67,8 +75,9 @@ def test_file_import_syncs_journals_in_batches(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "fsync", counted_sync)
     bundle = history_bundle()
     store.import_bundle(bundle)
-    assert store.load_session("ses_transfer") == bundle.sessions[0].snapshot
-    # Durability belongs to completed files, not each of the 700 journal records.
+    assert store.load_session("ses_transfer") == bundle.sessions[0].snapshot.materialize()
+    # Canonical journals synchronize batches; the native location index commits
+    # one transaction. Neither boundary synchronizes each individual message.
     assert 0 < calls < 30
 
 
@@ -87,7 +96,7 @@ def test_imported_events_remain_queryable_after_reopen_and_append(tmp_path, back
     store.import_bundle(bundle)
     store = open_store()
     snapshot = bundle.sessions[0].snapshot
-    assert store.load_session("ses_transfer") == snapshot
+    assert store.load_session("ses_transfer") == snapshot.materialize()
     for run in snapshot.runs:
         events, cursor = store.load_events_page("ses_transfer", run_id=run.run_id, limit=1000)
         assert events == [event for event in snapshot.events if event.run_id == run.run_id]
@@ -125,19 +134,17 @@ def test_imported_events_remain_queryable_after_reopen_and_append(tmp_path, back
     assert not more
 
 
-def test_file_import_sync_failure_does_not_publish_sessions(tmp_path, monkeypatch):
+def test_file_import_event_transaction_failure_does_not_publish_sessions(tmp_path, monkeypatch):
     store = LocalSessionStore(tmp_path)
     store.initialize()
-    sync = os.fsync
+    insert_events = file_store.insert_events
 
-    def fail_event_sync(fd):
-        for journal in tmp_path.glob(".session-import-*/sessions/*/events.jsonl"):
-            if journal.stat().st_ino == os.fstat(fd).st_ino:
-                raise OSError("injected event sync failure")
-        return sync(fd)
+    def fail_event_transaction(connection, events):
+        insert_events(connection, events)
+        raise sqlite3.OperationalError("injected event transaction failure")
 
-    monkeypatch.setattr(os, "fsync", fail_event_sync)
-    with pytest.raises(PersistenceError, match="event batch"):
+    monkeypatch.setattr(file_store, "insert_events", fail_event_transaction)
+    with pytest.raises(PersistenceError, match="event transaction"):
         store.import_bundle(history_bundle())
     assert store.list_sessions() == []
     assert not list(tmp_path.glob(".session-import-*"))

@@ -152,6 +152,7 @@ class ToolActivityRow(RangeSelectionOnly, Static):
                 ToolNavigationRequested(
                     parent_run_id=self.run_id,
                     parent_tool_call_id=self.tool_call_id,
+                    parent_batch_id=self._tool.batch_id,
                 )
             )
             event.stop()

@@ -7,17 +7,18 @@ from pydantic import Field
 
 from ouro.application.contracts.base import ApplicationDTO, Diagnostic
 from ouro.application.contracts.events import RuntimeEventView
+from ouro.application.contracts.tool_activity import PendingInteraction as RuntimePendingInteraction
+from ouro.application.contracts.tool_activity import RuntimeToolCallActivity
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.compaction import CompactionRecord, CompactionTrigger
 from ouro.core.context import ContextMetrics, ProviderContext
-from ouro.core.context_snapshots import ContextSnapshotHeader
+from ouro.core.context_snapshots import ModelRequestHeader
 from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessVersion
 from ouro.core.input_content import InputFile, InputSkillReference
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.reasoning import ReasoningRequest
-from ouro.core.session_commits import SessionCommitResult
 from ouro.core.session_controls import SessionInputMode
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import (
@@ -174,7 +175,7 @@ class SessionView(ApplicationDTO):
             reasoning_request=session.reasoning_request,
             approval_mode=session.approval_mode,
             interaction_mode=session.interaction_mode,
-            active_compaction_id=session.active_compaction_id,
+            active_compaction_id=session.context_selection.compaction_id,
             status=session.status,
             active_run_id=session.active_run_id,
             last_message_id=session.last_message_id,
@@ -224,12 +225,16 @@ class SessionContextStatus(ApplicationDTO):
     model_id: str
     prepared_at: datetime
     completed_at: datetime | None = None
+    interrupted_at: datetime | None = None
+    usage_entry_id: str | None = None
     metrics: ContextMetrics
     provider_reported_input_tokens: int | None = None
     active_compaction_id: str | None = None
 
     @classmethod
-    def from_record(cls, record: ContextSnapshotHeader) -> SessionContextStatus:
+    def from_record(
+        cls, record: ModelRequestHeader, *, reported_input_tokens: int | None = None
+    ) -> SessionContextStatus:
         compaction_id = record.context_metadata.get("compaction_id")
         return cls(
             context_id=record.context_id,
@@ -241,9 +246,11 @@ class SessionContextStatus(ApplicationDTO):
             endpoint_id=record.endpoint_id,
             model_id=record.model_id,
             prepared_at=record.prepared_at,
-            completed_at=record.completed_at,
+            completed_at=record.provider_done_at,
+            interrupted_at=record.interrupted_at,
+            usage_entry_id=record.usage_entry_id,
             metrics=record.metrics,
-            provider_reported_input_tokens=record.provider_reported_input_tokens,
+            provider_reported_input_tokens=reported_input_tokens,
             active_compaction_id=compaction_id if isinstance(compaction_id, str) else None,
         )
 
@@ -251,7 +258,6 @@ class SessionContextStatus(ApplicationDTO):
 class SessionContextSnapshot(ApplicationDTO):
     status: SessionContextStatus
     provider_context: ProviderContext
-    context_digest: str
 
 
 class SessionExport(ApplicationDTO):
@@ -264,7 +270,6 @@ class SessionExport(ApplicationDTO):
     compactions: tuple[CompactionRecord, ...] = ()
     extension_states: tuple[SessionExtensionStateRecord, ...] = ()
     harness_versions: tuple[HarnessVersion, ...] = ()
-    commits: tuple[SessionCommitResult, ...] = ()
 
 
 class SessionMessagePage(ApplicationDTO):
@@ -322,6 +327,9 @@ class SessionObservationSnapshot(ApplicationDTO):
     messages: tuple[MessageRecord, ...] = ()
     events: tuple[EventRecord, ...] = ()
     runs: tuple[RunRecord, ...] = ()
+    active_tool_calls: tuple[RuntimeToolCallActivity, ...] = ()
+    pending_interactions: tuple[RuntimePendingInteraction, ...] = ()
+    current_request: ModelRequestHeader | None = None
     compactions: tuple[CompactionRecord, ...] = ()
     queued_inputs: tuple[QueuedUserInputView, ...] = ()
     event_high_water: int = Field(default=0, ge=0)

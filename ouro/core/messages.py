@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from html import escape as escape_html
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel, VersionedOuroModel, new_id, utc_now
 from ouro.core.content import ImageContent as ImageContent
-from ouro.core.content import MediaContent
+from ouro.core.content import MediaContent, media_reference, media_resource_ids
 from ouro.core.content import TextContent as TextContent
 from ouro.core.input_content import InputContent, InputFile
 from ouro.core.message_roles import MessageRole
@@ -16,7 +16,8 @@ from ouro.core.message_semantics import (
     SemanticTag,
     escape_semantic_envelope_delimiters,
 )
-from ouro.core.tools import ToolCallProducer, ToolCallRequest
+from ouro.core.tool_facts import ToolCallIdentity
+from ouro.core.tools import ToolCallProducer, ToolCallRequest, ToolResultFeedback
 
 SkillActivationSource = Literal["user", "workspace", "plugin"]
 
@@ -174,8 +175,40 @@ class ModelMessage(OuroModel):
         return "".join(block.text for block in self.content if isinstance(block, TextContent))
 
 
+class InputMessageReference(OuroModel):
+    """A fixed accepted body or its attachment observation, never a JSON projection."""
+
+    input_id: str = Field(min_length=1)
+    part: Literal["body", "attachments"] = "body"
+    attachments_from_input: bool = True
+
+
+class ToolMessageReference(OuroModel):
+    """A fixed Outcome or the Call explained by this message's own feedback."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    identity: ToolCallIdentity
+    outcome_attempt: int | None = Field(default=None, ge=0)
+    feedback_is_error: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_source(self) -> Self:
+        if (self.outcome_attempt is None) != (self.feedback_is_error is not None):
+            raise ValueError(
+                "tool message must select either a certain Outcome or literal feedback"
+            )
+        return self
+
+
 class MessageRecord(VersionedOuroModel):
-    schema_version: Literal[4] = 4
+    """One explicitly materialized message for execution or a selected history read.
+
+    Persistence uses ``as_fact``; resolving an Input never changes its content owner.
+    This value has no loader, lazy collection, or implicit storage access.
+    """
+
+    schema_version: Literal[8] = 8
     message_id: str = Field(default_factory=lambda: new_id("msg"))
     before_harness_version: str | None = None
     session_id: str
@@ -189,6 +222,10 @@ class MessageRecord(VersionedOuroModel):
     semantic_tag: SemanticTag | None = None
     resource_refs: list[str] = Field(default_factory=list)
     input_attachments: tuple[InputFile, ...] = ()
+    input_ref: InputMessageReference | None = None
+    call_refs: tuple[ToolCallIdentity, ...] = ()
+    outcome_ref: ToolMessageReference | None = None
+    tool_feedback: ToolResultFeedback | None = None
     tool_calls: list[ToolCallRequest] = Field(default_factory=list)
     tool_result: ToolResultReference | None = None
     reasoning_content: str = ""
@@ -198,6 +235,9 @@ class MessageRecord(VersionedOuroModel):
     metadata: Metadata = MetadataField
 
     @model_validator(mode="after")
+    def validate_message(self) -> MessageRecord:
+        return self.validate_tool_fields()
+
     def validate_tool_fields(self) -> MessageRecord:
         reserved_metadata = {
             "tool_calls",
@@ -210,6 +250,7 @@ class MessageRecord(VersionedOuroModel):
             "provider_continuation",
             "semantic_tag",
             "scaffold",
+            "queued_input_id",
         }
         misplaced = sorted(reserved_metadata.intersection(self.metadata))
         if misplaced:
@@ -221,6 +262,16 @@ class MessageRecord(VersionedOuroModel):
             raise ValueError("message turn_id requires run_id")
         if self.tool_calls and self.role != "assistant":
             raise ValueError("only assistant messages may contain tool_calls")
+        if self.call_refs and self.role != "assistant":
+            raise ValueError("only assistant messages may reference original Calls")
+        if len(set(self.call_refs)) != len(self.call_refs):
+            raise ValueError("assistant message contains duplicate Call references")
+        if self.outcome_ref is not None and self.role != "tool_result":
+            raise ValueError("only tool-result messages may reference an Outcome or feedback")
+        if self.tool_feedback is not None and (
+            self.outcome_ref is None or self.outcome_ref.outcome_attempt is None
+        ):
+            raise ValueError("tool settlement feedback requires a fixed Outcome reference")
         if self.tool_result is not None and self.role != "tool_result":
             raise ValueError("only tool_result messages may contain tool_result")
         if (self.reasoning_content or self.provider_continuation is not None) and (
@@ -230,17 +281,21 @@ class MessageRecord(VersionedOuroModel):
         if self.model_response is not None and self.role != "assistant":
             raise ValueError("only assistant messages may contain model response state")
         if self.tool_execution is not None and (
-            self.role != "tool_result" or self.tool_result is None
+            self.role != "tool_result" or (self.tool_result is None and self.outcome_ref is None)
         ):
             raise ValueError("tool execution timing requires a tool_result message")
         _validate_skill_activation_blocks(self.role, self.content)
         if self.input_attachments:
             if self.role != "user":
                 raise ValueError("input attachments require a user-role message")
-            InputContent(
-                text="" if self.semantic_tag == "attachments" else self.text_content,
-                attachments=self.input_attachments,
-            )
+            # Offsets into a referenced body are checked when that body is materialized.
+            if not (
+                self.input_ref is not None and self.input_ref.part == "body" and not self.content
+            ):
+                InputContent(
+                    text="" if self.semantic_tag == "attachments" else self.text_content,
+                    attachments=self.input_attachments,
+                )
         return self
 
     @classmethod
@@ -274,6 +329,101 @@ class MessageRecord(VersionedOuroModel):
     @property
     def skill_activations(self) -> tuple[SkillActivationContent, ...]:
         return tuple(block for block in self.content if isinstance(block, SkillActivationContent))
+
+    @property
+    def input_id(self) -> str | None:
+        return self.input_ref.input_id if self.input_ref is not None else None
+
+    @property
+    def referenced_call_ids(self) -> tuple[ToolCallIdentity, ...]:
+        return self.call_refs or ((self.outcome_ref.identity,) if self.outcome_ref else ())
+
+    @property
+    def referenced_resource_ids(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys([*self.resource_refs, *media_resource_ids(self.content)]))
+
+    def validate_persisted_content(self) -> Self:
+        """Check content ownership after decoding a stored message."""
+        if any(
+            isinstance(block, MediaContent) and block.resource_id is not None and block.uri
+            for block in self.content
+        ):
+            raise ValueError("media resource bytes cannot also be owned by a message")
+        if self.tool_calls:
+            raise ValueError("original tool parameters belong to Call facts")
+        if self.tool_result is not None:
+            raise ValueError("tool result identity belongs to its Call reference")
+        if self.outcome_ref is not None and self.outcome_ref.outcome_attempt is not None:
+            if self.content or self.resource_refs or self.tool_execution is not None:
+                raise ValueError("an Outcome reference cannot also own its observed content")
+        if self.input_ref is not None:
+            if self.input_ref.part == "body" and self.content:
+                raise ValueError("an Input body reference cannot also own message content")
+            if self.input_ref.attachments_from_input and self.input_attachments:
+                raise ValueError("referenced Input attachments cannot be copied into a message")
+        return self
+
+    def _owned_content(self) -> MessageRecord:
+        """Borrow typed content for synchronous encoding without copying its bodies."""
+        updates: dict[str, Any] = {}
+        if self.input_ref is not None:
+            if self.input_ref.part == "body":
+                updates["content"] = []
+            if self.input_ref.attachments_from_input:
+                updates["input_attachments"] = ()
+        if self.call_refs:
+            updates["tool_calls"] = []
+        if self.outcome_ref is not None:
+            updates["tool_result"] = None
+            if self.outcome_ref.outcome_attempt is not None:
+                updates.update(content=[], resource_refs=[], tool_execution=None)
+        if "content" not in updates and any(
+            isinstance(block, MediaContent) and block.resource_id is not None
+            for block in self.content
+        ):
+            updates["content"] = [
+                media_reference(block) if isinstance(block, MediaContent) else block
+                for block in self.content
+            ]
+        return self.model_copy(update=updates) if updates else self
+
+    def as_fact(self) -> MessageFact:
+        """Return a detached fact when ownership crosses an in-memory boundary."""
+        return MessageFact.model_validate(self._owned_content().model_dump())
+
+    def storage_json(self) -> str:
+        """Encode owned fields; declared empty defaults need no stored copy.
+
+        Keep the schema, identity and timestamps explicit. Arbitrary metadata
+        and provider payload values retain their own nulls and empty values.
+        """
+        record = self._owned_content()
+        record.validate_tool_fields()
+        record.validate_persisted_content()
+        return record.model_dump_json(
+            exclude_none=True,
+            exclude={
+                name
+                for name in (
+                    "content",
+                    "resource_refs",
+                    "input_attachments",
+                    "call_refs",
+                    "tool_calls",
+                    "reasoning_content",
+                    "metadata",
+                )
+                if not getattr(record, name)
+            },
+        )
+
+
+class MessageFact(MessageRecord):
+    """The persisted shape; Input, Call and Outcome units are never embedded."""
+
+    @model_validator(mode="after")
+    def validate_ownership(self) -> Self:
+        return self.validate_persisted_content()
 
 
 def model_visible_message(message: MessageRecord | ModelMessage) -> ModelMessage:

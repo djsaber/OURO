@@ -18,6 +18,7 @@ from ouro.local_application import (
 )
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.backends.files.index import LocalSessionIndex
+from tests.session_storage import write_session_payload
 
 
 async def test_local_application_discovers_skills_after_startup(tmp_path):
@@ -99,7 +100,7 @@ async def test_task_sessions_use_the_composed_session_backend(
         assert session.runs[0].status == "completed"
         assert (tmp_path / "sessions.sqlite3").exists() == (session_backend == "sqlite")
         if session_backend == "files":
-            assert (tmp_path / "sessions" / task.session_id / "session.json").is_file()
+            assert (tmp_path / "sessions" / task.session_id / "session-data.sqlite3").is_file()
         assert (tmp_path / "tasks.sqlite3").exists() == (task_backend == "sqlite")
         assert (tmp_path / "tasks" / "layout.json").exists() == (task_backend == "files")
 
@@ -216,10 +217,7 @@ async def test_corrupt_historical_session_does_not_block_start_or_new_run(tmp_pa
     store.initialize()
     historical = SessionRecord(title="Corrupt history")
     store.create_session(historical)
-    (store.sessions_dir / historical.session_id / "session.json").write_text(
-        "{not-json",
-        encoding="utf-8",
-    )
+    write_session_payload(store, historical.session_id, "{not-json")
 
     application = LocalApplication.build(tmp_path, session_backend="files")
     async with application:

@@ -8,12 +8,16 @@ from collections.abc import AsyncGenerator, Iterable
 from contextlib import asynccontextmanager
 from typing import Any, Protocol
 
+from ouro.core.callbacks import CallbackCancelled
 from ouro.plugins.contributions.models import PreparedContributionSet
 from ouro.plugins.models import PluginGenerationRecord
 
 
-class PluginGenerationUnavailableError(RuntimeError):
+class PluginGenerationUnavailableError(CallbackCancelled):
     """Raised when a callback targets a generation whose invocation gate is closed."""
+
+    def __init__(self, reason: str, *, result: object = None) -> None:
+        super().__init__(result, reason=reason)
 
 
 class GenerationGate:
@@ -83,6 +87,12 @@ class GenerationGate:
             except TimeoutError:
                 if not cancellation.expired():
                     raise
+            except CallbackCancelled as exc:
+                if not cancellation.expired():
+                    raise
+                raise PluginGenerationUnavailableError(
+                    f"plugin generation is unavailable: {self.generation_id}", result=exc.result
+                ) from None
             if cancellation.expired():
                 raise PluginGenerationUnavailableError(
                     f"plugin generation is unavailable: {self.generation_id}"

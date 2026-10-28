@@ -29,7 +29,7 @@ async def test_input_is_atomic_and_snapshot_keeps_its_projection(tmp_path, backe
     item = InputAttachment(resource_id=resource.resource_id, name="notes.txt", text_offset=4)
     result = await runtime.run("read this", session_id=session.session_id, attachments=(item,))
     assert result.run.status == "completed"
-    messages = runtime.store.load_runtime_session(session.session_id).messages
+    messages = runtime.store.load_session(session.session_id).messages
     receipt, user = messages[:2]
     assert receipt.scaffold and receipt.semantic_tag == "attachments"
     assert receipt.resource_refs == [resource.resource_id]
@@ -37,12 +37,12 @@ async def test_input_is_atomic_and_snapshot_keeps_its_projection(tmp_path, backe
     assert user.input_attachments == (item,)
     assert len(conversation_turns(messages)) == 1
     branch = runtime.sessions.branch(session.session_id, receipt.message_id)
-    branch_messages = runtime.store.load_runtime_session(branch.session.session_id).messages
+    branch_messages = runtime.store.load_session(branch.session.session_id).messages
     assert len(branch_messages) == 2
     assert branch_messages[1].metadata["attachment_message_id"] == branch_messages[0].message_id
     branch_undo = await runtime.undo(branch.session.session_id)
     assert branch_undo.attachments == (item,)
-    assert runtime.store.load_runtime_session(branch.session.session_id).messages == []
+    assert runtime.store.load_session(branch.session.session_id).messages == []
     saved = runtime.sessions.context(session.session_id)
     assert "source data" in saved.provider_context.messages[0].text_content
     runtime.resources._max_model_text_bytes = 1
@@ -50,7 +50,7 @@ async def test_input_is_atomic_and_snapshot_keeps_its_projection(tmp_path, backe
     undone = await runtime.undo(session.session_id)
     assert undone.attachments == (item,)
     assert undone.resource_refs == (resource.resource_id,)
-    assert runtime.store.load_runtime_session(session.session_id).messages == []
+    assert runtime.store.load_session(session.session_id).messages == []
     await app.close()
 
 
@@ -81,7 +81,7 @@ async def test_active_run_can_import_and_consume_one_attachment_unit(tmp_path, m
     finally:
         provider.release_first.set()
     await asyncio.wait_for(task, 10)
-    messages = runtime.store.load_runtime_session(session.session_id).messages
+    messages = runtime.store.load_session(session.session_id).messages
     index = next(
         index for index, message in enumerate(messages) if message.semantic_tag == "attachments"
     )
@@ -217,14 +217,14 @@ async def test_durable_queue_acceptance_is_reported_before_notification_failure(
     running = asyncio.create_task(runtime.run("initial", session_id=session.session_id))
     await asyncio.wait_for(provider.first_started.wait(), 5)
     accepted = []
-    emit = runtime.event_recorder.emit
+    publish = runtime.event_recorder.publish_committed
 
-    async def failed_notification(*args, **kwargs):
-        if kwargs.get("event_type") == "follow_up_input_queued":
+    async def failed_notification(events):
+        if any(event.event_type == "follow_up_input_queued" for event in events):
             raise ValueError("notification failed")
-        return await emit(*args, **kwargs)
+        return await publish(events)
 
-    monkeypatch.setattr(runtime.event_recorder, "emit", failed_notification)
+    monkeypatch.setattr(runtime.event_recorder, "publish_committed", failed_notification)
     try:
         with pytest.raises(ValueError, match="notification failed"):
             await runtime.run(
@@ -234,6 +234,8 @@ async def test_durable_queue_acceptance_is_reported_before_notification_failure(
             )
         assert len(runtime.pending_user_inputs(session.session_id)) == 1
         assert accepted == [True]
+        events, _ = runtime.store.load_events_after(session.session_id)
+        assert sum(event.event_type == "follow_up_input_queued" for event in events) == 1
     finally:
         provider.release_first.set()
         await asyncio.wait_for(running, 10)

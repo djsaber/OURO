@@ -99,8 +99,9 @@ def _print_run_result(result: RunResult, *, json_mode: bool) -> int:
                     "run_id": result.run.run_id,
                     "final_text": result.final_text,
                     "error": result.run.error,
-                    "usage": result.run.usage,
-                    "events": [event.model_dump(mode="json") for event in result.events],
+                    "error_code": result.error_code,
+                    "usage": result.usage,
+                    "had_tool_error": result.had_tool_error,
                 },
                 ensure_ascii=False,
             )

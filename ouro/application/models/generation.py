@@ -14,6 +14,7 @@ from ouro.core.context import ContextBuilder
 from ouro.core.messages import ModelMessage
 from ouro.core.model_execution import ModelExecutionEvent, execute_model_request
 from ouro.core.model_generation import ModelGenerationRequest, ModelGenerationResult, ModelTextDelta
+from ouro.core.provider import ProviderStreamEvent
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.request_context import ProviderRequestContext
 
@@ -66,10 +67,8 @@ class ModelGenerationService:
         request_id = new_id("mreq")
         sequence = 0
 
-        async def observe(progress: ModelExecutionEvent) -> None:
-            nonlocal sequence
-            event = progress.event
-            if event.type == "done" and event.usage is not None:
+        async def settle_provider_done(event: ProviderStreamEvent) -> None:
+            if event.usage is not None:
                 # Settle known usage before publishing the result, including cancellation races.
                 await run_blocking(
                     self.usage.record_plugin_usage,
@@ -80,6 +79,10 @@ class ModelGenerationService:
                     session_id=session_id,
                     workspace=workspace,
                 )
+
+        async def observe(progress: ModelExecutionEvent) -> None:
+            nonlocal sequence
+            event = progress.event
             if on_output is not None:
                 text = (
                     event.text
@@ -108,6 +111,7 @@ class ModelGenerationService:
                     request_context=ProviderRequestContext(values),
                     signal=AbortSignal(),
                     on_event=observe,
+                    on_provider_done=settle_provider_done,
                 )
             if result.error is not None:
                 raise RuntimeError(f"Model request {request_id} failed: {result.error}")

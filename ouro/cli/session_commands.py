@@ -402,7 +402,6 @@ async def show_session_context(
             payload.update(
                 {
                     "provider_context": snapshot.provider_context.model_dump(mode="json"),
-                    "context_digest": snapshot.context_digest,
                 }
             )
         print(json.dumps(payload, ensure_ascii=False))
@@ -602,7 +601,7 @@ async def compact_session(
 def _print_compaction_result(result: CompactionCommandResult, *, json_mode: bool) -> int:
     compaction = result.compaction
     compaction_id = compaction.compaction_id if compaction is not None else None
-    covered_count = len(compaction.covered_message_ids) if compaction is not None else 0
+    covered_count = compaction.covered_message_count if compaction is not None else 0
 
     if json_mode:
         status = (

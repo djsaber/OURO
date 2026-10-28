@@ -60,7 +60,8 @@ iterator，消费者独占 FIFO；FIFO 满是唯一无损背压点。
 
 ## Runtime Event Observer
 
-canonical Event 始终持久化；Host event sink 按注册的同步 filter 选择入队事件，未设 filter 时接收全部事件。
+业务 Event 持久化，实时分片按[当前输出与观察契约](session-observation.md#通用正文观察)使用当前 Draft，
+不成为永久事件历史。Host event sink 按注册的同步 filter 选择入队事件，未设 filter 时接收全部事件。
 filter 不执行 I/O，拒绝投递不影响持久化或其他消费者。Plugin Observer 是独立可选消费者：
 
 - Registry 可用 event name、runtime event type 和 active controller 集合判断是否存在 enabled 匹配项；
@@ -77,7 +78,7 @@ filter 不执行 I/O，拒绝投递不影响持久化或其他消费者。Plugin
 不嵌套不同 Session 的文件锁。活动状态仍使用 Supervisor 的现有投影，不增加常驻树缓存。
 
 交互式历史使用 Application 的近期窗口与 before 游标，读取成本由请求的完整帧决定；Run/compaction 元数据与
-活动 Run 事件独立保留。TUI 初始窗口为 200 条消息的软限制，向前加载复用既有 Strip，不重新排版全部已加载正文。
+当前请求/Draft 和业务事件水位独立读取，不为状态窗口加载整 Run 事件。TUI 初始窗口为 200 条消息的软限制，向前加载复用既有 Strip，不重新排版全部已加载正文。
 选择仍有执行者的会话时，恢复入口先查询执行归属；已有 owner 不进入完整执行恢复读取。显示窗口和完整导出互不替代。
 上下文状态读取持久化 header 索引，避免为请求身份、时间与 token metrics 反序列化完整输入和媒体正文。
 
@@ -89,11 +90,23 @@ filter 不执行 I/O，拒绝投递不影响持久化或其他消费者。Plugin
 
 ## 工具结果消息
 
-同一 `ToolCallBatchRecord` 的完成结果按 `source_index` 构造消息，并作为一个有序 `append_messages` 批次提交。
-所有资源引用必须在任何新消息提交前验证。提交成功后才发布 `ToolCallFinishedObservation` 并推进批次状态。
+确定 Outcome 按到达顺序独立保存，模型历史按 `source_index` 形成完整工具帧。消息引用、Call 发布状态、
+Harness 意图、Driver ready 和对应小事件共用原生提交，提交成功后才推进内存状态并通知消费者。
+恢复安装已接受决定或发布待处理事实，不重调工具，也不逐条补齐半个工具帧。资源先发布、再提交引用；
+详细契约见[工具事实与整帧提交](session-persistence.md#工具事实存储)。
 
-幂等恢复时，已有 `(tool_result, tool_call_id)` 消息直接复用，只把缺失消息放入新批次；sequence 和
-`result_message_id` 必须保持确定性。单结果接口与批接口共享同一构造和校验规则。
+## 活动工作集与读取成本
+
+正常准备只读当前选择的尾部和所需摘要/技能来源。默认文本估算可复用活动不可变引用的数值成本，
+自定义整请求估算和动态 Provider 仍处理真实请求；摘要前后复用同一次准备值的边界见
+[上下文与压缩](context-and-compaction.md#contextview)。完整活动输入、实际大输出和显式历史查询仍有相应处理成本。
+
+Run 头不携带整 Run 事件、工具正文或用量 ID 数组；Catalog 成员数由已有 Session 头派生计数维护。
+冷恢复按当前执行头、pending 调用、请求/Draft 定位；原始预算从账本汇总读取。Files 的引用日志尾部使用有限块反向读取，
+少量记录仍可能打开一个完整的 64 KiB 引用块；这不是解码旧消息正文或重建全历史 ID 表。
+
+SQLite 长读会保留旧快照需要的 WAL；只读窗口应在数据交付前结束，不把网络、插件、排版或用户等待放在读取事务内。
+Files 使用对应 Session 锁维护读取寿命，避免同时删除资源留下裸引用。两后端不承诺任意长查询下空间或等待时间恒定。
 
 ## Runtime 阻塞边界
 
@@ -124,8 +137,8 @@ Provider 和工具执行中的 `AbortSignal.is_aborted()` 是高频同步检查�
 
 ## TUI 流式消费与结构边界
 
-- Host 的 Runtime/Agent tree 订阅建立是异步操作：Store 查询与历史事件投影在 worker 中完成，订阅队列、任务与
-  Supervisor 内存状态始终由事件循环拥有。先登记有界 live 队列，再读取 durable replay，合并时按 sequence 去重；
+- Host 的 Runtime/Agent tree 订阅建立是异步操作：Store 当前状态与事实投影在 worker 中完成，订阅队列、任务与
+  Supervisor 内存状态始终由事件循环拥有。先登记有界 live 队列，再读取当前快照，按 sequence 追赶业务事实；
   初始化期间溢出继续发布 lagged，失败或取消必须撤销订阅。不得在线程中运行持有 asyncio 队列的整个 Supervisor。
 - Supervisor 的提交、交互恢复和 enqueue 前查询离开事件循环；最后一次 await 后必须重新检查关闭状态和 Session
   调度所有权，再一次性登记 job。Agent tree 的持久化查询同样在 worker 执行，订阅集合的变更留在 loop。

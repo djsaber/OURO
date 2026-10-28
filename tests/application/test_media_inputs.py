@@ -87,7 +87,7 @@ async def test_mixed_attachments_preserve_audio_and_media_order_in_http_requests
                 snapshot = runtime.store.load_latest_context(session.session_id)
                 media = [
                     part
-                    for message in snapshot.source_messages
+                    for message in snapshot.provider_context.messages
                     for part in message.content
                     if isinstance(part, MediaContent)
                 ]
@@ -140,7 +140,7 @@ async def test_media_observation_survives_source_removal_model_switch_and_reopen
         result = await runtime.run("Describe", session_id=session.session_id, attachments=(item,))
         assert result.run.status == "completed", result.run.error
         assert encoded in str(provider.requests[-1])
-        observed = runtime.store.load_runtime_session(session.session_id).messages[0]
+        observed = runtime.store.load_session(session.session_id).messages[0]
         media = next(part for part in observed.content if isinstance(part, MediaContent))
         assert media.type == kind and base64.b64decode(media.uri.partition(",")[2]) == raw
         saved = runtime.sessions.context(session.session_id)
@@ -158,7 +158,7 @@ async def test_media_observation_survives_source_removal_model_switch_and_reopen
         assert result.run.status == "completed", result.run.error
         assert encoded not in str(provider.requests[-1])
         assert f"The {kind} was not sent" in str(provider.requests[-1])
-        assert runtime.store.load_runtime_session(session.session_id).messages[0] == observed
+        assert runtime.store.load_session(session.session_id).messages[0] == observed
     finally:
         await app.close()
 
@@ -170,7 +170,7 @@ async def test_media_observation_survives_source_removal_model_switch_and_reopen
         assert result.run.status == "completed", result.run.error
         assert encoded in str(replay.requests[-1])
         branch = reopened.runtime.sessions.branch(session.session_id, observed.message_id)
-        branched = reopened.runtime.store.load_runtime_session(branch.session.session_id)
+        branched = reopened.runtime.store.load_session(branch.session.session_id)
         if source_kind == "upload":
             # Observed media and metadata stay frozen; only the generated path table moves.
             assert branched.messages[0].content[:-1] == observed.content[:-1]
@@ -212,7 +212,7 @@ async def test_unsupported_media_is_a_durable_reference_not_a_future_implicit_re
     try:
         first = await runtime.run("Describe", session_id=session.session_id, attachments=(item,))
         assert first.run.status == "completed", first.run.error
-        observed = runtime.store.load_runtime_session(session.session_id).messages[0]
+        observed = runtime.store.load_session(session.session_id).messages[0]
         assert not any(isinstance(part, MediaContent) for part in observed.content)
         assert "model in use did not support it" in observed.text_content
         setattr(runtime.adapter.model, f"supports_{kind}_input", True)
@@ -430,6 +430,8 @@ def test_mixed_media_elision_uses_one_budget_and_keeps_text_without_encoding_old
         history.extend([message, reply])
     image = ImageContent(uri="data:image/png;base64,YQ==", media_type="image/png")
     history.append(MessageRecord(session_id=session.session_id, role="user", content=[image]))
+    store.append_messages(history)
+    session = store.load_session_record(session.session_id)
     monkeypatch.setattr(
         file_inputs, "DEFAULT_REQUEST_MEDIA_CHARS", 4 * ((path.stat().st_size + 2) // 3) + 4
     )
@@ -438,7 +440,7 @@ def test_mixed_media_elision_uses_one_budget_and_keeps_text_without_encoding_old
         pytest.fail("elided resource media must not be encoded")
 
     monkeypatch.setattr(file_inputs.base64, "b64encode", fail_encode)
-    projected, _ = MediaContextPreparation(store, resources.prepare_model_messages).project(
+    projected, _ = MediaContextPreparation(resources.prepare_model_messages).project(
         history,
         session=session,
         history=history,

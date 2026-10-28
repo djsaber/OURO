@@ -4,6 +4,161 @@
 使用锁定依赖，独立运行，不要与 pytest 或其他基准争用资源。输出为 JSON Lines，包含环境、原始样本和统计量；需要保存时写入本
 地忽略目录。基准结果只适用于测量环境，不能替代真实终端和网络 Provider 验证，也不作为 CI 的固定时间断言。
 
+## 会话重构前后对照
+
+```powershell
+uv run --frozen --extra themes python -B -X utf8 -m dev.benchmarks.session_refactor_comparison
+uv run --frozen --extra themes python -B -X utf8 -m dev.benchmarks.session_refactor_comparison --scenario history --messages 100 1000 10000 --repeat 3
+uv run --frozen --extra themes python -B -X utf8 -m dev.benchmarks.session_refactor_comparison --scenario agent_io --rounds 64 --repeat 3
+uv run --frozen --extra themes python -B -X utf8 -m dev.benchmarks.session_refactor_comparison --scenario stream_io --messages 10000 --stream-chunks 131072 --repeat 3
+uv run --frozen --extra themes python -B -X utf8 -m dev.benchmarks.session_refactor_comparison --scenario interaction --messages 1000 10000 --repeat 3
+```
+
+默认基线为重构前 `44724d8378632f3c5e63b6861e5e873493e71dce`，可用 `--baseline` 指定其他兼容基线。
+`--backend files|sqlite` 可只测一个后端；省略时测量两者。
+脚本将该提交和当前工作区的 `ouro/` 分别快照到临时目录，用同一锁定解释器串行启动独立子进程，
+逐次交换先后顺序。当前源码标识、环境和每次原始样本输出到 stdout；源码快照与合成数据在退出时清理。
+基线和当前版本使用各自格式构造数据，不调用升级模块，不访问用户 home。
+
+默认包含两种后端、三次重复和以下工作负载：
+
+- `long_run`：8/32/64 轮真实 Runtime、工具及自动摘要；每轮 4 KiB 输出与 4 KiB 工具结果。
+  测总耗时、末尾轮次、进程读写字节及次数、RSS 边界样本、RunResult 体积、持久文件及 SQLite 已用页、空闲页和结束时 WAL。
+- `history`：100/1,000/10,000 条各 1 KiB 的消息，固定八条活动消息及一条摘要。
+  测闲置会话恢复、Python 分配峰值、完整一轮、会话头/末尾 16 条/全量观察读取。
+  另测 32 个逐次确认的 256 B 分片写入与独立观察延迟，以及连续 128 个分片的 32 KiB 有效吞吐。
+  独立观察只经过框架 `SessionEventStream`，不注入本地推送，不含 Host 呈现；连续输出允许框架原有的分片合并，
+  写入吞吐计至最后正文被本地事件 sink 收到，独立读取计至完整正文被观察者收到。
+
+`long_run` 和 `agent_io` 支持 `--structured-bytes 65536` 增加每个工具结果的独立结构化正文；
+`--harness-owner-bytes 65536` 在计时前保存八个 owner 的私有状态，各 64 KiB，并在执行期间保持其业务值不变。
+两项默认均为零。用零、小、大状态分别测量，区分固定成本与重复读取活动私有状态的增长成本。
+`--argument-bytes 65536` 另外给每个原始工具调用加入 64 KiB 字符串参数，默认零。
+该参数也将合成长循环的 context_window 从 5,000 调整为 `5,000 + argument_bytes`，容纳原工具帧；
+不同参数规模的摘要次数可能不同，前后性能必须在相同规模、相同摘要次数下比较，不能用跨规模总耗时推断参数增长成本。
+完整观察保留原参数；结果窗口可另行衡量框架只读取展示所需数据的成本。
+
+额外的 `agent_io` 使用真实工具循环留下的 Input、Call、Outcome、摘要、Run 和消息，执行同样的完整/窗口查询。
+它另测最后一条工具结果的消息点查，反映增量可视化取得确定结果正文的框架成本；消息身份在计时外确定。
+随后分别输出 256 个 256 B 分片（每片之后等待 20 ms）和连续 8,192 个 256 B 分片（共 2 MiB），
+测量本地发布及独立适配器观察的 P50/P95/最大延迟、交付次数和有效字节吞吐。
+仅最后一片等待独立观察确认，不用逐片确认控制生产速率；观察者按累计字节识别完整分片，支持框架合并交付。
+生产间隔是异步调度目标，并非硬实时频率；持续输出吞吐包括框架的读写、合并和轮询等待，
+不是无限负载的理论上限，也不是跨进程 IPC 或网络性能。读写双方使用同一进程中的不同存储适配器，观察者不接收本地推送。
+超过 32 个样本的分布输出样本数及分位数，避免测量输出随分片数膨胀。
+
+`stream_io` 在同样的一万条历史上单独测连续输出，`--stream-chunks 131072` 对应 32 MiB。
+较长输出跨越多个观察分页和轮询周期，减小 2 MiB 短流受轮询相位的影响；不更改框架轮询或分页设置。
+同时报告完整 Run 耗时、两端收齐正文后到 Run/事件处理完成的收尾时间，以及前后逻辑存储与原生空闲页。
+观察计数按新增字节递增，不反复求和已收到的前缀；最终仍校验两端完整内容。
+
+`interaction` 补充实际 Application/Supervisor 入口的交互成本：
+
+- `SessionService.observation_snapshot(history_limit=200)`、向前翻页和新适配器重新打开；读取在线程中执行，
+  记录三次原始耗时、进程 IO 和实际返回条数，校验翻页没有重叠、重新打开内容一致。
+  首次调用单列，包含首次线程调度和读取，不混进“重复打开”数据；新进程不等于冷磁盘。
+- `submit_user_input` 在已有历史的 home 中新建空会话，以及继续原长会话：从用户提交分别计至接受回执、
+  进入 Provider、本地收到首段文本和完整 Run 返回；Supervisor 启动不在计时内。
+  即时合成 Provider 输出中文、reasoning 和 Markdown 代码块，用于分离框架成本，不模拟网络首 token 等待。
+- Provider 在首段后由 Event 保持运行，独立适配器恢复 200 条历史与当前输出；随后真实接受并取消一条排队输入，
+  最后分别记录 abort 返回、Provider 关闭和 Run 终态。校验排队输入没有执行、取消后不再待处理、Run 确实 aborted。
+  Event 只控制可操作阶段，60 秒期限仅防止挂起，不作为性能断言；取消结果与长 Run 吞吐分别解释。
+
+历史夹具仍是每条 1 KiB 文本、固定活动摘要与尾部，并非真实用户内容分布；大参数、structured、媒体和长流
+分别由其他场景度量。当前新会话测量也不代表应用冷启动。各用户操作、所需数据规模、已有证据和未测范围见
+[交互覆盖矩阵](../../docs/plans/archive/2026-10-26-session-data-implementation.md#场景覆盖与资源边界)。
+各场景分别报告，不以压力负载的吞吐替代短回复等待，不用统一总分掩盖某个交互退化；
+三对样本只提供中位数和范围，不能据此宣称稳定的交互 p95/p99 或真实屏幕体感已验收。
+
+构造、导入和清理不计入运行时间；计时与 tracemalloc 分开。未清空 OS 缓存；新适配器不等于冷磁盘。
+文件字节是逻辑长度，不是 NTFS 分配空间；RSS 不是连续峰值；结束时 WAL 不是 WAL 峰值。
+不同源码或参数的样本分别统计；进程 IO 计数与相同完整内容的交付耗时分别报告。
+Files 当前为顺序消息正文与会话级原生数据库，后者保存定位索引、工具事实、调用状态、摘要、请求小头与 Draft。
+SQLite 及 Files Draft 的原生连接只在执行所有者存续时复用。历史读取、
+流式本地发布和独立观察的计时边界保持相同，默认轮询间隔不计作 Host 渲染开销。
+全量观察是一次性完整历史读取，不是增量刷新 API；独立观察包含既有 100 ms 运行中轮询周期。
+这些数据度量框架提供数据的成本，不能换算为 Host 的实际帧率。完整口径、结果与局限见
+[重构前后性能对照](../../docs/plans/archive/2026-10-26-session-data-implementation.md#性能对照)。
+
+## 长 Run、慢查询与取消
+
+```powershell
+uv run --frozen python -m dev.benchmarks.long_run_growth --rounds 8 64 --repeat 3
+uv run --frozen python -m dev.benchmarks.long_run_growth --rounds 8 64 --repeat 1 --slow-reader
+uv run --frozen python -m dev.benchmarks.long_run_growth --rounds 8 --repeat 1 --slow-reader --abort-at 4
+```
+
+运行真实 Runtime、工具与摘要提交，固定每轮输出和工具结果，采样活动输入、当前输出、慢 sink 队列和进程 RSS。
+慢查询通过 Event 保持无关会话读取至任务结束；取消通过 Provider 握手触发。记录文件数、逻辑字节、SQLite 页与 WAL，
+并在释放读者后显式 checkpoint。RSS 是边界样本而非进程峰值；不把无关会话可继续工作误称为所有操作无锁等待。
+
+## 完整活动输入与编码
+
+```powershell
+uv run --frozen python -m dev.benchmarks.active_context --repeat 3
+```
+
+固定无关历史为空，独立增加活动文本条数和内联媒体体积。测量新的 ContextBuilder 准备，以及 Chat Completions、
+Responses、Anthropic Messages codec 加 JSON UTF-8 编码；输入构造、存储和网络不计入。
+计时与 tracemalloc 分开执行，后者不代表 RSS。两组实验的已执行范围见
+[会话整合记录](../../docs/plans/archive/2026-10-26-session-data-implementation.md#验证记录)。
+
+## 会话资源定向读取
+
+```powershell
+uv run --frozen python -m dev.benchmarks.session_resources --repeat 7
+```
+
+使用两后端的隔离目标格式数据，独立增加旧资源数和选中文件体积，固定读取首部 16 与尾部 32 字节。
+记录每个样本、Python 文件打开与读取字节、分配峰值、实际文件数、逻辑字节及 SQLite 查询计划、页数、空闲页和测量结束时 WAL。
+Python IO 探针不计 SQLite 引擎读取；tracemalloc 不代表 RSS。暖适配器和新建适配器分别运行，不清空 OS 缓存。
+构造与清理不计入读取时间；结果不表示完整模型轮次、冷磁盘或掉电恢复成本。已执行范围见
+[资源读取实施记录](../../docs/plans/archive/2026-10-26-session-data-implementation.md#场景覆盖与资源边界)。
+
+## 最近请求完成
+
+```powershell
+uv run --frozen python -m dev.benchmarks.context_completion --repeat 7
+uv run --frozen python dev/benchmarks/session_refactor_comparison.py --scenario request_io --repeat 3 --request-replacements 32 --request-bytes 4096 1048576 4194304
+```
+
+固定请求头，增加不可变输入大小，单独测量完成操作。每次样本准备一个新请求，准备、同步和 SQLite checkpoint
+不计入计时；连接保持打开，完成后立即采样 WAL 大小。输出 Python 读取字节、分配峰值、逐次时间与中位数、
+真实文件数、逻辑字节、SQLite 页数/空闲页及剩余请求数。没有清空 OS 缓存，不代表完整轮次、RSS 或掉电恢复。
+结果见[请求头实施记录](../../docs/plans/archive/2026-10-26-session-data-implementation.md#上下文观察与计量)。
+
+`request_io` 场景使用隔离的重构前/后源码进程，保留真实 Session 执行锁及其连接寿命，连续替换当前请求，不强制 checkpoint。
+单独记录请求提交耗时、进程读写传输字节、每次提交后的文件总量与页数，以及执行锁释放后的真实占用。
+夹具和空间采样不计入提交时间；进程传输含缓存命中，不等于物理设备流量。默认 `--request-content changing`
+让每轮正文全部变化；`stable` 只改变前缀，单独观察原生页复用。它测量请求持久化，完整 Agent
+循环与实时观察仍使用 `session_refactor_comparison` 的 `agent_io` 场景。
+
+## 活动摘要读取与投影
+
+```powershell
+uv run --frozen python -m dev.benchmarks.compaction_boundaries --repeat 3
+```
+
+固定摘要正文和两条保留尾部，分别增加已覆盖消息数和保留摘要数；测量活动摘要点查与预加载历史上的纯投影。
+输出逐次时间、Python 读取与分配峰值、摘要序列化大小、真实文件数和逻辑字节，以及 SQLite 页数、空闲页与 WAL。
+快照准备和历史内存不计入测量，适配器已初始化且不清空 OS 缓存；Python IO 不包含 SQLite 引擎读取，分配峰值不是 RSS。
+此实验不代表完整上下文准备、撤销或冷恢复。结果见
+[摘要覆盖边界记录](../../docs/plans/archive/2026-10-26-session-data-implementation.md#上下文观察与计量)。
+
+## Runtime 入口与冷适配器恢复
+
+```powershell
+uv run --frozen python -m dev.benchmarks.runtime_history --repeat 3
+```
+
+两后端每个样本重新生成隔离的目标格式数据，固定两条活动消息、两个当前请求事件和一条短 partial，
+分别增加已覆盖消息（64/4,096）、旧 Run（1/512）及摘要（1/512）。分别测新适配器初始化与显式恢复、
+Runtime 创建与完整一轮 FauxProvider 请求，记录耗时、Python 读取字节与打开次数、tracemalloc 峰值、
+真实文件数、逻辑字节及 SQLite WAL/页数/空闲页。准备数据不计时，未清 OS 缓存，不代表冷磁盘。
+FauxProvider 不含网络或真实 Provider 编码；内存不是 RSS，读取计数不含 SQLite 原生 I/O。
+当前执行头与待处理 Run 的读取边界见[提交与执行](../../docs/plans/archive/2026-10-26-session-data-implementation.md#提交与执行)。
+Catalog 文件计数、当前 Run 事件恢复等保留工作仍计入入口；不能用定向正文读取推断所有历史轴或整个冷恢复已收敛。
+
 ## 历史数据升级
 
 ```powershell
@@ -179,6 +334,19 @@ uv run --frozen python -m dev.benchmarks.harness_lifecycle --label current-envir
 通过 strace 观察同步调用；观测不可用时明确失败。调用原函数且保留返回值，不改变 fsync/WAL 策略。
 同步探针校准见 `tests/benchmarks/test_sqlite_sync.py`；计数不等于绕过操作系统缓存的物理介质写入。
 
+## 消息事实与定向读取
+
+```powershell
+uv run --frozen python -m dev.benchmarks.session_messages --counts 1000 10000 100000 --active 8 --repeat 7
+```
+
+两后端固定 8 条活动消息、0 个未决输入，分别测按 ID、Run、已接受输入和倒序尾部读取；每组包含同一 adapter
+与新 adapter 样本。所选末条消息引用一个已消费 Input，其他消息拥有正文；输入及其状态通过同一快照 API 创建。
+准备耗时独立报告，不进入查询计时。分别报告 MessageFact、InputRecord 解码数、Python
+读取字节/打开次数、tracemalloc、实际文件数/逻辑字节、SQLite 页数与输入查询计划。文件计数与计划查询不计时。
+这些观测不包含 SQLite 引擎 I/O、文件元数据 I/O、RSS 或物理设备流量；未清 OS 缓存，新 adapter 不代表冷磁盘。
+运行数据只能说明选定窗口查询，不能证明普通轮次、整个 Run 冷恢复或完整所有权重构已达到目标。
+
 ## Worker 响应与插件命令
 
 ```powershell
@@ -224,3 +392,12 @@ Worker 基准通过真实 handler 测量合成响应解码、构造次数及独�
 输出包含提交、首段文本、完整消费、消息摘要、Run 终态和响应性指标；安装、启动与初始历史准备不计时。
 首个模型 delta 不等于终端 paint，TUI 帧、按键和网络性能须按[性能规划](../../docs/plans/performance.md)
 单独验证。
+
+```powershell
+uv run --frozen python -m dev.benchmarks.response_drafts --repeat 3
+```
+
+Draft 实验固定输出字节数，分别拆成 10/1,000/100,000 片，使用隔离会话的真实追加和响应提交端口。
+报告 Python 分配峰值、活动 Draft、终结后文件与事件、两后端原生数据库的分配/空闲页；
+Draft 内容字节按原生 content 列计数，文件总量包含数据库开销；采样 WAL 不代表峰值。
+不含 Provider/Tool 时间，不清 OS 缓存；tracemalloc 耗时不能当作端到端延迟。

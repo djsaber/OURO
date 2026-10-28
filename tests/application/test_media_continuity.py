@@ -4,13 +4,13 @@ import pytest
 
 import ouro.application.inputs.files as file_inputs
 from ouro.core.content import ImageContent
-from ouro.core.media_context import MEDIA_CONTEXT_KEY
 from ouro.core.provider import ProviderStreamEvent
 from ouro.core.tools import ToolCallRequest
 from ouro.providers import FauxProvider
 from ouro.tools import builtin_tools
 from tests.application.test_compaction import RecordingStrategy
 from tests.providers.test_tool_result_content import encode
+from tests.run_facts import run_tool_results
 from tests.tools.test_builtin_view_image import image_file
 from tests.tui.test_history_commands import application_at
 
@@ -74,12 +74,13 @@ async def test_image_loop_releases_headroom_then_preserves_protocol_prefixes(
             wires = [encode(protocol, request, image_input=True) for request in provider.requests]
             for index in (1, 2, 3, 5, 6):
                 assert wires[index][: len(wires[index - 1])] == wires[index - 1]
-        canonical = app.runtime.store.load_runtime_session(result.session.session_id).messages
+        canonical = app.runtime.store.load_session(result.session.session_id).messages
         assert sum(isinstance(part, ImageContent) for m in canonical for part in m.content) == 6
         assert all(f"Observation {i}" in str(provider.requests[-1]) for i in range(6))
         saved = app.runtime.store.load_latest_context(result.session.session_id)
-        state = saved.context_metadata[MEDIA_CONTEXT_KEY]
-        assert state["media_elided_through_message_id"] is not None
+        state = app.runtime.store.load_session_record(result.session.session_id).context_selection
+        assert state.media_elided_through is not None
+        assert "media_projection" not in saved.context_metadata
         await app.close()
         path.unlink()
         replay = ImageLoopProvider(path, rounds=0)
@@ -98,6 +99,16 @@ async def test_image_loop_releases_headroom_then_preserves_protocol_prefixes(
             assert new[: len(old)] == old
 
         branch = app.runtime.sessions.branch(result.session.session_id, canonical[-1].message_id)
+        branch_record = app.runtime.store.load_session_record(branch.session.session_id)
+        assert (
+            branch_record.context_selection.media_elided_through.sequence
+            == state.media_elided_through.sequence
+        )
+        # A policy can deliberately restore media, independently of the last request.
+        app.runtime.sessions.set_context_selection(
+            branch.session.session_id,
+            branch_record.context_selection.model_copy(update={"media_elided_through": None}),
+        )
         monkeypatch.setattr(file_inputs, "DEFAULT_REQUEST_MEDIA_CHARS", size * 10)
         branched = await app.runtime.run("Review", session_id=branch.session.session_id)
         assert branched.run.status == "completed", branched.run.error
@@ -112,8 +123,8 @@ async def test_image_loop_releases_headroom_then_preserves_protocol_prefixes(
             assert app.runtime.store.load_latest_context(result.session.session_id) == before
             continued = await app.runtime.run("Continue", session_id=result.session.session_id)
             assert continued.run.status == "completed", continued.run.error
-            current = app.runtime.store.load_latest_context(result.session.session_id)
-            assert current.context_metadata[MEDIA_CONTEXT_KEY] == state
+            current = app.runtime.store.load_session_record(result.session.session_id)
+            assert current.context_selection.media_elided_through == state.media_elided_through
             assert (
                 sum(isinstance(p, ImageContent) for m in replay.requests[-1] for p in m.content)
                 == 3
@@ -138,7 +149,9 @@ async def test_oversized_new_tool_batch_fails_before_provider_and_keeps_saved_bo
         app.runtime.tools.register(tool)
     try:
         first = await app.runtime.run("Inspect", workspace=tmp_path)
-        saved = app.runtime.store.load_latest_context(first.session.session_id)
+        selection = app.runtime.store.load_session_record(
+            first.session.session_id
+        ).context_selection
         provider._event_batches = [
             [
                 ProviderStreamEvent.from_tool_call(
@@ -159,14 +172,15 @@ async def test_oversized_new_tool_batch_fails_before_provider_and_keeps_saved_bo
         assert result.run.status == "failed"
         assert "request media limit" in result.run.error
         assert len(provider.requests) == seen + 1
-        assert len(result.tool_results) == 4
+        assert len(run_tool_results(app.runtime.store, result)) == 4
         latest = app.runtime.store.load_latest_context(first.session.session_id)
         assert (
-            latest.context_metadata[MEDIA_CONTEXT_KEY] == saved.context_metadata[MEDIA_CONTEXT_KEY]
+            app.runtime.store.load_session_record(first.session.session_id).context_selection
+            == selection
         )
         assert not any(
             m.tool_result and m.tool_result.tool_call_id == "batch-0"
-            for m in latest.source_messages
+            for m in latest.provider_context.messages
         )
     finally:
         await app.close()
@@ -189,16 +203,18 @@ async def test_failed_provider_request_retries_the_committed_media_projection(
     try:
         first = await app.runtime.run("Inspect", workspace=tmp_path)
         assert first.run.status == "failed"
-        saved = app.runtime.store.load_latest_context(first.session.session_id)
+        selection = app.runtime.store.load_session_record(
+            first.session.session_id
+        ).context_selection
         retried = await app.runtime.continue_run(session_id=first.session.session_id)
         assert retried.run.status == "completed", retried.run.error
         for protocol in ("chat", "responses", "messages"):
             old = encode(protocol, provider.requests[-2], image_input=True)
             new = encode(protocol, provider.requests[-1], image_input=True)
             assert new[: len(old)] == old
-        latest = app.runtime.store.load_latest_context(first.session.session_id)
         assert (
-            latest.context_metadata[MEDIA_CONTEXT_KEY] == saved.context_metadata[MEDIA_CONTEXT_KEY]
+            app.runtime.store.load_session_record(first.session.session_id).context_selection
+            == selection
         )
     finally:
         await app.close()

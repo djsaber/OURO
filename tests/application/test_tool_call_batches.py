@@ -5,6 +5,7 @@ from datetime import timedelta
 import pytest
 
 import ouro.application.tool_calls as tool_calls_module
+from ouro.application.runs.tool_batches import load_tool_batch
 from ouro.application.runtime.service import RuntimeService
 from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.adapter import RuntimeAdapter
@@ -19,6 +20,7 @@ from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 from ouro.tools.builtin.todolist import builtin_todolist_tool
 from tests.application.helpers import running_runtime_task
+from tests.run_facts import run_tool_results
 
 
 def _result(invocation, content: str, *, is_error: bool = False) -> ToolResult:
@@ -112,6 +114,153 @@ async def test_approval_wait_is_committed_once_without_a_snapshot_rewrite(
 
 
 @pytest.mark.parametrize("store_type", [LocalSessionStore, SQLiteSessionStore])
+@pytest.mark.parametrize("drop_notifications", [False, True])
+@pytest.mark.asyncio
+async def test_modified_approval_starts_from_call_facts_without_embedding_bodies_in_run(
+    tmp_path, store_type, monkeypatch, drop_notifications
+):
+    store = store_type(tmp_path / "sessions.db" if store_type is SQLiteSessionStore else tmp_path)
+    store.initialize()
+    original = {"text": "original arguments " * 2000}
+    approved = {"text": "approved arguments " * 2000}
+    content = "actual result body " * 2000
+    observed = []
+    writes = []
+    commit_session = store.commit_session
+
+    def commit(request):
+        writes.append(request)
+        return commit_session(request)
+
+    monkeypatch.setattr(store, "commit_session", commit)
+
+    def execute(invocation, context):
+        durable = store.load_run(invocation.session_id, invocation.run_id)
+        identity = durable.active_tool_batch.identity(invocation.run_id, invocation.tool_call_id)
+        call = store.load_tool_call(invocation.session_id, identity)
+        start = store.load_tool_call_start(invocation.session_id, identity, 1)
+        state = store.load_tool_call_state(invocation.session_id, identity)
+        assert call.request.arguments == original
+        assert start.materialize(call).arguments == approved == invocation.arguments
+        assert state.status == "running" and state.attempt == 1
+        assert state.prepared_binding is None and state.arguments_override is None
+        assert state.approval.modified_arguments is None
+        assert state.outcome_attempt is None
+        observed.append(identity)
+        return ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+            content=content,
+            # Tool-owned JSON must not change the framework's execution status.
+            structured={"outcome_unknown": True, "answer": "distinct structured value"},
+        )
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            definition=ToolDefinition(
+                name="Write", description="Write once", permission_mode="approval"
+            ),
+            handler=execute,
+        )
+    )
+    runtime = RuntimeService(
+        store=store,
+        tools=registry,
+        adapter=RuntimeAdapter(
+            FauxProvider(
+                event_batches=[
+                    [
+                        ProviderStreamEvent.from_tool_call(
+                            {"id": "write_once", "name": "Write", "arguments": original}
+                        ),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                    [
+                        ProviderStreamEvent(type="text_delta", text="written"),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                ]
+            ),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+    )
+    if drop_notifications:
+
+        async def discard_notifications(events):
+            pass
+
+        monkeypatch.setattr(runtime.event_recorder, "publish_committed", discard_notifications)
+    try:
+        pending = await runtime.run("write")
+        assert pending.run.status == "waiting_approval"
+        completed = await runtime.approve_tool(
+            session_id=pending.session.session_id,
+            approved=True,
+            arguments_override=approved,
+        )
+        assert completed.run.status == "completed", completed.run.error
+        assert len(observed) == 1
+        identity = observed[0]
+        outcome = store.load_tool_outcome(pending.session.session_id, identity, 1)
+        assert outcome.value.content == content
+        assert outcome.value.structured["answer"] == "distinct structured value"
+        state = store.load_tool_call_state(pending.session.session_id, identity)
+        assert state.status == "completed"
+        assert state.result_message_id is not None and state.proposals is None
+        acceptance = next(request for request in writes if request.tool_facts.calls)
+        assert acceptance.runs[0].active_tool_batch.call_ids == ("write_once",)
+        assert any(step.message and step.message.tool_calls for step in acceptance.steps)
+        # A different reader reconstructs content from committed identities even if
+        # every live notification was lost. Neither large body is stored in events.
+        sid = pending.session.session_id
+        durable = store.load_session(sid).events
+        for event in durable:
+            if event.event_type == "tool_call_requested":
+                assert "arguments" not in event.payload
+            if event.event_type == "tool_call_completed":
+                assert "result_data" not in event.payload
+                assert event.payload["outcome_attempt"] == 1
+        observed_page, more = runtime.sessions.observation_events(sid, after_sequence=0, limit=100)
+        assert not more
+        requested = next(
+            event for event in observed_page.events if event.event_type == "tool_call_requested"
+        )
+        finished = next(
+            event for event in observed_page.events if event.event_type == "tool_call_completed"
+        )
+        assert requested.data["arguments"] == original
+        assert finished.data["result_data"] == outcome.value.structured
+        for kind, expected in (
+            ("tool_call_requested", "planned"),
+            ("tool_call_started", "running"),
+            ("tool_call_completed", "completed"),
+        ):
+            request = next(
+                request
+                for request in writes
+                if any(event.event_type == kind for event in request.events)
+            )
+            assert all(state.status == expected for state in request.call_states)
+            if kind == "tool_call_completed":
+                assert (
+                    store.load_tool_outcome(
+                        sid, identity, request.events[-1].payload["outcome_attempt"]
+                    )
+                    is not None
+                )
+        assert any(event.event_type == "tool_call_requested" for event in acceptance.events)
+        for request in writes:
+            for run in request.runs:
+                payload = run.model_dump_json()
+                assert original["text"] not in payload
+                assert approved["text"] not in payload
+                assert content not in payload
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.parametrize("store_type", [LocalSessionStore, SQLiteSessionStore])
 @pytest.mark.asyncio
 async def test_tool_wait_returns_consumed_state_change_and_resumes_committed_state(
     tmp_path, store_type, monkeypatch
@@ -182,12 +331,12 @@ async def test_tool_wait_returns_consumed_state_change_and_resumes_committed_sta
     try:
         waiting = await runtime.run("advance")
         assert waiting.run.status == "waiting_user"
-        batch = waiting.run.active_tool_batch
+        batch = load_tool_batch(store, waiting.run)
         assert batch is not None
         assert batch.calls[0].input_request.harness_change is None
         assert outcomes[0].input_request == batch.calls[0].input_request
         persisted = store.load_run(waiting.session.session_id, waiting.run.run_id)
-        assert persisted.active_tool_batch == batch
+        assert persisted.active_tool_batch == batch.head()
 
         completed = await runtime.answer_user(
             session_id=waiting.session.session_id,
@@ -196,7 +345,7 @@ async def test_tool_wait_returns_consumed_state_change_and_resumes_committed_sta
         )
         assert completed.run.status == "completed"
         assert seen == ["begin", {"stage": "waiting"}]
-        assert completed.tool_results[0].content == "accepted"
+        assert run_tool_results(store, completed)[0].content == "accepted"
     finally:
         await runtime.close()
 
@@ -271,7 +420,10 @@ async def test_empty_policy_registry_skips_policy_validation_but_keeps_host_pref
             assert result.run.status == "waiting_approval"
         else:
             assert result.run.status == "completed"
-            assert result.tool_results[0].structured.get("error_type") == expected_error
+            assert (
+                run_tool_results(runtime.store, result)[0].structured.get("error_type")
+                == expected_error
+            )
     finally:
         await runtime.close()
 
@@ -295,7 +447,7 @@ async def test_empty_policy_registry_preserves_control_refresh_failures(tmp_path
     )
     try:
         _, mode, reason, sequence = await coordinator._evaluate_tool_policies(
-            [], 0, session=session, run=run, invocation=invocation, phase="execution_boundary"
+            0, session=session, run=run, invocation=invocation, phase="execution_boundary"
         )
         assert refreshed == [session.controls]
         assert mode == "deny"
@@ -392,12 +544,13 @@ async def test_parallel_batch_preserves_one_assistant_message_and_source_order(
 
     monkeypatch.setattr(runtime.store, "commit_session", capture_message_batch)
     planned_states: list[tuple[str, str, list[str]]] = []
-    append_event = runtime.store.append_ordered_event
 
-    def capture_planned_state(event):
-        # Check the persisted state before its event is recorded. Asynchronous
-        # Host sinks may observe a later Run phase by the time they receive it.
-        if event.event_type == "tool_batch_planned":
+    def capture_planned_state(request):
+        committed = capture_message_batch(request)
+        event = next(
+            (event for event in committed.events if event.event_type == "tool_batch_planned"), None
+        )
+        if event is not None:
             assert event.run_id is not None
             durable_run = runtime.store.load_run(event.session_id, event.run_id)
             assert durable_run.active_tool_batch is not None
@@ -405,19 +558,19 @@ async def test_parallel_batch_preserves_one_assistant_message_and_source_order(
                 (
                     durable_run.phase,
                     durable_run.active_tool_batch.phase,
-                    [call.status for call in durable_run.active_tool_batch.calls],
+                    [call.status for call in load_tool_batch(runtime.store, durable_run).calls],
                 )
             )
-        return append_event(event)
+        return committed
 
-    monkeypatch.setattr(runtime.store, "append_ordered_event", capture_planned_state)
+    monkeypatch.setattr(runtime.store, "commit_session", capture_planned_state)
 
     result = await runtime.run("run both")
     snapshot = runtime.store.load_session(result.session.session_id)
 
     assert result.run.status == "completed"
-    assert not any(item.is_error for item in result.tool_results)
-    assert result.tool_results[2].structured == {"todos": todos}
+    assert not any(item.is_error for item in run_tool_results(runtime.store, result))
+    assert run_tool_results(runtime.store, result)[2].structured == {"todos": todos}
     assert not runtime.store.load_harness(result.session.session_id).state.states
     assert completed == ["second", "first"]
     assert [message.role for message in snapshot.messages] == [
@@ -491,12 +644,18 @@ async def test_exclusive_tool_rejects_mixed_batch_before_any_handler_runs(tmp_pa
 
     assert result.run.status == "completed"
     assert executed == []
-    assert [item.structured["error_type"] for item in result.tool_results] == [
+    assert [item.structured["error_type"] for item in run_tool_results(runtime.store, result)] == [
         "ExclusiveToolBatchViolation",
         "ExclusiveToolBatchViolation",
     ]
-    assert all("No tools were executed." in item.text_content for item in result.tool_results)
-    assert all("Call each separately" in item.text_content for item in result.tool_results)
+    assert all(
+        "No tools were executed." in item.text_content
+        for item in run_tool_results(runtime.store, result)
+    )
+    assert all(
+        "Call each separately" in item.text_content
+        for item in run_tool_results(runtime.store, result)
+    )
     assert any(event.event_type == "tool_batch_rejected" for event in snapshot.events)
 
 
@@ -541,7 +700,7 @@ async def test_sdk_tool_structured_input_round_trips_through_wait_and_resume(tmp
 
     assert pending.run.status == "waiting_user"
     assert durable_pending.active_tool_batch is not None
-    waiting_call = durable_pending.active_tool_batch.calls[0]
+    waiting_call = load_tool_batch(runtime.store, durable_pending).calls[0]
     assert waiting_call.status == "waiting_user"
     assert waiting_call.result is None
     assert waiting_call.input_request is not None
@@ -559,7 +718,7 @@ async def test_sdk_tool_structured_input_round_trips_through_wait_and_resume(tmp
         event for event in snapshot.events if event.event_type == "ask_user_resolved"
     )
     assert resumed.run.status == "completed"
-    assert resumed.tool_results[0].structured == {"answer": answer}
+    assert run_tool_results(runtime.store, resumed)[0].structured == {"answer": answer}
     assert result_message.text_content == json.dumps(
         answer,
         ensure_ascii=False,
@@ -686,10 +845,13 @@ async def test_unattended_session_returns_explicit_error_for_unsupported_tool(tm
     )
 
     assert result.run.status == "completed"
-    assert len(result.tool_results) == 1
-    assert result.tool_results[0].structured["error_type"] == "UserInputUnavailable"
-    assert result.tool_results[0].structured["resolved_by"] == "host_policy"
-    assert result.tool_results[0].structured["input_request"] == {
+    assert len(run_tool_results(runtime.store, result)) == 1
+    assert (
+        run_tool_results(runtime.store, result)[0].structured["error_type"]
+        == "UserInputUnavailable"
+    )
+    assert run_tool_results(runtime.store, result)[0].structured["resolved_by"] == "host_policy"
+    assert run_tool_results(runtime.store, result)[0].structured["input_request"] == {
         "type": "form",
         "fields": ["environment"],
     }
@@ -734,8 +896,13 @@ async def test_unattended_resume_cannot_request_user_input_again(tmp_path) -> No
     )
 
     assert result.run.status == "completed"
-    assert result.tool_results[0].structured["error_type"] == "UnattendedInteractionLoop"
-    assert result.tool_results[0].structured["input_request"] == {"stage": "second"}
+    assert (
+        run_tool_results(runtime.store, result)[0].structured["error_type"]
+        == "UnattendedInteractionLoop"
+    )
+    assert run_tool_results(runtime.store, result)[0].structured["input_request"] == {
+        "stage": "second"
+    }
 
 
 @pytest.mark.asyncio
@@ -800,8 +967,10 @@ async def test_resumable_tool_can_request_multiple_inputs_and_owns_final_result(
         ({"stage": "first"}, {"choice": "next"}),
         ({"stage": "second"}, {"choice": "accept"}),
     ]
-    assert completed.tool_results[0].content == "workflow accepted"
-    assert completed.tool_results[0].structured == {"accepted": {"choice": "accept"}}
+    assert run_tool_results(runtime.store, completed)[0].content == "workflow accepted"
+    assert run_tool_results(runtime.store, completed)[0].structured == {
+        "accepted": {"choice": "accept"}
+    }
 
 
 @pytest.mark.asyncio
@@ -1058,7 +1227,7 @@ async def test_parallel_batch_marks_only_handlers_that_actually_started(tmp_path
             snapshot = runtime.store.load_session(session.session_id)
             active = next(run for run in snapshot.runs if run.status == "running")
             assert active.active_tool_batch is not None
-            assert [call.status for call in active.active_tool_batch.calls] == [
+            assert [call.status for call in load_tool_batch(runtime.store, active).calls] == [
                 "running",
                 "running",
                 "ready",
@@ -1115,7 +1284,7 @@ async def test_batch_waits_for_every_approval_and_marks_running_before_execution
     )
 
     pending = await runtime.run("run protected tools")
-    batch = pending.run.active_tool_batch
+    batch = load_tool_batch(runtime.store, pending.run)
     assert batch is not None
     assert [call.request.id for call in batch.calls] == ["call_1", "call_2", "call_3"]
     approval_ids = [approval.approval_id for approval in batch.pending_approvals]
@@ -1182,7 +1351,10 @@ async def test_tool_failure_does_not_cancel_sibling_call(tmp_path) -> None:
 
     assert result.run.status == "completed"
     assert completed == ["call_2"]
-    assert [tool_result.is_error for tool_result in result.tool_results] == [True, False]
+    assert [tool_result.is_error for tool_result in run_tool_results(runtime.store, result)] == [
+        True,
+        False,
+    ]
 
 
 @pytest.mark.asyncio

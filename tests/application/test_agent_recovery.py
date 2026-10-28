@@ -28,6 +28,8 @@ from ouro.core.tools import ToolCallRequest
 from ouro.local_application import LocalApplication
 from ouro.sessions import LocalSessionStore, SessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
+from tests.session_storage import write_session_payload
+from tests.tool_batches import persist_tool_batch
 
 
 class UnusedProvider:
@@ -448,17 +450,14 @@ async def test_corrupt_child_session_blocks_only_the_child(tmp_path) -> None:
         ),
         expected_revision=relation.revision,
     )
-    (store.sessions_dir / child.session_id / "session.json").write_text(
-        "{not-json",
-        encoding="utf-8",
-    )
+    write_session_payload(store, child.session_id, "{not-json")
 
     async with application:
         root_result = await application.runtime.run(
             "continue the valid root Session",
             session_id=root.session_id,
         )
-        with pytest.raises(PersistenceError, match="could not decode session record"):
+        with pytest.raises(PersistenceError, match="could not decode Session"):
             await application.runtime.run(
                 "must remain isolated",
                 session_id=child.session_id,
@@ -490,7 +489,7 @@ async def test_target_reconcile_reports_parent_wait_referencing_missing_delegati
         events=runtime.event_recorder,
     )
     runtime.bind_extensions(agent_definitions=definitions, agent_controls=service)
-    wait = AgentWaitRequest(delegation_id="dlg_missing")
+    wait = AgentWaitRequest(delegation_id="dlg_missing", child_run_id="run_missing")
     batch = ToolCallBatchRecord(
         turn_id="turn_parent",
         assistant_message_id="msg_parent",
@@ -517,7 +516,7 @@ async def test_target_reconcile_reports_parent_wait_referencing_missing_delegati
         session_id="ses_root",
         status="waiting_child",
         phase="subagent_join",
-        active_tool_batch=batch,
+        active_tool_batch=batch.head(),
     )
     root = SessionRecord(
         session_id=run.session_id,
@@ -526,7 +525,7 @@ async def test_target_reconcile_reports_parent_wait_referencing_missing_delegati
         last_run_id=run.run_id,
     )
     store.create_session(root)
-    store.save_run(run)
+    persist_tool_batch(store, run, batch)
 
     diagnostics = await runtime.reconcile_session(root.session_id)
 

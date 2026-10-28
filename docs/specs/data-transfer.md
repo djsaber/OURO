@@ -70,7 +70,7 @@ version；内容文件由清单中的类型化引用关联。技能内容位于 
 
 读取前检查数量与声明解压体积，上限 10,000 条目与 512 MiB。拒绝路径穿越、绝对路径、Windows 特殊路径、
 符号链接、非普通文件、加密条目和大小写冲突路径；只向新建 staging 写入已校验的条目，不使用 `extractall`。
-会话资源逐一校验 SHA-256、大小，以及消息文件项、资源引用、队列和请求源消息的清单闭包；未知 kind、版本、无效结构、重复 identity、外部 Session 引用、
+会话资源逐一校验 SHA-256、大小，以及消息文件项、媒体资源引用、队列和最近请求媒体/源消息的清单闭包；内部观察资源同样随归档携带。未知 kind、版本、无效结构、重复 identity、外部 Session 引用、
 断裂的 parent/child 关系与缺失 Harness checkpoint 都会明确失败。
 
 归档是私密数据载体，不是脱敏的查询输出：配置中原有字面量、请求头、环境配置与对话正文会保留。
@@ -79,12 +79,16 @@ version；内容文件由清单中的类型化引用关联。技能内容位于 
 
 ## 会话容错与依赖
 
-导出持有选中 primary 的运行所有权，并取得全部 child 的运行所有权及 mutation 边界。
+导出持有选中 primary 的运行所有权，并取得全部 child 的运行所有权及只读边界。
 源会话必须 inactive，不在导出过程中恢复或中止源任务。全量范围由开始时的 Session 集合决定，不承诺
 对整个 OURO_HOME 做跨领域、跨新建会话的全局时间点快照；归档包含 archived 会话，不包含回收站。
+Files 存在未决原生决定时明确要求先恢复，不在导出内安装决定。SQLite 使用读事务，导出读取附件时
+不占用数据库写事务；运行所有权继续保护所选树及资源闭包。释放读取边界前取得实际资源字节，
+返回的归档不依赖随后可能删除的源路径。
 
-完整传输包括 Session、messages、events、runs、compactions、extension states、Harness versions、commit
-receipts、latest context、Delegation 及关联附件。未知插件和工具名称不参与导入可行性判定：
+完整传输包括 Session、消息事实、Input/状态、Call/started/Outcome/状态、events、runs、compactions、
+extension states、Harness versions、请求小头、最近 Manifest、Delegation 及关联附件；不包含已退出的完整提交回执。
+未知插件和工具名称不参与导入可行性判定：
 
 - 插件的 owner id、私有 state schema version 与 payload 原样保存，不加载插件或解释其私有数据。
 - 历史 tool call/result、模型引用和契约 identity 原样保留，不替换工具、不伪造结果、不丢弃未知状态。

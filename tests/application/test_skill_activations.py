@@ -21,6 +21,7 @@ from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.sessions import LocalSessionStore
 from ouro.skills import SkillLoader, SkillManager
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
+from tests.run_facts import run_events
 
 
 class CapturingProvider:
@@ -264,7 +265,7 @@ async def test_runtime_persists_typed_user_activation_and_exposes_it_to_prompt_p
     assert provider_user.role == "user"
     assert "Review the requested code carefully." in provider_user.text_content
     assert provider_user.text_content.endswith("Review this change")
-    snapshot = runtime.store.load_runtime_session(result.session.session_id)
+    snapshot = runtime.store.load_session(result.session.session_id)
     user_message = snapshot.messages[0]
     assert user_message.role == "user"
     assert user_message.text_content == "Review this change"
@@ -277,7 +278,9 @@ async def test_runtime_persists_typed_user_activation_and_exposes_it_to_prompt_p
     assert policy_calls[0].skill_activation.content_digest == (
         user_message.skill_activations[0].content_digest
     )
-    serialized_events = "\n".join(event.model_dump_json() for event in result.events)
+    serialized_events = "\n".join(
+        event.model_dump_json() for event in run_events(runtime.store, result)
+    )
     assert user_message.skill_activations[0].content_digest in serialized_events
     assert "Review the requested code carefully." not in serialized_events
 
@@ -294,7 +297,7 @@ async def test_runtime_allows_argumentless_skill_and_uses_skill_title(tmp_path) 
 
     assert result.session.title == "Skill: reviewer"
     assert "Review the requested code carefully." in provider.calls[0][-1].text_content
-    snapshot = runtime.store.load_runtime_session(result.session.session_id)
+    snapshot = runtime.store.load_session(result.session.session_id)
     assert snapshot.messages[0].text_content == ""
 
 
@@ -322,12 +325,14 @@ async def test_queued_skill_activation_uses_the_instructions_frozen_at_acceptanc
     provider.release.set()
     await active
 
-    assert any(event.event_type == "follow_up_input_queued" for event in queued.events)
+    assert any(
+        event.event_type == "follow_up_input_queued" for event in run_events(runtime.store, queued)
+    )
     assert len(provider.calls) == 2
     second_input = provider.calls[1][-1].text_content
     assert "Original queued instructions." in second_input
     assert "Changed after queue acceptance." not in second_input
-    snapshot = runtime.store.load_runtime_session(session.session_id)
+    snapshot = runtime.store.load_session(session.session_id)
     activation_messages = [message for message in snapshot.messages if message.skill_activations]
     assert len(activation_messages) == 1
     assert activation_messages[0].skill_activations[0].instructions == original_document
@@ -360,7 +365,7 @@ async def test_multiple_skills_are_accepted_as_one_input_after_all_policies_allo
         assert not runtime.store.list_sessions()
     else:
         result = await runtime.run("", skill_invocations=invocations)
-        messages = runtime.store.load_runtime_session(result.session.session_id).messages
+        messages = runtime.store.load_session(result.session.session_id).messages
         inputs = [item for item in messages if item.role == "user"]
         assert len(inputs) == 1 and not inputs[0].scaffold
         assert [item.name for item in inputs[0].skill_activations] == ["reviewer", "writer"]
@@ -396,7 +401,7 @@ async def test_multiple_queued_skills_remain_one_input_with_frozen_instructions(
     finally:
         provider.release.set()
         await active
-    snapshot = runtime.store.load_runtime_session(session.session_id)
+    snapshot = runtime.store.load_session(session.session_id)
     activated = [item for item in snapshot.messages if item.skill_activations]
     assert len(activated) == 1 and not activated[0].scaffold
     assert [item.instructions for item in activated[0].skill_activations] == originals

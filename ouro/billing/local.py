@@ -13,6 +13,7 @@ from ouro.core.billing import ProviderUsageEntry, UsageFilter, UsageLedgerEvent
 from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
 from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.usage_queries import (
+    RunUsageTotals,
     UsageAuditLog,
     UsageEntryCursor,
     UsageEntryList,
@@ -22,7 +23,7 @@ from ouro.core.usage_queries import (
 )
 from ouro.local_locks import FileMutationLock
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 5
 _APPLICATION_ID = 0x4F555242
 _MEASURES = (
     "input_tokens",
@@ -120,32 +121,28 @@ class LocalUsageLedger:
 
     def record(self, entry: ProviderUsageEntry) -> ProviderUsageEntry:
         with self._transaction(write=True) as connection:
-            row = connection.execute(
-                "SELECT entry_records.payload, events.payload AS source_event "
-                "FROM entry_records JOIN events ON source_event_id=event_id WHERE entry_id=?",
-                (entry.entry_id,),
-            ).fetchone()
-            if row is not None:
-                source = decode_versioned_record_json(
-                    UsageLedgerEvent, row["source_event"], label="usage ledger event"
-                ).entry
-                if source is None:
-                    raise PersistenceError("usage source event requires a request entry")
+            source = self._get_raw(connection, entry.entry_id)
+            if source is not None:
                 if source.billing_mode != entry.billing_mode:
                     raise PersistenceError(f"usage billing mode conflicts: {entry.entry_id}")
                 if source != entry.model_copy(update={"occurred_at": source.occurred_at}):
                     raise PersistenceError(
                         f"usage entry id conflicts with existing data: {entry.entry_id}"
                     )
-                return _entry(row["payload"])
+                return source
             if entry.revision != 1:
                 raise PersistenceError("new usage entries must have revision 1")
             self._write_entry(connection, entry)
             event = UsageLedgerEvent(event_type="record", entry=entry)
             self._append_event(connection, event)
             connection.execute(
-                "INSERT INTO entry_records VALUES (?, ?, ?)",
-                (entry.entry_id, entry.model_dump_json(), event.event_id),
+                "INSERT INTO raw_requests VALUES (?, ?)", (entry.entry_id, event.event_id)
+            )
+            if entry.run_id is not None:
+                self._add_run_usage(connection, entry)
+            connection.execute(
+                "INSERT INTO entry_records VALUES (?, ?)",
+                (entry.entry_id, entry.model_dump_json()),
             )
             connection.executemany(
                 "INSERT INTO scopes VALUES (?, ?, ?)",
@@ -156,6 +153,116 @@ class LocalUsageLedger:
                 ),
             )
         return entry.model_copy(deep=True)
+
+    def get_raw(self, entry_id: str) -> ProviderUsageEntry | None:
+        """Return the original report, including requests hidden by a billing reset."""
+        with self._transaction() as connection:
+            return self._get_raw(connection, entry_id)
+
+    @staticmethod
+    def _get_raw(connection: sqlite3.Connection, entry_id: str) -> ProviderUsageEntry | None:
+        row = connection.execute(
+            "SELECT events.payload FROM raw_requests "
+            "JOIN events ON source_event_id=event_id WHERE raw_requests.entry_id=?",
+            (entry_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        event = decode_versioned_record_json(UsageLedgerEvent, row[0], label="usage ledger event")
+        if event.event_type != "record" or event.entry is None or event.entry.entry_id != entry_id:
+            raise PersistenceError("usage source event does not match its original request")
+        return event.entry
+
+    @staticmethod
+    def _add_run_usage(connection: sqlite3.Connection, entry: ProviderUsageEntry) -> None:
+        connection.execute(
+            "INSERT INTO raw_run_totals VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(session_id, run_id) DO UPDATE SET "
+            "request_count=request_count+1, "
+            "agent_request_count=agent_request_count+excluded.agent_request_count, "
+            "compaction_request_count=compaction_request_count+excluded.compaction_request_count, "
+            "input_tokens=input_tokens+excluded.input_tokens, "
+            "output_tokens=output_tokens+excluded.output_tokens, "
+            "cache_read_tokens=cache_read_tokens+excluded.cache_read_tokens, "
+            "cache_write_tokens=cache_write_tokens+excluded.cache_write_tokens, "
+            "estimated_cost=estimated_cost+excluded.estimated_cost, "
+            "priced_request_count=priced_request_count+excluded.priced_request_count, "
+            "has_unknown=MAX(has_unknown, excluded.has_unknown), "
+            "has_usage_based=MAX(has_usage_based, excluded.has_usage_based), "
+            "has_subscription=MAX(has_subscription, excluded.has_subscription)",
+            (
+                entry.session_id,
+                entry.run_id,
+                int(entry.purpose == "agent"),
+                int(entry.purpose == "compaction"),
+                entry.input_tokens,
+                entry.output_tokens,
+                entry.cache_read_tokens,
+                entry.cache_write_tokens,
+                entry.estimated_cost or 0.0,
+                int(entry.estimated_cost is not None),
+                int(entry.billing_mode == "unknown"),
+                int(entry.billing_mode == "usage_based"),
+                int(entry.billing_mode == "subscription"),
+            ),
+        )
+
+    def run_usage(self, session_id: str, run_id: str) -> RunUsageTotals | None:
+        """Point-read raw consumption; no recorded request remains unknown."""
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM raw_run_totals WHERE session_id=? AND run_id=?",
+                (session_id, run_id),
+            ).fetchone()
+        return self._raw_totals(row)
+
+    def session_usage(self, session_id: str) -> RunUsageTotals | None:
+        """Aggregate one Session's narrow raw Run totals without loading Run records."""
+        sums = (
+            "request_count",
+            "agent_request_count",
+            "compaction_request_count",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "estimated_cost",
+            "priced_request_count",
+        )
+        modes = ("has_unknown", "has_usage_based", "has_subscription")
+        projection = ", ".join(
+            [
+                *(f"SUM({column}) AS {column}" for column in sums),
+                *(f"MAX({column}) AS {column}" for column in modes),
+            ]
+        )
+        with self._transaction() as connection:
+            row = connection.execute(
+                f"SELECT {projection} FROM raw_run_totals WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+        return self._raw_totals(row)
+
+    @staticmethod
+    def _raw_totals(row: sqlite3.Row | None) -> RunUsageTotals | None:
+        if row is None or row["request_count"] is None:
+            return None
+        return RunUsageTotals(
+            request_count=row["request_count"],
+            agent_request_count=row["agent_request_count"],
+            compaction_request_count=row["compaction_request_count"],
+            input_tokens=row["input_tokens"],
+            output_tokens=row["output_tokens"],
+            total_tokens=row["input_tokens"] + row["output_tokens"],
+            cache_read_tokens=row["cache_read_tokens"],
+            cache_write_tokens=row["cache_write_tokens"],
+            estimated_cost=row["estimated_cost"],
+            priced_request_count=row["priced_request_count"],
+            unpriced_request_count=row["request_count"] - row["priced_request_count"],
+            billing_modes=tuple(
+                mode for mode in ("subscription", "unknown", "usage_based") if row[f"has_{mode}"]
+            ),
+        )
 
     def get(self, entry_id: str) -> ProviderUsageEntry:
         with self._transaction() as connection:

@@ -25,11 +25,9 @@ class NativeRunTurns:
         response = context.model_response(response_id)
         try:
             completion = await self.evaluate_completion(
-                context.emitted,
                 context.sequence,
                 session=context.session,
                 run=context.run,
-                messages=context.messages,
                 assistant_text=response.text,
                 assistant_reasoning=response.reasoning,
                 turn_id=context.turn_id,
@@ -39,7 +37,6 @@ class NativeRunTurns:
         context.sequence = completion.sequence
         if completion.blocked_reason is not None:
             await context.pause("turn_policy_blocked")
-        context.messages.extend(completion.messages)
         if completion.should_continue:
             context.final_text = ""
         return not completion.should_continue

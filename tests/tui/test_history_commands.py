@@ -26,6 +26,7 @@ from ouro.tui.composer.drafts import TuiInputDraftStore
 from ouro.tui.composer.input import Composer
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
+from tests.run_facts import run_events
 from tests.tui.helpers import run_ready_app
 
 
@@ -207,9 +208,9 @@ async def test_undo_returns_latest_user_message_to_composer_and_edit_stays_in_se
         assert app.query_one(Composer).text == "second question"
         assert app._controller.session_id == first.session.session_id
         assert app.query_one(ConversationView).user_turn_summaries() == ("first question",)
-        await app._apply_runtime_events(second.events)
+        await app._apply_runtime_events(run_events(application.runtime.store, second))
         assert app._projection.assistant_text == ""
-        messages = application.runtime.store.load_runtime_session(first.session.session_id).messages
+        messages = application.runtime.store.load_session(first.session.session_id).messages
         assert all(message.run_id != second.run.run_id for message in messages)
         app.query_one(Composer).load_text("edited question")
         await pilot.press("enter")
@@ -218,7 +219,7 @@ async def test_undo_returns_latest_user_message_to_composer_and_edit_stays_in_se
             workers = tuple(w for w in app.workers if w.group == "run")
             if workers:
                 await app.workers.wait_for_complete(workers)
-        messages = application.runtime.store.load_runtime_session(first.session.session_id).messages
+        messages = application.runtime.store.load_session(first.session.session_id).messages
         assert [message.text_content for message in messages if message.role == "user"] == [
             "first question",
             "edited question",
@@ -424,7 +425,7 @@ async def test_continue_interrupted_run_uses_command_without_a_user_message(tmp_
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause()
         await command(app, pilot, "/continue")
-        snapshot = runtime.store.load_runtime_session(result.session.session_id)
+        snapshot = runtime.store.load_session(result.session.session_id)
         assert len(snapshot.runs) == 1
         assert snapshot.runs[0].run_id == result.run.run_id
         assert snapshot.runs[0].status == "completed"
@@ -448,7 +449,7 @@ async def test_undo_after_repeated_partial_failure_restores_editable_input(tmp_p
         assert app.query_one(Composer).text == "continue"
         assert not app.query_one(Composer).disabled
         assert app.query_one(ConversationView).user_turn_summaries() == ("first question",)
-        snapshot = application.runtime.store.load_runtime_session(first.session.session_id)
+        snapshot = application.runtime.store.load_session(first.session.session_id)
         assert len(snapshot.messages) == 2
         assert snapshot.messages[-1].metadata["incomplete"]
 

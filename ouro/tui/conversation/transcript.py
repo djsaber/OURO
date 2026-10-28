@@ -12,9 +12,14 @@ from ouro.tui.conversation.markdown_stream import split_markdown_blocks
 from ouro.tui.state import RunPresentation
 
 
+def _tool_call_keys(message: MessageRecord) -> dict[str, tuple[str | None, str | None, str]]:
+    batches = {ref.tool_call_id: ref.batch_id for ref in message.call_refs}
+    return {call.id: (message.run_id, batches.get(call.id), call.id) for call in message.tool_calls}
+
+
 def _tool_activities_from_messages(
     messages: Iterable[MessageRecord],
-) -> dict[str, RuntimeToolCallActivity]:
+) -> dict[tuple[str | None, str | None, str], RuntimeToolCallActivity]:
     """Pair assistant tool-call requests with their tool_result outcomes.
 
     A persisted tool call spans two messages: the assistant message carrying
@@ -27,11 +32,14 @@ def _tool_activities_from_messages(
     depend on results (read line counts) degrade to
     argument-only display.
     """
-    activities: dict[str, RuntimeToolCallActivity] = {}
+    activities: dict[tuple[str | None, str | None, str], RuntimeToolCallActivity] = {}
     for message in messages:
         if message.role == "assistant":
+            keys = _tool_call_keys(message)
             for call in message.tool_calls:
-                activities[call.id] = RuntimeToolCallActivity(
+                key = keys[call.id]
+                activities[key] = RuntimeToolCallActivity(
+                    batch_id=key[1],
                     tool_call_id=call.id,
                     tool_name=call.name,
                     status="unknown_outcome",
@@ -41,9 +49,11 @@ def _tool_activities_from_messages(
                 )
         elif message.role == "tool_result" and message.tool_result is not None:
             ref = message.tool_result
-            activity = activities.get(ref.tool_call_id)
+            batch_id = message.outcome_ref.identity.batch_id if message.outcome_ref else None
+            key = (message.run_id, batch_id, ref.tool_call_id)
+            activity = activities.get(key)
             if activity is not None:
-                activities[ref.tool_call_id] = activity.model_copy(
+                activities[key] = activity.model_copy(
                     update={
                         "status": "failed" if ref.is_error else "completed",
                         "started_at": (
@@ -136,7 +146,7 @@ def project_transcript_entries(
     compactions: tuple[CompactionRecord, ...],
     runs: tuple[RunPresentation, ...],
     *,
-    mutable_tool_call_keys: frozenset[tuple[str | None, str]],
+    mutable_tool_call_keys: frozenset[tuple[str | None, str | None, str]],
     visible_scaffold_delegation_id: str | None,
     show_scaffold_messages: bool = False,
 ) -> tuple[tuple[TranscriptEntry, ...], frozenset[str]]:
@@ -193,10 +203,10 @@ def project_transcript_entries(
             TranscriptEntry(kind="assistant", text=block, run_id=message.run_id)
             for block in split_markdown_blocks(message.text_content)
         )
-        for call in message.tool_calls:
-            if (message.run_id, call.id) in mutable_tool_call_keys:
+        for key in _tool_call_keys(message).values():
+            if key in mutable_tool_call_keys:
                 continue
-            activity = tool_activities.get(call.id)
+            activity = tool_activities.get(key)
             if activity is not None:
                 entries.append(
                     TranscriptEntry(
@@ -229,7 +239,7 @@ def project_transcript_entries(
             TranscriptEntry(
                 kind="compaction",
                 compaction=_compaction_presentation(
-                    covered_message_count=len(compaction.covered_message_ids),
+                    covered_message_count=compaction.covered_message_count,
                     tokens_before=compaction.estimated_tokens_before,
                     tokens_after=compaction.estimated_tokens_after,
                     duration_seconds=compaction.duration_seconds,

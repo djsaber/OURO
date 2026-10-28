@@ -32,6 +32,7 @@ from ouro.application.harness import capture_session_harness
 from ouro.application.inputs.queue import QueuedInputQueue
 from ouro.application.plugins.commands import execute_plugin_command
 from ouro.application.plugins.configuration import PluginConfigurationService
+from ouro.application.runs.tool_batches import load_batch_states
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.application.usage import UsageService
 from ouro.core.callbacks import run_blocking
@@ -961,21 +962,6 @@ class PluginService:
             package_digest=package_digest,
         )
 
-    def _audit(
-        self,
-        action: str,
-        installed: InstalledPlugin,
-        request_id: str | None = None,
-    ) -> None:
-        self.store.append_audit(
-            PluginAuditEvent(
-                action=action,
-                plugin_id=installed.plugin_id,
-                package_digest=installed.package_digest,
-                request_id=request_id,
-            )
-        )
-
     def _require_runtime(self) -> PluginRuntimeResource:
         if self.runtime is None:
             raise RuntimeError("plugin runtime lifecycle is unavailable")
@@ -1078,11 +1064,13 @@ class PluginService:
                         )
                 if not retained:
                     continue
-                batch = run.active_tool_batch
-                if batch is None:
-                    continue
-                for call in batch.calls:
-                    invocation = call.invocation
+                for call in load_batch_states(self.session_store, run):
+                    invocation = call.prepared_binding
+                    if invocation is None and call.attempt > 0:
+                        started = self.session_store.load_tool_call_start(
+                            session.session_id, call.identity, call.attempt
+                        )
+                        invocation = started.binding if started is not None else None
                     if (
                         call.status
                         not in {

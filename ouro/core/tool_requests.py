@@ -7,7 +7,6 @@ from pydantic import Field
 
 from ouro.core.base import OuroModel
 from ouro.core.cancellation import AbortSignal
-from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.model_execution import ModelExecutionResult
 from ouro.core.run_drivers import DriverCheckpoint
@@ -22,9 +21,7 @@ class ModelToolBatchRequest:
     run: RunRecord
     response: ModelExecutionResult
     turn_id: str
-    message_sequence: int
     sequence: int
-    emitted: list[EventRecord]
     abort_signal: AbortSignal
     driver_checkpoint: DriverCheckpoint | None = None
 
@@ -51,9 +48,7 @@ class DriverToolBatchRequest:
     run: RunRecord
     calls: tuple[ToolCallRequest, ...]
     turn_id: str
-    message_sequence: int
     sequence: int
-    emitted: list[EventRecord]
     abort_signal: AbortSignal
     checkpoint: DriverCheckpoint
 

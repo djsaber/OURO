@@ -132,6 +132,7 @@ async def execute_model_request(
     request_context: ProviderRequestContext,
     signal: AbortSignal,
     on_event: Callable[[ModelExecutionEvent], Awaitable[None]],
+    on_provider_done: Callable[[ProviderStreamEvent], Awaitable[None]] | None = None,
     on_stream_start: Callable[[], None] | None = None,
     started: tuple[datetime, float] | None = None,
     clock: Callable[[], datetime] = utc_now,
@@ -139,10 +140,12 @@ async def execute_model_request(
 ) -> ModelExecutionResult:
     """Own a provider stream through terminal output and resource release.
 
-    The host observes events for accounting and presentation. This boundary
-    assembles and validates model output; it never advances or finishes a Run.
-    Task cancellation propagates after closing the stream. An AbortSignal returns
-    partial output for the host to settle against its durable cancellation fact.
+    The host settles accounting on provider receipt and observes output for
+    presentation. This boundary assembles and validates model output; it never
+    advances or finishes a Run. The receipt callback runs before done enters the
+    output FIFO and does not publish response content. Task cancellation propagates
+    after closing the stream. An AbortSignal returns partial output for the host
+    to settle against its durable cancellation fact.
 
     ``started`` pairs a UTC anchor with a reading from ``monotonic_clock``. The
     host may capture it before request bookkeeping so that latency is included.
@@ -161,6 +164,7 @@ async def execute_model_request(
                 request_context=request_context,
                 signal=signal,
                 on_stream_start=on_stream_start,
+                on_provider_done=on_provider_done,
             )
         ) as events:
             async for event in events:

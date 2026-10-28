@@ -7,7 +7,7 @@ from ouro.tui.app import OuroTuiApp
 from ouro.tui.commands import matching_commands, resolve_command
 from ouro.tui.composer.input import Composer
 from ouro.tui.conversation.history import ConversationHistory
-from tests.session_summaries import add_session_summaries
+from tests.session_summaries import add_session_summaries, select_summary
 from tests.tui.helpers import run_ready_app, two_route_application
 
 
@@ -34,7 +34,7 @@ async def test_summary_command_shows_only_latest_summary_without_mutating_sessio
     target = runtime.sessions.create(title="Current", current_model="deleted/model").session
     runtime.sessions.create(title="Other")
     records = add_session_summaries(runtime.store, target.session_id)
-    runtime.store.activate_compaction(target.session_id, records[active_index].compaction_id)
+    select_summary(runtime.store, target.session_id, records[active_index].compaction_id)
     before = runtime.store.load_session(target.session_id)
     app = OuroTuiApp(application=application, resume_session_id=target.session_id)
 

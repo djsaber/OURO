@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -197,8 +199,10 @@ def test_failed_replacement_rollback_retains_original_files(tmp_path, monkeypatc
         _import(target_home, archive, "files", replace=True)
     retained = list(target_home.glob(".session-import-*"))
     assert len(retained) == 1
-    original = retained[0] / "backups" / "ses_root" / "session.json"
-    assert SessionRecord.model_validate_json(original.read_bytes()).title == "Original"
+    original = retained[0] / "backups" / "ses_root" / "session-data.sqlite3"
+    with closing(sqlite3.connect(original)) as connection:
+        payload = connection.execute("SELECT payload FROM sessions").fetchone()[0]
+    assert SessionRecord.model_validate_json(payload).title == "Original"
     lock = target.acquire_session_lock("ses_root", "after-failure")
     assert lock is not None
     lock.release()

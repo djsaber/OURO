@@ -95,7 +95,7 @@ async def test_custom_driver_delivers_steering_at_the_next_decision_in_the_same_
         ]
         if explicit:
             assert result.final_text == "steering-marker"
-        history = store.load_runtime_session(session.session_id)
+        history = store.load_session(session.session_id)
         delivered = [
             message
             for message in history.messages
@@ -215,7 +215,7 @@ async def test_undelivered_steering_is_retained_on_policy_rejection_or_cancellat
             result = await running
             assert result.run.status == "failed"
             assert "denied at delivery" in result.run.error
-        history = store.load_runtime_session(session.session_id)
+        history = store.load_session(session.session_id)
         assert len(history.runs) == 1
         assert len(provider.requests) == 1
         assert runtime.queued_inputs.eligible_session(history.session) == accepted
@@ -273,7 +273,7 @@ async def test_steering_waits_for_model_tool_results_and_survives_driver_restart
         provider.release.set()
         waiting = await running
         assert waiting.run.status == "waiting_approval", waiting.run.error
-        history = store.load_runtime_session(session.session_id)
+        history = store.load_session(session.session_id)
         assert [message.text_content for message in history.messages if message.role == "user"] == [
             "initial"
         ]
@@ -290,7 +290,7 @@ async def test_steering_waits_for_model_tool_results_and_survives_driver_restart
         )
         assert result.run.status == "completed", result.run.error
         assert result.final_text == "steering-marker"
-        history = store.load_runtime_session(session.session_id)
+        history = store.load_session(session.session_id)
         assert len(history.runs) == 1 and calls == ["deploy"]
         roles = [message.role for message in history.messages]
         assert roles == ["user", "assistant", "tool_result", "user", "assistant"]
@@ -328,7 +328,7 @@ async def test_busy_session_keeps_the_selected_driver_for_queued_follow_up(tmp_p
         runs = store.load_runs(session.session_id)
         assert [item.driver.driver_id for item in runs] == ["ouro.default", DRIVER]
         assert provider.calls == 1
-        messages = store.load_runtime_session(session.session_id).messages
+        messages = store.load_session(session.session_id).messages
         assert messages[-1].text_content == "chosen"
     finally:
         provider.release_first.set()
@@ -389,7 +389,7 @@ async def test_all_at_once_keeps_queued_command_release_bindings_separate_after_
             replacement.package_digest,
         ]
         assert all(item.status == "completed" for item in runs)
-        messages = store.load_runtime_session(session.session_id).messages
+        messages = store.load_session(session.session_id).messages
         assert [item.text_content for item in messages if item.role == "assistant"] == [
             "old",
             "new",
@@ -463,7 +463,7 @@ async def test_worker_command_atomic_batch_keeps_driver_selection_and_input_orde
         assert len(results) == 1
         assert results[0].run.driver.driver_id == DRIVER
         assert results[0].final_text == "batch done"
-        history = store.load_runtime_session(submission.session_id)
+        history = store.load_session(submission.session_id)
         assert len(history.runs) == 1
         assert [item.text_content for item in history.messages] == [
             "criteria",

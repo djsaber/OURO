@@ -20,7 +20,6 @@ class SessionCatalogProjection:
     message_count: int = 0
     run_count: int = 0
     resource_count: int = 0
-    resource_missing: bool = False
 
 
 def catalog_entry_from_projection(
@@ -30,8 +29,6 @@ def catalog_entry_from_projection(
     latest_run = projection.latest_run
     status = _catalog_status(session, projection.latest_run)
     health: SessionHealth = "recoverable" if status == "recoverable" else "ok"
-    if projection.resource_missing:
-        health = "missing_resource"
     return catalog_entry_from_session(
         session,
         status=status,

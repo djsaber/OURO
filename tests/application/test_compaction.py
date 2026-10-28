@@ -35,8 +35,9 @@ from ouro.core.provider import (
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.core.state import SessionRecord
 from ouro.resources import LocalResourceStore
-from ouro.sessions import LocalSessionStore
+from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
+from tests.run_facts import run_events
 
 
 class RecordingProvider:
@@ -328,7 +329,7 @@ async def test_prompt_snapshot_survives_config_update_during_compaction(tmp_path
         else:
             result = await runtime.run("new", session_id=session.session_id)
             context = store.load_latest_context(session.session_id)
-            assert context.system_prompt == "Before"
+            assert context.provider_context.system_prompt == "Before"
             assert context.context_metadata["personal_prompt"]["revision"] == 1
         assert result.run.status == "completed"
         record = store.load_active_compaction(session.session_id)
@@ -938,8 +939,9 @@ async def test_compaction_context_overflow_and_resolution_error_fall_back_to_run
 
 
 @pytest.mark.asyncio
-async def test_runtime_persists_compaction_endpoint_and_route_metadata(tmp_path) -> None:
-    store = LocalSessionStore(tmp_path)
+@pytest.mark.parametrize("backend", [LocalSessionStore, SQLiteSessionStore])
+async def test_runtime_persists_compaction_endpoint_and_route_metadata(tmp_path, backend) -> None:
+    store = backend(tmp_path / "sessions.sqlite3" if backend is SQLiteSessionStore else tmp_path)
     store.initialize()
     session = SessionRecord(title="Dedicated summary")
     store.create_session(session)
@@ -979,6 +981,12 @@ async def test_runtime_persists_compaction_endpoint_and_route_metadata(tmp_path)
     assert restored.model_endpoint_id == "compact"
     assert restored.model_id == "summary-model"
     assert restored.metadata["model_route"] == "configured"
+    assert len(snapshot.request_headers) == 1
+    header = snapshot.request_headers[0]
+    assert header.purpose == "compaction" and header.provider_done_at is not None
+    assert header.response_compaction_id == restored.compaction_id
+    assert header.response_closed_at is not None
+    assert snapshot.latest_manifest is None
     output_events = [
         event for event in snapshot.events if event.event_type == "compaction_model_output"
     ]
@@ -1047,7 +1055,7 @@ async def test_auto_compaction_persists_and_is_reused_by_new_runtime(tmp_path) -
     first_result = await first_runtime.run("new", session_id=session.session_id)
     first_snapshot = store.load_session(session.session_id)
     canonical_after_first = list(first_snapshot.messages)
-    active_id = first_snapshot.session.active_compaction_id
+    active_id = first_snapshot.session.context_selection.compaction_id
 
     second_provider = RecordingProvider()
     second_runtime = _runtime(
@@ -1062,7 +1070,9 @@ async def test_auto_compaction_persists_and_is_reused_by_new_runtime(tmp_path) -
     assert second_result.run.status == "completed"
     assert len(strategy.requests) == 1
     assert active_id is not None
-    assert store.load_session(session.session_id).session.active_compaction_id == active_id
+    assert (
+        store.load_session(session.session_id).session.context_selection.compaction_id == active_id
+    )
     assert canonical_after_first[:10] == first_snapshot.messages[:10]
     assert second_provider.calls[0][0].role == "system"
     assert second_provider.calls[0][0].text_content == (
@@ -1145,14 +1155,16 @@ async def test_manual_compaction_uses_same_pipeline_without_adding_messages(tmp_
     assert result.compaction.trigger == "manual"
     assert before.messages == after.messages
     assert after.active_compaction == result.compaction
-    assert [event.event_type for event in result.events] == [
+    assert [event.event_type for event in run_events(store, result)] == [
         "run_started",
         "compaction_started",
         "compaction_progress",
         "compaction_completed",
         "run_completed",
     ]
-    completed = next(event for event in result.events if event.event_type == "compaction_completed")
+    completed = next(
+        event for event in run_events(store, result) if event.event_type == "compaction_completed"
+    )
     assert completed.payload["context_metrics_after"] == (
         result.compaction.context_metrics_after.model_dump(mode="json")
     )
@@ -1214,13 +1226,13 @@ async def test_manual_compaction_abort_returns_aborted_result_without_activating
     )
 
     compact_result, abort_result = await asyncio.gather(compact_task, abort_task)
-    snapshot = store.load_runtime_session(session.session_id)
+    snapshot = store.load_session(session.session_id)
     event_types = [event.event_type for event in store.load_session(session.session_id).events]
 
     assert compact_result.run.status == "aborted"
     assert abort_result.run.status == "aborted"
     assert compact_result.compaction is None
-    assert snapshot.session.active_compaction_id is None
+    assert snapshot.session.context_selection.compaction_id is None
     assert snapshot.compactions == []
     assert provider.cancelled.is_set()
     assert "run_aborted" in event_types
@@ -1250,12 +1262,12 @@ async def test_auto_compaction_abort_terminates_agent_run_before_model_request(t
     )
 
     run_result, abort_result = await asyncio.gather(run_task, abort_task)
-    snapshot = store.load_runtime_session(session.session_id)
+    snapshot = store.load_session(session.session_id)
     event_types = [event.event_type for event in store.load_session(session.session_id).events]
 
     assert run_result.run.status == "aborted"
     assert abort_result.run.status == "aborted"
-    assert snapshot.session.active_compaction_id is None
+    assert snapshot.session.context_selection.compaction_id is None
     assert snapshot.compactions == []
     assert event_types.count("compaction_started") == 1
     assert "model_request_started" not in event_types
@@ -1311,7 +1323,7 @@ async def test_compaction_abort_is_terminal_and_does_not_invoke_fallback(tmp_pat
     assert compact_result.run.status == "aborted"
     assert abort_result.run.status == "aborted"
     assert fallback.call_count == 0
-    assert store.load_session_record(session.session_id).active_compaction_id is None
+    assert store.load_session_record(session.session_id).context_selection.compaction_id is None
 
 
 @pytest.mark.asyncio
@@ -1364,7 +1376,7 @@ async def test_manual_compaction_does_not_rewrite_latest_provider_context(
     assert runtime.sessions.effective_context_metrics(session.session_id) == (
         result.compaction.context_metrics_after
     )
-    assert store.load_session_record(session.session_id).active_compaction_id == (
+    assert store.load_session_record(session.session_id).context_selection.compaction_id == (
         result.compaction.compaction_id
     )
 
@@ -1384,7 +1396,7 @@ async def test_compaction_failure_is_visible_and_never_truncates_history(tmp_pat
 
     assert result.run.status == "paused"
     assert provider.calls == []
-    assert snapshot.session.active_compaction_id is None
+    assert snapshot.session.context_selection.compaction_id is None
     assert snapshot.compactions == []
     assert len(snapshot.messages) == 11
     assert any(event.event_type == "compaction_failed" for event in snapshot.events)
@@ -1430,7 +1442,7 @@ async def test_manual_compaction_failure_leaves_session_usable(tmp_path) -> None
 
     snapshot = store.load_session(session.session_id)
     assert snapshot.session.status == "idle"
-    assert snapshot.session.active_compaction_id is None
+    assert snapshot.session.context_selection.compaction_id is None
     assert snapshot.compactions == []
     assert snapshot.runs[-1].kind == "compaction"
     assert snapshot.runs[-1].status == "failed"

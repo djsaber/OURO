@@ -35,7 +35,7 @@ async def test_fork_and_undo_restore_complete_input_without_reupload(
     runtime = application.runtime
     session = runtime.create_session(title="fork inputs", workspace=tmp_path)
     await runtime.run("Earlier question", session_id=session.session_id)
-    retained = runtime.store.load_runtime_session(session.session_id).messages
+    retained = runtime.store.load_session(session.session_id).messages
 
     source = tmp_path / "上传 文件.txt"
     source.write_text("Uploaded evidence.", encoding="utf-8")
@@ -66,7 +66,7 @@ async def test_fork_and_undo_restore_complete_input_without_reupload(
             for item in original.skills
         ),
     )
-    before = runtime.store.load_runtime_session(session.session_id).messages
+    before = runtime.store.load_session(session.session_id).messages
     source.unlink()  # Fork and resubmit must use the owned upload, not the original file.
 
     def unexpected_upload(*args, **kwargs):
@@ -87,9 +87,9 @@ async def test_fork_and_undo_restore_complete_input_without_reupload(
         await app._open_session(session.session_id)
         await app._open_session(branch_id)
         assert composer.input_content == original
-        copied = runtime.store.load_runtime_session(branch_id).messages
+        copied = runtime.store.load_session(branch_id).messages
         assert [m.text_content for m in copied] == [m.text_content for m in retained]
-        assert runtime.store.load_runtime_session(session.session_id).messages == before
+        assert runtime.store.load_session(session.session_id).messages == before
         resources = runtime.resources.list_resources(branch_id).resources
         assert len(resources) == (1 if kind in {"mixed", "upload_only"} else 0)
         upload_paths = [
@@ -123,4 +123,4 @@ async def test_fork_and_undo_restore_complete_input_without_reupload(
                 await app._edit_session_history("/undo").wait()
                 await pilot.pause()
                 assert composer.input_content == original
-                assert len(runtime.store.load_runtime_session(branch_id).messages) == len(retained)
+                assert len(runtime.store.load_session(branch_id).messages) == len(retained)

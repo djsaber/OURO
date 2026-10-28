@@ -1,22 +1,23 @@
 from __future__ import annotations
 
-from typing import Any, cast
-
-from pydantic import JsonValue
+import asyncio
+from dataclasses import dataclass
 
 from ouro.application.harness import capture_session_harness
 from ouro.application.inputs.queue import QueuedInputQueue
+from ouro.application.runs.tool_batches import load_tool_batch, prepare_batch_changes
 from ouro.application.usage import UsageService
 from ouro.core.base import new_id, utc_now
 from ouro.core.callbacks import run_blocking
+from ouro.core.cancellation import settle_owned_tasks
 from ouro.core.errors import OuroError, PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.harness_calls import HarnessCallSnapshot, accept_state_changes
+from ouro.core.inputs import InputStateChange
 from ouro.core.run_transitions import plan_run_transition
 from ouro.core.session_commits import (
     SessionCommit,
     SessionCommitConflict,
-    SessionCommitResult,
     SessionCommitStep,
 )
 from ouro.core.session_controls import (
@@ -27,6 +28,8 @@ from ouro.core.session_controls import (
     SessionControlTransitionResult,
 )
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
+from ouro.core.tool_batches import ToolCallState
+from ouro.core.tool_facts import ToolCallFacts
 from ouro.core.tools import ToolResult
 from ouro.plugins.session_controllers import (
     PluginSessionController,
@@ -51,6 +54,22 @@ class SessionControlContractError(SessionControlError):
 
 class SessionControlStaleRevisionError(SessionControlError):
     pass
+
+
+@dataclass(frozen=True)
+class SessionControlCancellation:
+    activation_id: str
+    run_id: str | None
+    queue_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SessionControlCommitOutcome:
+    """Return values owned by this controller call, not a persistent command receipt."""
+
+    cancellations: tuple[SessionControlCancellation, ...] = ()
+    stop_requested_run_id: str | None = None
+    events: tuple[EventRecord, ...] = ()
 
 
 class SessionControlCoordinator:
@@ -95,21 +114,14 @@ class SessionControlCoordinator:
                 before=before,
                 steps=(SessionCommitStep(harness=draft.state),),
                 events=(self._event(session_id, operation_id, transition.action, "applied"),),
-                output={"session_control": result.model_dump(mode="json")},
             )
-            committed = await run_blocking(
-                self.commit,
+            committed = await self.commit_async(
                 request,
                 released_activation_ids=tuple(result.released_activation_ids),
                 resolving_tool_call_id=resolving_tool_call_id,
             )
             return self.with_cancellations(result, committed)
         except BaseException as exc:
-            # An undecided operation has no published business state to compensate.
-            # A durable decision is recovered before reporting a failure after commit.
-            recovered = await run_blocking(self.store.load_commit, session_id, operation_id)
-            if recovered is not None:
-                return self.with_cancellations(result, recovered)
             await run_blocking(
                 self.store.append_ordered_event,
                 self._event(
@@ -272,35 +284,74 @@ class SessionControlCoordinator:
         released_activation_ids: tuple[str, ...] = (),
         resolving_tool_call_id: str | None = None,
         stop_run_reason: str | None = None,
-    ) -> SessionCommitResult:
+    ) -> SessionControlCommitOutcome:
         """Commit state, released controllers' pending work and an optional execution stop."""
         with self.store.session_mutation(request.before.session_id):
             after = (request.after or request.before).model_copy(
                 update={"updated_at": utc_now(), "last_activity_at": utc_now()},
             )
             runs = list(request.runs)
-            cancellations = {}
+            tool_calls = list(request.tool_facts.calls)
+            tool_starts = list(request.tool_facts.starts)
+            tool_outcomes = list(request.tool_facts.outcomes)
+            call_states = list(request.call_states)
+            events = list(request.events)
+            cancellations = []
+            stopped_run_id = None
+            input_changes = {change.input_id: change for change in request.input_changes}
             for activation in request.before.controls.activations:
                 if activation.activation_id not in released_activation_ids:
                     continue
-                after, cancelled_run = self._cancel_pending(
+                after, cancelled_run, cancelled_facts, cancelled_states = self._cancel_pending(
                     after,
                     activation,
                     exclude_tool_call_id=resolving_tool_call_id,
                 )
+                tool_calls.extend(cancelled_facts.calls)
+                tool_starts.extend(cancelled_facts.starts)
+                tool_outcomes.extend(cancelled_facts.outcomes)
+                call_states.extend(cancelled_states)
                 if cancelled_run is not None:
                     runs = [run for run in runs if run.run_id != cancelled_run.run_id]
                     runs.append(cancelled_run)
+                    events.append(
+                        EventRecord(
+                            session_id=after.session_id,
+                            run_id=cancelled_run.run_id,
+                            event_type="run_aborted",
+                            payload={"reason": "session_control_released"},
+                        )
+                    )
                 after, queue_ids = QueuedInputQueue(self.store).without_session_control(
                     after,
                     controller_id=activation.controller_id,
                     activation_id=activation.activation_id,
                 )
-                cancellations[activation.activation_id] = {
-                    "run_id": cancelled_run.run_id if cancelled_run else None,
-                    "queue_ids": list(queue_ids),
-                }
-            output = dict(request.output)
+                cancellations.append(
+                    SessionControlCancellation(
+                        activation_id=activation.activation_id,
+                        run_id=cancelled_run.run_id if cancelled_run else None,
+                        queue_ids=tuple(queue_ids),
+                    )
+                )
+                for identity in queue_ids:
+                    if identity not in input_changes:
+                        events.append(
+                            EventRecord(
+                                session_id=after.session_id,
+                                run_id=after.active_run_id,
+                                event_type="queued_input_cancelled",
+                                payload={
+                                    "queue_id": identity,
+                                    "reason": "session_control_released",
+                                    "controller_id": activation.controller_id,
+                                    "activation_id": activation.activation_id,
+                                },
+                            )
+                        )
+                    input_changes.setdefault(
+                        identity, InputStateChange(input_id=identity, status="cancelled")
+                    )
             if stop_run_reason is not None:
                 current = self.store.load_session_record(request.before.session_id)
                 if current.active_run_id is not None:
@@ -309,6 +360,15 @@ class SessionControlCoordinator:
                         None,
                     ) or self.store.load_run(current.session_id, current.active_run_id)
                     if run.status in ACTIVE_RUN_STATUSES:
+                        if not run.abort_requested:
+                            events.append(
+                                EventRecord(
+                                    session_id=current.session_id,
+                                    run_id=run.run_id,
+                                    event_type="run_abort_requested",
+                                    payload={"reason": stop_run_reason},
+                                )
+                            )
                         run = run.model_copy(
                             update={
                                 "abort_requested": True,
@@ -317,41 +377,85 @@ class SessionControlCoordinator:
                         )
                         runs = [item for item in runs if item.run_id != run.run_id]
                         runs.append(run)
-                        output["stop_requested_run_id"] = run.run_id
-            if cancellations:
-                output["control_cancellations"] = cast(JsonValue, cancellations)
+                        stopped_run_id = run.run_id
             prepared = request.model_copy(
-                update={"after": after, "runs": tuple(runs), "output": output}
+                update={
+                    "after": after,
+                    "runs": tuple(runs),
+                    "input_changes": tuple(input_changes.values()),
+                    "tool_facts": ToolCallFacts(
+                        calls=tuple(tool_calls),
+                        starts=tuple(tool_starts),
+                        outcomes=tuple(tool_outcomes),
+                    ),
+                    "call_states": tuple(call_states),
+                    "events": tuple(events),
+                }
             )
             try:
-                committed = self.store.commit_session(prepared)
+                committed_events = self.store.commit_session(prepared).events
             except SessionCommitConflict:
                 raise
             except PersistenceError:
-                recovered = self.store.load_commit(request.before.session_id, request.operation_id)
-                if recovered is None:
-                    raise
-                committed = recovered
+                with self.store.session_mutation(request.before.session_id):
+                    recovered = self.store.load_session_record(request.before.session_id)
+                    if recovered.last_commit_id != request.operation_id:
+                        raise
+                    # The mutation boundary still owns this commit's final sequence.
+                    # Recover only its small notification range after Files roll-forward.
+                    committed_events = ()
+                    if prepared.events:
+                        events, _ = self.store.load_events_after(
+                            request.before.session_id,
+                            after_sequence=self.store.latest_event_sequence(
+                                request.before.session_id
+                            )
+                            - len(prepared.events),
+                            limit=len(prepared.events),
+                        )
+                        committed_events = tuple(events)
         self.store.refresh_catalog(request.before.session_id)
-        return committed
+        return SessionControlCommitOutcome(tuple(cancellations), stopped_run_id, committed_events)
+
+    async def commit_async(
+        self,
+        request: SessionCommit,
+        *,
+        released_activation_ids: tuple[str, ...] = (),
+        resolving_tool_call_id: str | None = None,
+        stop_run_reason: str | None = None,
+    ) -> SessionControlCommitOutcome:
+        """Settle the owned write, retaining its local return value across cancellation."""
+        task = asyncio.create_task(
+            run_blocking(
+                self.commit,
+                request,
+                released_activation_ids=released_activation_ids,
+                resolving_tool_call_id=resolving_tool_call_id,
+                stop_run_reason=stop_run_reason,
+            )
+        )
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await settle_owned_tasks(task)
+            if task.cancelled() or task.exception() is not None:
+                raise
+            return task.result()
 
     @staticmethod
     def with_cancellations(
         result: SessionControlTransitionResult,
-        committed: SessionCommitResult,
+        committed: SessionControlCommitOutcome,
     ) -> SessionControlTransitionResult:
-        cancellations = cast(
-            dict[str, dict[str, Any]], committed.output.get("control_cancellations", {})
-        )
         data = dict(result.data)
-        queue_ids = []
-        for activation_id in result.released_activation_ids:
-            cancellation = cancellations.get(activation_id)
-            if cancellation is None:
+        queue_ids: list[str] = []
+        for cancellation in committed.cancellations:
+            if cancellation.activation_id not in result.released_activation_ids:
                 continue
-            if cancellation.get("run_id") is not None:
-                data["cancelled_run_id"] = cancellation["run_id"]
-            queue_ids.extend(cancellation.get("queue_ids", []))
+            if cancellation.run_id is not None:
+                data["cancelled_run_id"] = cancellation.run_id
+            queue_ids.extend(cancellation.queue_ids)
         if queue_ids:
             data["cancelled_queue_ids"] = queue_ids
         return result.model_copy(update={"data": data})
@@ -385,13 +489,15 @@ class SessionControlCoordinator:
             data={"forced": True, "reason": reason},
         )
         if changed:
+            operation_id = new_id("op")
             committed = self.commit(
                 SessionCommit(
+                    operation_id=operation_id,
                     before=before,
-                    output={"session_control": result.model_dump(mode="json")},
                     steps=(
                         SessionCommitStep(harness=state.model_copy(update={"controls": controls})),
                     ),
+                    events=(self._event(session_id, operation_id, "release", "applied"),),
                 ),
                 released_activation_ids=(activation_id,),
             )
@@ -488,17 +594,17 @@ class SessionControlCoordinator:
         activation: SessionControlActivation,
         *,
         exclude_tool_call_id: str | None,
-    ) -> tuple[SessionRecord, RunRecord | None]:
+    ) -> tuple[SessionRecord, RunRecord | None, ToolCallFacts, tuple[ToolCallState, ...]]:
         if session.active_run_id is None:
-            return session, None
+            return session, None, ToolCallFacts(), ()
         run = self.store.load_run(session.session_id, session.active_run_id)
-        batch = run.active_tool_batch
+        batch = load_tool_batch(self.store, run)
         if (
             run.history_epoch != session.history_epoch
             or run.status != "waiting_user"
             or batch is None
         ):
-            return session, None
+            return session, None, ToolCallFacts(), ()
         owned = [
             call
             for call in batch.calls
@@ -509,7 +615,7 @@ class SessionControlCoordinator:
             and call.invocation.interaction_activation_id == activation.activation_id
         ]
         if not owned:
-            return session, None
+            return session, None, ToolCallFacts(), ()
         owned_ids = {call.request.id for call in owned}
         calls = [
             call.model_copy(
@@ -552,13 +658,20 @@ class SessionControlCoordinator:
             "activation_id": activation.activation_id,
         }
         now = utc_now()
+        aborted_batch, facts, states = prepare_batch_changes(
+            self.store,
+            run,
+            aborted_batch,
+            changed_call_ids=frozenset(owned_ids),
+            accept_proposals=False,
+        )
         aborted_run = run.model_copy(
             update={
                 "status": "aborted",
                 "ended_at": now,
                 "error": "session_control_released",
                 "pending_approval_id": None,
-                "active_tool_batch": aborted_batch,
+                "active_tool_batch": aborted_batch.head(),
                 "metadata": run_metadata,
             }
         )
@@ -568,7 +681,7 @@ class SessionControlCoordinator:
             next_run=aborted_run,
             now=now,
         )
-        return transition.session, transition.run
+        return transition.session, transition.run, facts, states
 
 
 def _claim_conflicts(

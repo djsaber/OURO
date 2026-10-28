@@ -3,14 +3,14 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from ouro.core.base import OuroModel
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageFact, MessageRecord
 
 
 class MessageTruncation(OuroModel):
     """A canonical suffix removed immediately before one selected message."""
 
-    first_removed: MessageRecord
-    last_retained: MessageRecord | None
+    first_removed: MessageFact
+    last_retained: MessageFact | None
     removed_count: int
 
 

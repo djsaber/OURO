@@ -529,7 +529,7 @@ async def test_stopped_goal_allows_normal_tools_without_resuming(goal_app, statu
     result = await g.say("Inspect the information and make this independent change.")
     assert result.run.status == "completed"
     assert g.executed_tools == ["ReadInfo", "ChangeInfo"]
-    assert not any(tool_result.is_error for tool_result in result.tool_results)
+    assert not result.had_tool_error
     assert (await g.goal())["status"] == status
     assert (await g.goal())["tokens_used"] == used
     assert g.pending() == []
@@ -613,7 +613,7 @@ async def test_model_can_resume_stopped_goal_without_changing_its_budget(goal_ap
     )
     result = await g.say("Here is the missing information. Assess the next step.")
     assert result.run.status == "completed"
-    assert not any(item.is_error for item in result.tool_results)
+    assert not result.had_tool_error
     after = await g.goal()
     assert after["status"] == "complete"
     assert after["token_budget"] == before["token_budget"]

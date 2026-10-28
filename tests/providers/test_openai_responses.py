@@ -14,7 +14,7 @@ from ouro.config.reasoning import (
     openai_chat_completions_effort_reasoning,
     openai_responses_effort_reasoning,
 )
-from ouro.core.context import ContextView
+from ouro.core.context import ContextBuilder
 from ouro.core.errors import ConfigError
 from ouro.core.messages import ModelMessage, TextContent
 from ouro.core.provider import ModelMetadata, ProviderRetryPolicy
@@ -284,9 +284,10 @@ async def test_compatible_config_factory_encodes_native_reasoning_without_produc
         events = [
             event
             async for event in adapter.stream(
-                ContextView(
+                ContextBuilder().build(
+                    tools=[],
                     system_prompt="instructions",
-                    model_messages=[ModelMessage.text(role="user", text="hello")],
+                    messages=[ModelMessage.text(role="user", text="hello")],
                 )
             )
         ]
@@ -378,7 +379,9 @@ async def test_responses_preset_roundtrips_config_and_encodes_requested_effort(
         events = [
             event
             async for event in adapter.stream(
-                ContextView(model_messages=[ModelMessage.text(role="user", text="hello")])
+                ContextBuilder().build(
+                    tools=[], messages=[ModelMessage.text(role="user", text="hello")]
+                )
             )
         ]
     assert events[-1].type == "done"
@@ -448,7 +451,9 @@ async def test_responses_visible_reasoning_reaches_adapter_without_becoming_answ
             events = [
                 event
                 async for event in adapter.stream(
-                    ContextView(model_messages=[ModelMessage.text(role="user", text="hello")])
+                    ContextBuilder().build(
+                        tools=[], messages=[ModelMessage.text(role="user", text="hello")]
+                    )
                 )
             ]
         finally:

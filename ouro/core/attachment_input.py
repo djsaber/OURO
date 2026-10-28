@@ -49,8 +49,6 @@ def separate_attachments(
         "session_input_source": "host",
         "host_source_id": "ouro.attachments",
     }
-    if has_body:
-        metadata.pop("queued_input_id", None)
     receipt = message.model_copy(
         update={
             "message_id": attachment_id,
@@ -66,6 +64,9 @@ def separate_attachments(
             "input_attachments": tuple(
                 item.model_copy(update={"text_offset": 0}) for item in attachments
             ),
+            "input_ref": message.input_ref.model_copy(update={"part": "attachments"})
+            if message.input_ref is not None
+            else None,
         }
     )
     if not has_body:

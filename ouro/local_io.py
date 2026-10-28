@@ -14,6 +14,18 @@ _WINDOWS_TRANSIENT_IO_DELAYS = (0.01, 0.02, 0.04, 0.08, 0.16, 0.32)
 _WINDOWS_TRANSIENT_SHARING_ERRORS = frozenset({5, 32})
 
 
+def filesystem_path(path: Path) -> Path:
+    """Address deep Session staging/trash paths without a Windows registry setting."""
+    if os.name != "nt":
+        return path
+    value = str(path.absolute())
+    if value.startswith("\\\\?\\"):
+        return path
+    if value.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + value[2:])
+    return Path("\\\\?\\" + value)
+
+
 def write_model_atomic(path: Path, model: OuroModel) -> None:
     write_text_atomic(path, model.model_dump_json(indent=2) + "\n")
 

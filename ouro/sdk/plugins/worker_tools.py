@@ -105,7 +105,7 @@ async def invoke_worker_tool(
         else:
             call = sdk.ToolCall(**raw, session_state=state)
             handler = tool.handler
-        output = await _invoke(handler, call)
+        output, cancelled = await _invoke(handler, call, state=state)
         if isinstance(output, str):
             result: dict[str, Any] = {"content": output}
         elif isinstance(output, sdk.ToolInputRequest):
@@ -120,11 +120,13 @@ async def invoke_worker_tool(
                 "is_error": output.is_error,
                 "session_control_transitions": [
                     asdict(item) for item in output.session_control_transitions
-                ],
+                ]
+                if not cancelled
+                else [],
             }
         else:
             raise TypeError("worker tool handler must return text, ToolOutput or ToolInputRequest")
-        if state is not None and state.changed:
+        if state is not None and state.changed and not cancelled:
             result["session_state"] = deepcopy(state.change)
         return result
     finally:
@@ -132,13 +134,37 @@ async def invoke_worker_tool(
             state.close()
 
 
-async def _invoke(handler: Any, call: sdk.ToolCall | sdk.ToolResumeCall) -> object:
+async def _invoke(
+    handler: Any, call: sdk.ToolCall | sdk.ToolResumeCall, *, state: WorkerSessionState | None
+) -> tuple[object, bool]:
     if inspect.iscoroutinefunction(handler):
-        return await handler(call)
-    task = asyncio.create_task(asyncio.to_thread(handler, call))
+        result = handler(call)
+    else:
+        result, cancelled = await _await_tool(
+            asyncio.create_task(asyncio.to_thread(handler, call)), cancel_task=False, state=state
+        )
+        if cancelled or not inspect.isawaitable(result):
+            return result, cancelled
+    if inspect.isawaitable(result):
+
+        async def await_result() -> object:
+            return await result
+
+        return await _await_tool(asyncio.create_task(await_result()), cancel_task=True, state=state)
+    return result, False
+
+
+async def _await_tool(
+    task: asyncio.Task[Any], *, cancel_task: bool, state: WorkerSessionState | None
+) -> tuple[object, bool]:
     try:
-        result = await asyncio.shield(task)
+        await asyncio.wait((task,))
+        return task.result(), False
     except asyncio.CancelledError as cancellation:
+        if state is not None:
+            state.close()
+        if cancel_task:
+            task.cancel()
         while not task.done():
             try:
                 await asyncio.wait((task,))
@@ -150,5 +176,5 @@ async def _invoke(handler: Any, call: sdk.ToolCall | sdk.ToolResumeCall) -> obje
             raise cancellation from exc
         if inspect.iscoroutine(result):
             result.close()
-        raise
-    return await result if inspect.isawaitable(result) else result
+            raise
+        return result, True

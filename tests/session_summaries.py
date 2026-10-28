@@ -2,9 +2,30 @@
 
 from datetime import UTC, datetime, timedelta
 
-from ouro.core.compaction import CompactionRecord, compaction_source_digest
+from ouro.core.compaction import CompactionRecord
 from ouro.core.messages import MessageRecord
+from ouro.core.session_commits import SessionCommit
 from ouro.sessions import SessionStore
+
+
+def commit_summary(store: SessionStore, record: CompactionRecord) -> None:
+    with store.session_mutation(record.session_id):
+        store.commit_session(
+            SessionCommit(before=store.load_session_record(record.session_id), compaction=record)
+        )
+
+
+def select_summary(store: SessionStore, session_id: str, compaction_id: str) -> None:
+    session = store.load_session_record(session_id)
+    store.save_session(
+        session.model_copy(
+            update={
+                "context_selection": session.context_selection.model_copy(
+                    update={"compaction_id": compaction_id}
+                )
+            }
+        )
+    )
 
 
 def add_session_summaries(store: SessionStore, session_id: str) -> tuple[CompactionRecord, ...]:
@@ -31,11 +52,10 @@ def add_session_summaries(store: SessionStore, session_id: str) -> tuple[Compact
             trigger="auto" if index else "manual",
             summary=text,
             created_at=datetime(2026, 9, 20, tzinfo=UTC) + timedelta(minutes=index),
-            covered_message_ids=[message.message_id for message in covered],
-            source_digest=compaction_source_digest(covered),
+            covered_message_count=len(covered),
+            covered_end_message_id=covered[-1].message_id,
             history_boundary_message_id=messages[len(covered)].message_id,
         )
-        store.append_compaction(record)
-        store.activate_compaction(session_id, record.compaction_id)
+        commit_summary(store, record)
         records.append(record)
     return tuple(records)

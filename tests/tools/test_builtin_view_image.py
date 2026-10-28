@@ -249,7 +249,9 @@ async def test_image_processing_keeps_event_loop_responsive_and_honors_cancellat
     result = await task
     assert result.is_error == abort
     if abort:
-        assert result.structured["aborted"]
+        # The entered handshake proves execution started. A cancelled worker is
+        # not evidence that the invocation never ran or produced an observation.
+        assert result.structured["unknown_outcome"]
         assert not any(isinstance(part, ImageContent) for part in result.content_blocks)
 
 

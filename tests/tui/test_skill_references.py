@@ -104,7 +104,7 @@ async def test_skill_menu_discovers_external_install_and_filters_without_rescann
         await pilot.press("enter")
         if workers := [worker for worker in app.workers if worker.group == "run"]:
             await app.workers.wait_for_complete(workers)
-        snapshot = application.runtime.store.load_runtime_session(app._controller.session_id)
+        snapshot = application.runtime.store.load_session(app._controller.session_id)
         activation = next(item for item in snapshot.messages if item.skill_activations)
         assert activation.skill_activations[0].instructions == installed.read_text(encoding="utf-8")
 
@@ -182,7 +182,7 @@ async def test_mixed_references_survive_restart_and_form_one_complete_attachment
             await asyncio.wait_for(restarted.workers.wait_for_complete(workers), timeout=10)
         await pilot.pause()
         assert not errors
-        snapshot = application.runtime.store.load_runtime_session(restarted._controller.session_id)
+        snapshot = application.runtime.store.load_session(restarted._controller.session_id)
         user_messages = [item for item in snapshot.messages if item.role == "user"]
         scaffolds = [item for item in user_messages if item.scaffold]
         assert len(user_messages) == 2 and len(scaffolds) == 1
@@ -261,7 +261,7 @@ async def test_unqueue_restores_multiple_skills_and_files_after_an_existing_draf
             )
             for item in original.skills
         )
-        _, queued, _ = runtime.queued_inputs.enqueue(
+        _, queued, _, _ = runtime.queued_inputs.enqueue(
             snapshot=runtime.store.load_runtime_session(session.session_id),
             prompt=original.text,
             skill_activations=activations,

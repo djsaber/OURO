@@ -25,7 +25,7 @@ from ouro.core.continuations import (
     ContinuationPolicyRegistration,
     RunContinuationRegistry,
 )
-from ouro.core.errors import SessionBusyError
+from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.messages import MessageRecord, TextContent, ToolResultReference
 from ouro.core.observers import ObserverRegistration, ObserverRegistry, RunFinishedObservation
 from ouro.core.prompt_policies import (
@@ -50,7 +50,8 @@ from ouro.core.state import (
     RunRecord,
     SessionRecord,
 )
-from ouro.core.tools import ToolCallProducer, ToolCallRequest
+from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
+from ouro.core.tools import ToolCallProducer, ToolCallRequest, ToolResult
 from ouro.local_application import LocalApplication
 from ouro.plugins.registry import (
     PluginCommand,
@@ -65,6 +66,8 @@ from ouro.plugins.session_controllers import (
 )
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
+from tests.session_storage import session_connection
+from tests.tool_batches import bind_tool_messages, persist_tool_batch, seed_tool_messages
 
 TEST_GOAL_PLUGIN_ID = "dev.example.goal"
 
@@ -124,7 +127,7 @@ async def test_continuation_terminal_query_runs_outside_the_event_loop(
 )
 @pytest.mark.parametrize("producer", ["model", "driver"])
 async def test_continuation_execution_facts_use_consumed_inputs_and_actual_calls(
-    tmp_path, backend, sources, feedback, automatic, call_count, producer
+    tmp_path, backend, sources, feedback, automatic, call_count, producer, monkeypatch
 ):
     store = (
         LocalSessionStore(tmp_path / "files")
@@ -196,16 +199,44 @@ async def test_continuation_execution_facts_use_consumed_inputs_and_actual_calls
         )
         for index in range(call_count)
     )
+    for index in range(call_count):
+        assistant = next(
+            message
+            for message in messages
+            if message.role == "assistant" and message.turn_id == f"turn-{index}"
+        )
+        receipt = next(
+            message
+            for message in messages
+            if message.role == "tool_result" and message.turn_id == f"turn-{index}"
+        )
+        request = ToolCallRequest(id="read", name="Read")
+        batch = ToolCallBatchRecord(
+            turn_id=assistant.turn_id,
+            assistant_message_id=assistant.message_id if producer == "model" else None,
+            producer=receipt.tool_result.producer,
+            phase="completed",
+            calls=[
+                ToolBatchCall(
+                    request=request,
+                    status="completed",
+                    result=ToolResult(tool_call_id="read", tool_name="Read"),
+                )
+            ],
+        )
+        persist_tool_batch(store, run, batch)
+        bind_tool_messages(store, run, batch, [assistant, receipt])
+    store.save_run(run)
     store.append_messages(messages)
     # Calls from other executions must not affect this outcome.
-    store.append_message(
-        MessageRecord(
-            session_id=session.session_id,
-            run_id="other-run",
-            role="assistant",
-            tool_calls=[ToolCallRequest(id="other", name="Read", arguments={})],
-        )
+    other = MessageRecord(
+        session_id=session.session_id,
+        run_id="other-run",
+        role="assistant",
+        tool_calls=[ToolCallRequest(id="other", name="Read", arguments={})],
     )
+    seed_tool_messages(store, other, [])
+    store.append_message(other)
     outcomes = []
 
     def record(outcome):
@@ -216,6 +247,11 @@ async def test_continuation_execution_facts_use_consumed_inputs_and_actual_calls
     registry = RunContinuationRegistry()
     registry.replace_owner("facts", (policy,))
     service = RunContinuationService(store=store, registry=registry, queue=QueuedInputQueue(store))
+
+    def no_run_history(*args, **kwargs):
+        raise AssertionError("continuation must use message counts and a point query")
+
+    monkeypatch.setattr(store, "load_run_messages", no_run_history)
     settlement = await service.settle(session_id=session.session_id, run_id=run.run_id)
     assert len(outcomes) == 1
     assert outcomes[0].tool_call_count == call_count
@@ -368,7 +404,7 @@ async def test_plugin_continuation_creates_attributed_scaffold_follow_up(
 
     result = await runtime.run("Solve the task")
 
-    snapshot = store.load_runtime_session(result.session.session_id)
+    snapshot = store.load_session(result.session.session_id)
     assert provider.calls == 2
     assert [run.origin for run in snapshot.runs] == ["user", "plugin"]
     assert [run.continuation.action for run in snapshot.runs if run.continuation] == [
@@ -457,7 +493,7 @@ async def test_plugin_command_returns_permission_checked_session_input(tmp_path)
 
     (result,) = [result async for result in consume_plugin_command(runtime, command)]
     assert result.session.session_id == command.session_id
-    snapshot = store.load_runtime_session(result.session.session_id)
+    snapshot = store.load_session(result.session.session_id)
     assert len(snapshot.runs) == 1
     assert snapshot.runs[0].origin == "plugin"
     assert snapshot.messages[0].role == "user"
@@ -632,8 +668,7 @@ async def test_abnormal_terminal_policy_can_pause_and_release_exact_control(
     assert second.settled is False
     assert first.run.continuation is not None
     assert first.run.continuation.action == decision_action
-    assert first.run.continuation.settlement_plan is not None
-    assert first.run.continuation.settlement_plan.action == decision_action
+    assert first.run.continuation.settlement_plan is None
     assert store.load_session_record(session.session_id).controls.activations == []
     assert len(lifecycle_calls) == 1
     assert lifecycle_calls[0].action == "deactivate"
@@ -935,11 +970,18 @@ async def test_staged_settlement_replay_does_not_reevaluate_or_release_new_activ
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("policy_available", [True, False])
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
 async def test_runtime_startup_reconciliation_replays_pending_settlement_without_running(
     tmp_path,
     policy_available,
+    backend,
+    monkeypatch,
 ) -> None:
-    store = LocalSessionStore(tmp_path)
+    store = (
+        LocalSessionStore(tmp_path)
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sessions.db")
+    )
     store.initialize()
     session = SessionRecord()
     store.create_session(session)
@@ -999,6 +1041,10 @@ async def test_runtime_startup_reconciliation_replays_pending_settlement_without
         continuations=registry,
     )
 
+    async def drop_notifications(_events):
+        pass
+
+    monkeypatch.setattr(runtime.event_recorder, "publish_committed", drop_notifications)
     first = await runtime.reconcile_pending_run_continuations()
     second = await runtime.reconcile_pending_run_continuations()
 
@@ -1081,8 +1127,13 @@ async def test_snapshot_recovery_failure_keeps_continuation_retryable(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_repeated_continuation_settlement_enqueues_once(tmp_path) -> None:
-    store = LocalSessionStore(tmp_path)
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_repeated_continuation_settlement_enqueues_once(tmp_path, backend) -> None:
+    store = (
+        LocalSessionStore(tmp_path)
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sessions.db")
+    )
     store.initialize()
     session = SessionRecord()
     store.create_session(session)
@@ -1110,6 +1161,92 @@ async def test_repeated_continuation_settlement_enqueues_once(tmp_path) -> None:
     assert second.settled is False
     assert len(queued) == 1
     assert queued[0].queue_id == first.run.continuation.queue_id
+    events, _ = store.load_events_page(session.session_id, limit=100)
+    assert tuple(events) == first.events
+    assert second.events == ()
+    assert [event.event_type for event in events] == [
+        "follow_up_input_queued",
+        "run_continuation_resolved",
+    ]
+    assert events[0].payload["queue_id"] == queued[0].queue_id
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+@pytest.mark.parametrize("superseded", [False, True])
+async def test_cancel_after_continuation_commit_uses_run_settlement_without_receipts(
+    tmp_path, monkeypatch, backend, superseded
+):
+    store = (
+        LocalSessionStore(tmp_path)
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sessions.db")
+    )
+    store.initialize()
+    session = SessionRecord()
+    store.create_session(session)
+    run = RunRecord(
+        session_id=session.session_id,
+        status="completed",
+        continuation=RunContinuationCheckpoint(
+            controllers=[_controller("dev.example.goal", "goal", "gen_goal")]
+        ),
+    )
+    store.save_run(run)
+    queue = QueuedInputQueue(store)
+    if superseded:
+        queue.enqueue(
+            snapshot=store.load_runtime_session(session.session_id),
+            prompt="user has priority",
+            title=None,
+            role="user",
+            scaffold=False,
+        )
+    prompt = "One retained continuation intent. " * 2048
+    registry = RunContinuationRegistry()
+    registry.replace_owner("goal", (_policy("dev.example.goal", "gen_goal", prompt),))
+    service = RunContinuationService(store=store, registry=registry, queue=queue)
+    entered, release = asyncio.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
+    commit = store.commit_session
+
+    def held_commit(request):
+        result = commit(request)
+        if any(
+            item.continuation and item.continuation.state == "resolved" for item in request.runs
+        ):
+            loop.call_soon_threadsafe(entered.set)
+            assert release.wait(10)
+        return result
+
+    monkeypatch.setattr(store, "commit_session", held_commit)
+    task = asyncio.create_task(service.settle(session_id=session.session_id, run_id=run.run_id))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        task.cancel()
+        release.set()
+        result = await asyncio.wait_for(task, timeout=10)
+        checkpoint = store.load_run(session.session_id, run.run_id).continuation
+        assert checkpoint.state == "resolved" and checkpoint.settlement_plan is None
+        assert result.settled and result.queued is (not superseded)
+        assert result.diagnostics == checkpoint.settlement_diagnostics
+        events, _ = store.load_events_page(session.session_id, limit=100)
+        resolutions = [event for event in events if event.event_type == "run_continuation_resolved"]
+        assert len(resolutions) == 1
+        assert resolutions[0].payload["queued"] is (not superseded)
+        assert resolutions[0].payload["diagnostics"] == list(result.diagnostics)
+        assert bool(result.diagnostics) is superseded
+        assert prompt not in store.load_run(session.session_id, run.run_id).model_dump_json()
+        accepted = store.load_input(session.session_id, checkpoint.queue_id)
+        if superseded:
+            assert accepted is None
+        else:
+            assert accepted.item.prompt == prompt
+        again = await service.settle(session_id=session.session_id, run_id=run.run_id)
+        assert not again.settled
+        assert len(queue.eligible_session(store.load_session_record(session.session_id))) == 1
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -1166,8 +1303,13 @@ async def test_bound_policy_can_settle_after_its_activation_was_released(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_releasing_controller_cancels_its_queued_continuation(tmp_path) -> None:
-    store = LocalSessionStore(tmp_path)
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_releasing_controller_cancels_its_queued_continuation(tmp_path, backend) -> None:
+    store = (
+        LocalSessionStore(tmp_path)
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sessions.db")
+    )
     store.initialize()
     canonical_controller_id = "dev.ouro.goal/session_controllers/mode"
     activation = SessionControlActivation(
@@ -1217,6 +1359,12 @@ async def test_releasing_controller_cancels_its_queued_continuation(tmp_path) ->
     )
 
     assert released.data["cancelled_queue_ids"] == [queued[0].queue_id]
+    events, _ = store.load_events_page(session.session_id, limit=100)
+    assert events[-2].event_type == "session_control_transition"
+    assert events[-2].payload["phase"] == "applied"
+    assert events[-1].event_type == "queued_input_cancelled"
+    assert events[-1].payload["queue_id"] == queued[0].queue_id
+    assert events[-1].payload["activation_id"] == activation.activation_id
     assert queue.eligible(store.load_runtime_session(session.session_id)) == []
 
 
@@ -1453,3 +1601,82 @@ def _policy(
         execution_contract_hash=f"execution-{plugin_id}",
         contract_hash=f"contract-{plugin_id}",
     )
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+@pytest.mark.parametrize("continue_run", [False, True])
+async def test_continuation_state_queue_and_event_share_native_failure_boundary(
+    tmp_path, backend, continue_run
+):
+    store = (
+        LocalSessionStore(tmp_path)
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sessions.db")
+    )
+    store.initialize()
+    session = SessionRecord()
+    store.create_session(session)
+    controller = _controller("dev.ouro.goal", "goal", "gen_goal")
+    run = RunRecord(
+        session_id=session.session_id,
+        status="completed",
+        continuation=RunContinuationCheckpoint(controllers=[controller] if continue_run else []),
+    )
+    store.save_run(run)
+    registry = RunContinuationRegistry()
+    policy_calls = []
+    if continue_run:
+        policy = _policy("dev.ouro.goal", "gen_goal", "retained input")
+
+        def decide(outcome):
+            policy_calls.append(outcome.run_id)
+            return policy.handler(outcome)
+
+        registry.replace_owner("goal", (replace(policy, handler=decide),))
+    service = RunContinuationService(store=store, registry=registry, queue=QueuedInputQueue(store))
+
+    with session_connection(store, session.session_id) as connection:
+        connection.execute(
+            "CREATE TRIGGER fail_continuation_event BEFORE INSERT ON events BEGIN "
+            "SELECT RAISE(ABORT, 'continuation event'); END"
+        )
+    with pytest.raises(PersistenceError):
+        await service.settle(session_id=session.session_id, run_id=run.run_id)
+    # Files may still own a cross-file input decision, but none of its native
+    # state or events can escape a failed transaction.
+    with session_connection(store, session.session_id) as connection:
+        stored_run = RunRecord.model_validate_json(
+            connection.execute(
+                "SELECT payload FROM runs WHERE run_id = ?", (run.run_id,)
+            ).fetchone()[0]
+        )
+        stored_session = SessionRecord.model_validate_json(
+            connection.execute("SELECT payload FROM sessions").fetchone()[0]
+        )
+        assert stored_run.continuation.state == "pending"
+        assert stored_session.pending_input_ids == ()
+        assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+        connection.execute("DROP TRIGGER fail_continuation_event")
+    with store.session_mutation(session.session_id):
+        pass
+    await service.settle(session_id=session.session_id, run_id=run.run_id)
+
+    before = store.load_session(session.session_id)
+    repeated = await service.settle(session_id=session.session_id, run_id=run.run_id)
+    assert not repeated.settled and repeated.events == ()
+    after = store.load_session(session.session_id)
+    assert before.events == after.events
+    assert [event.event_type for event in after.events] == (
+        ["follow_up_input_queued"] if continue_run else []
+    ) + ["run_continuation_resolved"]
+    assert after.events[-1].payload["action"] == ("continue" if continue_run else "complete")
+    assert after.events[-1].payload["queued"] is continue_run
+    checkpoint = repeated.run.continuation
+    assert checkpoint.state == "resolved" and checkpoint.settlement_plan is None
+    assert after.session.pending_input_ids == ((checkpoint.queue_id,) if continue_run else ())
+    assert policy_calls == ([run.run_id] if continue_run else [])
+    if continue_run:
+        assert (
+            store.load_input(session.session_id, checkpoint.queue_id).item.prompt
+            == "retained input"
+        )

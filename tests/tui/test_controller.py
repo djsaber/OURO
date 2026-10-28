@@ -15,7 +15,7 @@ from ouro.config import reasoning_effort_preset
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import ToolSelection
 from ouro.core.billing import UsageFilter
-from ouro.core.compaction import CompactionRecord, compaction_source_digest
+from ouro.core.compaction import CompactionRecord
 from ouro.core.errors import ConfigError
 from ouro.core.events import EventRecord
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
@@ -406,7 +406,7 @@ async def test_controller_new_session_ignores_unreadable_previous_session(
     try:
         result = await controller.submit("session that becomes unreadable")
         session_id = result.session.session_id
-        session_path = tmp_path / "sessions" / session_id / "session.json"
+        session_path = tmp_path / "sessions" / session_id / "session-data.sqlite3"
         if damaged_payload is None:
             session_path.unlink()
         else:
@@ -465,7 +465,7 @@ async def test_controller_deletes_unreadable_session_without_archiving(
             session_id="ses_unreadable",
             title="Unreadable",
         ).session
-        session_path = tmp_path / "sessions" / session.session_id / "session.json"
+        session_path = tmp_path / "sessions" / session.session_id / "session-data.sqlite3"
         session_path.write_text("{broken", encoding="utf-8")
         application.runtime.store.rebuild_catalog()
 
@@ -604,9 +604,7 @@ async def test_submission_preflight_does_not_follow_a_session_switch(tmp_path, m
         with pytest.raises(ConfigError, match="session or model changed"):
             await pending
         assert controller.session_id is None
-        messages = application.runtime.store.load_runtime_session(
-            result.session.session_id
-        ).messages
+        messages = application.runtime.store.load_session(result.session.session_id).messages
         assert all("must not move" not in message.text_content for message in messages)
     finally:
         release.set()
@@ -1843,8 +1841,9 @@ async def test_controller_submits_plugin_input_batch_as_one_run(tmp_path: Path) 
         assert len({message.run_id for message in messages}) == 1
         added = [
             event
-            for event in result.run_results[0].events
-            if event.event_type == "plugin_message_added"
+            for event in snapshot.events
+            if event.run_id == result.run_results[0].run.run_id
+            and event.event_type == "plugin_message_added"
         ]
         assert [event.payload["message_id"] for event in added] == [
             message.message_id for message in messages
@@ -2366,7 +2365,7 @@ async def test_controller_restores_compaction_boundaries_and_effective_metrics(
     try:
         result = await controller.submit("conversation to compact")
         session_id = result.session.session_id
-        messages = application.runtime.store.load_runtime_session(session_id).messages
+        messages = application.runtime.store.load_session(session_id).messages
         before = application.runtime.sessions.context_status(session_id)
         assert before is not None
         used = before.metrics.estimated_input_tokens
@@ -2379,14 +2378,15 @@ async def test_controller_restores_compaction_boundaries_and_effective_metrics(
             strategy_id="test",
             trigger="manual",
             summary="summary",
-            covered_message_ids=[messages[0].message_id],
+            covered_message_count=1,
+            covered_end_message_id=messages[0].message_id,
             history_boundary_message_id=messages[-1].message_id,
-            source_digest=compaction_source_digest(messages[:1]),
             estimated_tokens_after=compacted_tokens,
             context_metrics_after=compacted_metrics,
         )
-        application.runtime.store.append_compaction(compaction)
-        application.runtime.store.activate_compaction(session_id, compaction.compaction_id)
+        from tests.session_summaries import commit_summary
+
+        commit_summary(application.runtime.store, compaction)
 
         loaded = await controller.load_session(session_id)
 

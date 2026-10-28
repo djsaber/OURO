@@ -6,6 +6,7 @@ from ouro.core.tools import ToolCallRequest
 from ouro.providers import FauxProvider
 from ouro.tools import builtin_tools
 from tests.providers.test_tool_result_content import encode
+from tests.run_facts import run_tool_results
 from tests.tools.test_builtin_view_image import image_file
 from tests.tui.test_history_commands import application_at
 
@@ -58,9 +59,11 @@ async def test_builtin_view_image_reaches_model_through_normal_execution_and_pro
     try:
         result = await app.runtime.run("inspect the screenshot", workspace=tmp_path)
         assert result.run.status == "completed"
-        assert len(result.tool_results) == 2
-        assert all(not item.is_error for item in result.tool_results), result.tool_results
-        snapshot = app.runtime.store.load_runtime_session(result.session.session_id)
+        assert len(run_tool_results(app.runtime.store, result)) == 2
+        assert all(not item.is_error for item in run_tool_results(app.runtime.store, result)), (
+            run_tool_results(app.runtime.store, result)
+        )
+        snapshot = app.runtime.store.load_session(result.session.session_id)
         results = [message for message in snapshot.messages if message.role == "tool_result"]
         assert [message.tool_result.tool_call_id for message in results] == ["image-0", "image-1"]
         assert not any(message.role == "user" and message.scaffold for message in snapshot.messages)

@@ -20,6 +20,7 @@ from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
+from tests.run_facts import run_events, run_tool_results
 
 
 class RecordingProvider(FauxProvider):
@@ -110,8 +111,8 @@ async def test_personal_prompts_reach_prepared_requests_in_order(tmp_path, overr
         result = await runtime.run("edited", session_id=result.session.session_id)
         record = runtime.store.load_latest_context(result.session.session_id)
         assert record is not None
-        assert "Second\n\nEdited" in record.system_prompt
-        assert "First" not in record.system_prompt
+        assert "Second\n\nEdited" in record.provider_context.system_prompt
+        assert "First" not in record.provider_context.system_prompt
         assert record.context_metadata["personal_prompt"]["revision"] == 7
 
 
@@ -211,8 +212,8 @@ async def test_stream_is_unchanged_but_tool_continuation_uses_new_prompt(tmp_pat
             release.set()
             result = await task
         assert result.run.status == "completed"
-        assert len(result.tool_results) == 1
-        assert not result.tool_results[0].is_error
+        assert len(run_tool_results(runtime.store, result)) == 1
+        assert not run_tool_results(runtime.store, result)[0].is_error
         assert provider.prompts == ["Before", "After"]
         snapshot = runtime.store.load_latest_context(result.session.session_id)
         assert snapshot.model_round == 2
@@ -238,7 +239,11 @@ async def test_invalid_live_config_blocks_send_and_can_be_corrected_and_resumed(
         blocked = await runtime.run("blocked", session_id=first.session.session_id)
         assert blocked.run.status == "paused"
         assert provider.prompts == ["Before"]
-        diagnostic = next(event for event in blocked.events if event.event_type == "diagnostic")
+        diagnostic = next(
+            event
+            for event in run_events(runtime.store, blocked)
+            if event.event_type == "diagnostic"
+        )
         assert diagnostic.payload["code"] == "prompt_configuration_invalid"
         assert "PRIVATE-BODY" not in diagnostic.payload["message"]
         manager.config_path.write_bytes(saved)

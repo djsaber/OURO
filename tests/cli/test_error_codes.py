@@ -7,16 +7,12 @@ from ouro.cli.run import _run_exit_code
 from ouro.core.errors import PersistenceError
 from ouro.core.results import RunResult
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.core.tools import ToolResult
 
 
 def _result(status: str, *, tool_error: bool = False) -> RunResult:
     session = SessionRecord()
     run = RunRecord(session_id=session.session_id, status=status)  # type: ignore[arg-type]
-    tool_results = (
-        [ToolResult(tool_call_id="call_1", tool_name="Read", is_error=True)] if tool_error else []
-    )
-    return RunResult(session=session, run=run, tool_results=tool_results)
+    return RunResult(session=session, run=run, had_tool_error=tool_error)
 
 
 @pytest.mark.parametrize(

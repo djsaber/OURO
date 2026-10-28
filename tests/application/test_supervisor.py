@@ -30,6 +30,7 @@ from tests.application.helpers import (
     wait_for_runtime_event,
     wait_for_session_state,
 )
+from tests.session_storage import session_connection
 
 
 def _runtime(tmp_path, provider) -> RuntimeService:
@@ -175,8 +176,10 @@ async def test_supervisor_owns_long_lived_resource_shutdown(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_supervisor_defers_incompatible_runtime_to_target_without_blocking_startup(
+@pytest.mark.parametrize("selected", [False, True])
+async def test_supervisor_limits_incompatible_run_to_selected_execution(
     tmp_path,
+    selected,
 ) -> None:
     runtime = _runtime(tmp_path, FauxProvider())
     session = SessionRecord(title="Old runtime")
@@ -186,19 +189,32 @@ async def test_supervisor_defers_incompatible_runtime_to_target_without_blocking
         status="completed",
         agent_catalog=AgentCatalogSnapshot(),
     )
+    if selected:
+        session.last_run_id = run.run_id
     runtime.store.create_session(session)
     runtime.store.save_run(run)
     payload = json.loads(run.model_dump_json())
     payload["agent_catalog"]["contract_hash"] = "sha256:" + "0" * 64
-    run_path = runtime.store.sessions_dir / session.session_id / "runs" / f"{run.run_id}.json"
-    run_path.write_text(json.dumps(payload), encoding="utf-8")
+    with session_connection(runtime.store, session.session_id) as connection:
+        connection.execute(
+            "UPDATE runs SET payload = ? WHERE session_id = ? AND run_id = ?",
+            (json.dumps(payload), session.session_id, run.run_id),
+        )
     supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
 
     started = await supervisor.start()
 
     assert started.diagnostics == ()
+    if selected:
+        with pytest.raises(PersistenceError, match="agent catalog contract hash"):
+            await supervisor.submit("must remain strict", session_id=session.session_id)
+    else:
+        handle = await supervisor.submit(
+            "current execution still works", session_id=session.session_id
+        )
+        assert (await supervisor.wait(handle)).status == "completed"
     with pytest.raises(PersistenceError, match="agent catalog contract hash"):
-        await supervisor.submit("must remain strict", session_id=session.session_id)
+        runtime.store.load_run(session.session_id, run.run_id)
     handle = await supervisor.submit("new session still works")
     assert (await supervisor.wait(handle)).status == "completed"
     await supervisor.shutdown()
@@ -624,6 +640,7 @@ async def test_agent_relation_events_have_a_dedicated_category(tmp_path) -> None
                 "parent_session_id": session.session_id,
                 "parent_run_id": "run_parent",
                 "parent_tool_call_id": "call_spawn",
+                "parent_batch_id": "batch_spawn",
                 "delegation_id": "dlg_child",
                 "child_session_id": "ses_child",
                 "child_run_id": "run_child",

@@ -8,6 +8,7 @@ from ouro.application.inputs.queue import QueuedInputQueue
 from ouro.application.sessions.service import SessionService
 from ouro.core.errors import PersistenceError, SessionBranchError
 from ouro.core.harness import HarnessState
+from ouro.core.inputs import InputStateChange
 from ouro.core.messages import MessageRecord
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_controls import (
@@ -142,10 +143,13 @@ def test_transfer_preserves_undo_anchors_and_withdrawn_input_receipts(
     source = build_store(tmp_path / "source", source_backend)
     session, first, second = history(source)
     request = HostSessionInput(host_source_id="test", queue_id="accepted", prompt="once")
-    _, _, accepted = QueuedInputQueue(source).accept_host(session.session_id, request)
-    cleared = accepted.model_copy(update={"metadata": {}})
+    _, _, accepted, _ = QueuedInputQueue(source).accept_host(session.session_id, request)
     source.commit_session(
-        SessionCommit(before=accepted, after=cleared, before_message_id=second.message_id)
+        SessionCommit(
+            before=accepted,
+            before_message_id=second.message_id,
+            input_changes=(InputStateChange(input_id="accepted", status="cancelled"),),
+        )
     )
     snapshot = source.load_session(session.session_id)
     target = build_store(tmp_path / "target", target_backend)
@@ -156,8 +160,9 @@ def test_transfer_preserves_undo_anchors_and_withdrawn_input_receipts(
             snapshot.session,
             snapshot.messages,
             harness_versions=snapshot.harness_versions,
-            commits=snapshot.commits,
             compactions=snapshot.compactions,
+            inputs=tuple(snapshot.inputs),
+            input_states=tuple(snapshot.input_states),
         )
         for run in snapshot.runs:
             target.save_run(run)
@@ -211,7 +216,7 @@ def test_trash_keeps_undo(tmp_path, backend):
             ).fetchone()
         records = json.loads(row[0])["records"]
         assert len(records["harness_versions"]["rows"]) == len(before.harness_versions)
-        assert len(records["session_commits"]["rows"]) == len(before.commits)
+        assert "session_commits" not in records
         sessions = records["sessions"]
         restored = json.loads(sessions["rows"][0][sessions["columns"].index("payload")])
         assert restored["history_epoch"] == 1

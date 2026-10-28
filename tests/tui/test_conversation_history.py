@@ -215,12 +215,14 @@ class _HistoryApp(App[None]):
             lambda tool, **_kwargs: conversation_history_text.Text(tool.tool_name)
         )
         self.navigation: list[tuple[str, str]] = []
+        self.navigation_batches: list[str | None] = []
 
     def compose(self) -> ComposeResult:
         yield self.history
 
     def on_tool_navigation_requested(self, message: ToolNavigationRequested) -> None:
         self.navigation.append((message.parent_run_id, message.parent_tool_call_id))
+        self.navigation_batches.append(message.parent_batch_id)
 
 
 class _ThemedHistoryApp(_HistoryApp):
@@ -961,6 +963,7 @@ async def test_historical_spawn_tool_click_preserves_parent_run_identity() -> No
                 kind="tool",
                 run_id="run_parent",
                 tool=RuntimeToolCallActivity(
+                    batch_id="batch_spawn",
                     tool_call_id="call_spawn",
                     tool_name="SpawnAgent",
                     status="completed",
@@ -984,6 +987,7 @@ async def test_historical_spawn_tool_click_preserves_parent_run_identity() -> No
         await pilot.click(app.history, offset=(3, 0))
 
         assert app.navigation == [("run_parent", "call_spawn")]
+        assert app.navigation_batches == ["batch_spawn"]
 
 
 @pytest.mark.asyncio
@@ -1002,9 +1006,13 @@ async def test_live_spawn_tool_click_preserves_parent_run_identity() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tool_updates_are_scoped_to_the_parent_run(monkeypatch) -> None:
+@pytest.mark.parametrize("old_run, old_batch", [("run_old", "batch_new"), ("run_new", "batch_old")])
+async def test_tool_updates_are_scoped_to_the_parent_run_and_batch(
+    monkeypatch, old_run: str, old_batch: str
+) -> None:
     app = _HistoryApp()
     requested = RuntimeToolCallActivity(
+        batch_id="batch_new",
         tool_call_id="reused_call",
         tool_name="SpawnAgent",
         status="running",
@@ -1012,7 +1020,8 @@ async def test_tool_updates_are_scoped_to_the_parent_run(monkeypatch) -> None:
     )
 
     async with app.run_test(size=(80, 12)):
-        app.history.append(TranscriptEntry(kind="tool", run_id="run_old", tool=requested))
+        old = requested.model_copy(update={"batch_id": old_batch})
+        app.history.append(TranscriptEntry(kind="tool", run_id=old_run, tool=old))
         app.history.append(TranscriptEntry(kind="tool", run_id="run_new", tool=requested))
         await app.history.wait_until_rendered()
 
@@ -1027,7 +1036,7 @@ async def test_tool_updates_are_scoped_to_the_parent_run(monkeypatch) -> None:
         )
 
         assert matched == frozenset({"reused_call"})
-        assert app.history.entries[0].tool == requested
+        assert app.history.entries[0].tool == old
         assert app.history.entries[1].tool is not None
         assert app.history.entries[1].tool.status == "completed"
 

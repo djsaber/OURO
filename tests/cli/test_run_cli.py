@@ -101,7 +101,9 @@ def test_run_json_mode_outputs_machine_readable_result(tmp_path, capsys) -> None
     assert payload["run_id"].startswith("run_")
     assert payload["usage"]["input_tokens"] == 1
     assert payload["usage"]["output_tokens"] == 4
-    assert [event["event_type"] for event in payload["events"]][-1] == "run_completed"
+    assert "events" not in payload
+    assert payload["had_tool_error"] is False
+    assert payload["error_code"] is None
     assert payload["startup_diagnostics"] == []
 
 

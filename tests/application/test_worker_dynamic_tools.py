@@ -92,7 +92,7 @@ async def test_public_dynamic_record_plugin_keeps_decisions_and_commits_each_sch
             for value in store.load_session_extension_states(result.session.session_id)
         }
         assert values[PLUGIN].payload == {"records": [{"title": "original"}, {"topic": "current"}]}
-        history = store.load_runtime_session(result.session.session_id)
+        history = store.load_session(result.session.session_id)
         assert [message.text_content for message in history.messages if message.tool_result] == [
             "Record saved.",
             "Record saved.",
@@ -155,7 +155,7 @@ async def test_worker_group_approval_restart_checks_revision_before_session_muta
             value.owner_id: value
             for value in store.load_session_extension_states(result.session.session_id)
         }
-        history = store.load_runtime_session(result.session.session_id)
+        history = store.load_session(result.session.session_id)
         outputs = [message for message in history.messages if message.tool_result]
         assert len(outputs) == 1
         if changed:

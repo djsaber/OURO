@@ -6,11 +6,9 @@ from contextlib import ExitStack
 from pydantic import ConfigDict, ValidationError
 
 from ouro.application.contracts.base import ApplicationDTO, Diagnostic
-from ouro.application.inputs.queue import QUEUED_INPUTS_KEY, QueuedInput
 from ouro.core.base import OuroModel
 from ouro.core.errors import SessionBusyError
 from ouro.core.input_content import InputAttachment, InputFileReference
-from ouro.core.media_context import MEDIA_CONTEXT_KEY
 from ouro.core.resources import ResourceRecord
 from ouro.core.state import ACTIVE_RUN_STATUSES
 from ouro.resources.base import ResourceStore
@@ -76,14 +74,13 @@ class SessionTransferService:
                     if lock is None:
                         raise SessionBusyError("stop running child Sessions before export")
                     locks.callback(lock.release)
-                locks.enter_context(self.sessions.session_mutation(record.session_id))
+                locks.enter_context(self.sessions.session_read(record.session_id))
             try:
                 bundle = SessionBundle(
                     sessions=[
-                        PortableSession(
+                        PortableSession.from_snapshot(
                             snapshot=self.sessions.load_session(record.session_id),
                             resources=self.sessions.load_resource_references(record.session_id),
-                            latest_context=self.sessions.load_latest_context(record.session_id),
                         )
                         for record in records
                     ],
@@ -193,7 +190,8 @@ class SessionTransferService:
                             f"stop the running child Session before import: {identity}"
                         )
                     locks.callback(lock.release)
-                locks.enter_context(self.sessions.session_mutation(identity))
+            # Execution ownership stabilizes active Runs. The adapter owns the
+            # publication transaction and acquires resource lifetimes before it.
             for identity in sorted(replaced_ids):
                 record = self.sessions.load_session_record(identity)
                 if (
@@ -208,14 +206,6 @@ class SessionTransferService:
                         f"stop the active Session before replacement: {identity}"
                     )
             if bundle.sessions:
-                # Import starts a new media projection phase; the saved request remains viewable.
-                for item in bundle.sessions:
-                    if item.latest_context is not None:
-                        metadata = dict(item.latest_context.context_metadata)
-                        metadata.pop(MEDIA_CONTEXT_KEY, None)
-                        item.latest_context = item.latest_context.model_copy(
-                            update={"context_metadata": metadata}
-                        )
                 contents: dict[str, dict[str, bytes]] = {}
                 for name, (session_id, resource) in _resource_files(bundle).items():
                     contents.setdefault(session_id, {})[resource.filename] = archive.files[name]
@@ -292,12 +282,7 @@ def _external_reference_diagnostics(bundle: SessionBundle) -> tuple[Diagnostic, 
             for version in snapshot.harness_versions
             for activation in version.state.controls.activations
         )
-        tools = {call.name for message in snapshot.messages for call in message.tool_calls}
-        tools.update(
-            message.tool_result.tool_name
-            for message in snapshot.messages
-            if message.tool_result is not None
-        )
+        tools = {call.request.name for call in snapshot.tool_facts.calls}
         model = snapshot.session.current_model
         paths = sorted(
             {
@@ -345,9 +330,11 @@ def _resource_files(bundle: SessionBundle) -> dict[str, tuple[str, ResourceRecor
         session_id = item.snapshot.session.session_id
         ids = {record.resource_id for record in item.resources}
         messages = list(item.snapshot.messages)
-        if item.latest_context is not None:
-            messages.extend(item.latest_context.source_messages)
-        required = {identity for message in messages for identity in message.resource_refs}
+        required = {
+            identity for message in messages for identity in message.referenced_resource_ids
+        }
+        if (manifest := item.snapshot.latest_manifest) is not None:
+            required.update(manifest.manifest.referenced_resource_ids)
         required.update(
             attachment.resource_id
             for message in messages
@@ -356,12 +343,10 @@ def _resource_files(bundle: SessionBundle) -> dict[str, tuple[str, ResourceRecor
         )
         if len(ids) != len(item.resources):
             raise DataTransferError("Session archive contains duplicate resource identities")
-        for raw in item.snapshot.session.metadata.get(QUEUED_INPUTS_KEY, []):
-            try:
-                queued = QueuedInput.model_validate(raw)
-            except ValidationError as exc:
-                raise DataTransferError("Session archive has an invalid queued input") from exc
-            required.update(queued.resource_refs)
+        for accepted in item.snapshot.inputs:
+            required.update(accepted.item.resource_refs)
+        for outcome in item.snapshot.tool_facts.outcomes:
+            required.update(outcome.value.referenced_resource_ids)
         if not required.issubset(ids):
             raise DataTransferError("Session archive resource references are incomplete")
         for record in item.resources:

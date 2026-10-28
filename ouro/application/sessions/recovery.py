@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from typing import Any
-
+from ouro.application.runs.tool_batches import load_batch_states
+from ouro.application.usage import UsageService
 from ouro.core.base import utc_now
 from ouro.core.errors import PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.run_transitions import plan_run_transition, session_state_for_run
+from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
+from ouro.core.tool_batches import ToolCallState
 from ouro.sessions import RuntimeSessionSnapshot, SessionSnapshot, SessionStore
 
 _INCOMPLETE_RUN_STATUSES = {"queued", "running"}
@@ -16,103 +18,118 @@ _INCOMPLETE_RUN_STATUSES = {"queued", "running"}
 class SessionRecoveryService:
     """Apply interrupted-run recovery as an explicit application command."""
 
-    def __init__(self, store: SessionStore) -> None:
+    def __init__(self, store: SessionStore, *, usage_service: UsageService | None = None) -> None:
         self.store = store
+        self.usage = usage_service
+
+    def settle_request(self, session_id: str) -> None:
+        """Point-settle requests owned by unfinished work and the latest terminal Run."""
+        with self.store.session_mutation(session_id):
+            if self.store.is_session_locked(session_id):
+                return
+            session = self.store.load_session_record(session_id)
+            runs = self.store.load_pending_runs(session_id)
+            if session.last_run_id is not None and not any(
+                run.run_id == session.last_run_id for run in runs
+            ):
+                runs.append(self.store.load_run(session_id, session.last_run_id))
+        for run in runs:
+            self._settle_run_request(run)
+
+    def _settle_run_request(self, run: RunRecord) -> None:
+        session_id = run.session_id
+        if run.current_request_id is None:
+            return
+        with self.store.session_mutation(session_id):
+            if self.store.is_session_locked(session_id):
+                return
+            request = self.store.load_request_header(session_id, run.current_request_id)
+            if request is None:
+                raise PersistenceError("Run references a missing model request")
+            if request.run_id != run.run_id:
+                raise PersistenceError("Run references another Run's model request")
+            if request.usage_entry_id is not None:
+                return
+            settled = request.provider_done_at is not None or request.interrupted_at is not None
+            if settled and self.usage is None:
+                return
+            if self.store.load_session_record(session_id).history_epoch != run.history_epoch:
+                return
+        # The ledger and Session have separate transactions. Recheck ownership
+        # after the point lookup; recovery must not close a newly dispatched request.
+        entry = self.usage.request_usage(request) if self.usage is not None else None
+        if settled and entry is None:
+            return
+        with self.store.session_mutation(session_id):
+            if self.store.is_session_locked(session_id):
+                return
+            current_run = self.store.load_run(session_id, run.run_id)
+            if current_run.current_request_id != request.context_id:
+                return
+            if self.store.load_request_header(session_id, request.context_id) != request:
+                return
+            if self.store.load_session_record(session_id).history_epoch != run.history_epoch:
+                return
+            self.store.settle_request_header(
+                session_id,
+                request.context_id,
+                settled_at=utc_now(),
+                provider_done=request.provider_done_at is not None,
+                usage_entry_id=entry.entry_id if entry is not None else None,
+            )
 
     def recover(self, session_id: str) -> SessionSnapshot:
+        self.settle_request(session_id)
         with self.store.session_mutation(session_id):
-            snapshot = self.store.load_session(session_id)
-            recovered, changed = self._recover_snapshot(snapshot)
-            # Recovery can create native receipts and checkpoints. Complete
-            # maintenance reads return the committed aggregate, not a rebuilt DTO.
-            recovered = self.store.load_session(session_id) if changed else snapshot
+            changed = self._recover_runs(self.store.load_runtime_session(session_id))
+            recovered = self.store.load_session(session_id)
         if changed:
             self.store.refresh_catalog(session_id)
         return recovered
 
     def recover_runtime(self, session_id: str) -> RuntimeSessionSnapshot:
+        self.settle_request(session_id)
         with self.store.session_mutation(session_id):
-            runtime = self.store.load_runtime_session(session_id)
-            incomplete_run_ids = tuple(
-                run.run_id
-                for run in runtime.runs
-                if run.history_epoch == runtime.session.history_epoch
-                and run.status in _INCOMPLETE_RUN_STATUSES
-            )
-            events = (
-                self._load_run_events(session_id, incomplete_run_ids)
-                if incomplete_run_ids and not self.store.is_session_locked(session_id)
-                else []
-            )
-            snapshot = SessionSnapshot(**runtime.model_dump(), events=events)
-            recovered, changed = self._recover_snapshot(snapshot)
-        recovered_runtime = RuntimeSessionSnapshot(
-            session=recovered.session,
-            messages=recovered.messages,
-            runs=recovered.runs,
-            compactions=recovered.compactions,
-        )
+            recovered_runtime = self.store.load_runtime_session(session_id)
+            changed = self._recover_runs(recovered_runtime)
+            if changed:
+                recovered_runtime = self.store.load_runtime_session(session_id)
         if changed:
             self.store.refresh_catalog(session_id)
         return recovered_runtime
 
-    def _load_run_events(
-        self,
-        session_id: str,
-        run_ids: tuple[str, ...],
-    ) -> list[EventRecord]:
-        """Read only the event histories required to recover interrupted Runs."""
-
-        events: list[EventRecord] = []
-        for run_id in run_ids:
-            cursor = 0
-            while True:
-                page, next_cursor = self.store.load_events_page(
-                    session_id,
-                    cursor=cursor,
-                    limit=1000,
-                    run_id=run_id,
-                )
-                events.extend(page)
-                if next_cursor is None:
-                    break
-                if next_cursor <= cursor:
-                    raise PersistenceError(
-                        f"event journal cursor did not advance for session {session_id}"
-                    )
-                cursor = next_cursor
-        return events
-
-    def _recover_snapshot(self, snapshot: SessionSnapshot) -> tuple[SessionSnapshot, bool]:
-        session = snapshot.session
-        messages = list(snapshot.messages)
-        events = list(snapshot.events)
-        runs = list(snapshot.runs)
+    def _recover_runs(self, snapshot: RuntimeSessionSnapshot) -> bool:
+        session, runs = snapshot.session, snapshot.runs
         run_is_live = self.store.is_session_locked(session.session_id)
         recovered_runs: list[RunRecord] = []
-        recovered_incomplete = False
+        changed_runs: list[RunRecord] = []
+        changed_calls: list[ToolCallState] = []
+        steps: list[SessionCommitStep] = []
+        recovery_events: list[EventRecord] = []
 
         for run in runs:
-            if run.history_epoch != session.history_epoch:
+            if (
+                run_is_live
+                or run.history_epoch != session.history_epoch
+                or run.status not in ACTIVE_RUN_STATUSES
+            ):
                 recovered_runs.append(run)
                 continue
-            interaction_error = _interaction_state_error(run)
-            if not run_is_live and (
-                run.status in _INCOMPLETE_RUN_STATUSES or interaction_error is not None
-            ):
+            states = load_batch_states(self.store, run)
+            interaction_error = _interaction_state_error(run, states)
+            if run.status in _INCOMPLETE_RUN_STATUSES or interaction_error is not None:
                 metadata = dict(run.metadata)
                 partial_message = (
-                    self._append_recovered_partial_message(
+                    self._recovered_partial_message(
                         session=session,
                         run=run,
-                        messages=messages,
-                        events=events,
                     )
                     if run.status in _INCOMPLETE_RUN_STATUSES
                     else None
                 )
                 if partial_message is not None:
                     metadata["recovered_partial_assistant_message_id"] = partial_message.message_id
+                    steps.append(SessionCommitStep(message=partial_message))
                 metadata["recovered_from_status"] = run.status
                 if interaction_error is not None:
                     metadata["recovery_reason"] = "invalid_interaction_state"
@@ -122,16 +139,14 @@ class SessionRecoveryService:
                     interaction_error is not None
                     or active_batch.phase in {"executing", "committing_results"}
                 ):
-                    recovered_calls = [
+                    changed_calls.extend(
                         call.model_copy(update={"status": "unknown_outcome"})
+                        for call in states
                         if call.status in {"running", "resolving_input"}
-                        else call
-                        for call in active_batch.calls
-                    ]
+                    )
                     active_batch = active_batch.model_copy(
                         update={
                             "phase": "recoverable",
-                            "calls": recovered_calls,
                             "updated_at": now,
                         }
                     )
@@ -153,174 +168,97 @@ class SessionRecoveryService:
                     now=now,
                 )
                 recovered = transition.run
-                self.store.save_run(recovered)
-                recovery_event = self._append_recovery_event(
-                    session_id=session.session_id,
-                    run_id=recovered.run_id,
-                    history_epoch=recovered.history_epoch,
-                    previous_status=run.status,
-                    reason=(
-                        "invalid_interaction_state"
-                        if interaction_error is not None
-                        else "process_restarted"
-                    ),
+                recovery_events.append(
+                    EventRecord(
+                        session_id=session.session_id,
+                        run_id=recovered.run_id,
+                        history_epoch=recovered.history_epoch,
+                        event_type="run_status_changed",
+                        payload={
+                            "from_status": run.status,
+                            "to_status": "recoverable",
+                            "reason": (
+                                "invalid_interaction_state"
+                                if interaction_error is not None
+                                else "process_restarted"
+                            ),
+                        },
+                    )
                 )
-                events.append(recovery_event)
                 recovered_runs.append(recovered)
-                recovered_incomplete = True
+                changed_runs.append(recovered)
             else:
                 recovered_runs.append(run)
 
         reconciled_session, projection_changed = _reconcile_session_projection(
             session,
-            messages,
             recovered_runs,
         )
-        if recovered_incomplete or projection_changed:
+        if changed_runs or projection_changed:
             metadata = dict(session.metadata)
-            if recovered_incomplete:
+            if changed_runs:
                 metadata["recovered_incomplete_runs"] = True
             if projection_changed:
                 metadata["session_state_reconciled"] = True
-            session = reconciled_session.model_copy(
+            recovered_session = reconciled_session.model_copy(
                 update={
                     "updated_at": utc_now(),
                     "last_activity_at": utc_now(),
                     "metadata": metadata,
                 }
             )
-            self.store.save_session(session)
+            self.store.commit_session(
+                SessionCommit(
+                    before=session,
+                    after=recovered_session,
+                    steps=tuple(steps),
+                    runs=tuple(changed_runs),
+                    call_states=tuple(changed_calls),
+                    events=tuple(recovery_events),
+                )
+            )
+            return True
+        return False
 
-        return (
-            SessionSnapshot(
-                session=session,
-                messages=messages,
-                events=events,
-                runs=recovered_runs,
-                compactions=snapshot.compactions,
-            ),
-            recovered_incomplete or projection_changed,
-        )
-
-    def _append_recovered_partial_message(
+    def _recovered_partial_message(
         self,
         *,
         session: SessionRecord,
         run: RunRecord,
-        messages: list[MessageRecord],
-        events: list[EventRecord],
     ) -> MessageRecord | None:
-        run_events = sorted(
-            (event for event in events if event.run_id == run.run_id),
-            key=lambda event: (event.sequence, event.created_at, event.event_id),
-        )
-        # A resumed Run shares its audit journal with older attempts. A crash
-        # before the next model request must not resurrect their withdrawn text.
-        resumed_at = max(
-            (
-                event.sequence
-                for event in run_events
-                if event.event_type == "run_status_changed" and event.payload.get("resumed") is True
-            ),
-            default=0,
-        )
-        start_indexes = [
-            index
-            for index, event in enumerate(run_events)
-            if event.event_type == "model_request_started" and event.sequence > resumed_at
-        ]
-        if not start_indexes:
-            return None
-        start_event = run_events[start_indexes[-1]]
-        turn_id = start_event.turn_id
-        if turn_id is None:
-            raise PersistenceError(
-                f"model request event has no turn identity: {start_event.event_id}"
-            )
-        streamed_events = run_events[start_indexes[-1] + 1 :]
-        if any(
-            event.event_type
-            in {
-                "tool_call_requested",
-                "approval_requested",
-                "ask_user_requested",
-                "tool_call_completed",
-            }
-            for event in streamed_events
+        header = self.store.load_latest_context_header(session.session_id)
+        if (
+            header is None
+            or header.run_id != run.run_id
+            or header.context_id != run.current_request_id
+            or header.response_closed_at is not None
         ):
             return None
-        durable_run_messages = [message for message in messages if message.run_id == run.run_id]
-        if _model_round_is_durable(
-            durable_run_messages,
-            turn_id=turn_id,
-        ):
+        draft = self.store.load_response_draft(session.session_id, header.context_id)
+        if draft is None or not draft.chunks:
             return None
-
-        text = "".join(
-            value
-            for event in streamed_events
-            if event.event_type == "model_text_delta"
-            and isinstance((value := event.payload.get("text")), str)
-        )
-        reasoning = "".join(
-            value
-            for event in streamed_events
-            if event.event_type == "model_reasoning_delta"
-            and isinstance((value := event.payload.get("reasoning_content")), str)
-        )
-        if not text and not reasoning:
-            return None
-        metadata: dict[str, Any] = {
-            "incomplete": True,
-            "recovered_from_event_journal": True,
-            "run_id": run.run_id,
-        }
-        message = MessageRecord.text(
+        text = "".join(chunk.content for chunk in draft.chunks if chunk.channel == "text")
+        reasoning = "".join(chunk.content for chunk in draft.chunks if chunk.channel == "reasoning")
+        return MessageRecord.text(
             session_id=session.session_id,
             run_id=run.run_id,
             role="assistant",
             text=text,
-            sequence=len(messages) + 1,
-            turn_id=turn_id,
-        ).model_copy(update={"metadata": metadata, "reasoning_content": reasoning})
-        self.store.append_message(message)
-        messages.append(message)
-        return message
-
-    def _append_recovery_event(
-        self,
-        *,
-        session_id: str,
-        run_id: str,
-        history_epoch: int,
-        previous_status: str,
-        reason: str,
-    ) -> EventRecord:
-        return self.store.append_ordered_event(
-            EventRecord(
-                session_id=session_id,
-                run_id=run_id,
-                history_epoch=history_epoch,
-                event_type="run_status_changed",
-                payload={
-                    "from_status": previous_status,
-                    "to_status": "recoverable",
-                    "reason": reason,
+            turn_id=header.turn_id,
+        ).model_copy(
+            update={
+                "metadata": {
+                    "incomplete": True,
+                    "recovered_from_draft": True,
+                    "run_id": run.run_id,
                 },
-            )
+                "reasoning_content": reasoning,
+            }
         )
-
-
-def _model_round_is_durable(messages: list[MessageRecord], *, turn_id: str) -> bool:
-    return any(
-        message.turn_id == turn_id and message.role in {"assistant", "tool_result"}
-        for message in messages
-    )
 
 
 def _reconcile_session_projection(
     session: SessionRecord,
-    messages: list[MessageRecord],
     runs: list[RunRecord],
 ) -> tuple[SessionRecord, bool]:
     runs = [run for run in runs if run.history_epoch == session.history_epoch]
@@ -332,15 +270,6 @@ def _reconcile_session_projection(
         )
 
     active_run = active_runs[0] if active_runs else None
-    if active_run is not None and active_run is not runs[-1]:
-        later_runs = runs[runs.index(active_run) + 1 :]
-        retained_runs = {message.run_id for message in messages}
-        if active_run.kind != "agent" or any(
-            run.kind != "compaction" and run.run_id in retained_runs for run in later_runs
-        ):
-            raise PersistenceError(
-                f"session {session.session_id} has a non-latest active run: {active_run.run_id}"
-            )
     # Creation order is not execution order after resuming a Run following
     # manual compaction. Project the live owner or the most recent settlement.
     latest_run = active_run or max(
@@ -354,7 +283,6 @@ def _reconcile_session_projection(
         )
 
     expected_last_run_id = latest_run.run_id if latest_run is not None else None
-    expected_last_message_id = messages[-1].message_id if messages else None
     changes: dict[str, object] = {}
     if session.status != expected_status:
         changes["status"] = expected_status
@@ -362,34 +290,32 @@ def _reconcile_session_projection(
         changes["active_run_id"] = expected_active_run_id
     if session.last_run_id != expected_last_run_id:
         changes["last_run_id"] = expected_last_run_id
-    if session.last_message_id != expected_last_message_id:
-        changes["last_message_id"] = expected_last_message_id
-    if session.message_count != len(messages):
-        changes["message_count"] = len(messages)
     if not changes:
         return session, False
     return session.model_copy(update=changes), True
 
 
-def _interaction_state_error(run: RunRecord) -> str | None:
+def _interaction_state_error(run: RunRecord, calls: tuple[ToolCallState, ...]) -> str | None:
     if run.status == "waiting_approval":
-        batch = run.active_tool_batch
-        if batch is None or not batch.pending_approvals:
+        pending = [
+            call.approval
+            for call in calls
+            if call.status == "awaiting_approval" and call.approval is not None
+        ]
+        if not pending:
             return "Run was waiting for approval without a pending approval."
-        approval_ids = {approval.approval_id for approval in batch.pending_approvals}
+        approval_ids = {approval.approval_id for approval in pending}
         if run.pending_approval_id not in approval_ids:
             return "Run pending approval does not match its active tool batch."
     if run.status == "waiting_user":
-        batch = run.active_tool_batch
-        if batch is None or not any(call.status == "waiting_user" for call in batch.calls):
+        if not any(call.status == "waiting_user" for call in calls):
             return "Run was waiting for user input without a waiting tool call."
     if run.status == "waiting_child":
-        batch = run.active_tool_batch
-        if batch is None or not any(
+        if not any(
             call.status == "waiting_child"
             and call.agent_wait is not None
             and call.agent_wait.state == "pending"
-            for call in batch.calls
+            for call in calls
         ):
             return "Run was waiting for a child without a pending Agent wait."
     return None

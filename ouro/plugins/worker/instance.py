@@ -10,6 +10,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Any
 
+from ouro.core.callbacks import CallbackCancelled
 from ouro.plugins.installation.package import PLUGIN_API_VERSION
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.tool_groups import PluginToolGroups, ToolGroupPublication
@@ -272,6 +273,7 @@ class WorkerPluginInstance:
         decode: Callable[[dict[str, Any], str], T],
         state_view: sdk.PluginSessionStateView | None,
         timeout: float | None = None,
+        retain_result_on_cancel: bool = False,
     ) -> T:
         """Exchange an owner snapshot and a staged replacement through the call protocol."""
 
@@ -309,7 +311,14 @@ class WorkerPluginInstance:
                     ),
                 },
             }
-        raw = await self.client.request(method, params, timeout=timeout)
+        try:
+            raw = await self.client.request(
+                method, params, timeout=timeout, retain_result_on_cancel=retain_result_on_cancel
+            )
+        except CallbackCancelled as exc:
+            result = _object_result(exc.result, method)
+            result.pop("session_state", None)
+            raise CallbackCancelled(decode(result, method)) from None
         return self._result(raw, method, decode, state_view=state_view)
 
     def _tool_handler(self, identity: str, registration_id: str | None = None):
@@ -332,6 +341,7 @@ class WorkerPluginInstance:
                 decode=_decode_worker_tool,
                 state_view=call.session_state,
                 timeout=0,
+                retain_result_on_cancel=True,
             )
 
         return handler
@@ -360,6 +370,7 @@ class WorkerPluginInstance:
                 decode=_decode_worker_tool,
                 state_view=call.session_state,
                 timeout=0,
+                retain_result_on_cancel=True,
             )
 
         return handler

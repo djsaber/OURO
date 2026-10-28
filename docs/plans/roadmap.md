@@ -28,6 +28,13 @@
 Marketplace、签名/publisher trust root、worker OS sandbox、每插件依赖环境和通用 session-scoped KV/CAS 不属于
 当前路线图；只有真实插件提出无法由当前边界表达的共同需求时才重新评估。
 
+## 会话数据与长程执行
+
+单份事实正文、两后端有限提交、活动上下文、最近请求、当前输出恢复和原始计量已实施；范围、
+故障与增长验证见[实施记录](archive/2026-10-26-session-data-implementation.md#实施与验收)，设计取舍见[设计归档](archive/2026-10-26-session-data-implementation.md#设计方案)。
+当前契约由领域规格维护；最终代码未再次全量验证。升级模块保持原样，由用户后续单独适配，
+新用户目录初始化测试尚待用户反馈，不将这些后续工作计为已验收能力。
+
 ## 近期：Host 产品面
 
 ### TUI 产品化增强

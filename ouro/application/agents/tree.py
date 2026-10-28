@@ -15,6 +15,8 @@ from ouro.application.contracts.agents import (
 )
 from ouro.application.contracts.base import Diagnostic
 from ouro.application.contracts.execution import RuntimeActivitySnapshot, RuntimeNotification
+from ouro.application.runs.tool_batches import load_batch_states, load_tool_batch
+from ouro.application.usage import UsageService
 from ouro.core.agents import DelegationRecord
 from ouro.core.callbacks import run_blocking
 from ouro.core.errors import SessionNotFoundError
@@ -55,9 +57,16 @@ class AgentTreeRuntime(Protocol):
 class AgentTreeProjector:
     """Rebuild the bounded root Agent tree only from canonical records."""
 
-    def __init__(self, *, store: SessionStore, runtime: AgentTreeRuntime) -> None:
+    def __init__(
+        self,
+        *,
+        store: SessionStore,
+        runtime: AgentTreeRuntime,
+        usage_service: UsageService | None = None,
+    ) -> None:
         self.store = store
         self.runtime = runtime
+        self.usage = usage_service
 
     def snapshot(self, root_session_id: str) -> AgentTreeSnapshot:
         # One root read boundary avoids reopening the database for each fact.
@@ -81,7 +90,11 @@ class AgentTreeProjector:
         waiting_count = 0
         terminal_count = 0
         pending_interaction_count = 0
-        root_usage = dict(root_run.usage) if root_run is not None else {}
+        root_usage = (
+            self.usage.run_values(root_run.session_id, root_run.run_id) or {}
+            if root_run is not None and self.usage is not None
+            else {}
+        )
 
         for relation in relations:
             revision += relation.revision + 1
@@ -116,6 +129,7 @@ class AgentTreeProjector:
                     session_id=relation.child_session_id,
                     parent_session_id=relation.parent_session_id,
                     parent_run_id=relation.parent_run_id,
+                    parent_batch_id=relation.parent_batch_id,
                     parent_tool_call_id=relation.parent_tool_call_id,
                     agent_id=relation.agent_id,
                     agent_name=relation.definition.name,
@@ -225,30 +239,21 @@ class AgentTreeProjector:
             raise ValueError("root Run has invalid budget metadata")
         return RunBudgetPolicy.model_validate(raw)
 
-    @staticmethod
-    def _waiting_delegation_ids(run: RunRecord | None) -> tuple[str, ...]:
+    def _waiting_delegation_ids(self, run: RunRecord | None) -> tuple[str, ...]:
         if run is None or run.active_tool_batch is None:
             return ()
         return tuple(
             dict.fromkeys(
                 call.agent_wait.delegation_id
-                for call in run.active_tool_batch.calls
+                for call in load_batch_states(self.store, run)
                 if call.status == "waiting_child" and call.agent_wait is not None
             )
         )
 
     def _delegation_usage(self, relation: DelegationRecord) -> dict[str, int | float]:
-        if relation.child_session_id is None:
+        if relation.child_session_id is None or self.usage is None:
             return {}
-        usage: dict[str, int | float] = {}
-        try:
-            runs = self.store.load_runs(relation.child_session_id)
-        except FileNotFoundError:
-            return usage
-        for run in runs:
-            for key, value in run.usage.items():
-                usage[key] = usage.get(key, 0) + value
-        return usage
+        return self.usage.session_values(relation.child_session_id) or {}
 
     def _interaction_summaries(
         self,
@@ -276,7 +281,7 @@ class AgentTreeProjector:
             )
         except FileNotFoundError:
             return None
-        return run.active_tool_batch
+        return load_tool_batch(self.store, run)
 
     @staticmethod
     def _interaction_summary(

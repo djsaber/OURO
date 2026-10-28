@@ -299,17 +299,21 @@ ExtensionCatalog；当前决策目录落在 Run；实际执行通过 AgentServic
 
 ## DelegationRecord
 
-DelegationRecord 是 canonical record，建议字段如下：
+DelegationRecord 是 schema 2 的 canonical record，主要字段如下：
 
 | 分组 | 字段 |
 |---|---|
 | identity | delegation_id、schema_version、root_session_id |
-| parent | parent_session_id、parent_run_id、parent_tool_call_id、request_id |
+| parent | parent_session_id、parent_run_id、parent_batch_id、parent_tool_call_id、idempotency_key |
 | child | child_session_id、current_child_run_id、agent_id、agent_contract_hash、nickname |
 | task | description、initial_message_id、prompt_digest、显式 resource refs |
 | execution | execution_mode、lifecycle_binding、depth、spawn_state、control_state |
 | policy | frozen AgentDefinition、EffectiveToolRefs、显式 workspace/model 约束、approval_mode、interaction_mode、RunBudgetPolicy |
 | result | terminal child run、result message/resource refs、usage、delivery |
+
+模型委派必须同时保存 parent_batch_id 和 parent_tool_call_id；Host 直接委派两者均为空。
+Provider call ID 只在原生批次内唯一，不能仅凭 parent Run 和 call ID 确认结果或重试身份。
+Agent handle、tree node 和 agent_spawned 事件提供父批次身份；导航可按完整身份选择，省略批次时只接受唯一匹配。
 | lifecycle | created_at、updated_at、started_at、ended_at、closed_at、error |
 
 execution_mode：
@@ -350,6 +354,13 @@ DelegationResult 至少包含：
 
 最终文本从 result_message_id 指向的 canonical child message 读取；DelegationResult 不复制完整最终消息。只有产品
 明确产生了独立的蒸馏摘要时，才以单独 message identity 保存，而不是在 relation 中再存一份文本。
+同步 SpawnAgent 的模型可见摘要由父 Call 的 Outcome.content 保存，structured.result 只保留终态、消息引用、
+资源、计量及错误字段，不再重复保存 final_text。父消息引用该 Outcome；异步交付的展示包络由固定 delivery ID
+对应的 Host Input 保存。完整子正文仍通过 result_message_id 显式查询。
+
+终态收集读取子 Run 的已发布消息成员引用：首条匹配本 Delegation 的 user 输入、最后一条 assistant
+（包含工具调用帧），以及 assistant/tool_result 按历史顺序去重的 resource refs。该步骤不读取历史消息正文、
+Call 参数、Outcome 正文或媒体字节。未发布或已撤销的 Outcome 不贡献资源；后续文本展示和资源复制按所选引用执行。
 
 result terminal 与 result delivery 是两个状态。child completed 不等于结果已经进入父上下文。
 
@@ -389,19 +400,21 @@ SessionStatus 的粗粒度，不把子智能体 UI 状态扩张进 SessionStatus
 terminal 和进程恢复与主 Run 使用同一纯规则；AgentService 只提交转移意图，不自行拼装 Session status。
 
 SpawnAgent(sync) 在 application 层产生类型化 AgentWaitRequest，并把请求与解析结果保存在原 SpawnAgent
-ToolBatchCall 上，至少包含：
+Call 的独立状态上，执行时显式装入 ToolBatchCall，至少包含：
 
 - wait_id；
 - delegation_id；
+- child_run_id；
 - state：pending 或 resolved；
-- resolved delegation id；
+- resolved delegation id 与 child Run id；
 - resolution reason 和 resolved_at。
 
 一个同步 SpawnAgent ToolCall 只创建并等待一个 Delegation。Host 批量等待是独立的查询便利接口，不扩张 durable
 ToolCall 协议；在出现真实的多子任务 join 产品语义前，不预留 all/any、集合或 deadline 状态。
 
-ToolBatchCall 已经携带 tool call、batch 和 turn identity，不得在 Run 上再建立一份重复这些 identity 的
-AgentWaitCheckpoint。child 完成后解析原 ToolCall，恢复同一父 Run，不创建假的用户 Run。
+Call 状态通过原生身份及 attempt 关联 started 事实。同步等待在 child 创建和调度前持久化，此时 Call 可以仍为
+running；父执行停驻时复用同一个 wait_id。取消收尾保留该绑定，resolved 等待不能被旧执行快照重新打开。
+Run 不建立重复这些 identity 的 AgentWaitCheckpoint。child 完成后解析原 ToolCall，恢复同一父 Run。
 
 ## 持久化布局与 Store 端口
 
@@ -409,14 +422,12 @@ AgentWaitCheckpoint。child 完成后解析原 ToolCall，恢复同一父 Run，
 
     sessions/
       <root_session_id>/
-        session.json
+        session-data.sqlite3
         delegations/
           <delegation_id>.json
       <child_session_id>/
-        session.json
+        session-data.sqlite3
         messages.jsonl
-        events.jsonl
-        runs/
 
 Delegation 由发起它的 primary Session 自身拥有。child Session 只保存 delegation_id 引用，不复制完整 relation。
 
@@ -463,21 +474,30 @@ canonical 终态固化结果并唤醒 sync parent；Supervisor 的内存 job 失
 
 ## Spawn 提交协议与幂等
 
-spawn 不是跨多个 Session 文件的单一原子写，因此采用 durable、可重放的提交协议：
+spawn 使用分步提交，父子 Session 之间不承诺单一原子写：
 
 1. 从 parent Run 的 AgentCatalogSnapshot 按 agent_id 解析 definition，并校验 parent Session/Run、depth、预算、
    compatibility、显式 resource refs 和权限。
-2. 使用 parent_tool_call_id 或 Host request_id 生成/查找稳定 idempotency key。
+2. 模型调用由 application 使用完整 `(parent_run_id, parent_batch_id, parent_tool_call_id)` 生成稳定 idempotency key；Host 使用其 request_id。
+   模型请求必须匹配当前活动批次中的原 Call、正 attempt 的 started 记录及实际执行参数；复制到其他 Session 的 Call 不授予执行资格。
 3. 创建 spawn_state=requested 的 DelegationRecord，并在第一次写入前预留稳定的 child_session_id 与
    current_child_run_id。
-4. 按预留 identity 创建带 session_kind=subagent、root/parent/delegation identity 的 child Session；重试时若已存在，
+4. 短父 mutation 内复核当前 epoch、活动 Run、取消标记和 Call 授权；同步请求将预留 child Run 绑定到当前 Call attempt。
+   策略计算、资源复制及调度不持有该锁。
+5. 按预留 identity 创建带 session_kind=subagent、root/parent/delegation identity 的 child Session；重试时若已存在，
    校验其 backlink、策略与 workspace，而不是另建 child。
-5. 推进 spawn_state=child_created。
-6. 按预留 identity 创建 child queued Run；重试时复用并修复 Session projection，不创建第二个 Run。
-7. 通过 RuntimeSupervisor 提交已存在 child Session 的 Run，并传递 `DelegatedTaskInput` attribution。
-8. 推进 spawn_state=submitted 并发布 agent_spawned；queued/running 从 child Run 投影。
+6. 推进 spawn_state=child_created。
+7. 按预留 identity 创建 child queued Run；重试时复用并修复 Session projection，不创建第二个 Run。
+8. 资源和 queued Run 准备后再次检查父授权，再通过 RuntimeSupervisor 提交，并传递 `DelegatedTaskInput` attribution。
+9. 推进 spawn_state=submitted 并发布 agent_spawned；queued/running 从 child Run 投影。
+10. 子 Run 获得执行名额、完成输入准备后，在首次 running 提交内复核父 epoch、取消标记和 aborted/failed 状态。
+    先取得父 mutation，再取得子 mutation，持有至子启动提交结束；不在锁内执行策略、Provider 或插件。
+    父取消或撤销先提交时，子 Run 使用普通取消结算，未接受初始输入、未发出 run_started，也不调用 Provider。
+    子启动先提交时，之后的父取消沿既有 bound 级联处理。正常 completed 的父 Run 不撤销已接受的异步任务。
 
-任一步骤重试时必须复用已有 identity。不得因 Host 超时、模型重试或恢复重复创建 child。
+显式重试仍须满足当前授权并复用已有 identity。不得因 Host 超时、模型重试或恢复重复创建 child。
+首次启动边界只在子 Session 写业务事实；不增加父子分布式事务、启动许可记录或新恢复协议。
+取消后的既存 child 仍由绑定生命周期结算。
 
 启动 reconciliation 处理：
 
@@ -521,6 +541,10 @@ list_agents、read_agent 和 close_agent 保留为 AgentService/Host API，供 H
 AgentService 执行。SpawnAgent(sync) 由 AgentService 返回类型化 AgentWaitRequest，使原 ToolCall/Run 进入 durable
 waiting_child；不得用一个长生命周期 Tool handler coroutine 占住 worker。
 
+application 的控制操作在同一个 ToolExecutionContext 中执行并接受取消。调用者等待已进入的操作收尾；有实际完成
+返回时只保存其观察，取消不能继续发布或恢复旧意图。操作没有返回时保持 unknown_outcome。返回 waiting_child 只表示
+既存等待绑定，不构成结果正文；实际 child 观察由委派终态结算保存。
+
 Host 可通过 AgentService 调用相同控制语义，不需要伪造模型 ToolCall。Host request 必须有 request_id、
 actor/provenance 和相同 capability 检查。
 
@@ -529,17 +553,18 @@ actor/provenance 和相同 capability 检查。
 sync 是以下组合：
 
 1. 父模型调用 SpawnAgent(execution_mode=sync)。
-2. application 使用统一 spawn 原语创建 child，但不向模型提交中间 handle ToolResult。
+2. application 使用统一 spawn 原语，先持久化同步等待与原 attempt 的关联，再创建和调度 child；不提交中间 handle ToolResult。
 3. 原 SpawnAgent ToolCall 进入 waiting_child，父 Run 进入 waiting_child/subagent_join。
 4. RuntimeService 返回 durable waiting outcome，Supervisor worker/permit 被释放。
-5. child terminal 后，application 先固化 DelegationResult，再在父 Session lock 内解析 checkpoint。
-6. `handle + result` 作为原 SpawnAgent、原 tool_call_id 的 ToolResult 提交到原 tool batch。
-7. 父 Run 重新进入 running，并由 Supervisor 重新调度后续模型轮次。
+5. child terminal 后，application 先固化 DelegationResult，再按原 Call 的等待绑定保存确定 Outcome；父 Run 已中止或历史已撤销也不阻止这项观察保存。
+6. 恢复调度只携带完整 Call 身份与等待 resolution，Runtime 点读已保存 Outcome，再将其引用、等待结算和父 Run 恢复状态同提交。Supervisor 和 Runtime 均拒绝错批次，resolution 必须指向等待中的 Delegation 和 child Run。
+7. 提交完成后才进入父扩展恢复与后续执行；整帧历史发布仍使用普通工具批次提交。回调失败或任务取消不能擦除已保存的确定结果。
 
 即使 max_concurrency=1，该流程也不得死锁。waiting child 不计入 active execution permits，但仍计入 active Run 和
 root budget。
 
-底层 AgentWaitRequest 精确表达当前产品语义：一个同步 SpawnAgent 只等待自己创建的一个 delegation。Host 的
+底层 AgentWaitRequest 精确表达当前产品语义：一个同步 SpawnAgent 固定等待自己创建的 delegation 的一个 child_run_id。
+解析结果显式携带 resolved_child_run_id，不能随 Delegation.current_child_run_id 的后续变化改指 follow-up。Host 的
 `wait_agents()` 可等待多个 handle，但它不是模型工具，也不进入 ToolCall 的 durable join 协议。
 
 等待以持久化 child Run identity 为准，通过 `RuntimeSupervisor.wait_run` 共享会话事件流。审批或用户输入只结束
@@ -553,6 +578,21 @@ root budget。
 不能用终态之前读到的“结果不存在”决定结束送达观察。
 
 同步送达以原 ToolCall 的 canonical result 提交为完成边界；父模型仍在生成时也必须完成确认。
+确认只点读该 Call 状态与固定消息骨架，不扫描父 Run 消息、不加载工具参数或 Outcome 正文。
+Call 必须具有 condition_met 的已解析等待、同一 child Run、确定 Outcome 和匹配的已发布消息；未知反馈或 interrupted 等待不构成子结果交付。
+同步结果准备复用同一份已固化的 DelegationResult 快照，资源复制和返回值构造不重新读取可变化的当前结果。
+原 Call 的首个确定 Outcome 是后续恢复的固定输入，委派 revision、关闭状态或结果交付状态变化不触发正文重建。
+follow-up 先结算前一 child Run，再检查是否可替换当前身份；该检查点读原 Call，不能覆盖尚未解析的同步等待。
+发送请求以 Delegation 与 request_id 确定 Input 身份；同一身份的不同正文被拒绝。follow-up 在 child 原生提交中一起
+接受 Input、预留 queued Run 并更新 Session 投影，Run 只引用前一 child Run 与该 Input。相同请求重试复用原 Run，
+不会重新接受正文；执行消费已接受 Input，不能以调度参数替换其内容。
+
+root 的短 mutation 串行化后续接受与 Delegation 当前 Run 的关联，模型选择及调度在锁外进行。SQLite 使用既有原生
+事务提交这些更新；Files 先完成 child 的原生提交，再更新 root 关联。中断后的显式恢复按 child 当前执行头、前一 Run
+身份、冻结契约和固定 Input 校验关联，不扫描已知身份的历史 Run，也不重新执行 child。该分步协议不增加跨会话日志。
+确认送达也携带原 child Run；先前等待的迟到确认不能将后续结果标为 delivered。
+父等待中断只结算等待元信息并保留 unknown_outcome，不生成伪造的确定失败 Outcome。已建立等待的 Call 仍可接收实际
+child 结果；该观察不更新等待/Run 状态、不发布历史，也不改写已发布的未知反馈。Delegation 与原 Call 分别保留其所属事实。
 恢复调度后立即将进程内 job receipt 交给执行任务管理器，句柄按尝试结束独立回收，不能成为送达的前置等待。
 送达观察统一处理尚未恢复、已恢复但整批未提交、已提交和父 Run 终止四种状态。若本地尝试已结束但 join
 仍未恢复，则按执行失败补偿；等待其他子任务或父模型输出本身不属于失败。
@@ -591,7 +631,7 @@ next_boundary 应复用现有 durable queued input：
 
 恢复时若 queue id 已进入 canonical messages，只确认 delivery，不重复追加或启动 Run。
 
-Host 输入接收在同一个 Session mutation 中检查待消费队列和 canonical message receipt。重试已消费输入返回原
+Host 输入接收在同一个 Session mutation 中按 input ID 检查独立接受事实和小生命周期状态。重试已消费输入返回原
 message/Run identity；相同 queue id 携带不同输入时拒绝。接收后调度失败仍可用原 receipt 重试；输入恰好在本地
 job 最后一次队列排空之后到达时，Supervisor 在释放 job 槽位后重新检查该待消费输入。
 
@@ -680,8 +720,15 @@ child final result 建议结构化包含：
 运行时先从 parent 当前决策绑定的 ToolRegistry 解析 exact EffectiveToolRefs，再由 AgentService 将 AgentSpawnPolicy 与
 definition 结果求交并把最终目录持久化到 parent Run。插件 manifest 的进程/网络权限会进入 Host-owned tool metadata，
 插件提供的同名 metadata 不能覆盖它；shell、MCP 和声明了相关 package 权限的工具据此受 network/external-path cap。
-child Run 同时持久化 DelegatedConstraints；external path 未下放时，普通文件工具即使 Host 全局配置更宽也强制使用
-workspace-only 执行上下文。
+Delegation 是冻结定义、工具权限上限、路径约束和 child 预算的持久来源；child Run 保存所属 root/Delegation 身份与
+定义契约摘要，不复制这些配置。Runtime 在首次绑定或等待后重新绑定时点读该记录，核对 Session backlink、冻结策略
+及 Run 来源，随后在 RunResources 中持有本次执行所需值；缺失或不匹配直接失败，不退回 Host 默认权限。
+external path 未下放时，普通文件工具即使 Host 全局配置更宽也强制使用 workspace-only 执行上下文。
+手动摘要按 child Session 的关联读取同一冻结提示与工具上限，不创建委派执行；执行中用户插入消息的策略检查沿用
+活动 child Run 的来源。新 child 执行仍须具有已接受的委派关联。
+
+Delegation 的生命周期 revision 可以更新当前 child、结果和交付状态，不能替换 definition、effective_tools、constraints、
+approval_mode、interaction_mode 或 budget。两后端在原生 mutation/CAS 边界拒绝这类更新，保留原值和 revision。
 
 ### Spawn 权限
 
@@ -754,6 +801,8 @@ root 的交互面板处理；文本、思考和工具流通过子会话 observat
 
 Close 表示 Delegation 拒绝新的 follow-up，并释放进程内控制资源。Close 不删除 child Session、消息、Run 或结果。
 active child 必须先 interrupt 或达到 terminal/recoverable；不能以 close 伪造 completed。
+已接受发送请求的重试保留其身份，不能重新打开已关闭的 Delegation。显式 history continuation 仍按恢复入口的权限与
+冻结契约决定是否创建新 Run。
 
 ### Resume
 
@@ -790,14 +839,22 @@ durable relation 并提交现有 RuntimeSupervisor；实际同时执行数量与
 结果固化、投递、中断、follow-up 和 close 继续由 application lifecycle lock 与 repository CAS 串行化，不通过
 工具 batch 的 `exclusive` 属性建立第二把调度锁。
 
-每个 subagent Run 继续直接读取冻结的 `RunBudgetPolicy`。`RunModelRequests` 在模型请求的 durable
+每个 subagent Run 从所属 Delegation 读取冻结的 `RunBudgetPolicy`，不在 Run metadata 再存副本。`RunModelRequests` 在模型请求的 durable
 boundary 执行本 Run 与共享预算检查；AgentService 从 parent Run 与其 Delegation 对应的每个 subagent
-Session/Run 聚合 usage 和 model round，按 root policy 返回同一 `RunBudgetReason`。因此并发 subagent 在下一个
+Session/Run 定向读取账本原始消耗并聚合 model round，按 root policy 返回 `RunPauseReason`。因此并发 subagent 在下一个
 边界进入现有 `paused` 路径，已完成结果不被改写。
+AgentTree 的 child 用量在账本内按 Session 汇总原始 Run 数值，不加载 child Run 列表或请求历史。
 聚合以 `(session_id, run_id)` 去重，resume/follow-up 新 Run 各计一次；AgentTree 使用相同 Run 粒度展示 root/node
 usage。Supervisor 仍使用原全局 FIFO 与 execution permits，未增加 root-aware scheduler。
 
-root policy 未配置任何预算上限时，共享预算检查直接返回，不枚举 Delegation 或扫描 child Run usage。
+token 预算要求宿主提供同一 UsageService。原始消耗不随展示账单 correction/reset 减少；存在已发出但尚未收到
+用量报告的 parent/child 请求时，不能以已有部分汇总代替全部消耗：新的 spawn 明确拒绝，模型边界以
+usage_unavailable 暂停。已排队的 child 在执行边界重新检查共享预算。普通请求报告计数与摘要请求分开，摘要用量仍
+计入原始消耗。共享预算从计数投影读取 child Run 身份与两类派发数，逐 Run 对照原始报告；
+不加载完整 child Run，也不允许一个 Run 的额外报告覆盖另一个 Run 的缺失。仅有时间上限时不读取
+child 历史或账本；只有轮数上限时不读取账本。无 token 上限时，未知用量不阻止轮数或时间预算的独立判断。
+
+root policy 未配置任何预算上限时，共享预算检查直接返回，不枚举 Delegation 或读取 child Run 消耗。
 
 root budget 耗尽时：
 

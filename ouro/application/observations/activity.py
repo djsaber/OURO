@@ -15,10 +15,11 @@ from ouro.application.contracts.execution import (
     SupervisorRunStatus,
 )
 from ouro.application.contracts.sessions import SessionContextStatus
+from ouro.application.contracts.tool_activity import PendingInteraction
 from ouro.core.context import ContextMetrics
 from ouro.core.events import EventRecord
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
-from ouro.core.tool_batches import ToolBatchCall, ToolCallStatus
+from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord, ToolCallStatus
 from ouro.sessions.base import SessionSnapshot
 
 _MODEL_ACTIVITIES = {
@@ -72,6 +73,7 @@ def project_runtime_activity(
     status_override: SupervisorRunStatus | None = None,
     context_status: SessionContextStatus | None = None,
     effective_context_metrics: ContextMetrics | None = None,
+    batch: ToolCallBatchRecord | None = None,
 ) -> RuntimeActivitySnapshot:
     effective_metrics = effective_context_metrics or (
         context_status.metrics if context_status is not None else None
@@ -103,7 +105,9 @@ def project_runtime_activity(
     for event in sorted(snapshot.events, key=lambda item: (item.sequence, item.event_id)):
         if event.run_id == run.run_id:
             activity = reduce_runtime_activity(activity, event)
-    activity = overlay_run_activity(activity, run)
+    activity = overlay_run_activity(
+        activity, run, tool_calls=project_batch_activity(batch) if batch is not None else None
+    )
     if status_override is not None and status_override != activity.status:
         activity = activity.model_copy(
             update={
@@ -122,6 +126,7 @@ def project_runtime_activity_state(
     status_override: SupervisorRunStatus | None = None,
     context_status: SessionContextStatus | None = None,
     effective_context_metrics: ContextMetrics | None = None,
+    batch: ToolCallBatchRecord | None = None,
 ) -> RuntimeActivitySnapshot:
     """Project bounded current activity without replaying historical events."""
 
@@ -153,7 +158,7 @@ def project_runtime_activity_state(
         sequence=sequence,
         updated_at=run.ended_at or run.started_at,
     )
-    activity = overlay_run_activity(activity, run)
+    activity = overlay_run_activity(activity, run, tool_calls=project_batch_activity(batch))
     if status_override is not None and status_override != activity.status:
         activity = activity.model_copy(
             update={
@@ -168,10 +173,10 @@ def reduce_runtime_activity(
     current: RuntimeActivitySnapshot,
     event: EventRecord,
 ) -> RuntimeActivitySnapshot:
-    if event.sequence <= current.sequence:
+    if event.stream is None and event.sequence <= current.sequence:
         return current
     if event.history_epoch < current.history_epoch:
-        return current.model_copy(update={"sequence": event.sequence})
+        return current.model_copy(update={"sequence": max(current.sequence, event.sequence)})
     if event.history_epoch > current.history_epoch:
         current = RuntimeActivitySnapshot(
             session_id=current.session_id,
@@ -181,11 +186,11 @@ def reduce_runtime_activity(
         )
     resumed = event.event_type == "run_status_changed" and event.payload.get("resumed") is True
     if current.status in _TERMINAL_ACTIVITY and event.event_type != "run_started" and not resumed:
-        return current.model_copy(update={"sequence": event.sequence})
+        return current.model_copy(update={"sequence": max(current.sequence, event.sequence)})
 
     payload = event.payload
     updates: dict[str, Any] = {
-        "sequence": event.sequence,
+        "sequence": max(current.sequence, event.sequence),
         "updated_at": event.created_at,
     }
     if event.run_id is not None:
@@ -329,6 +334,7 @@ def reduce_runtime_activity(
         )
         started_calls = _tool_calls_from_payload(
             payload.get("tool_calls"),
+            batch_id=_string_or_none(payload.get("batch_id")),
             existing=current.tool_calls,
         )
         updates["tool_calls"] = (
@@ -464,6 +470,8 @@ def _selected_run(snapshot: SessionSnapshot, *, run_id: str | None) -> RunRecord
 def overlay_run_activity(
     current: RuntimeActivitySnapshot,
     run: RunRecord,
+    *,
+    tool_calls: tuple[RuntimeToolCallActivity, ...] | None = None,
 ) -> RuntimeActivitySnapshot:
     """Reconcile replayed activity with the canonical Run at the same read boundary."""
 
@@ -490,7 +498,9 @@ def overlay_run_activity(
         "run_phase": run.phase,
         "batch_id": batch.batch_id if batch is not None else None,
         "batch_phase": batch.phase if batch is not None else None,
-        "tool_calls": _overlay_tool_calls(current.tool_calls, batch.calls) if batch else (),
+        "tool_calls": (tool_calls if tool_calls is not None else current.tool_calls)
+        if batch
+        else (),
     }
     if run.abort_requested and run.status in ACTIVE_RUN_STATUSES:
         updates["status"] = "cancelling"
@@ -533,6 +543,52 @@ def overlay_run_activity(
     return current.model_copy(update=updates)
 
 
+def project_batch_activity(
+    batch: ToolCallBatchRecord | None,
+) -> tuple[RuntimeToolCallActivity, ...]:
+    """Project the explicitly selected calls; observed result content stays out of the view."""
+    return (
+        _overlay_tool_calls((), batch.calls, batch_id=batch.batch_id) if batch is not None else ()
+    )
+
+
+def project_batch_interactions(
+    run: RunRecord | None, batch: ToolCallBatchRecord | None
+) -> tuple[PendingInteraction, ...]:
+    """Restore accepted pending interactions from the current Call states."""
+    if run is None or batch is None or run.abort_requested or run.status not in ACTIVE_RUN_STATUSES:
+        return ()
+    pending = []
+    for call in batch.calls:
+        if call.status == "awaiting_approval" and call.approval is not None:
+            pending.append(
+                PendingInteraction(
+                    kind="approval",
+                    session_id=run.session_id,
+                    run_id=run.run_id,
+                    tool_call_id=call.request.id,
+                    tool_name=call.request.name,
+                    request_id=call.approval.approval_id,
+                )
+            )
+        elif call.status == "waiting_user" and call.input_request is not None:
+            invocation = call.invocation
+            pending.append(
+                PendingInteraction(
+                    kind="question",
+                    session_id=run.session_id,
+                    run_id=run.run_id,
+                    tool_call_id=call.request.id,
+                    tool_name=call.request.name,
+                    request=call.input_request.data,
+                    canonical_tool_id=invocation.canonical_tool_id if invocation else None,
+                    plugin_id=invocation.plugin_id if invocation else None,
+                    plugin_class=invocation.plugin_class if invocation else None,
+                )
+            )
+    return tuple(pending)
+
+
 def _run_reset(status: SupervisorRunStatus, activity: RuntimeActivity) -> dict[str, Any]:
     return {
         "status": status,
@@ -570,6 +626,7 @@ def _upsert_tool_call(
             item.status == "streaming" and item.source_index == normalized_index
         ):
             changes: dict[str, object] = {
+                "batch_id": _string_or_none(payload.get("batch_id")),
                 "tool_call_id": tool_call_id,
                 "tool_name": tool_name if tool_name != "unknown" else item.tool_name,
                 "status": status,
@@ -587,6 +644,7 @@ def _upsert_tool_call(
     if not matched:
         updated.append(
             RuntimeToolCallActivity(
+                batch_id=_string_or_none(payload.get("batch_id")),
                 tool_call_id=tool_call_id,
                 tool_name=tool_name,
                 status=status,
@@ -698,6 +756,7 @@ def _append_argument_stream_tail(current: str | None, delta: str) -> str:
 def _tool_calls_from_payload(
     value: object,
     *,
+    batch_id: str | None,
     existing: tuple[RuntimeToolCallActivity, ...] = (),
 ) -> tuple[RuntimeToolCallActivity, ...] | None:
     if not isinstance(value, list):
@@ -723,6 +782,7 @@ def _tool_calls_from_payload(
         arguments = _json_object(item.get("arguments"))
         calls.append(
             RuntimeToolCallActivity(
+                batch_id=batch_id,
                 tool_call_id=tool_call_id,
                 tool_name=tool_name,
                 status=status,
@@ -740,6 +800,8 @@ def _tool_calls_from_payload(
 def _overlay_tool_calls(
     projected: tuple[RuntimeToolCallActivity, ...],
     durable: Iterable[ToolBatchCall],
+    *,
+    batch_id: str,
 ) -> tuple[RuntimeToolCallActivity, ...]:
     projected_by_id = {item.tool_call_id: item for item in projected}
     calls: list[RuntimeToolCallActivity] = []
@@ -755,6 +817,7 @@ def _overlay_tool_calls(
             ended_at = previous.ended_at
         calls.append(
             RuntimeToolCallActivity(
+                batch_id=batch_id,
                 tool_call_id=call.request.id,
                 tool_name=call.request.name,
                 status=call.status,

@@ -16,6 +16,7 @@ from ouro.application.contracts.sessions import (
     SessionDetail,
     SessionView,
 )
+from ouro.application.contracts.tool_activity import PendingInteraction, RuntimeToolCallActivity
 from ouro.application.inputs.queue import QueuedUserInputView
 from ouro.application.observations.sessions import SessionObservation
 from ouro.config import EndpointReasoningConfig, ProviderProtocol, ProviderType
@@ -23,6 +24,7 @@ from ouro.core.agents import ExecutionMode, ToolSelection
 from ouro.core.approvals import ToolPermissionControl
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextMetrics
+from ouro.core.context_snapshots import ModelRequestHeader
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import ReasoningRequest
@@ -280,6 +282,9 @@ class LoadedSession:
     messages: tuple[MessageRecord, ...]
     events: tuple[EventRecord, ...]
     runs: tuple[RunRecord, ...] = ()
+    active_tool_calls: tuple[RuntimeToolCallActivity, ...] = ()
+    pending_interactions: tuple[PendingInteraction, ...] = ()
+    current_request: ModelRequestHeader | None = None
     context_status: SessionContextStatus | None = None
     effective_context_metrics: ContextMetrics | None = None
     compactions: tuple[CompactionRecord, ...] = ()

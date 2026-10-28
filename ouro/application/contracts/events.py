@@ -9,6 +9,7 @@ from ouro.application.contracts.base import ApplicationDTO
 from ouro.core.compaction import CompactionModelOutput
 from ouro.core.events import EventRecord
 from ouro.core.redaction import redact_data
+from ouro.core.response_drafts import ResponseStreamPosition
 
 RuntimeEventCategory = Literal[
     "text",
@@ -33,6 +34,7 @@ class RuntimeEventView(ApplicationDTO):
     category: RuntimeEventCategory
     created_at: datetime
     sequence: int
+    stream: ResponseStreamPosition | None = None
     text: str | None = None
     tool_call_id: str | None = None
     tool_name: str | None = None
@@ -71,6 +73,7 @@ def project_runtime_event(event: EventRecord) -> RuntimeEventView:
         category=category,
         created_at=event.created_at,
         sequence=event.sequence,
+        stream=event.stream,
         text=text,
         tool_call_id=_string(payload.get("tool_call_id")),
         tool_name=_string(payload.get("tool_name")),
@@ -127,16 +130,16 @@ def validate_runtime_event_payload(event_type: str, payload: dict[str, Any]) -> 
     for field in required.get(event_type, ()):
         if not isinstance(payload.get(field), str):
             raise ValueError(f"runtime event {event_type} requires string payload field {field}")
-    if event_type == "agent_spawned" and not (
-        "parent_tool_call_id" in payload
-        and (
-            payload["parent_tool_call_id"] is None
-            or isinstance(payload["parent_tool_call_id"], str)
-        )
-    ):
-        raise ValueError(
-            "runtime event agent_spawned requires nullable string payload field parent_tool_call_id"
-        )
+    if event_type == "agent_spawned":
+        for field in ("parent_tool_call_id", "parent_batch_id"):
+            if field not in payload or (
+                payload[field] is not None and not isinstance(payload[field], str)
+            ):
+                raise ValueError(
+                    f"runtime event agent_spawned requires nullable string payload field {field}"
+                )
+        if (payload["parent_batch_id"] is None) != (payload["parent_tool_call_id"] is None):
+            raise ValueError("runtime event agent_spawned requires a complete parent Call identity")
     if event_type == "compaction_model_output":
         CompactionModelOutput.model_validate(payload)
 
@@ -166,6 +169,7 @@ def _event_category(event_type: str) -> RuntimeEventCategory:
         "plugin_message_added",
         "model_request_started",
         "model_message_completed",
+        "model_response_committed",
         "recovery_tool_result_committed",
         "persistence_warning",
         "plugin_observer_failed",

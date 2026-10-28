@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ouro.core.callbacks import CallbackCancelled
+from ouro.core.cancellation import settle_owned_tasks
 from ouro.core.redaction import SensitiveValueRedactor
 from ouro.local_processes import LocalProcess, start_process
 from ouro.plugins.paths import portable_relative_path
@@ -121,6 +123,7 @@ class JsonRpcWorkerClient:
         params: Mapping[str, object] | None = None,
         *,
         timeout: float | None = None,
+        retain_result_on_cancel: bool = False,
     ) -> object:
         await self.start()
         if self._closed and method != "shutdown":
@@ -137,6 +140,12 @@ class JsonRpcWorkerClient:
         self._pending[request_id] = future
         self._pending_contexts[request_id] = copy_context()
         request_timeout = timeout if timeout is not None else self.request_timeout
+        sent = False
+
+        def mark_sent() -> None:
+            nonlocal sent
+            sent = True
+
         try:
             message: dict[str, object] = {
                 "jsonrpc": "2.0",
@@ -149,24 +158,52 @@ class JsonRpcWorkerClient:
                 if client is self:
                     message["parent_id"] = identity
                     break
-            await self._write(message)
-            return await asyncio.wait_for(future, timeout=request_timeout or None)
+            await self._write(message, on_sent=mark_sent)
+            response = asyncio.shield(future) if retain_result_on_cancel else future
+            return await asyncio.wait_for(response, timeout=request_timeout or None)
         except TimeoutError:
             with suppress(Exception):
                 await self.notify("cancel", {"id": request_id})
             raise
         except asyncio.CancelledError:
+            if not sent:
+                future.cancel()
+                raise
+            # The response may still describe an actual external effect, but the
+            # request can no longer authorize reverse calls or staged state.
+            self._pending_contexts.pop(request_id, None)
+            cancellation = asyncio.create_task(self.notify("cancel", {"id": request_id}))
+            await self._cancel_children(request_id)
+            await settle_owned_tasks(cancellation)
             with suppress(Exception):
-                await asyncio.shield(self.notify("cancel", {"id": request_id}))
+                cancellation.result()
+            if retain_result_on_cancel:
+                await settle_owned_tasks(future)
+                if not future.cancelled():
+                    try:
+                        result = future.result()
+                    except Exception:
+                        # A transport error is not a returned tool observation.
+                        pass
+                    else:
+                        raise CallbackCancelled(result) from None
             raise
         finally:
             self._pending.pop(request_id, None)
             self._pending_contexts.pop(request_id, None)
-            children = [item.task for item in self._incoming.values() if item.parent == request_id]
+            if not future.done():
+                future.cancel()
+            await self._cancel_children(request_id)
+
+    async def _cancel_children(self, request_id: int) -> None:
+        children = [item.task for item in self._incoming.values() if item.parent == request_id]
+        for task in children:
+            task.cancel()
+        if children:
+            await settle_owned_tasks(*children)
             for task in children:
-                task.cancel()
-            if children:
-                await asyncio.gather(*children, return_exceptions=True)
+                if not task.cancelled():
+                    task.exception()
 
     async def notify(self, method: str, params: Mapping[str, object] | None = None) -> None:
         await self.start()
@@ -223,7 +260,9 @@ class JsonRpcWorkerClient:
                 future.set_exception(error)
         self._pending.clear()
 
-    async def _write(self, message: dict[str, object]) -> None:
+    async def _write(
+        self, message: dict[str, object], *, on_sent: Callable[[], None] | None = None
+    ) -> None:
         process = self.process
         if process is None or process.stdin is None:
             raise WorkerProtocolError("plugin worker is not running")
@@ -232,6 +271,8 @@ class JsonRpcWorkerClient:
             raise WorkerProtocolError("plugin worker request exceeds message limit")
         async with self._write_lock:
             process.stdin.write(encoded + b"\n")
+            if on_sent is not None:
+                on_sent()
             await process.stdin.drain()
 
     async def _read_stdout(self) -> None:
@@ -336,7 +377,7 @@ class JsonRpcWorkerClient:
             )
             return
         if not isinstance(params, dict) or (
-            parent is not None and (type(parent) is not int or parent not in self._pending)
+            parent is not None and (type(parent) is not int or parent not in self._pending_contexts)
         ):
             await self._reply_error(request_id, -32602, "invalid request parameters or parent")
             return

@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 
 from ouro.application.harness import capture_session_harness
-from ouro.application.inputs.queue import QueuedInput, QueuedInputQueue
+from ouro.application.inputs.queue import QueuedInput, QueuedInputQueue, queued_input_event
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.application.usage import UsageService
 from ouro.core.base import utc_now
@@ -14,8 +14,9 @@ from ouro.core.continuations import (
     ContinuationFailure,
     RunContinuationRegistry,
 )
+from ouro.core.events import EventRecord
 from ouro.core.harness_calls import accept_state_changes
-from ouro.core.messages import MessageRecord
+from ouro.core.inputs import InputRecord, InputStateChange
 from ouro.core.redaction import redact_text
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_controls import (
@@ -43,6 +44,7 @@ class RunContinuationSettlement:
     queued: bool = False
     failures: tuple[ContinuationFailure, ...] = ()
     diagnostics: tuple[str, ...] = field(default_factory=tuple)
+    events: tuple[EventRecord, ...] = ()
 
 
 class RunContinuationService:
@@ -94,17 +96,11 @@ class RunContinuationService:
             checkpoint = run.continuation
             if checkpoint is None or checkpoint.state != "resolved":
                 return None
-            committed = self.store.load_commit(session_id, checkpoint.decision_id)
-            if committed is None:
-                return None
-            result = committed.output.get("continuation")
-            assert isinstance(result, dict)
-            diagnostic = result.get("diagnostic")
             return RunContinuationSettlement(
                 run=run,
                 settled=True,
-                queued=result.get("queued") is True,
-                diagnostics=(diagnostic,) if isinstance(diagnostic, str) else (),
+                queued=checkpoint.action == "continue",
+                diagnostics=checkpoint.settlement_diagnostics,
             )
 
     async def _settle(
@@ -137,17 +133,16 @@ class RunContinuationService:
             run=run,
             usage_service=self.usage_service,
         )
-        messages = await run_blocking(self.store.load_run_messages, session_id, run_id)
-        # Only consumed inputs determine origin; in-run policy feedback is not a new input.
-        inputs = [message for message in messages if "session_input_mode" in message.metadata]
-        # Driver calls have canonical results without an assistant tool-call message.
-        tool_call_ids = {
-            (message.turn_id, call.id) for message in messages for call in message.tool_calls
-        }
-        tool_call_ids.update(
-            (message.turn_id, message.tool_result.tool_call_id)
-            for message in messages
-            if message.tool_result
+        counts = await run_blocking(self.store.load_run_message_counts, session_id, run_id)
+        if not final_text:
+            last_assistant = await run_blocking(
+                self.store.find_last_assistant_message, session_id, run_id
+            )
+            final_text = last_assistant.text_content if last_assistant is not None else ""
+        usage = (
+            await run_blocking(self.usage_service.run_values, session_id, run_id)
+            if self.usage_service is not None
+            else None
         )
         outcome = RunOutcome(
             harness=draft,
@@ -155,18 +150,11 @@ class RunContinuationService:
             run_id=run.run_id,
             status=run.status,
             origin=run.origin,
-            final_text=final_text or _last_assistant_text(messages, run.run_id),
+            final_text=final_text,
             error=run.error,
-            usage=dict(run.usage),
-            tool_call_count=len(tool_call_ids),
-            automatic_continuation=(
-                all(
-                    message.metadata.get("continuation_decision_id") is not None
-                    for message in inputs
-                )
-                if inputs
-                else None
-            ),
+            usage=usage or {},
+            tool_call_count=counts.tool_call_count,
+            automatic_continuation=counts.automatic_continuation,
         )
         controller_ids = {
             (
@@ -191,19 +179,15 @@ class RunContinuationService:
                 diagnostic="one or more continuation policies failed",
             )
         if len(evaluation.decisions) > 1:
-            resolved = await run_blocking(
+            diagnostics = (
+                "multiple continuation policies requested control; automatic continuation paused",
+            )
+            return await run_blocking(
                 self._resolve,
                 run,
                 action="pause",
                 reason="continuation_policy_conflict",
-            )
-            return RunContinuationSettlement(
-                run=resolved,
-                settled=True,
-                diagnostics=(
-                    "multiple continuation policies requested control; "
-                    "automatic continuation paused",
-                ),
+                diagnostics=diagnostics,
             )
         if not evaluation.decisions:
             if run.status != "completed":
@@ -236,20 +220,18 @@ class RunContinuationService:
                             "abnormal terminal Run"
                         ),
                     )
-                resolved = await run_blocking(
+                return await run_blocking(
                     self._resolve,
                     run,
                     action="pause",
                     reason=f"terminal_run_{run.status}",
                 )
-                return RunContinuationSettlement(run=resolved, settled=True)
-            resolved = await run_blocking(
+            return await run_blocking(
                 self._resolve,
                 run,
                 action="complete",
                 reason="no_continuation_requested",
             )
-            return RunContinuationSettlement(run=resolved, settled=True)
 
         attributed = evaluation.decisions[0]
         try:
@@ -415,10 +397,7 @@ class RunContinuationService:
             latest = self.store.load_run(run.session_id, run.run_id)
             if latest.continuation is None or latest.continuation.state == "resolved":
                 return RunContinuationSettlement(run=latest)
-            resolved = self._resolve_locked(
-                latest, action="pause", reason="session_history_withdrawn"
-            )
-            return RunContinuationSettlement(run=resolved, settled=True)
+            return self._resolve_locked(latest, action="pause", reason="session_history_withdrawn")
 
     def _stage_plan(
         self,
@@ -460,19 +439,17 @@ class RunContinuationService:
             draft = plan.harness
             # A plan without a proven state boundary cannot authorize execution.
             if draft is None:
-                resolved = self._resolve_locked(
+                return self._resolve_locked(
                     latest, action="pause", reason="continuation_state_unavailable"
                 )
-                return RunContinuationSettlement(run=resolved, settled=True)
             if (
                 before.history_epoch != draft.history_epoch
                 or before.harness_version != draft.harness_version
                 or before.last_message_id != draft.last_message_id
             ):
-                resolved = self._resolve_locked(
+                return self._resolve_locked(
                     latest, action="pause", reason="continuation_state_changed"
                 )
-                return RunContinuationSettlement(run=resolved, settled=True)
 
             controller_ref = self._controller_ref_for_plan(checkpoint, plan)
             controller_id = f"{plan.plugin_id}/continuation_policies/{plan.policy_id}"
@@ -480,6 +457,9 @@ class RunContinuationService:
             action, reason = plan.action, plan.reason
             diagnostic = None
             queued = False
+            events: tuple[EventRecord, ...] = ()
+            staged_inputs: tuple[InputRecord, ...] = ()
+            input_changes: tuple[InputStateChange, ...] = ()
             if action == "continue":
                 if controller_ref.activation_id is not None and not any(
                     item.activation_id == controller_ref.activation_id
@@ -520,15 +500,22 @@ class RunContinuationService:
                         session_control_controller_id=controller_ref.active_when_controller_id,
                         session_control_activation_id=controller_ref.activation_id,
                     )
-                    after, _ = self.queue.stage_batch(before, (item,))
+                    staged = self.queue.stage_batch(before, (item,))
+                    staged_inputs, input_changes = staged.inputs, staged.changes
                     queued = True
+                    events = (
+                        queued_input_event(
+                            before, item, len(before.pending_input_ids) + 1 - len(staged.superseded)
+                        ),
+                    )
             resolved = _resolved_run(
                 latest,
                 action=action,
                 controller_id=controller_id,
                 reason=reason,
+                diagnostics=(diagnostic,) if diagnostic else (),
             )
-            self.session_controls.commit(
+            committed = self.session_controls.commit(
                 SessionCommit(
                     operation_id=checkpoint.decision_id,
                     before=before,
@@ -537,7 +524,9 @@ class RunContinuationService:
                     if action == plan.action
                     else (),
                     runs=(resolved,),
-                    output={"continuation": {"queued": queued, "diagnostic": diagnostic}},
+                    inputs=staged_inputs,
+                    input_changes=input_changes,
+                    events=(*events, _resolution_event(resolved, queued=queued)),
                 ),
                 released_activation_ids=plan.released_activation_ids
                 if action == plan.action
@@ -548,6 +537,7 @@ class RunContinuationService:
                 settled=True,
                 queued=queued,
                 diagnostics=(diagnostic,) if diagnostic else (),
+                events=committed.events,
             )
 
     @staticmethod
@@ -575,31 +565,16 @@ class RunContinuationService:
         reason: str,
         diagnostic: str,
     ) -> RunContinuationSettlement:
-        with self.store.session_mutation(run.session_id):
-            before = self.store.load_session_record(run.session_id)
-            latest = self.store.load_run(run.session_id, run.run_id)
-            checkpoint = latest.continuation
-            assert checkpoint is not None
-            if checkpoint.state == "resolved":
-                return RunContinuationSettlement(run=latest)
-            resolved = _resolved_run(latest, action="pause", reason=reason)
-            self.store.commit_session(
-                SessionCommit(
-                    operation_id=checkpoint.decision_id,
-                    before=before,
-                    runs=(resolved,),
-                    output={"continuation": {"queued": False, "diagnostic": diagnostic}},
-                )
-            )
-            return RunContinuationSettlement(
-                run=resolved,
-                settled=True,
-                failures=failures,
-                diagnostics=(
-                    diagnostic,
-                    "Session controls remain active; explicit release is required.",
-                ),
-            )
+        return self._resolve(
+            run,
+            action="pause",
+            reason=reason,
+            failures=failures,
+            diagnostics=(
+                diagnostic,
+                "Session controls remain active; explicit release is required.",
+            ),
+        )
 
     @staticmethod
     def _failure(
@@ -640,17 +615,21 @@ class RunContinuationService:
         action: str,
         controller_id: str | None = None,
         reason: str | None = None,
-    ) -> RunRecord:
+        diagnostics: tuple[str, ...] = (),
+        failures: tuple[ContinuationFailure, ...] = (),
+    ) -> RunContinuationSettlement:
         with self.store.session_mutation(run.session_id):
             latest = self.store.load_run(run.session_id, run.run_id)
             checkpoint = latest.continuation
             if checkpoint is None or checkpoint.state == "resolved":
-                return latest
+                return RunContinuationSettlement(run=latest)
             return self._resolve_locked(
                 latest,
                 action=action,
                 controller_id=controller_id,
                 reason=reason,
+                diagnostics=diagnostics,
+                failures=failures,
             )
 
     def _resolve_locked(
@@ -660,23 +639,32 @@ class RunContinuationService:
         action: str,
         controller_id: str | None = None,
         reason: str | None = None,
-    ) -> RunRecord:
+        diagnostics: tuple[str, ...] = (),
+        failures: tuple[ContinuationFailure, ...] = (),
+    ) -> RunContinuationSettlement:
         resolved = _resolved_run(
             run,
             action=action,
             controller_id=controller_id,
             reason=reason,
+            diagnostics=diagnostics,
         )
         assert run.continuation is not None
-        self.store.commit_session(
+        committed = self.store.commit_session(
             SessionCommit(
                 operation_id=run.continuation.decision_id,
                 before=self.store.load_session_record(run.session_id),
                 runs=(resolved,),
-                output={"continuation": {"queued": False, "diagnostic": None}},
+                events=(_resolution_event(resolved, failures=failures),),
             )
         )
-        return resolved
+        return RunContinuationSettlement(
+            run=resolved,
+            settled=True,
+            diagnostics=diagnostics,
+            failures=failures,
+            events=committed.events,
+        )
 
 
 def _resolved_run(
@@ -685,29 +673,45 @@ def _resolved_run(
     action: str,
     controller_id: str | None = None,
     reason: str | None = None,
+    diagnostics: tuple[str, ...] = (),
 ) -> RunRecord:
     checkpoint = run.continuation
     assert checkpoint is not None
     return run.model_copy(
         update={
-            "continuation": checkpoint.model_copy(
-                update={
-                    "state": "resolved",
-                    "action": action,
-                    "selected_controller_id": controller_id,
-                    "reason": reason,
-                    "resolved_at": utc_now(),
-                }
+            "continuation": checkpoint.resolved(
+                action=action,
+                controller_id=controller_id,
+                reason=reason,
+                diagnostics=diagnostics,
             )
         }
     )
 
 
-def _last_assistant_text(messages: list[MessageRecord], run_id: str) -> str:
-    for message in reversed(messages):
-        if message.run_id == run_id and message.role == "assistant":
-            return message.text_content
-    return ""
+def _resolution_event(
+    run: RunRecord,
+    *,
+    queued: bool = False,
+    failures: tuple[ContinuationFailure, ...] = (),
+) -> EventRecord:
+    checkpoint = run.continuation
+    assert checkpoint is not None
+    return EventRecord(
+        session_id=run.session_id,
+        run_id=run.run_id,
+        event_type="run_continuation_resolved",
+        payload={
+            "decision_id": checkpoint.decision_id,
+            "action": checkpoint.action,
+            "controller_id": checkpoint.selected_controller_id,
+            "reason": checkpoint.reason,
+            "queued": queued,
+            "failure_count": len(failures),
+            "failures": [failure.model_dump(mode="json") for failure in failures],
+            "diagnostics": list(checkpoint.settlement_diagnostics),
+        },
+    )
 
 
 __all__ = ["RunContinuationService", "RunContinuationSettlement"]

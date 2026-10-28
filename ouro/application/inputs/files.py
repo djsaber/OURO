@@ -28,6 +28,7 @@ from ouro.core.message_roles import MessageRole
 from ouro.core.messages import ContentBlock, ImageContent, MessageRecord, TextContent
 from ouro.core.resources import ResourceRecord
 from ouro.resources import ResourceStore
+from ouro.resources.media import materialize_media
 from ouro.tools.base import ToolExecutionContext
 
 DEFAULT_INPUT_CONTENT_BUDGET = 8192
@@ -140,6 +141,7 @@ def _prepare_media_content(
     *,
     role: MessageRole,
     modalities: frozenset[MediaModality],
+    prepare_media: Callable[[MediaContent, str | None], _PreparedMedia] | None = None,
 ) -> Blocks:
     """Check eligibility without dropping media in response to later input."""
     prepared: Blocks = []
@@ -148,7 +150,7 @@ def _prepare_media_content(
             reason = _input_media_omission(role, block.type, modalities)
             if reason is None and block.media_type:
                 reason = media_format_omission(block.type, block.media_type)
-            prepared.append(_inline_media(block, reason))
+            prepared.append((prepare_media or _inline_media)(block, reason))
         else:
             prepared.append(block)
     return prepared
@@ -186,6 +188,7 @@ class _Source:
     media_type: str
     size: int
     read: Callable[[tuple[tuple[int, int], ...]], tuple[bytes, ...]]
+    resource_id: str | None = None
 
     def header(self) -> str:
         # Uploaded bytes are stable, but their Session address changes on copy/import.
@@ -209,11 +212,12 @@ class FileInputProjector:
         *,
         store: ResourceStore,
         record: Callable[[str, str], ResourceRecord],
+        capture: Callable[[str, str, MediaContent], MediaContent],
         max_resource_bytes: int,
         max_text_bytes: int,
         max_media_bytes: int,
     ) -> None:
-        self.store, self.record = store, record
+        self.store, self.record, self.capture = store, record, capture
         self.max_resource_bytes, self.max_text_bytes, self.max_media_bytes = (
             max_resource_bytes,
             max_text_bytes,
@@ -265,6 +269,14 @@ class FileInputProjector:
                         ),
                         0,
                     )
+                # Publication follows a stable observation, outside the unavailable-file
+                # fallback: persistence failures must not silently discard observed media.
+                blocks = [
+                    _inline_media(self.capture(message.session_id, item.name, part.load()), None)
+                    if isinstance(part, _PreparedMedia) and part.omission is None
+                    else part
+                    for part in blocks
+                ]
                 content.append(
                     TextContent(
                         text=(
@@ -314,6 +326,7 @@ class FileInputProjector:
             record.media_type,
             record.size,
             partial(self.store.read_ranges, session_id, record),
+            record.resource_id,
         )
 
     def _reference_blocks(
@@ -405,6 +418,7 @@ class FileInputProjector:
                 message.content,
                 role=message.role,
                 modalities=input_modalities,
+                prepare_media=partial(self._prepare_owned_media, message.session_id),
             )
             if message.semantic_tag != "attachments":
                 for identity in message.resource_refs:
@@ -431,6 +445,18 @@ class FileInputProjector:
                 )
             )
         return PreparedFileInputs(list(reversed(prepared)), DEFAULT_REQUEST_MEDIA_CHARS)
+
+    def _prepare_owned_media(
+        self, session_id: str, block: MediaContent, reason: str | None
+    ) -> _PreparedMedia:
+        if block.resource_id is None or block.uri or reason is not None:
+            return _inline_media(block, reason)
+        record = self.record(session_id, block.resource_id)
+        return _PreparedMedia(
+            block.type,
+            4 * ((record.size + 2) // 3),
+            lambda: materialize_media(block, lambda _: self.store.load_content(session_id, record)),
+        )
 
     def project(
         self,
@@ -482,7 +508,12 @@ class FileInputProjector:
         preview_budget = min(content_budget, DEFAULT_ITEM_TEXT_BYTES, self.max_text_bytes)
         edge = max(512, preview_budget // 2)
         full = source.size <= preview_budget
-        ranges = ((0, source.size),) if full else ((0, edge), (max(edge, source.size - edge), edge))
+        tail_start = min(source.size, max(edge, source.size - edge))
+        ranges = (
+            ((0, source.size),)
+            if full
+            else ((0, min(edge, source.size)), (tail_start, source.size - tail_start))
+        )
         parts = source.read(ranges)
         prefix = parts[0]
         detected = file_media_type(prefix)
@@ -509,6 +540,7 @@ class FileInputProjector:
                 return constructors[kind](
                     uri=f"data:{detected};base64,{base64.b64encode(raw).decode('ascii')}",
                     media_type=detected,
+                    resource_id=source.resource_id,
                 )
 
             return (

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from ouro.application.inputs.queue import input_operation_id
+import ouro.sessions.backends.files.store as file_store
 from ouro.application.resources import ResourceService
 from ouro.application.runtime.environment import RuntimeEnvironment
 from ouro.application.runtime.service import RuntimeService
@@ -112,9 +112,9 @@ async def test_interrupted_publication_keeps_preparation_retryable(
 
     with monkeypatch.context() as patch:
         if backend == "files":
-            patch.setattr(runtime.store._commits, "save_session_record", fail)
+            patch.setattr(file_store, "write_session", fail)
         else:
-            patch.setattr(runtime.store, "_insert_resource_reference", fail)
+            patch.setattr(file_store.sqlite_resources, "attach_reference", fail)
         with pytest.raises(PersistenceError, match="publication interrupted"):
             await runtime.run(
                 "read",
@@ -234,8 +234,8 @@ async def test_first_input_acceptance_survives_execution_setup_failure(
     assert accepted == [True]
     identity = created[0].session_id
     assert runtime.sessions.input_accepted(identity, "accepted")
-    assert runtime.store.load_commit(identity, input_operation_id("accepted")) is not None
-    session = runtime.store.load_runtime_session(identity)
+    assert runtime.store.load_input(identity, "accepted").item.prompt == "keep this"
+    session = runtime.store.load_session(identity)
     queued = runtime.queued_inputs.eligible(session)
     assert len(queued) == 1 and queued[0].prompt == "keep this"
     assert session.messages == []

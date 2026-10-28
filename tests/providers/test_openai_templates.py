@@ -7,7 +7,7 @@ import pytest
 
 from ouro.config import ProviderConfigManager, ProviderRuntimeOptions
 from ouro.config.provider_templates import get_provider_template
-from ouro.core.context import ContextView
+from ouro.core.context import ContextBuilder
 from ouro.core.messages import ModelMessage
 from ouro.core.reasoning import ReasoningRequest, resolve_reasoning
 from ouro.core.tools import ToolDefinition
@@ -68,9 +68,9 @@ async def test_openai_preset_sends_native_responses_tools_and_reasoning(
             events = [
                 event
                 async for event in adapter.stream(
-                    ContextView(
-                        model_messages=[ModelMessage.text(role="user", text="Reply OK.")],
-                        tool_definitions=[
+                    ContextBuilder().build(
+                        messages=[ModelMessage.text(role="user", text="Reply OK.")],
+                        tools=[
                             ToolDefinition(
                                 name="echo",
                                 description="Return the given value",

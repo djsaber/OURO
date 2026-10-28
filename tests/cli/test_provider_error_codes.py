@@ -38,10 +38,11 @@ async def test_provider_error_code_survives_runtime_persistence_and_cli_json(
     monkeypatch.setattr("ouro.cli.run.build_default_runtime", lambda *args, **kwargs: runtime)
     assert await run_json("hello", home=tmp_path) == 1
     result = json.loads(capsys.readouterr().out)
-    failure = next(event for event in result["events"] if event["event_type"] == "run_failed")
-    assert failure["payload"] == {
-        "error": "Login required.",
-        "error_code": "authentication_required",
-    }
+    assert "events" not in result
+    assert result["error_code"] == "authentication_required"
+    assert result["error"] == "Login required."
     persisted = store.load_session(result["session_id"])
-    assert persisted.events[-1].payload == failure["payload"]
+    assert persisted.events[-1].payload == {
+        "error": result["error"],
+        "error_code": result["error_code"],
+    }

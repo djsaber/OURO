@@ -24,6 +24,7 @@ from ouro.tools import ToolRegistry
 from tests.application.test_agents import _services
 from tests.application.test_compaction import SummaryRouteProvider, _append_turns, _summary_adapter
 from tests.application.test_runtime import GateProvider
+from tests.tool_batches import seed_spawn_request
 
 
 def _record_loop_store_calls(store, monkeypatch) -> list[str]:
@@ -133,15 +134,20 @@ async def test_agent_lifecycle_and_tree_keep_store_off_loop(tmp_path, monkeypatc
     try:
         tree = await service.subscribe_agent_tree("ses_root")
         handle = await service.spawn_agent(
-            SpawnAgentRequest(
-                request_id="async-boundaries",
-                parent_session_id="ses_root",
-                parent_run_id="run_parent",
-                parent_tool_call_id="spawn_call",
-                agent_id="reader",
-                task="Read evidence",
-                description="Read evidence",
-                execution_mode="async",
+            await asyncio.to_thread(
+                seed_spawn_request,
+                store,
+                SpawnAgentRequest(
+                    request_id="async-boundaries",
+                    parent_session_id="ses_root",
+                    parent_run_id="run_parent",
+                    parent_batch_id="batch_spawn",
+                    parent_tool_call_id="spawn_call",
+                    agent_id="reader",
+                    task="Read evidence",
+                    description="Read evidence",
+                    execution_mode="async",
+                ),
             )
         )
         await service.wait_agents([handle.delegation_id])
@@ -413,15 +419,20 @@ async def test_spawn_submission_commit_serializes_with_agent_lifecycle(tmp_path,
     tasks = []
     try:
         handle = await service.spawn_agent(
-            SpawnAgentRequest(
-                request_id="submission-race",
-                parent_session_id="ses_root",
-                parent_run_id="run_parent",
-                parent_tool_call_id="spawn_call",
-                agent_id="reader",
-                task="Read",
-                description="Read",
-                execution_mode="async",
+            await asyncio.to_thread(
+                seed_spawn_request,
+                store,
+                SpawnAgentRequest(
+                    request_id="submission-race",
+                    parent_session_id="ses_root",
+                    parent_run_id="run_parent",
+                    parent_batch_id="batch_spawn",
+                    parent_tool_call_id="spawn_call",
+                    agent_id="reader",
+                    task="Read",
+                    description="Read",
+                    execution_mode="async",
+                ),
             )
         )
         await service.wait_agents([handle.delegation_id])

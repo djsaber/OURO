@@ -7,12 +7,14 @@ import pytest
 
 from ouro.application.agents.tree import AgentTreeProjector
 from ouro.application.contracts.agents import SpawnAgentRequest
+from ouro.application.observations.events import SessionEventStream
 from ouro.core.errors import PersistenceError, SessionNotFoundError
 from ouro.core.events import EventRecord
 from ouro.core.state import SessionRecord
 from ouro.sessions import SQLiteSessionStore
 from tests.application.test_agents import _services
 from tests.application.test_session_event_following import supervisor_for
+from tests.tool_batches import seed_spawn_request
 
 
 @pytest.mark.parametrize("already_observing", [False, True])
@@ -65,15 +67,20 @@ async def test_tree_observes_child_materialized_after_delegation_reservation(
                 subscription = await service.subscribe_agent_tree("ses_root")
             spawning = asyncio.create_task(
                 service.spawn_agent(
-                    SpawnAgentRequest(
-                        request_id="observe-reserved-child",
-                        parent_session_id="ses_root",
-                        parent_run_id="run_parent",
-                        parent_tool_call_id="spawn_call",
-                        agent_id="reader",
-                        task="Read bounded evidence.",
-                        description="Observe reserved child",
-                        execution_mode="async",
+                    await asyncio.to_thread(
+                        seed_spawn_request,
+                        store,
+                        SpawnAgentRequest(
+                            request_id="observe-reserved-child",
+                            parent_session_id="ses_root",
+                            parent_run_id="run_parent",
+                            parent_batch_id="batch_spawn",
+                            parent_tool_call_id="spawn_call",
+                            agent_id="reader",
+                            task="Read bounded evidence.",
+                            description="Observe reserved child",
+                            execution_mode="async",
+                        ),
                     )
                 )
             )
@@ -206,20 +213,22 @@ async def test_text_burst_is_filtered_before_state_buffer_and_tree_query(
     loop = asyncio.get_running_loop()
     reading, published = asyncio.Event(), asyncio.Event()
     release = threading.Event()
-    read = store.load_events_after
+    read = SessionEventStream._read_page
     queries = []
     project = service._tree_projector.snapshot
 
-    def paused_read(*args, **kwargs):
+    def paused_read(stream):
         loop.call_soon_threadsafe(reading.set)
         assert release.wait(10)
-        return read(*args, **kwargs)
+        return read(stream)
 
     def counted_project(*args):
         queries.append(threading.get_ident())
         return project(*args)
 
-    monkeypatch.setattr(store, "load_events_after", paused_read)
+    # Pause before the page owns a read scope, so subscription setup and the
+    # burst writer can finish before the follower takes its snapshot.
+    monkeypatch.setattr(SessionEventStream, "_read_page", paused_read)
     monkeypatch.setattr(service._tree_projector, "snapshot", counted_project)
     subscription = await service.subscribe_agent_tree("ses_root")
     source = supervisor._event_streams["ses_root"]

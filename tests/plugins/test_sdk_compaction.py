@@ -180,4 +180,4 @@ async def test_runtime_abort_cancels_async_sdk_compaction_and_owns_cleanup(tmp_p
     assert compact_result.run.status == "aborted"
     assert abort_result.run.status == "aborted"
     assert stopped.is_set()
-    assert store.load_session_record(session.session_id).active_compaction_id is None
+    assert store.load_session_record(session.session_id).context_selection.compaction_id is None

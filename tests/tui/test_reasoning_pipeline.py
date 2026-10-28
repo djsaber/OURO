@@ -84,7 +84,8 @@ async def test_max_effort_response_reaches_persisted_conversation_history(
             assistant = snapshot.messages[-1]
             assert assistant.reasoning_content == "Checking the evidence."
             assert assistant.provider_continuation is not None
-            assert any(e.event_type == "model_reasoning_delta" for e in snapshot.events)
+            assert not any(e.event_type == "model_reasoning_delta" for e in snapshot.events)
+            assert any(e.event_type == "model_response_committed" for e in snapshot.events)
             entries, _ = project_transcript_entries(
                 snapshot.messages,
                 (),

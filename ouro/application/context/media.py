@@ -1,18 +1,15 @@
-"""Prepare media projections and recover their boundary from the latest request."""
+"""Apply the current media selection without reading or changing request history."""
 
 from __future__ import annotations
 
 from typing import Protocol
 
-from pydantic import ValidationError
-
 from ouro.application.inputs.files import PreparedFileInputs, prepare_inline_messages
 from ouro.core.content import MediaModality
-from ouro.core.errors import PersistenceError
-from ouro.core.media_context import MEDIA_CONTEXT_KEY, MediaElisionState, plan_media_elision
+from ouro.core.context_selection import ContextSelection
+from ouro.core.media_context import plan_media_elision
 from ouro.core.messages import MessageRecord
 from ouro.core.state import SessionRecord
-from ouro.sessions import SessionStore
 
 
 class ModelMessagePreparer(Protocol):
@@ -28,8 +25,7 @@ class ModelMessagePreparer(Protocol):
 class MediaContextPreparation:
     """Produce candidate projections without committing state or generating summaries."""
 
-    def __init__(self, store: SessionStore, prepare_messages: ModelMessagePreparer | None) -> None:
-        self.store = store
+    def __init__(self, prepare_messages: ModelMessagePreparer | None) -> None:
         self.prepare_messages = prepare_messages
 
     def project(
@@ -40,8 +36,8 @@ class MediaContextPreparation:
         history: list[MessageRecord],
         input_modalities: frozenset[MediaModality],
         input_budget_tokens: int,
-    ) -> tuple[list[MessageRecord], MediaElisionState]:
-        state = self._state(session, history)
+    ) -> tuple[list[MessageRecord], ContextSelection]:
+        state = session.context_selection
         prepared = (
             self.prepare_messages(
                 messages,
@@ -53,19 +49,3 @@ class MediaContextPreparation:
         )
         state = plan_media_elision(history, prepared.media_sizes, state, limit=prepared.media_limit)
         return prepared.materialize(state.elided_ids(history)), state
-
-    def _state(self, session: SessionRecord, history: list[MessageRecord]) -> MediaElisionState:
-        header = self.store.load_latest_context_header(session.session_id)
-        raw = header.context_metadata.get(MEDIA_CONTEXT_KEY) if header is not None else None
-        fresh = MediaElisionState(history_epoch=session.history_epoch)
-        if raw is None:
-            return fresh
-        try:
-            state = MediaElisionState.model_validate(raw)
-        except ValidationError as exc:
-            raise PersistenceError("invalid media projection state in latest context") from exc
-        if state.history_epoch != session.history_epoch:
-            return fresh
-        if state.media_elided_through_message_id is not None and not state.elided_ids(history):
-            return fresh
-        return state

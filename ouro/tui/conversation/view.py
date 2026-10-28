@@ -314,7 +314,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         compactions: Iterable[CompactionRecord] = (),
         runs: Iterable[RunPresentation] = (),
         *,
-        mutable_tool_calls: Iterable[tuple[str | None, str]] = (),
+        mutable_tool_calls: Iterable[tuple[str | None, str | None, str]] = (),
         visible_scaffold_delegation_id: str | None = None,
         held_scroll_y: float | None = None,
         reusable_history: ConversationHistoryState | None = None,
@@ -628,14 +628,14 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             return
         self._history.update_agents(materialized)
         agents_by_call = {
-            (agent.parent_run_id, agent.parent_tool_call_id): agent
+            (agent.parent_run_id, agent.parent_batch_id, agent.parent_tool_call_id): agent
             for agent in materialized
             if agent.parent_tool_call_id is not None
         }
         for row in self._tools.values():
             if row.run_id is None:
                 continue
-            agent = agents_by_call.get((row.run_id, row.tool_call_id))
+            agent = agents_by_call.get((row.run_id, row.tool.batch_id, row.tool_call_id))
             if agent is not None:
                 row.apply_agent(agent)
 

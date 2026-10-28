@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass
 from inspect import signature
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, ValidationInfo, field_validator
 
+from ouro.core.agents import AgentControlRequest
 from ouro.core.base import OuroModel
-from ouro.core.callbacks import invoke_owned_callback
-from ouro.core.cancellation import AbortSignal
+from ouro.core.callbacks import CallbackCancelled, invoke_owned_callback
+from ouro.core.cancellation import AbortSignal, settle_owned_tasks
 from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.interactions import ToolInputResolution
 from ouro.core.tools import (
@@ -25,6 +26,7 @@ from ouro.core.tools import (
     ToolOutcomeStatus,
     ToolPermissionControl,
     ToolResult,
+    ToolResultValue,
     ToolSource,
 )
 from ouro.local_processes.commands import (
@@ -42,6 +44,7 @@ __all__ = [
     "ToolEffect",
     "ToolExecutionAborted",
     "ToolExecutionContext",
+    "ToolExecutionInterrupted",
     "ToolPolicyError",
     "ToolExecutionOutcome",
     "ToolInputRequest",
@@ -60,6 +63,16 @@ class ToolExecutionAborted(Exception):
         self.reason = reason
 
 
+class ToolExecutionInterrupted(Exception):
+    def __init__(
+        self, reason: str, *, result: object = None, propagate_cancel: bool = False
+    ) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.result = result
+        self.propagate_cancel = propagate_cancel
+
+
 class ToolPolicyError(ValueError):
     """Raised when a tool request violates an execution policy."""
 
@@ -75,6 +88,7 @@ class ToolExecutionContext:
     workspace_only: bool = False
     max_output_chars: int | None = DEFAULT_PROCESS_OUTPUT_LIMIT
     max_output_media_chars: int = 20 * 1024 * 1024
+    on_late_result: Callable[[ToolInvocation, ToolResultValue], Awaitable[None]] | None = None
 
     @property
     def is_aborted(self) -> bool:
@@ -87,6 +101,65 @@ class ToolExecutionContext:
     def raise_if_aborted(self) -> None:
         if self.is_aborted:
             raise ToolExecutionAborted(self.abort_reason)
+
+    async def invoke_owned(
+        self,
+        invoke: Callable[[], Coroutine[Any, Any, object]],
+    ) -> object:
+        """Own one tool task until completion or a fully-observed cancellation outcome."""
+
+        self.raise_if_aborted()
+        signal = self.signal
+        execution = asyncio.create_task(invoke())
+        abort_waiter = (
+            asyncio.create_task(signal.wait(poll_interval=self.poll_interval))
+            if signal is not None
+            else None
+        )
+        try:
+            if abort_waiter is None:
+                await asyncio.wait((execution,))
+                return execution.result()
+            done, _ = await asyncio.wait(
+                (execution, abort_waiter),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        except asyncio.CancelledError:
+            execution.cancel()
+            if abort_waiter is not None:
+                abort_waiter.cancel()
+            await settle_owned_tasks(
+                execution, *([abort_waiter] if abort_waiter is not None else [])
+            )
+            raise ToolExecutionInterrupted(
+                self.abort_reason,
+                result=_cancelled_result(execution),
+                propagate_cancel=True,
+            ) from None
+        except ToolExecutionAborted as exc:
+            raise ToolExecutionInterrupted(exc.reason) from None
+
+        if abort_waiter in done:
+            execution.cancel()
+            interrupted = await settle_owned_tasks(execution)
+            result = _cancelled_result(execution)
+            raise ToolExecutionInterrupted(
+                self.abort_reason,
+                result=result,
+                propagate_cancel=interrupted,
+            )
+
+        abort_waiter.cancel()
+        if await settle_owned_tasks(abort_waiter):
+            raise ToolExecutionInterrupted(
+                self.abort_reason,
+                result=_cancelled_result(execution),
+                propagate_cancel=True,
+            )
+        try:
+            return execution.result()
+        except ToolExecutionAborted as exc:
+            raise ToolExecutionInterrupted(exc.reason) from None
 
     async def sleep(self, seconds: float) -> None:
         deadline = asyncio.get_running_loop().time() + seconds
@@ -203,6 +276,19 @@ class ToolExecutionContext:
             raise ToolExecutionAborted(exc.reason) from exc
 
 
+def _cancelled_result(execution: asyncio.Task[object]) -> object:
+    if execution.cancelled():
+        return None
+    try:
+        return execution.result()
+    except CallbackCancelled as exc:
+        return exc.result
+    except Exception:
+        # No valid returned result was observed. Cancellation does not establish
+        # that external work was rolled back or never happened.
+        return None
+
+
 def _bounded_text(text: str, limit: int, *, truncated: bool) -> str:
     if not truncated and len(text) <= limit:
         return text
@@ -211,7 +297,7 @@ def _bounded_text(text: str, limit: int, *, truncated: bool) -> str:
     return f"{text[:prefix_length]}{marker}"
 
 
-ToolExecutionResult = ToolResult | ToolInputRequest
+ToolExecutionResult = ToolResult | ToolInputRequest | AgentControlRequest
 ToolHandler = Callable[
     [ToolInvocation, ToolExecutionContext], ToolExecutionResult | Awaitable[ToolExecutionResult]
 ]

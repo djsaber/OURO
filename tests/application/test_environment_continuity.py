@@ -4,6 +4,7 @@ import pytest
 
 from ouro.application.agents.definitions import AgentDefinitionService
 from ouro.application.runs.lifecycle import reserve_run
+from ouro.application.runs.tool_batches import load_tool_batch
 from ouro.application.runtime.service import RuntimeService
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.core.adapter import RuntimeAdapter
@@ -31,6 +32,8 @@ from ouro.plugins.session_controllers import (
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
+from tests.agent_facts import seed_delegation
+from tests.run_facts import run_events
 
 
 class CurrentCatalog:
@@ -152,7 +155,7 @@ async def test_approval_after_environment_change_closes_call_without_retargeting
         result = await runtime.approve_tool(session_id=waiting.session.session_id, approved=True)
         assert result.run.status == "completed", result.run.error
         assert executed == []
-        messages = store.load_runtime_session(waiting.session.session_id).messages
+        messages = store.load_session(waiting.session.session_id).messages
         results = [m.tool_result for m in messages if m.tool_result is not None]
         assert len(results) == 1
         assert results[0].tool_call_id == "call_action"
@@ -247,9 +250,11 @@ async def test_missing_tool_preserves_answer_and_closes_interaction(store, resum
             session_id=waiting.session.session_id, run_id=waiting.run.run_id, answer="yes"
         )
         assert result.run.status == "completed", result.run.error
-        receipt = next(event for event in result.events if event.event_type == "ask_user_resolved")
+        receipt = next(
+            event for event in run_events(store, result) if event.event_type == "ask_user_resolved"
+        )
         assert receipt.payload["answer"] == "yes"
-        messages = store.load_runtime_session(waiting.session.session_id).messages
+        messages = store.load_session(waiting.session.session_id).messages
         results = [message.tool_result for message in messages if message.tool_result is not None]
         assert len(results) == 1
         assert results[0].is_error is resumable
@@ -309,7 +314,7 @@ async def test_answer_resume_checks_current_permission_and_checkpoints_before_ef
 
     def resume(invocation, resolution, request, context):
         saved = store.load_run(invocation.session_id, invocation.run_id)
-        call = saved.active_tool_batch.calls[0]
+        call = load_tool_batch(store, saved).calls[0]
         assert call.status == "running"
         assert call.input_resolution.value == "yes"
         executed.append(invocation.tool_call_id)
@@ -359,7 +364,7 @@ async def test_answer_resume_checks_current_permission_and_checkpoints_before_ef
         )
         assert result.run.status == "completed", result.run.error
         assert executed == ([] if denied else ["call_action"])
-        messages = store.load_runtime_session(waiting.session.session_id).messages
+        messages = store.load_session(waiting.session.session_id).messages
         tool_result = next(message.tool_result for message in messages if message.tool_result)
         assert tool_result.is_error is denied
 
@@ -401,13 +406,17 @@ async def test_delegated_capabilities_use_current_implementation_without_adding_
         catalogs.current.tools, catalogs.current.tools.get("action").definition
     )
     session = runtime.create_session(title="Delegated capability ceiling")
+    relation = seed_delegation(store, session, effective_tools=(reference,))
     run = RunRecord(
         session_id=session.session_id,
         status="queued",
+        parent_run_id=relation.parent_run_id,
+        initiator_id=f"ouro.subagents/{relation.delegation_id}",
         metadata={
-            "effective_tool_names": ["action"],
-            "effective_tool_refs": [reference.model_dump(mode="json")],
-            "delegated_constraints": {"allow_external_paths": False},
+            "root_session_id": relation.root_session_id,
+            "delegation_id": relation.delegation_id,
+            "agent_id": relation.agent_id,
+            "agent_definition_contract_hash": relation.definition.contract_hash,
         },
     )
     reserve_run(store, run)
@@ -466,7 +475,7 @@ async def test_accepted_queue_survives_current_policy_rejection(store):
         catalogs.publish([operation], prompt_policies=policies)
         with pytest.raises(PromptRejectedError, match="Current policy"):
             await runtime.approve_tool(session_id=waiting.session.session_id, approved=True)
-        restored = store.load_runtime_session(waiting.session.session_id)
+        restored = store.load_session(waiting.session.session_id)
         assert restored.runs[0].status == "completed"
         assert runtime.queued_inputs.eligible_session(restored.session) == pending
         assert [
@@ -542,7 +551,6 @@ async def test_newly_active_tool_policy_receives_current_harness_at_preflight(st
             controllers=controllers,
         )
         await coordinator._evaluate_tool_policies(
-            [],
             0,
             session=session,
             run=run,

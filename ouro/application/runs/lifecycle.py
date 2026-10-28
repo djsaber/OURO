@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from contextlib import ExitStack
 from typing import Any
 
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.harness import capture_harness
-from ouro.application.inputs.queue import QueuedInputQueue
+from ouro.application.inputs.queue import consumption_changes
+from ouro.application.runs.tool_batches import load_tool_batch, prepare_batch_changes
 from ouro.application.session_controls import SessionControlCoordinator
-from ouro.application.usage import UsageService
+from ouro.application.usage import SummaryRequestRecorder, UsageService
 from ouro.core.base import new_id, utc_now
 from ouro.core.billing import UsagePurpose
 from ouro.core.callbacks import run_blocking
 from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.harness_calls import HarnessCallSnapshot, HarnessStateChange, accept_state_changes
+from ouro.core.inputs import InputRecord
 from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import SemanticTag
 from ouro.core.messages import (
@@ -24,6 +27,7 @@ from ouro.core.messages import (
     SkillActivationContent,
     TextContent,
     ToolExecutionTiming,
+    ToolMessageReference,
     ToolResultReference,
 )
 from ouro.core.provider import ModelMetadata, Usage
@@ -40,8 +44,14 @@ from ouro.core.state import (
     SessionContinuationRequest,
     SessionRecord,
 )
-from ouro.core.tool_batches import ToolCallBatchRecord
-from ouro.core.tools import ToolCallProducer, ToolCallRequest, ToolResult
+from ouro.core.tool_batches import ToolCallBatchRecord, ToolCallState, ToolResultProposals
+from ouro.core.tool_facts import (
+    ToolCallFacts,
+    ToolCallIdentity,
+    ToolFactConflict,
+    ToolOutcomeRecord,
+)
+from ouro.core.tools import ToolInvocation, ToolResult, ToolResultValue
 from ouro.sessions import RuntimeSessionSnapshot, SessionStore
 
 
@@ -74,11 +84,11 @@ def reserve_run(
             else:
                 raise SessionBusyError(f"Run identity is already reserved: {run.run_id}")
             run = run.model_copy(update={"history_epoch": session.history_epoch})
-            if configure_session is not None:
-                session = configure_session(session)
-            transition = plan_run_transition(session, current_run=None, next_run=run)
-            store.save_run(transition.run)
-            store.save_session(transition.session)
+            configured = configure_session(session) if configure_session is not None else session
+            transition = plan_run_transition(configured, current_run=None, next_run=run)
+            store.commit_session(
+                SessionCommit(before=session, after=transition.session, runs=(transition.run,))
+            )
     finally:
         lock.release()
     store.refresh_catalog(run.session_id)
@@ -87,6 +97,10 @@ def reserve_run(
 
 class SessionContinuationSuperseded(SessionCommitConflict):
     """The accepted request was consumed or revoked before execution could start."""
+
+
+class DelegationStartRevoked(SessionCommitConflict):
+    """The parent cancelled or withdrew an accepted child before its first start."""
 
 
 def require_current_continuation(
@@ -112,10 +126,6 @@ class RunLifecycle:
         self.usage_service = usage_service
         self.session_controls = SessionControlCoordinator(store, usage_service=usage_service)
         self._validate_resource_refs = validate_resource_refs
-        self._message_cache: dict[
-            tuple[str, str],
-            tuple[str | None, dict[tuple[str, str], MessageRecord]],
-        ] = {}
 
     def start(
         self,
@@ -125,12 +135,29 @@ class RunLifecycle:
         snapshot: RuntimeSessionSnapshot,
         resume: bool = False,
         input_messages: tuple[MessageRecord, ...] = (),
+        accepted_inputs: tuple[InputRecord, ...] = (),
         consumed_inputs: tuple[str, ...] = (),
         continuation_request: SessionContinuationRequest | None = None,
-    ) -> tuple[SessionRecord, RunRecord]:
+        events: tuple[EventRecord, ...] = (),
+    ) -> tuple[SessionRecord, RunRecord, tuple[EventRecord, ...]]:
         """Persist the shared session/run transition into an active run."""
 
-        with self.store.session_mutation(session.session_id):
+        with ExitStack() as locks:
+            if not resume and run.origin == "delegation":
+                if session.parent_session_id is None or run.parent_run_id is None:
+                    raise PersistenceError("Delegated Run has no parent identity")
+                # Keep the parent's cancellation/withdrawal boundary stable through
+                # the child's first start commit. No provider or plugin runs here.
+                locks.enter_context(self.store.session_mutation(session.parent_session_id))
+                parent = self.store.load_session_record(session.parent_session_id)
+                parent_run = self.store.load_run(parent.session_id, run.parent_run_id)
+                if (
+                    parent_run.history_epoch != parent.history_epoch
+                    or parent_run.abort_requested
+                    or parent_run.status in {"aborted", "failed"}
+                ):
+                    raise DelegationStartRevoked("Parent revoked delegation before child start")
+            locks.enter_context(self.store.session_mutation(session.session_id))
             latest_session = self.store.load_session_record(session.session_id)
             require_current_continuation(latest_session, continuation_request)
             existing = maybe_active_run(snapshot.runs, history_epoch=latest_session.history_epoch)
@@ -140,21 +167,17 @@ class RunLifecycle:
                 raise SessionBusyError(
                     f"session already has an active run: {latest_session.active_run_id}"
                 )
-            current_run = next(
-                (item for item in snapshot.runs if item.run_id == run.run_id),
-                None,
-            )
+            try:
+                current_run = self.store.load_run(session.session_id, run.run_id)
+            except FileNotFoundError:
+                current_run = None
             transition = plan_run_transition(
                 latest_session,
                 current_run=current_run,
                 next_run=run.model_copy(update={"status": "running"}),
                 resume=resume,
             )
-            after = (
-                QueuedInputQueue(self.store).without_inputs(transition.session, consumed_inputs)
-                if consumed_inputs
-                else transition.session
-            )
+            after = transition.session
             if run.kind == "agent":
                 after = after.model_copy(update={"continuation_request": None})
             committed = self.store.commit_session(
@@ -163,6 +186,25 @@ class RunLifecycle:
                     after=after,
                     runs=(transition.run,),
                     steps=tuple(SessionCommitStep(message=item) for item in input_messages),
+                    inputs=accepted_inputs,
+                    input_changes=consumption_changes(consumed_inputs, input_messages),
+                    events=(
+                        EventRecord(
+                            session_id=session.session_id,
+                            run_id=run.run_id,
+                            event_type="run_status_changed" if resume else "run_started",
+                            payload={
+                                "from_status": current_run.status
+                                if current_run is not None
+                                else None,
+                                "to_status": "running",
+                                "resumed": True,
+                            }
+                            if resume
+                            else {"trigger": run.trigger, "origin": run.origin, "kind": run.kind},
+                        ),
+                        *events,
+                    ),
                 )
             )
             for message, canonical in zip(input_messages, committed.messages, strict=True):
@@ -171,7 +213,7 @@ class RunLifecycle:
             active_run = transition.run
             active_session = committed.session
         self.store.refresh_catalog(active_session.session_id)
-        return active_session, active_run
+        return active_session, active_run, committed.events
 
     def settle_continuation_request(
         self, session_id: str, request: SessionContinuationRequest
@@ -196,7 +238,6 @@ class RunLifecycle:
         role: MessageRole,
         scaffold: bool,
         skill_activations: tuple[SkillActivationContent, ...] = (),
-        sequence: int,
         resource_refs: Iterable[str] = (),
         metadata: dict[str, Any] | None = None,
         semantic_tag: SemanticTag | None = None,
@@ -208,7 +249,7 @@ class RunLifecycle:
             role=role,
             scaffold=scaffold,
             skill_activations=skill_activations,
-            sequence=sequence,
+            sequence=0,
             resource_refs=resource_refs,
             metadata=metadata,
             semantic_tag=semantic_tag,
@@ -258,50 +299,12 @@ class RunLifecycle:
             message = message.model_copy(update={"metadata": dict(metadata)})
         return message
 
-    def append_assistant_tool_batch_message(
-        self,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        tool_calls: list[ToolCallRequest],
-        text: str,
-        sequence: int,
-        turn_id: str,
-        reasoning_content: str = "",
-        model_response: ModelResponseRecord | None = None,
-        provider_continuation: ProviderContinuationArtifact | None = None,
-    ) -> MessageRecord:
-        existing = self._find_message(
-            run,
-            ("assistant_tools", turn_id),
-        )
-        if existing is not None:
-            return existing
-        message = MessageRecord.text(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            role="assistant",
-            text=text,
-            sequence=sequence,
-            turn_id=turn_id,
-        ).model_copy(
-            update={
-                "tool_calls": list(tool_calls),
-                "reasoning_content": reasoning_content,
-                "model_response": model_response,
-                "provider_continuation": provider_continuation,
-            }
-        )
-        self._append_message(session=session, run=run, message=message)
-        return message
-
     def append_assistant_message(
         self,
         *,
         session: SessionRecord,
         run: RunRecord,
         text: str,
-        sequence: int,
         turn_id: str,
         reasoning_content: str = "",
         model_response: ModelResponseRecord | None = None,
@@ -309,118 +312,344 @@ class RunLifecycle:
     ) -> MessageRecord:
         """Durably commit a completed assistant turn without completing its run."""
 
-        existing = self._find_message(
-            run,
-            ("assistant", turn_id),
-        )
-        if existing is not None:
-            return existing
-        message = MessageRecord.text(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            role="assistant",
-            text=text,
-            sequence=sequence,
-            turn_id=turn_id,
-        ).model_copy(
-            update={
-                "reasoning_content": reasoning_content,
-                "model_response": model_response,
-                "provider_continuation": provider_continuation,
-            }
-        )
-        self._append_message(session=session, run=run, message=message)
-        return message
-
-    def append_tool_result_message(
-        self,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        result: ToolResult,
-        sequence: int,
-        turn_id: str | None = None,
-        producer: ToolCallProducer | None = None,
-    ) -> MessageRecord:
-        return self.append_tool_result_messages(
-            session=session,
-            run=run,
-            results=[result],
-            first_sequence=sequence,
-            turn_id=turn_id,
-            producer=producer,
-        )[0]
-
-    def append_tool_result_messages(
-        self,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        results: list[ToolResult],
-        first_sequence: int,
-        turn_id: str | None = None,
-        producer: ToolCallProducer | None = None,
-    ) -> list[MessageRecord]:
-        """Validate and commit one ordered tool-result message batch."""
-
-        resource_refs = [reference for result in results for reference in result.resource_refs]
-        if resource_refs and self._validate_resource_refs is None:
-            raise ValueError(
-                "tool result contains resource_refs but no ResourceService is configured"
-            )
-        if resource_refs and self._validate_resource_refs is not None:
-            self._validate_resource_refs(session.session_id, resource_refs)
-
-        messages: list[MessageRecord] = []
-        missing: list[MessageRecord] = []
-        state_changes: dict[str, HarnessStateChange] = {}
-        missing_by_tool_call_id: dict[str, MessageRecord] = {}
-        for index, result in enumerate(results):
-            existing = self._find_message(
-                run,
-                ("tool_result", result.tool_call_id),
-            )
-            if existing is None:
-                existing = missing_by_tool_call_id.get(result.tool_call_id)
+        with self.store.session_mutation(session.session_id):
+            current = self.store.load_session_record(session.session_id)
+            if run.history_epoch != current.history_epoch:
+                raise SessionCommitConflict("Run belongs to withdrawn Session history")
+            existing = self.store.find_assistant_message(session.session_id, run.run_id, turn_id)
             if existing is not None:
-                messages.append(existing)
-                continue
-            message = MessageRecord(
+                return existing
+            message = MessageRecord.text(
                 session_id=session.session_id,
                 run_id=run.run_id,
-                role="tool_result",
-                scaffold=producer is not None and producer.kind == "driver",
-                content=[*result.content_blocks],
-                sequence=first_sequence + index,
+                role="assistant",
+                text=text,
                 turn_id=turn_id,
             ).model_copy(
                 update={
-                    "resource_refs": result.resource_refs,
-                    "tool_result": ToolResultReference(
-                        tool_call_id=result.tool_call_id,
-                        tool_name=result.tool_name,
-                        producer=producer or ToolCallProducer(),
+                    "reasoning_content": reasoning_content,
+                    "model_response": model_response,
+                    "provider_continuation": provider_continuation,
+                }
+            )
+            self._append_message(session=session, run=run, message=message)
+            return message
+
+    def save_late_tool_result(
+        self,
+        *,
+        identity: ToolCallIdentity,
+        attempt: int,
+        invocation: ToolInvocation,
+        result: ToolResultValue,
+    ) -> None:
+        """Keep an owned execution's observation without reopening its business scope."""
+        self.store.commit_tool_outcome(
+            self._prepare_tool_outcome(identity, attempt, invocation, result)
+        )
+
+    def save_tool_result(
+        self,
+        *,
+        identity: ToolCallIdentity,
+        attempt: int,
+        invocation: ToolInvocation,
+        result: ToolResult,
+    ) -> bool:
+        """Save the observation and its pending proposals before business callbacks."""
+        outcome = self._prepare_tool_outcome(identity, attempt, invocation, result)
+        with self.store.session_mutation(invocation.session_id):
+            session = self.store.load_session_record(invocation.session_id)
+            run = self.store.load_run(invocation.session_id, identity.run_id)
+            state = self.store.load_tool_call_state(invocation.session_id, identity)
+            if state is None:
+                raise PersistenceError("tool result has no accepted Call state")
+            if (
+                run.history_epoch != session.history_epoch
+                or run.status not in ACTIVE_RUN_STATUSES
+                or run.abort_requested
+                or session.active_run_id != run.run_id
+                or run.active_tool_batch is None
+                or run.active_tool_batch.batch_id != identity.batch_id
+                or state.attempt != attempt
+                or state.result_message_id is not None
+            ):
+                self.store.commit_tool_outcome(outcome)
+                return False
+            accepted = state.model_copy(
+                update={
+                    "status": "failed" if result.is_error else "completed",
+                    "outcome_attempt": attempt,
+                    "proposals": ToolResultProposals.from_result(result),
+                    "feedback": None,
+                }
+            )
+            self.store.commit_session(
+                SessionCommit(
+                    before=session,
+                    tool_facts=ToolCallFacts(outcomes=(outcome,)),
+                    call_states=(accepted,),
+                )
+            )
+            return True
+
+    def _prepare_tool_outcome(
+        self,
+        identity: ToolCallIdentity,
+        attempt: int,
+        invocation: ToolInvocation,
+        result: ToolResultValue,
+    ) -> ToolOutcomeRecord:
+        call = self.store.load_tool_call(invocation.session_id, identity)
+        start = (
+            self.store.load_tool_call_start(invocation.session_id, identity, attempt)
+            if attempt > 0
+            else None
+        )
+        if call is None or (
+            attempt > 0 and (start is None or start.materialize(call) != invocation)
+        ):
+            raise PersistenceError("tool result does not match its original execution binding")
+        if result.resource_refs:
+            if self._validate_resource_refs is None:
+                raise ValueError("tool result resources require a ResourceService")
+            self._validate_resource_refs(invocation.session_id, result.resource_refs)
+        value = ToolResultValue.model_validate(
+            result.model_dump(include=set(ToolResultValue.model_fields))
+        )
+        previous = self.store.load_tool_outcome(invocation.session_id, identity, attempt)
+        if previous is not None:
+            if not previous.value.same_observation(value):
+                raise ToolFactConflict("a certain Outcome cannot be replaced")
+            return previous
+        return ToolOutcomeRecord(
+            session_id=invocation.session_id, identity=identity, attempt=attempt, value=value
+        )
+
+    def publish_tool_batch(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        batch: ToolCallBatchRecord,
+        recovering: bool = False,
+    ) -> tuple[
+        SessionRecord, RunRecord, ToolCallBatchRecord, list[MessageRecord], tuple[EventRecord, ...]
+    ]:
+        """Publish a resolved source-ordered frame, Call state and Driver ready together."""
+        ordered = sorted(batch.calls, key=lambda call: call.request.source_index)
+        if not ordered or any(call.result is None for call in ordered):
+            raise ValueError("publishing a tool batch requires feedback for every Call")
+        resource_refs = [
+            ref for call in ordered if call.result is not None for ref in call.result.resource_refs
+        ]
+        if resource_refs:
+            if self._validate_resource_refs is None:
+                raise ValueError(
+                    "tool result contains resource_refs but no ResourceService is configured"
+                )
+            self._validate_resource_refs(session.session_id, resource_refs)
+        with self.store.session_mutation(session.session_id):
+            current = self.store.load_session_record(session.session_id)
+            latest = self.store.load_run(session.session_id, run.run_id)
+            if latest.history_epoch != current.history_epoch:
+                raise SessionCommitConflict("Run belongs to withdrawn Session history")
+            identities = [
+                ToolCallIdentity(
+                    run_id=run.run_id, batch_id=batch.batch_id, tool_call_id=call.request.id
+                )
+                for call in ordered
+            ]
+            states = [
+                self.store.load_tool_call_state(session.session_id, identity)
+                for identity in identities
+            ]
+            if any(state is None for state in states):
+                raise PersistenceError("tool publication requires accepted Call states")
+            selected = [state for state in states if state is not None]
+            published = [state.result_message_id is not None for state in selected]
+            if any(published):
+                if not all(published):
+                    raise PersistenceError("tool frame has partially published Call states")
+                messages = []
+                for state in selected:
+                    assert state.result_message_id is not None
+                    message = self.store.load_message(session.session_id, state.result_message_id)
+                    if (
+                        message is None
+                        or message.outcome_ref is None
+                        or message.outcome_ref.identity != state.identity
+                    ):
+                        raise PersistenceError(
+                            "published Call is missing its fixed feedback message"
+                        )
+                    messages.append(message)
+                completed = batch.model_copy(
+                    update={
+                        "phase": "completed",
+                        "calls": [
+                            call.model_copy(
+                                update={
+                                    "status": state.status,
+                                    "result_message_id": state.result_message_id,
+                                }
+                            )
+                            for call, state in zip(ordered, selected, strict=True)
+                        ],
+                    }
+                )
+                return current, latest, completed, messages, ()
+            if not recovering:
+                self._require_active(latest)
+            elif latest.status not in {"aborted", "failed", "recoverable"}:
+                raise SessionBusyError("only an interrupted Run can publish recovery feedback")
+            if (
+                latest.active_tool_batch is None
+                or latest.active_tool_batch.batch_id != batch.batch_id
+            ):
+                raise SessionCommitConflict("tool publication belongs to another active batch")
+            if set(latest.active_tool_batch.call_ids) != {call.request.id for call in ordered}:
+                raise SessionCommitConflict("tool frame must publish all Calls in its native batch")
+            messages = []
+            published_states = []
+            published_calls = []
+            changes = {}
+            for call, state in zip(ordered, selected, strict=True):
+                result = call.result
+                assert result is not None
+                if not recovering and call.feedback != state.feedback:
+                    raise SessionCommitConflict("tool feedback changed before publication")
+                if state.outcome_attempt is None and call.status not in {
+                    "unknown_outcome",
+                    "aborted",
+                    "failed",
+                    "rejected",
+                }:
+                    raise PersistenceError("certain tool result must be saved before publication")
+                message = MessageRecord(
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    turn_id=batch.turn_id,
+                    role="tool_result",
+                    scaffold=batch.producer.kind == "driver",
+                    content=[*result.content_blocks],
+                    resource_refs=list(result.resource_refs),
+                    tool_result=ToolResultReference(
+                        tool_call_id=call.request.id,
+                        tool_name=call.request.name,
+                        producer=batch.producer,
                         is_error=result.is_error,
                     ),
-                    "tool_execution": ToolExecutionTiming(
+                    tool_execution=ToolExecutionTiming(
                         started_at=result.started_at,
                         ended_at=result.ended_at or result.started_at,
                     ),
+                    outcome_ref=ToolMessageReference(
+                        identity=state.identity,
+                        outcome_attempt=state.outcome_attempt,
+                        feedback_is_error=result.is_error
+                        if state.outcome_attempt is None
+                        else None,
+                    ),
+                    tool_feedback=call.feedback,
+                )
+                messages.append(message)
+                if (
+                    not recovering
+                    and state.proposals is not None
+                    and state.proposals.harness_change is not None
+                ):
+                    changes[message.message_id] = state.proposals.harness_change
+                published_states.append(
+                    state.model_copy(
+                        update={
+                            "status": call.status,
+                            "result_message_id": message.message_id,
+                            "proposals": None,
+                            "feedback": None,
+                        }
+                    )
+                )
+                published_calls.append(
+                    call.model_copy(update={"result_message_id": message.message_id})
+                )
+            checkpoint = latest.driver_checkpoint
+            if checkpoint is not None and checkpoint.state == "pending":
+                if checkpoint.batch_id != batch.batch_id:
+                    raise SessionCommitConflict("Driver checkpoint belongs to another batch")
+                checkpoint = checkpoint.model_copy(update={"state": "ready"})
+            completed_batch = batch.model_copy(
+                update={
+                    "phase": "completed",
+                    "calls": published_calls,
+                    "updated_at": utc_now(),
                 }
             )
-            messages.append(message)
-            missing.append(message)
-            missing_by_tool_call_id[result.tool_call_id] = message
-            if result.harness_change is not None:
-                state_changes[message.message_id] = result.harness_change
-        self.append_messages(
-            session=session,
-            run=run,
-            messages=missing,
-            allow_interrupted=True,
-            state_changes=state_changes,
-        )
-        return messages
+            head = (
+                completed_batch.head()
+                if recovering or (checkpoint and checkpoint.state == "ready")
+                else None
+            )
+            updated = latest.model_copy(
+                update={
+                    "active_tool_batch": head,
+                    "driver_checkpoint": checkpoint,
+                    "phase": latest.phase if recovering else "model_streaming",
+                    "pending_approval_id": None,
+                    "metadata": {**latest.metadata, "transcript_reconciled": True}
+                    if recovering
+                    else latest.metadata,
+                }
+            )
+            events = (
+                tuple(
+                    EventRecord(
+                        session_id=run.session_id,
+                        run_id=run.run_id,
+                        turn_id=batch.turn_id,
+                        event_type="recovery_tool_result_committed",
+                        payload={
+                            "batch_id": batch.batch_id,
+                            "turn_id": batch.turn_id,
+                            "tool_call_id": call.request.id,
+                            "tool_name": call.request.name,
+                            "outcome_unknown": call.status == "unknown_outcome",
+                        },
+                    )
+                    for call in ordered
+                )
+                if recovering
+                else (
+                    EventRecord(
+                        session_id=run.session_id,
+                        run_id=run.run_id,
+                        turn_id=batch.turn_id,
+                        event_type="tool_batch_completed",
+                        payload={
+                            "batch_id": batch.batch_id,
+                            "turn_id": batch.turn_id,
+                            "tool_result_count": len(messages),
+                        },
+                    ),
+                )
+            )
+            committed_events = self.append_messages(
+                session=current,
+                run=latest,
+                messages=messages,
+                allow_interrupted=recovering,
+                state_changes=changes,
+                run_update=updated,
+                call_states=tuple(published_states),
+                events=events,
+            )
+            return (
+                self.store.load_session_record(session.session_id),
+                updated,
+                completed_batch,
+                messages,
+                committed_events,
+            )
 
     def record_usage(
         self,
@@ -430,60 +659,33 @@ class RunLifecycle:
         model: ModelMetadata,
         request_id: str,
         purpose: UsagePurpose,
-    ) -> RunRecord:
-        """Persist provider usage to both the global ledger and owning Run."""
+        workspace: str | None = None,
+    ) -> str | None:
+        """Record original consumption without a Session transaction or Run copy."""
+        if self.usage_service is not None:
+            return self.usage_service.record_provider_usage(
+                run=run,
+                workspace=workspace,
+                usage=usage,
+                model=model,
+                request_id=request_id,
+                purpose=purpose,
+            ).entry_id
+        return None
 
-        with self.store.session_mutation(run.session_id):
-            latest = self.store.load_run(run.session_id, run.run_id)
-            if self.usage_service is not None:
-                entry = self.usage_service.record_provider_usage(
-                    run=run,
-                    workspace=self.store.load_session_record(run.session_id).workspace,
-                    usage=usage,
-                    model=model,
-                    request_id=request_id,
-                    purpose=purpose,
-                )
-                usage_entry_id = entry.entry_id
-            else:
-                usage_entry_id = ":".join(
-                    (
-                        purpose,
-                        request_id,
-                        model.provider_id,
-                        model.endpoint_id or "",
-                        model.model_id,
-                    )
-                )
-            if usage_entry_id in latest.usage_entry_ids:
-                return latest
-            updated = latest.model_copy(
-                update={
-                    "usage": merge_usage(latest.usage, usage),
-                    "usage_entry_ids": [*latest.usage_entry_ids, usage_entry_id],
-                }
-            )
-            self.store.save_run(updated)
-            return updated
-
-    def record_usage_for_run(
-        self,
-        *,
-        session_id: str,
-        run_id: str,
-        usage: Usage,
-        model: ModelMetadata,
-        request_id: str,
-        purpose: UsagePurpose,
-    ) -> RunRecord:
-        run = self.store.load_run(session_id, run_id)
-        return self.record_usage(
-            run,
-            usage,
-            model=model,
-            request_id=request_id,
-            purpose=purpose,
+    def usage_for_run(self, run: RunRecord) -> dict[str, int | float] | None:
+        return (
+            self.usage_service.run_values(run.session_id, run.run_id)
+            if self.usage_service is not None
+            else None
         )
+
+    def prepare_summary_requests(self, session_id: str, run_id: str) -> SummaryRequestRecorder:
+        """Capture usage ownership before the strategy starts its first request."""
+        with self.store.session_read(session_id):
+            session = self.store.load_session_record(session_id)
+            run = self.store.load_run(session_id, run_id)
+        return SummaryRequestRecorder(self.store, run, session.workspace, self.usage_service)
 
     def consume_driver_checkpoint(
         self, session_id: str, run_id: str
@@ -494,7 +696,7 @@ class RunLifecycle:
             run = self.store.load_run(session_id, run_id)
             self._require_active(run)
             checkpoint = run.driver_checkpoint
-            batch = run.active_tool_batch
+            batch = load_tool_batch(self.store, run)
             if checkpoint is not None and checkpoint.state == "consumed":
                 raise ValueError(
                     "Driver checkpoint was consumed; interrupted plugin code cannot be replayed"
@@ -526,12 +728,16 @@ class RunLifecycle:
         *,
         session: SessionRecord,
         run: RunRecord,
-        batch: ToolCallBatchRecord | None,
+        batch: ToolCallBatchRecord,
         status: RunStatus,
         phase: RunPhase,
         harness: HarnessCallSnapshot | None = None,
         driver_checkpoint: DriverCheckpoint | None = None,
-    ) -> tuple[SessionRecord, RunRecord]:
+        changed_call_ids: frozenset[str] | None = None,
+        started_call_ids: frozenset[str] = frozenset(),
+        assistant_message: MessageRecord | None = None,
+        events: tuple[EventRecord, ...] = (),
+    ) -> tuple[SessionRecord, RunRecord, ToolCallBatchRecord, tuple[EventRecord, ...]]:
         with self.store.session_mutation(session.session_id):
             latest_session = self.store.load_session_record(session.session_id)
             latest_run = self.store.load_run(session.session_id, run.run_id)
@@ -540,19 +746,22 @@ class RunLifecycle:
                 raise SessionCommitConflict("Run belongs to withdrawn Session history")
             changes = [
                 call.input_request.harness_change
-                for call in (batch.calls if batch is not None else [])
+                for call in batch.calls
                 if call.status in {"waiting_user", "resolving_input"}
                 and call.input_request is not None
                 and call.input_request.harness_change is not None
             ]
-            steps: tuple[SessionCommitStep, ...] = ()
+            steps: tuple[SessionCommitStep, ...] = (
+                (SessionCommitStep(message=assistant_message),)
+                if assistant_message is not None
+                else ()
+            )
             if changes:
                 draft = accept_state_changes(
                     harness or capture_harness(self.store, session.session_id, run=run),
                     changes,
                 )
-                steps = (SessionCommitStep(harness=draft.state),)
-                assert batch is not None
+                steps += (SessionCommitStep(harness=draft.state),)
                 batch = batch.model_copy(
                     update={
                         "calls": [
@@ -570,41 +779,45 @@ class RunLifecycle:
                         ]
                     }
                 )
-            if batch is not None:
-                accepted = steps[0].harness if steps else None
-                controls = accepted.controls if accepted is not None else latest_session.controls
-                activations = {
-                    item.controller_id: item.activation_id for item in controls.activations
+            accepted = steps[-1].harness if steps else None
+            controls = accepted.controls if accepted is not None else latest_session.controls
+            activations = {item.controller_id: item.activation_id for item in controls.activations}
+            batch = batch.model_copy(
+                update={
+                    "calls": [
+                        call.model_copy(
+                            update={
+                                "invocation": call.invocation.model_copy(
+                                    update={
+                                        "interaction_activation_id": activations.get(
+                                            call.invocation.interaction_controller_id
+                                        ),
+                                    }
+                                )
+                            }
+                        )
+                        if call.status == "waiting_user"
+                        and call.invocation is not None
+                        and call.invocation.interaction_controller_id is not None
+                        and call.invocation.interaction_activation_id is None
+                        else call
+                        for call in batch.calls
+                    ]
                 }
-                batch = batch.model_copy(
-                    update={
-                        "calls": [
-                            call.model_copy(
-                                update={
-                                    "invocation": call.invocation.model_copy(
-                                        update={
-                                            "interaction_activation_id": activations.get(
-                                                call.invocation.interaction_controller_id
-                                            ),
-                                        }
-                                    )
-                                }
-                            )
-                            if call.status == "waiting_user"
-                            and call.invocation is not None
-                            and call.invocation.interaction_controller_id is not None
-                            and call.invocation.interaction_activation_id is None
-                            else call
-                            for call in batch.calls
-                        ]
-                    }
-                )
-            pending = batch.pending_approvals if batch is not None else []
+            )
+            batch, tool_facts, call_states = prepare_batch_changes(
+                self.store,
+                latest_run,
+                batch,
+                changed_call_ids=changed_call_ids,
+                started_call_ids=started_call_ids,
+            )
+            batch_events = self._batch_events(latest_run, batch, tool_facts, status)
+            pending = batch.pending_approvals
             checkpoint = driver_checkpoint or latest_run.driver_checkpoint
             if driver_checkpoint is not None:
                 if (
-                    batch is None
-                    or driver_checkpoint.batch_id != batch.batch_id
+                    driver_checkpoint.batch_id != batch.batch_id
                     or driver_checkpoint.state != "pending"
                     or (
                         latest_run.driver_checkpoint is not None
@@ -612,18 +825,13 @@ class RunLifecycle:
                     )
                 ):
                     raise ValueError("Driver checkpoint must bind one new native tool batch")
-            if batch is not None and batch.phase == "completed":
-                if checkpoint is not None and checkpoint.state == "pending":
-                    if checkpoint.batch_id != batch.batch_id:
-                        raise ValueError("Driver checkpoint batch changed")
-                    checkpoint = checkpoint.model_copy(update={"state": "ready"})
-                else:
-                    batch = None
+            if batch.phase == "completed":
+                raise ValueError("completed tool frames must use atomic publication")
             updated_run = latest_run.model_copy(
                 update={
                     "status": status,
                     "phase": phase,
-                    "active_tool_batch": batch,
+                    "active_tool_batch": batch.head(),
                     "driver_checkpoint": checkpoint,
                     "pending_approval_id": pending[0].approval_id if pending else None,
                 }
@@ -647,13 +855,91 @@ class RunLifecycle:
                     after=transition.session,
                     steps=steps,
                     runs=(transition.run,),
+                    tool_facts=tool_facts,
+                    call_states=call_states,
+                    events=(*batch_events, *events),
                 )
             )
             updated_run = transition.run
             updated_session = committed.session
+            if assistant_message is not None:
+                canonical = committed.messages[0]
+                assistant_message.sequence = canonical.sequence
+                assistant_message.before_harness_version = canonical.before_harness_version
         if status in {"waiting_approval", "waiting_user", "waiting_child"}:
             self.store.refresh_catalog(updated_session.session_id)
-        return updated_session, updated_run
+        return updated_session, updated_run, batch, committed.events
+
+    @staticmethod
+    def _batch_events(
+        run: RunRecord,
+        batch: ToolCallBatchRecord,
+        facts: ToolCallFacts,
+        status: RunStatus,
+    ) -> tuple[EventRecord, ...]:
+        """Describe the changes owned by this batch commit, without copying bodies."""
+        events: list[EventRecord] = []
+
+        def event(kind: str, **payload: Any) -> None:
+            events.append(
+                EventRecord(
+                    session_id=run.session_id,
+                    run_id=run.run_id,
+                    turn_id=batch.turn_id,
+                    event_type=kind,
+                    payload={"batch_id": batch.batch_id, "turn_id": batch.turn_id, **payload},
+                )
+            )
+
+        if facts.calls:
+            event(
+                "tool_batch_planned",
+                tool_call_count=len(batch.calls),
+                execution_mode=batch.execution_mode,
+            )
+            for call in facts.calls:
+                event(
+                    "tool_call_requested",
+                    tool_call_id=call.request.id,
+                    tool_name=call.request.name,
+                    producer=call.producer.model_dump(mode="json"),
+                    source_index=call.request.source_index,
+                )
+        for start in facts.starts:
+            started_call = next(
+                item for item in batch.calls if item.request.id == start.identity.tool_call_id
+            )
+            event(
+                "tool_call_started",
+                tool_call_id=started_call.request.id,
+                tool_name=started_call.request.name,
+                source_index=started_call.request.source_index,
+                attempt=start.attempt,
+            )
+        previous = run.active_tool_batch
+        if previous is not None and previous.batch_id == batch.batch_id:
+            if previous.phase != batch.phase and batch.phase == "executing":
+                event(
+                    "tool_batch_started",
+                    execution_mode=batch.execution_mode,
+                    tool_calls=[
+                        {
+                            "tool_call_id": call.request.id,
+                            "tool_name": call.request.name,
+                            "status": call.status,
+                            "source_index": call.request.source_index,
+                        }
+                        for call in batch.calls
+                    ],
+                )
+            elif previous.phase != batch.phase and batch.phase == "committing_results":
+                event(
+                    "tool_batch_results_committing",
+                    tool_result_count=sum(call.result is not None for call in batch.calls),
+                )
+        if status != run.status:
+            event("run_status_changed", to_status=status, status=status)
+        return tuple(events)
 
     def save_aborted_batch(
         self,
@@ -661,96 +947,127 @@ class RunLifecycle:
         session_id: str,
         run_id: str,
         batch: ToolCallBatchRecord,
-    ) -> RunRecord:
+        events: tuple[EventRecord, ...] = (),
+    ) -> tuple[RunRecord, tuple[EventRecord, ...]]:
         """Attach final audit outcomes while an interrupted Run is settling."""
 
         with self.store.session_mutation(session_id):
             latest_run = self.store.load_run(session_id, run_id)
             if latest_run.status != "aborted" and not latest_run.abort_requested:
-                return latest_run
+                return latest_run, ()
             current = latest_run.active_tool_batch
             if current is not None and current.batch_id != batch.batch_id:
                 raise SessionBusyError(f"aborted run batch changed: {run_id} ({current.batch_id})")
-            updated_run = latest_run.model_copy(update={"active_tool_batch": batch})
-            self.store.save_run(updated_run)
-            return updated_run
+            batch = batch.model_copy(
+                update={
+                    "calls": [
+                        call.model_copy(
+                            update={
+                                "status": "unknown_outcome"
+                                if call.status == "running"
+                                else "aborted"
+                            }
+                        )
+                        if call.status not in {"completed", "failed", "rejected", "unknown_outcome"}
+                        else call
+                        for call in batch.calls
+                    ]
+                }
+            )
+            batch, tool_facts, call_states = prepare_batch_changes(
+                self.store,
+                latest_run,
+                batch,
+                accept_proposals=False,
+            )
+            updated_run = latest_run.model_copy(update={"active_tool_batch": batch.head()})
+            current_session = self.store.load_session_record(session_id)
+            committed = self.store.commit_session(
+                SessionCommit(
+                    before=current_session,
+                    runs=(updated_run,),
+                    tool_facts=tool_facts,
+                    call_states=call_states,
+                    events=(
+                        *events,
+                        EventRecord(
+                            session_id=session_id,
+                            run_id=run_id,
+                            turn_id=batch.turn_id,
+                            event_type="tool_batch_aborted",
+                            payload={
+                                "batch_id": batch.batch_id,
+                                "turn_id": batch.turn_id,
+                                "tool_result_count": 0,
+                            },
+                        ),
+                    ),
+                )
+            )
+            return updated_run, committed.events
 
     async def complete(
         self,
-        emitted: list[EventRecord],
-        sequence: int,
         *,
         session: SessionRecord,
         run: RunRecord,
-        messages: list[MessageRecord],
         final_text: str,
         reasoning_content: str = "",
         model_response: ModelResponseRecord | None = None,
         provider_continuation: ProviderContinuationArtifact | None = None,
         turn_id: str | None = None,
-        tool_results: list[ToolResult],
+        had_tool_error: bool,
         assistant_already_committed: bool = False,
     ) -> RunResult:
         persisted = await run_blocking(
             self._complete,
-            emitted=emitted,
             session=session,
             run=run,
-            messages=messages,
             final_text=final_text,
             reasoning_content=reasoning_content,
             model_response=model_response,
             provider_continuation=provider_continuation,
             turn_id=turn_id,
-            tool_results=tool_results,
+            had_tool_error=had_tool_error,
             assistant_already_committed=assistant_already_committed,
         )
         if isinstance(persisted, RunResult):
             return persisted
-        completed_session, completed_run = persisted
-        await self.events.emit(
-            emitted,
-            sequence,
-            session_id=completed_session.session_id,
-            run_id=completed_run.run_id,
-            event_type="run_completed",
-            payload={"final_text_length": len(final_text)},
-        )
+        completed_session, completed_run, events = persisted
+        await self.events.publish_committed(events)
         return RunResult(
             session=completed_session,
             run=completed_run,
             final_text=final_text,
-            events=emitted,
-            tool_results=tool_results,
+            had_tool_error=had_tool_error,
         )
 
     def _complete(
         self,
         *,
-        emitted: list[EventRecord],
         session: SessionRecord,
         run: RunRecord,
-        messages: list[MessageRecord],
         final_text: str,
         reasoning_content: str,
         model_response: ModelResponseRecord | None,
         provider_continuation: ProviderContinuationArtifact | None,
         turn_id: str | None,
-        tool_results: list[ToolResult],
+        had_tool_error: bool,
         assistant_already_committed: bool,
-    ) -> tuple[SessionRecord, RunRecord] | RunResult:
+    ) -> tuple[SessionRecord, RunRecord, tuple[EventRecord, ...]] | RunResult:
         """Persist the complete transition as one blocking operation."""
 
         with self.store.session_mutation(session.session_id):
+            latest_session = self.store.load_session_record(session.session_id)
             latest_run = self.store.load_run(session.session_id, run.run_id)
             if latest_run.status not in ACTIVE_RUN_STATUSES or latest_run.abort_requested:
                 return RunResult(
-                    session=self.store.load_session_record(session.session_id),
+                    session=latest_session,
                     run=latest_run,
                     final_text=final_text,
-                    events=emitted,
-                    tool_results=tool_results,
+                    had_tool_error=had_tool_error,
                 )
+            steps: tuple[SessionCommitStep, ...] = ()
             if not assistant_already_committed and (
                 final_text or reasoning_content or provider_continuation is not None
             ):
@@ -759,7 +1076,6 @@ class RunLifecycle:
                     run_id=run.run_id,
                     role="assistant",
                     text=final_text,
-                    sequence=len(messages) + 1,
                     turn_id=turn_id,
                 )
                 assistant_message = assistant_message.model_copy(
@@ -769,13 +1085,7 @@ class RunLifecycle:
                         "provider_continuation": provider_continuation,
                     }
                 )
-                self._append_message(session=session, run=latest_run, message=assistant_message)
-                messages.append(assistant_message)
-
-            latest_session = self.store.load_session_record(session.session_id)
-            latest_run = self.store.load_run(session.session_id, run.run_id)
-            self._require_active(latest_run)
-            last_message_id = messages[-1].message_id if messages else session.last_message_id
+                steps = (SessionCommitStep(message=assistant_message),)
             now = utc_now()
             completed_run = latest_run.model_copy(
                 update={
@@ -786,29 +1096,35 @@ class RunLifecycle:
                     "metadata": dict(latest_run.metadata),
                 }
             )
-            session_basis = latest_session.model_copy(
-                update={
-                    "last_message_id": last_message_id,
-                    "message_count": len(messages),
-                }
-            )
             transition = plan_run_transition(
-                session_basis,
+                latest_session,
                 current_run=latest_run,
                 next_run=completed_run,
                 now=now,
             )
-            self.store.save_run(transition.run)
-            self.store.save_session(transition.session)
+            committed = self.store.commit_session(
+                SessionCommit(
+                    before=latest_session,
+                    after=transition.session,
+                    runs=(transition.run,),
+                    steps=steps,
+                    events=(
+                        EventRecord(
+                            session_id=session.session_id,
+                            run_id=run.run_id,
+                            event_type="run_completed",
+                            payload={"final_text_length": len(final_text)},
+                        ),
+                    ),
+                )
+            )
             completed_run = transition.run
-            completed_session = transition.session
+            completed_session = committed.session
         self.store.refresh_catalog(completed_session.session_id)
-        return completed_session, completed_run
+        return completed_session, completed_run, committed.events
 
     async def fail(
         self,
-        emitted: list[EventRecord],
-        sequence: int,
         *,
         session: SessionRecord,
         run: RunRecord,
@@ -819,44 +1135,36 @@ class RunLifecycle:
         model_response: ModelResponseRecord | None = None,
         provider_continuation: ProviderContinuationArtifact | None = None,
         turn_id: str | None = None,
-        tool_results: list[ToolResult],
+        had_tool_error: bool,
     ) -> RunResult:
         persisted = await run_blocking(
             self._fail,
-            emitted=emitted,
             session=session,
             run=run,
             error=error,
+            error_code=error_code,
             final_text=final_text,
             reasoning_content=reasoning_content,
             model_response=model_response,
             provider_continuation=provider_continuation,
             turn_id=turn_id,
-            tool_results=tool_results,
+            had_tool_error=had_tool_error,
         )
         if isinstance(persisted, RunResult):
             return persisted
-        failed_session, failed_run = persisted
-        await self.events.emit(
-            emitted,
-            sequence,
-            session_id=failed_session.session_id,
-            run_id=failed_run.run_id,
-            event_type="run_failed",
-            payload={"error": error, **({"error_code": error_code} if error_code else {})},
-        )
+        failed_session, failed_run, events = persisted
+        await self.events.publish_committed(events)
         return RunResult(
             session=failed_session,
             run=failed_run,
             final_text=final_text,
-            events=emitted,
-            tool_results=tool_results,
+            had_tool_error=had_tool_error,
+            error_code=error_code,
         )
 
     def _fail(
         self,
         *,
-        emitted: list[EventRecord],
         session: SessionRecord,
         run: RunRecord,
         error: str,
@@ -865,8 +1173,9 @@ class RunLifecycle:
         model_response: ModelResponseRecord | None,
         provider_continuation: ProviderContinuationArtifact | None,
         turn_id: str | None,
-        tool_results: list[ToolResult],
-    ) -> tuple[SessionRecord, RunRecord] | RunResult:
+        had_tool_error: bool,
+        error_code: str | None = None,
+    ) -> tuple[SessionRecord, RunRecord, tuple[EventRecord, ...]] | RunResult:
         """Persist the failed transition as one blocking operation."""
 
         with self.store.session_mutation(session.session_id):
@@ -877,9 +1186,9 @@ class RunLifecycle:
                     session=latest_session,
                     run=latest_run,
                     final_text=final_text,
-                    events=emitted,
-                    tool_results=tool_results,
+                    had_tool_error=had_tool_error,
                 )
+            steps: tuple[SessionCommitStep, ...] = ()
             if final_text or reasoning_content or provider_continuation is not None:
                 metadata: dict[str, Any] = {
                     "incomplete": True,
@@ -890,7 +1199,6 @@ class RunLifecycle:
                     run_id=run.run_id,
                     role="assistant",
                     text=final_text,
-                    sequence=latest_session.message_count + 1,
                     turn_id=turn_id,
                 ).model_copy(
                     update={
@@ -900,10 +1208,7 @@ class RunLifecycle:
                         "provider_continuation": provider_continuation,
                     }
                 )
-                self._append_message(session=session, run=latest_run, message=assistant_message)
-                latest_session = self.store.load_session_record(session.session_id)
-                latest_run = self.store.load_run(session.session_id, run.run_id)
-                self._require_active(latest_run)
+                steps = (SessionCommitStep(message=assistant_message),)
             now = utc_now()
             failed_run = latest_run.model_copy(
                 update={
@@ -923,69 +1228,70 @@ class RunLifecycle:
                 next_run=failed_run,
                 now=now,
             )
-            self.store.save_run(transition.run)
-            self.store.save_session(transition.session)
+            committed = self.store.commit_session(
+                SessionCommit(
+                    before=latest_session,
+                    after=transition.session,
+                    runs=(transition.run,),
+                    steps=steps,
+                    events=(
+                        EventRecord(
+                            session_id=session.session_id,
+                            run_id=run.run_id,
+                            event_type="run_failed",
+                            payload={
+                                "error": error,
+                                **({"error_code": error_code} if error_code else {}),
+                            },
+                        ),
+                    ),
+                )
+            )
             failed_run = transition.run
-            failed_session = transition.session
+            failed_session = committed.session
         self.store.refresh_catalog(failed_session.session_id)
-        return failed_session, failed_run
+        return failed_session, failed_run, committed.events
 
     async def pause(
         self,
-        emitted: list[EventRecord],
-        sequence: int,
         *,
         session: SessionRecord,
         run: RunRecord,
         reason: RunPauseReason,
         next_model_round: int,
         final_text: str,
-        tool_results: list[ToolResult],
+        had_tool_error: bool,
     ) -> RunResult:
         persisted = await run_blocking(
             self._pause,
-            emitted=emitted,
             session=session,
             run=run,
             reason=reason,
             next_model_round=next_model_round,
             final_text=final_text,
-            tool_results=tool_results,
+            had_tool_error=had_tool_error,
         )
         if isinstance(persisted, RunResult):
             return persisted
-        paused_session, paused_run = persisted
-        await self.events.emit(
-            emitted,
-            sequence,
-            session_id=paused_session.session_id,
-            run_id=paused_run.run_id,
-            event_type="run_paused",
-            payload={
-                "reason": reason,
-                "next_model_round": next_model_round,
-                "usage": paused_run.usage,
-            },
-        )
+        paused_session, paused_run, events = persisted
+        await self.events.publish_committed(events)
         return RunResult(
             session=paused_session,
             run=paused_run,
             final_text=final_text,
-            events=emitted,
-            tool_results=tool_results,
+            had_tool_error=had_tool_error,
         )
 
     def _pause(
         self,
         *,
-        emitted: list[EventRecord],
         session: SessionRecord,
         run: RunRecord,
         reason: RunPauseReason,
         next_model_round: int,
         final_text: str,
-        tool_results: list[ToolResult],
-    ) -> tuple[SessionRecord, RunRecord] | RunResult:
+        had_tool_error: bool,
+    ) -> tuple[SessionRecord, RunRecord, tuple[EventRecord, ...]] | RunResult:
         """Persist the paused transition as one blocking operation."""
 
         with self.store.session_mutation(session.session_id):
@@ -996,8 +1302,7 @@ class RunLifecycle:
                     session=latest_session,
                     run=latest_run,
                     final_text=final_text,
-                    events=emitted,
-                    tool_results=tool_results,
+                    had_tool_error=had_tool_error,
                 )
             metadata = dict(latest_run.metadata)
             metadata["pause"] = {
@@ -1027,12 +1332,25 @@ class RunLifecycle:
                 next_run=paused_run,
                 now=now,
             )
-            self.store.save_run(transition.run)
-            self.store.save_session(transition.session)
+            committed = self.store.commit_session(
+                SessionCommit(
+                    before=latest_session,
+                    after=transition.session,
+                    runs=(transition.run,),
+                    events=(
+                        EventRecord(
+                            session_id=session.session_id,
+                            run_id=run.run_id,
+                            event_type="run_paused",
+                            payload={"reason": reason, "next_model_round": next_model_round},
+                        ),
+                    ),
+                )
+            )
             paused_run = transition.run
-            paused_session = transition.session
+            paused_session = committed.session
         self.store.refresh_catalog(paused_session.session_id)
-        return paused_session, paused_run
+        return paused_session, paused_run, committed.events
 
     def _append_message(
         self,
@@ -1059,11 +1377,14 @@ class RunLifecycle:
         state_changes: dict[str, HarnessStateChange] | None = None,
         consumed_inputs: tuple[str, ...] = (),
         operation_id: str | None = None,
-    ) -> None:
+        run_update: RunRecord | None = None,
+        call_states: tuple[ToolCallState, ...] = (),
+        events: tuple[EventRecord, ...] = (),
+    ) -> tuple[EventRecord, ...]:
         """Persist one ordered message batch and advance the Session projection once."""
 
         if not messages:
-            return
+            return ()
         if any(
             message.session_id != session.session_id or message.run_id != run.run_id
             for message in messages
@@ -1123,13 +1444,15 @@ class RunLifecycle:
                     "last_run_id": run.run_id,
                 }
             )
-            if consumed_inputs:
-                after = QueuedInputQueue(self.store).without_inputs(after, consumed_inputs)
             request = SessionCommit(
                 operation_id=operation_id or new_id("op"),
                 before=current,
                 after=after,
                 steps=tuple(steps),
+                input_changes=consumption_changes(consumed_inputs, messages),
+                runs=(run_update,) if run_update is not None else (),
+                call_states=call_states,
+                events=events,
             )
             if control_message is not None:
                 assert draft is not None and control_message.tool_result is not None
@@ -1139,67 +1462,35 @@ class RunLifecycle:
                     for item in current.controls.activations
                     if item.activation_id not in active_ids
                 )
-                committed = self.session_controls.commit(
+                control_commit = self.session_controls.commit(
                     request,
                     released_activation_ids=released,
                     resolving_tool_call_id=control_message.tool_result.tool_call_id,
                 )
+                committed_events = control_commit.events
+                committed_messages: list[MessageRecord] = []
+                for message in messages:
+                    canonical = self.store.load_message(session.session_id, message.message_id)
+                    if canonical is None:
+                        raise PersistenceError("committed tool frame is missing its message")
+                    committed_messages.append(canonical)
             else:
                 committed = self.store.commit_session(request)
-            for message, canonical in zip(messages, committed.messages, strict=True):
+                committed_events = committed.events
+                committed_messages = list(committed.messages)
+            for message, canonical in zip(messages, committed_messages, strict=True):
                 message.sequence = canonical.sequence
                 message.before_harness_version = canonical.before_harness_version
-            cache_key = (session.session_id, run.run_id)
-            cached = self._message_cache.get(cache_key)
-            if cached is not None and cached[0] == current.last_message_id:
-                cache = cached[1]
-                for message in messages:
-                    key = _message_cache_key(message)
-                    if key is not None:
-                        cache[key] = message
-                self._message_cache[cache_key] = (committed.session.last_message_id, cache)
         # A durable message batch changes the bounded list projection even
         # while its Run remains active. Refresh only this Session; catalog
         # query paths never compensate by scanning canonical history.
         self.store.refresh_catalog(session.session_id)
+        return committed_events
 
     @staticmethod
     def _require_active(run: RunRecord) -> None:
         if run.status not in ACTIVE_RUN_STATUSES or run.abort_requested:
             raise SessionBusyError(f"run is no longer active: {run.run_id} ({run.status})")
-
-    def _find_message(
-        self,
-        run: RunRecord,
-        key: tuple[str, str],
-    ) -> MessageRecord | None:
-        cache_key = (run.session_id, run.run_id)
-        with self.store.session_mutation(run.session_id):
-            # This read also recovers a decided commit before inspecting the cache.
-            current = self.store.load_session_record(run.session_id)
-            if run.history_epoch != current.history_epoch:
-                raise SessionCommitConflict("Run belongs to withdrawn Session history")
-            cached = self._message_cache.get(cache_key)
-            if cached is None or cached[0] != current.last_message_id:
-                cache = {}
-                for message in self.store.load_run_messages(run.session_id, run.run_id):
-                    message_key = _message_cache_key(message)
-                    if message_key is not None:
-                        cache[message_key] = message
-                self._message_cache[cache_key] = (current.last_message_id, cache)
-            else:
-                cache = cached[1]
-            return cache.get(key)
-
-    def finish_run(self, run: RunRecord) -> None:
-        self._message_cache.pop((run.session_id, run.run_id), None)
-
-
-def find_run(runs: list[RunRecord], run_id: str) -> RunRecord:
-    for run in runs:
-        if run.run_id == run_id:
-            return run
-    raise KeyError(f"unknown run: {run_id}")
 
 
 def abort_run_state(
@@ -1208,7 +1499,7 @@ def abort_run_state(
     session_id: str,
     run_id: str | None = None,
     reason: str,
-) -> tuple[SessionRecord, RunRecord, bool]:
+) -> tuple[SessionRecord, RunRecord, tuple[EventRecord, ...]]:
     """Persist the canonical terminal state used by every Run abort initiator."""
 
     with store.session_mutation(session_id):
@@ -1216,10 +1507,12 @@ def abort_run_state(
         run = (
             store.load_run(session_id, run_id)
             if run_id
-            else find_active_run(store.load_runs(session_id), history_epoch=session.history_epoch)
+            else find_active_run(
+                store.load_pending_runs(session_id), history_epoch=session.history_epoch
+            )
         )
         if run.status not in ACTIVE_RUN_STATUSES:
-            return session, run, False
+            return session, run, ()
         now = utc_now()
         metadata = dict(run.metadata)
         metadata["abort_reason"] = reason
@@ -1239,12 +1532,25 @@ def abort_run_state(
             next_run=aborted_run,
             now=now,
         )
-        store.save_run(transition.run)
-        store.save_session(transition.session)
+        committed = store.commit_session(
+            SessionCommit(
+                before=session,
+                after=transition.session,
+                runs=(transition.run,),
+                events=(
+                    EventRecord(
+                        session_id=session_id,
+                        run_id=run.run_id,
+                        event_type="run_aborted",
+                        payload={"reason": reason},
+                    ),
+                ),
+            )
+        )
         aborted_run = transition.run
-        idle_session = transition.session
+        idle_session = committed.session
     store.refresh_catalog(idle_session.session_id)
-    return idle_session, aborted_run, True
+    return idle_session, aborted_run, committed.events
 
 
 def request_run_abort_state(
@@ -1253,7 +1559,7 @@ def request_run_abort_state(
     session_id: str,
     run_id: str | None = None,
     reason: str,
-) -> tuple[SessionRecord, RunRecord, bool]:
+) -> tuple[SessionRecord, RunRecord, tuple[EventRecord, ...]]:
     """Persist cancellation intent without claiming that execution has stopped."""
 
     with store.session_mutation(session_id):
@@ -1261,10 +1567,12 @@ def request_run_abort_state(
         run = (
             store.load_run(session_id, run_id)
             if run_id
-            else find_active_run(store.load_runs(session_id), history_epoch=session.history_epoch)
+            else find_active_run(
+                store.load_pending_runs(session_id), history_epoch=session.history_epoch
+            )
         )
         if run.status not in ACTIVE_RUN_STATUSES or run.abort_requested:
-            return session, run, False
+            return session, run, ()
         metadata = dict(run.metadata)
         metadata["abort_reason"] = reason
         requested_run = run.model_copy(
@@ -1278,20 +1586,25 @@ def request_run_abort_state(
             current_run=run,
             next_run=requested_run,
         )
-        store.save_run(transition.run)
-        store.save_session(transition.session)
+        committed = store.commit_session(
+            SessionCommit(
+                before=session,
+                after=transition.session,
+                runs=(transition.run,),
+                events=(
+                    EventRecord(
+                        session_id=session_id,
+                        run_id=run.run_id,
+                        event_type="run_abort_requested",
+                        payload={"reason": reason},
+                    ),
+                ),
+            )
+        )
         requested_run = transition.run
-        active_session = transition.session
+        active_session = committed.session
     store.refresh_catalog(active_session.session_id)
-    return active_session, requested_run, True
-
-
-def _message_cache_key(message: MessageRecord) -> tuple[str, str] | None:
-    if message.role == "assistant" and message.turn_id is not None:
-        return ("assistant_tools" if message.tool_calls else "assistant", message.turn_id)
-    if message.role == "tool_result" and message.tool_result is not None:
-        return ("tool_result", message.tool_result.tool_call_id)
-    return None
+    return active_session, requested_run, committed.events
 
 
 def find_active_run(runs: list[RunRecord], *, history_epoch: int) -> RunRecord:
@@ -1312,13 +1625,3 @@ def maybe_active_run(runs: list[RunRecord], *, history_epoch: int) -> RunRecord 
         return find_active_run(runs, history_epoch=history_epoch)
     except ValueError:
         return None
-
-
-def merge_usage(current: dict[str, int | float], usage: Usage) -> dict[str, int | float]:
-    merged = dict(current)
-    for key, value in usage.model_dump().items():
-        if value is None:
-            continue
-        existing = merged.get(key, 0)
-        merged[key] = existing + value if isinstance(existing, int | float) else value
-    return merged

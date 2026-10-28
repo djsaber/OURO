@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import threading
+from contextlib import closing
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -220,13 +223,12 @@ async def test_command_state_control_queue_and_result_share_one_decision(store, 
         assert not store.load_harness(session.session_id).state.states
         assert not store.load_session_record(session.session_id).controls.activations
         assert not pending(store, session)
-        assert store.load_commit(session.session_id, requests[0].operation_id) is None
+        assert store.load_session_record(session.session_id).last_commit_id is None
         return
 
     result = await execute(store, session, activate)
     assert len(requests) == 1
-    persisted = store.load_commit(session.session_id, requests[0].operation_id)
-    assert persisted.output["plugin_command"] == result.model_dump(mode="json")
+    assert store.load_session_record(session.session_id).last_commit_id == requests[0].operation_id
     state = store.load_harness(session.session_id).state
     assert state.states[0].payload == {"command": True, "mode": True}
     assert len(state.controls.activations) == 1
@@ -276,3 +278,51 @@ async def test_cancellation_after_decision_returns_the_accepted_command(store, m
     items = pending(store, session)
     assert result.accepted_inputs[0].queue_id == items[0].queue_id
     assert len(items) == 2
+
+
+async def test_sqlite_post_head_failure_cannot_acknowledge_a_rolled_back_command(tmp_path):
+    store = SQLiteSessionStore(tmp_path / "sessions.db")
+    store.initialize()
+    session = SessionRecord()
+    store.create_session(session)
+    with closing(sqlite3.connect(store.database)) as connection, connection:
+        connection.execute(
+            "CREATE TRIGGER reject_command AFTER INSERT ON events "
+            "BEGIN SELECT RAISE(ABORT, 'injected post-head fault'); END"
+        )
+    with pytest.raises(PersistenceError):
+        await execute(store, session, activate)
+    assert store.load_session_record(session.session_id) == session
+    assert not store.load_harness(session.session_id).state.states
+    assert not pending(store, session)
+    assert not store.load_session(session.session_id).inputs
+
+
+async def test_file_cleanup_failure_recovers_command_without_repeating_callback(
+    tmp_path, monkeypatch
+):
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord()
+    store.create_session(session)
+    unlink = Path.unlink
+    interruptions = []
+    calls = []
+
+    def interrupted(path, *args, **kwargs):
+        if path.name == "commit.json" and not interruptions:
+            interruptions.append(path)
+            raise OSError("injected decision cleanup fault")
+        return unlink(path, *args, **kwargs)
+
+    def controller(call):
+        calls.append(call.activation_id)
+        return activate(call)
+
+    monkeypatch.setattr(Path, "unlink", interrupted)
+    result = await execute(store, session, controller)
+    assert len(interruptions) == len(calls) == 1
+    assert result.output == "accepted"
+    assert len(pending(store, session)) == 2
+    assert not interruptions[0].exists()
+    assert len(store.load_session_record(session.session_id).controls.activations) == 1

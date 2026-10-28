@@ -6,14 +6,25 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, Literal, Self
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import ConfigDict, Field, JsonValue, model_validator
 
 from ouro.core.agents import AgentControlRequest, AgentWaitRequest
 from ouro.core.approvals import ApprovalRecord, PermissionMode, ToolPermissionControl
 from ouro.core.base import Metadata, MetadataField, OuroModel, new_id, utc_now
-from ouro.core.content import ContentPart, ToolContent, content_parts, content_text
+from ouro.core.content import (
+    ContentPart,
+    ToolContent,
+    append_content_text,
+    content_parts,
+    content_text,
+    media_resource_ids,
+    same_content_observation,
+)
 from ouro.core.harness_calls import HarnessStateChange
-from ouro.core.session_controls import SessionControlTransitionRequest
+from ouro.core.session_controls import (
+    SessionControlTransitionRequest,
+    SessionControlTransitionResult,
+)
 
 ToolExecutionPreference = Literal["inherit", "sequential"]
 ToolEffect = Literal["read_only", "state_changing", "unknown"]
@@ -28,6 +39,7 @@ ToolSource = Literal[
 ]
 ToolOutcomeStatus = Literal[
     "ready",
+    "control_requested",
     "completed",
     "approval_required",
     "waiting_user",
@@ -92,7 +104,11 @@ class ToolCallProducer(OuroModel):
         return self
 
 
-class ToolInvocation(OuroModel):
+class ToolInvocationBinding(OuroModel):
+    """Execution provenance, separate from the arguments owned by a Call."""
+
+    model_config = ConfigDict(extra="forbid")
+
     producer: ToolCallProducer = Field(default_factory=ToolCallProducer)
     tool_call_id: str = Field(default_factory=lambda: new_id("tool"))
     session_id: str
@@ -104,7 +120,6 @@ class ToolInvocation(OuroModel):
     source: ToolSource = "builtin"
     effect: ToolEffect = "unknown"
     batch_behavior: ToolBatchBehavior = "compatible"
-    arguments: dict[str, Any] = Field(default_factory=dict)
     requested_at: datetime = Field(default_factory=utc_now)
     permission_mode: PermissionMode = "auto"
     permission_control: ToolPermissionControl = "host"
@@ -127,8 +142,17 @@ class ToolInvocation(OuroModel):
     tool_policy_reason: str | None = None
 
 
-class ToolResult(OuroModel):
-    harness_change: HarnessStateChange | None = None
+class ToolInvocation(ToolInvocationBinding):
+    model_config = ConfigDict(extra="ignore")
+
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolResultValue(OuroModel):
+    """An observed value; accepting it does not apply any business proposal."""
+
+    model_config = ConfigDict(extra="forbid")
+
     tool_call_id: str
     tool_name: str
     is_error: bool = False
@@ -139,8 +163,6 @@ class ToolResult(OuroModel):
     ended_at: datetime | None = None
     exit_code: int | None = None
     metadata: Metadata = MetadataField
-    session_control_transitions: list[SessionControlTransitionRequest] = Field(default_factory=list)
-    agent_control_request: AgentControlRequest | None = None
 
     @property
     def content_blocks(self) -> list[ContentPart]:
@@ -149,6 +171,15 @@ class ToolResult(OuroModel):
     @property
     def text_content(self) -> str:
         return content_text(self.content)
+
+    def same_observation(self, other: ToolResultValue) -> bool:
+        return self.model_copy(update={"content": ""}) == other.model_copy(
+            update={"content": ""}
+        ) and same_content_observation(self.content, other.content)
+
+    @property
+    def referenced_resource_ids(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys([*self.resource_refs, *media_resource_ids(self.content_blocks)]))
 
     @model_validator(mode="before")
     @classmethod
@@ -162,6 +193,50 @@ class ToolResult(OuroModel):
         ):
             return {**value, "started_at": value["ended_at"]}
         return value
+
+
+class ToolResultFeedback(OuroModel):
+    """Framework settlement feedback, separately owned from the tool's observation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    controls: tuple[SessionControlTransitionResult, ...] = ()
+    error_type: str | None = None
+    error_message: str | None = None
+
+    @model_validator(mode="after")
+    def validate_feedback(self) -> Self:
+        if (self.error_type is None) != (self.error_message is None):
+            raise ValueError("settlement feedback requires both error type and message")
+        if not self.controls and self.error_type is None:
+            raise ValueError("settlement feedback cannot be empty")
+        return self
+
+    def materialize[ResultT: ToolResultValue](self, result: ResultT) -> ResultT:
+        output = [item.output for item in self.controls if item.output]
+        structured = dict(result.structured)
+        if self.controls:
+            structured["session_controls"] = [
+                item.model_dump(mode="json") for item in self.controls
+            ]
+        if self.error_type is not None:
+            assert self.error_message is not None
+            output.append(self.error_message)
+            structured.update(error_type=self.error_type, error_message=self.error_message)
+        return result.model_copy(
+            update={
+                "content": append_content_text(result.content, "\n".join(output)),
+                "structured": structured,
+                "is_error": result.is_error or self.error_type is not None,
+            }
+        )
+
+
+class ToolResult(ToolResultValue):
+    model_config = ConfigDict(extra="ignore")
+
+    harness_change: HarnessStateChange | None = None
+    session_control_transitions: list[SessionControlTransitionRequest] = Field(default_factory=list)
 
 
 class ToolInputRequest(OuroModel):
@@ -178,6 +253,16 @@ class ToolExecutionOutcome(OuroModel):
     approval: ApprovalRecord | None = None
     input_request: ToolInputRequest | None = None
     agent_wait: AgentWaitRequest | None = None
+    control_request: AgentControlRequest | None = None
+    feedback: ToolResultFeedback | None = None
+
+    @model_validator(mode="after")
+    def validate_control_request(self) -> Self:
+        if (self.status == "control_requested") != (self.control_request is not None):
+            raise ValueError("control_requested requires an explicit control request")
+        if self.control_request is not None and self.result is not None:
+            raise ValueError("a control request is not an observed tool result")
+        return self
 
 
 def tool_definition_contract_hash(definition: ToolDefinition) -> str:

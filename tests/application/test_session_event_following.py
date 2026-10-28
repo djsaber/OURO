@@ -5,6 +5,7 @@ import threading
 
 import pytest
 
+import ouro.application.supervisor as supervisor_module
 from ouro.application.runtime.service import RuntimeService
 from ouro.application.supervisor import RuntimeSupervisor
 from ouro.core.adapter import RuntimeAdapter
@@ -306,21 +307,22 @@ async def test_external_append_during_snapshot_handoff_is_not_lost(stores, monke
     session = SessionRecord(title="Snapshot handoff")
     writer.create_session(session)
     first = append(writer, session.session_id, "snapshot")
-    captured, release = threading.Event(), threading.Event()
-    read = reader.load_events_after
+    captured, release = asyncio.Event(), asyncio.Event()
+    run_blocking = supervisor_module.run_blocking
 
-    def capture_replay(*args, **kwargs):
-        page = read(*args, **kwargs)
-        if not captured.is_set():
+    async def capture_replay(operation, *args, **kwargs):
+        result = await run_blocking(operation, *args, **kwargs)
+        if operation.__name__ == "read_replay" and not captured.is_set():
             captured.set()
-            assert release.wait(3)
-        return page
+            await asyncio.wait_for(release.wait(), 10)
+        return result
 
-    monkeypatch.setattr(reader, "load_events_after", capture_replay)
+    # Hold the snapshot handoff after its storage read scope has ended.
+    monkeypatch.setattr(supervisor_module, "run_blocking", capture_replay)
     supervisor = supervisor_for(reader)
     opening = asyncio.create_task(supervisor.subscribe(session.session_id))
     try:
-        assert await asyncio.to_thread(captured.wait, 3)
+        await asyncio.wait_for(captured.wait(), 10)
         second = append(writer, session.session_id, "during replay")
         release.set()
         subscription = await opening
@@ -366,21 +368,21 @@ async def test_concurrent_attach_cannot_advance_past_a_slower_subscribers_replay
     session = SessionRecord(title="Concurrent attachment")
     writer.create_session(session)
     first_event = append(writer, session.session_id, "before")
-    captured, release = threading.Event(), threading.Event()
-    read = reader.load_events_after
+    captured, release = asyncio.Event(), asyncio.Event()
+    run_blocking = supervisor_module.run_blocking
 
-    def delayed_first_replay(*args, **kwargs):
-        page = read(*args, **kwargs)
-        if kwargs["limit"] == 100 and not captured.is_set():
+    async def delayed_first_replay(operation, *args, **kwargs):
+        result = await run_blocking(operation, *args, **kwargs)
+        if operation.__name__ == "read_replay" and not captured.is_set():
             captured.set()
-            assert release.wait(3)
-        return page
+            await asyncio.wait_for(release.wait(), 10)
+        return result
 
-    monkeypatch.setattr(reader, "load_events_after", delayed_first_replay)
+    monkeypatch.setattr(supervisor_module, "run_blocking", delayed_first_replay)
     supervisor = supervisor_for(reader)
     opening = asyncio.create_task(supervisor.subscribe(session.session_id, max_buffer=100))
     try:
-        assert await asyncio.to_thread(captured.wait, 3)
+        await asyncio.wait_for(captured.wait(), 10)
         second_event = append(writer, session.session_id, "between observers")
         second = await supervisor.subscribe(session.session_id)
         release.set()

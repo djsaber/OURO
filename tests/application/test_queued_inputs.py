@@ -1,14 +1,21 @@
+import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
+from threading import Barrier
 
 import pytest
 from pydantic import ValidationError
 
-from ouro.application.inputs.queue import QUEUED_INPUTS_KEY, QueuedInputQueue
-from ouro.core.messages import MessageRecord, SkillActivationContent
+from ouro import local_io
+from ouro.application.inputs.queue import QueuedInputQueue, consumption_changes
+from ouro.core.errors import PersistenceError, SessionRecoveryRequiredError
+from ouro.core.messages import InputMessageReference, MessageRecord, SkillActivationContent
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_controls import HostSessionInput, SessionInputRequest
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.inputs import input_path
 
 
 def test_queued_input_queue_persists_items_fifo_and_clears_when_empty(tmp_path) -> None:
@@ -20,7 +27,7 @@ def test_queued_input_queue_persists_items_fifo_and_clears_when_empty(tmp_path) 
     queue = QueuedInputQueue(store)
 
     snapshot = store.load_session(session.session_id)
-    session, _, _ = queue.enqueue(
+    session, _, _, _ = queue.enqueue(
         snapshot=snapshot,
         prompt="first",
         title=None,
@@ -28,7 +35,7 @@ def test_queued_input_queue_persists_items_fifo_and_clears_when_empty(tmp_path) 
         scaffold=False,
     )
     snapshot = store.load_session(session.session_id)
-    session, _, size = queue.enqueue(
+    session, _, size, _ = queue.enqueue(
         snapshot=snapshot,
         prompt="second",
         title="Second",
@@ -38,8 +45,10 @@ def test_queued_input_queue_persists_items_fifo_and_clears_when_empty(tmp_path) 
 
     snapshot = store.load_session(session.session_id)
     assert size == 2
-    assert snapshot.session.metadata[QUEUED_INPUTS_KEY][0]["prompt"] == "first"
-    assert snapshot.session.metadata[QUEUED_INPUTS_KEY][1]["title"] == "Second"
+    pending = queue.eligible(snapshot)
+    assert pending[0].prompt == "first"
+    assert pending[1].title == "Second"
+    assert "follow_up_queue" not in snapshot.session.metadata
 
     first = queue.peek(snapshot)
     assert first is not None
@@ -54,7 +63,7 @@ def test_queued_input_queue_persists_items_fifo_and_clears_when_empty(tmp_path) 
     assert first.title is None
     assert second.prompt == "second"
     assert second.title == "Second"
-    assert QUEUED_INPUTS_KEY not in snapshot.session.metadata
+    assert snapshot.session.pending_input_ids == ()
 
 
 def test_atomic_batch_is_one_ordered_unit_and_coalesces_only_its_owner(tmp_path) -> None:
@@ -71,7 +80,7 @@ def test_atomic_batch_is_one_ordered_unit_and_coalesces_only_its_owner(tmp_path)
         "execution_contract_hash": "contract_1",
     }
 
-    _, first, _, _ = queue.enqueue_batch(
+    _, first, _, _, _ = queue.enqueue_batch(
         snapshot=store.load_session(session.session_id),
         inputs=(
             SessionInputRequest(
@@ -94,7 +103,7 @@ def test_atomic_batch_is_one_ordered_unit_and_coalesces_only_its_owner(tmp_path)
         execution_contract_hash="contract_1",
         coalesce_key="goal-lifecycle",
     )
-    _, replacement, _, superseded = queue.enqueue_batch(
+    _, replacement, _, superseded, _ = queue.enqueue_batch(
         snapshot=store.load_session(session.session_id),
         inputs=(SessionInputRequest(prompt="final control", role="user"),),
         coalesce_key="goal-lifecycle",
@@ -112,43 +121,45 @@ def test_atomic_batch_is_one_ordered_unit_and_coalesces_only_its_owner(tmp_path)
     assert units[-1] == replacement
 
 
-def test_queued_input_queue_removes_invalid_item(tmp_path) -> None:
+def test_queued_input_query_reports_missing_state_without_repairing(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
-    session = SessionRecord(title="Invalid input", metadata={QUEUED_INPUTS_KEY: [{}]})
+    session = SessionRecord(title="Invalid input")
     store.create_session(session)
     queue = QueuedInputQueue(store)
 
-    item = queue.peek(store.load_session(session.session_id))
-    snapshot = store.load_session(session.session_id)
-
-    assert item is None
-    assert QUEUED_INPUTS_KEY not in snapshot.session.metadata
-
-
-def test_queued_input_queue_drops_host_item_without_source_attribution(tmp_path) -> None:
-    store = LocalSessionStore(tmp_path)
-    store.initialize()
-    session = SessionRecord(
-        title="Invalid Host input",
-        metadata={
-            QUEUED_INPUTS_KEY: [
-                {
-                    "prompt": "anonymous framework input",
-                    "mode": "follow_up",
-                    "source": "host",
-                }
-            ]
-        },
+    session, item, _, _ = queue.enqueue(
+        snapshot=store.load_runtime_session(session.session_id),
+        prompt="accepted",
+        title=None,
+        role="user",
+        scaffold=False,
     )
+    path = input_path(store.sessions_dir / session.session_id, item.queue_id, state=True)
+    path.unlink()
+    with pytest.raises(PersistenceError, match="state not found"):
+        queue.peek(store.load_runtime_session(session.session_id))
+    assert store.load_session_record(session.session_id).pending_input_ids == (item.queue_id,)
+    assert not path.exists()
+
+
+def test_queued_input_queue_rejects_host_item_without_source_attribution(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Invalid Host input")
     store.create_session(session)
     queue = QueuedInputQueue(store)
 
-    item = queue.peek(store.load_session(session.session_id))
-    snapshot = store.load_session(session.session_id)
-
-    assert item is None
-    assert QUEUED_INPUTS_KEY not in snapshot.session.metadata
+    with pytest.raises(ValidationError, match="requires a source id"):
+        queue.enqueue(
+            snapshot=store.load_runtime_session(session.session_id),
+            prompt="anonymous",
+            title=None,
+            role="user",
+            scaffold=False,
+            source="host",
+        )
+    assert store.load_session_record(session.session_id).pending_input_ids == ()
 
 
 def test_queued_input_queue_read_does_not_consume(tmp_path) -> None:
@@ -157,7 +168,7 @@ def test_queued_input_queue_read_does_not_consume(tmp_path) -> None:
     session = SessionRecord(title="Queue")
     store.create_session(session)
     queue = QueuedInputQueue(store)
-    queued_session, _, _ = queue.enqueue(
+    queued_session, _, _, _ = queue.enqueue(
         snapshot=store.load_session(session.session_id),
         prompt="second",
         title=None,
@@ -187,14 +198,14 @@ def test_queue_cancels_only_the_selected_direct_user_input(tmp_path, backend: st
     session = SessionRecord(title="Cancelable queue")
     store.create_session(session)
     queue = QueuedInputQueue(store)
-    _, user_input, _ = queue.enqueue(
+    _, user_input, _, _ = queue.enqueue(
         snapshot=store.load_session(session.session_id),
         prompt="Return this draft",
         title=None,
         role="user",
         scaffold=False,
     )
-    _, host_input, _ = queue.enqueue(
+    _, host_input, _, _ = queue.enqueue(
         snapshot=store.load_session(session.session_id),
         prompt="Framework continuation",
         title=None,
@@ -210,7 +221,7 @@ def test_queue_cancels_only_the_selected_direct_user_input(tmp_path, backend: st
     )
 
     remaining = queue.eligible_session(store.load_session_record(session.session_id))
-    assert cancelled == user_input
+    assert cancelled is not None and cancelled[1] == user_input
     assert (
         queue.cancel_user_input(
             session_id=session.session_id,
@@ -243,7 +254,7 @@ def test_queue_persists_argumentless_user_skill_activation_and_rejects_steering(
         content_digest=f"sha256:{'a' * 64}",
     )
 
-    queued_session, queued, _ = queue.enqueue(
+    queued_session, queued, _, _ = queue.enqueue(
         snapshot=store.load_session(session.session_id),
         prompt="",
         skill_activations=(activation,),
@@ -285,7 +296,7 @@ def test_host_queued_input_requires_and_preserves_source_attribution(tmp_path) -
             role="system",
             scaffold=True,
         )
-    _, queued, _ = queue.enqueue(
+    _, queued, _, _ = queue.enqueue(
         snapshot=snapshot,
         prompt="recover from checkpoint",
         title="Recovery",
@@ -312,7 +323,7 @@ def test_plugin_queue_preserves_message_role_independently_from_provenance(tmp_p
     queue = QueuedInputQueue(store)
     snapshot = store.load_session(session.session_id)
 
-    queued_session, queued, _ = queue.enqueue(
+    queued_session, queued, _, _ = queue.enqueue(
         snapshot=snapshot,
         prompt="The user's explicit command intent",
         title=None,
@@ -337,7 +348,7 @@ def test_plugin_queue_preserves_message_role_independently_from_provenance(tmp_p
     assert restored.scaffold is True
     assert restored.semantic_tag == "plugin-intent"
     assert restored.plugin_id == "dev.example.plugin"
-    _, host_user_message, _ = queue.enqueue(
+    _, host_user_message, _, _ = queue.enqueue(
         snapshot=store.load_session(session.session_id),
         prompt="Host-owned user-role scaffold",
         title=None,
@@ -354,28 +365,29 @@ def test_plugin_queue_preserves_message_role_independently_from_provenance(tmp_p
 def test_queue_rejects_persisted_items_missing_explicit_message_semantics(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
-    session = SessionRecord(
-        title="Incomplete plugin queue",
-        metadata={
-            QUEUED_INPUTS_KEY: [
-                {
-                    "prompt": "incomplete plugin continuation",
-                    "mode": "follow_up",
-                    "source": "plugin",
-                    "plugin_id": "dev.example.plugin",
-                    "contribution_id": "continuation",
-                    "generation_id": "generation_1",
-                    "execution_contract_hash": "contract_1",
-                    "semantic_tag": "plugin-message",
-                }
-            ]
-        },
-    )
+    session = SessionRecord(title="Incomplete plugin queue")
     store.create_session(session)
-    restored = QueuedInputQueue(store).peek(store.load_session(session.session_id))
-
-    assert restored is None
-    assert QUEUED_INPUTS_KEY not in store.load_session_record(session.session_id).metadata
+    queue = QueuedInputQueue(store)
+    _, item, _, _ = queue.enqueue(
+        snapshot=store.load_runtime_session(session.session_id),
+        prompt="plugin",
+        title=None,
+        role="user",
+        scaffold=True,
+        source="plugin",
+        plugin_id="dev.example.plugin",
+        contribution_id="continuation",
+        generation_id="generation_1",
+        execution_contract_hash="contract_1",
+    )
+    path = input_path(store.sessions_dir / session.session_id, item.queue_id)
+    payload = json.loads(path.read_text())
+    del payload["item"]["role"]
+    path.write_text(json.dumps(payload))
+    before = path.read_bytes()
+    with pytest.raises(PersistenceError, match="could not validate"):
+        queue.peek(store.load_runtime_session(session.session_id))
+    assert path.read_bytes() == before
 
 
 def test_delegated_task_input_requires_and_preserves_delegation_identity(tmp_path) -> None:
@@ -396,7 +408,7 @@ def test_delegated_task_input_requires_and_preserves_delegation_identity(tmp_pat
             scaffold=True,
         )
 
-    queued_session, queued, _ = queue.enqueue(
+    queued_session, queued, _, _ = queue.enqueue(
         snapshot=snapshot,
         prompt="Inspect the target.",
         title=None,
@@ -437,7 +449,7 @@ def test_queued_input_queue_merges_concurrent_stale_snapshot_enqueues(tmp_path) 
             future.result(timeout=2)
 
     reloaded = store.load_session(session.session_id)
-    prompts = [item["prompt"] for item in reloaded.session.metadata[QUEUED_INPUTS_KEY]]
+    prompts = [item.prompt for item in queue.eligible(reloaded)]
     assert sorted(prompts) == sorted(f"prompt-{index}" for index in range(20))
 
 
@@ -457,17 +469,27 @@ def test_host_receipt_is_atomic_across_pending_and_consumed_input(tmp_path, back
     first.create_session(session)
     queues = [QueuedInputQueue(first), QueuedInputQueue(second)]
     request = HostSessionInput(prompt="result", host_source_id="test/result", queue_id="delivery")
+    selecting = Barrier(4)
+
+    def select_driver(identity):
+        assert identity is None
+        selecting.wait(timeout=5)
+        return None
+
     with ThreadPoolExecutor(max_workers=4) as executor:
         accepted = list(
             executor.map(
-                lambda i: queues[i % 2].accept_host(session.session_id, request),
+                lambda i: queues[i % 2].accept_host(
+                    session.session_id, request, select_driver=select_driver
+                ),
                 range(12),
             )
         )
-    assert sum(item is not None for _, item, _ in accepted) == 1
+    assert sum(item is not None for _, item, _, _ in accepted) == 1
     assert len(queues[0].eligible_session(first.load_session_record(session.session_id))) == 1
-    with pytest.raises(ValueError, match="already bound"):
-        queues[1].accept_host(session.session_id, request.model_copy(update={"prompt": "changed"}))
+    for change in ({"prompt": "changed"}, {"title": "changed"}, {"history_epoch": 0}):
+        with pytest.raises(ValueError, match="already bound"):
+            queues[1].accept_host(session.session_id, request.model_copy(update=change))
     message = MessageRecord.text(
         session_id=session.session_id,
         run_id="run_result",
@@ -477,11 +499,11 @@ def test_host_receipt_is_atomic_across_pending_and_consumed_input(tmp_path, back
         text=request.prompt,
     ).model_copy(
         update={
+            "input_ref": InputMessageReference(input_id=request.queue_id),
             "metadata": {
-                "queued_input_id": request.queue_id,
                 "queued_input_mode": request.mode,
                 "host_source_id": request.host_source_id,
-            }
+            },
         }
     )
     with first.session_mutation(session.session_id):
@@ -489,7 +511,7 @@ def test_host_receipt_is_atomic_across_pending_and_consumed_input(tmp_path, back
         first.commit_session(
             SessionCommit(
                 before=before,
-                after=queues[0].without_inputs(before, (request.queue_id,)),
+                input_changes=consumption_changes((request.queue_id,), [message]),
                 steps=(SessionCommitStep(message=message),),
             )
         )
@@ -501,8 +523,92 @@ def test_host_receipt_is_atomic_across_pending_and_consumed_input(tmp_path, back
             )
         )
     assert all(
-        receipt.message_id == message.message_id and item is None for receipt, item, _ in retried
+        receipt.message_id == message.message_id and item is None for receipt, item, _, _ in retried
     )
     assert queues[0].eligible_session(first.load_session_record(session.session_id)) == []
     with pytest.raises(ValueError, match="already bound"):
         queues[1].accept_host(session.session_id, request.model_copy(update={"mode": "steer"}))
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+@pytest.mark.parametrize("operation", ["accept", "cancel"])
+def test_queue_state_and_event_share_native_failure_boundary(
+    tmp_path, monkeypatch, backend, operation
+):
+    store = (
+        LocalSessionStore(tmp_path)
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sessions.db")
+    )
+    store.initialize()
+    session = SessionRecord()
+    store.create_session(session)
+    queue = QueuedInputQueue(store)
+    snapshot = store.load_runtime_session(session.session_id)
+
+    def accept():
+        return queue.enqueue(
+            snapshot=snapshot,
+            prompt="accepted once",
+            title=None,
+            role="user",
+            scaffold=False,
+            queue_id="input-atomic",
+        )
+
+    if operation == "cancel":
+        accept()
+
+    def change():
+        if operation == "accept":
+            return accept()
+        return queue.cancel_user_input(session_id=session.session_id, queue_id="input-atomic")
+
+    if backend == "files":
+        target = input_path(store.sessions_dir / session.session_id, "input-atomic", state=True)
+        replace = local_io.replace_path_with_retry
+        interrupted = []
+
+        def interrupt(source, destination):
+            replace(source, destination)
+            if destination == target:
+                interrupted.append(True)
+                raise OSError("input state installed before event")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(local_io, "replace_path_with_retry", interrupt)
+            with pytest.raises(PersistenceError):
+                change()
+        assert interrupted == [True]
+        with pytest.raises(SessionRecoveryRequiredError):
+            store.load_session_record(session.session_id)
+        with store.session_mutation(session.session_id):
+            pass
+    else:
+        with closing(sqlite3.connect(store.database)) as connection, connection:
+            connection.execute(
+                "CREATE TRIGGER fail_input_event BEFORE INSERT ON events BEGIN "
+                "SELECT RAISE(ABORT, 'input event'); END"
+            )
+        with pytest.raises(PersistenceError):
+            change()
+        assert store.load_session_record(session.session_id).pending_input_ids == (
+            ("input-atomic",) if operation == "cancel" else ()
+        )
+        with closing(sqlite3.connect(store.database)) as connection, connection:
+            connection.execute("DROP TRIGGER fail_input_event")
+        change()
+
+    before = store.load_session(session.session_id)
+    if operation == "accept":
+        assert accept()[-1] == ()
+    else:
+        assert change() is None
+    after = store.load_session(session.session_id)
+    assert after.events == before.events
+    types = [event.event_type for event in after.events]
+    assert types == ["follow_up_input_queued"] + (
+        ["queued_input_cancelled"] if operation == "cancel" else []
+    )
+    assert after.session.pending_input_ids == (("input-atomic",) if operation == "accept" else ())
+    assert store.load_input(session.session_id, "input-atomic").item.prompt == "accepted once"

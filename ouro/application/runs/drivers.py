@@ -11,7 +11,6 @@ from ouro.application.runs.lifecycle import RunLifecycle
 from ouro.core.base import new_id
 from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import AbortSignal
-from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.model_execution import ModelExecutionResult
 from ouro.core.model_requests import (
@@ -41,7 +40,7 @@ from ouro.core.tool_requests import (
     ModelToolBatchRequester,
     ToolBatchHandlingResult,
 )
-from ouro.core.tools import ToolCallRequest, ToolResult
+from ouro.core.tools import ToolCallRequest
 
 
 class _DriverHalted(Exception):
@@ -56,9 +55,7 @@ class NativeRunDriverContext:
         *,
         session: SessionRecord,
         run: RunRecord,
-        messages: list[MessageRecord],
         sequence: int,
-        emitted: list[EventRecord],
         abort_signal: AbortSignal,
         request_model: RunModelRequester,
         request_tools: ModelToolBatchRequester,
@@ -69,8 +66,8 @@ class NativeRunDriverContext:
         workspace_only: bool = False,
         resume_turn_id: str | None = None,
     ) -> None:
-        self.session, self.run, self.messages = session, run, messages
-        self.sequence, self.emitted = sequence, emitted
+        self.session, self.run = session, run
+        self.sequence = sequence
         self.signal = abort_signal
         self.workspace = workspace or session.workspace
         self.workspace_only = workspace_only
@@ -91,7 +88,7 @@ class NativeRunDriverContext:
         self.final_text = ""
         self.suspended = False
         self.stopped: RunResult | None = None
-        self.results: list[ToolResult] = []
+        self.had_tool_error = False
 
     @property
     def session_id(self) -> str:
@@ -144,11 +141,9 @@ class NativeRunDriverContext:
                 RunModelRequest(
                     session=self.session,
                     run=self.run,
-                    messages=self.messages,
                     model_round=self.run.model_round_count + 1,
                     turn_id=turn_id,
                     sequence=self.sequence,
-                    emitted=self.emitted,
                     abort_signal=self.signal,
                     prompt=prompt,
                     tools=tools,
@@ -172,7 +167,7 @@ class NativeRunDriverContext:
             if response.tool_calls:
                 self._pending = (response_id, turn_id, response)
             else:
-                message = await run_blocking(
+                await run_blocking(
                     self._runs.append_assistant_message,
                     session=self.session,
                     run=self.run,
@@ -180,10 +175,8 @@ class NativeRunDriverContext:
                     reasoning_content=response.reasoning,
                     model_response=response.model_response,
                     provider_continuation=response.continuation,
-                    sequence=len(self.messages) + 1,
                     turn_id=turn_id,
                 )
-                self.messages.append(message)
             return DriverModelResponse(
                 response_id,
                 response.text,
@@ -208,15 +201,12 @@ class NativeRunDriverContext:
         if self.turn_id is None:
             self.turn_id = new_id("turn")
         delivered = await self._consume_inputs(
-            self.emitted,
             self.sequence,
             session=self.session,
             run=self.run,
-            messages=self.messages,
             turn_id=self.turn_id,
         )
         self.sequence = delivered.sequence
-        self.messages.extend(delivered.messages)
         self._inputs_checked = True
         if delivered.messages:
             self.final_text = ""
@@ -237,9 +227,7 @@ class NativeRunDriverContext:
                     run=self.run,
                     response=response,
                     turn_id=turn_id,
-                    message_sequence=len(self.messages) + 1,
                     sequence=self.sequence,
-                    emitted=self.emitted,
                     abort_signal=self.signal,
                     driver_checkpoint=durable,
                 )
@@ -261,9 +249,7 @@ class NativeRunDriverContext:
                     run=self.run,
                     calls=calls,
                     turn_id=new_id("turn"),
-                    message_sequence=len(self.messages) + 1,
                     sequence=self.sequence,
-                    emitted=self.emitted,
                     abort_signal=self.signal,
                     checkpoint=DriverCheckpoint(batch_id=new_id("batch"), payload=checkpoint),
                 )
@@ -272,8 +258,7 @@ class NativeRunDriverContext:
 
     async def _accept_tool_result(self, result: ToolBatchHandlingResult) -> DriverToolResult:
         self.session, self.run, self.sequence = result.session, result.run, result.sequence
-        self.messages.extend(result.messages)
-        self.results.extend(result.results)
+        self.had_tool_error |= any(item.is_error for item in result.results)
         self._inputs_checked = False
         self.final_text = ""
         self.suspended = result.status != "completed"
@@ -293,21 +278,17 @@ class NativeRunDriverContext:
 
     async def pause(self, reason: RunPauseReason) -> Never:
         self.stopped = await self._runs.pause(
-            self.emitted,
-            self.sequence,
             session=self.session,
             run=self.run,
             reason=reason,
             next_model_round=self.run.model_round_count + 1,
             final_text=self.final_text,
-            tool_results=self.results,
+            had_tool_error=self.had_tool_error,
         )
         raise _DriverHalted
 
     async def fail(self, error: str, *, response: ModelExecutionResult | None = None) -> Never:
         self.stopped = await self._runs.fail(
-            self.emitted,
-            self.sequence,
             session=self.session,
             run=self.run,
             error=error,
@@ -317,7 +298,7 @@ class NativeRunDriverContext:
             model_response=response.model_response if response is not None else None,
             provider_continuation=response.continuation if response is not None else None,
             turn_id=self.turn_id,
-            tool_results=self.results,
+            had_tool_error=self.had_tool_error,
         )
         raise _DriverHalted
 
@@ -332,7 +313,7 @@ class NativeRunDriverContext:
                     self.run, checkpoint_resume = await run_blocking(
                         self._runs.consume_driver_checkpoint, self.session_id, self.run_id
                     )
-                    self.results.extend(checkpoint_resume.results)
+                    self.had_tool_error |= any(item.is_error for item in checkpoint_resume.results)
                     resume = checkpoint_resume
                 elif self.turn_id is not None:
                     # The built-in algorithm can continue from native facts after
@@ -371,8 +352,7 @@ class NativeRunDriverContext:
                 return RunResult(
                     session=self.session,
                     run=self.run,
-                    events=self.emitted,
-                    tool_results=self.results,
+                    had_tool_error=self.had_tool_error,
                 )
             if not isinstance(outcome, DriverFinished):
                 raise ValueError("DriverSuspended requires a native waiting operation")
@@ -384,13 +364,10 @@ class NativeRunDriverContext:
                 if response.tool_calls or outcome.text != response.text:
                     raise ValueError("final response must match the committed model output")
             return await self._runs.complete(
-                self.emitted,
-                self.sequence,
                 session=self.session,
                 run=self.run,
-                messages=self.messages,
                 final_text=outcome.text,
-                tool_results=self.results,
+                had_tool_error=self.had_tool_error,
                 assistant_already_committed=committed,
             )
         except _DriverHalted:
@@ -402,21 +379,18 @@ class NativeRunDriverContext:
             return RunResult(
                 session=self.session,
                 run=self.run,
-                events=self.emitted,
-                tool_results=self.results,
+                had_tool_error=self.had_tool_error,
                 final_text=self.final_text,
             )
         except Exception as exc:  # noqa: BLE001 - Driver execution is an extension boundary.
             if self.stopped is not None:
                 return self.stopped
             return await self._runs.fail(
-                self.emitted,
-                self.sequence,
                 session=self.session,
                 run=self.run,
                 error=f"Run driver failed: {type(exc).__name__}: {redact_text(str(exc))}",
                 final_text="",
-                tool_results=self.results,
+                had_tool_error=self.had_tool_error,
             )
         finally:
             self.close()

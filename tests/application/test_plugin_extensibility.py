@@ -7,6 +7,7 @@ import shutil
 import pytest
 
 from ouro.application.observers import ObserverDispatcher
+from ouro.application.runs.tool_batches import load_tool_batch
 from ouro.application.runtime.configuration import RuntimeConfigurationResolver
 from ouro.application.runtime.environment import RuntimeEnvironment
 from ouro.application.runtime.service import RuntimeService
@@ -37,6 +38,7 @@ from ouro.tools import (
 )
 from ouro.tools.builtin.shell import detect_command_shell
 from tests.concurrency import wait_until
+from tests.run_facts import run_tool_results
 
 
 @pytest.mark.asyncio
@@ -147,7 +149,7 @@ async def test_inprocess_plugin_tool_policy_can_restrict_builtin_tool(tmp_path) 
 
     result = await runtime.run("run the guarded command")
 
-    snapshot = store.load_runtime_session(result.session.session_id)
+    snapshot = store.load_session(result.session.session_id)
     tool_message = next(message for message in snapshot.messages if message.role == "tool_result")
     assert tool_message.tool_result is not None
     assert tool_message.tool_result.is_error is True
@@ -239,10 +241,10 @@ async def test_inprocess_prompt_policy_uses_the_run_catalog_and_denies_without_s
     assert seen["catalog_id"] == allowed.run.metadata["extension_catalog_id"]
     assert seen["execution_contract"] == generation["execution_contract_hash"]
 
-    before = store.load_runtime_session(allowed.session.session_id)
+    before = store.load_session(allowed.session.session_id)
     with pytest.raises(PromptRejectedError, match="prompt rejected by test guard"):
         await runtime.run("contains blocked marker", session_id=allowed.session.session_id)
-    after = store.load_runtime_session(allowed.session.session_id)
+    after = store.load_session(allowed.session.session_id)
     assert after.messages == before.messages
     assert after.runs == before.runs
     assert "contains blocked marker" not in after.session.model_dump_json()
@@ -412,10 +414,13 @@ async def test_queued_inputs_share_current_consumption_environment(tmp_path) -> 
     old_generation = first_run.metadata["extension_generations"][0]["generation_id"]
 
     await runtime.run("queued input", session_id=session.session_id)
-    queued = store.load_session_record(session.session_id).metadata["follow_up_queue"][0]
-    assert queued["prompt_policy_checked"] is True
-    assert queued["prospective_run_id"]
-    assert queued["extension_generations"][0]["generation_id"] == old_generation
+    pending_id = store.load_session_record(session.session_id).pending_input_ids[0]
+    accepted = store.load_input(session.session_id, pending_id)
+    assert accepted is not None
+    queued = accepted.item
+    assert queued.prompt_policy_checked is True
+    assert queued.prospective_run_id
+    assert queued.extension_generations[0]["generation_id"] == old_generation
 
     assert await application.plugin_runtime.restart("dev.ouro.prompt_guard") == "active"
     with application.plugin_runtime.snapshot() as current:
@@ -423,16 +428,18 @@ async def test_queued_inputs_share_current_consumption_environment(tmp_path) -> 
         current_generation = current.generations[0].generation_id
 
     await runtime.run("queued under current catalog", session_id=session.session_id)
-    queued_items = store.load_session_record(session.session_id).metadata["follow_up_queue"]
-    assert len(queued_items) == 2
-    assert queued_items[1]["extension_generations"][0]["generation_id"] == current_generation
+    pending_ids = store.load_session_record(session.session_id).pending_input_ids
+    assert len(pending_ids) == 2
+    second = store.load_input(session.session_id, pending_ids[1])
+    assert second is not None
+    assert second.item.extension_generations[0]["generation_id"] == current_generation
 
     provider.release.set()
     await first_task
-    completed = store.load_runtime_session(session.session_id)
+    completed = store.load_session(session.session_id)
     assert len(completed.runs) == 2
     queued_run = completed.runs[1]
-    assert queued_run.run_id == queued["prospective_run_id"]
+    assert queued_run.run_id == queued.prospective_run_id
     assert queued_run.metadata["extension_generations"][0]["generation_id"] == current_generation
     user_texts = [message.text_content for message in completed.messages if message.role == "user"]
     assert user_texts == ["first input", "queued input", "queued under current catalog"]
@@ -499,19 +506,22 @@ async def test_steering_admission_and_consumption_use_current_policy(tmp_path) -
         session_id=session.session_id,
         queue_mode="steer",
     )
-    queued = store.load_session_record(session.session_id).metadata["follow_up_queue"][0]
-    assert queued["extension_catalog_id"] != active_catalog_id
-    assert queued["extension_generations"][0]["generation_id"] != active_generation
+    pending_id = store.load_session_record(session.session_id).pending_input_ids[0]
+    accepted = store.load_input(session.session_id, pending_id)
+    assert accepted is not None
+    queued = accepted.item
+    assert queued.extension_catalog_id != active_catalog_id
+    assert queued.extension_generations[0]["generation_id"] != active_generation
     seen = json.loads(
         (await application.plugins.execute_command("dev.ouro.prompt_guard:inspect")).output
     )
-    assert seen["catalog_id"] == queued["extension_catalog_id"]
+    assert seen["catalog_id"] == queued.extension_catalog_id
 
     provider.release.set()
     await first_task
     completed = store.load_runtime_session(session.session_id)
     assert len(completed.runs) == 1
-    assert "follow_up_queue" not in completed.session.metadata
+    assert not completed.session.pending_input_ids
     assert provider.calls == 2
 
     await application.close()
@@ -592,8 +602,8 @@ async def test_tool_controlled_tool_bypasses_host_permission_but_not_tool_policy
     result = await runtime.run("control the harness", approval_mode="deny")
 
     assert result.run.status == "completed"
-    assert result.tool_results[0].structured["error_type"] == "ToolPermissionDenied"
-    assert result.tool_results[0].is_error is True
+    assert run_tool_results(store, result)[0].structured["error_type"] == "ToolPermissionDenied"
+    assert run_tool_results(store, result)[0].is_error is True
     assert evaluated == ["ControlHarness"]
     events = store.load_session(result.session.session_id).events
     assert any(event.event_type == "tool_policy_evaluated" for event in events)
@@ -679,7 +689,7 @@ async def test_tool_policy_is_rechecked_at_the_execution_boundary(tmp_path) -> N
     assert result.run.status == "completed"
     assert evaluations == 2
     assert executed == []
-    assert result.tool_results[0].structured["error_type"] == "ToolPermissionDenied"
+    assert run_tool_results(store, result)[0].structured["error_type"] == "ToolPermissionDenied"
     policy_event = next(
         event
         for event in store.load_session(result.session.session_id).events
@@ -856,12 +866,12 @@ async def test_waiting_calls_resume_on_current_matching_implementation(tmp_path)
     assert new_completed.run.status == "completed"
     old_tool_result = next(
         message
-        for message in store.load_runtime_session(old.session.session_id).messages
+        for message in store.load_session(old.session.session_id).messages
         if message.role == "tool_result"
     )
     new_tool_result = next(
         message
-        for message in store.load_runtime_session(new.session.session_id).messages
+        for message in store.load_session(new.session.session_id).messages
         if message.role == "tool_result"
     )
     assert old_tool_result.text_content == new_generation
@@ -899,7 +909,7 @@ async def test_waiting_approval_rebuilds_same_execution_contract_after_restart(t
     waiting = await first_runtime.run("wait for approval")
     assert waiting.run.status == "waiting_approval"
     persisted_generation = waiting.run.metadata["extension_generations"][0]
-    persisted_batch = waiting.run.active_tool_batch
+    persisted_batch = load_tool_batch(first_runtime.store, waiting.run)
     assert persisted_batch is not None
     persisted_call = persisted_batch.calls[0]
     assert persisted_call.invocation is not None
@@ -953,7 +963,7 @@ async def test_waiting_approval_rebuilds_same_execution_contract_after_restart(t
     assert completed.run.status == "completed"
     tool_result = next(
         message
-        for message in second_store.load_runtime_session(waiting.session.session_id).messages
+        for message in second_store.load_session(waiting.session.session_id).messages
         if message.role == "tool_result"
     )
     assert tool_result.text_content == rebuilt_generation.generation_id
@@ -987,7 +997,7 @@ async def test_resumable_plugin_tool_rebuilds_original_execution_contract_after_
 
     waiting = await first_runtime.run("start the workflow")
     persisted_generation = waiting.run.metadata["extension_generations"][0]
-    persisted_batch = waiting.run.active_tool_batch
+    persisted_batch = load_tool_batch(first_runtime.store, waiting.run)
     assert waiting.run.status == "waiting_user"
     assert persisted_batch is not None
     persisted_call = persisted_batch.calls[0]
@@ -1038,7 +1048,7 @@ async def test_resumable_plugin_tool_rebuilds_original_execution_contract_after_
     )
 
     assert completed.run.status == "completed"
-    assert completed.tool_results[0].structured == {
+    assert run_tool_results(second_store, completed)[0].structured == {
         "answer": {"choice": "accept"},
         "generation_id": rebuilt_generation.generation_id,
     }
@@ -1108,7 +1118,7 @@ async def test_waiting_approval_rejects_changed_contract_after_restart(
     assert completed.run.status == "completed"
     tool_result = next(
         message
-        for message in second_store.load_runtime_session(waiting.session.session_id).messages
+        for message in second_store.load_session(waiting.session.session_id).messages
         if message.role == "tool_result"
     )
     assert tool_result.tool_result.is_error
@@ -1427,7 +1437,7 @@ async def test_tool_policy_rechecks_user_modified_approval_arguments(tmp_path) -
     assert completed.run.status == "completed"
     assert not (workspace / "safe.txt").exists()
     assert not (workspace / "protected.txt").exists()
-    snapshot = store.load_runtime_session(waiting.session.session_id)
+    snapshot = store.load_session(waiting.session.session_id)
     tool_message = next(message for message in snapshot.messages if message.role == "tool_result")
     assert "protected path cannot be written" in tool_message.text_content
     events = store.load_session(waiting.session.session_id).events

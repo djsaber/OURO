@@ -14,6 +14,7 @@ from ouro.config import ProviderConfigManager, provider_models
 from ouro.config.compaction import CompactionConfigManager
 from ouro.config.provider_models import ProviderConnectionSpec, ProviderTypeSpec
 from ouro.config.reasoning import mapped_reasoning
+from ouro.core.billing import UsageFilter
 from ouro.core.provider import ProviderRetryPolicy
 from ouro.core.reasoning import ReasoningRequest
 from ouro.local_application import LocalApplication, ProviderServicePolicy, build_local_runtime
@@ -23,6 +24,7 @@ from ouro.tools import Tool, ToolDefinition, ToolResult
 from tests.application.test_runtime_authentication import login
 from tests.auth import test_driver_contracts as auth_fixtures
 from tests.providers.responses_fixtures import call, delta, item_event, message, reasoning, terminal
+from tests.run_facts import run_events
 
 
 @pytest.fixture(params=[("files", False), ("files", True), ("sqlite", False), ("sqlite", True)])
@@ -177,14 +179,17 @@ async def test_long_tool_arguments_execute_only_after_successful_completion(
 
     body = ToolBody()
     async with build(timeout=0.2) as app:
+        streamed = []
+        app.runtime.add_event_sink(streamed.append)
         await login(app.provider_auth)
         replies.extend([httpx.Response(200, stream=body), terminal([message("finished")])])
         result = await app.runtime.run("Call echo once.")
+        await app.runtime.drain_events()
         assert body.closed
         assert (
             "".join(
                 event.payload["arguments_delta"]
-                for event in result.events
+                for event in streamed
                 if event.event_type == "model_tool_call_delta"
             )
             == output["arguments"]
@@ -193,12 +198,17 @@ async def test_long_tool_arguments_execute_only_after_successful_completion(
             assert result.run.status == "failed"
             assert "inactivity" in result.run.error
             assert executions == [] and len(requests) == 1
-            assert not result.run.usage_entry_ids
+            assert app.runtime.usage.run_usage(result.session.session_id, result.run.run_id) is None
         else:
             assert result.run.status == "completed", result.run.error
             assert result.final_text == "finished"
             assert executions == [1] and len(requests) == 2
-            assert len(result.run.usage_entry_ids) == 2
+            assert (
+                app.runtime.usage.run_usage(
+                    result.session.session_id, result.run.run_id
+                ).request_count
+                == 2
+            )
 
 
 async def tool_run(app, replies):
@@ -263,10 +273,13 @@ async def test_tool_loop_persists_and_replays_after_restart_and_refresh(response
             ("call-1", "result-1"),
             ("call-2", "result-2"),
         ]
-        assert first.run.usage["input_tokens"] == 60
-        assert first.run.usage["output_tokens"] == 30
-        assert len(first.run.usage_entry_ids) == 3
-        entries = [app.runtime.usage.ledger.get(key) for key in first.run.usage_entry_ids]
+        assert first.usage["input_tokens"] == 60
+        assert first.usage["output_tokens"] == 30
+        assert (
+            app.runtime.usage.run_usage(first.session.session_id, first.run.run_id).request_count
+            == 3
+        )
+        entries = app.runtime.usage.list_entries(UsageFilter(run_ids={first.run.run_id})).entries
         assert all(entry.billing_mode == "subscription" for entry in entries)
         assert all(entry.estimated_cost is None for entry in entries)
         assert sum(entry.cache_read_tokens for entry in entries) == 15
@@ -289,7 +302,10 @@ async def test_tool_loop_persists_and_replays_after_restart_and_refresh(response
         failed = await app.runtime.run("After logout.", session_id=session_id)
         assert failed.run.status == "failed"
         assert len(requests) == count
-        assert any(e.payload.get("error_code") == "authentication_required" for e in failed.events)
+        assert any(
+            e.payload.get("error_code") == "authentication_required"
+            for e in run_events(app.runtime.store, failed)
+        )
         persisted = app.runtime.store.load_session(session_id).model_dump_json()
         assert "fixture-access" not in persisted and "fixture-rotated" not in persisted
     assert not replies
@@ -306,9 +322,12 @@ async def test_incomplete_tool_response_cannot_execute_and_recovery_uses_complet
         replies.append(incomplete)
         failed = await app.runtime.run("Use the tool.")
         assert failed.run.status == "failed"
-        assert any(e.payload.get("error_code") == "response_incomplete" for e in failed.events)
+        assert any(
+            e.payload.get("error_code") == "response_incomplete"
+            for e in run_events(app.runtime.store, failed)
+        )
         assert executions == []
-        assert failed.run.usage_entry_ids == []
+        assert app.runtime.usage.run_usage(failed.session.session_id, failed.run.run_id) is None
         assert len(requests) == 1
         session_id = failed.session.session_id
         saved = app.runtime.store.load_session(session_id).messages
@@ -326,7 +345,10 @@ async def test_incomplete_tool_response_cannot_execute_and_recovery_uses_complet
             i.get("type") not in {"function_call", "function_call_output"}
             for i in requests[1][0]["input"]
         )
-        assert len(result.run.usage_entry_ids) == 2
+        assert (
+            app.runtime.usage.run_usage(result.session.session_id, result.run.run_id).request_count
+            == 2
+        )
     assert not replies
 
 
@@ -399,6 +421,7 @@ async def test_model_switch_after_failure_preserves_completed_tool_frames(
         session_id = failed.session.session_id
         saved = app.runtime.store.load_session(session_id).messages
         source_message = next(m for m in saved if m.tool_calls)
+        event_cursor = app.runtime.store.latest_event_sequence(session_id)
         assert source_message.provider_continuation.protocol == source_protocol
         app.runtime.switch_session_model(session_id, target.key)
 
@@ -433,9 +456,13 @@ async def test_model_switch_after_failure_preserves_completed_tool_frames(
         assert len([m for m in persisted if m.role == "user"]) == (
             1 if continue_without_input else 2
         )
-        assert (not any(e.event_type == "user_message_added" for e in result.events)) == (
-            continue_without_input
-        )
+        assert (
+            not any(
+                e.event_type == "user_message_added"
+                for e in run_events(app.runtime.store, result)
+                if e.sequence > event_cursor
+            )
+        ) == (continue_without_input)
     assert not replies
 
 
@@ -493,11 +520,10 @@ async def test_compaction_uses_canonical_history_and_excludes_covered_opaque_ite
         assert result.run.status == "completed", result.run.error
         payload = requests[-1][0]
         assert "Two rounds done." in json.dumps(payload)
-        covered = set(compacted.compaction.covered_message_ids)
         expected = [
             item
-            for m in saved
-            if m.message_id not in covered and m.provider_continuation is not None
+            for m in saved[compacted.compaction.covered_message_count :]
+            if m.provider_continuation is not None
             for item in m.provider_continuation.blocks[0]["items"]
         ]
         assert output_items(payload) == expected

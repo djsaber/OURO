@@ -172,7 +172,7 @@ async def test_steering_inputs_are_consumed_at_turn_boundaries_in_fifo_order(
         assert len(provider.contexts) == expected_calls
         assert len(snapshot.runs) == expected_run_count
         assert [_user_texts(context) for context in provider.contexts] == expected_contexts
-        assert "follow_up_queue" not in snapshot.session.metadata
+        assert not snapshot.session.pending_input_ids
 
 
 @pytest.mark.asyncio
@@ -204,7 +204,7 @@ async def test_follow_up_inputs_are_consumed_at_run_boundaries_in_fifo_order(
         assert len(provider.contexts) == expected_calls
         assert len(snapshot.runs) == expected_run_count
         assert _user_texts(provider.contexts[-1]) == last_context_users
-        assert "follow_up_queue" not in snapshot.session.metadata
+        assert not snapshot.session.pending_input_ids
 
 
 @pytest.mark.asyncio
@@ -256,7 +256,7 @@ async def test_host_follow_up_preserves_scaffold_role_and_attribution(tmp_path, 
         assert host_run.trigger == "host"
         assert host_run.initiator_id == "ouro.runtime/recovery"
         assert host_run.parent_run_id == snapshot.runs[0].run_id
-        assert "follow_up_queue" not in snapshot.session.metadata
+        assert not snapshot.session.pending_input_ids
 
 
 @pytest.mark.asyncio

@@ -1,30 +1,16 @@
-"""Monotonic media elision within one canonical history epoch."""
+"""Default media selection policy over the currently selected canonical messages."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from pydantic import Field
-
-from ouro.core.base import OuroModel
 from ouro.core.content import MediaContent, MediaModality
+from ouro.core.context_selection import ContextSelection, MessageBoundary
 from ouro.core.errors import MediaCapacityError
 from ouro.core.message_frames import context_frames, project_tool_exchanges
 from ouro.core.messages import MessageRecord
 
 MEDIA_RETENTION_RATIO = 0.6
-MEDIA_CONTEXT_KEY = "media_projection"
-
-
-class MediaElisionState(OuroModel):
-    history_epoch: int = Field(ge=0)
-    media_elided_through_message_id: str | None = None
-
-    def elided_ids(self, messages: Sequence[MessageRecord]) -> frozenset[str]:
-        for index, message in enumerate(messages):
-            if message.message_id == self.media_elided_through_message_id:
-                return frozenset(item.message_id for item in messages[: index + 1])
-        return frozenset()
 
 
 def media_chars(content: MediaContent) -> int:
@@ -55,10 +41,10 @@ def require_media_capacity(size: int, limit: int) -> None:
 def plan_media_elision(
     messages: Sequence[MessageRecord],
     sizes: Mapping[str, int],
-    state: MediaElisionState,
+    state: ContextSelection,
     *,
     limit: int,
-) -> MediaElisionState:
+) -> ContextSelection:
     """Release whole old frames only on overflow, protecting all unprocessed input.
 
     A completed model reply closes its preceding input, not its own tool results.
@@ -85,7 +71,7 @@ def plan_media_elision(
             protected = min(protected, index)
             break
 
-    eligible: list[tuple[str, int]] = []
+    eligible: list[tuple[MessageRecord, int]] = []
     end = 0
     for frame in context_frames(messages):
         end += len(frame)
@@ -93,14 +79,14 @@ def plan_media_elision(
             break
         size = sum(sizes.get(m.message_id, 0) for m in frame if m.message_id not in elided)
         if size:
-            eligible.append((frame[-1].message_id, size))
+            eligible.append((frame[-1], size))
     pending = remaining - sum(size for _, size in eligible)
     require_media_capacity(pending, limit)
     target = max(int(limit * MEDIA_RETENTION_RATIO), pending)
-    boundary = state.media_elided_through_message_id
-    for identity, size in eligible:
+    boundary = state.media_elided_through
+    for message, size in eligible:
         remaining -= size
-        boundary = identity
+        boundary = MessageBoundary(message_id=message.message_id, sequence=message.sequence)
         if remaining <= target:
             break
-    return state.model_copy(update={"media_elided_through_message_id": boundary})
+    return state.model_copy(update={"media_elided_through": boundary})

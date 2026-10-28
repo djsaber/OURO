@@ -11,6 +11,7 @@ import pytest
 
 from ouro.application.harness import capture_harness
 from ouro.application.plugins.commands import submit_plugin_command
+from ouro.application.runs.tool_batches import load_tool_batch
 from ouro.application.runtime.environment import RuntimeEnvironment
 from ouro.application.runtime.service import RuntimeService
 from ouro.application.session_controls import SessionControlCoordinator
@@ -40,6 +41,7 @@ from ouro.tools import (
     ToolResult,
     builtin_tools,
 )
+from tests.run_facts import run_events, run_tool_results
 
 PLUGIN_ID = "dev.ouro.plan"
 
@@ -399,7 +401,7 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
     assert not first_provider.plan_path.is_relative_to(workspace)
     assert not (workspace / ".ouro").exists()
     assert first_provider.plan_path.read_text(encoding="utf-8").startswith("# Proposed plan")
-    waiting_snapshot = first_store.load_runtime_session(waiting.session.session_id)
+    waiting_snapshot = first_store.load_session(waiting.session.session_id)
     scaffolds = [
         message
         for message in waiting_snapshot.messages
@@ -414,12 +416,18 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
         {"EnterPlanMode", "ExitPlanMode"} <= tool_names for tool_names in first_provider.tool_names
     )
     waiting_call = next(
-        call for call in waiting.run.active_tool_batch.calls if call.request.id == "call_exit"
+        call
+        for call in load_tool_batch(first_store, waiting.run).calls
+        if call.request.id == "call_exit"
     )
     assert waiting_call.input_request is not None
     assert waiting_call.input_request.data["type"] == "plan_confirmation"
     assert waiting_call.input_request.data["plan"].startswith("# Proposed plan")
-    requested = next(event for event in waiting.events if event.event_type == "ask_user_requested")
+    requested = next(
+        event
+        for event in run_events(first_store, waiting)
+        if event.event_type == "ask_user_requested"
+    )
     assert requested.payload["canonical_tool_id"] == f"{PLUGIN_ID}/tools/exit"
     assert requested.payload["plugin_id"] == PLUGIN_ID
     assert requested.payload["plugin_class"] == "builtin"
@@ -452,7 +460,7 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
             )
             assert result.run.status == "failed"
             assert "Session controller contract is unavailable" in result.run.error
-            messages = second_store.load_runtime_session(waiting.session.session_id).messages
+            messages = second_store.load_session(waiting.session.session_id).messages
             exit_result = next(
                 message.tool_result
                 for message in messages
@@ -474,7 +482,7 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
     assert completed.run.status == "completed"
     assert completed.final_text == "Plan approved; ready to implement."
     assert {"EnterPlanMode", "ExitPlanMode"} <= final_provider.tool_names
-    completed_snapshot = second_store.load_runtime_session(completed.session.session_id)
+    completed_snapshot = second_store.load_session(completed.session.session_id)
     exit_result = next(
         message
         for message in completed_snapshot.messages
@@ -526,7 +534,9 @@ async def test_plan_mode_exit_uses_unattended_resolution_in_afk_mode(tmp_path) -
         for request in provider.requests
     )
     exit_result = next(
-        result for result in completed.tool_results if result.tool_call_id == "call_exit"
+        result
+        for result in run_tool_results(store, completed)
+        if result.tool_call_id == "call_exit"
     )
     assert exit_result.structured["phase"] == "inactive"
     assert exit_result.structured["decision"] == "proceed"
@@ -577,7 +587,9 @@ async def test_plan_mode_denies_builtin_writer_outside_current_plan_and_continue
     else:
         assert wrong_path.read_text(encoding="utf-8") == "old content"
     denied = next(
-        tool_result for tool_result in result.tool_results if tool_result.tool_name == tool_name
+        tool_result
+        for tool_result in run_tool_results(store, result)
+        if tool_result.tool_name == tool_name
     )
     assert denied.is_error is True
     assert denied.structured["error_type"] == "ToolPermissionDenied"
@@ -613,7 +625,7 @@ async def test_plan_command_only_activates_mode_until_next_user_message(tmp_path
     )
 
     assert command.session_inputs == []
-    before_run = store.load_runtime_session(session.session_id)
+    before_run = store.load_session(session.session_id)
     assert before_run.messages == []
     assert before_run.runs == []
     result = await runtime.run(
@@ -624,7 +636,7 @@ async def test_plan_command_only_activates_mode_until_next_user_message(tmp_path
     assert result.run.status == "completed"
     assert result.final_text == "Planning can continue later."
     assert provider.stream_count == 1
-    snapshot = store.load_runtime_session(session.session_id)
+    snapshot = store.load_session(session.session_id)
     reminder = next(
         message
         for message in snapshot.messages
@@ -667,7 +679,7 @@ async def test_plan_off_cancels_activation_bound_pending_approval(tmp_path) -> N
     assert cancelled.status == "aborted"
     assert cancelled.active_tool_batch is not None
     pending = next(
-        call for call in cancelled.active_tool_batch.calls if call.request.id == "call_exit"
+        call for call in load_tool_batch(store, cancelled).calls if call.request.id == "call_exit"
     )
     assert pending.status == "aborted"
     assert pending.result is not None
@@ -675,6 +687,11 @@ async def test_plan_off_cancels_activation_bound_pending_approval(tmp_path) -> N
     assert snapshot.session.status == "idle"
     assert snapshot.session.active_run_id is None
     assert released.data["session_controls"][0]["data"]["cancelled_run_id"] == cancelled.run_id
+    events, _ = store.load_events_page(
+        waiting.session.session_id, run_id=cancelled.run_id, limit=100
+    )
+    aborted = [event for event in events if event.event_type == "run_aborted"]
+    assert len(aborted) == 1 and aborted[0].payload["reason"] == "session_control_released"
     with pytest.raises(ValueError, match="not waiting for user input"):
         await runtime.answer_user(
             session_id=waiting.session.session_id,
@@ -704,7 +721,7 @@ async def test_interrupted_plan_can_be_undone_repeatedly_without_reverting_files
             current = store.load_harness(session_id)
             assert current.version_id not in versions
             versions.add(current.version_id)
-            invocation = waiting.run.active_tool_batch.calls[-1].invocation
+            invocation = load_tool_batch(runtime.store, waiting.run).calls[-1].invocation
             assert (
                 invocation.interaction_activation_id
                 == current.state.controls.activations[0].activation_id
@@ -715,7 +732,7 @@ async def test_interrupted_plan_can_be_undone_repeatedly_without_reverting_files
             audit = store.load_run(session_id, waiting.run.run_id)
             undone = await runtime.undo(session_id)
             assert undone.session.history_epoch == epoch + 1
-            assert not store.load_runtime_session(session_id).messages
+            assert not store.load_session(session_id).messages
             state = store.load_harness(session_id).state
             assert not state.states and not state.controls.activations
             assert store.load_run(session_id, waiting.run.run_id) == audit
@@ -772,7 +789,7 @@ async def test_plan_off_releases_controller_without_creating_run_or_deleting_art
         workspace=str(workspace),
     )
 
-    completed = store.load_runtime_session(session.session_id)
+    completed = store.load_session(session.session_id)
     assert completed.session.controls.activations == []
     assert completed.messages == []
     assert completed.runs == []
@@ -891,7 +908,9 @@ async def test_plan_mode_denies_other_state_changing_tools_without_running_them(
     assert completed.final_text == "Tool attempt handled."
     assert invoked == []
     denied = next(
-        result for result in completed.tool_results if result.tool_name == "ExternalMutation"
+        result
+        for result in run_tool_results(runtime.store, completed)
+        if result.tool_name == "ExternalMutation"
     )
     assert denied.is_error is True
     assert denied.structured["error_type"] == "ToolPermissionDenied"
@@ -935,7 +954,9 @@ async def test_plan_mode_allows_any_declared_read_only_tool(tmp_path) -> None:
     assert completed.run.status == "completed"
     assert invoked == ["call_attempt"]
     read_result = next(
-        result for result in completed.tool_results if result.tool_name == "ExternalRead"
+        result
+        for result in run_tool_results(runtime.store, completed)
+        if result.tool_name == "ExternalRead"
     )
     assert read_result.is_error is False
     assert read_result.content == "read result"

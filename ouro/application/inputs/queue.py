@@ -1,185 +1,81 @@
 from __future__ import annotations
 
-import hashlib
-from collections.abc import Callable
-from datetime import datetime
-from typing import Literal
-
-from pydantic import AliasChoices, Field, ValidationError, field_validator, model_validator
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 
 from ouro.application.contracts.execution import HostInputReceipt
 from ouro.application.contracts.sessions import QueuedUserInputView as QueuedUserInputView
-from ouro.core.base import OuroModel, new_id, utc_now
-from ouro.core.input_content import InputContent, InputFile, InputSkillReference
+from ouro.core.base import new_id, utc_now
+from ouro.core.errors import PersistenceError
+from ouro.core.events import EventRecord
+from ouro.core.input_content import InputFile, InputSkillReference
+from ouro.core.inputs import InputRecord, InputState, InputStateChange
+from ouro.core.inputs import QueuedInput as QueuedInput
+from ouro.core.inputs import QueuedInputMode as QueuedInputMode
+from ouro.core.inputs import QueuedInputSource as QueuedInputSource
 from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import SemanticTag
-from ouro.core.messages import SkillActivationContent
+from ouro.core.messages import MessageRecord, SkillActivationContent
 from ouro.core.run_drivers import RunDriverBinding
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict
-from ouro.core.session_controls import HostSessionInput, SessionInputMode, SessionInputRequest
-from ouro.core.state import SessionRecord
+from ouro.core.session_controls import HostSessionInput, SessionInputRequest
+from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import RuntimeSessionSnapshot, SessionRepository
 
-# Durable metadata key for the FIFO input queue. Items with missing or invalid
-# fields are dropped as invalid; older shapes are not completed.
-QUEUED_INPUTS_KEY = "follow_up_queue"
 
-QueuedInputMode = SessionInputMode
-QueuedInputSource = Literal["user", "host", "plugin", "delegation"]
-
-
-class QueuedInput(OuroModel):
-    history_epoch: int = Field(default=0, ge=0)
-    history_bound: bool = False
-    queue_id: str = Field(min_length=1)
-    prompt: str = ""
-    skill_activations: tuple[SkillActivationContent, ...] = Field(
-        default=(), validation_alias=AliasChoices("skill_activations", "skill_activation")
-    )
-    mode: QueuedInputMode
-    driver: RunDriverBinding | None = None
-    title: str | None = None
-    resource_refs: tuple[str, ...] = ()
-    attachments: tuple[InputFile, ...] = Field(default=(), max_length=16)
-    queued_at: datetime
-    source: QueuedInputSource
-    role: MessageRole
-    scaffold: bool
-    semantic_tag: SemanticTag | None
-    batch_id: str | None = None
-    batch_index: int | None = Field(default=None, ge=0)
-    batch_size: int | None = Field(default=None, ge=1)
-    coalesce_key: str | None = Field(default=None, min_length=1, max_length=128)
-    host_source_id: str | None = None
-    delegation_id: str | None = None
-    plugin_id: str | None = None
-    contribution_id: str | None = None
-    generation_id: str | None = None
-    execution_contract_hash: str | None = None
-    caused_by_run_id: str | None = None
-    continuation_decision_id: str | None = None
-    session_control_controller_id: str | None = None
-    session_control_activation_id: str | None = None
-    prompt_policy_checked: bool = False
-    prospective_run_id: str | None = None
-    extension_catalog_id: str | None = None
-    extension_generations: tuple[dict[str, object], ...] = ()
-
-    @field_validator("skill_activations", mode="before")
-    @classmethod
-    def read_skill_activations(cls, value: object) -> object:
-        """Retain accepted inputs persisted with a single activation."""
-        if value is None:
-            return ()
-        if isinstance(value, dict | SkillActivationContent):
-            return (value,)
-        return value
-
-    @field_validator("host_source_id")
-    @classmethod
-    def normalize_host_source_id(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        normalized = value.strip()
-        return normalized or None
-
-    @model_validator(mode="after")
-    def validate_source(self) -> QueuedInput:
-        if self.driver is not None and self.mode != "follow_up":
-            raise ValueError("Driver selection cannot steer an existing Run")
-        plugin_attribution = (
-            self.plugin_id,
-            self.contribution_id,
-            self.generation_id,
-            self.execution_contract_hash,
-            self.continuation_decision_id,
-            self.session_control_controller_id,
-            self.session_control_activation_id,
-        )
-        if self.source == "delegation" and not self.delegation_id:
-            raise ValueError("delegated task input requires a delegation id")
-        if self.source != "delegation" and self.delegation_id is not None:
-            raise ValueError("only delegated task input can carry a delegation id")
-        if self.source == "plugin" and (
-            not self.plugin_id
-            or not self.contribution_id
-            or not self.generation_id
-            or not self.execution_contract_hash
-        ):
-            raise ValueError("plugin queued input requires complete extension attribution")
-        if self.source == "plugin" and self.host_source_id is not None:
-            raise ValueError("plugin queued input cannot carry Host attribution")
-        if self.source == "delegation" and (
-            self.host_source_id is not None
-            or any(value is not None for value in plugin_attribution)
-        ):
-            raise ValueError("delegated task input cannot carry Host or plugin attribution")
-        if self.source == "host":
-            if not self.host_source_id:
-                raise ValueError("Host queued input requires a source id")
-            if any(value is not None for value in plugin_attribution):
-                raise ValueError("Host queued input cannot carry plugin attribution")
-        if self.source == "user" and (
-            self.host_source_id is not None
-            or any(value is not None for value in plugin_attribution)
-        ):
-            raise ValueError("user queued input cannot carry Host or plugin attribution")
-        batch_fields = (self.batch_id, self.batch_index, self.batch_size)
-        if any(value is not None for value in batch_fields) and any(
-            value is None for value in batch_fields
-        ):
-            raise ValueError("queued input batch identity requires id, index, and size")
-        if (
-            self.batch_id is not None
-            and self.batch_index is not None
-            and self.batch_size is not None
-        ):
-            if self.batch_index >= self.batch_size:
-                raise ValueError("queued input batch index must be smaller than its size")
-        if self.coalesce_key is not None and self.batch_id is None:
-            raise ValueError("coalescing is only valid for an atomic input unit")
-        if self.source == "plugin" and self.resource_refs:
-            raise ValueError("plugin queued input cannot carry Host resource references")
-        if (self.session_control_controller_id is None) is not (
-            self.session_control_activation_id is None
-        ):
-            raise ValueError(
-                "queued input Session control binding requires controller and activation ids"
-            )
-        if self.prompt_policy_checked and self.source != "user":
-            raise ValueError("only direct user input can be prompt-policy checked")
-        if self.prompt_policy_checked and not self.prospective_run_id:
-            raise ValueError("prompt-policy checked input requires a prospective run id")
-        if self.extension_generations and not self.extension_catalog_id:
-            raise ValueError("queued extension generations require a catalog id")
-        if self.attachments:
-            content = InputContent(text=self.prompt, attachments=self.attachments)
-            if content.resource_refs != self.resource_refs:
-                raise ValueError("Attachment identities must match resource references")
-        if (
-            not self.prompt.strip()
-            and not self.skill_activations
-            and not self.resource_refs
-            and not self.attachments
-        ):
-            raise ValueError("queued input requires a prompt or skill activation")
-        if self.skill_activations:
-            if self.source != "user" or self.role != "user" or self.scaffold:
-                raise ValueError("skill activation is only valid on direct user input")
-            if self.mode != "follow_up":
-                raise ValueError("skill activation cannot steer an active run")
-        return self
+@dataclass(frozen=True)
+class InputQueueChange:
+    inputs: tuple[InputRecord, ...]
+    changes: tuple[InputStateChange, ...]
+    superseded: tuple[QueuedInput, ...] = ()
 
 
 class QueuedInputQueue:
-    """Durable FIFO storage for accepted input awaiting a consumption boundary.
-
-    Delivery timing is selected per item. Consumers may filter by delivery mode;
-    eligible items always retain their enqueue order.
-    """
+    """FIFO references to accepted inputs; bodies are immutable independent facts."""
 
     def __init__(self, store: SessionRepository) -> None:
         self.store = store
+
+    def _state(self, session_id: str, input_id: str) -> InputState:
+        state = self.store.load_input_state(session_id, input_id)
+        if state is None:
+            raise PersistenceError(f"accepted input state not found: {input_id}")
+        return state
+
+    def are_consumed(self, session_id: str, input_ids: Iterable[str]) -> bool:
+        with self.store.session_read(session_id):
+            return all(
+                self._state(session_id, identity).status == "consumed" for identity in input_ids
+            )
+
+    def _pending_state(self, session: SessionRecord, input_id: str) -> InputState:
+        state = self._state(session.session_id, input_id)
+        if state.status != "pending":
+            raise PersistenceError(f"Session queue references a terminal input: {input_id}")
+        return state
+
+    def _pending_item(self, session: SessionRecord, state: InputState) -> QueuedInput | None:
+        if state.history_epoch != session.history_epoch and (
+            state.history_bound or state.source in {"plugin", "delegation"}
+        ):
+            return None
+        record = self.store.load_input(session.session_id, state.input_id)
+        if record is None:
+            raise PersistenceError(f"accepted input body not found: {state.input_id}")
+        if not state.matches_intent(record):
+            raise PersistenceError("input lifecycle routing does not match its accepted intent")
+        item = record.item
+        if item.history_epoch != session.history_epoch:
+            item = item.model_copy(
+                update={
+                    "history_epoch": session.history_epoch,
+                    "prompt_policy_checked": False,
+                    "prospective_run_id": None,
+                    "extension_catalog_id": None,
+                    "extension_generations": (),
+                }
+            )
+        return item
 
     def accept_host(
         self,
@@ -187,71 +83,27 @@ class QueuedInputQueue:
         request: HostSessionInput,
         *,
         select_driver: Callable[[str | None], RunDriverBinding | None] | None = None,
-    ) -> tuple[HostInputReceipt, QueuedInput | None, SessionRecord]:
-        """Atomically accept an input or return its pending/consumed receipt.
-
-        A retry after canonical consumption must not reinsert the same input.
-        Only newly accepted items are returned for event publication.
-        """
+    ) -> tuple[HostInputReceipt, QueuedInput | None, SessionRecord, tuple[EventRecord, ...]]:
         queue_id = request.queue_id or new_id("queued")
+        with self.store.session_read(session_id):
+            session = self.store.load_session_record(session_id)
+            if request.history_epoch is not None and request.history_epoch != session.history_epoch:
+                raise SessionCommitConflict("Host input belongs to withdrawn Session history")
+            record = self.store.load_input(session_id, queue_id)
+            if record is not None:
+                return self._host_receipt(session, request, record), None, session, ()
+        # Driver selection may invoke Host policy; it must not own a storage lock.
+        if request.driver_id is not None and select_driver is None:
+            raise ValueError("Host input Driver selection is unavailable")
+        driver = select_driver(request.driver_id) if select_driver is not None else None
         with self.store.session_mutation(session_id):
             session = self.store.load_session_record(session_id)
             if request.history_epoch is not None and request.history_epoch != session.history_epoch:
                 raise SessionCommitConflict("Host input belongs to withdrawn Session history")
-            existing = self.find_session(session, queue_id)
-            if existing is not None:
-                if (
-                    existing.host_source_id != request.host_source_id
-                    or existing.prompt != request.prompt
-                    or existing.mode != request.mode
-                    or existing.resource_refs != request.resource_refs
-                    or existing.role != request.role
-                    or existing.scaffold != request.scaffold
-                    or existing.semantic_tag != request.semantic_tag
-                    or (existing.driver.driver_id if existing.driver else None) != request.driver_id
-                ):
-                    raise ValueError("Host input queue id is already bound to another input")
-                return (
-                    HostInputReceipt(
-                        session_id=session_id,
-                        queue_id=queue_id,
-                        accepted_at=existing.queued_at,
-                    ),
-                    None,
-                    session,
-                )
-            message = self.store.find_queued_input_message(session_id, queue_id)
-            if message is not None:
-                if (
-                    message.metadata.get("host_source_id") != request.host_source_id
-                    or message.text_content != request.prompt
-                    or tuple(message.resource_refs) != request.resource_refs
-                    or message.metadata.get("queued_input_mode") != request.mode
-                    or message.role != request.role
-                    or message.scaffold != request.scaffold
-                    or message.semantic_tag != request.semantic_tag
-                    or message.metadata.get("input_driver_id") != request.driver_id
-                ):
-                    raise ValueError("Host input queue id is already bound to another input")
-                return (
-                    HostInputReceipt(
-                        session_id=session_id,
-                        queue_id=queue_id,
-                        accepted_at=message.created_at,
-                        message_id=message.message_id,
-                        run_id=message.run_id,
-                    ),
-                    None,
-                    session,
-                )
-            if self.store.load_commit(session_id, input_operation_id(queue_id)) is not None:
-                raise ValueError(
-                    "Host input was already accepted and has been withdrawn or cancelled"
-                )
-            if request.driver_id is not None and select_driver is None:
-                raise ValueError("Host input Driver selection is unavailable")
-            driver = select_driver(request.driver_id) if select_driver is not None else None
-            session, item, _ = self.enqueue(
+            record = self.store.load_input(session_id, queue_id)
+            if record is not None:
+                return self._host_receipt(session, request, record), None, session, ()
+            session, item, _, events = self.enqueue(
                 snapshot=RuntimeSessionSnapshot(session=session),
                 prompt=request.prompt,
                 driver=driver,
@@ -267,15 +119,37 @@ class QueuedInputQueue:
                 caused_by_run_id=session.active_run_id,
                 history_bound=request.history_epoch is not None,
             )
-            return (
-                HostInputReceipt(
-                    session_id=session_id,
-                    queue_id=queue_id,
-                    accepted_at=item.queued_at,
-                ),
-                item,
-                session,
-            )
+        return (
+            HostInputReceipt(
+                session_id=session_id,
+                queue_id=queue_id,
+                accepted_at=item.queued_at,
+            ),
+            item,
+            session,
+            events,
+        )
+
+    def _host_receipt(
+        self, session: SessionRecord, request: HostSessionInput, record: InputRecord
+    ) -> HostInputReceipt:
+        existing = record.item
+        validate_host_input(record, request)
+        state = self._state(session.session_id, existing.queue_id)
+        if state.status in {"cancelled", "withdrawn"}:
+            raise ValueError("Host input was already accepted and has been withdrawn or cancelled")
+        message = (
+            self.store.load_message(session.session_id, state.message_ids[-1])
+            if state.message_ids
+            else None
+        )
+        return HostInputReceipt(
+            session_id=session.session_id,
+            queue_id=existing.queue_id,
+            accepted_at=existing.queued_at,
+            message_id=message.message_id if message else None,
+            run_id=message.run_id if message else None,
+        )
 
     def enqueue(
         self,
@@ -309,7 +183,7 @@ class QueuedInputQueue:
         extension_generations: tuple[dict[str, object], ...] = (),
         coalesce_key: str | None = None,
         history_bound: bool = False,
-    ) -> tuple[SessionRecord, QueuedInput, int]:
+    ) -> tuple[SessionRecord, QueuedInput, int, tuple[EventRecord, ...]]:
         batch_id = new_id("batch") if coalesce_key is not None else None
         item = QueuedInput(
             history_epoch=snapshot.session.history_epoch,
@@ -350,38 +224,30 @@ class QueuedInputQueue:
             latest = self.store.load_session_record(snapshot.session.session_id)
             if item.history_epoch != latest.history_epoch:
                 raise SessionCommitConflict("Queued input belongs to withdrawn Session history")
-            metadata = dict(latest.metadata)
-            queue = _raw_queue(metadata)
-            receipt = self.store.load_commit(latest.session_id, input_operation_id(item.queue_id))
-            if receipt is not None:
-                existing = self.find_session(receipt.session, item.queue_id)
-                if existing is None or not same_queued_input(existing, item):
+            record = self.store.load_input(latest.session_id, item.queue_id)
+            if record is not None:
+                if not same_queued_input(record.item, item):
                     raise ValueError("Input id is already bound to another input")
-                if self.find_session(latest, item.queue_id) is None and (
-                    self.store.find_queued_input_message(latest.session_id, item.queue_id) is None
-                ):
+                state = self._state(latest.session_id, item.queue_id)
+                if state.status in {"cancelled", "withdrawn"}:
                     raise ValueError(
                         "Input was already accepted and has been withdrawn or cancelled"
                     )
-                return latest, existing, len(queue)
-            for raw_item in queue:
-                existing = _parse_item(raw_item)
-                if existing is not None and existing.queue_id == item.queue_id:
-                    if not same_queued_input(existing, item):
-                        raise ValueError("Input id is already bound to another input")
-                    return latest, existing, len(queue)
-            queue.append(item.model_dump(mode="python"))
-            metadata[QUEUED_INPUTS_KEY] = queue
-            session = latest.model_copy(update={"metadata": metadata, "updated_at": utc_now()})
-            self.store.commit_session(
+                return latest, record.item, len(latest.pending_input_ids), ()
+            staged = self.stage_batch(latest, (item,))
+            committed = self.store.commit_session(
                 SessionCommit(
-                    operation_id=input_operation_id(item.queue_id),
                     before=latest,
-                    after=session,
-                    output={"queue_id": item.queue_id},
+                    inputs=staged.inputs,
+                    input_changes=staged.changes,
+                    events=(
+                        queued_input_event(
+                            latest, item, len(latest.pending_input_ids) + 1 - len(staged.superseded)
+                        ),
+                    ),
                 )
             )
-        return session, item, len(queue)
+        return committed.session, item, len(committed.session.pending_input_ids), committed.events
 
     def enqueue_batch(
         self,
@@ -398,7 +264,13 @@ class QueuedInputQueue:
         caused_by_run_id: str | None = None,
         session_control_controller_id: str | None = None,
         session_control_activation_id: str | None = None,
-    ) -> tuple[SessionRecord, tuple[QueuedInput, ...], int, tuple[QueuedInput, ...]]:
+    ) -> tuple[
+        SessionRecord,
+        tuple[QueuedInput, ...],
+        int,
+        tuple[QueuedInput, ...],
+        tuple[EventRecord, ...],
+    ]:
         """Atomically enqueue one ordered input unit and supersede its pending projection."""
 
         if not inputs:
@@ -435,41 +307,91 @@ class QueuedInputQueue:
         )
         with self.store.session_mutation(snapshot.session.session_id):
             latest = self.store.load_session_record(snapshot.session.session_id)
-            session, superseded = self.stage_batch(latest, queued_items)
-            self.store.save_session(session)
-        return session, queued_items, len(_raw_queue(session.metadata)), superseded
+            staged = self.stage_batch(latest, queued_items)
+            committed = self.store.commit_session(
+                SessionCommit(
+                    before=latest,
+                    inputs=staged.inputs,
+                    input_changes=staged.changes,
+                    events=(
+                        EventRecord(
+                            session_id=latest.session_id,
+                            run_id=latest.active_run_id,
+                            event_type="session_input_batch_queued",
+                            payload={
+                                "batch_id": batch_id,
+                                "queue_ids": [item.queue_id for item in queued_items],
+                                "batch_size": len(queued_items),
+                                "mode": queued_items[0].mode,
+                                "queue_size": len(latest.pending_input_ids)
+                                + len(queued_items)
+                                - len(staged.superseded),
+                                "plugin_id": plugin_id,
+                                "contribution_id": contribution_id,
+                                "coalesce_key": coalesce_key,
+                                "superseded_queue_ids": [
+                                    item.queue_id for item in staged.superseded
+                                ],
+                            },
+                        ),
+                    ),
+                )
+            )
+        return (
+            committed.session,
+            queued_items,
+            len(committed.session.pending_input_ids),
+            staged.superseded,
+            committed.events,
+        )
 
     def stage_batch(
         self,
         session: SessionRecord,
         queued_items: tuple[QueuedInput, ...],
-    ) -> tuple[SessionRecord, tuple[QueuedInput, ...]]:
-        """Append a prepared unit to the caller's Session draft, without saving it."""
+        *,
+        staged_inputs: tuple[InputRecord, ...] = (),
+        cancelled_ids: frozenset[str] = frozenset(),
+    ) -> InputQueueChange:
+        if not queued_items:
+            raise ValueError("queued input batch cannot be empty")
         if any(item.history_epoch != session.history_epoch for item in queued_items):
             raise SessionCommitConflict("Queued input belongs to withdrawn Session history")
         first = queued_items[0]
         if any(item.driver != first.driver for item in queued_items):
             raise ValueError("an atomic input batch must select one Driver contract")
-        metadata = dict(session.metadata)
-        superseded: list[QueuedInput] = []
-        retained: list[object] = []
-        for raw_item in _raw_queue(metadata):
-            existing = _parse_item(raw_item)
-            if (
-                first.coalesce_key is not None
-                and existing is not None
-                and existing.source == first.source
-                and existing.plugin_id == first.plugin_id
-                and existing.contribution_id == first.contribution_id
-                and existing.coalesce_key == first.coalesce_key
-            ):
-                superseded.append(existing)
-            else:
-                retained.append(raw_item)
-        retained.extend(item.model_dump(mode="python") for item in queued_items)
-        metadata[QUEUED_INPUTS_KEY] = retained
-        return session.model_copy(update={"metadata": metadata, "updated_at": utc_now()}), tuple(
-            superseded
+        superseded = []
+        if first.coalesce_key is not None:
+            prepared = {record.item.queue_id: record for record in staged_inputs}
+            for input_id in (*session.pending_input_ids, *prepared):
+                if input_id in cancelled_ids:
+                    continue
+                state = (
+                    InputState.pending(prepared[input_id])
+                    if input_id in prepared
+                    else self._pending_state(session, input_id)
+                )
+                if (
+                    state.source == first.source
+                    and state.plugin_id == first.plugin_id
+                    and state.contribution_id == first.contribution_id
+                    and state.coalesce_key == first.coalesce_key
+                ):
+                    item = (
+                        prepared[input_id].item
+                        if input_id in prepared
+                        else self._pending_item(session, state)
+                    )
+                    if item is not None:
+                        superseded.append(item)
+        return InputQueueChange(
+            inputs=tuple(
+                InputRecord(session_id=session.session_id, item=item) for item in queued_items
+            ),
+            changes=tuple(
+                InputStateChange(input_id=item.queue_id, status="cancelled") for item in superseded
+            ),
+            superseded=tuple(superseded),
         )
 
     def eligible(
@@ -479,16 +401,11 @@ class QueuedInputQueue:
         mode: QueuedInputMode | None = None,
         limit: int | None = None,
     ) -> list[QueuedInput]:
-        """Return valid eligible items without acknowledging durable queue state."""
-
         return self.eligible_session(snapshot.session, mode=mode, limit=limit)
 
     def bound_drivers(self, session: SessionRecord) -> tuple[RunDriverBinding, ...]:
-        """Read contracts retained by persisted queue entries without changing the queue."""
         return tuple(
-            item.driver
-            for raw in _raw_queue(session.metadata)
-            if (item := _parse_item(raw)) is not None and item.driver is not None
+            item.driver for item in self.eligible_session(session) if item.driver is not None
         )
 
     def eligible_session(
@@ -498,11 +415,18 @@ class QueuedInputQueue:
         mode: QueuedInputMode | None = None,
         limit: int | None = None,
     ) -> list[QueuedInput]:
-        """Read queue metadata without loading unrelated messages or Run records."""
-
-        valid, saw_invalid = _read_eligible_inputs(session, mode=mode, limit=limit)
-        if saw_invalid:
-            self._remove_invalid(session.session_id)
+        valid = []
+        with self.store.session_read(session.session_id):
+            session = self.store.load_session_record(session.session_id)
+            for input_id in session.pending_input_ids:
+                state = self._pending_state(session, input_id)
+                if mode is not None and state.mode != mode:
+                    continue
+                item = self._pending_item(session, state)
+                if item is not None:
+                    valid.append(item)
+                    if limit is not None and len(valid) >= limit:
+                        break
         return valid
 
     def eligible_units(
@@ -511,8 +435,6 @@ class QueuedInputQueue:
         *,
         mode: QueuedInputMode | None = None,
     ) -> list[tuple[QueuedInput, ...]]:
-        """Return complete delivery units without splitting an atomic batch."""
-
         return self.eligible_units_session(snapshot.session, mode=mode)
 
     def eligible_units_session(
@@ -538,8 +460,7 @@ class QueuedInputQueue:
                 or any(member.driver != item.driver for member in candidate)
                 or [member.batch_index for member in candidate] != list(range(item.batch_size))
             ):
-                index += 1
-                continue
+                raise PersistenceError("accepted input batch is incomplete")
             units.append(candidate)
             index += item.batch_size
         return units
@@ -549,72 +470,48 @@ class QueuedInputQueue:
         return items[0] if items else None
 
     def find_session(self, session: SessionRecord, queue_id: str) -> QueuedInput | None:
-        """Return one valid queued item by its stable delivery identity."""
+        with self.store.session_read(session.session_id):
+            session = self.store.load_session_record(session.session_id)
+            if queue_id not in session.pending_input_ids:
+                return None
+            return self._pending_item(session, self._pending_state(session, queue_id))
 
-        return next(
-            (item for item in self.eligible_session(session) if item.queue_id == queue_id),
-            None,
-        )
-
-    def cancel_user_input(self, *, session_id: str, queue_id: str) -> QueuedInput | None:
-        """Atomically remove a direct user input that is still queued."""
-
+    def cancel_user_input(
+        self, *, session_id: str, queue_id: str
+    ) -> tuple[SessionRecord, QueuedInput, tuple[EventRecord, ...]] | None:
         with self.store.session_mutation(session_id):
             latest = self.store.load_session_record(session_id)
-            metadata = dict(latest.metadata)
-            queue = _raw_queue(metadata)
-            for index, raw_item in enumerate(queue):
-                item = _parse_item(raw_item)
-                if item is None or item.queue_id != queue_id or item.source != "user":
-                    continue
-                queue.pop(index)
-                self._save_queue(latest, metadata, queue)
-                return item
-        return None
-
-    def without_inputs(self, session: SessionRecord, queue_ids: tuple[str, ...]) -> SessionRecord:
-        """Stage exact removals for the same decision that appends their messages."""
-        selected = set(queue_ids)
-        metadata = dict(session.metadata)
-        retained = [
-            raw
-            for raw in _raw_queue(metadata)
-            if not isinstance(raw, dict) or raw.get("queue_id") not in selected
-        ]
-        if retained:
-            metadata[QUEUED_INPUTS_KEY] = retained
-        else:
-            metadata.pop(QUEUED_INPUTS_KEY, None)
-        return session.model_copy(update={"metadata": metadata})
+            item = self.find_session(latest, queue_id)
+            if item is None or item.source != "user":
+                return None
+            committed = self.store.commit_session(
+                SessionCommit(
+                    before=latest,
+                    input_changes=(InputStateChange(input_id=queue_id, status="cancelled"),),
+                    events=(
+                        EventRecord(
+                            session_id=session_id,
+                            run_id=latest.active_run_id,
+                            event_type="queued_input_cancelled",
+                            payload={
+                                "queue_id": item.queue_id,
+                                "mode": item.mode,
+                                "source": item.source,
+                            },
+                        ),
+                    ),
+                )
+            )
+            return committed.session, item, committed.events
 
     def after_withdrawal(self, session: SessionRecord) -> tuple[SessionRecord, tuple[str, ...]]:
-        """Keep independent accepted inputs, replacing only their obsolete execution permits."""
-        retained = []
-        cancelled = []
-        for raw in _raw_queue(session.metadata):
-            item = _parse_item(raw)
-            if item is None:
-                continue
-            if item.history_bound or item.source in {"plugin", "delegation"}:
-                cancelled.append(item.queue_id)
-                continue
-            retained.append(
-                item.model_copy(
-                    update={
-                        "history_epoch": session.history_epoch + 1,
-                        "prompt_policy_checked": False,
-                        "prospective_run_id": None,
-                        "extension_catalog_id": None,
-                        "extension_generations": (),
-                    }
-                ).model_dump(mode="python")
-            )
-        metadata = dict(session.metadata)
-        if retained:
-            metadata[QUEUED_INPUTS_KEY] = retained
-        else:
-            metadata.pop(QUEUED_INPUTS_KEY, None)
-        return session.model_copy(update={"metadata": metadata}), tuple(cancelled)
+        cancelled = tuple(
+            identity
+            for identity in session.pending_input_ids
+            if (state := self._pending_state(session, identity)).history_bound
+            or state.source in {"plugin", "delegation"}
+        )
+        return session, cancelled
 
     def without_session_control(
         self,
@@ -623,103 +520,118 @@ class QueuedInputQueue:
         controller_id: str,
         activation_id: str,
     ) -> tuple[SessionRecord, tuple[str, ...]]:
-        """Prepare a queue removal for the caller's Session commit."""
-        cancelled: list[str] = []
-        metadata = dict(session.metadata)
-        retained: list[object] = []
-        for raw_item in _raw_queue(metadata):
-            item = _parse_item(raw_item)
-            if item is not None and (
-                item.session_control_controller_id == controller_id
-                and item.session_control_activation_id == activation_id
-            ):
-                cancelled.append(item.queue_id)
-            else:
-                retained.append(raw_item)
-        if not cancelled:
-            return session, ()
-        if retained:
-            metadata[QUEUED_INPUTS_KEY] = retained
-        else:
-            metadata.pop(QUEUED_INPUTS_KEY, None)
-        return session.model_copy(update={"metadata": metadata}), tuple(cancelled)
-
-    def _remove_invalid(self, session_id: str) -> None:
-        with self.store.session_mutation(session_id):
-            latest = self.store.load_session_record(session_id)
-            metadata = dict(latest.metadata)
-            queue = [
-                raw_item for raw_item in _raw_queue(metadata) if _parse_item(raw_item) is not None
-            ]
-            self._save_queue(latest, metadata, queue)
-
-    def _save_queue(
-        self,
-        session: SessionRecord,
-        metadata: dict[str, object],
-        queue: list[object],
-    ) -> None:
-        if queue:
-            metadata[QUEUED_INPUTS_KEY] = queue
-        else:
-            metadata.pop(QUEUED_INPUTS_KEY, None)
-        updated = session.model_copy(update={"metadata": metadata, "updated_at": utc_now()})
-        self.store.save_session(updated)
+        cancelled = tuple(
+            identity
+            for identity in session.pending_input_ids
+            if (state := self._pending_state(session, identity)).session_control_controller_id
+            == controller_id
+            and state.session_control_activation_id == activation_id
+        )
+        return session, cancelled
 
 
-def _raw_queue(metadata: dict[str, object]) -> list[object]:
-    current = metadata.get(QUEUED_INPUTS_KEY)
-    return list(current) if isinstance(current, list) else []
+def queued_input_event(session: SessionRecord, item: QueuedInput, queue_size: int) -> EventRecord:
+    """Notify acceptance using routing metadata; the Input keeps its body."""
+    return EventRecord(
+        session_id=session.session_id,
+        run_id=session.active_run_id,
+        event_type="follow_up_input_queued"
+        if item.mode == "follow_up"
+        else "steering_input_queued",
+        payload={
+            "queue_id": item.queue_id,
+            "mode": item.mode,
+            "queue_size": queue_size,
+            "resource_refs": list(item.resource_refs),
+            "source": item.source,
+            "role": item.role,
+            "scaffold": item.scaffold,
+            "semantic_tag": item.semantic_tag,
+            "host_source_id": item.host_source_id,
+            "delegation_id": item.delegation_id,
+            "plugin_id": item.plugin_id,
+            "contribution_id": item.contribution_id,
+            "skill_names": [skill.name for skill in item.skill_activations],
+            "skill_content_digests": [skill.content_digest for skill in item.skill_activations],
+        },
+    )
 
 
-def _parse_item(item: object) -> QueuedInput | None:
-    if not isinstance(item, dict):
-        return None
-    try:
-        return QueuedInput.model_validate(item)
-    except ValidationError:
-        return None
-
-
-def _read_eligible_inputs(
-    session: SessionRecord,
+def input_message_events(
+    run: RunRecord,
+    inputs: Sequence[QueuedInput],
+    messages: Sequence[MessageRecord],
     *,
-    mode: QueuedInputMode | None = None,
-    limit: int | None = None,
-) -> tuple[list[QueuedInput], bool]:
-    valid: list[QueuedInput] = []
-    saw_invalid = False
-    for raw_item in _raw_queue(session.metadata):
-        item = _parse_item(raw_item)
-        if item is None:
-            saw_invalid = True
-            continue
-        if item.history_epoch != session.history_epoch:
-            if item.history_bound or item.source in {"plugin", "delegation"}:
-                continue
-            item = item.model_copy(
-                update={
-                    "history_epoch": session.history_epoch,
-                    "prompt_policy_checked": False,
-                    "prospective_run_id": None,
-                    "extension_catalog_id": None,
-                    "extension_generations": (),
-                }
+    queued: bool,
+    turn_id: str | None = None,
+) -> tuple[EventRecord, ...]:
+    """Reference the last message of each accepted input's indivisible frame."""
+    by_input = {message.input_id: message for message in messages}
+    events = []
+    for item in inputs:
+        message = by_input[item.queue_id]
+        kind = (
+            "queued_input_consumed"
+            if turn_id is not None
+            else {"host": "host_message_added", "plugin": "plugin_message_added"}.get(
+                item.source, "user_message_added"
             )
-        if mode is None or item.mode == mode:
-            valid.append(item)
-            if limit is not None and len(valid) >= limit:
-                break
-    return valid, saw_invalid
+        )
+        payload: dict[str, object] = {
+            "message_id": message.message_id,
+            "source": item.source,
+            "host_source_id": item.host_source_id,
+            "plugin_id": item.plugin_id,
+            "contribution_id": item.contribution_id,
+        }
+        if turn_id is not None:
+            payload.update(queue_id=item.queue_id, mode=item.mode, turn_id=turn_id)
+        else:
+            payload.update(
+                queued_input_id=item.queue_id if queued else None,
+                role=message.role,
+                scaffold=message.scaffold,
+                semantic_tag=message.semantic_tag,
+                resource_refs=list(item.resource_refs),
+                skill_names=[skill.name for skill in item.skill_activations],
+                skill_content_digests=[skill.content_digest for skill in item.skill_activations],
+            )
+        events.append(
+            EventRecord(
+                session_id=run.session_id,
+                run_id=run.run_id,
+                turn_id=turn_id,
+                event_type=kind,
+                payload=payload,
+            )
+        )
+    return tuple(events)
 
 
-def project_pending_user_inputs(session: SessionRecord) -> tuple[QueuedUserInputView, ...]:
-    """Project one immutable Session boundary without mutating its queue."""
-    items, _ = _read_eligible_inputs(session)
+def project_pending_user_inputs(
+    session: SessionRecord,
+    inputs: list[QueuedInput],
+) -> tuple[QueuedUserInputView, ...]:
     return tuple(
         project_queued_user_input(item, waiting_on_run_id=session.active_run_id)
-        for item in items
+        for item in inputs
         if item.source == "user"
+    )
+
+
+def consumption_changes(
+    input_ids: tuple[str, ...],
+    messages: list[MessageRecord] | tuple[MessageRecord, ...],
+) -> tuple[InputStateChange, ...]:
+    return tuple(
+        InputStateChange(
+            input_id=identity,
+            status="consumed",
+            message_ids=tuple(
+                message.message_id for message in messages if message.input_id == identity
+            ),
+        )
+        for identity in input_ids
     )
 
 
@@ -741,16 +653,12 @@ def project_queued_user_input(
     )
 
 
-def input_operation_id(queue_id: str) -> str:
-    """Acceptance survives consumption and history withdrawal in the native receipt journal."""
-    return "input_" + hashlib.sha256(queue_id.encode("utf-8")).hexdigest()
-
-
 def same_queued_input(first: QueuedInput, second: QueuedInput) -> bool:
     """Compare the submitted input, independent of its later execution bindings."""
     fields = (
         "prompt",
         "mode",
+        "history_bound",
         "title",
         "resource_refs",
         "attachments",
@@ -770,3 +678,22 @@ def same_queued_input(first: QueuedInput, second: QueuedInput) -> bool:
         and [(item.name, item.text_offset, item.order) for item in first.skill_activations]
         == [(item.name, item.text_offset, item.order) for item in second.skill_activations]
     )
+
+
+def validate_host_input(record: InputRecord, request: HostSessionInput) -> None:
+    """Keep a fixed Host input identity bound to its originally accepted request."""
+    existing = record.item
+    if (
+        existing.host_source_id != request.host_source_id
+        or existing.source != "host"
+        or existing.prompt != request.prompt
+        or existing.title != request.title
+        or existing.mode != request.mode
+        or existing.resource_refs != request.resource_refs
+        or existing.role != request.role
+        or existing.scaffold != request.scaffold
+        or existing.semantic_tag != request.semantic_tag
+        or existing.history_bound != (request.history_epoch is not None)
+        or (existing.driver.driver_id if existing.driver else None) != request.driver_id
+    ):
+        raise ValueError("Host input queue id is already bound to another input")

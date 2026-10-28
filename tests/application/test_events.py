@@ -130,9 +130,7 @@ async def test_event_recorder_persists_event_and_dispatches_runtime_event_observ
     )
     recorder = RuntimeEventRecorder(store=store, observers=observers)
 
-    emitted: list[EventRecord] = []
     sequence = await recorder.emit(
-        emitted,
         0,
         session_id=session.session_id,
         run_id="run_1",
@@ -143,7 +141,7 @@ async def test_event_recorder_persists_event_and_dispatches_runtime_event_observ
     snapshot = store.load_session(session.session_id)
 
     assert sequence == 1
-    assert emitted[0].event_type == "run_started"
+    assert snapshot.events[0].event_type == "run_started"
     assert snapshot.events[0].event_type == "run_started"
     assert seen == ["run_started"]
 
@@ -172,7 +170,6 @@ async def test_runtime_event_observer_receives_a_redacted_payload(tmp_path) -> N
     recorder = RuntimeEventRecorder(store=store, observers=observers)
 
     await recorder.emit(
-        [],
         0,
         session_id=session.session_id,
         run_id="run_1",
@@ -274,7 +271,6 @@ async def test_event_observer_retains_registry_resolved_at_publish_time(tmp_path
 
     recorder.set_observer_registry_resolver(resolve)
     await recorder.emit(
-        [],
         0,
         session_id=session.session_id,
         run_id="run_catalog",
@@ -316,7 +312,6 @@ async def test_unmatched_runtime_event_skips_observation_projection(
     monkeypatch.setattr(events_module, "_runtime_event_observation", unexpected_projection)
 
     await recorder.emit(
-        [],
         0,
         session_id=session.session_id,
         run_id="run_filtered",
@@ -356,7 +351,6 @@ async def test_runtime_event_matcher_short_circuits_catalog_resolution(tmp_path)
     recorder.set_runtime_event_observer_matcher(lambda _run_id, _event_type: False)
 
     await recorder.emit(
-        [],
         0,
         session_id=session.session_id,
         run_id="run_catalog",
@@ -417,9 +411,7 @@ async def test_event_recorder_converts_observer_failure_to_failure_event(tmp_pat
     )
     recorder = RuntimeEventRecorder(store=store, observers=observers)
 
-    emitted: list[EventRecord] = []
     sequence = await recorder.emit(
-        emitted,
         0,
         session_id=session.session_id,
         run_id="run_1",
@@ -430,7 +422,9 @@ async def test_event_recorder_converts_observer_failure_to_failure_event(tmp_pat
     snapshot = store.load_session(session.session_id)
 
     assert sequence == 1
-    assert [event.event_type for event in emitted] == ["run_started"]
+    assert [
+        event.event_type for event in store.load_events_after(session.session_id, limit=1)[0]
+    ] == ["run_started"]
     assert [event.event_type for event in snapshot.events] == [
         "run_started",
         "plugin_observer_failed",
@@ -461,12 +455,9 @@ async def test_event_recorder_allocates_unique_sequences_across_concurrent_emitt
         event_sink=blocking_sink,
     )
     second = RuntimeEventRecorder(store=store, observers=ObserverRegistry())
-    first_events: list[EventRecord] = []
-    second_events: list[EventRecord] = []
 
     first_emit = asyncio.create_task(
         first.emit(
-            first_events,
             0,
             session_id=session.session_id,
             run_id="run_1",
@@ -476,7 +467,6 @@ async def test_event_recorder_allocates_unique_sequences_across_concurrent_emitt
     )
     await sink_entered.wait()
     second_sequence = await second.emit(
-        second_events,
         0,
         session_id=session.session_id,
         run_id="run_1",
@@ -490,8 +480,8 @@ async def test_event_recorder_allocates_unique_sequences_across_concurrent_emitt
 
     snapshot = store.load_session(session.session_id)
     assert [event.sequence for event in snapshot.events] == [1, 2]
-    assert first_events[0].sequence == 1
-    assert second_events[0].sequence == 2
+    assert snapshot.events[0].sequence == 1
+    assert snapshot.events[1].sequence == 2
     assert first_sequence == 1
     assert second_sequence == 2
 
@@ -587,7 +577,6 @@ async def test_slow_file_persistence_does_not_block_another_session(tmp_path) ->
 
     blocked_emit = asyncio.create_task(
         recorder.emit(
-            [],
             0,
             session_id=blocked.session_id,
             run_id="run_blocked",
@@ -598,7 +587,6 @@ async def test_slow_file_persistence_does_not_block_another_session(tmp_path) ->
     assert await asyncio.to_thread(entered.wait, 1)
     independent_sequence = await asyncio.wait_for(
         recorder.emit(
-            [],
             0,
             session_id=independent.session_id,
             run_id="run_independent",
@@ -639,7 +627,6 @@ async def test_observer_timeout_cannot_block_durable_event(tmp_path) -> None:
 
     sequence = await asyncio.wait_for(
         recorder.emit(
-            [],
             0,
             session_id=session.session_id,
             run_id="run_1",
@@ -689,7 +676,6 @@ async def test_event_recorder_close_applies_observer_shutdown_deadline(tmp_path)
     )
 
     await recorder.emit(
-        [],
         0,
         session_id=session.session_id,
         run_id="run_1",
@@ -712,7 +698,6 @@ async def test_stable_runtime_event_payload_is_validated_before_persistence(tmp_
 
     with pytest.raises(ValueError, match="requires string payload field text"):
         await recorder.emit(
-            [],
             0,
             session_id=session.session_id,
             run_id="run_1",
@@ -735,9 +720,7 @@ async def test_tool_output_with_malformed_url_does_not_break_event_delivery(tmp_
     seen: list[str] = []
     recorder.add_event_sink(lambda event: seen.append(event.event_type))
 
-    emitted = []
     sequence = await recorder.emit(
-        emitted,
         0,
         session_id=session.session_id,
         run_id="run_1",
@@ -755,7 +738,9 @@ async def test_tool_output_with_malformed_url_does_not_break_event_delivery(tmp_
     await recorder.drain()
 
     assert sequence == 1
-    assert [event.event_type for event in emitted] == ["tool_call_completed"]
+    assert [
+        event.event_type for event in store.load_events_after(session.session_id, limit=1)[0]
+    ] == ["tool_call_completed"]
     assert seen == ["tool_call_completed"]
     assert not any(
         event.event_type == "event_sink_failed"
@@ -819,7 +804,6 @@ async def test_host_sink_worker_starts_with_eager_task_factory(tmp_path) -> None
     loop.set_task_factory(asyncio.eager_task_factory)
     try:
         await recorder.emit(
-            [],
             0,
             session_id=session.session_id,
             run_id="run_eager",

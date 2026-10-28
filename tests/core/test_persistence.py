@@ -23,7 +23,10 @@ def test_versioned_record_model_rejects_unknown_schema_version() -> None:
         ({"schema_version": "1", "session_id": "ses_string"}, "'1'"),
         ({"schema_version": 0, "session_id": "ses_old"}, "0"),
         ({"schema_version": 1, "session_id": "ses_legacy"}, "1"),
-        ({"schema_version": 3, "session_id": "ses_future"}, "3"),
+        ({"schema_version": 2, "session_id": "ses_previous"}, "2"),
+        ({"schema_version": 3, "session_id": "ses_previous_selection"}, "3"),
+        ({"schema_version": 4, "session_id": "ses_previous_counts"}, "4"),
+        ({"schema_version": 6, "session_id": "ses_future"}, "6"),
     ],
 )
 def test_versioned_decoder_requires_explicit_current_version(
@@ -32,7 +35,7 @@ def test_versioned_decoder_requires_explicit_current_version(
 ) -> None:
     with pytest.raises(
         UnsupportedDataVersionError,
-        match=rf"found {found}, expected 2",
+        match=rf"found {found}, expected 5",
     ):
         decode_versioned_record_json(
             SessionRecord,
@@ -47,7 +50,13 @@ def test_versioned_decoder_rejects_non_record_payload(payload: str) -> None:
         decode_versioned_record_json(SessionRecord, payload, label="session record")
 
 
-def test_versioned_decoder_returns_current_typed_record() -> None:
+def test_versioned_decoder_returns_current_typed_record_without_intermediate_json(
+    monkeypatch,
+) -> None:
+    def reject_intermediate(*args, **kwargs):
+        pytest.fail("valid persisted records must decode directly to their typed model")
+
+    monkeypatch.setattr(json, "loads", reject_intermediate)
     session = decode_versioned_record_json(
         SessionRecord,
         SessionRecord(session_id="ses_current").model_dump_json(),
@@ -55,7 +64,7 @@ def test_versioned_decoder_returns_current_typed_record() -> None:
     )
 
     assert session.session_id == "ses_current"
-    assert session.schema_version == 2
+    assert session.schema_version == 5
 
 
 def _activation(**changes):

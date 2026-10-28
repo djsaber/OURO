@@ -14,6 +14,12 @@ _MEDIA_TYPE = re.compile(r"[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+\Z")
 ResourceSourceKind = Literal["import", "tool"]
 
 
+def validate_resource_id(resource_id: str) -> str:
+    if re.fullmatch(r"res_[0-9a-f]{32}", resource_id) is None:
+        raise ValueError("invalid resource identity")
+    return resource_id
+
+
 class ResourceSource(OuroModel):
     """Non-path provenance safe to expose through application DTOs."""
 
@@ -35,21 +41,21 @@ class ResourceSource(OuroModel):
 class ResourceRecord(VersionedOuroModel):
     """Metadata for one named file in a prepared or accepted Session namespace."""
 
-    schema_version: int = 2
+    schema_version: int = 3
     resource_id: str = Field(default_factory=lambda: new_id("res"))
     filename: str
     digest: str
     media_type: str
     size: int = Field(ge=0)
     source: ResourceSource
+    internal: bool = False
     created_at: datetime = Field(default_factory=utc_now)
 
     @model_validator(mode="after")
     def validate_identity(self) -> Self:
         if not _DIGEST.fullmatch(self.digest):
             raise ValueError("resource digest must be a lowercase sha256 digest")
-        if not re.fullmatch(r"res_[0-9a-f]{32}", self.resource_id):
-            raise ValueError("invalid resource identity")
+        validate_resource_id(self.resource_id)
         if (
             not self.filename
             or self.filename in {".", ".."}

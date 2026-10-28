@@ -31,11 +31,13 @@ from ouro.application.observations.activity import (
     runtime_activity_changed,
     runtime_activity_for_status,
 )
+from ouro.application.observations.drafts import read_draft_events, resolve_fact_event
 from ouro.application.observations.events import SessionEventStream
 from ouro.application.observations.sessions import SessionObservation, redact_observation
 from ouro.application.observations.subscription import SessionStateSubscription
 from ouro.application.runs.lifecycle import maybe_active_run
 from ouro.application.runs.ownership import RunReservation
+from ouro.application.runs.tool_batches import load_tool_batch
 from ouro.application.runtime.service import RuntimeService
 from ouro.application.sessions.editing import continuable_run
 from ouro.core.agents import AgentWaitResolution
@@ -43,6 +45,7 @@ from ouro.core.base import utc_now
 from ouro.core.callbacks import run_blocking
 from ouro.core.errors import OuroError, PersistenceError, SessionBusyError, SessionNotFoundError
 from ouro.core.events import EventRecord
+from ouro.core.response_drafts import ResponseStreamPosition
 from ouro.core.results import RunResult
 from ouro.core.session_controls import DelegatedTaskInput, HostSessionInput
 from ouro.core.state import (
@@ -52,7 +55,7 @@ from ouro.core.state import (
     RunStatus,
     SessionRecord,
 )
-from ouro.core.tools import ToolResult
+from ouro.core.tool_facts import ToolCallIdentity
 
 _CLOSED: Final = object()
 _LOGGER = logging.getLogger(__name__)
@@ -79,8 +82,7 @@ class _RunJob:
     session_input: HostSessionInput | DelegatedTaskInput | None = None
     host_input_receipt: HostInputReceipt | None = None
     agent_wait_resolution: AgentWaitResolution | None = None
-    agent_wait_result: ToolResult | None = None
-    agent_wait_tool_call_id: str | None = None
+    agent_wait_identity: ToolCallIdentity | None = None
     interaction_kind: str | None = None
     approval_id: str | None = None
     approval_decision: bool | None = None
@@ -123,6 +125,7 @@ class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
         self._queue: asyncio.Queue[RuntimeNotification | object] = asyncio.Queue(max_buffer)
         self._closed = False
         self._event_sequence = after_sequence
+        self._draft_position: ResponseStreamPosition | None = None
 
     def __aiter__(self) -> RuntimeSubscription:
         return self
@@ -163,9 +166,20 @@ class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
         if self._closed:
             return
         if notification.event is not None:
-            if notification.event.sequence <= self._event_sequence:
-                return
-            self._event_sequence = notification.event.sequence
+            position = notification.event.stream
+            if position is not None:
+                if position.cursor is not None:
+                    if (
+                        self._draft_position is not None
+                        and self._draft_position.context_id == position.context_id
+                        and position.cursor <= (self._draft_position.cursor or 0)
+                    ):
+                        return
+                    self._draft_position = position
+            else:
+                if notification.event.sequence <= self._event_sequence:
+                    return
+                self._event_sequence = notification.event.sequence
         try:
             self._queue.put_nowait(notification)
         except asyncio.QueueFull:
@@ -209,6 +223,7 @@ class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
             self._offer_lagged()
             return
         self._event_sequence = after_sequence
+        self._draft_position = None
         for notification in (*replay, *pending):
             if (
                 notification.activity is not None
@@ -447,7 +462,7 @@ class RuntimeSupervisor:
             # local slot and reservation. Resume only after that ownership settles.
             await previous_job.done.wait()
         snapshot = await run_blocking(self.runtime.session_recovery.recover_runtime, session_id)
-        run = continuable_run(snapshot)
+        run = await run_blocking(continuable_run, self.store, snapshot)
         if run_id is not None and run.run_id != run_id:
             raise SessionBusyError("The requested continuation is no longer the latest run")
         handle = RunHandle(session_id=session_id)
@@ -510,13 +525,12 @@ class RuntimeSupervisor:
         self,
         *,
         session_id: str,
-        run_id: str,
-        tool_call_id: str,
+        identity: ToolCallIdentity,
         resolution: AgentWaitResolution,
-        result: ToolResult,
     ) -> RunHandle:
         """Schedule continuation of one parked parent Run."""
 
+        run_id = identity.run_id
         await self.start()
         lock = self._parked_session_locks.setdefault(session_id, asyncio.Lock())
         async with lock:
@@ -528,14 +542,15 @@ class RuntimeSupervisor:
             run = await run_blocking(self.store.load_run, session_id, run_id)
             if run.status != "waiting_child":
                 raise ValueError(f"run is not waiting for a child: {run.status}")
+            if run.active_tool_batch is None or run.active_tool_batch.batch_id != identity.batch_id:
+                raise ValueError("Agent wait belongs to another native batch")
             handle = RunHandle(session_id=session_id)
             job = _RunJob(
                 handle=handle,
                 prompt="",
                 title=None,
                 agent_wait_resolution=resolution,
-                agent_wait_result=result,
-                agent_wait_tool_call_id=tool_call_id,
+                agent_wait_identity=identity,
             )
             await self._enqueue_job(job, run_id=run_id)
             return handle
@@ -575,7 +590,12 @@ class RuntimeSupervisor:
             job = None
             if status.status not in ACTIVE_RUN_STATUSES:
                 session = await run_blocking(self.store.load_session_record, session_id)
-                if self.runtime.queued_inputs.find_session(session, receipt.queue_id) is not None:
+                if (
+                    await run_blocking(
+                        self.runtime.queued_inputs.find_session, session, receipt.queue_id
+                    )
+                    is not None
+                ):
                     job = _RunJob(
                         handle=RunHandle(session_id=session_id),
                         prompt="",
@@ -824,12 +844,28 @@ class RuntimeSupervisor:
                 subscription.initial_activity = initial
 
             def read_replay() -> tuple[tuple[RuntimeNotification, ...], bool]:
-                # Events are immutable facts; read replay outside the snapshot lock.
-                events, truncated = self.store.load_events_after(
-                    session_id,
-                    after_sequence=after_sequence,
-                    limit=max_buffer,
-                )
+                with self.store.session_read(session_id):
+                    epoch = self.store.load_session_record(session_id).history_epoch
+                    events, truncated = self.store.load_events_after(
+                        session_id,
+                        after_sequence=after_sequence,
+                        limit=max_buffer,
+                    )
+                    sequence = events[-1].sequence if events else after_sequence
+                    events = [
+                        resolve_fact_event(self.store, event, history_epoch=epoch)
+                        for event in events
+                    ]
+                    if not truncated:
+                        draft = read_draft_events(
+                            self.store,
+                            session_id,
+                            sequence=sequence,
+                            history_epoch=epoch,
+                            limit=max_buffer,
+                        )
+                        events.extend(draft)
+                        truncated = len(events) > max_buffer
                 replay = (
                     tuple(
                         RuntimeNotification(kind="event", event=project_runtime_event(event))
@@ -1324,16 +1360,11 @@ class RuntimeSupervisor:
                         )
                     elif job.agent_wait_resolution is not None:
                         job.provider_stream_started.set()
-                        assert job.agent_wait_result is not None
-                        assert job.agent_wait_tool_call_id is not None
-                        run_id = self._snapshots[job.handle.handle_id].run_id
-                        assert run_id is not None
+                        assert job.agent_wait_identity is not None
                         job.result = await self.runtime.resume_agent_wait(
                             session_id=job.handle.session_id,
-                            run_id=run_id,
-                            tool_call_id=job.agent_wait_tool_call_id,
+                            identity=job.agent_wait_identity,
                             resolution=job.agent_wait_resolution,
-                            result=job.agent_wait_result,
                         )
                     elif job.continue_existing:
                         job.provider_stream_started.set()
@@ -1489,6 +1520,7 @@ class RuntimeSupervisor:
                 else None
             )
             sequence = self.store.latest_event_sequence(session_id)
+            batch = load_tool_batch(self.store, run) if run is not None else None
             context_status = self.runtime.sessions.context_status(session_id)
             metrics = self.runtime.sessions.effective_context_metrics(session_id)
         return project_runtime_activity_state(
@@ -1498,6 +1530,7 @@ class RuntimeSupervisor:
             status_override=status_override if run is None else None,
             context_status=context_status,
             effective_context_metrics=metrics,
+            batch=batch,
         )
 
     def _resolve_job(self, handle_or_session: RunHandle | str) -> _RunJob:
@@ -1584,7 +1617,7 @@ class RuntimeSupervisor:
         with self.store.session_read(session_id):
             session = self.store.load_session_record(session_id)
             return maybe_active_run(
-                self.store.load_runs(session_id), history_epoch=session.history_epoch
+                self.store.load_pending_runs(session_id), history_epoch=session.history_epoch
             )
 
     async def _finish_interrupted_job(self, job: _RunJob) -> None:

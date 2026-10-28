@@ -7,8 +7,6 @@ from ouro.core.attachment_input import is_editable_user_input
 from ouro.core.base import new_id
 from ouro.core.compaction import (
     CompactionRecord,
-    compaction_source_digest,
-    validate_compaction_lineage,
 )
 from ouro.core.context import estimate_message_tokens
 from ouro.core.errors import CompactionStateError, SessionBranchError
@@ -174,10 +172,8 @@ def copy_branch_compactions(
 ) -> list[CompactionRecord]:
     """Copy the usable active compaction lineage into a branch.
 
-    A compaction is usable only when both its summarized prefix and the durable
-    message boundary where it became history are present in the branch. This
-    prevents a branch from inheriting a summary that reaches beyond its own
-    canonical messages, and keeps transcript placement references resolvable.
+    Coverage and predecessor summaries are dependencies. A display anchor beyond
+    the copied tail is moved to the branch head without discarding valid coverage.
     """
 
     if active_compaction_id is None:
@@ -192,30 +188,24 @@ def copy_branch_compactions(
     copied: list[CompactionRecord] = []
 
     for compaction in lineage:
-        covered_count = len(compaction.covered_message_ids)
-        if covered_count == 0:
-            raise CompactionStateError(
-                f"compaction {compaction.compaction_id} covers no canonical messages"
-            )
-        if source_ids[:covered_count] != compaction.covered_message_ids:
+        covered_count = compaction.covered_message_count
+        if covered_count > len(source_ids):
             break
+        if source_ids[covered_count - 1] != compaction.covered_end_message_id:
+            raise CompactionStateError("compaction coverage boundary does not match branch history")
 
         boundary_index = source_positions.get(compaction.history_boundary_message_id)
-        if boundary_index is None:
-            break
-        if boundary_index < covered_count - 1:
+        if boundary_index is not None and boundary_index < covered_count - 1:
             raise CompactionStateError(
                 f"compaction {compaction.compaction_id} history boundary precedes its summary"
             )
 
-        validate_compaction_lineage(source_messages, compaction)
         previous_id = compaction.previous_compaction_id
         if previous_id is not None and previous_id not in compaction_id_map:
             break
 
         copied_id = new_id("cmp")
         compaction_id_map[compaction.compaction_id] = copied_id
-        copied_prefix = copied_messages[:covered_count]
         metadata = dict(compaction.metadata)
         metadata["source_compaction_id"] = compaction.compaction_id
         copied.append(
@@ -226,13 +216,19 @@ def copy_branch_compactions(
                     "previous_compaction_id": (
                         compaction_id_map[previous_id] if previous_id is not None else None
                     ),
-                    "covered_message_ids": [
-                        message_id_map[message_id] for message_id in compaction.covered_message_ids
-                    ],
-                    "history_boundary_message_id": message_id_map[
-                        compaction.history_boundary_message_id
-                    ],
-                    "source_digest": compaction_source_digest(copied_prefix),
+                    "covered_end_message_id": message_id_map[compaction.covered_end_message_id],
+                    "retained_skill_message_ids": tuple(
+                        message_id_map[identity]
+                        for identity in compaction.retained_skill_message_ids
+                    ),
+                    "history_boundary_message_id": (
+                        message_id_map[compaction.history_boundary_message_id]
+                        if boundary_index is not None
+                        else copied_messages[-1].message_id
+                    ),
+                    "context_metrics_after": compaction.context_metrics_after
+                    if boundary_index is not None
+                    else None,
                     "metadata": metadata,
                 }
             )

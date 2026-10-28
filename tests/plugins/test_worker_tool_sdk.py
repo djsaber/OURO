@@ -110,31 +110,63 @@ async def test_worker_tool_wait_and_resume_preserve_resolution_and_state_proposa
     }
 
 
-async def test_cancelled_sync_worker_tool_settles_thread_and_discards_late_state():
-    entered, release = threading.Event(), threading.Event()
-    retained = []
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_cancelled_worker_tool_returns_observation_and_discards_late_state(
+    monkeypatch, asynchronous
+):
+    from ouro.sdk.plugins.worker_tools import WorkerSessionState
 
-    def execute(call):
+    entered, release = threading.Event(), threading.Event()
+    release_async = asyncio.Event()
+    closed = asyncio.Event()
+    retained = []
+    close = WorkerSessionState.close
+
+    def observe_close(state):
+        close(state)
+        closed.set()
+
+    monkeypatch.setattr(WorkerSessionState, "close", observe_close)
+
+    def begin(call):
         retained.append(call.session_state)
+        call.session_state.replace(state_schema_version=1, payload={"staged": True})
         entered.set()
-        release.wait()
+
+    def finish(call):
         with pytest.raises(RuntimeError, match="finished"):
             call.session_state.replace(state_schema_version=1, payload={"late": True})
         return "late"
 
+    def execute_sync(call):
+        begin(call)
+        release.wait()
+        return finish(call)
+
+    async def execute_async(call):
+        begin(call)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release_async.wait()
+            asyncio.current_task().uncancel()
+        return finish(call)
+
+    execute = execute_async if asynchronous else execute_sync
     task = asyncio.create_task(
         invoke_worker_tool(sdk.ToolContribution("tool", "Tool", "Test", execute), params())
     )
     try:
         assert await asyncio.to_thread(entered.wait, 5)
         task.cancel()
-        await asyncio.sleep(0)
+        await asyncio.wait_for(closed.wait(), 5)
         assert not task.done()
         release.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        release_async.set()
+        assert await task == {"content": "late"}
         with pytest.raises(RuntimeError, match="finished"):
             retained[0].read()
     finally:
         release.set()
+        release_async.set()
         await asyncio.gather(task, return_exceptions=True)

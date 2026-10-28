@@ -5,8 +5,8 @@ from dataclasses import dataclass
 
 from ouro.application.contracts.agents import AgentInteractionView
 from ouro.application.contracts.models import AvailableModel
-from ouro.application.observations.content import InteractionKind as InteractionKind
-from ouro.application.observations.content import PendingInteraction as PendingInteraction
+from ouro.application.contracts.tool_activity import InteractionKind as InteractionKind
+from ouro.application.contracts.tool_activity import PendingInteraction as PendingInteraction
 from ouro.application.observations.content import ProjectionUpdate as ProjectionUpdate
 from ouro.application.observations.content import SessionContentProjection
 from ouro.application.observations.content import canonical_event_order as canonical_event_order

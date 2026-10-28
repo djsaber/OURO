@@ -131,7 +131,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._pieces: list[_Piece] = []
         self._piece_line_starts: list[int] = []
         self._piece_indexes_by_entry: dict[int, list[int]] = {}
-        self._tool_entry_indexes: dict[tuple[str | None, str], int] = {}
+        self._tool_entry_indexes: dict[tuple[str | None, str | None, str], int] = {}
         self._user_lines: list[int] = []
         self._render_width = 0
         self._reasoning_expanded = reasoning_expanded
@@ -226,6 +226,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                     ToolNavigationRequested(
                         parent_run_id=entry.run_id,
                         parent_tool_call_id=entry.tool.tool_call_id,
+                        parent_batch_id=entry.tool.batch_id,
                     )
                 )
                 event.stop()
@@ -454,7 +455,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._entries = [*merged_prefix, *entries[shared:]]
         self._refresh_traces()
         self._tool_entry_indexes = {
-            (entry.run_id, entry.tool.tool_call_id): index
+            (entry.run_id, entry.tool.batch_id, entry.tool.tool_call_id): index
             for index, entry in enumerate(self._entries)
             if entry.tool is not None
         }
@@ -486,6 +487,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                 and cached.tool is not None
                 and current.tool is not None
                 and cached.tool.tool_call_id == current.tool.tool_call_id
+                and cached.tool.batch_id == current.tool.batch_id
             )
         if cached.kind == "run":
             return cached.run_id == current.run_id
@@ -582,7 +584,9 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         if entry.kind == "run":
             self._refresh_traces()
         if entry.tool is not None:
-            self._tool_entry_indexes[(entry.run_id, entry.tool.tool_call_id)] = entry_index
+            self._tool_entry_indexes[
+                (entry.run_id, entry.tool.batch_id, entry.tool.tool_call_id)
+            ] = entry_index
         if (
             entry.reasoning
             and reasoning_expanded is not None
@@ -623,7 +627,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         matched: set[str] = set()
         changed_indexes: list[int] = []
         for tool_call_id, tool in updates.items():
-            index = self._tool_entry_indexes.get((run_id, tool_call_id))
+            index = self._tool_entry_indexes.get((run_id, tool.batch_id, tool_call_id))
             if index is None:
                 continue
             entry = self._entries[index]
@@ -646,7 +650,9 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         for agent in agents:
             if agent.parent_tool_call_id is None:
                 continue
-            index = self._tool_entry_indexes.get((agent.parent_run_id, agent.parent_tool_call_id))
+            index = self._tool_entry_indexes.get(
+                (agent.parent_run_id, agent.parent_batch_id, agent.parent_tool_call_id)
+            )
             if index is None:
                 continue
             entry = self._entries[index]
@@ -889,7 +895,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._piece_line_starts.clear()
         self._piece_indexes_by_entry.clear()
         self._tool_entry_indexes = {
-            (entry.run_id, entry.tool.tool_call_id): index
+            (entry.run_id, entry.tool.batch_id, entry.tool.tool_call_id): index
             for index, entry in enumerate(entries)
             if entry.tool is not None
         }
@@ -1114,7 +1120,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._piece_line_starts = starts
         self._piece_indexes_by_entry = piece_indexes_by_entry
         self._tool_entry_indexes = {
-            (entry.run_id, entry.tool.tool_call_id): index
+            (entry.run_id, entry.tool.batch_id, entry.tool.tool_call_id): index
             for index, entry in enumerate(self._entries)
             if entry.tool is not None
         }

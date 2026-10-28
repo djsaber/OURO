@@ -323,7 +323,7 @@ async def test_default_builtin_injects_instructions_then_runtime_facts_without_p
     assert prompt.index("<ouro-agent-instructions>") < prompt.index("<ouro-system-information>")
     assert prompt.endswith("</ouro-system-information>")
     assert f"Workspace: {workspace}" in prompt
-    snapshot = store.load_runtime_session(result.session.session_id)
+    snapshot = store.load_session(result.session.session_id)
     assert not any(
         message.metadata.get("kind") == "context_provider" for message in snapshot.messages
     )

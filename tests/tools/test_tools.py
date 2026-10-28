@@ -555,7 +555,7 @@ async def test_sync_tool_handler_does_not_block_the_event_loop() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tool_execution_aborted_still_returns_aborted_outcome() -> None:
+async def test_handler_abort_does_not_establish_absence_of_external_effects() -> None:
     from ouro.tools.base import ToolExecutionAborted
 
     registry = ToolRegistry()
@@ -575,7 +575,7 @@ async def test_tool_execution_aborted_still_returns_aborted_outcome() -> None:
         ToolInvocation(session_id="ses_1", run_id="run_1", tool_name="Aborting")
     )
 
-    assert outcome.status == "aborted"
+    assert outcome.status == "unknown_outcome"
     assert outcome.result is not None
     assert outcome.result.is_error is True
     assert "cancelled by signal" in outcome.result.content
@@ -648,27 +648,27 @@ async def test_executor_cancels_async_tool_without_handler_polling() -> None:
     outcome = await asyncio.wait_for(execution, timeout=1)
 
     assert finalized.is_set()
-    assert outcome.status == "aborted"
+    assert outcome.status == "unknown_outcome"
     assert outcome.result is not None
-    assert outcome.result.structured == {"aborted": True, "reason": "stop async tool"}
+    assert outcome.result.structured == {"unknown_outcome": True, "reason": "stop async tool"}
 
 
 @pytest.mark.asyncio
 async def test_executor_owns_sync_tool_until_cancel_outcome_is_known(monkeypatch) -> None:
-    import ouro.tools.executor as executor_module
+    import ouro.tools.base as tool_module
 
     registry = ToolRegistry()
     signal = AbortSignal()
     entered = threading.Event()
     release = threading.Event()
     settling = asyncio.Event()
-    settle = executor_module.settle_owned_tasks
+    settle = tool_module.settle_owned_tasks
 
     async def observe_settlement(*tasks):
         settling.set()
         return await settle(*tasks)
 
-    monkeypatch.setattr(executor_module, "settle_owned_tasks", observe_settlement)
+    monkeypatch.setattr(tool_module, "settle_owned_tasks", observe_settlement)
 
     def handler(invocation: ToolInvocation, context) -> ToolResult:
         entered.set()
@@ -722,9 +722,9 @@ async def test_executor_accepts_cooperative_cancellation_from_sync_tool() -> Non
         context: ToolExecutionContext,
     ) -> ToolResult:
         entered.set()
-        while True:
-            context.raise_if_aborted()
-            checkpoint.wait(timeout=0.01)
+        checkpoint.wait()
+        context.raise_if_aborted()
+        raise AssertionError("the cancellation checkpoint must reject execution")
 
     registry.register(
         Tool(
@@ -745,12 +745,13 @@ async def test_executor_accepts_cooperative_cancellation_from_sync_tool() -> Non
     assert await asyncio.to_thread(entered.wait, 1)
 
     signal.abort("stop cooperative tool")
+    checkpoint.set()
     outcome = await asyncio.wait_for(execution, timeout=1)
 
-    assert outcome.status == "aborted"
+    assert outcome.status == "unknown_outcome"
     assert outcome.result is not None
     assert outcome.result.structured == {
-        "aborted": True,
+        "unknown_outcome": True,
         "reason": "stop cooperative tool",
     }
 

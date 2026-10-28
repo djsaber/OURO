@@ -14,7 +14,8 @@ import pytest
 from ouro.application.runs.lifecycle import reserve_run
 from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
-from ouro.core.agents import AgentCatalogSnapshot, DelegatedConstraints
+from ouro.core.agents import AgentCatalogSnapshot
+from ouro.core.errors import PersistenceError
 from ouro.core.observers import ContextPreparedObservation
 from ouro.core.provider import ModelMetadata
 from ouro.core.session_controls import HostSessionInput
@@ -23,6 +24,7 @@ from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
+from tests.agent_facts import seed_delegation
 
 
 def test_headless_runtime_completes_and_closes_with_tui_imports_blocked():
@@ -107,15 +109,24 @@ async def runtime(tmp_path):
         await app.close()
 
 
-def delegated_run(session_id="session", **updates):
+def delegated_run(app, session_id="session", **updates):
+    session = app.store.load_session_record(session_id)
+    relation = (
+        seed_delegation(app.store, session)
+        if session.session_kind == "primary"
+        else app.store.load_delegation(session.root_session_id, session.delegation_id)
+    )
     return RunRecord(
         session_id=session_id,
         status="waiting_approval",
         agent_catalog=AgentCatalogSnapshot(),
+        parent_run_id=relation.parent_run_id,
+        initiator_id=f"ouro.subagents/{relation.delegation_id}",
         metadata={
-            "effective_tool_names": [],
-            "effective_tool_refs": [],
-            "delegated_constraints": {"allow_external_paths": False},
+            "root_session_id": relation.root_session_id,
+            "delegation_id": relation.delegation_id,
+            "agent_id": relation.agent_id,
+            "agent_definition_contract_hash": relation.definition.contract_hash,
         },
         **updates,
     )
@@ -126,7 +137,7 @@ async def test_close_releases_all_run_references_with_or_without_catalog(runtime
     app, catalog, source = runtime
     if extensions:
         app.bind_extensions(catalog=source)
-    run = delegated_run()
+    run = delegated_run(app)
     catalog_reference = weakref.ref(run.agent_catalog)
     await app._ensure_extension_snapshot(run)
     coordinator_reference = weakref.ref(app._tool_calls_for_run(run.run_id))
@@ -145,7 +156,7 @@ async def test_close_releases_all_run_references_with_or_without_catalog(runtime
 async def test_wait_releases_resources_and_resume_acquires_current_binding(runtime, status):
     app, catalog, source = runtime
     app.bind_extensions(catalog=source)
-    run = delegated_run().model_copy(update={"status": status})
+    run = delegated_run(app).model_copy(update={"status": status})
     await app._ensure_extension_snapshot(run)
     reference = weakref.ref(app._tool_calls_for_run(run.run_id))
     app._finish_run_observers(run)
@@ -162,7 +173,7 @@ async def test_wait_releases_resources_and_resume_acquires_current_binding(runti
 async def test_unmatched_observation_does_not_retain_the_run_catalog(runtime):
     app, catalog, source = runtime
     app.bind_extensions(catalog=source)
-    run = delegated_run()
+    run = delegated_run(app)
     await app._ensure_extension_snapshot(run)
     _, close_observer = app._observers_for_observation(
         ContextPreparedObservation(
@@ -183,7 +194,7 @@ async def test_unmatched_observation_does_not_retain_the_run_catalog(runtime):
 async def test_recovery_does_not_interpret_historical_control_metadata(runtime):
     app, catalog, source = runtime
     app.bind_extensions(catalog=source)
-    run = delegated_run()
+    run = delegated_run(app)
     run.metadata["session_control_snapshot"] = {"activations": [{"controller_id": "obsolete"}]}
     await app._ensure_extension_snapshot(run)
     assert app._active_controller_ids_for_run(run.run_id) == set()
@@ -192,11 +203,10 @@ async def test_recovery_does_not_interpret_historical_control_metadata(runtime):
 
 async def test_invalid_delegated_binding_does_not_publish_partial_tool_cap(runtime):
     app, _, _ = runtime
-    run = delegated_run()
+    run = delegated_run(app)
     await app._ensure_extension_snapshot(run)
-    run.metadata["effective_tool_names"] = ["missing"]
-    run.metadata["effective_tool_refs"] = "invalid"
-    with pytest.raises(ValueError, match="effective tool references"):
+    run.metadata["agent_definition_contract_hash"] = "different-contract"
+    with pytest.raises(PersistenceError, match="child_contract_unavailable"):
         await app._ensure_extension_snapshot(run)
     # The original empty cap remains usable; no partially restored name is exposed.
     assert app._tools_for_run(run.run_id).definitions() == []
@@ -206,7 +216,7 @@ async def test_cancelled_binding_releases_owned_lease(runtime, monkeypatch):
     app, catalog, source = runtime
     app.bind_extensions(catalog=source)
     session = app.create_session(title="Cancelled binding")
-    run = delegated_run(session.session_id)
+    run = delegated_run(app, session.session_id)
     entered = asyncio.Event()
 
     async def hold(*args, **kwargs):
@@ -226,7 +236,7 @@ async def test_cancelled_binding_releases_owned_lease(runtime, monkeypatch):
 async def test_detaching_run_transfers_only_catalog_ownership(runtime):
     app, catalog, source = runtime
     app.bind_extensions(catalog=source)
-    run = delegated_run()
+    run = delegated_run(app)
     await app._ensure_extension_snapshot(run)
     reference = weakref.ref(app._tool_calls_for_run(run.run_id))
     snapshot = app._detach_extension_snapshot(run.run_id)
@@ -239,21 +249,19 @@ async def test_detaching_run_transfers_only_catalog_ownership(runtime):
     assert catalog.lease_count == 0
 
 
-async def test_prepared_run_decodes_delegated_binding_once(runtime):
+async def test_prepared_run_loads_frozen_delegation_once(runtime):
     app, catalog, source = runtime
     app.bind_extensions(catalog=source)
     session = app.create_session(title="Prepared binding")
-    run = delegated_run(session.session_id).model_copy(update={"status": "queued"})
+    run = delegated_run(app, session.session_id).model_copy(update={"status": "queued"})
     run.metadata["extension_generations"] = []
     reserve_run(app.store, run)
-    with patch.object(
-        DelegatedConstraints, "model_validate", wraps=DelegatedConstraints.model_validate
-    ) as decode:
+    with patch.object(app.store, "load_delegation", wraps=app.store.load_delegation) as load:
         result = await app.run_prepared(
             run, HostSessionInput(prompt="hello", host_source_id="test")
         )
     assert result.run.status == "completed"
-    assert decode.call_count == 1
+    load.assert_called_once_with(run.metadata["root_session_id"], run.metadata["delegation_id"])
     assert catalog.lease_count == 0
 
 
@@ -265,7 +273,7 @@ async def test_failed_recovery_does_not_retain_the_runs_agent_catalog(runtime):
         raise RuntimeError("catalog unavailable")
 
     source.snapshot = unavailable
-    run = delegated_run()
+    run = delegated_run(app)
     reference = weakref.ref(run.agent_catalog)
     with pytest.raises(RuntimeError, match="catalog unavailable"):
         await app._ensure_extension_snapshot(run)
@@ -283,11 +291,11 @@ async def test_close_finishes_other_resources_when_a_lease_callback_fails(runtim
         raise ValueError("release callback failed")
 
     source.snapshot = lambda: catalog.acquire(on_close=fail)
-    run = delegated_run()
+    run = delegated_run(app)
     await app._ensure_extension_snapshot(run)
     reference = weakref.ref(app._tool_calls_for_run(run.run_id))
     source.snapshot = catalog.acquire
-    await app._ensure_extension_snapshot(delegated_run())
+    await app._ensure_extension_snapshot(delegated_run(app))
     with patch.object(app.models, "close", wraps=app.models.close) as close_models:
         with pytest.raises(ExceptionGroup, match="runtime shutdown failed") as failure:
             await app.close()

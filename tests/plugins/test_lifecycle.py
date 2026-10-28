@@ -338,7 +338,7 @@ async def test_disable_keeps_sync_sdk_callback_owned_until_thread_finishes(tmp_p
             assert not stopped.is_set()
             assert not running.done()
             finish.set()
-            with pytest.raises(PluginCommandError, match="CallbackOutcomeUnknown"):
+            with pytest.raises(PluginCommandError, match="unavailable"):
                 await running
             assert await runtime.wait_stopped(PLUGIN_ID) == "disabled"
             assert stopped.is_set()

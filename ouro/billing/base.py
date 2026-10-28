@@ -5,6 +5,7 @@ from typing import Protocol
 
 from ouro.core.billing import ProviderUsageEntry, UsageFilter
 from ouro.core.usage_queries import (
+    RunUsageTotals,
     UsageAuditLog,
     UsageEntryCursor,
     UsageEntryList,
@@ -15,7 +16,7 @@ from ouro.core.usage_queries import (
 
 
 class UsageLedger(Protocol):
-    """Persistence boundary for the effective global provider usage ledger."""
+    """Original request facts, raw Run consumption, and editable billing views."""
 
     root: Path
 
@@ -24,6 +25,12 @@ class UsageLedger(Protocol):
     def record(self, entry: ProviderUsageEntry) -> ProviderUsageEntry: ...
 
     def get(self, entry_id: str) -> ProviderUsageEntry: ...
+
+    def get_raw(self, entry_id: str) -> ProviderUsageEntry | None: ...
+
+    def run_usage(self, session_id: str, run_id: str) -> RunUsageTotals | None: ...
+
+    def session_usage(self, session_id: str) -> RunUsageTotals | None: ...
 
     def list_entries(
         self,

@@ -20,7 +20,12 @@ from ouro.core.errors import (
 from ouro.core.resources import ResourceRecord, ResourceSource, SessionResourceReference
 from ouro.local_io import replace_path_with_retry
 from ouro.local_locks import FileMutationLock
-from ouro.resources.files import checked_file, session_resource_directory, write_resource_contents
+from ouro.resources.files import (
+    checked_file,
+    session_resource_directory,
+    verify_resource_files,
+    write_resource_contents,
+)
 from ouro.resources.prepared import (
     load_prepared_resources,
     prepared_manifest,
@@ -140,32 +145,33 @@ class LocalResourceStore:
         return self.read_ranges(session_id, record, ((0, record.size),))[0]
 
     def verify(self, session_id: str, record: ResourceRecord) -> None:
-        self.read_ranges(session_id, record, ())
+        verify_resource_files(session_resource_directory(self.root, session_id), (record,))
 
     def read_ranges(
         self, session_id: str, record: ResourceRecord, ranges: tuple[tuple[int, int], ...]
     ) -> tuple[bytes, ...]:
-        if any(start < 0 or length < 0 for start, length in ranges):
-            raise ValueError("resource ranges must be non-negative")
-        buffers = [bytearray() for _ in ranges]
-        digest = hashlib.sha256()
-        size = 0
+        if any(start < 0 or length < 0 or start + length > record.size for start, length in ranges):
+            raise ValueError("resource ranges must lie within the recorded size")
+        parts = []
         try:
-            with self.path_for(session_id, record).open("rb") as stream:
-                while chunk := stream.read(_CHUNK_SIZE):
-                    digest.update(chunk)
-                    for buffer, (start, length) in zip(buffers, ranges, strict=True):
-                        left, right = max(start, size), min(start + length, size + len(chunk))
-                        if left < right:
-                            buffer.extend(chunk[left - size : right - size])
-                    size += len(chunk)
+            with self.path_for(session_id, record).open("rb", buffering=0) as stream:
+                if os.fstat(stream.fileno()).st_size != record.size:
+                    raise ResourceIntegrityError(f"resource size mismatch: {record.filename}")
+                for start, length in ranges:
+                    stream.seek(start)
+                    part = stream.read(length)
+                    if len(part) != length:
+                        raise ResourceIntegrityError(
+                            f"resource range unavailable: {record.filename}"
+                        )
+                    parts.append(part)
+                if os.fstat(stream.fileno()).st_size != record.size:
+                    raise ResourceIntegrityError(f"resource size changed: {record.filename}")
         except FileNotFoundError as exc:
             raise ResourceIntegrityError(f"resource file is missing: {record.filename}") from exc
         except OSError as exc:
             raise PersistenceError(f"could not read resource {record.filename}: {exc}") from exc
-        if size != record.size or f"sha256:{digest.hexdigest()}" != record.digest:
-            raise ResourceIntegrityError(f"resource integrity mismatch: {record.filename}")
-        return tuple(bytes(buffer) for buffer in buffers)
+        return tuple(parts)
 
     def export_file(
         self, session_id: str, record: ResourceRecord, destination: Path, *, overwrite: bool

@@ -160,7 +160,7 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
         assert len(user_indexes) == len(assistant_indexes) == 2
         assert user_indexes[0] < assistant_indexes[0] < user_indexes[1] < assistant_indexes[1]
 
-        snapshot = application.runtime.store.load_runtime_session(app._controller.session_id or "")
+        snapshot = application.runtime.store.load_session(app._controller.session_id or "")
         queued_message = next(
             message for message in snapshot.messages if message.text_content == "follow next"
         )
@@ -293,8 +293,8 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(
             await _wait_until(
                 checkpoint_waiting.is_set, pilot, description="child approval checkpoint"
             )
-            # Preflight publishes approval_requested before its batch checkpoint.
-            # Consume that notification while the canonical interaction is absent.
+            # The approval event and waiting state share the pending checkpoint.
+            # Neither is visible before that commit completes.
             await application.runtime.drain_events()
             await app._flush_pending_runtime_events()
             async with app._runtime_event_apply_lock:
@@ -407,7 +407,7 @@ async def test_guide_shortcuts_steer_the_active_run_at_the_next_model_turn(
         )
 
         assert queue_panel.display is False
-        snapshot = application.runtime.store.load_runtime_session(app._controller.session_id or "")
+        snapshot = application.runtime.store.load_session(app._controller.session_id or "")
         guided_message = next(
             message for message in snapshot.messages if message.text_content == "guide now"
         )

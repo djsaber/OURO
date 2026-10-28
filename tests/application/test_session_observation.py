@@ -7,8 +7,13 @@ import pytest
 
 from ouro.application.observations.content import active_stream_tail, restore_session_content
 from ouro.application.observations.sessions import observation_event
+from ouro.core.base import utc_now
+from ouro.core.context import ContextMetrics
+from ouro.core.context_snapshots import ModelRequestHeader, RequestManifestRecord
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
+from ouro.core.request_manifest import RequestManifest
+from ouro.core.response_drafts import ResponseDraftChunk
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.state import RunRecord, SessionRecord
 from tests.application.test_session_event_following import append, supervisor_for
@@ -231,11 +236,41 @@ async def test_content_restore_keeps_completed_stream_until_canonical_message_ex
     writer, reader = stores
     session = SessionRecord(active_run_id="run_live")
     writer.create_session(session)
-    writer.save_run(RunRecord(session_id=session.session_id, run_id="run_live", status="running"))
+    header = ModelRequestHeader(
+        session_id=session.session_id,
+        run_id="run_live",
+        turn_id="turn_one",
+        model_round=1,
+        provider_id="faux",
+        model_id="faux",
+        started_at=utc_now(),
+        metrics=ContextMetrics(estimated_input_tokens=0, estimated_fixed_tokens=0),
+    )
+    writer.commit_session(
+        SessionCommit(
+            before=writer.load_session_record(session.session_id),
+            runs=(
+                RunRecord(
+                    session_id=session.session_id,
+                    run_id="run_live",
+                    status="running",
+                    current_request_id=header.context_id,
+                ),
+            ),
+            request_header=header,
+            request_manifest=RequestManifestRecord(
+                context_id=header.context_id, manifest=RequestManifest()
+            ),
+        )
+    )
+    for channel, content in (("reasoning", "thinking"), ("text", "answer")):
+        writer.append_response_draft(
+            session.session_id,
+            header.context_id,
+            ResponseDraftChunk(channel=channel, content=content),
+        )
     for event_type, payload in (
-        ("model_request_started", {"model": "faux"}),
-        ("model_reasoning_delta", {"reasoning_content": "thinking"}),
-        ("model_text_delta", {"text": "answer"}),
+        ("model_request_started", {"model": "faux", "context_id": header.context_id}),
         ("model_message_completed", {}),
     ):
         writer.append_ordered_event(

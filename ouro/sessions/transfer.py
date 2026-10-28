@@ -119,8 +119,13 @@ def _copy_snapshot(
         resource_references=references,
         resource_contents=contents,
         harness_versions=snapshot.harness_versions,
-        commits=snapshot.commits,
         compactions=snapshot.compactions,
+        inputs=tuple(snapshot.inputs),
+        input_states=tuple(snapshot.input_states),
+        tool_facts=snapshot.tool_facts,
+        call_states=snapshot.call_states,
+        request_headers=tuple(snapshot.request_headers),
+        latest_manifest=snapshot.latest_manifest,
     )
     for run in snapshot.runs:
         target.save_run(run)

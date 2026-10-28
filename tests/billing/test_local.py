@@ -283,7 +283,8 @@ def test_corrections_preserve_source_identity_and_reject_stale_revisions(tmp_pat
     source = ledger.record(_entry(0))
     corrected = source.model_copy(update={"revision": 2, "input_tokens": 99})
     ledger.replace(corrected, note="invoice")
-    assert LocalUsageLedger(tmp_path).record(source) == corrected
+    assert LocalUsageLedger(tmp_path).record(source) == source
+    assert LocalUsageLedger(tmp_path).get(source.entry_id) == corrected
     with pytest.raises(PersistenceError, match="conflicts"):
         ledger.record(source.model_copy(update={"output_tokens": 100}))
     with pytest.raises(PersistenceError, match="stale"):
@@ -364,7 +365,7 @@ def test_summary_scope_and_reset_never_decode_request_or_audit_payloads(tmp_path
     assert ledger.session_scope_tokens("ses_a") == {}
 
 
-@pytest.mark.parametrize("version", [1, 999])
+@pytest.mark.parametrize("version", [1, 2, 999])
 def test_database_version_is_required(tmp_path, version):
     ledger = LocalUsageLedger(tmp_path)
     ledger.initialize()

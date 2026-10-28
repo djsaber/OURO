@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +12,62 @@ from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from tests.resource_fixtures import resource_record
+from tests.session_storage import read_session_payload, write_session_payload
+from tests.sessions.test_tool_fact_storage import commit, facts
+
+
+@pytest.mark.parametrize("backend", ("files", "sqlite"))
+def test_catalog_preview_does_not_materialize_call_arguments(backend, tmp_path, monkeypatch):
+    store = (
+        LocalSessionStore(tmp_path)
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sessions.db")
+    )
+    store.initialize()
+    session, run, call, _, _ = facts(store)
+    call = call.model_copy(
+        update={
+            "request": call.request.model_copy(
+                update={"arguments": {"body": "large parameters " * 65536}}
+            )
+        }
+    )
+    commit(store, session, calls=(call,))
+    message = MessageRecord.text(
+        session_id=session.session_id,
+        run_id=run.run_id,
+        role="assistant",
+        text="Visible progress",
+    )
+    message.turn_id = call.turn_id
+    message.call_refs = (call.identity,)
+    store.append_message(message)
+    original_open = Path.open
+
+    def no_calls(path, *args, **kwargs):
+        if "calls" in path.parts:
+            raise AssertionError("Catalog read original Call parameters")
+        return original_open(path, *args, **kwargs)
+
+    if isinstance(store, LocalSessionStore):
+        monkeypatch.setattr(Path, "open", no_calls)
+        catalog = store.scan_catalog()
+    else:
+        with store.session_mutation(session.session_id):
+            connection = store._transaction_connection()
+
+            def authorize(action, table, column, *args):
+                if action == sqlite3.SQLITE_READ and table == "tool_calls":
+                    return sqlite3.SQLITE_DENY
+                return sqlite3.SQLITE_OK
+
+            connection.set_authorizer(authorize)
+            try:
+                assert store.refresh_catalog(session.session_id) is None
+            finally:
+                connection.set_authorizer(None)
+        catalog = store.read_catalog()
+    assert catalog.sessions[0].last_message_preview == "Visible progress"
 
 
 @pytest.mark.parametrize("backend", ("files", "sqlite"))
@@ -29,10 +86,7 @@ def test_catalog_read_does_not_validate_canonical_session_rows(
     assert store.refresh_catalog(session.session_id) is None
 
     if isinstance(store, LocalSessionStore):
-        (store.sessions_dir / session.session_id / "session.json").write_text(
-            "{broken",
-            encoding="utf-8",
-        )
+        write_session_payload(store, session.session_id, "{broken")
     else:
         with closing(sqlite3.connect(store.database)) as connection:
             connection.execute(
@@ -85,18 +139,17 @@ def test_catalog_uses_bounded_projection_without_loading_runtime_history(
     )
     store.save_run(run)
     assert store.refresh_catalog(session.session_id) is None
-    if isinstance(store, LocalSessionStore):
-        (store.sessions_dir / session.session_id / "compactions.jsonl").write_text(
-            "{broken\n",
-            encoding="utf-8",
+    database = (
+        store.sessions_dir / session.session_id / "session-data.sqlite3"
+        if isinstance(store, LocalSessionStore)
+        else store.database
+    )
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute(
+            "INSERT INTO compactions(session_id, compaction_id, covered_end_message_id, "
+            "history_boundary_message_id, payload) VALUES(?, ?, ?, ?, ?)",
+            (session.session_id, "cmp_broken", first.message_id, latest.message_id, "{broken"),
         )
-    else:
-        with closing(sqlite3.connect(store.database)) as connection:
-            connection.execute(
-                "INSERT INTO compactions(session_id, compaction_id, payload) VALUES(?, ?, ?)",
-                (session.session_id, "cmp_broken", "{broken"),
-            )
-            connection.commit()
 
     def reject_full_history(*_args, **_kwargs):
         raise AssertionError("Catalog must not load RuntimeSessionSnapshot")
@@ -166,10 +219,9 @@ def test_corrupt_catalog_projection_preserves_readable_subagent_identity(
     )
     store.create_session(child)
     if isinstance(store, LocalSessionStore):
-        session_path = store.sessions_dir / child.session_id / "session.json"
-        payload = json.loads(session_path.read_text(encoding="utf-8"))
+        payload = json.loads(read_session_payload(store, child.session_id))
         payload.pop("delegation_id")
-        session_path.write_text(json.dumps(payload), encoding="utf-8")
+        write_session_payload(store, child.session_id, json.dumps(payload))
     else:
         with closing(sqlite3.connect(store.database)) as connection:
             row = connection.execute(

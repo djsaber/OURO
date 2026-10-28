@@ -11,6 +11,7 @@ from pydantic import Field, field_validator, model_validator
 
 from ouro.core.approvals import PermissionMode, SessionApprovalMode
 from ouro.core.base import OuroModel, VersionedOuroModel, new_id, utc_now
+from ouro.core.errors import PersistenceError
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.model_selection import DEFAULT_MODEL
 from ouro.core.run_budget import RunBudgetPolicy
@@ -290,13 +291,15 @@ class DelegationResult(OuroModel):
 
 
 class DelegationRecord(VersionedOuroModel):
+    schema_version: Literal[2] = 2
     revision: int = Field(default=0, ge=0)
     delegation_id: str = Field(default_factory=lambda: new_id("dlg"))
     idempotency_key: str = Field(min_length=1, max_length=256)
     root_session_id: str
     parent_session_id: str
     parent_run_id: str
-    parent_tool_call_id: str | None = None
+    parent_batch_id: str | None = Field(default=None, min_length=1)
+    parent_tool_call_id: str | None = Field(default=None, min_length=1)
     child_session_id: str | None = None
     current_child_run_id: str | None = None
     agent_id: str
@@ -322,8 +325,23 @@ class DelegationRecord(VersionedOuroModel):
     updated_at: datetime = Field(default_factory=utc_now)
     error: str | None = None
 
+    def require_frozen_contract(self, previous: DelegationRecord) -> None:
+        """Lifecycle revisions cannot replace the accepted child authority."""
+        for field in (
+            "definition",
+            "effective_tools",
+            "constraints",
+            "approval_mode",
+            "interaction_mode",
+            "budget",
+        ):
+            if getattr(self, field) != getattr(previous, field):
+                raise PersistenceError(f"Delegation frozen contract cannot change: {field}")
+
     @model_validator(mode="after")
     def validate_relation(self) -> Self:
+        if (self.parent_batch_id is None) != (self.parent_tool_call_id is None):
+            raise ValueError("model delegation requires both parent batch and tool call identity")
         if self.agent_id != self.definition.agent_id:
             raise ValueError("delegation agent_id must match frozen definition")
         if self.lifecycle_binding == "detached":
@@ -361,19 +379,23 @@ class AgentHandle(OuroModel):
 
 class AgentWaitResolution(OuroModel):
     resolved_delegation_id: str | None = None
+    resolved_child_run_id: str | None = Field(default=None, min_length=1)
     reason: Literal["condition_met", "interrupted"]
     resolved_at: datetime = Field(default_factory=utc_now)
 
     @model_validator(mode="after")
     def validate_resolution(self) -> Self:
-        if self.reason == "condition_met" and self.resolved_delegation_id is None:
-            raise ValueError("completed Agent wait requires a resolved delegation")
+        if self.reason == "condition_met" and (
+            self.resolved_delegation_id is None or self.resolved_child_run_id is None
+        ):
+            raise ValueError("completed Agent wait requires a resolved delegation and child Run")
         return self
 
 
 class AgentWaitRequest(OuroModel):
     wait_id: str = Field(default_factory=lambda: new_id("wait"))
     delegation_id: str = Field(min_length=1, max_length=128)
+    child_run_id: str = Field(min_length=1)
     state: WaitState = "pending"
     resolution: AgentWaitResolution | None = None
 
@@ -386,6 +408,11 @@ class AgentWaitRequest(OuroModel):
             self.delegation_id,
         }:
             raise ValueError("Agent wait resolution must reference its requested delegation")
+        if self.resolution is not None and self.resolution.resolved_child_run_id not in {
+            None,
+            self.child_run_id,
+        }:
+            raise ValueError("Agent wait resolution must reference its requested child Run")
         return self
 
 
@@ -393,7 +420,6 @@ class AgentControlRequest(OuroModel):
     """A product-owned tool intent interpreted by the application layer."""
 
     action: AgentControlAction
-    request_id: str = Field(min_length=1, max_length=256)
     agent_id: str | None = None
     task: str | None = Field(default=None, max_length=20_000)
     description: str | None = Field(default=None, max_length=500)

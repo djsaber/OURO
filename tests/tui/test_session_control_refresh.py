@@ -31,7 +31,7 @@ async def test_pause_command_stops_blocked_execution_without_a_new_input(tmp_pat
             before = application.runtime.store.load_session(session_id).messages
             await app._dispatch_command("/goal pause")
             await _wait_for_worker_group(app, pilot, group="plugin-command")
-            snapshot = application.runtime.store.load_runtime_session(session_id)
+            snapshot = application.runtime.store.load_session(session_id)
             assert snapshot.runs[-1].status == "aborted"
             assert snapshot.messages == before
             goal = await application.plugins.execute_command(

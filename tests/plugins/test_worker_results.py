@@ -90,7 +90,7 @@ def worker(monkeypatch, tmp_path):
     )
 
     async def invoke(kind, payload, view=None):
-        async def respond(method, params, *, timeout=None):
+        async def respond(method, params, *, timeout=None, retain_result_on_cancel=False):
             expected = {"tool_resume": "tool.resume", "observer": "observer.observe"}.get(
                 kind, f"{kind}.call"
             )

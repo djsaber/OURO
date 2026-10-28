@@ -108,6 +108,77 @@ class AgentRecoveryService:
             and self._run_mismatch_code(relation, run) is None
         )
 
+    def load_run_delegation(
+        self, session: SessionRecord, run: RunRecord
+    ) -> DelegationRecord | None:
+        """Point-read and validate the Run's frozen authority, without reconciliation."""
+        if session.session_id != run.session_id:
+            raise PersistenceError("Run does not belong to its Session")
+        if session.session_kind == "primary":
+            if run.metadata.get("delegation_id") is not None:
+                raise PersistenceError("Primary Run cannot use a child Delegation")
+            return None
+        if session.root_session_id is None or session.delegation_id is None:
+            raise PersistenceError("Subagent Session has no Delegation identity")
+        try:
+            relation = self.store.load_delegation(session.root_session_id, session.delegation_id)
+        except FileNotFoundError as exc:
+            raise PersistenceError("Run's frozen Delegation is unavailable") from exc
+        mismatch = self._child_mismatch_code(relation, session)
+        if mismatch is None and run.kind == "agent":
+            mismatch = self._run_mismatch_code(relation, run)
+        if mismatch is not None:
+            raise PersistenceError(f"Run's frozen Delegation is inconsistent: {mismatch}")
+        return relation
+
+    def bind_current_child(
+        self, relation: DelegationRecord, child: SessionRecord
+    ) -> DelegationRecord:
+        """Finish the root reference to a committed child successor, without executing it."""
+        with self.store.session_mutation(relation.root_session_id):
+            relation = self.store.load_delegation(relation.root_session_id, relation.delegation_id)
+            child = self.store.load_session_record(child.session_id)
+            if (
+                relation.current_child_run_id is None
+                or child.last_run_id is None
+                or child.last_run_id == relation.current_child_run_id
+            ):
+                return relation
+            run = self.store.load_run(child.session_id, child.last_run_id)
+            if run.metadata.get("previous_child_run_id") != relation.current_child_run_id:
+                return relation
+            if (
+                self._child_identity_mismatch(relation, child)
+                or self._run_mismatch_code(relation, run) is not None
+                or run.history_epoch != child.history_epoch
+            ):
+                raise PersistenceError("committed child successor does not match its Delegation")
+            input_id = run.metadata.get("follow_up_input_id")
+            if input_id is not None:
+                accepted = self.store.load_input(child.session_id, str(input_id))
+                if (
+                    run.trigger != "subagent_follow_up"
+                    or accepted is None
+                    or accepted.item.prospective_run_id != run.run_id
+                    or accepted.item.source != "host"
+                    or accepted.item.mode != "follow_up"
+                    or accepted.item.semantic_tag != "subagent-message"
+                    or accepted.item.history_epoch != run.history_epoch
+                ):
+                    raise PersistenceError("committed child successor has no matching input")
+            elif run.trigger != "continue":
+                raise PersistenceError("child successor requires an input or history continuation")
+            return self.store.save_delegation(
+                relation.model_copy(
+                    update={
+                        "current_child_run_id": run.run_id,
+                        "result": None,
+                        "control_state": "open",
+                    }
+                ),
+                expected_revision=relation.revision,
+            )
+
     def _reconcile_relation(
         self,
         relation: DelegationRecord,
@@ -158,7 +229,20 @@ class AgentRecoveryService:
             ]
 
         try:
-            runs = self.store.load_runs(child.session_id)
+            relation = self.bind_current_child(relation, child)
+        except PersistenceError as exc:
+            return [
+                self._incompatible_runtime_diagnostic(relation, exc, session_id=child.session_id)
+            ]
+
+        try:
+            runs = (
+                [self.store.load_run(child.session_id, relation.current_child_run_id)]
+                if relation.current_child_run_id is not None
+                else self.store.load_runs(child.session_id)
+            )
+        except FileNotFoundError:
+            runs = []
         except PersistenceError as exc:
             return [
                 self._incompatible_runtime_diagnostic(

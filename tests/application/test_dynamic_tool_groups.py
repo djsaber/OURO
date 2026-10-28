@@ -73,7 +73,7 @@ async def test_model_decision_keeps_original_tools_and_next_decision_sees_new_gr
         assert len(observed) == 3
         assert observed[0][0]["parameters_schema"]["required"] == ["query"]
         assert observed[1][0]["parameters_schema"]["required"] == ["topic"]
-        history = store.load_runtime_session(result.session.session_id)
+        history = store.load_session(result.session.session_id)
         results = [message for message in history.messages if message.tool_result]
         assert [item.text_content for item in results] == ["one:term", "two:new"]
         assert plugins.catalog().lease_count == 0
@@ -143,7 +143,7 @@ async def test_approval_restart_requires_original_dynamic_tool_revision(
             approval_id=pending.run.pending_approval_id,
             approved=True,
         )
-        history = store.load_runtime_session(result.session.session_id)
+        history = store.load_session(result.session.session_id)
         results = [message for message in history.messages if message.tool_result]
         if changed:
             assert not any(item.text_content == "one:term" for item in results)

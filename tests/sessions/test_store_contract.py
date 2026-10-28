@@ -9,21 +9,61 @@ from threading import Barrier
 
 import pytest
 
+import ouro.sessions.backends.files.store as file_store
 from ouro.application.sessions.recovery import SessionRecoveryService
 from ouro.core.base import utc_now
 from ouro.core.compaction import CompactionRecord
-from ouro.core.context import ContextBuilder, ContextMetrics
+from ouro.core.context import ContextBuilder, ContextMetrics, ProviderContext
 from ouro.core.context_budget import ContextBudget
-from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_digest
-from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
+from ouro.core.context_snapshots import ContextSnapshotRecord
+from ouro.core.errors import PersistenceError, ResourceNotFoundError, UnsupportedDataVersionError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.resources.prepared import save_prepared_resources
 from ouro.sessions import LocalSessionStore, SessionStore, SQLiteSessionStore
+from tests.context_facts import save_context
 from tests.harness_state import remove_harness_state, replace_harness_state
 from tests.resource_fixtures import resource_record
+from tests.session_storage import session_connection, write_session_payload
+
+
+def test_session_read_preserves_callers_domain_errors(session_store: SessionStore) -> None:
+    session = SessionRecord()
+    session_store.create_session(session)
+    failure = ValueError("invalid requested observation")
+    with pytest.raises(ValueError) as raised:
+        with session_store.session_read(session.session_id):
+            session_store.load_session_record(session.session_id)
+            raise failure
+    assert raised.value is failure
+
+
+def test_reserved_file_snapshot_retries_after_native_publication_failure(tmp_path, monkeypatch):
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord()
+    save_prepared_resources(store.root, session.session_id, [])
+    message = MessageRecord.text(session_id=session.session_id, role="assistant", text="snapshot")
+    database = store.sessions_dir / session.session_id / "session-data.sqlite3"
+    publish = file_store.write_session
+
+    def fail_after_head(connection, head):
+        publish(connection, head)
+        raise PersistenceError("injected snapshot publication failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(file_store, "write_session", fail_after_head)
+        with pytest.raises(PersistenceError, match="injected snapshot"):
+            store.create_session_snapshot(session, [message], prepared_resources=True)
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT count(*) FROM sessions").fetchone() == (0,)
+        assert connection.execute("SELECT count(*) FROM locations").fetchone() == (0,)
+    store.create_session_snapshot(session, [message], prepared_resources=True)
+    assert store.load_session_record(session.session_id).message_count == 1
+    assert store.load_messages_tail(session.session_id)[0].message_id == message.message_id
 
 
 @pytest.fixture(params=("files", "sqlite"))
@@ -74,12 +114,18 @@ def test_session_store_round_trip_and_pages(session_store: SessionStore) -> None
         strategy_id="test",
         trigger="manual",
         summary="summary",
-        covered_message_ids=[message.message_id],
+        covered_message_count=1,
+        covered_end_message_id=message.message_id,
         history_boundary_message_id=message.message_id,
-        source_digest="sha256:" + "0" * 64,
         context_metrics_after=ContextBuilder().build(messages=[message], tools=[]).metrics,
     )
-    session = session.model_copy(update={"active_compaction_id": compaction.compaction_id})
+    session = session.model_copy(
+        update={
+            "context_selection": session.context_selection.model_copy(
+                update={"compaction_id": compaction.compaction_id}
+            )
+        }
+    )
     reference = resource_record(resource_id="res_" + "a" * 32)
 
     session_store.create_session_snapshot(
@@ -154,8 +200,10 @@ def test_session_store_ignores_unknown_record_fields(session_store: SessionStore
     payload["synthetic"] = False
 
     if isinstance(session_store, LocalSessionStore):
-        journal = session_store.sessions_dir / session.session_id / "messages.jsonl"
-        journal.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        record = session_store.sessions_dir / session.session_id / "messages.jsonl"
+        payload = json.loads(record.read_bytes())
+        payload["synthetic"] = False
+        record.write_bytes((json.dumps(payload) + "\n").encode("utf-8"))
     else:
         assert isinstance(session_store, SQLiteSessionStore)
         connection = sqlite3.connect(session_store.database)
@@ -227,8 +275,7 @@ def test_session_store_rejects_record_without_explicit_schema_version(
     payload = json.dumps(raw)
 
     if isinstance(session_store, LocalSessionStore):
-        path = session_store.sessions_dir / session.session_id / "session.json"
-        path.write_text(payload, encoding="utf-8")
+        write_session_payload(session_store, session.session_id, payload)
     else:
         connection = sqlite3.connect(session_store.database)
         try:
@@ -240,7 +287,7 @@ def test_session_store_rejects_record_without_explicit_schema_version(
         finally:
             connection.close()
 
-    with pytest.raises(UnsupportedDataVersionError, match="found missing, expected 2"):
+    with pytest.raises(UnsupportedDataVersionError, match="found missing, expected 5"):
         session_store.load_session_record(session.session_id)
 
 
@@ -258,7 +305,7 @@ def test_session_store_preserves_unicode_line_separators_inside_messages(
 
     session_store.create_session_snapshot(session, [message])
 
-    assert session_store.load_runtime_session(session.session_id).messages == [message]
+    assert session_store.load_session(session.session_id).messages == [message]
     assert session_store.load_messages_page(session.session_id) == ([message], None)
 
 
@@ -284,12 +331,9 @@ def test_session_store_replaces_latest_context_atomically(session_store: Session
         model_round=1,
         provider_id="test",
         model_id="test-model",
-        system_prompt=view.system_prompt,
-        source_messages=[message],
-        tool_definitions=view.tool_definitions,
         metrics=view.metrics,
         context_metadata=view.context_metadata,
-        context_digest=context_view_digest(view),
+        provider_context=view.provider_context,
     )
     second = first.model_copy(
         update={
@@ -301,30 +345,41 @@ def test_session_store_replaces_latest_context_atomically(session_store: Session
 
     assert session_store.load_latest_context(session.session_id) is None
     assert session_store.load_latest_context_header(session.session_id) is None
-    session_store.save_latest_context(first)
+    save_context(session_store, first)
     assert session_store.load_latest_context(session.session_id) == first
     assert session_store.load_latest_context_header(session.session_id) == first.header()
-    session_store.save_latest_context(second)
+    save_context(session_store, second)
     assert session_store.load_latest_context(session.session_id) == second
     assert session_store.load_latest_context_header(session.session_id) == second.header()
     completed = second.model_copy(
-        update={"completed_at": utc_now(), "provider_reported_input_tokens": 123}
+        update={"provider_done_at": utc_now(), "usage_entry_id": second.expected_usage_entry_id}
     )
-    session_store.save_latest_context(completed)
+    session_store.settle_request_header(
+        session.session_id,
+        second.context_id,
+        settled_at=completed.provider_done_at,
+        provider_done=True,
+        usage_entry_id=second.expected_usage_entry_id,
+    )
+    assert session_store.load_latest_context(session.session_id) == completed
     assert session_store.load_latest_context_header(session.session_id) == completed.header()
     if isinstance(session_store, LocalSessionStore):
         directory = session_store.sessions_dir / session.session_id
-        index = directory / "context-index.json"
-        index.unlink()
-        assert session_store.load_latest_context_header(session.session_id) == completed.header()
-        assert not index.exists()  # Reading canonical data does not rebuild a missing index.
-        session_store.save_latest_context(completed)
-        (directory / "context.json").write_text(first.model_dump_json(), encoding="utf-8")
-        assert session_store.load_latest_context_header(session.session_id) == first.header()
-        index.unlink()
-        index.mkdir()  # A derived-index write failure must not fail a canonical update.
-        session_store.save_latest_context(completed)
-        assert session_store.load_latest_context_header(session.session_id) == completed.header()
+        assert not (directory / "context-index.json").exists()
+        assert [path.name for path in (directory / "request-content").iterdir()] == [
+            "ctx_second.json"
+        ]
+        with closing(sqlite3.connect(directory / "session-data.sqlite3")) as connection:
+            header = json.loads(
+                connection.execute(
+                    "SELECT payload FROM request_headers WHERE context_id = 'ctx_second'"
+                ).fetchone()[0]
+            )
+        assert "source_messages" not in header
+        body = json.loads((directory / "request-content/ctx_second.json").read_text("utf-8"))
+        assert "provider_done_at" not in body
+        assert "usage_entry_id" not in body
+        assert "provider_reported_input_tokens" not in body
 
 
 def test_session_store_rejects_context_with_incompatible_capability_schema(
@@ -341,29 +396,29 @@ def test_session_store_rejects_context_with_incompatible_capability_schema(
         model_id="media",
         supports_image_input=True,
         metrics=ContextMetrics(estimated_input_tokens=0, estimated_fixed_tokens=0),
-        context_digest="sha256:" + "0" * 64,
+        provider_context=ProviderContext(),
     )
-    session_store.save_latest_context(context)
+    save_context(session_store, context)
     raw = context.model_dump(mode="json")
     raw["schema_version"] = 3
     raw["supports_vision"] = raw.pop("supports_image_input")
     raw.pop("supports_audio_input")
     raw.pop("supports_video_input")
     payload = json.dumps(raw)
-    if isinstance(session_store, LocalSessionStore):
-        path = session_store.sessions_dir / session.session_id / "context.json"
-        path.write_text(payload, encoding="utf-8")
-    else:
-        with closing(sqlite3.connect(session_store.database)) as connection:
-            connection.execute(
-                "UPDATE latest_contexts SET payload = ? WHERE session_id = ?",
-                (payload, session.session_id),
-            )
-            connection.commit()
+    database = (
+        session_store.sessions_dir / session.session_id / "session-data.sqlite3"
+        if isinstance(session_store, LocalSessionStore)
+        else session_store.database
+    )
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute(
+            "UPDATE request_headers SET payload = ? WHERE session_id = ?",
+            (payload, session.session_id),
+        )
 
-    with pytest.raises(UnsupportedDataVersionError, match="found 3, expected 5"):
+    with pytest.raises(UnsupportedDataVersionError, match="found 3, expected 11"):
         session_store.load_latest_context(session.session_id)
-    with pytest.raises(UnsupportedDataVersionError, match="found 3, expected 5"):
+    with pytest.raises(UnsupportedDataVersionError, match="found 3, expected 11"):
         session_store.load_latest_context_header(session.session_id)
 
 
@@ -390,6 +445,10 @@ def test_session_store_loads_runs_without_reading_journals(session_store: Sessio
             # ordinary indexed writes reject malformed payloads before commit.
             connection.execute("DROP INDEX messages_session_run")
             connection.execute("DROP INDEX messages_session_queued_input")
+            connection.execute("DROP INDEX messages_assistant_turn")
+            connection.execute("DROP INDEX messages_context_delivery")
+            connection.execute("DROP INDEX messages_assistant_run")
+            connection.execute("DROP INDEX messages_input_history")
             connection.execute(
                 "UPDATE messages SET payload = '{not json' WHERE session_id = ?",
                 (session.session_id,),
@@ -435,6 +494,63 @@ def test_session_store_resource_reference_ownership(session_store: SessionStore)
     ] == [resource_id]
     session_store.remove_resource_reference(second.session_id, resource_id)
     assert session_store.load_resource_references(second.session_id) == []
+
+
+def test_resource_lookup_is_scoped_and_does_not_list_other_resources(session_store, monkeypatch):
+    session = SessionRecord()
+    other = SessionRecord()
+    session_store.create_session(session)
+    session_store.create_session(other)
+    reference = resource_record()
+    session_store.attach_resource_reference(session.session_id, reference)
+
+    def forbid_list(_session_id):
+        pytest.fail("point lookup must not list all Session resources")
+
+    monkeypatch.setattr(session_store, "load_resource_references", forbid_list)
+    assert (
+        session_store.load_resource_reference(session.session_id, reference.resource_id)
+        == reference
+    )
+    with pytest.raises(ResourceNotFoundError):
+        session_store.load_resource_reference(other.session_id, reference.resource_id)
+    with pytest.raises(ValueError):
+        session_store.load_resource_reference(session.session_id, "../outside")
+
+
+def test_resource_identity_cannot_be_rebound(session_store):
+    session = SessionRecord()
+    session_store.create_session(session)
+    reference = resource_record()
+    session_store.attach_resource_reference(session.session_id, reference)
+    session_store.attach_resource_reference(session.session_id, reference)
+    with pytest.raises(PersistenceError, match="identity"):
+        session_store.attach_resource_reference(
+            session.session_id, reference.model_copy(update={"filename": "different.txt"})
+        )
+    assert (
+        session_store.load_resource_reference(session.session_id, reference.resource_id)
+        == reference
+    )
+
+
+def test_unselected_resource_corruption_does_not_affect_point_read(session_store):
+    session = SessionRecord()
+    session_store.create_session(session)
+    selected = resource_record()
+    damaged = resource_record()
+    session_store.attach_resource_reference(session.session_id, selected)
+    session_store.attach_resource_reference(session.session_id, damaged)
+    with session_connection(session_store, session.session_id) as connection:
+        connection.execute(
+            "UPDATE resource_references SET payload = ? WHERE session_id = ? AND resource_id = ?",
+            ("invalid record", session.session_id, damaged.resource_id),
+        )
+    assert (
+        session_store.load_resource_reference(session.session_id, selected.resource_id) == selected
+    )
+    with pytest.raises(PersistenceError):
+        session_store.load_resource_reference(session.session_id, damaged.resource_id)
 
 
 def test_session_store_owns_extension_state_lifecycle(session_store: SessionStore) -> None:
@@ -571,7 +687,7 @@ def test_session_store_trashes_complete_tree_without_loading_domain_records(
         records = [dict(zip(versions["columns"], row, strict=True)) for row in versions["rows"]]
         persisted = next(row for row in records if row["version_id"] == version_id)
         assert state.model_dump(mode="json") in json.loads(persisted["payload"])["state"]["states"]
-        assert payload["records"]["session_commits"]["rows"]
+        assert "session_commits" not in payload["records"]
 
 
 def test_session_store_catalog_and_trash(session_store: SessionStore) -> None:
@@ -589,3 +705,114 @@ def test_session_store_catalog_and_trash(session_store: SessionStore) -> None:
     assert session_store.list_sessions() == []
     with pytest.raises(FileNotFoundError):
         session_store.load_session(session.session_id)
+
+
+def test_sparse_event_storage_preserves_explicit_nested_values(session_store):
+    session = SessionRecord()
+    session_store.create_session(session)
+    event = EventRecord(
+        session_id=session.session_id,
+        run_id="external/run",
+        turn_id="turn",
+        history_epoch=2,
+        sequence=7,
+        event_type="diagnostic",
+        payload={"nested": {"none": None, "empty": [], "zero": 0}},
+        metadata={"none": None, "empty": {}},
+    )
+    session_store.append_event(event)
+    assert session_store.load_events_page(session.session_id) == ([event], None)
+    assert session_store.load_events_after(session.session_id, after_sequence=6) == ([event], False)
+    assert session_store.latest_event_sequence(session.session_id) == 7
+
+
+def test_nested_native_reads_share_one_scoped_connection(session_store, monkeypatch):
+    session = SessionRecord()
+    session_store.create_session(session)
+    run = RunRecord(session_id=session.session_id)
+    session_store.save_run(run)
+    message = MessageRecord.text(session_id=session.session_id, role="user", text="scope")
+    session_store.append_message(message)
+    connect = sqlite3.connect
+    connections = []
+
+    def observed_connect(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", observed_connect)
+    with session_store.session_read(session.session_id):
+        session_store.load_session_record(session.session_id)
+        assert session_store.load_message(session.session_id, message.message_id) == message
+        assert session_store.load_run(session.session_id, run.run_id) == run
+        assert session_store.load_latest_request(session.session_id) is None
+        assert session_store.load_active_compaction(session.session_id) is None
+        assert session_store.load_session_observation(session.session_id).messages == [message]
+        assert len(connections) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        connections[0].execute("SELECT 1")
+
+
+def test_nested_file_reads_share_the_boundary_and_preserve_outer_lifetime(tmp_path, monkeypatch):
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord()
+    store.create_session(session)
+    observed = []
+    observe = store._observe_session_directory
+
+    def observe_directory(session_id):
+        observed.append(session_id)
+        observe(session_id)
+
+    monkeypatch.setattr(store, "_observe_session_directory", observe_directory)
+    with pytest.raises(ValueError, match="outer read failed"):
+        with store.session_read(session.session_id) as outer:
+            connection = outer.connection()
+            with pytest.raises(ValueError, match="nested read failed"):
+                with store.session_read(session.session_id) as inner:
+                    assert inner is outer
+                    assert store.load_session_record(session.session_id) == session
+                    raise ValueError("nested read failed")
+            assert connection.execute("SELECT 1").fetchone()[0] == 1
+            assert observed == [session.session_id]
+            raise ValueError("outer read failed")
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        connection.execute("SELECT 1")
+    # A new reader observes directory replacement again; no scope or lock leaked.
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        assert executor.submit(store.load_session_record, session.session_id).result() == session
+    assert observed == [session.session_id, session.session_id]
+
+
+def test_nested_sqlite_reads_share_only_the_current_session_resource_lock(tmp_path, monkeypatch):
+    store = SQLiteSessionStore(tmp_path / "ouro.db")
+    store.initialize()
+    first, second = SessionRecord(), SessionRecord()
+    for session in (first, second):
+        store.create_session(session)
+    resource_lock = store._resource_lock
+    locked = []
+
+    def observe_lock(session_id):
+        locked.append(session_id)
+        return resource_lock(session_id)
+
+    monkeypatch.setattr(store, "_resource_lock", observe_lock)
+    with store.session_read(first.session_id) as connection:
+        with store.session_read(first.session_id) as nested:
+            assert nested is connection
+        with pytest.raises(ValueError, match="nested read failed"):
+            with store.session_read(second.session_id) as other:
+                assert other is connection
+                assert store.load_session_record(second.session_id) == second
+                raise ValueError("nested read failed")
+        with store.session_read(first.session_id) as restored:
+            assert restored is connection
+        assert locked == [first.session_id, second.session_id]
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        connection.execute("SELECT 1")
+    with store.session_read(first.session_id):
+        assert store.load_session_record(first.session_id) == first
+    assert locked == [first.session_id, second.session_id, first.session_id]

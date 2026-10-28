@@ -14,17 +14,23 @@ from ouro.config.providers.manager import ProviderConfigManager
 from ouro.config.providers.template_store import ProviderTemplateStore
 from ouro.config.skills import ManagedSkillRecord, SkillConfigManager
 from ouro.core.agents import AgentDefinition, DelegationRecord
+from ouro.core.base import utc_now
 from ouro.core.context import ContextBuilder
-from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_digest
+from ouro.core.context_selection import MessageBoundary
+from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.errors import ConfigError, PersistenceError, SessionBusyError
 from ouro.core.harness import HarnessState
-from ouro.core.media_context import MEDIA_CONTEXT_KEY, MediaElisionState
 from ouro.core.messages import MessageRecord
+from ouro.core.provider import ModelMetadata, Usage
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolCallRequest
-from ouro.local_application import build_local_data_transfer_service, build_local_session_services
+from ouro.local_application import (
+    build_local_data_transfer_service,
+    build_local_session_services,
+    build_local_usage_service,
+)
 from ouro.mcp.configuration import MCPConfigStore, MCPServerConfigUpdate
 from ouro.resources.local import LocalResourceStore
 from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
@@ -35,6 +41,8 @@ from ouro.transfer.archive import (
     read_archive,
     write_archive,
 )
+from tests.context_facts import save_context
+from tests.tool_batches import seed_tool_messages
 
 
 def transfer(home, action, kind, path, *, ids=(), replace=False, backend="files"):
@@ -205,8 +213,9 @@ def _create_session(store, identity="ses_test", **kwargs):
 
 @pytest.mark.parametrize("source_backend", ["files", "sqlite"])
 @pytest.mark.parametrize("target_backend", ["files", "sqlite"])
+@pytest.mark.parametrize("settled", [False, True])
 def test_session_round_trip_across_backends_with_attachments(
-    tmp_path, source_backend, target_backend
+    tmp_path, source_backend, target_backend, settled
 ):
     source, target = tmp_path / "source", tmp_path / "target"
     services = build_local_session_services(source, session_backend=source_backend)
@@ -224,25 +233,76 @@ def test_session_round_trip_across_backends_with_attachments(
         provider_id="faux",
         model_id="faux",
         metrics=view.metrics,
-        source_messages=history,
-        context_digest=context_view_digest(view),
-        context_metadata={
-            MEDIA_CONTEXT_KEY: MediaElisionState(
-                history_epoch=session.history_epoch,
-                media_elided_through_message_id=history[-1].message_id,
-            ).model_dump(mode="json")
-        },
+        provider_context=view.provider_context,
+        context_metadata={"audit": "preserved request metadata"},
     )
-    services._store.save_latest_context(context)
+    session = session.model_copy(
+        update={
+            "context_selection": session.context_selection.model_copy(
+                update={
+                    "media_elided_through": MessageBoundary(
+                        message_id=history[-1].message_id, sequence=history[-1].sequence
+                    ),
+                }
+            )
+        }
+    )
+    services._store.save_session(session)
+    old_context = context.model_copy(
+        update={"context_id": "ctx_previous", "turn_id": "turn_previous"}
+    )
+    save_context(services._store, old_context)
+    save_context(services._store, context)
+    summary_header = context.header().model_copy(
+        update={
+            "context_id": "req_summary",
+            "turn_id": "req_summary",
+            "purpose": "compaction",
+            "provider_done_at": utc_now(),
+        }
+    )
+    services._store.commit_session(
+        SessionCommit(
+            before=services._store.load_session_record(session.session_id),
+            request_header=summary_header,
+            runs=(_run.model_copy(update={"current_request_id": summary_header.context_id}),),
+        )
+    )
+    assert len(services._store.load_session(session.session_id).request_headers) == 3
+    if settled:
+        entry = build_local_usage_service(source).record_provider_usage(
+            run=_run,
+            usage=Usage(input_tokens=7),
+            request_id=context.turn_id,
+            purpose="agent",
+            model=ModelMetadata(provider_id="faux", model_id="faux"),
+        )
+        services._store.settle_request_header(
+            session.session_id,
+            context.context_id,
+            settled_at=utc_now(),
+            provider_done=True,
+            usage_entry_id=entry.entry_id,
+        )
+        context = services._store.load_latest_context(session.session_id)
+        assert (
+            services.sessions.context_status(session.session_id).provider_reported_input_tokens == 7
+        )
     _create_session(services._store, "ses_other")
     archive = tmp_path / "sessions.zip"
     assert transfer(source, "export", "sessions", archive, backend=source_backend).count == 2
     assert transfer(target, "import", "sessions", archive, backend=target_backend).count == 2
     imported = build_local_session_services(target, session_backend=target_backend)
-    assert imported._store.load_latest_context(session.session_id) == context.model_copy(
-        update={"context_metadata": {}}
+    assert imported._store.load_latest_context(session.session_id) == context
+    assert (
+        imported._store.load_session_record(session.session_id).context_selection
+        == session.context_selection
     )
     assert services._store.load_latest_context(session.session_id) == context
+    imported_context = imported.sessions.context(session.session_id)
+    assert imported_context.provider_context == context.provider_context
+    assert imported_context.status.usage_entry_id == context.usage_entry_id
+    assert imported_context.status.provider_reported_input_tokens is None
     assert imported._store.load_session(session.session_id) == services._store.load_session(
         session.session_id
     )
@@ -306,8 +366,9 @@ def test_selected_session_import_from_full_archive_and_missing_id(tmp_path, back
     assert len(actual._store.list_sessions()) == 2
 
 
-def test_selected_child_transfers_complete_agent_tree(tmp_path):
-    services = build_local_session_services(tmp_path / "source")
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+def test_selected_child_transfers_complete_agent_tree(tmp_path, backend):
+    services = build_local_session_services(tmp_path / "source", session_backend=backend)
     root, run = _create_session(services._store, "ses_root")
     definition = AgentDefinition(
         agent_id="review", name="Review", description="Review", system_prompt="Review"
@@ -334,11 +395,19 @@ def test_selected_child_transfers_complete_agent_tree(tmp_path):
     services._store.create_delegation(relation)
     archive = tmp_path / "tree.zip"
     assert (
-        transfer(tmp_path / "source", "export", "sessions", archive, ids=("ses_child",)).count == 2
+        transfer(
+            tmp_path / "source", "export", "sessions", archive, ids=("ses_child",), backend=backend
+        ).count
+        == 2
     )
-    transfer(tmp_path / "target", "import", "sessions", archive, ids=("ses_child",))
-    target = build_local_session_services(tmp_path / "target")
+    transfer(
+        tmp_path / "target", "import", "sessions", archive, ids=("ses_child",), backend=backend
+    )
+    target = build_local_session_services(tmp_path / "target", session_backend=backend)
     assert target._store.list_delegations("ses_root") == [relation]
+    assert target._store.list_delegations("ses_root", parent_run_id=run.run_id) == [relation]
+    assert target._store.find_delegation_by_child_session("ses_root", "ses_child") == relation
+    assert target._store.find_delegation_by_idempotency_key("ses_root", "example") == relation
 
 
 def test_busy_session_export_releases_acquired_locks(tmp_path):
@@ -445,6 +514,8 @@ def test_unknown_extension_tool_and_model_are_preserved_without_loading_them(tmp
         role="assistant",
         tool_calls=[ToolCallRequest(name="missing__tool", arguments={"value": "retained"})],
     )
+    seed_tool_messages(services._store, message, [], run=run)
+    session = services._store.load_session_record(session.session_id)
     services._store.commit_session(
         SessionCommit(
             before=session,

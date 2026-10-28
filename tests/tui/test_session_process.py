@@ -69,8 +69,9 @@ async def observe(home, backend, session_id, connection):
                 elif isinstance(command, tuple) and command[0] == "catch_up":
                     release.set()
                     await wait_until(
-                        lambda sequence=command[1]: (
+                        lambda sequence=command[1], text=command[2]: (
                             app._observation_subscription.applied_sequence >= sequence
+                            and app._projection.assistant_text == text
                         ),
                         pilot,
                         description="remote observer caught up",
@@ -134,8 +135,7 @@ async def test_two_process_tuis_keep_execution_and_slow_observation_independent(
                     for index in range(129):
                         marker = f"piece {index}, "
                         provider.text("Alpha", marker)
-                        # A provider fragment is not a durable event: the adapter
-                        # coalesces adjacent text. Await each committed marker
+                        # Await each current Draft marker after adapter coalescing
                         # before producing the next to cross the 128-event buffer
                         # deterministically, regardless of timer granularity/load.
                         while True:
@@ -159,10 +159,19 @@ async def test_two_process_tuis_keep_execution_and_slow_observation_independent(
                 description="owner continues while remote observer is held",
             )
             events = application.runtime.store.load_session(sessions[0]).events
-            assert sum(event.event_type == "model_text_delta" for event in events) > 128
+            assert not any(event.event_type == "model_text_delta" for event in events)
+            latest = application.runtime.store.load_latest_request(sessions[0])
+            assert latest is not None
+            header, _ = latest
+            response = application.runtime.store.load_response_draft(
+                sessions[0], header.context_id, limit=1000
+            )
+            assert response is not None and len(response.chunks) > 128
             applied, pending, draft = await request(reader, "held")
             assert applied == before and pending <= 128 and draft == "vv"
-            text, summaries = await request(reader, ("catch_up", events[-1].sequence))
+            text, summaries = await request(
+                reader, ("catch_up", events[-1].sequence, app._projection.assistant_text)
+            )
             assert text == app._projection.assistant_text
             assert summaries == []
             provider.finish("Alpha")
@@ -176,7 +185,10 @@ async def test_two_process_tuis_keep_execution_and_slow_observation_independent(
                     await asyncio.wait_for(worker.wait(), 15)
                 snapshot = application.runtime.store.load_session(sessions[0])
                 run_ids.append(snapshot.runs[-1].run_id)
-                text, summaries = await request(reader, ("catch_up", snapshot.events[-1].sequence))
+                text, summaries = await request(
+                    reader,
+                    ("catch_up", snapshot.events[-1].sequence, snapshot.messages[-1].text_content),
+                )
                 assert text == snapshot.messages[-1].text_content
                 assert summaries == run_ids
             assert await request(reader, "close") == "closed"

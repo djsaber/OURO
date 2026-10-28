@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -16,6 +15,7 @@ from ouro.core.base import new_id, utc_now
 from ouro.core.callbacks import run_blocking
 from ouro.core.events import EventRecord
 from ouro.core.harness_calls import HarnessCallSnapshot, accept_state_changes
+from ouro.core.inputs import InputRecord, InputStateChange
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
@@ -223,6 +223,8 @@ async def execute_plugin_command(
         after = before
         queue = QueuedInputQueue(store)
         events = []
+        accepted_inputs: list[InputRecord] = []
+        input_changes: dict[str, InputStateChange] = {}
         for batch, driver in selected_batches:
             batch_id = new_id("batch")
             items = tuple(
@@ -250,7 +252,15 @@ async def execute_plugin_command(
                 )
                 for index, item in enumerate(batch.inputs)
             )
-            after, superseded = queue.stage_batch(after, items)
+            staged = queue.stage_batch(
+                after,
+                items,
+                staged_inputs=tuple(accepted_inputs),
+                cancelled_ids=frozenset(input_changes),
+            )
+            accepted_inputs.extend(staged.inputs)
+            input_changes.update((change.input_id, change) for change in staged.changes)
+            superseded = staged.superseded
             receipts.append(
                 HostInputReceipt(
                     session_id=before.session_id,
@@ -297,6 +307,8 @@ async def execute_plugin_command(
                 after=after,
                 steps=(SessionCommitStep(harness=draft.state),),
                 events=tuple(events),
+                inputs=tuple(accepted_inputs),
+                input_changes=tuple(input_changes.values()),
             )
     parts = [result.output] if result.output else []
     parts.extend(item.output for item in controls if item.output)
@@ -334,35 +346,14 @@ async def execute_plugin_command(
                 }
             )
             view = view.model_copy(update={"continuation_request": continuation_request})
-        commit_request = commit_request.model_copy(
-            update={"output": {"plugin_command": view.model_dump(mode="json")}}
+        committed = await coordinator.commit_async(
+            commit_request,
+            released_activation_ids=tuple(
+                identity for item in controls for identity in item.released_activation_ids
+            ),
+            stop_run_reason=f"Stopped by /{command_id}" if result.run_action == "stop" else None,
         )
-        try:
-            committed = await run_blocking(
-                coordinator.commit,
-                commit_request,
-                released_activation_ids=tuple(
-                    identity for item in controls for identity in item.released_activation_ids
-                ),
-                stop_run_reason=f"Stopped by /{command_id}"
-                if result.run_action == "stop"
-                else None,
-            )
-        except asyncio.CancelledError:
-            # run_blocking has settled the owned write before cancellation reaches us.
-            # Report the accepted command when its durable decision already exists.
-            recovered = await run_blocking(
-                coordinator.store.load_commit,
-                commit_request.before.session_id,
-                commit_request.operation_id,
-            )
-            if recovered is None:
-                raise
-            committed = recovered
-        view = PluginCommandExecutionView.model_validate(committed.output["plugin_command"])
-        view = view.model_copy(
-            update={"stop_requested_run_id": committed.output.get("stop_requested_run_id")}
-        )
+        view = view.model_copy(update={"stop_requested_run_id": committed.stop_requested_run_id})
         if controls:
             data = dict(view.data)
             data["session_controls"] = [

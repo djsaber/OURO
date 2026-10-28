@@ -27,7 +27,7 @@ async def test_utf16_text_exceeding_utf8_budget_keeps_head_and_tail(
     else:
         item = input_content.InputFileReference(name=path.name, path=str(path))
     await app.runtime.run("Explain", session_id=session.session_id, attachments=(item,))
-    receipt = app.runtime.store.load_runtime_session(session.session_id).messages[0]
+    receipt = app.runtime.store.load_session(session.session_id).messages[0]
     assert "head/tail preview" in receipt.text_content
     assert "开头" in receipt.text_content and "结尾" in receipt.text_content
     assert "omitted bytes" in receipt.text_content
@@ -46,7 +46,7 @@ async def test_same_named_uploads_have_unambiguous_model_file_labels(tmp_path):
         record = app.runtime.resources.import_resource(session.session_id, path).resource
         items.append(input_content.InputAttachment(name=path.name, resource_id=record.resource_id))
     await app.runtime.run("Compare", session_id=session.session_id, attachments=tuple(items))
-    receipt = app.runtime.store.load_runtime_session(session.session_id).messages[0]
+    receipt = app.runtime.store.load_session(session.session_id).messages[0]
     headers = [block.text for block in receipt.content if getattr(block, "type", None) == "text"]
     for filename, contents in (
         ("notes.txt", "first contents"),
@@ -71,7 +71,7 @@ async def test_paired_attachment_scaffold_is_not_a_separate_undo_input(tmp_path,
     path.write_text("data", encoding="utf-8")
     item = input_content.InputFileReference(name=path.name, path=str(path))
     result = await app.runtime.run("Keep this question", attachments=(item,))
-    before = app.runtime.store.load_runtime_session(result.session.session_id)
+    before = app.runtime.store.load_session(result.session.session_id)
     for invalid_fork_target in (
         None,
         before.messages[0].message_id,
@@ -84,10 +84,7 @@ async def test_paired_attachment_scaffold_is_not_a_separate_undo_input(tmp_path,
     assert len(app.runtime.store.list_sessions()) == 1
     with pytest.raises(ValueError, match="directly submitted user input"):
         await app.runtime.undo(result.session.session_id, message_id=before.messages[0].message_id)
-    assert (
-        app.runtime.store.load_runtime_session(result.session.session_id).messages
-        == before.messages
-    )
+    assert app.runtime.store.load_session(result.session.session_id).messages == before.messages
     restored = await app.runtime.undo(result.session.session_id)
     assert restored.input.text_content == "Keep this question" and restored.attachments == (item,)
     await app.close()
@@ -137,7 +134,7 @@ async def test_reference_uses_original_path_and_freezes_observed_text(tmp_path, 
     context = app.runtime.sessions.context(session_id)
     text = context.provider_context.messages[0].text_content
     assert "original security policy" in text and source.as_posix() in text
-    receipt = app.runtime.store.load_runtime_session(session_id).messages[0]
+    receipt = app.runtime.store.load_session(session_id).messages[0]
     assert "original security policy" in receipt.text_content
     assert "file_observations" not in receipt.model_dump()
     assert "res_" not in text
@@ -146,9 +143,7 @@ async def test_reference_uses_original_path_and_freezes_observed_text(tmp_path, 
     await app.runtime.run("Explain further", session_id=session_id)
     latest = app.runtime.sessions.context(session_id)
     assert "original security policy" in latest.provider_context.messages[0].text_content
-    assert app.runtime.store.load_runtime_session(session_id).messages[1].input_attachments == (
-        item,
-    )
+    assert app.runtime.store.load_session(session_id).messages[1].input_attachments == (item,)
     names = set(app.runtime.tools.names())
     assert not {"ResourceRead", "ResourceMaterialize"} & names
     await app.close()
@@ -200,7 +195,7 @@ async def test_reference_image_snapshot_survives_source_removal(tmp_path, backen
     blocks = saved.provider_context.messages[0].content
     image_blocks = [block for block in blocks if isinstance(block, ImageContent)]
     assert image_blocks
-    receipt = app.runtime.store.load_runtime_session(result.session.session_id).messages[0]
+    receipt = app.runtime.store.load_session(result.session.session_id).messages[0]
     persisted = [block for block in receipt.content if isinstance(block, ImageContent)]
     assert persisted == image_blocks
     assert base64.b64decode(persisted[0].uri.partition(",")[2]) == raw
@@ -226,12 +221,12 @@ async def test_branch_owns_its_upload_after_source_is_trashed(tmp_path, backend)
     record = resources.import_resource(session.session_id, source).resource
     item = input_content.InputAttachment(name=source.name, resource_id=record.resource_id)
     await app.runtime.run("Explain", session_id=session.session_id, attachments=(item,))
-    message = app.runtime.store.load_runtime_session(session.session_id).messages[0]
+    message = app.runtime.store.load_session(session.session_id).messages[0]
     branch = app.runtime.sessions.branch(session.session_id, message.message_id).session
     branch_path = resources.resource_path(branch.session_id, record.resource_id)
     source_path = resources.resource_path(session.session_id, record.resource_id)
     assert branch_path != source_path
-    copied = app.runtime.store.load_runtime_session(branch.session_id).messages[0]
+    copied = app.runtime.store.load_session(branch.session_id).messages[0]
     assert branch_path.as_posix() in copied.text_content
     assert source_path.as_posix() not in copied.text_content
     assert source_path.as_posix() in message.text_content
@@ -279,9 +274,9 @@ async def test_branch_preserves_observed_files_and_skill_instructions(
         skill_invocation=SkillInvocationRequest(name="reviewer", arguments="Review"),
     )
     saved_context = runtime.sessions.context(session.session_id)
-    before = runtime.store.load_runtime_session(session.session_id).messages
+    before = runtime.store.load_session(session.session_id).messages
     branch = runtime.sessions.branch(session.session_id, before[fork_point].message_id).session
-    copied = runtime.store.load_runtime_session(branch.session_id).messages
+    copied = runtime.store.load_session(branch.session_id).messages
     assert len(copied) == 2
     assert copied[1].skill_activations == before[1].skill_activations
     source_path = runtime.resources.resource_path(session.session_id, resource.resource_id)
@@ -324,7 +319,7 @@ async def test_unavailable_reference_only_is_valid_without_inventing_user_text(t
     app = application_at(tmp_path / "home")
     item = input_content.InputFileReference(name="missing.md", path=str(tmp_path / "missing.md"))
     result = await app.runtime.run("", attachments=(item,), workspace=str(tmp_path))
-    messages = app.runtime.store.load_runtime_session(result.session.session_id).messages
+    messages = app.runtime.store.load_session(result.session.session_id).messages
     assert messages[0].scaffold and messages[0].input_attachments == (item,)
     projection = app.runtime.sessions.context(result.session.session_id).provider_context
     assert "File unavailable" in projection.messages[0].text_content

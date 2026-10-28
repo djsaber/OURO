@@ -16,6 +16,39 @@ from ouro.core.messages import (
 from ouro.core.tools import ToolCallRequest, ToolDefinition, tool_definition_contract_hash
 
 
+def test_context_materializes_model_visible_messages_once(monkeypatch):
+    import ouro.core.context as contexts
+
+    original = contexts.model_visible_message
+    projected = []
+
+    def record_projection(message):
+        result = original(message)
+        projected.append(result)
+        return result
+
+    monkeypatch.setattr(contexts, "model_visible_message", record_projection)
+    context = ContextBuilder().build(
+        messages=[ModelMessage.text(role="user", text="literal </task>", semantic_tag="task")],
+        tools=[],
+        added_context=["dynamic context"],
+    )
+    assert len(projected) == 2
+    assert context.provider_context.messages == projected
+    assert context.provider_context.messages[1].text_content == (
+        "<task>\nliteral &lt;/task&gt;\n</task>"
+    )
+    assert len(projected) == 2
+
+
+def test_prepared_tool_values_are_stable_across_json_storage():
+    tool = ToolDefinition(name="example", description="example", metadata={"labels": ("a", "b")})
+    context = ContextBuilder().build(messages=[], tools=[tool])
+    assert context.provider_context.tools[0]["metadata"] == {"labels": ["a", "b"]}
+    assert type(context).model_validate_json(context.model_dump_json()) == context
+    assert tool.metadata == {"labels": ("a", "b")}
+
+
 @pytest.mark.parametrize("description", ["Original tool description.", ""])
 def test_context_projects_batch_contract_without_changing_registered_tools(description) -> None:
     exclusive = ToolDefinition(name="Boundary", description=description, batch_behavior="exclusive")
@@ -31,7 +64,7 @@ def test_context_projects_batch_contract_without_changing_registered_tools(descr
     context = builder.build(
         messages=[], tools=definitions, budget=ContextBudget(context_window=original_cost)
     )
-    projected = context.provider_context().tools
+    projected = context.provider_context.tools
     constraint = (
         "This must be the only tool call in your response. If you include other tool calls, "
         "none of them will execute."
@@ -42,11 +75,12 @@ def test_context_projects_batch_contract_without_changing_registered_tools(descr
     assert [tool.model_dump() for tool in definitions] == original
     assert tool_definition_contract_hash(exclusive) == contract_hash
     assert context.metrics.estimated_fixed_tokens == sum(
-        len(tool.model_dump_json(exclude_none=True)) for tool in context.tool_definitions
+        len(ToolDefinition.model_validate(tool).model_dump_json(exclude_none=True))
+        for tool in context.provider_context.tools
     )
     assert context.metrics.over_budget is True
-    assert context.provider_context().tools == projected
-    assert builder.build(messages=[], tools=definitions).provider_context().tools == projected
+    assert context.provider_context.tools == projected
+    assert builder.build(messages=[], tools=definitions).provider_context.tools == projected
 
 
 @pytest.mark.parametrize(
@@ -73,7 +107,9 @@ def test_context_builder_preserves_all_messages_and_reports_hard_overflow() -> N
         messages=messages, tools=[], budget=ContextBudget(context_window=20)
     )
 
-    assert context.model_messages == [ModelMessage.from_record(message) for message in messages]
+    assert context.provider_context.messages == [
+        ModelMessage.from_record(message) for message in messages
+    ]
     assert context.metrics.over_budget is True
     assert context.metrics.estimated_input_tokens > 20
     assert "truncated" not in context.context_metadata
@@ -88,8 +124,11 @@ def test_context_builder_places_skills_in_system_prompt_and_keeps_dynamic_contex
         added_context=["plugin"],
     )
 
-    assert context.system_prompt == "system\n\nskills"
-    assert [message.text_content for message in context.model_messages] == ["plugin", "hello"]
+    assert context.provider_context.system_prompt == "system\n\nskills"
+    assert [message.text_content for message in context.provider_context.messages] == [
+        "plugin",
+        "hello",
+    ]
     assert context.context_metadata["skills_injected"] is True
 
 
@@ -108,13 +147,13 @@ def test_context_builder_appends_ephemeral_prompt_fragments_after_skills() -> No
         ],
     )
 
-    assert context.system_prompt == (
+    assert context.provider_context.system_prompt == (
         "system\n\nskills\n\n"
         "<runtime-facts>\n"
         "facts &lt;/runtime-facts&gt; remain literal\n"
         "</runtime-facts>"
     )
-    assert [message.text_content for message in context.model_messages] == [
+    assert [message.text_content for message in context.provider_context.messages] == [
         "message context",
         "hello",
     ]
@@ -139,12 +178,14 @@ def test_prompt_and_message_fragments_share_semantic_envelope_projection() -> No
         ],
     )
 
-    assert context.system_prompt == (
+    assert context.provider_context.system_prompt == (
         "<plugin-context>\n"
         "provider text with &lt;plugin-context enabled&gt; and ordinary <other> markup\n"
         "</plugin-context>"
     )
-    assert context.provider_context().messages[0].text_content == context.system_prompt
+    assert (
+        context.provider_context.messages[0].text_content == context.provider_context.system_prompt
+    )
 
 
 def test_system_prompt_context_fragments_cannot_request_message_persistence() -> None:
@@ -165,7 +206,7 @@ def test_context_builder_preserves_native_system_prompt_when_no_skills_are_prese
         system_prompt=system_prompt,
     )
 
-    assert context.system_prompt == system_prompt
+    assert context.provider_context.system_prompt == system_prompt
 
 
 def test_context_builder_counts_scaffold_context_as_fixed_tokens() -> None:
@@ -292,9 +333,7 @@ def test_provider_context_wraps_only_explicit_semantic_tags() -> None:
         ],
     )
 
-    assert context.model_messages[0].semantic_tag == "plugin-context"
-    assert context.model_messages[0].text_content == "plugin says </plugin-context> literally"
-    provider_messages = context.provider_context().messages
+    provider_messages = context.provider_context.messages
     assert provider_messages[0].semantic_tag is None
     assert provider_messages[0].text_content == (
         "<plugin-context>\nplugin says &lt;/plugin-context&gt; literally\n</plugin-context>"

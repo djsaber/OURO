@@ -70,5 +70,5 @@ def test_skill_activation_is_rejected_on_non_user_roles_and_counts_toward_budget
     context = ContextBuilder().build(messages=[activated], tools=[])
 
     assert estimate_message_tokens(activated) > estimate_message_tokens(plain)
-    assert context.provider_context().messages[0].role == "user"
-    assert "x" * 100 in context.provider_context().messages[0].text_content
+    assert context.provider_context.messages[0].role == "user"
+    assert "x" * 100 in context.provider_context.messages[0].text_content

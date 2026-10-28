@@ -8,7 +8,7 @@ from ouro.core.agents import (
     AgentDefinition,
     AgentSpawnPolicy,
 )
-from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
+from ouro.tools import Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolRegistry, ToolResult
 from ouro.tools.builtin.agents import agent_control_tools
 
 
@@ -66,6 +66,34 @@ def test_empty_agent_catalog_omits_only_spawn_control() -> None:
 
     assert "SpawnAgent" not in names
     assert names == ["SendAgentMessage", "InterruptAgent"]
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments", "action"),
+    [
+        ("SendAgentMessage", {"delegation_id": "child", "message": "Continue"}, "send"),
+        ("InterruptAgent", {"delegation_id": "child", "reason": "Finished"}, "interrupt"),
+    ],
+)
+async def test_executor_returns_explicit_agent_intent_without_an_empty_result(
+    name, arguments, action
+):
+    registry = ToolRegistry()
+    for tool in agent_control_tools(AgentCatalogSnapshot()):
+        registry.register(tool)
+    outcome = await ToolExecutor(registry).execute(
+        ToolInvocation(
+            tool_call_id="call_control",
+            tool_name=name,
+            session_id="session_parent",
+            run_id="run_parent",
+            arguments=arguments,
+        )
+    )
+    assert outcome.status == "control_requested"
+    assert outcome.result is None
+    assert outcome.control_request.action == action
+    assert outcome.control_request.delegation_id == "child"
 
 
 def test_list_agents_is_not_projected_as_a_model_tool() -> None:

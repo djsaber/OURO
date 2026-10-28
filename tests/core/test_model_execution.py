@@ -26,12 +26,73 @@ async def _execute(provider, *, observe=None, signal=None, **kwargs):
 
     return await execute_model_request(
         RuntimeAdapter(provider, ModelMetadata(model_id="test", provider_id="test")),
-        ContextView(system_prompt="", model_messages=[], tool_definitions=[]),
+        ContextView(),
         request_context=ProviderRequestContext({"request.purpose": "chat"}),
         signal=signal or AbortSignal(),
         on_event=observe or ignore,
         **kwargs,
     )
+
+
+@pytest.mark.parametrize("ending", ["abort", "cancel", "observer_failure"])
+async def test_received_done_is_settled_before_buffered_output_is_discarded(ending):
+    observed = asyncio.Event()
+    reported = asyncio.Event()
+    release = asyncio.Event()
+    closed = asyncio.Event()
+    signal = AbortSignal()
+    receipts = []
+    visible = []
+
+    class Provider(FauxProvider):
+        async def stream(self, **kwargs):
+            try:
+                yield ProviderStreamEvent(type="text_delta", text="visible prefix")
+                await observed.wait()
+                yield ProviderStreamEvent(type="text_delta", text="discarded suffix")
+                yield ProviderStreamEvent(type="done", usage=Usage(input_tokens=7))
+                # A terminal response ends the request, including its accounting.
+                yield ProviderStreamEvent(type="done", usage=Usage(input_tokens=999))
+            finally:
+                closed.set()
+
+    async def settle(event):
+        receipts.append(event.usage)
+        reported.set()
+
+    async def observe(progress):
+        visible.append(progress.event)
+        observed.set()
+        await release.wait()
+        if ending == "observer_failure":
+            raise ValueError("presentation failed")
+
+    task = asyncio.create_task(
+        _execute(Provider(), observe=observe, signal=signal, on_provider_done=settle)
+    )
+    try:
+        await asyncio.wait_for(reported.wait(), 5)
+        if ending == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            if ending == "abort":
+                signal.abort()
+            release.set()
+            result = await asyncio.wait_for(task, 5)
+            assert result.text == "visible prefix"
+            assert result.usage is None  # No done event was consumed as response output.
+            assert result.aborted == (ending == "abort")
+            assert result.error == ("presentation failed" if ending == "observer_failure" else None)
+        assert receipts == [Usage(input_tokens=7)]
+        assert len(visible) == 1
+        assert closed.is_set()
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.parametrize("clock_shift", [-10, 10])

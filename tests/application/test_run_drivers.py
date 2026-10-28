@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from ouro.application.plugins.service import PluginService
+from ouro.application.runs.tool_batches import load_tool_batch
 from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.observers import ObserverRegistry
@@ -47,7 +48,9 @@ def set_driver_body(package: Path, body: str) -> None:
     source.write_text(text[:start] + body + "\n\n" + text[end:], encoding="utf-8")
 
 
-def host(tmp_path, store, calls, mode="approval", content="deployed", handler=None):
+def host(
+    tmp_path, store, calls, mode="approval", content="deployed", handler=None, usage_service=None
+):
     tools = ToolRegistry()
 
     def execute(invocation, context):
@@ -86,6 +89,7 @@ def host(tmp_path, store, calls, mode="approval", content="deployed", handler=No
         store=store,
         adapter=RuntimeAdapter(provider, ModelMetadata(model_id="faux", provider_id="faux")),
         tools=tools,
+        usage_service=usage_service,
     )
     runtime.bind_extensions(catalog=plugin_runtime)
     return runtime, plugin_runtime, service
@@ -134,7 +138,7 @@ async def test_driver_wait_restarts_with_exact_contract_native_results_and_check
         assert result.run.driver == pending.run.driver
         assert result.run.driver_checkpoint.state == "consumed"
         assert result.run.active_tool_batch is None
-        history = store.load_runtime_session(result.session.session_id)
+        history = store.load_session(result.session.session_id)
         assert [
             message.tool_result.tool_call_id for message in history.messages if message.tool_result
         ] == ["deploy"]
@@ -286,7 +290,7 @@ async def test_driver_cannot_leave_a_native_operation_running_after_return(tmp_p
             ),
         ),
     )
-    session, run = runtime.run_lifecycle.start(
+    session, run, _ = runtime.run_lifecycle.start(
         session=session, run=run, snapshot=store.load_runtime_session(session.session_id)
     )
     entered, closed = asyncio.Event(), asyncio.Event()
@@ -309,9 +313,7 @@ async def test_driver_cannot_leave_a_native_operation_running_after_return(tmp_p
     context = NativeRunDriverContext(
         session=session,
         run=run,
-        messages=[],
         sequence=0,
-        emitted=[],
         abort_signal=AbortSignal(),
         request_model=native_request,
         request_tools=unused_tools,
@@ -489,7 +491,7 @@ async def test_programmatic_tool_wait_preserves_driver_provenance_without_model_
     try:
         pending = await runtime.run("deploy", driver_id=DRIVER)
         assert pending.run.status == "waiting_approval", pending.run.error
-        batch = pending.run.active_tool_batch
+        batch = load_tool_batch(store, pending.run)
         assert batch.producer.kind == "driver"
         assert batch.producer.driver_id == DRIVER
         assert batch.assistant_message_id is None
@@ -497,7 +499,7 @@ async def test_programmatic_tool_wait_preserves_driver_provenance_without_model_
         assert pending.run.model_round_count == 0
         assert not any(
             message.tool_calls
-            for message in store.load_runtime_session(pending.session.session_id).messages
+            for message in store.load_session(pending.session.session_id).messages
         )
     finally:
         await runtime.close()
@@ -516,15 +518,17 @@ async def test_programmatic_tool_wait_preserves_driver_provenance_without_model_
         assert result.final_text == "deployed"
         assert result.run.model_round_count == 0
         assert len(calls) == 1
-        history = store.load_runtime_session(result.session.session_id)
+        history = store.load_session(result.session.session_id)
         receipt = next(item for item in history.messages if item.tool_result is not None)
         assert receipt.tool_result.producer == batch.producer
         assert receipt.scaffold
         projected, excluded = project_tool_exchanges(history.messages)
         assert excluded == ()
         view = ContextBuilder().build(messages=projected, tools=[])
-        assert not any(item.tool_calls for item in view.model_messages)
-        native_output = next(item for item in view.model_messages if item.tool_result is not None)
+        assert not any(item.tool_calls for item in view.provider_context.messages)
+        native_output = next(
+            item for item in view.provider_context.messages if item.tool_result is not None
+        )
         assert native_output.tool_result.producer == batch.producer
         assert "deployed" in native_output.text_content
     finally:
@@ -533,9 +537,9 @@ async def test_programmatic_tool_wait_preserves_driver_provenance_without_model_
 
 
 @pytest.mark.parametrize("programmatic", [False, True])
-@pytest.mark.parametrize("canonical_only", [False, True])
+@pytest.mark.parametrize("after_commit", [False, True])
 async def test_result_commit_interruption_recovers_checkpoint_without_repeating_tools(
-    tmp_path, monkeypatch, programmatic, canonical_only
+    tmp_path, monkeypatch, programmatic, after_commit
 ):
     from ouro.core.content import ImageContent, TextContent
 
@@ -559,49 +563,46 @@ async def test_result_commit_interruption_recovers_checkpoint_without_repeating_
         )
     service.install(package)
     await service.enable(PLUGIN)
-    save = runtime.run_lifecycle.save_batch_state
+    commit = store.commit_session
 
-    def interrupted(**kwargs):
-        if kwargs["batch"] is not None and kwargs["batch"].phase == "completed":
-            raise RuntimeError("interrupted after canonical tool result commit")
-        return save(**kwargs)
+    def interrupted(request):
+        publishing = bool(request.call_states) and all(
+            state.result_message_id is not None for state in request.call_states
+        )
+        if publishing and not after_commit:
+            raise RuntimeError("interrupted before tool frame commit")
+        result = commit(request)
+        if publishing:
+            raise RuntimeError("interrupted after tool frame commit")
+        return result
 
-    monkeypatch.setattr(runtime.run_lifecycle, "save_batch_state", interrupted)
+    monkeypatch.setattr(store, "commit_session", interrupted)
     try:
         failed = await runtime.run("deploy", driver_id=DRIVER)
         assert failed.run.status == "failed", failed.run.error
         assert len(calls) == 1
         saved = store.load_run(failed.session.session_id, failed.run.run_id)
-        assert saved.driver_checkpoint.state == "pending"
-        assert saved.active_tool_batch.phase == "committing_results"
-        if canonical_only:
-            # Exercise the canonical receipt as the surviving durable evidence.
-            batch = saved.active_tool_batch
-            store.save_run(
-                saved.model_copy(
-                    update={
-                        "active_tool_batch": batch.model_copy(
-                            update={
-                                "calls": [
-                                    call.model_copy(update={"result": None}) for call in batch.calls
-                                ]
-                            }
-                        )
-                    }
-                )
-            )
-        monkeypatch.setattr(runtime.run_lifecycle, "save_batch_state", save)
+        assert saved.driver_checkpoint.state == ("ready" if after_commit else "pending")
+        assert saved.active_tool_batch.phase == (
+            "completed" if after_commit else "committing_results"
+        )
+        # The only durable result body belongs to Outcome; Run stores its batch head.
+        assert "calls" not in saved.active_tool_batch.model_dump()
+        saved_content = load_tool_batch(store, saved).calls[0].result.content
+        assert saved_content[0] == content[0]
+        assert isinstance(saved_content[1], ImageContent)
+        assert saved_content[1].resource_id is not None
+        assert saved_content[1].uri == media.uri
+        assert saved_content[1].media_type == media.media_type
+        monkeypatch.setattr(store, "commit_session", commit)
         reconciled = await runtime.run_recovery.reconcile(
             store.load_runtime_session(failed.session.session_id)
         )
         repaired = next(item for item in reconciled.runs if item.run_id == saved.run_id)
         assert repaired.driver_checkpoint.state == "ready"
-        assert repaired.active_tool_batch.calls[0].status == "completed"
-        if canonical_only:
-            assert repaired.active_tool_batch.calls[0].result.content == [
-                TextContent(text="ok"),
-                media,
-            ]
+        repaired_batch = load_tool_batch(store, repaired)
+        assert repaired_batch.calls[0].status == "completed"
+        assert repaired_batch.calls[0].result.content == saved_content
         result = await runtime.continue_run(session_id=failed.session.session_id)
         assert result.run.status == "completed", result.run.error
         assert len(calls) == 1
@@ -633,28 +634,27 @@ async def test_programmatic_unknown_outcome_is_delivered_without_repeating_side_
     )
     service.install(package)
     await service.enable(PLUGIN)
-    save = runtime.run_lifecycle.save_batch_state
+    commit = store.commit_session
 
-    def interrupted(**kwargs):
-        batch = kwargs["batch"]
-        if batch is not None and any(call.result is not None for call in batch.calls):
+    def interrupted(request):
+        if request.tool_facts.outcomes:
             raise RuntimeError("interrupted before durable result")
-        return save(**kwargs)
+        return commit(request)
 
-    monkeypatch.setattr(runtime.run_lifecycle, "save_batch_state", interrupted)
+    monkeypatch.setattr(store, "commit_session", interrupted)
     try:
         failed = await runtime.run("deploy", driver_id=DRIVER)
         assert failed.run.status == "failed", failed.run.error
         assert len(calls) == 1
         saved = store.load_run(failed.session.session_id, failed.run.run_id)
         assert saved.driver_checkpoint.state == "pending"
-        assert saved.active_tool_batch.calls[0].status == "running"
-        monkeypatch.setattr(runtime.run_lifecycle, "save_batch_state", save)
+        assert load_tool_batch(store, saved).calls[0].status == "running"
+        monkeypatch.setattr(store, "commit_session", commit)
         result = await runtime.continue_run(session_id=failed.session.session_id)
         assert result.run.status == "completed", result.run.error
         assert result.final_text == "Verify external state before retrying"
         assert len(calls) == 1
-        history = store.load_runtime_session(result.session.session_id)
+        history = store.load_session(result.session.session_id)
         receipt = next(item for item in history.messages if item.tool_result is not None)
         assert receipt.tool_result.producer.driver_id == DRIVER
         assert receipt.tool_result.is_error
@@ -689,7 +689,7 @@ async def test_finishing_model_response_preserves_one_authentic_assistant_messag
         assert result.run.status == ("completed" if tamper is None else "failed"), result.run.error
         assistants = [
             item
-            for item in store.load_runtime_session(result.session.session_id).messages
+            for item in store.load_session(result.session.session_id).messages
             if item.role == "assistant"
         ]
         assert len(assistants) == 1
@@ -755,7 +755,7 @@ async def test_default_driver_continues_native_facts_after_checkpoint_consumptio
         assert calls == ["deploy"]
         assistants = [
             item
-            for item in store.load_runtime_session(resumed.session.session_id).messages
+            for item in store.load_session(resumed.session.session_id).messages
             if item.role == "assistant"
         ]
         assert len(assistants) == 2
@@ -797,7 +797,7 @@ async def test_driver_abort_waits_for_native_tool_cancellation_receipts(tmp_path
         assert finalized.is_set()
         events = store.load_session(session.session_id).events
         completed = next(event for event in events if event.event_type == "tool_call_completed")
-        assert completed.payload["status"] == "aborted"
+        assert completed.payload["status"] == "unknown_outcome"
         kinds = [event.event_type for event in events]
         assert kinds.index("tool_call_completed") < kinds.index("tool_batch_aborted")
         assert kinds.index("tool_batch_aborted") < kinds.index("run_aborted")

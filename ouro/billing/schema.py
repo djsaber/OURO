@@ -13,7 +13,7 @@ USAGE_SCHEMA = (
     )""",
     """CREATE TABLE entry_records (
         entry_id TEXT PRIMARY KEY REFERENCES entries(entry_id) ON DELETE CASCADE,
-        payload TEXT NOT NULL, source_event_id TEXT NOT NULL REFERENCES events(event_id)
+        payload TEXT NOT NULL
     )""",
     """CREATE TABLE scopes (
         entry_id TEXT NOT NULL REFERENCES entries(entry_id) ON DELETE CASCADE,
@@ -23,6 +23,22 @@ USAGE_SCHEMA = (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
         event_id TEXT NOT NULL UNIQUE, payload TEXT NOT NULL
     )""",
+    """CREATE TABLE raw_requests (
+        entry_id TEXT PRIMARY KEY,
+        source_event_id TEXT NOT NULL UNIQUE REFERENCES events(event_id)
+    ) WITHOUT ROWID""",
+    """CREATE TABLE raw_run_totals (
+        session_id TEXT NOT NULL, run_id TEXT NOT NULL,
+        request_count INTEGER NOT NULL,
+        agent_request_count INTEGER NOT NULL,
+        compaction_request_count INTEGER NOT NULL,
+        input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+        cache_read_tokens INTEGER NOT NULL, cache_write_tokens INTEGER NOT NULL,
+        estimated_cost REAL NOT NULL, priced_request_count INTEGER NOT NULL,
+        has_unknown INTEGER NOT NULL, has_usage_based INTEGER NOT NULL,
+        has_subscription INTEGER NOT NULL,
+        PRIMARY KEY(session_id, run_id)
+    ) WITHOUT ROWID""",
     "CREATE INDEX entries_time ON entries(occurred_at DESC, entry_id DESC)",
     # Full-ledger and daily aggregates read this narrow covering index without row lookups.
     "CREATE INDEX entries_totals ON entries(day, billing_mode, input_tokens, output_tokens, "

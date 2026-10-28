@@ -207,12 +207,9 @@ async def test_driver_parallel_agents_review_and_conditional_approved_action(
             )
             resumed = await supervisor.wait(handle)
             assert resumed.status == "completed", resumed
-            assert (
-                store.load_runtime_session(result.session_id).messages[-1].text_content
-                == "deployed"
-            )
+            assert store.load_session(result.session_id).messages[-1].text_content == "deployed"
             assert calls == ["deploy"]
-        snapshot = store.load_runtime_session(pending.session.session_id)
+        snapshot = store.load_session(pending.session.session_id)
         spawns = [
             item
             for item in snapshot.messages

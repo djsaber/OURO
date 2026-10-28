@@ -559,10 +559,10 @@ async def test_remote_tool_call_cooperates_with_abort_signal() -> None:
         execution.cancel()
         await asyncio.gather(execution, return_exceptions=True)
         await manager.close()
-    assert outcome.status == "aborted"
+    assert outcome.status == "unknown_outcome"
     assert outcome.result is not None
     assert outcome.result.structured == {
-        "aborted": True,
+        "unknown_outcome": True,
         "reason": "cancelled by test",
     }
 

@@ -13,6 +13,7 @@ from ouro.core.messages import (
     ProviderContinuationArtifact,
     TextContent,
     ToolResultReference,
+    model_visible_message,
 )
 from ouro.core.provider import ModelMetadata
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict, SessionCommitStep
@@ -28,6 +29,7 @@ from ouro.core.tools import ToolCallRequest, ToolResult
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
+from tests.tool_batches import bind_tool_messages, persist_tool_batch
 
 
 @pytest.fixture(params=["files", "sqlite"])
@@ -144,21 +146,17 @@ async def test_exact_cut_then_continue_preserves_prefix_and_ignores_old_checkpoi
         ToolResult(tool_call_id=item.id, tool_name=item.name, content=f"withdrawn {item.id}")
         for item in requests
     ]
-    store.save_run(
-        run.model_copy(
-            update={
-                "active_tool_batch": ToolCallBatchRecord(
-                    assistant_message_id=assistant.message_id,
-                    turn_id="tools",
-                    phase="recoverable",
-                    calls=[
-                        ToolBatchCall(request=item, status="completed", result=result)
-                        for item, result in zip(requests, results, strict=True)
-                    ],
-                ),
-                "continuation": RunContinuationCheckpoint(),
-            }
-        )
+    batch = ToolCallBatchRecord(
+        assistant_message_id=assistant.message_id,
+        turn_id="tools",
+        phase="recoverable",
+        calls=[
+            ToolBatchCall(request=item, status="completed", result=result)
+            for item, result in zip(requests, results, strict=True)
+        ],
+    )
+    persist_tool_batch(
+        store, run.model_copy(update={"continuation": RunContinuationCheckpoint()}), batch
     )
     messages = [
         user,
@@ -177,6 +175,7 @@ async def test_exact_cut_then_continue_preserves_prefix_and_ignores_old_checkpoi
             for result in results
         ],
     ]
+    bind_tool_messages(store, run, batch, messages)
     committed = store.commit_session(
         SessionCommit(
             before=store.load_session_record(session.session_id),
@@ -207,20 +206,27 @@ async def test_exact_cut_then_continue_preserves_prefix_and_ignores_old_checkpoi
     assert store.load_harness(session.session_id).state.states[0].payload == cut - 1
     assert store.load_session_record(session.session_id).active_run_id is None
     assert store.load_session_record(session.session_id).last_run_id is None
+    withdrawn_run = store.load_run(session.session_id, run.run_id)
+    assert withdrawn_run.continuation.state == "resolved"
+    assert withdrawn_run.continuation.reason == "session_history_withdrawn"
+    assert store.load_pending_runs(session.session_id) == []
     try:
         await runtime.reconcile_execution_session(session.session_id)
         old_run = store.load_run(session.session_id, run.run_id)
+        assert old_run == withdrawn_run
         assert old_run.active_tool_batch is not None
         assert old_run.continuation.reason == "session_history_withdrawn"
         result = await runtime.continue_run(session_id=session.session_id)
         assert result.run.run_id != run.run_id
         assert result.run.history_epoch == 1
         assert result.run.status == "completed"
-        after = store.load_runtime_session(session.session_id)
-        assert after.messages[:-1] == list(committed.messages[:cut])
+        after = store.load_session(session.session_id)
+        assert [message.as_fact() for message in after.messages[:-1]] == list(
+            committed.messages[:cut]
+        )
         assert after.messages[-1].text_content == "Hello from OURO."
         context = store.load_latest_context(session.session_id)
-        assert [item.message_id for item in context.source_messages] == [user.message_id]
+        assert context.provider_context.messages == [model_visible_message(user)]
         assert bool(context.context_metadata["history_diagnostics"]) == (cut > 1)
         assert store.load_run(session.session_id, run.run_id) == old_run
         with pytest.raises(SessionCommitConflict, match="withdrawn"):
@@ -230,7 +236,7 @@ async def test_exact_cut_then_continue_preserves_prefix_and_ignores_old_checkpoi
 
 
 def queued_batch(runtime, session):
-    _, inputs, _, _ = runtime.queued_inputs.enqueue_batch(
+    _, inputs, _, _, _ = runtime.queued_inputs.enqueue_batch(
         snapshot=runtime.store.load_runtime_session(session.session_id),
         inputs=(SessionInputRequest(prompt="first"), SessionInputRequest(prompt="second")),
         source="plugin",
@@ -252,7 +258,7 @@ async def test_queue_consumption_failure_is_one_native_decision(
     inputs = queued_batch(runtime, session)
     run = RunRecord(session_id=session.session_id)
     if boundary == "steer":
-        session, run = runtime.run_lifecycle.start(
+        session, run, _ = runtime.run_lifecycle.start(
             session=session, run=run, snapshot=store.load_runtime_session(session.session_id)
         )
     snapshot = store.load_runtime_session(session.session_id)
@@ -271,18 +277,17 @@ async def test_queue_consumption_failure_is_one_native_decision(
                         run=run,
                         snapshot=snapshot,
                         inputs=list(inputs),
-                        existing_message_count=0,
                     )
                 else:
                     runtime._consume_queued_turn_inputs(
                         session=session,
                         run=run,
                         inputs=inputs,
-                        sequence=1,
+                        turn_id="turn-consume",
                     )
                 if decided:
                     raise OSError("interrupted after durable decision")
-        after = store.load_runtime_session(session.session_id)
+        after = store.load_session(session.session_id)
         pending = runtime.queued_inputs.eligible_session(after.session)
         assert [item.queue_id for item in pending] == (
             [] if decided else [i.queue_id for i in inputs]
@@ -294,20 +299,26 @@ async def test_queue_consumption_failure_is_one_native_decision(
             item.before_harness_version == session.harness_version for item in after.messages
         )
         assert len(after.runs) == int(decided or boundary == "steer")
+        notifications = [
+            event
+            for event in after.events
+            if event.event_type in {"plugin_message_added", "queued_input_consumed"}
+        ]
+        assert len(notifications) == (len(inputs) if decided else 0)
+        assert [event.payload["message_id"] for event in notifications] == [
+            message.message_id for message in after.messages
+        ]
         if decided:
             for item in inputs:
                 assert (
                     store.find_queued_input_message(session.session_id, item.queue_id) is not None
                 )
-            assert (
-                runtime._consume_queued_turn_inputs(
-                    session=session,
-                    run=run,
-                    inputs=inputs,
-                    sequence=3,
-                )
-                == []
-            )
+            assert runtime._consume_queued_turn_inputs(
+                session=session,
+                run=run,
+                inputs=inputs,
+                turn_id="turn-consume",
+            ) == ([], ())
     finally:
         await runtime.close()
 
@@ -316,7 +327,7 @@ async def test_queue_consumption_failure_is_one_native_decision(
 async def test_cancel_and_consume_compete_on_the_exact_queue_identity(store, winner):
     runtime = runtime_for(store)
     session = runtime.create_session(title="Queue race")
-    _, item, _ = runtime.queued_inputs.enqueue(
+    _, item, _, _ = runtime.queued_inputs.enqueue(
         snapshot=store.load_runtime_session(session.session_id),
         prompt="edit me",
         title=None,
@@ -342,7 +353,6 @@ async def test_cancel_and_consume_compete_on_the_exact_queue_identity(store, win
                     run=RunRecord(session_id=session.session_id),
                     snapshot=snapshot,
                     inputs=[item],
-                    existing_message_count=0,
                 )
             except _QueuedInputSelectionChanged:
                 return None
@@ -408,10 +418,14 @@ async def test_provider_artifact_budget_and_replay_require_current_route_and_epo
         result = await runtime.continue_run(session_id=first.session.session_id)
         assert result.run.status == "completed"
         canonical = store.load_message(first.session.session_id, response.message_id)
-        assert canonical == committed.messages[0]
+        assert canonical.as_fact() == committed.messages[0]
         assert canonical.provider_continuation == artifact
         context = store.load_latest_context(first.session.session_id)
-        projected = next(m for m in context.source_messages if m.message_id == response.message_id)
+        projected = next(
+            m
+            for m in context.provider_context.messages
+            if m.role == response.role and m.text_content == response.text_content
+        )
         assert projected.provider_continuation == (
             artifact if not withdraw and route == "matching" else None
         )
@@ -424,7 +438,7 @@ async def test_retained_user_queue_rechecks_policy_and_old_automatic_batch_canno
     runtime = runtime_for(store)
     try:
         first = await runtime.run("original")
-        _, user, _ = runtime.queued_inputs.enqueue(
+        _, user, _, _ = runtime.queued_inputs.enqueue(
             snapshot=store.load_runtime_session(first.session.session_id),
             prompt="pending user",
             title=None,

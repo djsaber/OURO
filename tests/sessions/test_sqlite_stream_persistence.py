@@ -2,107 +2,56 @@ import sqlite3
 
 import pytest
 
+import ouro.sessions.backends.sqlite.store as sqlite_store
 from ouro.core.events import EventRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import SQLiteSessionStore
 
 
-@pytest.mark.parametrize(
-    "event_type,payload",
-    (
-        ("model_text_delta", {"text": "hello"}),
-        ("model_reasoning_delta", {"reasoning_content": "thinking"}),
-        (
-            "model_tool_call_delta",
-            {
-                "index": 0,
-                "id_delta": "call_1",
-                "name_delta": "Read",
-                "arguments_delta": '{"path":"README.md"}',
-            },
-        ),
-    ),
-)
-def test_sqlite_stream_deltas_are_visible_with_group_durability(
-    tmp_path,
-    monkeypatch,
-    event_type: str,
-    payload: dict[str, object],
-) -> None:
+@pytest.mark.parametrize("nested", [False, True])
+def test_sqlite_current_draft_is_visible_and_never_downgrades_an_outer_commit(
+    tmp_path, monkeypatch, nested
+):
+    from contextlib import nullcontext
+
+    from ouro.core.response_drafts import ResponseDraftChunk
+    from tests.response_drafts import persist_response_draft
+
     store = SQLiteSessionStore(tmp_path / "ouro.db")
     store.initialize()
-    session = SessionRecord(title="SQLite stream durability")
+    session = SessionRecord()
     store.create_session(session)
-    synchronous_modes: list[tuple[str, int]] = []
-    insert_event = store._insert_event
+    run = RunRecord(session_id=session.session_id, status="running")
+    store.save_run(run)
+    header = persist_response_draft(store, run, turn_id="turn")
+    modes = []
+    transaction = store._transaction_connection
 
-    def capture_synchronous_mode(
-        connection: sqlite3.Connection,
-        event: EventRecord,
-    ) -> None:
-        mode = connection.execute("PRAGMA synchronous").fetchone()[0]
-        synchronous_modes.append((event.event_type, int(mode)))
-        insert_event(connection, event)
+    def capture():
+        connection = transaction()
+        modes.append(connection.execute("PRAGMA synchronous").fetchone()[0])
+        return connection
 
-    monkeypatch.setattr(store, "_insert_event", capture_synchronous_mode)
-
-    delta = store.append_ordered_event(
-        EventRecord(
-            session_id=session.session_id,
-            event_type=event_type,
-            payload=payload,
-        )
-    )
-
-    # NORMAL changes only the fsync policy. The committed delta is already
-    # visible to another connection and retains its canonical sequence.
-    visible = store.load_events_after(session.session_id, after_sequence=0)[0]
-    assert [(event.event_id, event.sequence) for event in visible] == [(delta.event_id, 1)]
-
-    boundary = store.append_ordered_event(
-        EventRecord(
-            session_id=session.session_id,
-            event_type="model_message_completed",
-        )
-    )
-
-    assert boundary.sequence == 2
-    assert synchronous_modes == [
-        (event_type, 1),  # SQLITE_SYNC_NORMAL
-        ("model_message_completed", 2),  # SQLITE_SYNC_FULL
-    ]
-
-
-def test_outer_durable_transaction_never_downgrades_for_nested_delta(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    store = SQLiteSessionStore(tmp_path / "ouro.db")
-    store.initialize()
-    session = SessionRecord(title="Nested SQLite durability")
-    store.create_session(session)
-    synchronous_modes: list[int] = []
-    insert_event = store._insert_event
-
-    def capture_synchronous_mode(
-        connection: sqlite3.Connection,
-        event: EventRecord,
-    ) -> None:
-        synchronous_modes.append(int(connection.execute("PRAGMA synchronous").fetchone()[0]))
-        insert_event(connection, event)
-
-    monkeypatch.setattr(store, "_insert_event", capture_synchronous_mode)
-
-    with store.session_mutation(session.session_id):
-        store.append_ordered_event(
-            EventRecord(
-                session_id=session.session_id,
-                event_type="model_text_delta",
-                payload={"text": "nested"},
+    monkeypatch.setattr(store, "_transaction_connection", capture)
+    owner = store.acquire_session_lock(session.session_id, run.run_id)
+    assert owner is not None
+    with owner:
+        with store.session_mutation(session.session_id) if nested else nullcontext():
+            store.append_response_draft(
+                session.session_id,
+                header.context_id,
+                ResponseDraftChunk(channel="text", content="visible"),
             )
+        assert modes and set(modes) == {2 if nested else 1}
+        reader = SQLiteSessionStore(store.database)
+        assert (
+            reader.load_response_draft(session.session_id, header.context_id).chunks[0].content
+            == "visible"
         )
 
-    assert synchronous_modes == [2]
+        modes.clear()
+        store.save_run(run)
+        assert modes and set(modes) == {2}
 
 
 def test_sqlite_observation_and_replay_queries_use_session_scoped_indexes(tmp_path) -> None:
@@ -154,25 +103,28 @@ def test_sqlite_observation_high_water_shares_the_snapshot_read_boundary(
             payload={"text": "snapshot"},
         )
     )
-    original_load_models = store._load_models
+    load_session = sqlite_store.read_session
     appended: list[EventRecord] = []
+    injected = False
 
-    def append_between_event_rows_and_high_water(connection, query, parameters, model_type):
-        records = original_load_models(connection, query, parameters, model_type)
-        if model_type is EventRecord and not appended:
+    def append_after_session_read(connection, session_id):
+        nonlocal injected
+        session = load_session(connection, session_id)
+        if not injected:
+            injected = True
             appended.append(
                 store.append_ordered_event(
                     EventRecord(
-                        session_id=session.session_id,
+                        session_id=session_id,
                         run_id=run.run_id,
-                        event_type="model_text_delta",
-                        payload={"text": "replay"},
+                        event_type="diagnostic",
+                        payload={"message": "concurrent event"},
                     )
                 )
             )
-        return records
+        return session
 
-    monkeypatch.setattr(store, "_load_models", append_between_event_rows_and_high_water)
+    monkeypatch.setattr(sqlite_store, "read_session", append_after_session_read)
 
     snapshot = store.load_session_observation(session.session_id)
     replay, truncated = store.load_events_after(
@@ -180,7 +132,7 @@ def test_sqlite_observation_high_water_shares_the_snapshot_read_boundary(
         after_sequence=snapshot.event_high_water,
     )
 
-    assert snapshot.active_run_events == [first]
     assert snapshot.event_high_water == first.sequence
+    assert len(appended) == 1
     assert replay == appended
     assert truncated is False

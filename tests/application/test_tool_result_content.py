@@ -48,12 +48,20 @@ class RecordingProvider(FauxProvider):
 @pytest.mark.parametrize("protocol", ["chat", "responses", "messages"])
 @pytest.mark.parametrize("image_input", [False, True])
 async def test_rich_results_survive_execution_storage_replay_and_route_projection(
-    tmp_path, backend, protocol, image_input
+    tmp_path, backend, protocol, image_input, monkeypatch
 ):
     provider = RecordingProvider(protocol)
     app = application_at(tmp_path, provider, backend=backend)
     app.runtime.adapter.model.supports_image_input = image_input
     executed = []
+    published = []
+    publish = app.runtime.run_lifecycle.publish_tool_batch
+
+    def capture_batch(**kwargs):
+        published.append(kwargs["batch"].model_copy(deep=True))
+        return publish(**kwargs)
+
+    monkeypatch.setattr(app.runtime.run_lifecycle, "publish_tool_batch", capture_batch)
 
     def render(invocation, context):
         executed.append(invocation.tool_call_id)
@@ -77,7 +85,7 @@ async def test_rich_results_survive_execution_storage_replay_and_route_projectio
         start = roles.index("tool")
         assert roles[start : start + 4] == ["tool", "tool", "user", "user"]
 
-    snapshot = app.runtime.store.load_runtime_session(result.session.session_id)
+    snapshot = app.runtime.store.load_session(result.session.session_id)
     outputs = [message for message in snapshot.messages if message.role == "tool_result"]
     assert len(outputs) == 2
     assert all(
@@ -92,18 +100,16 @@ async def test_rich_results_survive_execution_storage_replay_and_route_projectio
         # Persisted content remains independent of the route that consumed it.
         reopened.runtime.adapter.model.supports_image_input = True
         lifecycle = reopened.runtime._tool_calls_for_run(result.run.run_id).runs
-        replay = lifecycle.append_tool_result_messages(
+        _, _, _, replay, _ = lifecycle.publish_tool_batch(
             session=result.session,
             run=result.run,
-            results=result.tool_results,
-            first_sequence=100,
-            turn_id=outputs[0].turn_id,
+            batch=published[0],
         )
         assert [message.message_id for message in replay] == [
             message.message_id for message in outputs
         ]
         assert (
-            reopened.runtime.store.load_runtime_session(result.session.session_id).messages
+            reopened.runtime.store.load_session(result.session.session_id).messages
             == snapshot.messages
         )
         await reopened.runtime.run("continue", session_id=result.session.session_id)

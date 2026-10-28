@@ -2,13 +2,15 @@ from contextlib import closing
 
 import pytest
 
+import ouro.sessions.backends.files.commits as file_commits
 from ouro.core.compaction import CompactionRecord
-from ouro.core.errors import PersistenceError
-from ouro.core.messages import MessageRecord, TextContent, ToolResultReference
+from ouro.core.errors import PersistenceError, SessionRecoveryRequiredError
+from ouro.core.messages import MessageRecord, ToolResultReference
 from ouro.core.state import SessionRecord
 from ouro.core.tools import ToolCallRequest
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.backends.files.journal import reverse_jsonl
+from tests.tool_batches import seed_tool_messages
 
 
 @pytest.fixture(params=["files", "sqlite"])
@@ -45,14 +47,14 @@ def test_cut_validates_head_and_boundary_before_mutating(store):
             store.truncate_messages(
                 session.session_id, before_message_id=boundary, expected_last_message_id=head
             )
-        assert store.load_runtime_session(session.session_id).messages == messages
+        assert store.load_session(session.session_id).messages == messages
     result = store.truncate_messages(
         session.session_id,
         before_message_id=messages[2].message_id,
         expected_last_message_id=messages[-1].message_id,
     )
-    assert result.first_removed == messages[2]
-    assert result.last_retained == messages[1]
+    assert result.first_removed == messages[2].as_fact()
+    assert result.last_retained == messages[1].as_fact()
     assert result.removed_count == 2
     assert store.load_messages_tail(session.session_id) == list(reversed(messages[:2]))
     store.append_message(messages[2])
@@ -85,6 +87,7 @@ def test_cut_preserves_the_exact_prefix_even_inside_a_tool_exchange(store):
         for index, call in enumerate(calls)
     ]
     user = MessageRecord.text(session_id=session.session_id, role="user", text="next", sequence=4)
+    seed_tool_messages(store, assistant, results)
     store.append_messages([assistant, *results, user])
     store.truncate_messages(
         session.session_id,
@@ -101,6 +104,7 @@ def test_cut_preserves_the_exact_prefix_even_inside_a_tool_exchange(store):
         )
         for index, message in enumerate([assistant, results[0], user])
     ]
+    seed_tool_messages(store, partial[0], [partial[1]])
     store.append_messages(partial)
     store.truncate_messages(
         broken.session_id,
@@ -144,19 +148,20 @@ def test_cut_only_invalidates_compaction_when_coverage_is_removed(store, cut_ind
         strategy_id="test",
         trigger="manual",
         summary="older context",
-        source_digest="digest",
-        covered_message_ids=[m.message_id for m in messages[:2]],
+        covered_message_count=2,
+        covered_end_message_id=messages[1].message_id,
         history_boundary_message_id=messages[1].message_id,
     )
-    store.append_compaction(compaction)
-    store.activate_compaction(session.session_id, compaction.compaction_id)
+    from tests.session_summaries import commit_summary
+
+    commit_summary(store, compaction)
     store.truncate_messages(
         session.session_id,
         before_message_id=messages[cut_index].message_id,
         expected_last_message_id=messages[-1].message_id,
     )
     assert (
-        store.load_session_record(session.session_id).active_compaction_id is not None
+        store.load_session_record(session.session_id).context_selection.compaction_id is not None
     ) == active
 
 
@@ -167,8 +172,8 @@ def test_cut_preserves_valid_compaction_chain_and_allows_new_compaction(store):
         strategy_id="test",
         trigger="manual",
         summary="retained context",
-        source_digest="previous",
-        covered_message_ids=[messages[0].message_id],
+        covered_message_count=1,
+        covered_end_message_id=messages[0].message_id,
         history_boundary_message_id=messages[1].message_id,
     )
     removed = previous.model_copy(
@@ -176,11 +181,14 @@ def test_cut_preserves_valid_compaction_chain_and_allows_new_compaction(store):
             "compaction_id": "removed_summary",
             "previous_compaction_id": previous.compaction_id,
             "history_boundary_message_id": messages[3].message_id,
+            "covered_message_count": 4,
+            "covered_end_message_id": messages[3].message_id,
         }
     )
     for compaction in (previous, removed):
-        store.append_compaction(compaction)
-    store.activate_compaction(session.session_id, removed.compaction_id)
+        from tests.session_summaries import commit_summary
+
+        commit_summary(store, compaction)
     store.truncate_messages(
         session.session_id,
         before_message_id=messages[2].message_id,
@@ -188,7 +196,8 @@ def test_cut_preserves_valid_compaction_chain_and_allows_new_compaction(store):
     )
     assert store.load_compactions(session.session_id) == [previous]
     assert (
-        store.load_session_record(session.session_id).active_compaction_id == previous.compaction_id
+        store.load_session_record(session.session_id).context_selection.compaction_id
+        == previous.compaction_id
     )
     following = previous.model_copy(
         update={
@@ -196,12 +205,11 @@ def test_cut_preserves_valid_compaction_chain_and_allows_new_compaction(store):
             "previous_compaction_id": previous.compaction_id,
         }
     )
-    store.append_compaction(following)
+    commit_summary(store, following)
     assert store.load_compactions(session.session_id) == [previous, following]
 
 
 def test_local_cut_recovers_after_failure_between_truncation_and_projection(tmp_path, monkeypatch):
-    from ouro.sessions.backends.files.commits import FileSessionCommits
 
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -211,7 +219,7 @@ def test_local_cut_recovers_after_failure_between_truncation_and_projection(tmp_
         raise OSError("injected projection failure")
 
     with monkeypatch.context() as patch:
-        patch.setattr(FileSessionCommits, "save_session_record", staticmethod(fail_session_write))
+        patch.setattr(file_commits, "write_session", fail_session_write)
         with pytest.raises(PersistenceError, match="injected"):
             store.truncate_messages(
                 session.session_id,
@@ -219,7 +227,11 @@ def test_local_cut_recovers_after_failure_between_truncation_and_projection(tmp_
                 expected_last_message_id=messages[-1].message_id,
             )
     reopened = LocalSessionStore(tmp_path)
-    restored = reopened.load_runtime_session(session.session_id)
+    with pytest.raises(SessionRecoveryRequiredError):
+        reopened.load_session(session.session_id)
+    with reopened.session_mutation(session.session_id):
+        pass
+    restored = reopened.load_session(session.session_id)
     assert restored.messages == messages[:2]
     assert restored.session.last_message_id == messages[1].message_id
     assert restored.session.message_count == 2
@@ -247,36 +259,43 @@ def test_sqlite_cut_rolls_back_if_projection_fails(tmp_path, monkeypatch):
                 before_message_id=messages[2].message_id,
                 expected_last_message_id=messages[-1].message_id,
             )
-    assert store.load_runtime_session(session.session_id).messages == messages
+    assert store.load_session(session.session_id).messages == messages
 
 
 def test_local_cut_reads_only_suffix_and_never_rewrites_prefix(tmp_path, monkeypatch):
-    import ouro.sessions.backends.files.commits as module
+    import ouro.sessions.backends.files.messages as module
 
     store = LocalSessionStore(tmp_path)
     store.initialize()
-    session, messages = history(store)
-    prefix = messages[0].model_copy(update={"content": [TextContent(text="x" * 2_000_000)]})
-    path = store.sessions_dir / session.session_id / "messages.jsonl"
-    prefix_bytes = (prefix.model_dump_json() + "\n").encode()
-    path.write_bytes(
-        prefix_bytes + b"".join((m.model_dump_json() + "\n").encode() for m in messages[1:])
-    )
+    session = SessionRecord()
+    store.create_session(session)
+    messages = [
+        MessageRecord.text(
+            session_id=session.session_id,
+            role="user" if index % 2 == 0 else "assistant",
+            text="x" * 2_000_000 if index == 0 else str(index),
+        )
+        for index in range(4)
+    ]
+    store.append_messages(messages)
+    directory = store.sessions_dir / session.session_id
+    path = directory / "messages.jsonl"
+    prefix_bytes = path.read_bytes().splitlines(keepends=True)[0]
     reads = []
-    original = module.decode_versioned_record_json
+    original = module.decode_message_content
 
-    def counted(model, payload, **kwargs):
-        if model is MessageRecord:
-            reads.append(len(payload))
-        return original(model, payload, **kwargs)
+    def counted(payload, **kwargs):
+        reads.append(len(payload))
+        return original(payload, **kwargs)
 
-    monkeypatch.setattr(module, "decode_versioned_record_json", counted)
+    monkeypatch.setattr(module, "decode_message_content", counted)
     store.truncate_messages(
         session.session_id,
         before_message_id=messages[2].message_id,
         expected_last_message_id=messages[-1].message_id,
     )
-    assert len(reads) == 3
+    # Only the first removed and last retained boundary facts are decoded.
+    assert len(reads) == 2
     assert sum(reads) < 10000
     assert path.read_bytes().startswith(prefix_bytes)
 

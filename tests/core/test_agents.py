@@ -121,6 +121,18 @@ def test_delegation_spawn_phases_validate_child_identity() -> None:
         definition=definition,
     )
     assert requested.child_session_id is None
+    assert requested.schema_version == 2
+    with pytest.raises(ValidationError, match="schema_version must be 2"):
+        DelegationRecord.model_validate({**requested.model_dump(), "schema_version": 1})
+    for missing in ("parent_batch_id", "parent_tool_call_id"):
+        values = {
+            **requested.model_dump(),
+            "parent_batch_id": "batch",
+            "parent_tool_call_id": "call",
+        }
+        values[missing] = None
+        with pytest.raises(ValidationError, match="both parent batch and tool call"):
+            DelegationRecord.model_validate(values)
     assert "context_message_ids" not in DelegationRecord.model_fields
     assert "context_compaction_id" not in DelegationRecord.model_fields
 
@@ -131,15 +143,28 @@ def test_delegation_spawn_phases_validate_child_identity() -> None:
 
 
 def test_agent_wait_request_targets_one_delegation() -> None:
-    wait = AgentWaitRequest(delegation_id="dlg_one")
+    wait = AgentWaitRequest(delegation_id="dlg_one", child_run_id="run_one")
 
     assert wait.delegation_id == "dlg_one"
     with pytest.raises(ValidationError, match="requested delegation"):
         AgentWaitRequest(
             delegation_id="dlg_one",
+            child_run_id="run_one",
             state="resolved",
             resolution=AgentWaitResolution(
                 resolved_delegation_id="dlg_other",
+                resolved_child_run_id="run_one",
+                reason="condition_met",
+            ),
+        )
+    with pytest.raises(ValidationError, match="requested child Run"):
+        AgentWaitRequest(
+            delegation_id="dlg_one",
+            child_run_id="run_one",
+            state="resolved",
+            resolution=AgentWaitResolution(
+                resolved_delegation_id="dlg_one",
+                resolved_child_run_id="run_two",
                 reason="condition_met",
             ),
         )

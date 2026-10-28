@@ -312,7 +312,7 @@ async def test_sync_parent_wakes_when_child_finishes_on_another_host(tmp_path, b
         async with asyncio.timeout(60):
             completed = await first.supervisor.wait_run(root.session_id, run.run_id)
         assert completed.status == "completed"
-        messages = first.runtime.store.load_runtime_session(root.session_id).messages
+        messages = first.runtime.store.load_session(root.session_id).messages
         results = [m for m in messages if m.tool_result and m.tool_result.tool_call_id == "spawn"]
         assert len(results) == 1
         assert results[0].tool_result.is_error == (scenario == "provider_failure")

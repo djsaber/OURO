@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import hashlib
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Protocol
 
+from ouro.application.usage import SummaryRequestRecorder
 from ouro.config.compaction import CompactionModelConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import new_id
-from ouro.core.billing import UsagePurpose
 from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import AbortSignal
 from ouro.core.compaction import (
@@ -38,29 +36,15 @@ from ouro.core.message_semantics import (
 from ouro.core.messages import MessageRecord, ModelMessage, model_visible_message
 from ouro.core.model_execution import ModelExecutionEvent, execute_model_request
 from ouro.core.provider import (
-    ModelMetadata,
     ProviderCompletion,
+    ProviderStreamEvent,
     Usage,
 )
 from ouro.core.request_context import ProviderRequestContext
-from ouro.core.state import RunRecord
 from ouro.prompts import SUMMARIZATION_PROMPT
 
 _SUMMARY_PATTERN = re.compile(r"<summary>\s*(.*?)\s*</summary>", re.DOTALL)
 _SUMMARY_INPUT_TAG = "conversation-to-summarize"
-
-
-class CompactionUsageRecorder(Protocol):
-    def __call__(
-        self,
-        *,
-        session_id: str,
-        run_id: str,
-        usage: Usage,
-        model: ModelMetadata,
-        request_id: str,
-        purpose: UsagePurpose,
-    ) -> RunRecord: ...
 
 
 @dataclass(frozen=True)
@@ -93,7 +77,7 @@ class LLMSummaryCompactionStrategy:
         configured_adapter_resolver: Callable[[], RuntimeAdapter] | None = None,
         model_config: CompactionModelConfig | None = None,
         runtime_adapter_resolver: Callable[[str], RuntimeAdapter] | None = None,
-        usage_recorder: CompactionUsageRecorder | None = None,
+        prepare_requests: Callable[[str, str], SummaryRequestRecorder] | None = None,
     ) -> None:
         self.runtime_adapter = adapter
         self.runtime_adapter_resolver = runtime_adapter_resolver
@@ -101,7 +85,7 @@ class LLMSummaryCompactionStrategy:
         self.configured_adapter_error = configured_adapter_error
         self.configured_adapter_resolver = configured_adapter_resolver
         self.model_config = model_config or CompactionModelConfig()
-        self.usage_recorder = usage_recorder
+        self.prepare_requests = prepare_requests
         self.prompt = prompt
 
     async def compact(
@@ -110,6 +94,16 @@ class LLMSummaryCompactionStrategy:
         *,
         signal: AbortSignal | None = None,
     ) -> CompactionArtifact:
+        try:
+            request_recorder = (
+                await run_blocking(self.prepare_requests, request.session_id, request.run_id)
+                if self.prepare_requests is not None and request.run_id is not None
+                else None
+            )
+        except Exception as exc:
+            raise CompactionStrategyError(
+                f"cannot bind summary usage: {exc}", terminal=True
+            ) from exc
         failures: list[str] = []
         model_outputs: list[CompactionModelOutput] = []
         if self.configured_adapter_error:
@@ -124,6 +118,7 @@ class LLMSummaryCompactionStrategy:
                     adapter=adapter,
                     route=route.route,
                     signal=signal,
+                    request_recorder=request_recorder,
                 )
             except Exception as exc:  # noqa: BLE001 - model-route fallback boundary.
                 model_outputs.extend(_outputs_from_error(exc))
@@ -201,6 +196,7 @@ class LLMSummaryCompactionStrategy:
         adapter: RuntimeAdapter,
         route: str,
         signal: AbortSignal | None,
+        request_recorder: SummaryRequestRecorder | None,
     ) -> CompactionArtifact:
         rolling_summary = request.previous_summary
         total_usage: dict[str, int | float] = {}
@@ -231,6 +227,7 @@ class LLMSummaryCompactionStrategy:
                         previous_summary=rolling_summary,
                         messages=chunk,
                         signal=signal,
+                        request_recorder=request_recorder,
                     )
                 except CompactionStrategyError as first_error:
                     if not _should_retry_smaller_chunk(first_error, consumed_frames):
@@ -255,6 +252,7 @@ class LLMSummaryCompactionStrategy:
                             previous_summary=rolling_summary,
                             messages=chunk,
                             signal=signal,
+                            request_recorder=request_recorder,
                         )
                     except Exception as retry_error:
                         raise CompactionStrategyError(
@@ -283,7 +281,6 @@ class LLMSummaryCompactionStrategy:
             model_outputs=model_outputs,
             metadata={
                 "prompt_version": self.prompt_version,
-                "prompt_hash": hashlib.sha256(self.prompt.encode("utf-8")).hexdigest(),
                 "chunk_count": chunk_count,
                 "model_request_count": len(model_outputs),
                 "model_provider": adapter.model.provider_id,
@@ -309,7 +306,7 @@ class LLMSummaryCompactionStrategy:
 
         capacity = adapter.model.context_budget.input_tokens
         empty_context = self._summary_context(adapter, agent_system_prompt, previous_summary, [])
-        empty_payload = empty_context.provider_context().messages[-1].text_content
+        empty_payload = empty_context.provider_context.messages[-1].text_content
         fixed_tokens = empty_context.metrics.estimated_input_tokens - estimate_text_tokens(
             empty_payload
         )
@@ -402,12 +399,40 @@ class LLMSummaryCompactionStrategy:
         previous_summary: str | None,
         messages: Sequence[MessageRecord],
         signal: AbortSignal | None,
+        request_recorder: SummaryRequestRecorder | None,
     ) -> _SummaryChunkResult:
         context = self._summary_context(adapter, agent_system_prompt, previous_summary, messages)
         if context.metrics.over_budget:
             raise ContextOverflowError("summary input exceeds model input budget")
         request_id = new_id("req")
         classified_provider_error = False
+        usage_failed = False
+        provider_done_seen = False
+        if request_recorder is not None:
+            try:
+                await run_blocking(
+                    request_recorder.start, request_id, model=adapter.model, metrics=context.metrics
+                )
+            except Exception as exc:
+                raise CompactionStrategyError(
+                    f"cannot commit summary dispatch: {exc}", terminal=True
+                ) from exc
+
+        async def settle_provider_done(event: ProviderStreamEvent) -> None:
+            nonlocal usage_failed, provider_done_seen
+            provider_done_seen = True
+            if request_recorder is not None:
+                try:
+                    await run_blocking(
+                        request_recorder.settle,
+                        request_id,
+                        model=adapter.model,
+                        provider_done=True,
+                        usage=event.usage,
+                    )
+                except Exception:
+                    usage_failed = True
+                    raise
 
         async def observe(progress: ModelExecutionEvent) -> None:
             nonlocal classified_provider_error
@@ -417,20 +442,6 @@ class LLMSummaryCompactionStrategy:
                 classified_provider_error = event.error_code is not None
             if event.type == "tool_call_delta":
                 raise CompactionError("summary provider attempted to call a tool")
-            if (
-                event.type == "done"
-                and event.usage is not None
-                and self.usage_recorder is not None
-                and run_id is not None
-            ):
-                self.usage_recorder(
-                    session_id=session_id,
-                    run_id=run_id,
-                    usage=event.usage,
-                    model=adapter.model,
-                    request_id=request_id,
-                    purpose="compaction",
-                )
 
         result = await execute_model_request(
             adapter,
@@ -444,13 +455,24 @@ class LLMSummaryCompactionStrategy:
                 }
             ),
             on_event=observe,
+            on_provider_done=settle_provider_done,
         )
+        if not provider_done_seen and request_recorder is not None:
+            await run_blocking(
+                request_recorder.settle,
+                request_id,
+                model=adapter.model,
+                provider_done=False,
+                usage=None,
+            )
         error: CompactionError | None = None
         match = _SUMMARY_PATTERN.search(result.text)
         if result.aborted:
             error = CompactionAbortedError("summary compaction was aborted")
         elif result.error is not None:
-            error = CompactionStrategyError(result.error, terminal=classified_provider_error)
+            error = CompactionStrategyError(
+                result.error, terminal=classified_provider_error or usage_failed
+            )
         elif match is None or not match.group(1).strip():
             error = CompactionError("summary response did not contain a non-empty <summary> block")
 

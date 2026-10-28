@@ -169,9 +169,9 @@ async def test_sync_sdk_tool_uses_host_cancellation_context() -> None:
         context: sdk.ToolExecutionContext,
     ) -> sdk.ToolOutput:
         entered.set()
-        while True:
-            context.raise_if_aborted()
-            checkpoint.wait(timeout=0.01)
+        checkpoint.wait()
+        context.raise_if_aborted()
+        raise AssertionError("the cancellation checkpoint must reject execution")
 
     contributions = adapt_sdk_contributions(
         owner_id="example.plugin",
@@ -203,11 +203,12 @@ async def test_sync_sdk_tool_uses_host_cancellation_context() -> None:
     assert await asyncio.to_thread(entered.wait, 1)
 
     signal.abort("cancel SDK tool")
+    checkpoint.set()
     outcome = await asyncio.wait_for(execution, timeout=1)
 
-    assert outcome.status == "aborted"
+    assert outcome.status == "unknown_outcome"
     assert outcome.result is not None
     assert outcome.result.structured == {
-        "aborted": True,
+        "unknown_outcome": True,
         "reason": "cancel SDK tool",
     }

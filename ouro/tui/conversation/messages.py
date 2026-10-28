@@ -19,10 +19,13 @@ _MESSAGE_META = "ouro_message"
 class ToolNavigationRequested(Message):
     """A SpawnAgent tool presentation requested its durable child Session."""
 
-    def __init__(self, *, parent_run_id: str, parent_tool_call_id: str) -> None:
+    def __init__(
+        self, *, parent_run_id: str, parent_tool_call_id: str, parent_batch_id: str | None = None
+    ) -> None:
         super().__init__()
         self.parent_run_id = parent_run_id
         self.parent_tool_call_id = parent_tool_call_id
+        self.parent_batch_id = parent_batch_id
 
 
 class MessageCopyRequested(Message):

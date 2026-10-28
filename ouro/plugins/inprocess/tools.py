@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import MappingProxyType
 
+from ouro.core.callbacks import CallbackCancelled
+from ouro.core.harness_calls import HarnessStateChange
 from ouro.core.interactions import AnswerResolution, ToolInputResolution, UnattendedResolution
 from ouro.core.session_controls import SessionControlTransitionRequest
 from ouro.plugins.harness_calls import bind_context_callback, invoke_plugin_callback
@@ -40,41 +42,23 @@ def _adapt_tool(contribution: sdk.ToolContribution, *, owner_id: str) -> Tool:
             workspace=str(context.workspace) if context.workspace is not None else None,
             workspace_only=context.workspace_only,
         )
-        raw, change = await invoke_plugin_callback(
-            execute_callback,
-            call,
-            snapshot=context.harness,
-            owner_id=owner_id,
-            writable=contribution.effect != "read_only",
-            signal=context.signal,
-            context=_SDKToolExecutionContext(context),
-        )
-        if isinstance(raw, str):
-            raw = sdk.ToolOutput(content=raw)
-        if isinstance(raw, sdk.ToolInputRequest):
-            return ToolInputRequest(data=raw.data, harness_change=change)
-        return ToolResult(
-            harness_change=change,
-            tool_call_id=invocation.tool_call_id,
-            tool_name=invocation.tool_name,
-            content=from_sdk_content(raw.content),
-            structured=dict(raw.structured),
-            resource_refs=list(raw.resource_refs),
-            is_error=raw.is_error,
-            session_control_transitions=[
-                SessionControlTransitionRequest(
-                    action=item.action,
-                    controller_id=item.controller_id,
-                    activation_id=item.activation_id,
-                    replace_activation_ids=list(item.replace_activation_ids),
-                    expected_session_revision=item.expected_session_revision,
-                    expected_activation_revision=item.expected_activation_revision,
-                    payload=item.payload,
-                    reason=item.reason,
-                )
-                for item in raw.session_control_transitions
-            ],
-        )
+        try:
+            raw, change = await invoke_plugin_callback(
+                execute_callback,
+                call,
+                snapshot=context.harness,
+                owner_id=owner_id,
+                writable=contribution.effect != "read_only",
+                signal=context.signal,
+                context=_SDKToolExecutionContext(context),
+            )
+        except CallbackCancelled as exc:
+            if isinstance(exc.result, str | sdk.ToolOutput | sdk.ToolInputRequest):
+                raise CallbackCancelled(
+                    _tool_output(invocation, exc.result, None, controls=False)
+                ) from None
+            raise
+        return _tool_output(invocation, raw, change)
 
     async def resume_handler(
         invocation: ToolInvocation,
@@ -95,41 +79,23 @@ def _adapt_tool(contribution: sdk.ToolContribution, *, owner_id: str) -> Tool:
             workspace=str(context.workspace) if context.workspace is not None else None,
             workspace_only=context.workspace_only,
         )
-        raw, change = await invoke_plugin_callback(
-            resume_callback,
-            call,
-            snapshot=context.harness,
-            owner_id=owner_id,
-            writable=contribution.effect != "read_only",
-            signal=context.signal,
-            context=_SDKToolExecutionContext(context),
-        )
-        if isinstance(raw, str):
-            raw = sdk.ToolOutput(content=raw)
-        if isinstance(raw, sdk.ToolInputRequest):
-            return ToolInputRequest(data=raw.data, harness_change=change)
-        return ToolResult(
-            harness_change=change,
-            tool_call_id=invocation.tool_call_id,
-            tool_name=invocation.tool_name,
-            content=from_sdk_content(raw.content),
-            structured=dict(raw.structured),
-            resource_refs=list(raw.resource_refs),
-            is_error=raw.is_error,
-            session_control_transitions=[
-                SessionControlTransitionRequest(
-                    action=item.action,
-                    controller_id=item.controller_id,
-                    activation_id=item.activation_id,
-                    replace_activation_ids=list(item.replace_activation_ids),
-                    expected_session_revision=item.expected_session_revision,
-                    expected_activation_revision=item.expected_activation_revision,
-                    payload=item.payload,
-                    reason=item.reason,
-                )
-                for item in raw.session_control_transitions
-            ],
-        )
+        try:
+            raw, change = await invoke_plugin_callback(
+                resume_callback,
+                call,
+                snapshot=context.harness,
+                owner_id=owner_id,
+                writable=contribution.effect != "read_only",
+                signal=context.signal,
+                context=_SDKToolExecutionContext(context),
+            )
+        except CallbackCancelled as exc:
+            if isinstance(exc.result, str | sdk.ToolOutput | sdk.ToolInputRequest):
+                raise CallbackCancelled(
+                    _tool_output(invocation, exc.result, None, controls=False)
+                ) from None
+            raise
+        return _tool_output(invocation, raw, change)
 
     return Tool(
         definition=ToolDefinition(
@@ -149,6 +115,43 @@ def _adapt_tool(contribution: sdk.ToolContribution, *, owner_id: str) -> Tool:
         ),
         handler=handler,
         resume_handler=resume_handler if contribution.resume_handler is not None else None,
+    )
+
+
+def _tool_output(
+    invocation: ToolInvocation,
+    raw: str | sdk.ToolOutput | sdk.ToolInputRequest,
+    change: HarnessStateChange | None,
+    *,
+    controls: bool = True,
+) -> ToolResult | ToolInputRequest:
+    if isinstance(raw, str):
+        raw = sdk.ToolOutput(content=raw)
+    if isinstance(raw, sdk.ToolInputRequest):
+        return ToolInputRequest(data=raw.data, harness_change=change)
+    return ToolResult(
+        harness_change=change,
+        tool_call_id=invocation.tool_call_id,
+        tool_name=invocation.tool_name,
+        content=from_sdk_content(raw.content),
+        structured=dict(raw.structured),
+        resource_refs=list(raw.resource_refs),
+        is_error=raw.is_error,
+        session_control_transitions=[
+            SessionControlTransitionRequest(
+                action=item.action,
+                controller_id=item.controller_id,
+                activation_id=item.activation_id,
+                replace_activation_ids=list(item.replace_activation_ids),
+                expected_session_revision=item.expected_session_revision,
+                expected_activation_revision=item.expected_activation_revision,
+                payload=item.payload,
+                reason=item.reason,
+            )
+            for item in raw.session_control_transitions
+        ]
+        if controls
+        else [],
     )
 
 

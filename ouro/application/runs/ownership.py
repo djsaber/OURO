@@ -5,10 +5,8 @@ from dataclasses import dataclass
 
 from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import AbortSignal, settle_owned_tasks
-from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, RunStatus, SessionRecord
-from ouro.core.tools import ToolResult
 from ouro.sessions import SessionLock, SessionStore
 
 
@@ -211,8 +209,7 @@ class RunExecutionOwnership:
         session_id: str,
         run_id: str,
         final_text: str,
-        emitted: list[EventRecord],
-        tool_results: list[ToolResult],
+        had_tool_error: bool,
     ) -> RunResult | None:
         del session_id
         abort_state = self._abort_states.get(run_id)
@@ -223,8 +220,7 @@ class RunExecutionOwnership:
             session=session,
             run=run,
             final_text=final_text,
-            events=emitted,
-            tool_results=tool_results,
+            had_tool_error=had_tool_error,
         )
 
     async def _poll_durable_abort(

@@ -4,60 +4,118 @@ import json
 import os
 import re
 import shutil
-import struct
+import sqlite3
 from collections import OrderedDict
-from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
-from contextlib import ExitStack, closing, suppress
+from collections.abc import Generator, Iterable, Iterator, Mapping
+from contextlib import ExitStack, closing, contextmanager, suppress
+from datetime import datetime
+from itertools import islice
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Lock
-from typing import Self, TypeVar
+from threading import Lock, local
+from types import TracebackType
+from typing import Self
 
 from pydantic import ValidationError
 
 from ouro.core.agents import DelegationRecord
 from ouro.core.base import OuroModel, new_id, utc_now
-from ouro.core.compaction import CompactionRecord
-from ouro.core.context_snapshots import ContextSnapshotHeader, ContextSnapshotRecord
+from ouro.core.compaction import CompactionRecord, validate_compaction_snapshot
+from ouro.core.content import media_resource_ids
+from ouro.core.context_selection import validate_media_selection
+from ouro.core.context_snapshots import (
+    ContextSnapshotRecord,
+    ModelRequestHeader,
+    RequestManifestRecord,
+    validate_request_snapshot,
+)
 from ouro.core.errors import (
     DelegationRevisionConflictError,
     PersistenceError,
-    ResourceNotFoundError,
+    SessionRecoveryRequiredError,
     UnsupportedDataVersionError,
 )
-from ouro.core.events import MODEL_STREAM_DELTA_EVENT_TYPES, EventRecord
+from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessState, HarnessVersion
+from ouro.core.inputs import InputRecord, InputState, validate_input_snapshot
+from ouro.core.message_content import validate_tool_message_snapshot
 from ouro.core.message_frames import MessageTruncation
-from ouro.core.messages import MessageRecord
+from ouro.core.message_statistics import RunMessageCounts, RunResultReferences
+from ouro.core.messages import MessageFact, MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
-from ouro.core.resources import ResourceRecord, SessionResourceReference, SessionResourceReferences
+from ouro.core.resources import ResourceRecord, SessionResourceReference
+from ouro.core.response_drafts import ResponseDraftChunk, ResponseDraftPage
 from ouro.core.session_commits import (
     SessionCommit,
     SessionCommitConflict,
     SessionCommitResult,
     SessionCommitStep,
 )
-from ouro.core.session_controls import SessionControlState
 from ouro.core.session_extensions import (
     SessionExtensionStateRecord,
 )
-from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.state import RunRecord, RunRequestCounts, SessionRecord
+from ouro.core.tool_batches import ToolCallState, validate_call_states
+from ouro.core.tool_facts import (
+    ToolCallFacts,
+    ToolCallIdentity,
+    ToolCallRecord,
+    ToolCallStart,
+    ToolOutcomeRecord,
+)
 from ouro.local_io import (
+    filesystem_path,
     read_text_atomic,
     replace_path_with_retry,
     write_json_atomic,
     write_model_atomic,
 )
 from ouro.local_locks import is_lock_held
-from ouro.resources.files import verify_resource_files, write_resource_contents
+from ouro.resources.files import (
+    read_resource_content,
+    require_published_resource,
+    verify_resource_files,
+    write_resource_contents,
+)
+from ouro.resources.media import (
+    capture_outcome_media,
+    materialize_context_media,
+    materialize_outcome_media,
+    validate_media_references,
+)
 from ouro.resources.prepared import validate_prepared_resources
+from ouro.sessions import sqlite_facts, sqlite_resources
 from ouro.sessions.backends.files.commits import FileSessionCommits
-from ouro.sessions.backends.files.context_index import read_context_index, write_context_index
+from ouro.sessions.backends.files.compactions import (
+    read_compaction,
+    read_compactions,
+)
+from ouro.sessions.backends.files.contexts import input_path as request_input_path
+from ouro.sessions.backends.files.contexts import (
+    read_request,
+)
+from ouro.sessions.backends.files.database import connect_data, initialize_index
+from ouro.sessions.backends.files.delegations import (
+    find_record as find_delegation,
+)
+from ouro.sessions.backends.files.delegations import (
+    lookup_path as delegation_lookup_path,
+)
+from ouro.sessions.backends.files.delegations import (
+    read_record as read_delegation,
+)
+from ouro.sessions.backends.files.delegations import (
+    record_path as delegation_path,
+)
 from ouro.sessions.backends.files.index import LocalSessionIndex
+from ouro.sessions.backends.files.inputs import input_path, read_input, read_state
 from ouro.sessions.backends.files.journal import reverse_jsonl
-from ouro.sessions.backends.files.message_index import MessageJournalQueries
+from ouro.sessions.backends.files.messages import (
+    FileMessageRecords,
+)
 from ouro.sessions.base import (
     RuntimeSessionSnapshot,
+    SessionHistorySnapshot,
     SessionObservationState,
     SessionSnapshot,
 )
@@ -65,11 +123,26 @@ from ouro.sessions.index import SessionIndex
 from ouro.sessions.layout import DATA_LAYOUT_VERSION, DataLayoutManifest
 from ouro.sessions.locks import SessionMutationLock, SessionRunLock
 from ouro.sessions.portable import SessionBundle, populate_sessions
+from ouro.sessions.sqlite_compactions import insert_compaction
+from ouro.sessions.sqlite_connections import ExecutionConnections, NativeSessionRunLock
+from ouro.sessions.sqlite_drafts import append_chunk as append_draft_chunk
+from ouro.sessions.sqlite_drafts import publish_draft
+from ouro.sessions.sqlite_drafts import read_page as read_draft_page
+from ouro.sessions.sqlite_events import insert_events, latest_sequence, read_events
+from ouro.sessions.sqlite_events import read_after as read_events_after
+from ouro.sessions.sqlite_events import read_page as read_events_page
+from ouro.sessions.sqlite_facts import load_snapshot as load_tool_facts
+from ouro.sessions.sqlite_facts import load_states, read_call_state, write_call_state, write_facts
+from ouro.sessions.sqlite_requests import (
+    read_headers,
+    read_latest_header,
+    read_request_header,
+    write_header,
+)
+from ouro.sessions.sqlite_runs import read_pending_runs, read_request_counts, read_run, read_runs
+from ouro.sessions.sqlite_sessions import read_session, require_session, write_session
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
-_JournalRecord = TypeVar("_JournalRecord", MessageRecord, EventRecord)
-_EVENT_SEQUENCE_INDEX_RECORD = struct.Struct(">QQ")
-_EVENT_SEQUENCE_INDEX_STRIDE = 256
 
 
 class LocalSessionStore:
@@ -80,18 +153,18 @@ class LocalSessionStore:
         self.session_locks_dir = self.root / "locks" / "sessions"
         self.session_mutation_locks_dir = self.root / "locks" / "session-mutations"
         self.trash_sessions_dir = self.root / "trash" / "sessions"
-        self._event_sequence_cache: dict[str, tuple[int, int]] = {}
-        self._event_sequence_index_cache: dict[str, tuple[int, int] | None] = {}
-        self._event_run_offset_cache: dict[tuple[str, str], int] = {}
         self._session_directory_ids: dict[str, tuple[int, int]] = {}
-        self._message_queries = MessageJournalQueries()
-        self._commits = FileSessionCommits(self._session_dir, self._message_queries)
+        self._messages = FileMessageRecords()
+        self._connections: dict[str, ExecutionConnections] = {}
+        self._commits = FileSessionCommits(self._session_dir, self._connections)
+        self._read_state = local()
         self._delegation_paths: OrderedDict[str, Path] = OrderedDict()
         self._delegation_path_lock = Lock()
         self._layout_path = self.root / "layout.json"
         self._catalog = LocalSessionIndex(
             self.sessions_dir,
             self.session_locks_dir,
+            self._connections,
         )
 
     def initialize(self) -> None:
@@ -107,6 +180,95 @@ class LocalSessionStore:
     def create_session(self, session: SessionRecord) -> None:
         self.create_session_snapshot(session, [])
 
+    def load_tool_call(self, session_id: str, identity: ToolCallIdentity) -> ToolCallRecord | None:
+        with self.session_read(session_id) as reader:
+            return sqlite_facts.read_fact(reader.connection(), session_id, identity, ToolCallRecord)
+
+    def load_tool_call_start(
+        self, session_id: str, identity: ToolCallIdentity, attempt: int
+    ) -> ToolCallStart | None:
+        with self.session_read(session_id) as reader:
+            return sqlite_facts.read_fact(
+                reader.connection(),
+                session_id,
+                identity,
+                ToolCallStart,
+                attempt=attempt,
+            )
+
+    def load_tool_outcome(
+        self, session_id: str, identity: ToolCallIdentity, attempt: int
+    ) -> ToolOutcomeRecord | None:
+        with self.session_read(session_id) as reader:
+            outcome = sqlite_facts.read_fact(
+                reader.connection(),
+                session_id,
+                identity,
+                ToolOutcomeRecord,
+                attempt=attempt,
+            )
+            return materialize_outcome_media(
+                outcome,
+                lambda resource_id: self._messages.media(
+                    reader.connection(), self._require_session_dir(session_id), resource_id
+                ),
+            )
+
+    def _capture_tool_outcome(
+        self, outcome: ToolOutcomeRecord, resources: list[SessionResourceReference]
+    ) -> ToolOutcomeRecord:
+        directory = self._require_session_dir(outcome.session_id)
+        with self.session_read(outcome.session_id) as reader:
+            connection = reader.connection()
+            for identity in media_resource_ids(outcome.value.content_blocks):
+                require_published_resource(
+                    directory / "resources" / "files",
+                    sqlite_resources.read_reference(connection, outcome.session_id, identity),
+                )
+            previous = sqlite_facts.read_fact(
+                connection,
+                outcome.session_id,
+                outcome.identity,
+                ToolOutcomeRecord,
+                attempt=outcome.attempt,
+            )
+            if previous == outcome:
+                return outcome
+
+            def read(identity: str) -> bytes:
+                return self._messages.media(connection, directory, identity)
+
+            def publish(record: SessionResourceReference, content: bytes) -> None:
+                write_resource_contents(directory / "resources" / "files", ((record, content),))
+                resources.append(record)
+
+            value = materialize_outcome_media(outcome, read)
+            assert value is not None
+            return capture_outcome_media(value, materialize_outcome_media(previous, read), publish)
+
+    def tool_outcomes_use_resource(self, session_id: str, resource_id: str) -> bool:
+        with self.session_read(session_id) as scope:
+            for record in sqlite_facts.read_facts(
+                scope.connection(), session_id, ToolOutcomeRecord
+            ):
+                if resource_id in record.value.referenced_resource_ids:
+                    return True
+            return False
+
+    def load_tool_call_state(
+        self, session_id: str, identity: ToolCallIdentity
+    ) -> ToolCallState | None:
+        with self.session_read(session_id) as reader:
+            return read_call_state(reader.connection(), session_id, identity)
+
+    def load_input(self, session_id: str, input_id: str) -> InputRecord | None:
+        with self.session_read(session_id):
+            return read_input(self._require_session_dir(session_id), session_id, input_id)
+
+    def load_input_state(self, session_id: str, input_id: str) -> InputState | None:
+        with self.session_read(session_id):
+            return read_state(self._require_session_dir(session_id), session_id, input_id)
+
     def import_bundle(
         self,
         bundle: SessionBundle,
@@ -114,7 +276,9 @@ class LocalSessionStore:
         replace_session_ids: tuple[str, ...] = (),
         resource_contents: Mapping[str, Mapping[str, bytes]] | None = None,
     ) -> None:
-        temporary = TemporaryDirectory(prefix=".session-import-", dir=self.root, delete=False)
+        temporary = TemporaryDirectory(
+            prefix=".session-import-", dir=filesystem_path(self.root), delete=False
+        )
         staging = Path(temporary.name)
         retain_backups = False
         try:
@@ -130,6 +294,8 @@ class LocalSessionStore:
             with ExitStack() as locks:
                 for identity in affected:
                     locks.enter_context(self.session_mutation(identity))
+                    if connections := self._connections.get(identity):
+                        connections.close_idle()
                     if self._session_dir(identity).exists() and identity not in replace_session_ids:
                         raise PersistenceError(f"session already exists: {identity}")
                 try:
@@ -162,15 +328,20 @@ class LocalSessionStore:
                 temporary.cleanup()
 
     def _invalidate_session_caches(self, session_id: str) -> None:
-        self._event_sequence_cache.pop(session_id, None)
-        self._event_sequence_index_cache.pop(session_id, None)
-        self._event_run_offset_cache = {
-            key: offset
-            for key, offset in self._event_run_offset_cache.items()
-            if key[0] != session_id
-        }
         with self._delegation_path_lock:
             self._delegation_paths.clear()
+
+    def _observe_session_directory(self, session_id: str) -> None:
+        try:
+            stat = self._session_dir(session_id).stat()
+        except FileNotFoundError:
+            return
+        identity = (stat.st_dev, stat.st_ino)
+        previous = self._session_directory_ids.get(session_id)
+        if previous is not None and previous != identity:
+            # Another Host can replace a Session without changing journal sizes.
+            self._invalidate_session_caches(session_id)
+        self._session_directory_ids[session_id] = identity
 
     def create_delegation(self, delegation: DelegationRecord) -> DelegationRecord:
         root_id = delegation.root_session_id
@@ -183,10 +354,10 @@ class LocalSessionStore:
                 raise PersistenceError(
                     f"delegation idempotency key already exists: {delegation.idempotency_key}"
                 )
-            path = self._delegation_path(root_id, delegation.delegation_id)
+            path = delegation_path(self._require_session_dir(root_id), delegation.delegation_id)
             if path.exists():
                 raise PersistenceError(f"delegation already exists: {delegation.delegation_id}")
-            self._write_model_atomic(path, delegation)
+            self._commits.commit_delegation(delegation)
         return delegation
 
     def load_delegation(
@@ -194,13 +365,10 @@ class LocalSessionStore:
         root_session_id: str,
         delegation_id: str,
     ) -> DelegationRecord:
-        with self.session_mutation(root_session_id):
-            path = self._delegation_path(root_session_id, delegation_id)
+        with self.session_read(root_session_id):
             try:
-                return decode_versioned_record_json(
-                    DelegationRecord,
-                    read_text_atomic(path),
-                    label=f"delegation {delegation_id}",
+                return read_delegation(
+                    self._require_session_dir(root_session_id), root_session_id, delegation_id
                 )
             except FileNotFoundError:
                 raise
@@ -250,9 +418,8 @@ class LocalSessionStore:
                     update={"revision": expected_revision + 1, "updated_at": utc_now()}
                 ).model_dump()
             )
-            self._write_model_atomic(
-                self._delegation_path(root_id, delegation.delegation_id), updated
-            )
+            updated.require_frozen_contract(current)
+            self._commits.commit_delegation(updated, previous=current)
             return updated
 
     def list_delegations(
@@ -260,10 +427,22 @@ class LocalSessionStore:
         root_session_id: str,
         *,
         parent_session_id: str | None = None,
+        parent_run_id: str | None = None,
     ) -> list[DelegationRecord]:
-        with self.session_mutation(root_session_id):
+        with self.session_read(root_session_id):
             root_dir = self._require_session_dir(root_session_id)
-            records = self._load_delegations_from_dir(root_dir / "delegations")
+            if parent_run_id is None:
+                records = [
+                    read_delegation(root_dir, root_session_id, path.stem)
+                    for path in (root_dir / "delegations").glob("*.json")
+                ]
+            else:
+                records = [
+                    read_delegation(root_dir, root_session_id, path.name)
+                    for path in delegation_lookup_path(root_dir, "parents", parent_run_id).glob("*")
+                ]
+                if any(record.parent_run_id != parent_run_id for record in records):
+                    raise PersistenceError("Delegation parent index disagrees with its record")
         if parent_session_id is not None:
             records = [item for item in records if item.parent_session_id == parent_session_id]
         return sorted(records, key=lambda item: (item.created_at, item.delegation_id))
@@ -273,21 +452,26 @@ class LocalSessionStore:
         root_session_id: str,
         child_session_id: str,
     ) -> DelegationRecord | None:
-        _validated_record_id(child_session_id, kind="session")
-        for record in self.list_delegations(root_session_id):
-            if record.child_session_id == child_session_id:
-                return record
-        return None
+        with self.session_read(root_session_id):
+            return find_delegation(
+                self._require_session_dir(root_session_id),
+                root_session_id,
+                "children",
+                child_session_id,
+            )
 
     def find_delegation_by_idempotency_key(
         self,
         root_session_id: str,
         idempotency_key: str,
     ) -> DelegationRecord | None:
-        for record in self.list_delegations(root_session_id):
-            if record.idempotency_key == idempotency_key:
-                return record
-        return None
+        with self.session_read(root_session_id):
+            return find_delegation(
+                self._require_session_dir(root_session_id),
+                root_session_id,
+                "requests",
+                idempotency_key,
+            )
 
     def create_session_snapshot(
         self,
@@ -296,10 +480,15 @@ class LocalSessionStore:
         resource_references: list[SessionResourceReference] | None = None,
         harness_versions: list[HarnessVersion] | None = None,
         compactions: list[CompactionRecord] | None = None,
-        commits: list[SessionCommitResult] | None = None,
         resource_contents: Iterable[tuple[ResourceRecord, bytes]] = (),
         *,
         prepared_resources: bool = False,
+        inputs: tuple[InputRecord, ...] = (),
+        input_states: tuple[InputState, ...] | None = None,
+        tool_facts: ToolCallFacts | None = None,
+        call_states: tuple[ToolCallState, ...] = (),
+        request_headers: tuple[ModelRequestHeader, ...] = (),
+        latest_manifest: RequestManifestRecord | None = None,
     ) -> None:
         with self.session_mutation(session.session_id):
             self._create_session_snapshot(
@@ -308,9 +497,14 @@ class LocalSessionStore:
                 resource_references,
                 harness_versions,
                 compactions,
-                commits,
                 resource_contents,
                 prepared_resources=prepared_resources,
+                inputs=inputs,
+                input_states=input_states,
+                tool_facts=tool_facts,
+                call_states=call_states,
+                request_headers=request_headers,
+                latest_manifest=latest_manifest,
             )
 
     def _create_session_snapshot(
@@ -320,15 +514,51 @@ class LocalSessionStore:
         resource_references: list[SessionResourceReference] | None,
         harness_versions: list[HarnessVersion] | None,
         compactions: list[CompactionRecord] | None,
-        commits: list[SessionCommitResult] | None,
         resource_contents: Iterable[tuple[ResourceRecord, bytes]],
         *,
         prepared_resources: bool = False,
+        inputs: tuple[InputRecord, ...] = (),
+        input_states: tuple[InputState, ...] | None = None,
+        tool_facts: ToolCallFacts | None = None,
+        call_states: tuple[ToolCallState, ...] = (),
+        request_headers: tuple[ModelRequestHeader, ...] = (),
+        latest_manifest: RequestManifestRecord | None = None,
     ) -> None:
+        messages = [
+            item if item.sequence == index else item.model_copy(update={"sequence": index})
+            for index, item in enumerate(messages, start=1)
+        ]
+        validate_request_snapshot(session.session_id, request_headers, latest_manifest)
+        validate_media_references(
+            messages,
+            latest_manifest,
+            (record.resource_id for record in resource_references or []),
+            (tool_facts or ToolCallFacts()).outcomes,
+        )
+        compaction_records = compactions or []
+        validate_compaction_snapshot(session, messages, compaction_records)
+        if (boundary := session.context_selection.media_elided_through) is not None:
+            validate_media_selection(
+                session.context_selection,
+                session.session_id,
+                next((item for item in messages if item.message_id == boundary.message_id), None),
+            )
+        states = validate_input_snapshot(
+            session.session_id, session.pending_input_ids, inputs, input_states, messages=messages
+        )
+        if tool_facts is not None:
+            tool_facts.validate_snapshot(session.session_id)
+        validate_call_states(
+            call_states, tool_facts or ToolCallFacts(), session_id=session.session_id
+        )
+        validate_tool_message_snapshot(messages, tool_facts or ToolCallFacts())
         session_dir = self._session_dir(session.session_id)
-        if (session_dir / "session.json").exists() or (
-            session_dir.exists() and not prepared_resources
-        ):
+        database = session_dir / "session-data.sqlite3"
+        published = False
+        if database.exists():
+            with connect_data(session_dir) as connection:
+                published = connection.execute("SELECT 1 FROM sessions").fetchone() is not None
+        if published or (session_dir.exists() and not prepared_resources):
             raise PersistenceError(f"session already exists: {session.session_id}")
 
         if prepared_resources:
@@ -338,14 +568,16 @@ class LocalSessionStore:
         )
         try:
             if prepared_resources:
-                # No Session owns this metadata until session.json is published. A retry
-                # replaces the whole metadata snapshot, including unaccepted receipts.
-                for name in ("runs", "event-index", "harness", "operations"):
+                # No Session owns this metadata until its native head is published. A retry
+                # replaces the unaccepted metadata snapshot.
+                for name in (
+                    "harness",
+                    "inputs",
+                ):
                     path = staging_dir / name
                     if path.exists():
                         shutil.rmtree(path)
-            for directory in ("runs", "event-index/runs", "resources", "harness"):
-                (staging_dir / directory).mkdir(parents=True, exist_ok=prepared_resources)
+            (staging_dir / "harness").mkdir(parents=True, exist_ok=prepared_resources)
             versions = (
                 harness_versions
                 if harness_versions is not None
@@ -364,60 +596,71 @@ class LocalSessionStore:
                 for message in messages
             ):
                 raise PersistenceError("Session snapshot has a missing Harness checkpoint")
-            staged = FileSessionCommits(lambda _session_id: staging_dir, MessageJournalQueries())
+            staged = FileSessionCommits(lambda _session_id: staging_dir)
+            for record in inputs:
+                write_model_atomic(input_path(staging_dir, record.item.queue_id), record)
+            for state in states:
+                write_model_atomic(input_path(staging_dir, state.input_id, state=True), state)
             for version in versions:
                 if version.session_id != session.session_id:
                     raise PersistenceError("Harness checkpoint belongs to another Session")
                 staged.save_version(version)
-            for receipt in commits or ():
-                if receipt.session.session_id != session.session_id:
-                    raise PersistenceError("Session receipt belongs to another Session")
-                staged.save_result(receipt)
             session = session.model_copy(
                 update={
                     "message_count": len(messages),
+                    "controls": checkpoints[session.harness_version].state.controls,
+                    "run_count": 0,
+                    "resource_count": len({item.resource_id for item in resource_references or ()}),
                     "last_message_id": messages[-1].message_id if messages else None,
                 }
             )
-            for name in ("messages.jsonl", "events.jsonl", "compactions.jsonl"):
-                (staging_dir / name).write_bytes(b"")
             for message in messages:
                 if message.session_id != session.session_id:
                     raise PersistenceError(
                         f"message {message.message_id} does not belong to "
                         f"session {session.session_id}"
                     )
-            self._append_jsonl_batch(staging_dir / "messages.jsonl", messages)
-            compaction_records = compactions or []
-            if any(item.session_id != session.session_id for item in compaction_records):
-                raise PersistenceError(
-                    f"compaction does not belong to session {session.session_id}"
-                )
-            if session.active_compaction_id is not None and not any(
-                item.compaction_id == session.active_compaction_id for item in compaction_records
-            ):
-                raise PersistenceError(
-                    f"active compaction {session.active_compaction_id} is missing from "
-                    f"session snapshot {session.session_id}"
-                )
-            self._append_jsonl_batch(staging_dir / "compactions.jsonl", compaction_records)
-            self._write_json_atomic(
-                staging_dir / "resources" / "index.json",
-                SessionResourceReferences(resources=resource_references or []).model_dump(
-                    mode="json"
-                ),
-            )
+            if len({message.message_id for message in messages}) != len(messages):
+                raise PersistenceError("Session snapshot contains duplicate message identities")
             write_resource_contents(staging_dir / "resources" / "files", resource_contents)
             if not prepared_resources:
                 verify_resource_files(
                     staging_dir / "resources" / "files", resource_references or ()
                 )
-            # session.json is the publication boundary for an in-place resource reservation.
-            self._commits.save_session_record(staging_dir, session)
+            if latest_manifest is not None:
+                content_path = request_input_path(staging_dir, latest_manifest.context_id)
+                content_path.parent.mkdir(exist_ok=True)
+                write_model_atomic(content_path, latest_manifest)
+            # All native records publish together, including an in-place resource
+            # reservation. The journal remains private until this publication.
+            with connect_data(staging_dir, mode="rwc") as connection:
+                initialize_index(connection)
+                self._messages.create(connection, staging_dir, messages)
+                write_session(connection, session)
+                for reference in resource_references or ():
+                    sqlite_resources.insert_reference(connection, session.session_id, reference)
+                write_facts(connection, tool_facts.records if tool_facts is not None else ())
+                for call_state in call_states:
+                    write_call_state(connection, call_state)
+                for compaction in compaction_records:
+                    insert_compaction(connection, compaction)
+                for header in request_headers:
+                    write_header(connection, header)
+                if latest_manifest is not None:
+                    connection.execute(
+                        "INSERT INTO latest_contexts VALUES (?, ?)",
+                        (session.session_id, latest_manifest.context_id),
+                    )
+                    publish_draft(
+                        connection,
+                        next(
+                            header
+                            for header in request_headers
+                            if header.context_id == latest_manifest.context_id
+                        ),
+                    )
             if not prepared_resources:
                 replace_path_with_retry(staging_dir, session_dir)
-            self._event_sequence_cache[session.session_id] = (0, 0)
-            self._event_sequence_index_cache[session.session_id] = None
         except (OSError, PersistenceError) as exc:
             if not prepared_resources:
                 with suppress(OSError):
@@ -465,7 +708,12 @@ class LocalSessionStore:
         session_ids: tuple[str, ...],
     ) -> str:
         for session_id in session_ids:
-            self._require_session_dir(session_id)
+            # Explicit trash also accepts an unreadable canonical Session.
+            database = self._session_dir(session_id) / "session-data.sqlite3"
+            if not database.is_file():
+                raise FileNotFoundError(database)
+            if connections := self._connections.get(session_id):
+                connections.close_idle()
         trash_id = new_id("trash")
         staging_dir = self.trash_sessions_dir / f".{trash_id}.staging"
         staged_sessions = staging_dir / "sessions"
@@ -536,36 +784,41 @@ class LocalSessionStore:
                 supplied.sequence = stored.sequence
                 supplied.before_harness_version = stored.before_harness_version
 
-    def load_messages_tail(self, session_id: str, *, limit: int = 100) -> list[MessageRecord]:
+    def load_messages_tail(
+        self, session_id: str, *, limit: int = 100, include_media: bool = True
+    ) -> list[MessageRecord]:
         if limit < 1:
             raise ValueError("message tail limit must be positive")
-        with self.session_mutation(session_id):
-            path = self._require_session_dir(session_id) / "messages.jsonl"
-            messages: list[MessageRecord] = []
+        with self.session_read(session_id) as scope:
+            directory = self._require_session_dir(session_id)
+            path = directory / "messages.jsonl"
             with closing(reverse_jsonl(path)) as lines:
-                for _, line in lines:
-                    messages.append(
-                        decode_versioned_record_json(
-                            MessageRecord, line, label=f"message in session {session_id}"
-                        )
-                    )
-                    if len(messages) == limit:
-                        break
-            return messages
+                return self._messages.materialize_many(
+                    directory,
+                    (
+                        self._messages.entry(line, session_id=session_id)
+                        for _, line in islice(lines, limit)
+                    ),
+                    connection=scope.connection(),
+                    include_media=include_media,
+                )
 
     def iter_messages_before(
         self, session_id: str, *, before: int | None = None
     ) -> Generator[tuple[int, MessageRecord]]:
         if before is not None and before < 0:
             raise ValueError("message cursor must be nonnegative")
-        with self.session_read(session_id):
-            path = self._require_session_dir(session_id) / "messages.jsonl"
+        with self.session_read(session_id) as scope:
+            directory = self._require_session_dir(session_id)
+            path = directory / "messages.jsonl"
             with closing(reverse_jsonl(path, before=before)) as lines:
                 for offset, line in lines:
                     yield (
                         offset,
-                        decode_versioned_record_json(
-                            MessageRecord, line, label=f"message in session {session_id}"
+                        self._messages.materialize(
+                            directory,
+                            self._messages.entry(line, session_id=session_id),
+                            connection=scope.connection(),
                         ),
                     )
 
@@ -586,52 +839,65 @@ class LocalSessionStore:
             return result.truncation
 
     def load_harness(self, session_id: str, version_id: str | None = None) -> HarnessVersion:
-        with self.session_mutation(session_id):
+        with self.session_read(session_id):
             if version_id is None:
-                return self._commits.load_session_harness(session_id)[1]
+                return self.load_session_harness(session_id)[1]
             return self._commits.load_harness(session_id, version_id)
-
-    def load_commit(self, session_id: str, operation_id: str) -> SessionCommitResult | None:
-        with self.session_mutation(session_id):
-            self._require_session_dir(session_id)
-            return self._commits.load_result(session_id, operation_id)
 
     def commit_session(self, request: SessionCommit) -> SessionCommitResult:
         with self.session_mutation(request.before.session_id):
             try:
-                return self._commits.commit(request)
+                resources: list[SessionResourceReference] = []
+                if request.tool_facts.outcomes:
+                    request = request.model_copy(
+                        update={
+                            "tool_facts": request.tool_facts.model_copy(
+                                update={
+                                    "outcomes": tuple(
+                                        self._capture_tool_outcome(outcome, resources)
+                                        for outcome in request.tool_facts.outcomes
+                                    )
+                                }
+                            )
+                        }
+                    )
+                captured = {record.resource_id: record for record in resources}
+                for identity in request.media_resource_ids:
+                    require_published_resource(
+                        self._require_session_dir(request.before.session_id)
+                        / "resources"
+                        / "files",
+                        captured[identity]
+                        if identity in captured
+                        else self.load_resource_reference(request.before.session_id, identity),
+                    )
+                return self._commits.commit(request, tuple(resources))
             except OSError as exc:
                 raise PersistenceError(
                     f"could not commit Session {request.before.session_id}: {exc}"
                 ) from exc
 
-    def append_event(self, event: EventRecord) -> None:
-        with self.session_mutation(event.session_id):
-            session_dir = self._require_session_dir(event.session_id)
-            path = session_dir / "events.jsonl"
-            run_offset: int | None = None
-            if event.run_id is not None:
-                run_offset = self._event_run_offset(event.session_id, event.run_id, path)
-            journal_size = path.stat().st_size if path.exists() else 0
-            self._prepare_event_sequence_index(
-                event.session_id,
-                path,
-                sequence=event.sequence,
-            )
-            self._append_jsonl(path, event)
-            if (
-                event.run_id is not None
-                and run_offset not in {None, 0}
-                and run_offset == journal_size
-            ):
-                self._write_event_run_offset(
-                    event.session_id,
-                    event.run_id,
-                    run_offset,
-                    journal_size=path.stat().st_size,
-                    first_event=event,
+    def commit_tool_outcome(self, outcome: ToolOutcomeRecord) -> ToolOutcomeRecord:
+        with self.session_mutation(outcome.session_id):
+            self._require_session_dir(outcome.session_id)
+            try:
+                resources: list[SessionResourceReference] = []
+                outcome = self._capture_tool_outcome(outcome, resources)
+                saved = self._commits.commit_outcome(outcome, tuple(resources))
+                value = materialize_outcome_media(
+                    saved,
+                    lambda identity: read_resource_content(
+                        self._require_session_dir(outcome.session_id) / "resources" / "files",
+                        self.load_resource_reference(outcome.session_id, identity),
+                    ),
                 )
-            self._event_sequence_cache.pop(event.session_id, None)
+                assert value is not None
+                return value
+            except OSError as exc:
+                raise PersistenceError(f"could not save tool Outcome: {exc}") from exc
+
+    def append_event(self, event: EventRecord) -> None:
+        self.append_events([event])
 
     def append_events(self, events: list[EventRecord]) -> None:
         if not events:
@@ -640,312 +906,304 @@ class LocalSessionStore:
         if any(event.session_id != session_id for event in events):
             raise PersistenceError("event batch must belong to one Session")
         with self.session_mutation(session_id):
-            path = self._require_session_dir(session_id) / "events.jsonl"
-            initial_size = path.stat().st_size
-            run_offsets = {
-                run_id: self._event_run_offset(session_id, run_id, path)
-                for run_id in dict.fromkeys(event.run_id for event in events)
-                if run_id is not None
-            }
-            first_events: dict[str, tuple[int, EventRecord]] = {}
-            try:
-                # Import owns a private staging store. Keep a single buffered journal
-                # open and sync once before snapshot verification and publication.
-                with path.open("ab") as stream:
-                    for event in events:
-                        offset = stream.tell()
-                        self._prepare_event_sequence_index(
-                            session_id, path, sequence=event.sequence, offset=offset
-                        )
-                        if event.run_id is not None and event.run_id not in first_events:
-                            first_events[event.run_id] = (offset, event)
-                        stream.write(event.model_dump_json().encode("utf-8") + b"\n")
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                    journal_size = stream.tell()
-            except (OSError, TypeError, ValueError) as exc:
-                raise PersistenceError(f"could not append event batch: {session_id}") from exc
-            finally:
-                self._event_sequence_cache.pop(session_id, None)
-            for run_id, (offset, event) in first_events.items():
-                if run_offsets[run_id] == initial_size:
-                    self._write_event_run_offset(
-                        session_id, run_id, offset, journal_size=journal_size, first_event=event
-                    )
+            self._require_session_dir(session_id)
+            with self._commits.connect(session_id, mode="rw") as connection:
+                insert_events(connection, events)
 
     def append_ordered_event(self, event: EventRecord) -> EventRecord:
         with self.session_mutation(event.session_id):
-            session_dir = self._require_session_dir(event.session_id)
-            path = session_dir / "events.jsonl"
-            sequence = max(
-                event.sequence,
-                self._max_event_sequence(event.session_id, path) + 1,
-            )
-            ordered = event.model_copy(update={"sequence": sequence})
-            run_offset: int | None = None
-            if ordered.run_id is not None:
-                run_offset = self._event_run_offset(event.session_id, ordered.run_id, path)
-            journal_size = path.stat().st_size if path.exists() else 0
-            self._prepare_event_sequence_index(
-                event.session_id,
-                path,
-                sequence=sequence,
-            )
-            # Delta events are group-committed by the next durable boundary
-            # event. This preserves ordered live replay without one fsync per token.
-            self._append_jsonl(
-                path,
-                ordered,
-                durable=ordered.event_type not in MODEL_STREAM_DELTA_EVENT_TYPES,
-            )
-            if (
-                ordered.run_id is not None
-                and run_offset not in {None, 0}
-                and run_offset == journal_size
-            ):
-                self._write_event_run_offset(
-                    event.session_id,
-                    ordered.run_id,
-                    run_offset,
-                    journal_size=path.stat().st_size,
-                    first_event=ordered,
+            self._require_session_dir(event.session_id)
+            with self._commits.connect(event.session_id, mode="rw") as connection:
+                ordered = event.model_copy(
+                    update={
+                        "sequence": max(
+                            event.sequence, latest_sequence(connection, event.session_id) + 1
+                        )
+                    }
                 )
-            self._event_sequence_cache[event.session_id] = (path.stat().st_size, sequence)
-            return ordered
+                insert_events(connection, (ordered,))
+                return ordered
 
     def save_run(self, run: RunRecord) -> None:
         with self.session_mutation(run.session_id):
-            session_dir = self._require_session_dir(run.session_id)
-            run_dir = session_dir / "runs"
-            run_dir.mkdir(parents=True, exist_ok=True)
-            run_id = _validated_record_id(run.run_id, kind="run")
-            run_path = run_dir / f"{run_id}.json"
-            if not run_path.exists():
-                journal = session_dir / "events.jsonl"
-                offset_path = self._event_run_offset_path(run.session_id, run_id)
-                if (run.session_id, run_id) in self._event_run_offset_cache or offset_path.exists():
-                    self._event_run_offset(run.session_id, run_id, journal)
-                else:
-                    self._write_event_run_offset(
-                        run.session_id,
-                        run_id,
-                        journal.stat().st_size if journal.exists() else 0,
-                        journal_size=journal.stat().st_size if journal.exists() else 0,
-                    )
-            self._write_model_atomic(run_path, run)
+            self._commits.commit_run(run, session=self.load_session_record(run.session_id))
 
-    def save_latest_context(self, context: ContextSnapshotRecord) -> None:
-        with self.session_mutation(context.session_id):
-            session_dir = self._require_session_dir(context.session_id)
-            self._write_model_atomic(session_dir / "context.json", context)
-            write_context_index(session_dir / "context.json", context)
+    def append_response_draft(
+        self, session_id: str, context_id: str, chunk: ResponseDraftChunk
+    ) -> int:
+        directory = self._session_dir(session_id)
+        if (directory / "commit.json").exists():
+            with self.session_mutation(session_id):
+                pass
+        connections = self._connections.get(session_id) or ExecutionConnections(
+            directory / "session-data.sqlite3", create=False
+        )
+        try:
+            connection = connections.borrow()
+            try:
+                # Live prefixes have no per-fragment power-loss guarantee. Request
+                # lifecycle commits still use the database's durable transaction.
+                connection.execute("PRAGMA synchronous = NORMAL")
+                with connection:
+                    return append_draft_chunk(connection, session_id, context_id, chunk)
+            finally:
+                connections.return_connection(connection)
+        except sqlite3.Error as exc:
+            raise PersistenceError(f"could not append response Draft: {exc}") from exc
 
-    def load_latest_context_header(self, session_id: str) -> ContextSnapshotHeader | None:
-        with self.session_read(session_id):
-            path = self._require_session_dir(session_id) / "context.json"
-            if not path.exists():
+    def load_response_draft(
+        self, session_id: str, context_id: str, *, after_cursor: int = 0, limit: int | None = None
+    ) -> ResponseDraftPage | None:
+        if after_cursor < 0 or (limit is not None and limit < 1):
+            raise ValueError("Draft cursor and page size must be positive")
+        with self.session_read(session_id) as reader:
+            self._require_session_dir(session_id)
+            page = read_draft_page(
+                reader.connection(), session_id, context_id, after_cursor=after_cursor, limit=limit
+            )
+            if page is not None:
+                return page
+            # A prepared request has no append target until it starts, but its
+            # observation is already an empty page. Closed/replaced requests are absent.
+            header = read_latest_header(reader.connection(), session_id)
+            if (
+                header is None
+                or header.context_id != context_id
+                or header.response_closed_at is not None
+            ):
                 return None
-            header = read_context_index(path)
-            if header is not None:
-                return header
-            context = self.load_latest_context(session_id)
-            return context.header() if context is not None else None
+            return ResponseDraftPage(context_id=context_id)
+
+    def settle_request_header(
+        self,
+        session_id: str,
+        context_id: str,
+        *,
+        settled_at: datetime,
+        provider_done: bool,
+        usage_entry_id: str | None,
+    ) -> ModelRequestHeader:
+        with self.session_mutation(session_id):
+            directory = self._require_session_dir(session_id)
+            with connect_data(directory) as connection:
+                header = read_request_header(connection, session_id, context_id)
+            if header is None:
+                raise PersistenceError(f"latest context does not match {context_id}")
+            completed = header.settled(
+                context_id=context_id,
+                settled_at=settled_at,
+                provider_done=provider_done,
+                usage_entry_id=usage_entry_id,
+            )
+            if completed != header:
+                with connect_data(directory, mode="rw") as connection:
+                    write_header(connection, completed)
+            return completed
+
+    def load_request_header(self, session_id: str, context_id: str) -> ModelRequestHeader | None:
+        with self.session_read(session_id) as reader:
+            self._require_session_dir(session_id)
+            return read_request_header(reader.connection(), session_id, context_id)
+
+    def load_latest_context_header(self, session_id: str) -> ModelRequestHeader | None:
+        with self.session_read(session_id) as reader:
+            self._require_session_dir(session_id)
+            return read_latest_header(reader.connection(), session_id)
 
     def load_latest_context(self, session_id: str) -> ContextSnapshotRecord | None:
-        with self.session_mutation(session_id):
-            path = self._require_session_dir(session_id) / "context.json"
-            if not path.exists():
-                return None
+        with self.session_read(session_id) as reader:
             try:
-                return decode_versioned_record_json(
-                    ContextSnapshotRecord,
-                    read_text_atomic(path),
-                    label=f"latest context for session {session_id}",
+                request = read_request(reader.connection(), self._session_dir(session_id))
+                if request is None:
+                    return None
+                header, body = request
+                context = ContextSnapshotRecord.assemble(
+                    header,
+                    body,
+                    {
+                        identity: self.load_message(session_id, identity)
+                        for identity in body.manifest.referenced_message_ids
+                    },
+                )
+                return materialize_context_media(
+                    context,
+                    lambda identity: self._messages.media(
+                        reader.connection(), self._require_session_dir(session_id), identity
+                    ),
                 )
             except (OSError, ValidationError, ValueError) as exc:
                 raise PersistenceError(
                     f"could not load latest context for session {session_id}: {exc}"
                 ) from exc
 
-    def append_compaction(self, compaction: CompactionRecord) -> None:
-        with self.session_mutation(compaction.session_id):
-            session_dir = self._require_session_dir(compaction.session_id)
-            self._append_jsonl(
-                session_dir / "compactions.jsonl",
-                compaction,
-            )
-
-    def activate_compaction(self, session_id: str, compaction_id: str) -> SessionRecord:
-        with self.session_mutation(session_id):
-            session_dir = self._require_session_dir(session_id)
-            compactions = self._load_compactions(session_dir)
-            if not any(item.compaction_id == compaction_id for item in compactions):
-                raise PersistenceError(
-                    f"unknown compaction {compaction_id} for session {session_id}"
-                )
-            updated = self.load_session_record(session_id).model_copy(
-                update={
-                    "active_compaction_id": compaction_id,
-                    "updated_at": utc_now(),
-                }
-            )
-            self.save_session(updated)
-        self.refresh_catalog(session_id)
-        return updated
+    def load_latest_request(
+        self, session_id: str
+    ) -> tuple[ModelRequestHeader, RequestManifestRecord] | None:
+        with self.session_read(session_id) as reader:
+            return read_request(reader.connection(), self._session_dir(session_id))
 
     def load_session(self, session_id: str) -> SessionSnapshot:
-        with self.session_mutation(session_id):
-            runtime = self._load_runtime_session(session_id)
+        with self.session_read(session_id) as reader:
+            history = self._load_session_history(session_id)
             session_dir = self._session_dir(session_id)
-            try:
-                events = [
-                    decode_versioned_record_json(
-                        EventRecord,
-                        line,
-                        label=f"event in session {session_id}",
-                    )
-                    for line in self._iter_jsonl(session_dir / "events.jsonl")
-                ]
-            except (OSError, ValidationError, ValueError) as exc:
-                raise PersistenceError(f"could not load session {session_id}: {exc}") from exc
-            snapshot = SessionSnapshot(
-                session=runtime.session,
-                messages=runtime.messages,
-                runs=runtime.runs,
-                compactions=runtime.compactions,
+            events = read_events(reader.connection(), session_id)
+            latest_request = read_request(reader.connection(), session_dir)
+            # Records are decoded at their storage boundary; assembling a typed
+            # container must not validate the entire history a second time.
+            snapshot = SessionSnapshot.model_construct(
+                session=history.session,
+                request_headers=read_headers(reader.connection(), session_id),
+                latest_manifest=latest_request[1] if latest_request is not None else None,
+                messages=history.messages,
+                runs=history.runs,
+                compactions=history.compactions,
                 events=events,
+                tool_facts=load_tool_facts(reader.connection(), session_id),
+                call_states=load_states(reader.connection(), session_id),
+                inputs=sorted(
+                    (
+                        decode_versioned_record_json(
+                            InputRecord, read_text_atomic(path), label="input"
+                        )
+                        for path in (session_dir / "inputs" / "records").glob("*.json")
+                    ),
+                    key=lambda record: record.item.queue_id,
+                ),
+                input_states=sorted(
+                    (
+                        decode_versioned_record_json(
+                            InputState, read_text_atomic(path), label="input state"
+                        )
+                        for path in (session_dir / "inputs" / "states").glob("*.json")
+                    ),
+                    key=lambda state: state.input_id,
+                ),
                 extension_states=self.load_session_extension_states(session_id),
                 harness_versions=[
                     self._commits.load_harness(session_id, path.stem)
                     for path in sorted((session_dir / "harness").glob("*.json"))
                 ],
-                commits=[
-                    decode_versioned_record_json(
-                        SessionCommitResult,
-                        read_text_atomic(path),
-                        label=f"Session receipt {path.stem}",
-                    )
-                    for path in sorted((session_dir / "operations").glob("*.json"))
-                ],
             )
+            validate_request_snapshot(
+                session_id, snapshot.request_headers, snapshot.latest_manifest
+            )
+            validate_call_states(snapshot.call_states, snapshot.tool_facts, session_id=session_id)
         return snapshot
 
     def load_runtime_session(self, session_id: str) -> RuntimeSessionSnapshot:
-        with self.session_mutation(session_id):
-            return self._load_runtime_session(session_id)
+        with self.session_read(session_id) as reader:
+            session = self.load_session_record(session_id)
+            connection = reader.connection()
+            selected = {
+                run.run_id: run
+                for run in read_pending_runs(connection, session_id, session.history_epoch)
+            }
+            for identity in (session.active_run_id, session.last_run_id):
+                if identity is not None and identity not in selected:
+                    try:
+                        selected[identity] = read_run(connection, session_id, identity)
+                    except FileNotFoundError:
+                        # Explicit recovery can clear an invalid Session pointer.
+                        pass
+            return RuntimeSessionSnapshot.model_construct(
+                session=session, runs=sorted(selected.values(), key=_run_sort_key)
+            )
+
+    def load_pending_runs(self, session_id: str) -> list[RunRecord]:
+        with self.session_read(session_id) as reader:
+            session = self.load_session_record(session_id)
+            return read_pending_runs(reader.connection(), session_id, session.history_epoch)
 
     def load_session_observation(self, session_id: str) -> SessionObservationState:
-        with self.session_read(session_id):
-            runtime = self._load_runtime_session(session_id)
-            active_run_id = runtime.session.active_run_id
-            path = self._session_dir(session_id) / "events.jsonl"
-            event_high_water = self._max_event_sequence(session_id, path)
-            active_events = (
-                self._read_events_for_run(
-                    path,
-                    session_id=session_id,
-                    run_id=active_run_id,
-                    offset=self._event_run_offset(session_id, active_run_id, path),
-                )
-                if active_run_id is not None
-                else []
-            )
-            return SessionObservationState(
-                **runtime.model_dump(),
-                active_run_events=active_events,
+        with self.session_read(session_id) as reader:
+            history = self._load_session_history(session_id)
+            event_high_water = latest_sequence(reader.connection(), session_id)
+            return SessionObservationState.model_construct(
+                session=history.session,
+                messages=history.messages,
+                runs=history.runs,
+                compactions=history.compactions,
                 event_high_water=event_high_water,
             )
 
+    def load_run_request_counts(self, session_id: str) -> tuple[RunRequestCounts, ...]:
+        with self.session_read(session_id) as reader:
+            return read_request_counts(reader.connection(), session_id)
+
     def load_runs(self, session_id: str) -> list[RunRecord]:
-        with self.session_mutation(session_id):
+        with self.session_read(session_id):
             return self._load_runs(session_id)
 
     def _load_runs(self, session_id: str) -> list[RunRecord]:
-        session_dir = self._require_session_dir(session_id)
-        try:
-            runs = [
-                decode_versioned_record_json(
-                    RunRecord,
-                    read_text_atomic(path),
-                    label=f"run record {path}",
-                )
-                for path in sorted((session_dir / "runs").glob("*.json"))
-            ]
-        except (OSError, ValidationError, ValueError) as exc:
-            raise PersistenceError(f"could not load runs for session {session_id}: {exc}") from exc
-        runs.sort(key=_run_sort_key)
-        return runs
+        with self.session_read(session_id) as reader:
+            return read_runs(reader.connection(), session_id)
 
-    def _load_runtime_session(self, session_id: str) -> RuntimeSessionSnapshot:
+    def _load_session_history(self, session_id: str) -> SessionHistorySnapshot:
         session_dir = self._session_dir(session_id)
         try:
             session = self.load_session_record(session_id)
-            messages = [
-                decode_versioned_record_json(
-                    MessageRecord,
-                    line,
-                    label=f"message in session {session_id}",
+            with self.session_read(session_id) as scope:
+                messages = self._messages.materialize_many(
+                    session_dir,
+                    (
+                        self._messages.entry(line, session_id=session_id)
+                        for line in self._iter_jsonl(session_dir / "messages.jsonl")
+                    ),
+                    connection=scope.connection(),
                 )
-                for line in self._iter_jsonl(session_dir / "messages.jsonl")
-            ]
-            compactions = self._load_compactions(session_dir)
+                compactions = read_compactions(scope.connection(), session_dir)
         except FileNotFoundError:
             raise
         except (OSError, ValidationError, ValueError) as exc:
             raise PersistenceError(f"could not load session {session_id}: {exc}") from exc
         runs = self._load_runs(session_id)
-        snapshot = RuntimeSessionSnapshot(
+        snapshot = SessionHistorySnapshot.model_construct(
             session=session,
             messages=messages,
             runs=runs,
             compactions=compactions,
         )
-        if session.active_compaction_id is not None and snapshot.active_compaction is None:
+        if (
+            session.context_selection.compaction_id is not None
+            and snapshot.active_compaction is None
+        ):
             raise PersistenceError(
-                f"session {session_id} references missing compaction {session.active_compaction_id}"
+                f"session {session_id} references missing compaction "
+                f"{session.context_selection.compaction_id}"
             )
         return snapshot
 
     def load_active_compaction(self, session_id: str) -> CompactionRecord | None:
-        with self.session_mutation(session_id):
+        with self.session_read(session_id) as reader:
             session = self.load_session_record(session_id)
-            active_id = session.active_compaction_id
+            active_id = session.context_selection.compaction_id
             if active_id is None:
                 return None
             session_dir = self._require_session_dir(session_id)
-            active = next(
-                (
-                    compaction
-                    for compaction in self._load_compactions(session_dir)
-                    if compaction.compaction_id == active_id
-                ),
-                None,
-            )
-            if active is None:
+            try:
+                return read_compaction(reader.connection(), session_dir, active_id)
+            except FileNotFoundError as exc:
                 raise PersistenceError(
                     f"session {session_id} references missing compaction {active_id}"
-                )
-            return active
+                ) from exc
 
     def load_compactions(self, session_id: str) -> list[CompactionRecord]:
-        with self.session_mutation(session_id):
-            session_dir = self._require_session_dir(session_id)
-            return self._load_compactions(session_dir)
+        with self.session_read(session_id) as reader:
+            return read_compactions(reader.connection(), self._session_dir(session_id))
 
     def latest_event_sequence(self, session_id: str) -> int:
-        with self.session_mutation(session_id):
-            path = self._require_session_dir(session_id) / "events.jsonl"
-            return self._max_event_sequence(session_id, path)
+        with self.session_read(session_id) as reader:
+            return latest_sequence(reader.connection(), session_id)
 
     def load_session_record(self, session_id: str) -> SessionRecord:
-        with self.session_mutation(session_id):
-            return self._commits.load_session_harness(session_id)[0]
+        with self.session_read(session_id) as reader:
+            return read_session(reader.connection(), session_id)
 
     def load_session_harness(self, session_id: str) -> tuple[SessionRecord, HarnessVersion]:
-        with self.session_mutation(session_id):
-            session, version = self._commits.load_session_harness(session_id)
-            session.controls = SessionControlState.model_validate(session.controls.model_dump())
-            return session, version
+        with self.session_read(session_id) as reader:
+            session = read_session(reader.connection(), session_id)
+            harness = self._commits.load_harness(session_id, session.harness_version)
+            return session, harness
 
     def load_messages_page(
         self,
@@ -955,32 +1213,117 @@ class LocalSessionStore:
         limit: int = 100,
     ) -> tuple[list[MessageRecord], int | None]:
         cursor, limit = _validated_page_args(cursor, limit)
-        with self.session_mutation(session_id):
-            path = self._require_session_dir(session_id) / "messages.jsonl"
-            return self._read_record_page(
-                path,
-                MessageRecord,
+        with self.session_read(session_id) as reader:
+            return self._messages.page(
+                reader.connection(),
+                self._require_session_dir(session_id),
+                session_id=session_id,
                 cursor=cursor,
                 limit=limit,
             )
 
     def load_message(self, session_id: str, message_id: str) -> MessageRecord:
-        with self.session_mutation(session_id):
-            path = self._require_session_dir(session_id) / "messages.jsonl"
-            message = self._message_queries.message(path, message_id)
+        with self.session_read(session_id) as reader:
+            directory = self._require_session_dir(session_id)
+            message = self._messages.message(reader.connection(), directory, message_id)
             if message is not None:
+                if message.session_id != session_id:
+                    raise PersistenceError("message record belongs to another Session")
                 return message
         raise PersistenceError(f"message not found in session {session_id}: {message_id}")
 
+    def load_message_fact(self, session_id: str, message_id: str) -> MessageFact:
+        with self.session_read(session_id) as reader:
+            fact = self._messages.fact(
+                reader.connection(), self._require_session_dir(session_id), message_id
+            )
+            if fact is None or fact.session_id != session_id:
+                raise PersistenceError(f"message not found in session {session_id}: {message_id}")
+            return fact
+
+    def load_run_message_counts(self, session_id: str, run_id: str) -> RunMessageCounts:
+        with self.session_read(session_id) as reader:
+            return self._messages.index.read_counts(reader.connection(), run_id)
+
+    def load_run_result_references(
+        self, session_id: str, run_id: str, *, delegation_id: str
+    ) -> RunResultReferences:
+        with self.session_read(session_id) as reader:
+            return self._messages.result_references(
+                reader.connection(), run_id, delegation_id=delegation_id
+            )
+
     def load_run_messages(self, session_id: str, run_id: str) -> list[MessageRecord]:
-        with self.session_mutation(session_id):
-            path = self._require_session_dir(session_id) / "messages.jsonl"
-            return self._message_queries.run(path, run_id)
+        with self.session_read(session_id) as reader:
+            directory = self._require_session_dir(session_id)
+            return self._messages.run(reader.connection(), directory, run_id, session_id=session_id)
+
+    def has_run_messages(self, session_id: str, run_id: str) -> bool:
+        with self.session_read(session_id) as reader:
+            found = self._messages.index.last_reference(reader.connection(), "runs", run_id)
+            if found is None:
+                return False
+            if found.run_id != run_id:
+                raise PersistenceError("Run message lookup has a foreign identity")
+            return True
+
+    def has_input_messages(self, session_id: str) -> bool:
+        with self.session_read(session_id) as reader:
+            found = self._messages.index.last_reference(
+                reader.connection(), "input_messages", "all"
+            )
+            if found is None:
+                return False
+            if found.role not in {"user", "system"}:
+                raise PersistenceError("input history lookup has a non-input message")
+            return True
+
+    def find_last_assistant_message(self, session_id: str, run_id: str) -> MessageRecord | None:
+        with self.session_read(session_id) as reader:
+            directory = self._require_session_dir(session_id)
+            found = self._messages.index.last_reference(
+                reader.connection(), "assistant_runs", run_id
+            )
+            if found is None:
+                return None
+            if found.run_id != run_id or found.role != "assistant":
+                raise PersistenceError("assistant lookup has a foreign message")
+            return self._messages.resolve(
+                reader.connection(), directory, found, session_id=session_id
+            )
+
+    def find_assistant_message(
+        self, session_id: str, run_id: str, turn_id: str
+    ) -> MessageRecord | None:
+        with self.session_read(session_id) as reader:
+            return self._messages.run_message(
+                reader.connection(),
+                self._require_session_dir(session_id),
+                session_id=session_id,
+                run_id=run_id,
+                kind="assistant_turns",
+                identity=turn_id,
+            )
+
+    def find_context_provider_message(
+        self, session_id: str, run_id: str, delivery_key: str
+    ) -> MessageRecord | None:
+        with self.session_read(session_id) as reader:
+            return self._messages.run_message(
+                reader.connection(),
+                self._require_session_dir(session_id),
+                session_id=session_id,
+                run_id=run_id,
+                kind="context_deliveries",
+                identity=delivery_key,
+            )
 
     def find_queued_input_message(self, session_id: str, queue_id: str) -> MessageRecord | None:
-        with self.session_mutation(session_id):
-            path = self._require_session_dir(session_id) / "messages.jsonl"
-            return self._message_queries.queued(path, queue_id)
+        with self.session_read(session_id) as reader:
+            directory = self._require_session_dir(session_id)
+            return self._messages.queued(
+                reader.connection(), directory, queue_id, session_id=session_id
+            )
 
     def load_events_page(
         self,
@@ -991,16 +1334,9 @@ class LocalSessionStore:
         run_id: str | None = None,
     ) -> tuple[list[EventRecord], int | None]:
         cursor, limit = _validated_page_args(cursor, limit)
-        with self.session_mutation(session_id):
-            path = self._require_session_dir(session_id) / "events.jsonl"
-            if run_id is not None and cursor == 0:
-                cursor = self._event_run_offset(session_id, run_id, path)
-            return self._read_record_page(
-                path,
-                EventRecord,
-                cursor=cursor,
-                limit=limit,
-                run_id=run_id,
+        with self.session_read(session_id) as reader:
+            return read_events_page(
+                reader.connection(), session_id, cursor=cursor, limit=limit, run_id=run_id
             )
 
     def load_events_after(
@@ -1011,102 +1347,48 @@ class LocalSessionStore:
         limit: int = 100,
     ) -> tuple[list[EventRecord], bool]:
         after_sequence, limit = _validated_page_args(after_sequence, limit)
-        records: list[EventRecord] = []
-        try:
-            with self.session_mutation(session_id):
-                path = self._require_session_dir(session_id) / "events.jsonl"
-                if after_sequence >= self._max_event_sequence(session_id, path):
-                    return [], False
-                offset = self._event_offset_after_sequence(
-                    session_id,
-                    path,
-                    after_sequence=after_sequence,
-                )
-                with path.open("rb") as file:
-                    file.seek(offset)
-                    for raw in file:
-                        if not raw.strip():
-                            continue
-                        event = decode_versioned_record_json(
-                            EventRecord,
-                            raw,
-                            label=f"event in session {session_id}",
-                        )
-                        if event.sequence <= after_sequence:
-                            continue
-                        records.append(event)
-                        if len(records) > limit:
-                            return records[:limit], True
-        except (OSError, UnicodeDecodeError, ValidationError, ValueError) as exc:
-            raise PersistenceError(f"could not read events after sequence: {exc}") from exc
-        return records, False
+        with self.session_read(session_id) as reader:
+            return read_events_after(
+                reader.connection(), session_id, after_sequence=after_sequence, limit=limit
+            )
 
     def load_run(self, session_id: str, run_id: str) -> RunRecord:
-        with self.session_mutation(session_id):
-            validated_run_id = _validated_record_id(run_id, kind="run")
-            path = self._session_dir(session_id) / "runs" / f"{validated_run_id}.json"
-            try:
-                return decode_versioned_record_json(
-                    RunRecord,
-                    read_text_atomic(path),
-                    label=f"run {run_id} for session {session_id}",
-                )
-            except FileNotFoundError:
-                raise
-            except (OSError, ValidationError, ValueError) as exc:
-                raise PersistenceError(
-                    f"could not load run {run_id} for session {session_id}: {exc}"
-                ) from exc
+        with self.session_read(session_id) as reader:
+            return read_run(reader.connection(), session_id, run_id)
 
     def list_sessions(self) -> list[SessionRecord]:
-        return [
-            self.load_session_record(path.parent.name)
-            for path in sorted(self.sessions_dir.glob("[!.]*/session.json"))
-        ]
+        sessions = []
+        for path in sorted(self.sessions_dir.glob("[!.]*/session-data.sqlite3")):
+            try:
+                sessions.append(self.load_session_record(path.parent.name))
+            except FileNotFoundError:
+                # A reserved resource directory can have unpublished snapshot data.
+                continue
+        return sessions
 
     def load_resource_references(self, session_id: str) -> list[SessionResourceReference]:
-        with self.session_mutation(session_id):
-            return self._load_resource_references(session_id)
+        with self.session_read(session_id) as reader:
+            return sqlite_resources.read_references(reader.connection(), session_id)
 
-    def _load_resource_references(self, session_id: str) -> list[SessionResourceReference]:
-        path = self._resource_reference_path(session_id)
-        try:
-            return SessionResourceReferences.model_validate_json(read_text_atomic(path)).resources
-        except FileNotFoundError:
-            raise
-        except (OSError, ValidationError, ValueError) as exc:
-            raise PersistenceError(
-                f"could not load resource references for session {session_id}: {exc}"
-            ) from exc
+    def load_resource_reference(
+        self, session_id: str, resource_id: str
+    ) -> SessionResourceReference:
+        with self.session_read(session_id) as reader:
+            return sqlite_resources.read_reference(reader.connection(), session_id, resource_id)
 
     def attach_resource_reference(
-        self,
-        session_id: str,
-        reference: SessionResourceReference,
+        self, session_id: str, reference: SessionResourceReference
     ) -> None:
         with self.session_mutation(session_id):
-            references = self.load_resource_references(session_id)
-            if any(item.resource_id == reference.resource_id for item in references):
-                return
-            references.append(reference)
-            self._write_model_atomic(
-                self._resource_reference_path(session_id),
-                SessionResourceReferences(resources=references),
-            )
+            self._require_session_dir(session_id)
+            with self._commits.connect(session_id, mode="rw") as connection:
+                sqlite_resources.attach_reference(connection, session_id, reference)
 
     def remove_resource_reference(self, session_id: str, resource_id: str) -> None:
         with self.session_mutation(session_id):
-            references = self.load_resource_references(session_id)
-            if not any(item.resource_id == resource_id for item in references):
-                raise ResourceNotFoundError(
-                    f"resource {resource_id} is not attached to session {session_id}"
-                )
-            self._write_model_atomic(
-                self._resource_reference_path(session_id),
-                SessionResourceReferences(
-                    resources=[item for item in references if item.resource_id != resource_id]
-                ),
-            )
+            self._require_session_dir(session_id)
+            with self._commits.connect(session_id, mode="rw") as connection:
+                sqlite_resources.remove_reference(connection, session_id, resource_id)
 
     def load_session_extension_states(self, session_id: str) -> list[SessionExtensionStateRecord]:
         return list(self.load_harness(session_id).state.states)
@@ -1130,17 +1412,40 @@ class LocalSessionStore:
         return self._catalog.load()
 
     def acquire_session_lock(self, session_id: str, run_id: str) -> SessionRunLock | None:
-        lock = SessionRunLock(self._lock_path(session_id), session_id=session_id, run_id=run_id)
+        connections = ExecutionConnections(
+            self._session_dir(session_id) / "session-data.sqlite3", create=False
+        )
+
+        def released() -> None:
+            self._connections.pop(session_id)
+
+        lock = NativeSessionRunLock(
+            self._lock_path(session_id),
+            session_id=session_id,
+            run_id=run_id,
+            connections=connections,
+            on_release=released,
+        )
         try:
-            return lock if lock.acquire() else None
+            if not lock.acquire():
+                return None
+            self._connections[session_id] = connections
+            return lock
         except OSError as exc:
             raise PersistenceError(
                 f"could not acquire session lock for {session_id}: {exc}"
             ) from exc
 
-    def session_read(self, session_id: str) -> SessionMutationLock:
-        # Files need the same short, reentrant Session lock for coherent reads.
-        return self.session_mutation(session_id)
+    @contextmanager
+    def session_read(self, session_id: str) -> Iterator[_SessionRead]:
+        # Nested consumers share the whole read boundary, including its lock and
+        # directory identity, rather than constructing another boundary per read.
+        current = getattr(self._read_state, "scopes", {}).get(session_id)
+        if current is not None:
+            yield current
+        else:
+            with _SessionRead(self, session_id) as reader:
+                yield reader
 
     def session_mutation(self, session_id: str) -> SessionMutationLock:
         return _SessionMutation(self, session_id)
@@ -1156,33 +1461,17 @@ class LocalSessionStore:
     def _session_dir(self, session_id: str) -> Path:
         return self.sessions_dir / _validated_record_id(session_id, kind="session")
 
-    def _delegation_path(self, root_session_id: str, delegation_id: str) -> Path:
-        root_dir = self._require_session_dir(root_session_id)
-        validated = _validated_record_id(delegation_id, kind="delegation")
-        return root_dir / "delegations" / f"{validated}.json"
-
-    def _load_delegations_from_dir(self, directory: Path) -> list[DelegationRecord]:
-        return [self._load_delegation_path(path) for path in sorted(directory.glob("*.json"))]
-
-    @staticmethod
-    def _load_delegation_path(path: Path) -> DelegationRecord:
-        try:
-            return decode_versioned_record_json(
-                DelegationRecord,
-                read_text_atomic(path),
-                label=f"delegation {path}",
-            )
-        except (OSError, ValidationError, ValueError) as exc:
-            raise PersistenceError(f"could not load delegation {path}: {exc}") from exc
-
-    def _resource_reference_path(self, session_id: str) -> Path:
-        return self._require_session_dir(session_id) / "resources" / "index.json"
-
     def _require_session_dir(self, session_id: str) -> Path:
         session_dir = self._session_dir(session_id)
-        session_path = session_dir / "session.json"
+        session_path = session_dir / "session-data.sqlite3"
         if not session_path.is_file():
             raise FileNotFoundError(session_path)
+        scope = getattr(self._read_state, "scopes", {}).get(session_id)
+        if scope is not None:
+            scope.connection()
+        else:
+            with self._commits.connect(session_id) as connection:
+                require_session(connection, session_id)
         return session_dir
 
     def _initialize_layout(self) -> None:
@@ -1260,382 +1549,11 @@ class LocalSessionStore:
         validated = _validated_record_id(session_id, kind="session")
         return self.session_mutation_locks_dir / f"{validated}.lock"
 
-    def _event_run_offset(
-        self,
-        session_id: str,
-        run_id: str,
-        journal: Path,
-    ) -> int:
-        """Return the first possible byte for a Run without rescanning old Runs."""
-
-        validated_run_id = _validated_record_id(run_id, kind="run")
-        key = (session_id, validated_run_id)
-        cached = self._event_run_offset_cache.get(key)
-        if cached is not None:
-            return cached
-        journal_size = journal.stat().st_size if journal.exists() else 0
-        index_path = self._event_run_offset_path(session_id, validated_run_id)
-        if index_path.exists():
-            try:
-                raw = json.loads(read_text_atomic(index_path))
-                offset = raw["offset"]
-                if (
-                    raw.get("schema_version") == 1
-                    and raw.get("run_id") == validated_run_id
-                    and isinstance(offset, int)
-                    and not isinstance(offset, bool)
-                    and _is_record_boundary(journal, offset, journal_size)
-                    and self._event_run_offset_matches(
-                        journal,
-                        run_id=validated_run_id,
-                        offset=offset,
-                        journal_size=journal_size,
-                        index=raw,
-                    )
-                ):
-                    self._event_run_offset_cache[key] = offset
-                    return offset
-            except OSError, KeyError, TypeError, ValueError, json.JSONDecodeError:
-                # This is a derived accelerator. Rebuild it from the canonical
-                # append-only journal instead of making the Session unreadable.
-                pass
-        offset, first_event = self._find_event_run_offset(
-            journal,
-            session_id=session_id,
-            run_id=run_id,
-        )
-        self._write_event_run_offset(
-            session_id,
-            validated_run_id,
-            offset,
-            journal_size=journal_size,
-            first_event=first_event,
-        )
-        return offset
-
-    def _find_event_run_offset(
-        self,
-        journal: Path,
-        *,
-        session_id: str,
-        run_id: str,
-    ) -> tuple[int, EventRecord | None]:
-        run_id_pattern = re.compile(
-            rb'"run_id"\s*:\s*' + re.escape(json.dumps(run_id, ensure_ascii=False).encode("utf-8"))
-        )
-        try:
-            with journal.open("rb") as file:
-                while True:
-                    offset = file.tell()
-                    raw = file.readline()
-                    if not raw:
-                        return offset, None
-                    if not raw.strip() or run_id_pattern.search(raw) is None:
-                        continue
-                    event = decode_versioned_record_json(
-                        EventRecord,
-                        raw,
-                        label=f"event in session {session_id}",
-                    )
-                    if event.run_id == run_id:
-                        return offset, event
-        except (OSError, UnicodeDecodeError, ValidationError, ValueError) as exc:
-            raise PersistenceError(
-                f"could not locate Run {run_id} events in Session {session_id}: {exc}"
-            ) from exc
-
-    def _write_event_run_offset(
-        self,
-        session_id: str,
-        run_id: str,
-        offset: int,
-        *,
-        journal_size: int,
-        first_event: EventRecord | None = None,
-    ) -> None:
-        validated_run_id = _validated_record_id(run_id, kind="run")
-        payload = {
-            "schema_version": 1,
-            "run_id": validated_run_id,
-            "offset": offset,
-            "journal_size": journal_size,
-        }
-        if first_event is not None:
-            payload.update(
-                {
-                    "first_event_id": first_event.event_id,
-                    "first_event_sequence": first_event.sequence,
-                }
-            )
-        self._event_run_offset_cache[(session_id, validated_run_id)] = offset
-        path = self._event_run_offset_path(session_id, validated_run_id)
-        if offset == 0 and not path.exists():
-            # Absence already means "scan from the journal start". Persisting
-            # a zero cursor would add I/O without narrowing any future read.
-            return
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
-        except OSError, TypeError, ValueError:
-            # This index is disposable. The in-memory offset remains valid for
-            # this Store; a reopened Store can rebuild it from events.jsonl.
-            return
-
-    @staticmethod
-    def _event_run_offset_matches(
-        journal: Path,
-        *,
-        run_id: str,
-        offset: int,
-        journal_size: int,
-        index: dict[str, object],
-    ) -> bool:
-        if offset == 0:
-            return True
-        if offset == journal_size:
-            return index.get("journal_size") == journal_size
-        event_id = index.get("first_event_id")
-        sequence = index.get("first_event_sequence")
-        if (
-            not isinstance(event_id, str)
-            or not isinstance(sequence, int)
-            or isinstance(sequence, bool)
-        ):
-            return False
-        try:
-            with journal.open("rb") as file:
-                file.seek(offset)
-                payload = json.loads(file.readline())
-        except OSError, TypeError, ValueError, json.JSONDecodeError:
-            return False
-        return (
-            isinstance(payload, dict)
-            and payload.get("run_id") == run_id
-            and payload.get("event_id") == event_id
-            and payload.get("sequence") == sequence
-        )
-
-    def _event_run_offset_path(self, session_id: str, run_id: str) -> Path:
-        return self._session_dir(session_id) / "event-index" / "runs" / f"{run_id}.json"
-
-    def _read_events_for_run(
-        self,
-        journal: Path,
-        *,
-        session_id: str,
-        run_id: str,
-        offset: int,
-    ) -> list[EventRecord]:
-        run_id_pattern = re.compile(
-            rb'"run_id"\s*:\s*' + re.escape(json.dumps(run_id, ensure_ascii=False).encode("utf-8"))
-        )
-        events: list[EventRecord] = []
-        try:
-            with journal.open("rb") as file:
-                file.seek(offset)
-                for raw in file:
-                    if not raw.strip() or run_id_pattern.search(raw) is None:
-                        continue
-                    event = decode_versioned_record_json(
-                        EventRecord,
-                        raw,
-                        label=f"event in session {session_id}",
-                    )
-                    if event.run_id == run_id:
-                        events.append(event)
-        except (OSError, UnicodeDecodeError, ValidationError, ValueError) as exc:
-            raise PersistenceError(
-                f"could not read Run {run_id} events in Session {session_id}: {exc}"
-            ) from exc
-        return events
-
-    def _prepare_event_sequence_index(
-        self,
-        session_id: str,
-        journal: Path,
-        *,
-        sequence: int,
-        offset: int | None = None,
-    ) -> None:
-        """Checkpoint a sparse sequence-to-byte cursor before journal append."""
-
-        if session_id not in self._event_sequence_index_cache:
-            self._event_sequence_index_cache[session_id] = self._load_last_sequence_checkpoint(
-                session_id,
-                journal,
-            )
-        previous = self._event_sequence_index_cache[session_id]
-        if previous is not None and sequence - previous[0] < _EVENT_SEQUENCE_INDEX_STRIDE:
-            return
-        journal_size = (
-            offset if offset is not None else (journal.stat().st_size if journal.exists() else 0)
-        )
-        if previous is None and journal_size == 0:
-            # Offset zero is the implicit checkpoint. Materialize the sparse
-            # index only once it can skip a non-empty historical prefix.
-            self._event_sequence_index_cache[session_id] = (sequence, journal_size)
-            return
-        index_path = self._event_sequence_index_path(session_id)
-        try:
-            index_path.parent.mkdir(parents=True, exist_ok=True)
-            with index_path.open("wb" if previous is None else "ab") as file:
-                file.write(_EVENT_SEQUENCE_INDEX_RECORD.pack(sequence, journal_size))
-        except OSError, struct.error:
-            # Checkpoints are query accelerators, not part of event durability.
-            # Retry at the next sparse boundary without blocking this append.
-            self._event_sequence_index_cache[session_id] = (sequence, journal_size)
-            return
-        self._event_sequence_index_cache[session_id] = (sequence, journal_size)
-
-    def _load_last_sequence_checkpoint(
-        self,
-        session_id: str,
-        journal: Path,
-    ) -> tuple[int, int] | None:
-        index_path = self._event_sequence_index_path(session_id)
-        if not index_path.exists():
-            return None
-        try:
-            index_size = index_path.stat().st_size
-            complete_size = index_size - (index_size % _EVENT_SEQUENCE_INDEX_RECORD.size)
-            if complete_size == 0:
-                return None
-            if complete_size != index_size:
-                with index_path.open("r+b") as file:
-                    file.truncate(complete_size)
-            with index_path.open("rb") as file:
-                file.seek(complete_size - _EVENT_SEQUENCE_INDEX_RECORD.size)
-                sequence, offset = _EVENT_SEQUENCE_INDEX_RECORD.unpack(file.read())
-            journal_size = journal.stat().st_size if journal.exists() else 0
-            if not _is_record_boundary(journal, offset, journal_size):
-                return None
-            return sequence, offset
-        except OSError, struct.error:
-            return None
-
-    def _event_offset_after_sequence(
-        self,
-        session_id: str,
-        journal: Path,
-        *,
-        after_sequence: int,
-    ) -> int:
-        """Find a bounded forward-scan start using fixed-width sparse checkpoints."""
-
-        index_path = self._event_sequence_index_path(session_id)
-        try:
-            record_size = _EVENT_SEQUENCE_INDEX_RECORD.size
-            record_count = index_path.stat().st_size // record_size
-            if record_count == 0:
-                return 0
-            target = after_sequence + 1
-            low = 0
-            high = record_count
-            candidate: tuple[int, int] | None = None
-            with index_path.open("rb") as index:
-                while low < high:
-                    middle = (low + high) // 2
-                    index.seek(middle * record_size)
-                    raw = index.read(record_size)
-                    if len(raw) != record_size:
-                        return 0
-                    sequence, offset = _EVENT_SEQUENCE_INDEX_RECORD.unpack(raw)
-                    if sequence <= target:
-                        candidate = (sequence, offset)
-                        low = middle + 1
-                    else:
-                        high = middle
-            if candidate is None:
-                return 0
-            sequence, offset = candidate
-            journal_size = journal.stat().st_size
-            if not _is_record_boundary(journal, offset, journal_size) or offset == journal_size:
-                return 0
-            with journal.open("rb") as file:
-                file.seek(offset)
-                raw = file.readline()
-            payload = json.loads(raw)
-            if not isinstance(payload, dict) or payload.get("sequence") != sequence:
-                return 0
-            return offset
-        except (
-            OSError,
-            TypeError,
-            ValueError,
-            json.JSONDecodeError,
-            struct.error,
-        ):
-            # A corrupt/missing accelerator must never hide canonical events.
-            return 0
-
-    def _event_sequence_index_path(self, session_id: str) -> Path:
-        return self._session_dir(session_id) / "event-index" / "sequences.bin"
-
-    def _max_event_sequence(self, session_id: str, path: Path) -> int:
-        size = path.stat().st_size if path.exists() else 0
-        cached = self._event_sequence_cache.get(session_id)
-        if cached is not None and cached[0] == size:
-            return cached[1]
-        if size == 0:
-            self._event_sequence_cache[session_id] = (0, 0)
-            return 0
-        try:
-            # A trailing LF only ends a record; its beginning may be many
-            # blocks earlier. Reuse the complete-record reader used by messages.
-            with closing(reverse_jsonl(path, block_size=8192)) as records:
-                _, line = next(records, (0, b""))
-            raw = json.loads(line)
-            if not isinstance(raw, dict):
-                raise ValueError("event record must be a JSON object")
-            value = raw.get("sequence", 0)
-            if not isinstance(value, int) or value < 0:
-                raise ValueError("event sequence must be a non-negative integer")
-        except (OSError, UnicodeDecodeError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise PersistenceError(f"could not read event sequence from {path}: {exc}") from exc
-        self._event_sequence_cache[session_id] = (size, value)
-        return value
-
-    def _load_compactions(self, session_dir: Path) -> list[CompactionRecord]:
-        return [
-            decode_versioned_record_json(
-                CompactionRecord,
-                line,
-                label=f"compaction in {session_dir}",
-            )
-            for line in self._iter_jsonl(session_dir / "compactions.jsonl")
-        ]
-
     def _write_model_atomic(self, path: Path, model: OuroModel) -> None:
         write_model_atomic(path, model)
 
     def _write_json_atomic(self, path: Path, value: object) -> None:
         write_json_atomic(path, value)
-
-    def _append_jsonl(self, path: Path, model: OuroModel, *, durable: bool = True) -> None:
-        self._append_jsonl_batch(path, [model], durable=durable)
-
-    def _append_jsonl_batch(
-        self,
-        path: Path,
-        models: Sequence[OuroModel],
-        *,
-        durable: bool = True,
-    ) -> None:
-        if not models:
-            return
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as file:
-                for model in models:
-                    file.write(model.model_dump_json() + "\n")
-                file.flush()
-                if durable:
-                    os.fsync(file.fileno())
-        except (OSError, TypeError, ValueError) as exc:
-            raise PersistenceError(f"could not append batch to {path}: {exc}") from exc
 
     def _iter_jsonl(self, path: Path) -> Iterator[str]:
         if not path.exists():
@@ -1650,58 +1568,6 @@ class LocalSessionStore:
                         yield line
         except OSError as exc:
             raise PersistenceError(f"could not read {path}: {exc}") from exc
-
-    def _read_record_page(
-        self,
-        path: Path,
-        model_type: type[_JournalRecord],
-        *,
-        cursor: int,
-        limit: int,
-        run_id: str | None = None,
-    ) -> tuple[list[_JournalRecord], int | None]:
-        run_id_pattern = (
-            re.compile(
-                rb'"run_id"\s*:\s*'
-                + re.escape(json.dumps(run_id, ensure_ascii=False).encode("utf-8"))
-            )
-            if run_id is not None
-            else None
-        )
-        try:
-            size = path.stat().st_size
-            if cursor > size:
-                raise ValueError(f"cursor {cursor} is beyond end of journal ({size})")
-            with path.open("rb") as file:
-                if cursor:
-                    file.seek(cursor - 1)
-                    if file.read(1) != b"\n":
-                        raise ValueError(f"cursor {cursor} is not at a record boundary")
-                file.seek(cursor)
-                records: list[_JournalRecord] = []
-                while len(records) < limit:
-                    raw = file.readline()
-                    if not raw:
-                        break
-                    if not raw.strip():
-                        continue
-                    # Filtering belongs to the persistence query boundary. Avoid
-                    # decoding unrelated records, then validate candidate matches
-                    # through the canonical versioned-record decoder below.
-                    if run_id_pattern is not None and run_id_pattern.search(raw) is None:
-                        continue
-                    record = decode_versioned_record_json(
-                        model_type,
-                        raw,
-                        label=f"{model_type.__name__} in {path}",
-                    )
-                    if run_id is not None and getattr(record, "run_id", None) != run_id:
-                        continue
-                    records.append(record)
-                position = file.tell()
-            return records, position if position < size else None
-        except (OSError, UnicodeDecodeError, ValidationError, ValueError) as exc:
-            raise PersistenceError(f"could not read journal page from {path}: {exc}") from exc
 
 
 def _run_sort_key(run: RunRecord) -> tuple[str, str]:
@@ -1722,17 +1588,64 @@ def _validated_page_args(cursor: int, limit: int) -> tuple[int, int]:
     return cursor, limit
 
 
-def _is_record_boundary(path: Path, offset: int, size: int) -> bool:
-    if offset < 0 or offset > size:
-        return False
-    if offset == 0:
-        return True
-    try:
-        with path.open("rb") as file:
-            file.seek(offset - 1)
-            return file.read(1) == b"\n"
-    except OSError:
-        return False
+class _SessionRead(SessionMutationLock):
+    def __init__(self, store: LocalSessionStore, session_id: str) -> None:
+        super().__init__(store._mutation_lock_path(session_id), session_id=session_id)
+        self._store = store
+        self._connection: sqlite3.Connection | None = None
+        self._resources = ExitStack()
+
+    def __enter__(self) -> Self:
+        super().__enter__()
+        try:
+            if (self._store._session_dir(self.session_id) / "commit.json").exists():
+                raise SessionRecoveryRequiredError(
+                    f"Session {self.session_id} has a pending native decision; "
+                    "enter session_mutation to recover it before reading"
+                )
+            self._store._observe_session_directory(self.session_id)
+            scopes = getattr(self._store._read_state, "scopes", None)
+            if scopes is None:
+                scopes = self._store._read_state.scopes = {}
+            scopes[self.session_id] = self
+        except BaseException:
+            super().release()
+            raise
+        return self
+
+    def connection(self) -> sqlite3.Connection:
+        assert self._acquired
+        if self._connection is None:
+            directory = self._store._session_dir(self.session_id)
+            if not (directory / "session-data.sqlite3").is_file():
+                raise FileNotFoundError(self.session_id)
+            self._connection = self._resources.enter_context(
+                connect_data(
+                    directory,
+                    connections=self._store._connections.get(self.session_id),
+                )
+            )
+            require_session(self._connection, self.session_id)
+        return self._connection
+
+    def release(self) -> None:
+        try:
+            if self._acquired:
+                self._store._read_state.scopes.pop(self.session_id)
+                self._resources.close()
+        finally:
+            super().release()
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        try:
+            self._resources.__exit__(exc_type, exc, traceback)
+        finally:
+            self.release()
 
 
 class _SessionMutation(SessionMutationLock):
@@ -1743,19 +1656,7 @@ class _SessionMutation(SessionMutationLock):
     def __enter__(self) -> Self:
         super().__enter__()
         try:
-            directory = self._store._session_dir(self.session_id)
-            try:
-                stat = directory.stat()
-            except FileNotFoundError:
-                pass
-            else:
-                identity = (stat.st_dev, stat.st_ino)
-                previous = self._store._session_directory_ids.get(self.session_id)
-                if previous is not None and previous != identity:
-                    # Replacement can come from another Host. Directory identity
-                    # invalidates cursors even when journal lengths happen to match.
-                    self._store._invalidate_session_caches(self.session_id)
-                self._store._session_directory_ids[self.session_id] = identity
+            self._store._observe_session_directory(self.session_id)
             self._store._commits.finish(self.session_id)
         except OSError as exc:
             self.release()

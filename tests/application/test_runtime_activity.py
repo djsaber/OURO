@@ -7,6 +7,7 @@ from ouro.application.contracts.execution import (
 )
 from ouro.application.observations.activity import (
     overlay_run_activity,
+    project_batch_activity,
     project_runtime_activity,
     queued_runtime_activity,
     reduce_runtime_activity,
@@ -29,24 +30,23 @@ def test_terminal_run_snapshot_cannot_reactivate_retained_tool_calls(status):
     terminal = _event(2, "run_failed", {"error": "contract unavailable"})
     current = reduce_runtime_activity(queued_runtime_activity("ses_1"), requested)
     current = reduce_runtime_activity(current, terminal)
+    batch = ToolCallBatchRecord(
+        turn_id="turn_1",
+        assistant_message_id="msg_1",
+        calls=[
+            ToolBatchCall(request=ToolCallRequest(id="shell", name="PowerShell"), status="ready"),
+            ToolBatchCall(request=ToolCallRequest(id="done", name="Read"), status="completed"),
+        ],
+    )
     run = RunRecord(
         session_id="ses_1",
         run_id="run_1",
         status=status,
         ended_at=terminal.created_at,
-        active_tool_batch=ToolCallBatchRecord(
-            turn_id="turn_1",
-            assistant_message_id="msg_1",
-            calls=[
-                ToolBatchCall(
-                    request=ToolCallRequest(id="shell", name="PowerShell"), status="ready"
-                ),
-                ToolBatchCall(request=ToolCallRequest(id="done", name="Read"), status="completed"),
-            ],
-        ),
+        active_tool_batch=batch.head(),
     )
     for activity in [current, queued_runtime_activity("ses_1")]:
-        restored = overlay_run_activity(activity, run)
+        restored = overlay_run_activity(activity, run, tool_calls=project_batch_activity(batch))
         expected = (
             "failed"
             if status == "failed"
@@ -55,10 +55,11 @@ def test_terminal_run_snapshot_cannot_reactivate_retained_tool_calls(status):
             else "unknown_outcome"
         )
         calls = {call.tool_call_id: call for call in restored.tool_calls}
+        assert all(call.batch_id == batch.batch_id for call in calls.values())
         assert calls["shell"].status == expected
         assert calls["shell"].ended_at == run.ended_at
         assert calls["done"].status == "completed"
-    assert run.active_tool_batch.calls[0].status == "ready"
+    assert batch.calls[0].status == "ready"
 
 
 def _event(
@@ -367,7 +368,7 @@ def test_runtime_activity_projection_overlays_authoritative_durable_tool_state()
         run_id="run_1",
         status="running",
         phase="tool_execution",
-        active_tool_batch=batch,
+        active_tool_batch=batch.head(),
     )
     snapshot = SessionSnapshot(
         session=session,
@@ -375,7 +376,7 @@ def test_runtime_activity_projection_overlays_authoritative_durable_tool_state()
         events=[_event(1, "run_started")],
     )
 
-    activity = project_runtime_activity(snapshot)
+    activity = project_runtime_activity(snapshot, batch=batch)
 
     assert activity.activity == "executing_tools"
     assert activity.run_phase == "tool_execution"

@@ -26,7 +26,7 @@ def test_run_selects_task_backend_without_changing_session_backend(tmp_path, cap
         == 0
     )
     result = json.loads(capsys.readouterr().out)
-    assert (tmp_path / "sessions" / result["session_id"] / "session.json").is_file()
+    assert (tmp_path / "sessions" / result["session_id"] / "session-data.sqlite3").is_file()
     assert not (tmp_path / "sessions.sqlite3").exists()
     assert (tmp_path / "tasks.sqlite3").exists() == (task_backend == "sqlite")
     assert (tmp_path / "tasks" / "layout.json").exists() == (task_backend == "files")

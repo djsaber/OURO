@@ -256,6 +256,7 @@ class LocalApplication:
             scheduler=supervisor,
             events=runtime.event_recorder,
             resources=runtime.resources,
+            usage_service=runtime.usage,
             spawn_policy=configured_agents.runtime.spawn_policy,
             max_depth=configured_agents.runtime.max_depth,
         )
@@ -685,7 +686,9 @@ def build_local_session_services(
     resource_store.initialize()
     resources = ResourceService(store=resource_store, sessions=store)
     return LocalSessionServices(
-        sessions=SessionService(store, resources=resources),
+        sessions=SessionService(
+            store, resources=resources, usage_service=build_local_usage_service(root)
+        ),
         resources=resources,
         _store=store,
     )

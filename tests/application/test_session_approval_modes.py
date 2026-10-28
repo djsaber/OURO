@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from ouro.application.runs.tool_batches import load_tool_batch
 from ouro.application.runtime.service import RuntimeService
 from ouro.application.sessions.service import SessionService
 from ouro.core.adapter import RuntimeAdapter
@@ -14,6 +15,7 @@ from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
+from tests.run_facts import run_tool_results
 
 
 class _BlockingWriteProvider:
@@ -117,7 +119,7 @@ async def test_approval_mode_requires_approval_for_automatic_tools(tmp_path) -> 
 
     assert result.run.status == "waiting_approval"
     assert result.run.active_tool_batch is not None
-    invocation = result.run.active_tool_batch.calls[0].invocation
+    invocation = load_tool_batch(runtime.store, result.run).calls[0].invocation
     assert invocation is not None
     assert invocation.permission_mode == "approval"
 
@@ -150,8 +152,11 @@ async def test_deny_mode_rejects_automatic_tools_without_requesting_approval(tmp
     assert result.run.status == "completed"
     assert result.session.approval_mode == "deny"
     assert not target.exists()
-    assert result.tool_results[0].structured["error_type"] == "ToolPermissionDenied"
-    snapshot = runtime.store.load_runtime_session(result.session.session_id)
+    assert (
+        run_tool_results(runtime.store, result)[0].structured["error_type"]
+        == "ToolPermissionDenied"
+    )
+    snapshot = runtime.store.load_session(result.session.session_id)
     tool_message = next(message for message in snapshot.messages if message.role == "tool_result")
     assert tool_message.tool_execution is not None
     assert tool_message.tool_execution.started_at == tool_message.tool_execution.ended_at

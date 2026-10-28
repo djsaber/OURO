@@ -337,7 +337,10 @@ Worker 是语言无关的 JSON-RPC/stdio 进程边界：
 
 双方 reader 只解析和分派，不等待业务回调。请求携带 `parent_id` 时，接收方绑定到仍在执行的父调用；嵌套
 Host 调用继承其只读和 workspace 约束。请求有独立关联 ID、有限正数 `timeout_seconds` 和取消通知；父调用
-结束后不接受其迟到的业务结果。默认每侧同时处理 32 个独立请求，每个方向的在途请求上限为 128；同一调用链的
+结束后不接受其迟到的业务提案。工具 RPC 在取消后移除父调用权限并取消已接受的反向子调用，只保留原响应的
+接收身份，直到返回或连接关闭；该身份不能授权新的反向 Host 请求。确定迟到观察按
+[工具取消契约](tools-and-interactions.md#取消与进程)保存。默认每侧同时处理 32 个独立请求，
+每个方向的在途请求上限为 128；同一调用链的
 重入不占用新的独立请求槽位，但仍受总上限约束。业务完成时释放独立槽位，响应写入任务仍由传输层持有。
 
 反向方法包括 `services.call`、`services.register`、`registrations.close`、`handlers.invoke`、
@@ -397,9 +400,13 @@ Context 只暴露稳定、必要的能力：
 Observer、Context、Prompt/Tool/Turn Policy、Compaction、read_only Tool 获得只读视图；
 Command、状态变更 Tool、Session Controller、Continuation 获得可暂存视图。没有目标 Session 的调用中视图为 None。
 `branch_policy` 与 semantic projection tags 仍通过替换操作声明；插件不传 owner_id、session_id 或版本条件。
-框架将状态、模式关系、输出和等待阶段按 `SessionCommit` 结算；嵌套 Controller 从同一操作的暂存值
+框架将状态、模式关系、领域事实和等待阶段按 `SessionCommit` 结算；嵌套 Controller 从同一操作的暂存值
 读取，输出无效或冲突时不发布部分状态。状态不变的调用不创建版本。具体锚点和撤销契约见
 [Harness 规格](session-undo.md)。
+
+Command 和 Controller 的显示输出保留在本次调用中，不进入永久提交回执。提交期间的取消等待已拥有的写入完成，
+成功后交付原输出及接受身份；原生恢复不重放命令。长期重试使用 Input 或 Run 的领域身份，具体提交确认与
+continuation 方案清理见[会话持久化规格](session-persistence.md#sessionstore-契约)。
 
 Worker 随调用在 params 根对象接收 `session_state = {writable, value, controls, run_controls, usage_tokens}`，
 后面三个字段为 owner 只读控制关系、请求绑定和原生用量投影；其中 value 为
@@ -677,8 +684,9 @@ Catalog 作同一校验。随机 `registration_id` 只标识本次进程内发�
 不会因旧 Catalog 后续释放而重新启动。
 
 Python SDK helper 将单参数工具 handler 的文本、结构化内容、等待请求和恢复结果映射到协议，提供本次调用的
-Session 状态视图。状态返回与 Host 接受保持分离；只读与失效视图拒绝变更，同步 handler 取消后等待线程退出，
-丢弃迟到结果。工具与恢复调用不使用传输层默认超时，其实际生命周期由 Run、调用方取消及 generation gate 控制。
+Session 状态视图。状态返回与 Host 接受保持分离；只读与失效视图拒绝变更，取消先关闭视图，再等待所属回调结束。
+同步或异步 handler 的确定迟到观察可以返回，但不携带状态修改和控制转换意图。工具与恢复调用不使用传输层
+默认超时，其实际生命周期由 Run、调用方取消及 generation gate 控制。
 
 ## 10. Observer、Policy 与 Continuation
 
@@ -721,7 +729,7 @@ Fragment 的 `target = message | system_prompt` 默认是 `message`。`system_pr
 Application 在基础 system prompt 和 Skills 之后按 provider/fragment 稳定顺序追加片段，但不得为它构造 canonical
 message。两种 target 都可以由 producer 通过可选 `semantic_tag` 声明语义；标签存在时由 Core 的同一 renderer
 校验、转义正文中的同名包络分隔符并构造 model-visible envelope，不存在时正文保持原样。producer 不得把包络
-写入 `text`。投影结果计入 token 预算与请求 digest。Context Provider call 可以读取 Host 提供的 Session workspace。
+写入 `text`。投影结果计入 token 预算，并由最近请求 Manifest 保存实际值。Context Provider call 可以读取 Host 提供的 Session workspace。
 
 ### 10.3 Prompt Policy
 
@@ -1055,12 +1063,13 @@ Disable：
 `disable(wait=True)` 在本 Host 的停止预算内等待，未结束返回 `stopping`，清理失败返回 `failed`。
 `disable(wait=False)` 只等待入口撤销和目录发布；`wait_stopped(plugin_id)` 可再次等待本 Host 的清理结果。
 调用方取消不会遗弃清理；失败资源保留归属，显式再次 disable 或 Host shutdown 可以重试清理。
-插件撤销的取消限于回调范围，对外呈现不可用错误；它不取消等待回调的 Host 任务，也不接受吞掉取消后的迟到成功结果。
+插件撤销的取消限于回调范围，对外呈现不可用反馈；它不取消等待回调的 Host 任务，也不接受吞掉取消后的业务提案。
+工具的确定迟到返回仅作为原执行的观察保存，不把撤销后的回调视为当前业务执行成功。
 卸载和私有数据清除必须等待本 Host 相应资源退出；卸载某一 digest 不要求无关版本退出。
 Host shutdown 按已发布 Catalog 的依赖顺序关闭资源，不依赖持久状态文件仍然可读。
 
-进程内插件遵守合作式停止。同步回调的线程不能强杀，取消后仍保留执行归属直到线程结束；其迟到结果不作为成功
-提交。worker 的停止 RPC 和进程树清理由同一 owner 收尾。上述完成状态只代表当前 Host，不声明其他 Host 已停止。
+进程内插件遵守合作式停止。同步回调的线程不能强杀，取消后仍保留执行归属直到线程结束；迟到观察的保存不提交
+旧业务意图。worker 的停止 RPC 和进程树清理由同一 owner 收尾。上述完成状态只代表当前 Host，不声明其他 Host 已停止。
 
 ### 共享 Home 的状态传播
 

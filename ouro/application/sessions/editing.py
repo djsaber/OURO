@@ -7,47 +7,58 @@ from ouro.core.attachment_input import is_editable_user_input
 from ouro.core.base import new_id
 from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.events import EventRecord
+from ouro.core.inputs import InputStateChange
 from ouro.core.messages import ContentBlock, MessageRecord, ModelMessage, TextContent
-from ouro.core.session_commits import SessionCommit, SessionCommitResult
-from ouro.core.state import ACTIVE_RUN_STATUSES, RESUMABLE_RUN_STATUSES, RunRecord
+from ouro.core.session_commits import SessionCommit, SessionCommitConflict
+from ouro.core.state import ACTIVE_RUN_STATUSES, RESUMABLE_RUN_STATUSES, RunRecord, SessionRecord
 from ouro.sessions import RuntimeSessionSnapshot, SessionStore
 
 
 def continuable_run(
-    snapshot: RuntimeSessionSnapshot, *, allow_completed: bool = False
+    store: SessionStore, snapshot: RuntimeSessionSnapshot, *, allow_completed: bool = False
 ) -> RunRecord:
     """Select the latest dialogue execution, independently of maintenance Runs."""
 
-    if any(
-        run.status in ACTIVE_RUN_STATUSES and run.history_epoch == snapshot.session.history_epoch
-        for run in snapshot.runs
-    ):
-        raise SessionBusyError(
-            "Finish or abort the active execution or pending interaction before continuing"
+    with store.session_read(snapshot.session.session_id):
+        if (
+            store.load_session_record(snapshot.session.session_id).history_epoch
+            != snapshot.session.history_epoch
+        ):
+            raise SessionCommitConflict("Continuation belongs to withdrawn Session history")
+        if any(
+            run.status in ACTIVE_RUN_STATUSES
+            and run.history_epoch == snapshot.session.history_epoch
+            for run in snapshot.runs
+        ):
+            raise SessionBusyError(
+                "Finish or abort the active execution or pending interaction before continuing"
+            )
+        run = next(
+            (
+                run
+                for run in reversed(store.load_runs(snapshot.session.session_id))
+                if run.kind == "agent"
+                and (
+                    run.history_epoch == snapshot.session.history_epoch
+                    or store.has_run_messages(snapshot.session.session_id, run.run_id)
+                )
+            ),
+            None,
         )
-    retained_runs = {message.run_id for message in snapshot.messages}
-    run = next(
-        (
-            run
-            for run in reversed(snapshot.runs)
-            if run.kind == "agent"
-            and (run.history_epoch == snapshot.session.history_epoch or run.run_id in retained_runs)
-        ),
-        None,
-    )
-    if run is None:
-        raise ValueError("There is no retained agent input to continue")
-    if (
-        run.history_epoch == snapshot.session.history_epoch
-        and run.status not in RESUMABLE_RUN_STATUSES
-        and not (allow_completed and run.status == "completed")
-    ):
-        raise ValueError(
-            f"The latest agent run is {run.status}; there is no unfinished execution to continue"
-        )
-    if not any(message.role in {"user", "system"} for message in snapshot.messages):
-        raise ValueError("The run has no retained input to continue")
-    return run
+        if run is None:
+            raise ValueError("There is no retained agent input to continue")
+        if (
+            run.history_epoch == snapshot.session.history_epoch
+            and run.status not in RESUMABLE_RUN_STATUSES
+            and not (allow_completed and run.status == "completed")
+        ):
+            raise ValueError(
+                f"The latest agent run is {run.status}; "
+                "there is no unfinished execution to continue"
+            )
+        if not store.has_input_messages(snapshot.session.session_id):
+            raise ValueError("The run has no retained input to continue")
+        return run
 
 
 def undo_user_input(
@@ -83,7 +94,9 @@ def undo_user_input(
                     store,
                     SessionCommit(
                         before=session,
-                        after=queue.without_inputs(session, (pending.queue_id,)),
+                        input_changes=(
+                            InputStateChange(input_id=pending.queue_id, status="cancelled"),
+                        ),
                         events=(
                             EventRecord(
                                 session_id=session_id,
@@ -99,7 +112,7 @@ def undo_user_input(
                 if pending.prompt:
                     content.append(TextContent(text=pending.prompt))
                 return SessionUndoResult(
-                    session=committed.session,
+                    session=committed,
                     input=ModelMessage(role="user", content=content),
                     resource_refs=pending.resource_refs,
                     attachments=pending.attachments,
@@ -167,9 +180,8 @@ def undo_user_input(
                 ),
             )
         store.refresh_catalog(session_id)
-        assert committed.truncation is not None
         return SessionUndoResult(
-            session=committed.session,
+            session=committed,
             input=ModelMessage(
                 role="user",
                 content=[] if selected.semantic_tag == "attachments" else selected.content,
@@ -177,9 +189,9 @@ def undo_user_input(
             resource_refs=tuple(boundary.resource_refs),
             attachments=selected.input_attachments,
             message_id=selected.message_id,
-            queue_id=selected.metadata.get("queued_input_id"),
+            queue_id=selected.input_id,
             run_id=selected.run_id,
-            removed_count=committed.truncation.removed_count,
+            removed_count=session.message_count - committed.message_count,
             cancelled_queue_ids=cancelled,
         )
     finally:
@@ -192,11 +204,12 @@ def _direct_user_message(message: MessageRecord) -> bool:
     )
 
 
-def _commit_undo(store: SessionStore, request: SessionCommit) -> SessionCommitResult:
+def _commit_undo(store: SessionStore, request: SessionCommit) -> SessionRecord:
     try:
-        return store.commit_session(request)
+        return store.commit_session(request).session
     except OSError, PersistenceError:
-        committed = store.load_commit(request.before.session_id, request.operation_id)
-        if committed is None:
-            raise
-        return committed
+        with store.session_mutation(request.before.session_id):
+            current = store.load_session_record(request.before.session_id)
+            if current.last_commit_id != request.operation_id:
+                raise
+            return current

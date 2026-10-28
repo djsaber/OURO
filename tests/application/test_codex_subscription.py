@@ -12,11 +12,13 @@ import pytest
 from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.config import ProviderConfigManager
 from ouro.core.base import utc_now
+from ouro.core.billing import UsageFilter
 from ouro.core.tasks import AgentTaskTarget, TaskConfiguration, TaskSchedule
 from ouro.local_application import LocalApplication, open_local_provider_auth
 from ouro.tools import Tool, ToolDefinition, ToolResult
 from tests.auth.openai_fixtures import tokens
 from tests.providers.responses_fixtures import call, item_event, message, reasoning, terminal
+from tests.run_facts import run_events
 
 
 @pytest.mark.parametrize("base_url", ["https://api.openai.com/v1", "https://elsewhere.invalid"])
@@ -42,7 +44,7 @@ async def test_subscription_target_override_fails_before_credentials_or_network(
         assert result.run.status == "failed"
         assert any(
             event.payload.get("error_code") == "authentication_target_rejected"
-            for event in result.events
+            for event in run_events(app.runtime.store, result)
         )
 
 
@@ -112,7 +114,7 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
         assert unattended.run.status == "failed"
         assert any(
             event.payload.get("error_code") == "authentication_required"
-            for event in unattended.events
+            for event in run_events(app.runtime.store, unattended)
         )
         await app.task_scheduler.stop()
         due = utc_now().replace(hour=9, minute=0, second=0, microsecond=0) + timedelta(days=1)
@@ -206,8 +208,8 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
         assert app.runtime.adapter.model.max_output_tokens is None
         context = app.runtime.store.load_latest_context(session_id)
         assert context.metrics.reserved_output_tokens == 0
-        for key in first.run.usage_entry_ids:
-            entry = app.runtime.usage.ledger.get(key)
+        entries = app.runtime.usage.list_entries(UsageFilter(run_ids={first.run.run_id})).entries
+        for entry in entries:
             assert entry.billing_mode == "subscription" and entry.estimated_cost is None
 
     # Reconstruct with built-in registration only: persisted credentials/history are sufficient.
@@ -227,7 +229,10 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
         count = len(model_requests)
         failed = await app.runtime.run("After logout.", session_id=session_id)
         assert failed.run.status == "failed"
-        assert any(e.payload.get("error_code") == "authentication_required" for e in failed.events)
+        assert any(
+            e.payload.get("error_code") == "authentication_required"
+            for e in run_events(app.runtime.store, failed)
+        )
         assert len(model_requests) == count
         public = app.runtime.store.load_session(session_id).model_dump_json()
         public += facade.provider(provider_id).model_dump_json()

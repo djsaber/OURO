@@ -6,8 +6,8 @@ import pytest
 
 from ouro.application.contracts.sessions import SessionHistoryAnchor
 from ouro.application.sessions.service import SessionService
-from ouro.core.compaction import CompactionRecord, compaction_source_digest
-from ouro.core.context import ContextMetrics
+from ouro.core.compaction import CompactionRecord
+from ouro.core.context import ContextBuilder, ContextMetrics
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ToolResultReference
@@ -16,6 +16,9 @@ from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolCallRequest
 from tests.application.test_session_event_following import stores as stores
 from tests.application.test_session_event_following import supervisor_for
+from tests.context_facts import save_context
+from tests.response_drafts import persist_response_draft
+from tests.tool_batches import seed_tool_messages
 
 
 def seed(store, count):
@@ -39,11 +42,10 @@ def test_observation_status_does_not_materialize_provider_context(stores, monkey
         model_round=1,
         provider_id="test",
         model_id="test",
-        source_messages=messages,
+        provider_context=ContextBuilder().build(messages=messages, tools=[]).provider_context,
         metrics=ContextMetrics(estimated_input_tokens=50, estimated_fixed_tokens=0),
-        context_digest="sha256:" + "0" * 64,
     )
-    writer.save_latest_context(context)
+    save_context(writer, context)
 
     def forbidden(*args, **kwargs):
         pytest.fail("status query materialized the lossless provider context")
@@ -108,17 +110,20 @@ def test_window_retains_complete_tool_exchange_and_compaction_boundary(stores, i
         role="tool_result",
         tool_result=ToolResultReference(tool_call_id=call.id, tool_name=call.name),
     )
+    seed_tool_messages(writer, request, [result], run=run)
     writer.append_messages([request, result])
     compaction = CompactionRecord(
         session_id=session_id,
         strategy_id="test",
         trigger="manual",
         summary="Earlier conversation",
-        covered_message_ids=[message.message_id for message in prefix],
-        source_digest=compaction_source_digest(prefix),
+        covered_message_count=len(prefix),
+        covered_end_message_id=prefix[-1].message_id,
         history_boundary_message_id=result.message_id,
     )
-    writer.append_compaction(compaction)
+    from tests.session_summaries import commit_summary
+
+    commit_summary(writer, compaction)
     service = SessionService(reader)
     window = service.history_window(session_id, limit=1)
     expected = (*prefix[-1:], request, result) if identified else (request, result)
@@ -170,16 +175,11 @@ async def test_bounded_observation_keeps_active_tail_and_window_policy_on_reset(
             before=session,
             after=session.model_copy(update={"active_run_id": run.run_id, "status": "running"}),
             runs=(run,),
-            events=(
-                EventRecord(
-                    session_id=session_id,
-                    run_id=run.run_id,
-                    event_type="model_text_delta",
-                    payload={"text": "still writing"},
-                ),
-            ),
         )
     )
+
+    persist_response_draft(writer, run, turn_id="turn_current", text="still writing")
+    run = writer.load_run(session_id, run.run_id)
 
     def full_history_forbidden(*args, **kwargs):
         pytest.fail("a bounded observation loaded full message history")

@@ -8,12 +8,10 @@ from ouro.core.compaction import (
     CompactionRecord,
     CompactionStrategyRegistry,
     compaction_frames,
-    compaction_source_digest,
     conversation_turns,
     plan_compaction,
     project_compacted_messages,
 )
-from ouro.core.errors import CompactionStateError
 from ouro.core.messages import MessageRecord, ToolResultReference
 from ouro.core.tools import ToolCallRequest
 
@@ -168,12 +166,12 @@ def test_compaction_projection_replaces_covered_prefix_without_mutating_history(
         strategy_id="test.summary",
         summary="summary",
         trigger="auto",
-        covered_message_ids=[message.message_id for message in messages[:2]],
-        source_digest=compaction_source_digest(messages[:2]),
+        covered_message_count=2,
+        covered_end_message_id=messages[1].message_id,
         history_boundary_message_id=messages[-1].message_id,
     )
 
-    projected = project_compacted_messages(messages, record)
+    projected = project_compacted_messages(messages[2:], record)
 
     assert [message.text_content for message in messages] == ["old", "answer", "latest"]
     assert [message.text_content for message in projected] == ["summary", "latest"]
@@ -190,24 +188,25 @@ def test_compaction_record_requires_an_explicit_history_boundary() -> None:
             strategy_id="test.summary",
             summary="summary",
             trigger="manual",
-            source_digest="sha256:" + "0" * 64,
+            covered_message_count=1,
+            covered_end_message_id="msg_covered",
         )
 
 
-def test_compaction_projection_rejects_history_lineage_mismatch() -> None:
-    messages = [_message("user", "changed", 1)]
+def test_compaction_projection_accepts_only_the_uncovered_suffix() -> None:
+    messages = [_message("user", "covered", 1), _message("user", "tail", 2)]
     record = CompactionRecord(
         session_id="ses_1",
         strategy_id="test.summary",
         summary="summary",
         trigger="auto",
-        covered_message_ids=["msg_missing"],
-        source_digest="invalid",
+        covered_message_count=1,
+        covered_end_message_id=messages[0].message_id,
         history_boundary_message_id=messages[-1].message_id,
     )
 
-    with pytest.raises(CompactionStateError, match="canonical message history"):
-        project_compacted_messages(messages, record)
+    projected = project_compacted_messages(messages[1:], record)
+    assert [item.text_content for item in projected] == ["summary", "tail"]
 
 
 def test_compaction_strategy_registry_rejects_silent_replacement() -> None:

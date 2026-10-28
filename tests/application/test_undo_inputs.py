@@ -68,7 +68,7 @@ async def test_undo_restores_owner_state_and_preserves_independent_pending_input
     )
     host = HostSessionInput(prompt="independent host", host_source_id="test.host")
     receipt = await runtime.submit_host_input(host, session_id=session_id)
-    _, automatic, _, _ = runtime.queued_inputs.enqueue_batch(
+    _, automatic, _, _, _ = runtime.queued_inputs.enqueue_batch(
         snapshot=store.load_runtime_session(session_id),
         inputs=(SessionInputRequest(prompt="automatic"),),
         source="plugin",
@@ -85,7 +85,7 @@ async def test_undo_restores_owner_state_and_preserves_independent_pending_input
     assert [item.queue_id for item in pending] == [user.queue_id, receipt.queue_id]
     assert all(item.history_epoch == 1 and not item.prompt_policy_checked for item in pending)
     assert result.cancelled_queue_ids == (automatic[0].queue_id,)
-    assert [m.text_content for m in store.load_runtime_session(session_id).messages] == [
+    assert [m.text_content for m in store.load_session(session_id).messages] == [
         "keep this",
         "Hello from OURO.",
     ]
@@ -93,7 +93,7 @@ async def test_undo_restores_owner_state_and_preserves_independent_pending_input
 
 async def test_default_undo_cancels_last_queued_input_during_live_execution(runtime, tmp_path):
     session = runtime.create_session(title="Live queue")
-    session, run = runtime.run_lifecycle.start(
+    session, run, _ = runtime.run_lifecycle.start(
         session=session,
         run=RunRecord(session_id=session.session_id),
         snapshot=runtime.store.load_runtime_session(session.session_id),
@@ -130,12 +130,11 @@ async def test_consumed_queue_identity_never_cancels_or_selects_another_input(ru
     session = runtime.create_session(title="Consumed queue")
     consumed = enqueue(runtime, session.session_id, "consumed")
     snapshot = runtime.store.load_runtime_session(session.session_id)
-    _, run, messages = runtime._start_queued_run(
+    _, run, messages, _ = runtime._start_queued_run(
         session=session,
         run=RunRecord(session_id=session.session_id),
         snapshot=snapshot,
         inputs=[consumed],
-        existing_message_count=0,
     )
     pending = enqueue(runtime, session.session_id, "unrelated")
     lock = runtime.store.acquire_session_lock(session.session_id, run.run_id)
@@ -206,7 +205,7 @@ async def test_undo_returns_durable_result_when_cancelled_after_decision(runtime
         result = await task
         assert result.text_content == "withdraw"
         assert result.session.history_epoch == 1
-        assert runtime.store.load_runtime_session(first.session.session_id).messages == []
+        assert runtime.store.load_session(first.session.session_id).messages == []
     finally:
         release.set()
         await task
@@ -244,7 +243,7 @@ async def test_host_retry_cannot_resurrect_a_consumed_withdrawn_input(runtime):
     )
     with pytest.raises(ValueError, match="already accepted"):
         await runtime.submit_host_input(request, session_id=session.session_id)
-    assert runtime.store.load_runtime_session(session.session_id).messages == []
+    assert runtime.store.load_session(session.session_id).messages == []
     assert runtime.pending_user_inputs(session.session_id) == ()
     with pytest.raises(SessionCommitConflict, match="withdrawn"):
         await runtime.submit_host_input(
@@ -265,7 +264,7 @@ async def test_old_finalizer_cannot_drain_preserved_user_input_after_undo(runtim
     pending = enqueue(runtime, first.session.session_id, "keep pending")
     await runtime.undo(first.session.session_id, message_id=target.message_id)
     await runtime._finalize_run_boundary(first, drain_queued_inputs=True)
-    current = runtime.store.load_runtime_session(first.session.session_id)
+    current = runtime.store.load_session(first.session.session_id)
     assert current.messages == []
     assert [i.queue_id for i in runtime.queued_inputs.eligible_session(current.session)] == [
         pending.queue_id
@@ -302,7 +301,7 @@ async def test_supervised_continuation_rejects_history_changed_after_scheduling(
         release.set()
         status = await supervisor.wait(handle)
         assert status.status == "failed"
-        after = runtime.store.load_runtime_session(session_id)
+        after = runtime.store.load_session(session_id)
         assert not after.messages
         assert after.runs == [first.run]
         assert after.session.history_epoch == 2

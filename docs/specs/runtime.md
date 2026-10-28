@@ -31,7 +31,7 @@ Session 是长期会话容器。关键字段包括：
 
 首次直接用户输入通过校验与 Prompt Policy 后，Session、持久输入及原生 Session commit 回执在同一发布边界成立，
 随后通过正常队列消费边界启动 Run。Host 可用 `new_session_id` 指定新会话身份；该身份已有准备资源时原位接续其归属，文件身份和路径不变。
-没有准备资源的输入无需预留文件空间。`input_id` 标识一次 Host 提交，`SessionService.input_accepted` 统一通过原生提交回执查询接受事实，
+没有准备资源的输入无需预留文件空间。`input_id` 标识一次 Host 提交，`SessionService.input_accepted` 按该身份定位 Input 接受事实，
 无需重放历史。回执只描述输入是否已接受；草稿保存、恢复及资源保留策略由 Host 决定。
 
 Session 可保存一个尚未消费的 `continuation_request`，记录命令提交身份、历史代次和控制修订。
@@ -46,17 +46,21 @@ Run 表示一次可恢复执行。状态集合为：
 `paused`、`recoverable`。
 
 运行阶段为：`model_streaming`、`tool_preflight`、`human_interaction`、`tool_execution`、
-`subagent_join`、`result_commit`。Run 保存模型摘要、usage、活动工具批次、待审批身份、终止请求和错误信息。
+`subagent_join`、`result_commit`。Run 保存模型摘要、活动工具批次、待审批身份、终止请求和错误信息。
+原始消耗属于账本，Run 不保存 usage 或累计 usage IDs；结果与观察按需读取有限汇总，见[用量规格](usage-and-billing.md#run-消耗与宿主边界)。
 ProviderStreamEvent 的 error 可附带供应商无关 error_code；原生模型请求将其传给 Driver 执行边界，
-写入 run_failed.payload.error_code 并进入 CLI JSON 的 events。Core 不解释认证状态或 HTTP 对象，
+写入 run_failed.payload.error_code 并进入 RunResult/CLI JSON 的 error_code。Core 不解释认证状态或 HTTP 对象，
 不在 RunRecord 复制认证状态；请求侧分类见[请求认证规格](request-authentication.md)。
+
+Run 的 `current_request_id` 与最近准备输入同提交；可能开始调用与计数随后同提交。具体边界见
+[会话持久化](session-persistence.md#canonical-数据与投影)。
 
 活动 Run 可在 model turn 边界切换路由，因此不能仅凭 `RunRecord.model` 重建逐轮模型历史；每次实际 Provider
 请求使用的 provider、endpoint 与 model 以 `model_request_started` 事件和 usage 记录为权威。
 
 ### Run Driver 与原生端口
 
-Run 记录使用 schema 5，Message 记录使用 schema 4。Run 保存不可变的 `driver` 绑定。默认算法的身份为
+Run 记录使用 schema 9，Message 记录使用 schema 6。Run 保存不可变的 `driver` 绑定。默认算法的身份为
 `ouro.default`；插件 Driver 保存 `plugin_id/run_drivers/id`、贡献契约，以及所属插件和传递依赖的实现引用。
 每个实现引用包含 plugin identity/class、release、配置修订 ID 和执行契约哈希，不保存解析后的凭据。
 Host 在执行前校验精确契约，缺失或不匹配时报告错误，不切换算法。Driver 调用只租用所属插件及其依赖，
@@ -74,6 +78,15 @@ Host 输入的相同 queue ID 重试复用已接受回执，不重新选版；�
 自定义 Driver 使用原生模型请求、工具批次、输入交付和 Agent 控制端口，计数、用量、上下文、工具权限和审批由 Host 执行。
 模型请求执行原生模型预算；Agent 控制保留共享预算与 Delegation 约束。
 Driver 的完成意图由 Host 写入终态；默认算法的 turn policy 不自动作用于自定义算法。
+
+Driver 不持有或累计 canonical 消息列表。模型请求只传执行身份与本次指令，准备服务读取当前选择；
+输入和工具操作的消息位置由 Session 提交分配，不由 Driver 的列表长度决定。turn policy 反馈提交后只返回续跑决定。
+assistant 重试按 Run/turn 点查已提交回包。Runtime 执行快照只含 Session、当前待处理 Run 与 active/last 执行头；
+续跑按成员查询确认保留输入，已消费 Host 输入按身份定位，插件批次按消费状态确认。
+审批、回答和委派恢复点读目标 Run；冷恢复与 terminal continuation 结算只读取相应的待处理 Run。
+显式对话续跑候选通过执行头和待处理 Run 查询定位；Agent 预算读取原始账本汇总和窄 Run 计数，
+不扫描历史 Run 正文。当前 Run 的观察快照由 Call、Draft 和请求头构造，具体契约见
+[会话观察](session-observation.md)和[用量与计费](usage-and-billing.md)。
 默认算法和插件算法均以 `RunDriverHandler` 调用同一 `NativeRunDriverContext`。默认算法在模型轮次和工具批次
 后检查插入输入，并在无工具响应后评估 turn policy；完成策略由 `NativeRunTurns` 接入。
 
@@ -109,8 +122,10 @@ Agent 端口将类型化的 spawn、send、interrupt 请求交给原生工具边
 - `consumed`：Host 已原子标记消费并移除活动批次，允许把 checkpoint 与工具结果交给 Driver 一次。
 
 结果沿用原生工具事实，不建立独立 Driver 操作账本。立即完成的工具批次也在返回调用者前消费 checkpoint。
-结果已持久化但批次完成提交中断时，恢复协调器根据已保存的结果和 canonical 回执完成 checkpoint，保留媒体、资源
-引用与执行时间，不重新执行工具。执行中断且没有可靠结果时记录未知结果，不推断外部副作用已经撤销。
+确定 Outcome 保存后，原生工具帧、Call 发布状态与 ready checkpoint 在同一 Session 决定中发布。
+发布前中断时，恢复协调器使用原 Call/Outcome 完成整帧；发布已决定后按原生决定收尾，不补写逐条结果回执。
+媒体、资源引用与执行时间从固定 Outcome 读取，不重新执行工具。执行中断且没有可靠结果时记录未知反馈，
+不推断外部副作用已经撤销；该历史反馈不因迟到结果而改变。
 进入等待后 Driver 返回 `DriverSuspended`，结束调用并释放执行所有权；恢复先结算原生批次，再校验原 Driver、
 消费 checkpoint 并调用其恢复入口。消费前中断可以继续交付已结算结果；消费后中断不能从插件函数开头自动重跑。
 没有可恢复 checkpoint 的自定义 Run 不支持任意位置重放。默认算法也使用原生批次 checkpoint；其逻辑只通过
@@ -145,8 +160,12 @@ Session 投影规则为：
 history epoch 内将 `aborted`、`failed`、`paused`、`recoverable` Run 重新置为 running，清除结束标记并取得执行所有权；
 普通写入和迟到事件不能触发该迁移。completed Run 保持终态；历史撤销后的继续创建新 Run。新 Run 只能从
 `queued` 或 `running` 注册。
-application 用例仍负责取得 mutation lock、准备业务字段、先保存权威 Run 再保存 Session 投影，以及在 durable
-边界之后发事件。usage、continuation、tool batch 审计和消息游标等不改变 Run status 的写入不属于状态迁移。
+application 用例负责取得 mutation lock 并准备业务字段。预留与启动、正常完成、失败、暂停、取消请求和取消终态
+通过同一 `SessionCommit` 保存 Run 与 Session 投影；完成或失败产生的最终 assistant 消息也在该提交中。
+消息头和数量由提交边界从当前 Session 推进，不接受 Driver 的历史列表重算。已提交的模型响应不重复追加。
+已终结或正在取消的 Run 不接受新的完成输出。对应的业务事件与状态在同一 Session 提交中保存，
+持久化成功后才通知订阅者；恢复只补齐原提交允许的存储效果。
+账本记账、continuation、tool batch 审计和消息游标等不改变 Run status 的写入不属于状态迁移。
 
 ### Message 与 model turn
 
@@ -160,7 +179,8 @@ application 用例仍负责取得 mutation lock、准备业务字段、先保存
   不根据来源、role、标签或正文猜测、补全或改写其他维度。
 - 用户、assistant、Harness 和工具结果消息都可以属于 canonical history。
 - assistant 工具请求写入类型化 `tool_calls`。
-- 工具结果写入类型化 `tool_result`。
+- 工具消息保存固定 Call/Outcome 引用；执行与查询显式物化类型化 `tool_result`，结果正文由 Outcome 拥有。
+- 框架控制反馈与原始观察分开保存，发布后由固定消息拥有；Driver 和模型读取组合后的反馈，控制失败不改写原 Outcome。
 - 可展示的模型思考写入类型化 `reasoning_content`。
 - 原生协议续接数据写入 `provider_continuation`，并标记来源 provider、protocol 和 model；通用消息帧是跨路由续跑依据。
 - 一次模型响应中的 assistant 工具请求及其结果共享 `turn_id`。
@@ -172,18 +192,38 @@ application 用例仍负责取得 mutation lock、准备业务字段、先保存
 ## 运行流程
 
 1. Host 调用 `RuntimeService.run`。
-2. 新会话被创建，或现有会话通过运行态快照执行恢复检查；仅当存在中断 Run 时，按 `run_id` 分页读取该 Run 的
-   event 以固化未提交的部分输出，不加载其他 Run 的 replay events。
+2. 新会话被创建，或现有会话通过运行态快照执行恢复检查；中断 Run 只读取匹配的当前请求头和 Draft，
+   将已写前缀固化为 partial；不读取旧模型事件或把工具参数片段当成可执行调用。
 3. 取得 session run lock；锁竞争失败时返回 active Run 或明确的 `SessionBusyError`。
 4. `RunLifecycle.start` 持久化 active Session/Run。
 5. 输入消息按提供方给出的 role、scaffold、semantic tag 和 provenance 原样持久化并产生事件。
 6. `InnerAgentLoop` 通过 `RunModelRequests` 请求模型。宿主复用已加载的 canonical messages 准备上下文，
    检查预算、提交请求计数并调用 request-local `RuntimeAdapter`；正常模型轮次不得重新加载完整 Session 事件历史。
-7. 模型文本、reasoning 和工具调用增量到达时依次形成事件；`done` 后完整工具调用交给
-   `ToolCallCoordinator`，最终消息则完成 Run。
+7. 模型文本和 reasoning 先追加当前 Draft，再通知观察者；工具参数片段只作实时观察。
+   `done` 后完整工具调用交给 `ToolCallCoordinator`，正式消息与请求响应关闭和 Draft 清理同提交。
 8. waiting 状态通过 approve/reject/AskUser 或 child 结果恢复同一 Run。
 9. Run 退出执行时释放执行许可和环境绑定；终态清理 Observer 隔离状态，已投递的观察任务独立完成收尾。
 10. 在 model turn 边界消费 steer 输入；completed Run 先释放 session run lock，再串行启动 follow-up Run。
+
+`RunResult` 仅包含 Session/Run、最终文本、原始用量摘要、错误码与 `had_tool_error`。它描述本次调用，
+不持有整 Run 的 events、tool_results 或 usage IDs，也没有隐式加载这些历史的属性。
+Driver 只拥有当前响应/批次及错误标志，已完成批次的正文从执行链释放；需要历史时显式查询消息、事件和 Outcome。
+CLI print 使用有界事件订阅呈现实时输出，JSON 返回上述摘要；显式事件查询仍可取得永久事实，不能回放已结束请求的 token 切分。
+
+Run 启动、恢复、完成、失败、暂停、取消意图及取消终态的小事件与相应 Run/Session 状态同提交；提交后的通知可以丢失，
+订阅以已有 sequence 追赶，不通过重新执行业务补通知。
+
+普通队列入队、Host 输入接受和 plugin 原子输入批次的入队事件随 Input/队列状态提交；重复接受同一身份不追加通知。
+直接用户输入取消的事件与取消状态同提交，不能在已经消费后再生成取消通知。输入启动新 Run 时，Run、消费状态、
+消息及来源事件同提交；活动 Run 消费 steering 时，消息、消费状态与 `queued_input_consumed` 同提交。
+事件保存消息和输入身份及来源元数据，输入正文仍由 Input 拥有。
+
+terminal continuation 的 resolved checkpoint、自动续跑输入及 `run_continuation_resolved` 由同一次 Session 提交
+发布。无继续决策、冲突、策略失败和旧历史撤回也在各自结算提交中记录结果；重复结算不追加输入或事件。
+取消发生在提交之后时，从已接受 checkpoint 返回结算状态，通知缺口由持久 sequence 追赶，不重新调用策略。
+controller 释放引起的待处理交互终止、所属队列取消，以及命令停止意图，同相关状态和小事件一起提交；
+force release 也记录已应用的控制变更。controller 开始/失败事件仅为诊断，不能代替提交决定。
+turn-policy 的反馈消息与 `turn_policy_continued` 同提交；策略计算仍在存储锁外进行。
 
 ## Run 进程内资源
 
@@ -236,8 +276,10 @@ Session 继续的整体前提。持久 ToolInvocation、控制 activation 和 De
 ## Provider 流契约
 
 - `RuntimeAdapter` 以每个 provider stream 一个常驻 reader 和一个固定容量 FIFO 解耦网络生产与 Core 消费。
-  reader 是 provider 迭代器的唯一调用者；FIFO 是唯一无损背压边界。持久化、Host 或 UI 的协作式等待不得直接
-  暂停 socket 读取，FIFO 满后 reader 才允许等待消费者。
+  reader 是 provider 迭代器的唯一调用者；FIFO 承担输出背压，Host 或 UI 的输出消费等待不直接暂停 socket 读取。
+  首个 done 到达后，reader 先调用 Application 提供的计量结算回调，再排队完成事件；该回调不发布内容或推进算法。
+  此时 Provider 已结束响应，后续事件不再读取。取消或展示失败可以丢弃排队内容，不能抹去已接收的原始报告。
+  账本及 Session 收尾的边界见[用量与计费](usage-and-billing.md#run-消耗与宿主边界)。
 - FIFO 保持事件顺序。每个连续语义段中首个 `text_delta` 或 `reasoning_delta` 不等待未来分片；后续快速分片以
   上次同类发射时间为锚点，在最多 8 ms 且不续期的窗口内合并。到达时窗口已截止的慢分片立即交付。合并受
   16 KiB 字符上限约束，不得跨 continuation、tool、retry、done、error、类型切换或携带 usage/completion 的
@@ -268,11 +310,13 @@ Session 继续的整体前提。持久 ToolInvocation、控制 activation 和 De
 - 累计输出 token；
 - 已用时间。
 
-超过软预算进入 `paused`。上下文无法安全构建时以 `context_blocked` 暂停。预算未配置时不限制运行轮数。
+超过软预算进入 `paused`。配置 token 预算但已有请求缺少用量报告时以 `usage_unavailable` 暂停；
+无计量端口时不能配置 token 预算，轮数与时间预算仍可使用。上下文无法安全构建时以 `context_blocked` 暂停。
+预算未配置时不限制运行轮数。
 
 ## 排队输入
 
-active Run 期间的新输入写入 Session metadata 中的 durable 队列。每项完整保存 `source` provenance、`role`、
+输入接受写入独立 `InputRecord`，Session 的 `pending_input_ids` 保存 FIFO 身份。每项完整保存 `source` provenance、`role`、
 `scaffold`、可选 `semantic_tag` 和交付模式；这些字段分别由输入提供方定义，队列不互相推断：
 
 - `follow_up`：当前 Run 完整结束后交付，每次消费创建一个后续 Run；
@@ -288,15 +332,17 @@ active Run 期间的新输入写入 Session metadata 中的 durable 队列。每
 
 role 不改变 producer provenance，也不授予直接用户权限。Host 和插件输入不能携带未经对应 use case 验证的用户资源
 引用；delegation 输入可携带 Spawn 时已验证并复制到 child Session 的资源引用。未知来源、Host 来源缺少 source id、
-插件来源缺少完整执行归属、delegation 来源缺少 relation identity，或缺少消息三维契约字段的持久化项均按无效项
-移除，不按来源或历史默认值补全。
+插件来源缺少完整执行归属、delegation 来源缺少 relation identity，或缺少消息三维契约字段的持久化项均明确报错，
+不在查询中移除、不按来源或历史默认值补全。
 
 工具请求及结果共享原子 turn，steer 必须在工具结果提交后插入。`queued_inputs.consumption_mode` 决定每个
 消费边界只取一条（`one_by_one`）或取出当时全部符合交付时机的消息（`all_at_once`）。过滤不同交付模式时，
 符合条件的消息保持原始入队顺序；较早的 follow-up 不阻塞较晚 steer 在 turn 边界生效。
 
 队列项具备唯一 id。完整消费单位通过 `SessionCommit` 一次提交消息、逐节点 Harness 锚点、队列消费与
-Session 投影；没有独立 acknowledge 阶段。输入接受回执在撤销消息后仍保留，重试不能重新接受同一输入。
+Session 投影；没有独立 acknowledge 阶段。原始接受事实和小生命周期状态在撤销消息后仍保留，重试不能重新接受同一输入。
+直接等待执行的 `RuntimeService.run` 在同一 Run 启动决定中接受并消费输入，避免先持久启动、后追加输入的中间态。
+Host 的 Driver 选择在存储锁外执行，进入接受事务后重新检查身份，竞争者只能有一次新的接受通知。
 
 审批和 AskUser 恢复属于原 Run 的同一锁事务。恢复后即使 Run 已 completed，也不能在该锁的作用域内递归
 启动 follow-up；后续 Run 必须等恢复入口释放非重入 session run lock 后再取得新的锁。
@@ -304,10 +350,14 @@ Session 投影；没有独立 acknowledge 阶段。输入接受回执在撤销�
 ## 子智能体等待
 
 模型侧 `SpawnAgent(execution_mode=sync)` 不在工具 handler 内轮询 child。原 SpawnAgent 所在
-`ToolCallBatchRecord` 保存 durable `AgentWaitRequest`，父 Run 进入 `waiting_child/subagent_join`，`RuntimeService` 把 waiting outcome 交还
-`RuntimeSupervisor` 并释放 execution permit。child 终态后，application 按原 parent session/run/tool-call
+对应 `ToolCallState` 保存 durable `AgentWaitRequest`，父 Run 进入 `waiting_child/subagent_join`，`RuntimeService` 把 waiting outcome 交还
+`RuntimeSupervisor` 并释放 execution permit。child 终态后，application 按原 parent session/run/batch/tool-call
 identity 解析该调用并恢复同一父 Run；重复结果通知只会命中已经解析的 checkpoint，不创建第二个父 Run。
-每个同步 SpawnAgent 的 wait 只引用它创建的一个 Delegation；Host 批量等待不进入该持久协议。
+每个同步 SpawnAgent 的 wait 固定引用它创建的 Delegation 和 child Run；Host 批量等待不进入该持久协议。
+AgentService 在 child 调度前把同步等待绑定到当前 started Call attempt，独立保存匹配原等待的确定 Outcome；
+child 在父执行停驻前完成也使用同一绑定。恢复任务只传递身份与 resolution，不携带结果正文。
+Runtime 从存储读取该 Outcome，将引用、等待结算与父 Run 恢复状态同提交，再进入扩展回调；回调异常使用普通批次
+失败边界。取消或撤销使恢复提交失去授权时，既存观察保持不变，执行不继续；既有未知反馈也不会因此改变。
 
 child 本身仍执行普通 `InnerAgentLoop`、ToolBatch、Approval、AskUser、预算与恢复状态机。父子关系和结果交付由
 application 的 durable Delegation 编排，core 不递归调用 RuntimeService，也不维护另一套 child 执行状态。
@@ -320,6 +370,9 @@ application 的 durable Delegation 编排，core 不递归调用 RuntimeService�
 - Provider stream、工具和子进程通过协作式轮询观察 signal。
 - 未知外部副作用不能因恢复而自动重放。
 - terminal Run 的后续迟到写入不能把 Session 恢复为 running。
+- 工具取消后的确定迟到返回通过原 Call/attempt 独立保存，历史发布与业务提案资格保持撤销；没有实际返回时保持
+  unknown_outcome。同步、异步、worker、恢复回调与 application Agent control 均遵循
+  [工具取消契约](tools-and-interactions.md#取消与进程)。
 
 ## 进程内监督
 
@@ -336,7 +389,7 @@ SessionStore 定点恢复；Host 的历史展示读取不触发恢复，进程�
 `role=user`、`scaffold=False`，模型、推理、workspace、权限/交互模式、附件、资源引用、技能及队列模式保留原有语义。
 `RuntimeService.run` 仍提供直接等待执行的底层接口。
 
-请求携带稳定的 Session 和 input identity。相同身份与内容的重试返回原生提交回执，消费后仍能定位消息和 Run。
+请求携带稳定的 Session 和 input identity。相同身份与内容的重试按接受记录及生命周期状态返回小回执，消费后仍能定位消息和 Run。
 仍在持久队列中的输入直接返回待消费回执，不搜索历史消息；队列移除与消息写入共享消费提交边界。
 身份对应不同内容、已取消或已撤销的输入不能重新入队。回执表示持久受理，`UserInputSubmission.wait` 是可选的结果等待，
 取消该等待不拥有也不取消执行。提交在移交 Supervisor 前取消不会受理；移交后由 Supervisor 完成受理与调度，

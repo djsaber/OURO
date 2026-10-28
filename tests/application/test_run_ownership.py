@@ -151,8 +151,7 @@ async def test_run_execution_ownership_tracks_lock_and_signal_lifecycle(tmp_path
         session_id=session.session_id,
         run_id=run.run_id,
         final_text="partial",
-        emitted=[],
-        tool_results=[],
+        had_tool_error=False,
     )
     assert result is not None
     assert result.run.abort_requested is True

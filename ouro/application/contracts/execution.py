@@ -3,22 +3,24 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import Field, model_validator
 
 from ouro.application.contracts.base import ApplicationDTO, Diagnostic
 from ouro.application.contracts.events import RuntimeEventView
 from ouro.application.contracts.sessions import SessionContextStatus
+from ouro.application.contracts.tool_activity import (
+    RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS as RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS,
+)
+from ouro.application.contracts.tool_activity import (
+    RuntimeToolCallActivity as RuntimeToolCallActivity,
+)
+from ouro.application.contracts.tool_activity import (
+    RuntimeToolCallStatus as RuntimeToolCallStatus,
+)
 from ouro.core.base import new_id, utc_now
 from ouro.core.context import ContextMetrics
 from ouro.core.state import RunPhase
-from ouro.core.tool_batches import ToolBatchPhase, ToolCallStatus
-
-RuntimeToolCallStatus = ToolCallStatus | Literal["streaming", "cancelling"]
-
-# Runtime snapshots retain a bounded, verbatim suffix rather than an ever-growing
-# incomplete JSON document. Hosts can consume or ignore it without taking on work
-# proportional to the total streamed argument size.
-RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS = 256
+from ouro.core.tool_batches import ToolBatchPhase
 
 SupervisorRunStatus = Literal[
     "idle",
@@ -83,35 +85,6 @@ class RuntimeStatusSnapshot(ApplicationDTO):
     status: SupervisorRunStatus
     updated_at: datetime = Field(default_factory=utc_now)
     diagnostics: tuple[Diagnostic, ...] = ()
-
-
-class RuntimeToolCallActivity(ApplicationDTO):
-    """Host-neutral projection of a tool call's current runtime activity.
-
-    While ``status`` is ``streaming``, ``tool_call_id`` is a stream-scoped
-    projection identity and ``tool_name`` contains the received name fragments.
-    ``status`` owns the lifecycle; ``argument_stream_tail`` is bounded preview
-    content retained only while the call is ``streaming``. Canonical calls use
-    ``arguments`` instead.
-    """
-
-    tool_call_id: str
-    tool_name: str
-    status: RuntimeToolCallStatus
-    source_index: int = Field(ge=0)
-    arguments: dict[str, JsonValue] = Field(default_factory=dict)
-    argument_stream_tail: str | None = Field(
-        default=None,
-        max_length=RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS,
-        description=(
-            "Bounded verbatim suffix of streaming arguments; "
-            "None before argument streaming and outside the streaming state"
-        ),
-    )
-    result_data: dict[str, JsonValue] = Field(default_factory=dict)
-    requested_at: datetime | None = None
-    started_at: datetime | None = None
-    ended_at: datetime | None = None
 
 
 class RuntimeActivitySnapshot(ApplicationDTO):

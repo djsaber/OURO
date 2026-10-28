@@ -66,7 +66,7 @@ async def test_both_pages_restore_upload_and_reference_then_submit(
         if workers:
             await asyncio.wait_for(restarted.workers.wait_for_complete(workers), 10)
         assert restarted._controller.session_id == identity
-        snapshot = restarted_application.runtime.store.load_runtime_session(identity)
+        snapshot = restarted_application.runtime.store.load_session(identity)
         assert snapshot.runs[-1].status == "completed"
         assert any("uploaded snapshot" in m.text_content for m in snapshot.messages)
         assert any("updated reference" in m.text_content for m in snapshot.messages)
@@ -205,7 +205,7 @@ async def test_both_pages_keep_input_when_draft_save_fails(tmp_path, existing, m
             assert composer.input_content.text == "keep my input"
             assert len(application.runtime.store.list_sessions()) == int(existing)
             if existing:
-                assert application.runtime.store.load_runtime_session(origin).messages == []
+                assert application.runtime.store.load_session(origin).messages == []
         await app._flush_input_drafts()
         assert TuiInputDraftStore(tmp_path).load().content_for(origin).text == "keep my input"
 
@@ -235,7 +235,7 @@ async def test_navigation_during_submission_save_retains_original_target(tmp_pat
             if workers:
                 await asyncio.wait_for(app.workers.wait_for_complete(workers), 10)
         assert app._input_drafts.welcome.text == "welcome submission"
-        assert application.runtime.store.load_runtime_session(other.session_id).messages == []
+        assert application.runtime.store.load_session(other.session_id).messages == []
         assert len(application.runtime.store.list_sessions()) == 1
 
 

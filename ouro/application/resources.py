@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from pathlib import Path
 
 from ouro.application.contracts.base import Diagnostic
@@ -19,7 +19,7 @@ from ouro.application.inputs.files import (
 )
 from ouro.application.inputs.queue import QueuedInputQueue
 from ouro.core.base import new_id, utc_now
-from ouro.core.content import MediaModality
+from ouro.core.content import MediaContent, MediaModality
 from ouro.core.errors import (
     PersistenceError,
     ResourceAttachmentError,
@@ -37,6 +37,7 @@ from ouro.core.resources import (
 )
 from ouro.core.session_commits import SessionCommitConflict
 from ouro.resources import ResourceStore
+from ouro.resources.media import capture_media
 from ouro.sessions import SessionStore
 
 DEFAULT_MAX_RESOURCE_BYTES = 100 * 1024 * 1024
@@ -100,13 +101,9 @@ class ResourceService:
                 media_type=self._store.infer_media_type(path),
                 max_bytes=self._max_resource_bytes,
             )
-            try:
-                self._store.save_prepared(
-                    identity, [*records, SessionResourceReference(**record.model_dump())]
-                )
-            except Exception:
-                self._store.delete_resources(identity, (record,))
-                raise
+            self._store.save_prepared(
+                identity, [*records, SessionResourceReference(**record.model_dump())]
+            )
         return ResourceMutationResult(resource=ResourceView.from_record(record), created=True)
 
     def release_prepared(self, identity: str, *, retain: tuple[str, ...] = ()) -> None:
@@ -154,13 +151,11 @@ class ResourceService:
                 media_type=media_type or self._store.infer_media_type(path),
                 max_bytes=self._max_resource_bytes,
             )
-            try:
-                self._sessions.attach_resource_reference(
-                    session_id, SessionResourceReference(**record.model_dump())
-                )
-            except Exception:
-                self._store.delete_resources(session_id, (record,))
-                raise
+            # A failed acknowledgement can follow metadata publication. Retain
+            # the file; a possible orphan is preferable to a dangling confirmed ID.
+            self._sessions.attach_resource_reference(
+                session_id, SessionResourceReference(**record.model_dump())
+            )
         return ResourceMutationResult(
             resource=ResourceView.from_record(record),
             created=True,
@@ -168,20 +163,7 @@ class ResourceService:
         )
 
     def _record(self, session_id: str, resource_id: str) -> SessionResourceReference:
-        self._sessions.load_session_record(session_id)
-        record = next(
-            (
-                item
-                for item in self._sessions.load_resource_references(session_id)
-                if item.resource_id == resource_id
-            ),
-            None,
-        )
-        if record is None:
-            raise ResourceNotFoundError(
-                f"resource {resource_id} is not attached to session {session_id}"
-            )
-        return record
+        return self._sessions.load_resource_reference(session_id, resource_id)
 
     def directory_for(self, session_id: str) -> Path:
         return self._store.directory_for(session_id)
@@ -201,24 +183,27 @@ class ResourceService:
             resources=tuple(
                 ResourceView.from_record(item)
                 for item in self._sessions.load_resource_references(session_id)
+                if not item.internal
             ),
         )
 
     def show_resource(
         self, session_id: str, resource_id: str, *, verify: bool = True
     ) -> ResourceView:
-        record = self._record(session_id, resource_id)
-        if verify:
-            self._store.verify(session_id, record)
-        return ResourceView.from_record(record)
+        with self._sessions.session_read(session_id):
+            record = self._record(session_id, resource_id)
+            if verify:
+                self._store.verify(session_id, record)
+            return ResourceView.from_record(record)
 
     def export_resource(
         self, session_id: str, resource_id: str, destination: str | Path, *, overwrite: bool = False
     ) -> ResourceExportResult:
-        record = self._record(session_id, resource_id)
-        exported = self._store.export_file(
-            session_id, record, Path(destination), overwrite=overwrite
-        )
+        with self._sessions.session_read(session_id):
+            record = self._record(session_id, resource_id)
+            exported = self._store.export_file(
+                session_id, record, Path(destination), overwrite=overwrite
+            )
         return ResourceExportResult(resource=ResourceView.from_record(record), destination=exported)
 
     def remove_resource(self, session_id: str, resource_id: str) -> ResourceRemoveResult:
@@ -226,19 +211,37 @@ class ResourceService:
         if lock is None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
         try:
-            with self._sessions.session_mutation(session_id):
+            with (
+                self._sessions.session_read(session_id),
+                self._sessions.session_mutation(session_id),
+            ):
                 record = self._record(session_id, resource_id)
-                snapshot = self._sessions.load_runtime_session(session_id)
-                if any(resource_id in message.resource_refs for message in snapshot.messages):
+                session = self._sessions.load_session_record(session_id)
+                with closing(self._sessions.iter_messages_before(session_id)) as messages:
+                    if any(
+                        resource_id in message.referenced_resource_ids for _, message in messages
+                    ):
+                        raise ResourceInUseError(
+                            f"resource {resource_id} is referenced by a canonical message"
+                        )
+                request = self._sessions.load_latest_request(session_id)
+                if (
+                    request is not None
+                    and resource_id in request[1].manifest.referenced_resource_ids
+                ):
                     raise ResourceInUseError(
-                        f"resource {resource_id} is referenced by a canonical message"
+                        f"resource {resource_id} is referenced by the latest request"
                     )
                 if any(
                     resource_id in item.resource_refs
-                    for item in QueuedInputQueue(self._sessions).eligible(snapshot)
+                    for item in QueuedInputQueue(self._sessions).eligible_session(session)
                 ):
                     raise ResourceInUseError(
                         f"resource {resource_id} is referenced by a queued input"
+                    )
+                if self._sessions.tool_outcomes_use_resource(session_id, resource_id):
+                    raise ResourceInUseError(
+                        f"resource {resource_id} is referenced by a tool Outcome"
                     )
                 self._sessions.remove_resource_reference(session_id, resource_id)
                 try:
@@ -280,30 +283,32 @@ class ResourceService:
                     )
 
     def _projector(self) -> FileInputProjector:
-        # One manifest read per Session and projection, with no cache across requests.
-        manifests: dict[str, dict[str, SessionResourceReference]] = {}
+        # Only selected identities are retained for this preparation.
+        selected: dict[tuple[str, str], SessionResourceReference] = {}
 
         def record(session_id: str, resource_id: str) -> SessionResourceReference:
-            if session_id not in manifests:
-                self._sessions.load_session_record(session_id)
-                manifests[session_id] = {
-                    item.resource_id: item
-                    for item in self._sessions.load_resource_references(session_id)
-                }
-            try:
-                return manifests[session_id][resource_id]
-            except KeyError as exc:
-                raise ResourceNotFoundError(
-                    f"resource {resource_id} is not attached to session {session_id}"
-                ) from exc
+            key = (session_id, resource_id)
+            if key not in selected:
+                selected[key] = self._record(session_id, resource_id)
+            return selected[key]
 
         return FileInputProjector(
             store=self._store,
             record=record,
+            capture=self._capture_media,
             max_resource_bytes=self._max_resource_bytes,
             max_text_bytes=self._max_model_text_bytes,
             max_media_bytes=self._max_model_media_bytes,
         )
+
+    def _capture_media(self, session_id: str, name: str, media: MediaContent) -> MediaContent:
+        """Publish observed workspace bytes before the message can reference them."""
+
+        def publish(record: SessionResourceReference, content: bytes) -> None:
+            self._store.import_contents(session_id, ((record, content),))
+            self._sessions.attach_resource_reference(session_id, record)
+
+        return capture_media(media, source=ResourceSource(name=name), publish=publish)
 
     def prepare_input(
         self,
@@ -327,9 +332,12 @@ class ResourceService:
         input_modalities: frozenset[MediaModality],
         input_budget_tokens: int | None = None,
     ) -> list[MessageRecord]:
-        return self._projector().project(
-            messages, input_modalities=input_modalities, input_budget_tokens=input_budget_tokens
-        )
+        with ExitStack() as reads:
+            for identity in sorted({message.session_id for message in messages}):
+                reads.enter_context(self._sessions.session_read(identity))
+            return self._projector().project(
+                messages, input_modalities=input_modalities, input_budget_tokens=input_budget_tokens
+            )
 
     def prepare_model_messages(
         self,
@@ -392,15 +400,23 @@ class ResourceService:
         with ExitStack() as locks:
             for identity in sorted({source_session_id, target_session_id}):
                 locks.enter_context(self._sessions.session_mutation(identity))
-            existing = {
-                item.resource_id
-                for item in self._sessions.load_resource_references(target_session_id)
-            }
             for identity in identities:
                 source = self._record(source_session_id, identity)
                 self._store.verify(source_session_id, source)
-                if identity in existing:
-                    self._store.verify(target_session_id, self._record(target_session_id, identity))
+                try:
+                    existing = self._record(target_session_id, identity)
+                except ResourceNotFoundError:
+                    existing = None
+                if existing is not None:
+                    if (existing.digest, existing.size, existing.media_type) != (
+                        source.digest,
+                        source.size,
+                        source.media_type,
+                    ):
+                        raise PersistenceError(
+                            "resource identity is already bound to other content"
+                        )
+                    self._store.verify(target_session_id, existing)
                     continue
                 copied = self._store.import_file(
                     target_session_id,

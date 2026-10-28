@@ -3830,6 +3830,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 parent_session_id=parent_session_id,
                 parent_run_id=message.parent_run_id,
                 parent_tool_call_id=message.parent_tool_call_id,
+                parent_batch_id=message.parent_batch_id,
             )
             if agent is None:
                 self.notify(
@@ -4647,6 +4648,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 messages=loaded.messages,
                 events=ordered_events,
                 runs=loaded.runs,
+                active_tool_calls=loaded.active_tool_calls,
+                pending_interactions=loaded.pending_interactions,
+                current_request=loaded.current_request,
                 compactions=loaded.compactions,
                 queued_inputs=loaded.queued_inputs,
                 event_high_water=loaded.event_high_water,
@@ -4665,7 +4669,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             loaded.compactions,
             presentations,
             mutable_tool_call_keys=frozenset(
-                (projection.activity.run_id, tool.tool_call_id)
+                (projection.activity.run_id, tool.batch_id, tool.tool_call_id)
                 for tool in tools
                 if not terminal_tools
             ),
@@ -4678,14 +4682,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         prepared = list(entries)
         if tools and terminal_tools:
             historical_tools = {
-                (entry.run_id, entry.tool.tool_call_id)
+                (entry.run_id, entry.tool.batch_id, entry.tool.tool_call_id)
                 for entry in entries
                 if entry.tool is not None
             }
             prepared.extend(
                 TranscriptEntry(kind="tool", run_id=projection.activity.run_id, tool=tool)
                 for tool in tools
-                if (projection.activity.run_id, tool.tool_call_id) not in historical_tools
+                if (projection.activity.run_id, tool.batch_id, tool.tool_call_id)
+                not in historical_tools
             )
 
         # A snapshot installs complete state; it does not replay streaming handoffs.

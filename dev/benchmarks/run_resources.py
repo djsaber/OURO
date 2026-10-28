@@ -170,7 +170,7 @@ async def prepared_probe(root, backend):
                 run, HostSessionInput(prompt="hello", host_source_id="benchmark")
             )
         await app.drain_events()
-        snapshot = app.store.load_runtime_session(session.session_id)
+        snapshot = app.store.load_session(session.session_id)
         content = [
             {key: message.model_dump(mode="json")[key] for key in ("role", "content")}
             for message in snapshot.messages

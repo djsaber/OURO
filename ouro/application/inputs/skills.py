@@ -8,7 +8,6 @@ from pathlib import Path
 from pydantic import Field, field_validator
 
 from ouro.core.base import OuroModel
-from ouro.core.compaction import CompactionRecord
 from ouro.core.context_providers import ContextFragment
 from ouro.core.errors import SkillActivationError
 from ouro.core.messages import (
@@ -100,18 +99,9 @@ class SkillActivationService:
 
 
 def compacted_skill_context(
-    messages: Sequence[MessageRecord], active: CompactionRecord | None
+    messages: Sequence[MessageRecord],
 ) -> list[ContextFragment]:
-    """Keep covered skill instructions stable for the lifetime of a compaction projection."""
-    if active is None:
-        return []
-    boundary_run_id = next(
-        message.run_id
-        for message in messages
-        if message.message_id == active.history_boundary_message_id
-    )
-    if boundary_run_id is None:
-        return []
+    """Render the skill sources fixed by summary activation, without scanning history."""
     return [
         ContextFragment(
             role="user",
@@ -119,8 +109,7 @@ def compacted_skill_context(
                 ModelMessage(role="user", content=list(message.skill_activations))
             ).text_content,
         )
-        for message in messages[: len(active.covered_message_ids)]
-        if message.run_id == boundary_run_id and message.skill_activations
+        for message in messages
     ]
 
 

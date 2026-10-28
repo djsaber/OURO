@@ -6,7 +6,7 @@ import threading
 import pytest
 from jsonschema import ValidationError
 
-from ouro.core.callbacks import CallbackOutcomeUnknown
+from ouro.core.callbacks import CallbackCancelled
 from ouro.core.observers import ObserverRegistry
 from ouro.plugins.builtin import BuiltinPluginDefinition, BuiltinPluginRegistry
 from ouro.plugins.catalog.gates import PluginGenerationUnavailableError
@@ -253,7 +253,7 @@ async def test_cancelled_sync_service_callback_cannot_start_late_sdk_operations(
         pending.cancel()
         await asyncio.sleep(0)
         release.set()
-        with pytest.raises(CallbackOutcomeUnknown):
+        with pytest.raises(CallbackCancelled):
             await pending
         assert failures == ["plugin invocation has finished"]
     finally:

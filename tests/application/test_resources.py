@@ -27,8 +27,10 @@ from ouro.core.observers import ObserverRegistry
 from ouro.core.state import RunRecord
 from ouro.core.tools import ToolResult
 from ouro.resources import LocalResourceStore
-from ouro.sessions import LocalSessionStore
+from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from tests.providers.test_tool_result_content import encode
+from tests.session_storage import session_connection
+from tests.tool_batches import persist_tool_batch, resolved_tool_batch
 
 
 def test_file_batch_failure_keeps_only_verified_published_files(tmp_path):
@@ -58,10 +60,14 @@ def test_file_batch_checks_existing_and_incoming_content(tmp_path):
         store.import_contents("ses_test", ((record, b"verified"),))
 
 
-def _services(tmp_path, *, max_bytes=1024 * 1024):
-    sessions = LocalSessionStore(tmp_path)
+def _services(tmp_path, *, max_bytes=1024 * 1024, backend="files"):
+    sessions = (
+        LocalSessionStore(tmp_path)
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "ouro.db")
+    )
     sessions.initialize()
-    resource_store = LocalResourceStore(sessions.root)
+    resource_store = LocalResourceStore(tmp_path)
     resource_store.initialize()
     resources = ResourceService(
         store=resource_store,
@@ -108,31 +114,36 @@ def test_model_projection_reads_file_once_and_revalidates_each_request(
         assert "attached text" in projected[0].text_content
     assert message.text_content == "Read this"
     assert len(reads) == 1
-    # Integrity is checked against the bytes consumed by every request.
+    # Ordinary reads reject missing or resized files without scanning a full digest.
     blob_path.write_bytes(b"corrupt")
     with pytest.raises(ResourceIntegrityError):
         resources.project_model_messages([message], input_modalities=frozenset())
 
 
-def test_projection_loads_session_manifest_once_per_request(tmp_path, monkeypatch):
-    store, _, resources, service = _services(tmp_path)
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+def test_projection_reads_only_selected_resource_metadata(tmp_path, monkeypatch, backend):
+    store, _, resources, service = _services(tmp_path, backend=backend)
     session_id = service.create().session.session_id
     source = tmp_path / "input.txt"
     source.write_text("data", encoding="utf-8")
-    records = [resources.import_resource(session_id, source).resource for _ in range(3)]
+    records = [resources.import_resource(session_id, source).resource for _ in range(8)]
     message = MessageRecord.text(session_id=session_id, role="user", text="Read these")
-    message.resource_refs = [record.resource_id for record in records]
+    message.resource_refs = [record.resource_id for record in records[:3]]
     reads = []
-    load = store.load_resource_references
+    load = store.load_resource_reference
 
-    def tracked_load(identity):
-        reads.append(identity)
-        return load(identity)
+    def tracked_load(identity, resource_id):
+        reads.append((identity, resource_id))
+        return load(identity, resource_id)
 
-    monkeypatch.setattr(store, "load_resource_references", tracked_load)
+    def forbid_list(identity):
+        pytest.fail("projection must not enumerate unrelated resources")
+
+    monkeypatch.setattr(store, "load_resource_reference", tracked_load)
+    monkeypatch.setattr(store, "load_resource_references", forbid_list)
     for _ in range(2):
         resources.project_model_messages([message], input_modalities=frozenset())
-    assert reads == [session_id, session_id]
+    assert reads == [(session_id, record.resource_id) for record in records[:3]] * 2
 
 
 def test_failed_file_removal_preserves_resource_ownership(tmp_path, monkeypatch):
@@ -151,6 +162,41 @@ def test_failed_file_removal_preserves_resource_ownership(tmp_path, monkeypatch)
         resources.remove_resource(session_id, record.resource_id)
     assert sessions.load_resource_references(session_id) == original
     assert resources.resource_path(session_id, record.resource_id).read_bytes() == b"data"
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+def test_copy_selected_resources_does_not_list_target_and_rejects_rebinding(
+    tmp_path, monkeypatch, backend
+):
+    from ouro.core.state import SessionRecord
+    from tests.resource_fixtures import resource_record
+
+    store, blobs, resources, service = _services(tmp_path, backend=backend)
+    source = service.create().session
+    target = service.create().session
+    path = tmp_path / "source.txt"
+    path.write_bytes(b"source")
+    selected = resources.import_resource(source.session_id, path).resource
+
+    def forbid_list(_session_id):
+        pytest.fail("copy must read only selected resource identities")
+
+    monkeypatch.setattr(store, "load_resource_references", forbid_list)
+    for _ in range(2):
+        assert resources.copy_references(
+            source.session_id, target.session_id, (selected.resource_id,)
+        ) == (selected.resource_id,)
+    record = store.load_resource_reference(target.session_id, selected.resource_id)
+    assert blobs.load_content(target.session_id, record) == b"source"
+
+    conflicting = SessionRecord()
+    other = resource_record(resource_id=selected.resource_id, content=b"other")
+    store.create_session_snapshot(conflicting, [], [other], resource_contents=((other, b"other"),))
+    with pytest.raises(PersistenceError, match="identity"):
+        resources.copy_references(
+            source.session_id, conflicting.session_id, (selected.resource_id,)
+        )
+    assert blobs.load_content(conflicting.session_id, other) == b"other"
 
 
 def test_import_keeps_independent_named_copies_without_source_path(
@@ -188,11 +234,13 @@ def test_session_resource_metadata_rejects_unsupported_version(tmp_path):
     session = service.create().session
     source = tmp_path / "versioned.txt"
     source.write_text("versioned", encoding="utf-8")
-    resources.import_resource(session.session_id, source)
-    record_path = sessions.sessions_dir / session.session_id / "resources" / "index.json"
-    raw = json.loads(record_path.read_text("utf-8"))
-    raw["resources"][0]["schema_version"] = 1
-    record_path.write_text(json.dumps(raw), encoding="utf-8")
+    record = resources.import_resource(session.session_id, source).resource
+    with session_connection(sessions, session.session_id) as connection:
+        connection.execute(
+            "UPDATE resource_references SET payload = json_set(payload, '$.schema_version', 1) "
+            "WHERE session_id = ? AND resource_id = ?",
+            (session.session_id, record.resource_id),
+        )
     with pytest.raises(PersistenceError):
         resources.list_resources(session.session_id)
 
@@ -214,16 +262,24 @@ def test_failed_oversized_import_leaves_no_visible_reference_or_staging_file(tmp
     assert sessions.load_session(session.session_id).messages == []
 
 
-def test_reference_publish_failure_rolls_back_new_canonical_record(
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+@pytest.mark.parametrize("after_publication", [False, True])
+def test_reference_publish_failure_retains_bytes_after_uncertain_acknowledgement(
     monkeypatch,
     tmp_path,
+    backend,
+    after_publication,
 ) -> None:
-    sessions, resource_store, resources, session_service = _services(tmp_path)
+    sessions, resource_store, resources, session_service = _services(tmp_path, backend=backend)
     session = session_service.create(title="Rollback").session
     source = tmp_path / "rollback.txt"
     source.write_text("rollback", encoding="utf-8")
 
+    attach = sessions.attach_resource_reference
+
     def fail_attach(_session_id, _reference):
+        if after_publication:
+            attach(_session_id, _reference)
         raise OSError("injected reference failure")
 
     monkeypatch.setattr(sessions, "attach_resource_reference", fail_attach)
@@ -231,9 +287,13 @@ def test_reference_publish_failure_rolls_back_new_canonical_record(
     with pytest.raises(OSError, match="injected reference failure"):
         resources.import_resource(session.session_id, source)
 
-    assert list(resource_store.directory_for(session.session_id).iterdir()) == []
-    assert list(resource_store.directory_for(session.session_id).iterdir()) == []
-    assert resources.list_resources(session.session_id).resources == ()
+    files = list(resource_store.directory_for(session.session_id).iterdir())
+    assert len(files) == 1 and files[0].read_bytes() == b"rollback"
+    # SQLite rolls back the enclosing transaction; Files may already have
+    # published metadata when the caller loses acknowledgement.
+    assert len(resources.list_resources(session.session_id).resources) == (
+        backend == "files" and after_publication
+    )
 
 
 def test_index_failure_keeps_canonical_import_and_returns_diagnostic(monkeypatch, tmp_path):
@@ -473,15 +533,19 @@ def test_tool_resource_refs_are_validated_before_canonical_message_commit(tmp_pa
     run = RunRecord(session_id=session.session_id, status="running")
 
     with pytest.raises(ResourceNotFoundError, match="not attached"):
-        lifecycle.append_tool_result_message(
+        lifecycle.publish_tool_batch(
             session=sessions.load_session_record(session.session_id),
             run=run,
-            result=ToolResult(
-                tool_call_id="call_1",
-                tool_name="GeneratedFile",
-                resource_refs=["res_" + "0" * 64],
+            batch=resolved_tool_batch(
+                run,
+                [
+                    ToolResult(
+                        tool_call_id="call_1",
+                        tool_name="GeneratedFile",
+                        resource_refs=["res_" + "0" * 32],
+                    )
+                ],
             ),
-            sequence=1,
         )
 
     assert sessions.load_session(session.session_id).messages == []
@@ -503,28 +567,30 @@ def test_tool_result_batch_validates_every_resource_before_any_message_commit(tm
     run = RunRecord(session_id=session.session_id, status="running")
 
     with pytest.raises(ResourceNotFoundError, match="not attached"):
-        lifecycle.append_tool_result_messages(
+        lifecycle.publish_tool_batch(
             session=sessions.load_session_record(session.session_id),
             run=run,
-            results=[
-                ToolResult(
-                    tool_call_id="call_valid",
-                    tool_name="GeneratedFile",
-                    resource_refs=[valid_resource.resource_id],
-                ),
-                ToolResult(
-                    tool_call_id="call_invalid",
-                    tool_name="GeneratedFile",
-                    resource_refs=["res_" + "0" * 64],
-                ),
-            ],
-            first_sequence=1,
+            batch=resolved_tool_batch(
+                run,
+                [
+                    ToolResult(
+                        tool_call_id="call_valid",
+                        tool_name="GeneratedFile",
+                        resource_refs=[valid_resource.resource_id],
+                    ),
+                    ToolResult(
+                        tool_call_id="call_invalid",
+                        tool_name="GeneratedFile",
+                        resource_refs=["res_" + "0" * 32],
+                    ),
+                ],
+            ),
         )
 
     assert sessions.load_session(session.session_id).messages == []
 
 
-def test_tool_result_batch_reuses_existing_message_and_commits_only_missing_suffix(
+def test_tool_result_batch_reuses_the_complete_published_frame(
     tmp_path,
 ) -> None:
     sessions, _, resources, session_service = _services(tmp_path)
@@ -539,22 +605,21 @@ def test_tool_result_batch_reuses_existing_message_and_commits_only_missing_suff
     sessions.save_run(run)
     first = ToolResult(tool_call_id="call_1", tool_name="First", content="one")
     second = ToolResult(tool_call_id="call_2", tool_name="Second", content="two")
-    existing = lifecycle.append_tool_result_message(
+    batch = resolved_tool_batch(run, [first, second])
+    run = persist_tool_batch(sessions, run, batch)
+    _, _, _, existing, _ = lifecycle.publish_tool_batch(
         session=sessions.load_session_record(session.session_id),
         run=run,
-        result=first,
-        sequence=1,
+        batch=batch,
     )
-
-    messages = lifecycle.append_tool_result_messages(
+    _, _, _, messages, _ = lifecycle.publish_tool_batch(
         session=sessions.load_session_record(session.session_id),
         run=run,
-        results=[first, second],
-        first_sequence=1,
+        batch=batch,
     )
 
     snapshot = sessions.load_session(session.session_id)
-    assert messages[0] == existing
+    assert messages == existing
     assert [message.sequence for message in messages] == [1, 2]
     assert [message.tool_result.tool_call_id for message in snapshot.messages] == [
         "call_1",

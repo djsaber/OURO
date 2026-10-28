@@ -6,7 +6,7 @@ import threading
 import pytest
 from pydantic import ValidationError
 
-from ouro.core.callbacks import CallbackOutcomeUnknown, invoke_callback
+from ouro.core.callbacks import CallbackCancelled, invoke_callback
 from ouro.core.harness import HarnessState
 from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.session_controls import (
@@ -198,7 +198,7 @@ async def test_owned_sync_callback_loses_state_access_before_its_thread_settles(
             views[0].read()
     finally:
         release.set()
-        with pytest.raises(CallbackOutcomeUnknown):
+        with pytest.raises(CallbackCancelled):
             await task
     assert failures == ["Harness invocation is closed"]
 

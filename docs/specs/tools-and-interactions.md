@@ -30,8 +30,8 @@
 内部 Tool 的执行回调固定为 `handler(invocation, context)`，恢复回调固定为
 `resume_handler(invocation, resolution, request, context)`，各参数按位置传入。取消信号通过 `context.signal`
 访问。构造 Tool 时验证签名能接受对应参数；执行和恢复直接调用，不探测参数名，也不在失败后换一种签名重试。
-回调可以同步或异步，继续由 `invoke_owned_callback` 隔离同步工作并拥有取消收尾；同步工作结果不确定时保留相应
-恢复语义，不因统一签名而遗弃线程或重放副作用。
+回调可以同步或异步，由 `invoke_owned_callback` 隔离同步工作并拥有取消收尾。取消先关闭插件的调用视图，
+再等待所属线程或异步任务结束；返回的观察与已撤销的业务提交资格分开处理，不遗弃线程或重放副作用。
 
 公开 SDK 的 Tool / resume 回调可只接收调用对象，也可接收执行上下文。贡献适配在装配时确定调用方式并保留
 同步、异步属性；非法签名在装配时失败。SDK、MCP 和 generation gate 的输出均遵循上述内部 Tool 签名。
@@ -121,12 +121,15 @@ Use this for images already available on disk.”。JSON Schema 由严格参数�
 
 ## 工具批次
 
-一次完整 Provider 响应中的所有 tool calls 组成 `ToolCallBatchRecord`。批次保存：
+一次完整 Provider 响应中的所有 tool calls 组成一个原生批次。`ToolCallBatchRecord` 是按需显式物化的工作集，包含：
 
 - batch/turn/assistant message identity；
 - execution mode 和 max concurrency；
 - 每个调用的 request、invocation、approval、result 和 result message；
 - planned、interaction、execution、commit、terminal 或 recoverable phase。
+
+Run 仅保存批次引用小头；原请求、实际执行参数、确定结果与等待状态分别按
+[工具事实存储契约](session-persistence.md#工具事实存储)持久化，不序列化完整工作集。
 
 `batch_behavior` 声明批次组合约束，与执行顺序独立：
 
@@ -138,10 +141,13 @@ Use this for images already available on disk.”。JSON Schema 由严格参数�
 Host 在构建模型上下文时，将 exclusive 约束统一追加到工具描述的请求副本；注册定义与执行契约保持原样。
 说明随工具定义发送，运行时仍按结构化契约独立校验。请求呈现、预算与快照见[上下文规格](context-and-compaction.md)。
 
-批次必须先持久化 assistant tool-call message，再执行外部工具。结果无论顺序或并行执行，都按 Provider
-原始 `source_index` 顺序提交并回灌模型。同一完成批次先统一验证全部资源引用，再把缺失的结果消息作为一个
-有序 `append_messages` 批次提交；任何结果验证失败不得留下部分消息。提交成功后才投递 tool-finished Observer 并
-推进批次状态。恢复时按 tool call id 复用已有结果消息，只批量补交缺失项。
+模型批次原 Call 与 assistant 引用消息在同一个决定中接受，实际进入工具前固定并提交 started。
+正常 handler 或 resume handler 返回后，确定观察与待处理提案先通过原生提交保存，再进入 Session control 回调；
+回调不占用存储事务或 mutation 锁。每项结果独立保存，不等待其他调用的业务处理，历史按原始 `source_index`
+顺序发布并回灌模型。完成批次先统一验证全部资源引用，
+再原子发布整帧消息、Call 发布状态、Harness 效果及 Driver ready；任何结果或提案验证失败不得留下部分效果。
+提交成功后才投递 tool-finished Observer。恢复使用固定 Call/Outcome 引用完成整个未发布帧，已发布帧按 Call 状态
+中的消息身份读取；完整身份包含 Run 与 batch，Provider call ID 可以跨批次复用。
 
 ## 顺序与并行
 
@@ -160,8 +166,10 @@ AskUser 调用进入 `waiting_user`，保存活动批次和问题。用户答案
 
 ## Agent 控制与 child HITL
 
-Agent 控制工具的普通 handler 只返回类型化 `AgentControlRequest`，`ToolCallCoordinator` 再把请求交给
-application `AgentService`。tools/core 不导入 AgentService、RuntimeService 或 Supervisor。SpawnAgent 的
+Agent 控制工具的普通 handler 只返回类型化 `AgentControlRequest`，executor 返回无 ToolResult 的
+`control_requested` outcome；`ToolCallCoordinator` 再把请求交给 application `AgentService`。
+意图本身不构成观察，不能持久化为空 Outcome。实际控制结果返回后才进入结果保存边界；等待 child 仍使用独立等待状态。
+tools/core 不导入 AgentService、RuntimeService 或 Supervisor。SpawnAgent 的
 `agent_id` schema、execution mode 与实际解析都来自同一 decision-bound `AgentCatalogSnapshot`；目录没有可派遣
 definition 时省略 SpawnAgent，而不是生成非法空枚举。控制名称属于产品保留集，plugin/MCP 不能覆盖。
 
@@ -172,7 +180,17 @@ child Run；根 Host 通过包含 delegation/session/run/tool-call/request ident
 
 ## 取消与进程
 
-`ToolExecutionContext` 提供 abort 检查、可取消 sleep 和 shell 运行。Shell：
+handler 进入前已取消时，executor 返回 `aborted`；进入后仅收到取消或协作式中断，不能证明外部作用未发生，
+返回 `unknown_outcome`。Python 任务取消在所属工作收尾后向调用方传播；Run 的 `aborted` 终态不等于工具未执行。
+
+应用管线对同步线程、抑制取消的异步 handler、SDK worker 及恢复回调的确定迟到结果，校验原 Call、started
+attempt 和实际执行绑定后独立保存 Outcome。只保存内容、structured、资源和时间等观察，不接受 Harness、
+Session control 或 Agent control 意图，不把原 Run 恢复为活动状态，也不向撤销后的历史发布结果。
+已发布的未知反馈继续引用其当时字面值。worker 退出而没有返回结果时，仍保持未知，不补造确定失败结果。
+独立使用 ToolExecutor 的嵌入宿主需提供结果接收端口，executor 自身不拥有会话持久化。
+
+`ToolExecutionContext` 提供 abort 检查、执行操作的取消结算、可取消 sleep 和 shell 运行。普通工具与 application
+Agent control 使用同一取消所有权：操作实际返回完成值时只保留观察；返回等待请求不产生空 Outcome。Shell：
 
 - 在独立进程组中启动；
 - 从进程启动起并发排空 stdout/stderr，不使用会先累计完整输出的 `communicate()`；
@@ -192,8 +210,9 @@ workspace 约束只限制命令行工具的工作目录，不是操作系统命�
 
 ## 恢复
 
-进程退出时正在执行或提交结果的调用标记为 `unknown_outcome`。恢复不得自动重放这些调用。已经 durable
-提交的结果通过 call id 去重；checkpointed result 可安全完成消息提交。
+实际执行已开始但没有持久观察的调用恢复为 `unknown_outcome`，不得自动重放。有确定 Outcome 时使用其原始
+观察完成未发布消息；若尚有未发布的 Harness 或 Session control 提案，丢弃提案并追加
+`ToolBusinessEffectsNotApplied` 反馈。恢复不再次进入控制回调，也不把丢弃状态意图解释成外部操作未发生。
 
 ## Observer 与事件
 
@@ -201,10 +220,22 @@ workspace 约束只限制命令行工具的工作目录，不是操作系统命�
 batch/call/approval/AskUser 事件。
 Observer 失败隔离为 `plugin_observer_failed`，不改变工具的实际结果。
 
+调用接受、started、批次执行阶段、审批等待与决议、用户回答与再次提问、子结果等待与决议的业务事件，
+与各自 Call/Run 状态在同一次原生提交中保存。审批请求不会先于其持久等待状态向 Host 公布。
+工具帧完成事件与消息、Call 发布状态和 Driver ready 同提交；中断批次及恢复补齐事件也使用各自的提交边界。
+提交后通知不再写入第二条事件，丢失通知时按 Session sequence 追赶。
+
+永久 `tool_call_requested` 只保存 Call 身份及少量展示元数据，不复制 arguments。
+永久 `tool_call_completed` 以 Call 身份和固定 `outcome_attempt` 引用确定结果，保留当时的结算反馈，
+不复制原始 structured；未知结果没有 Outcome 引用。Application 在观察读取边界内物化 arguments/result_data，
+不会用后来变化的当前 attempt 或迟到结果改写历史通知。结果的独立保存仍先于业务结算，通知不承担恢复事实所有权。
+
 ## 状态效果与历史代次
 
 工具通过调用范围内的 owner 视图提出状态替换/删除。Host 验证输出和控制转换后，将状态效果与对应结果
 消息置于同一 `SessionCommit`；结果消息锚点指向该效果之前的版本。同一次结果提交中，对同一 owner 的多份状态提案明确拒绝。
+Session control 的返回或错误作为独立框架反馈保存，历史物化时追加到原始观察；控制失败不得覆盖原始 content、
+structured、资源或执行时间。组合后的反馈可以是错误，但原 Outcome 仍保留工具实际返回的成功或失败。
 需要独立批次提交状态的工具声明 `batch_behavior="exclusive"`；仅要求 handler 不重叠的工具可声明
 `execution_mode="sequential"`。顺序执行不会刷新同一执行阶段的 Harness 快照，不能替代状态提交边界。
 
@@ -216,6 +247,8 @@ Observer 失败隔离为 `plugin_observer_failed`，不改变工具的实际结�
 - `tests/tools/test_tools.py`
 - `tests/tools/test_executor_permissions.py`
 - `tests/application/test_tool_call_batches.py`
+- `tests/application/test_tool_observation_order.py`
+- `tests/application/test_parallel_tool_observations.py`
 - `tests/application/test_runtime.py`
 - `tests/application/test_agents.py`
 - `tests/tools/test_builtin_agents.py`

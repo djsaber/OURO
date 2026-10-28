@@ -8,6 +8,7 @@ from pydantic import Field, model_validator
 from ouro.core.agents import AgentCatalogSnapshot
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.base import Metadata, MetadataField, OuroModel, VersionedOuroModel, new_id, utc_now
+from ouro.core.context_selection import ContextSelection
 from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.message_semantics import SemanticTag
@@ -20,7 +21,7 @@ from ouro.core.session_controls import (
     SessionInputMode,
     SessionInputRole,
 )
-from ouro.core.tool_batches import ToolCallBatchRecord
+from ouro.core.tool_batches import ToolBatchHead
 
 RunStatus = Literal[
     "queued",
@@ -160,6 +161,33 @@ class RunContinuationCheckpoint(OuroModel):
     selected_controller_id: str | None = None
     reason: str | None = None
     resolved_at: datetime | None = None
+    settlement_diagnostics: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_settlement_lifetime(self) -> Self:
+        if self.state == "resolved" and self.settlement_plan is not None:
+            raise ValueError("resolved continuation cannot retain its settlement plan")
+        return self
+
+    def resolved(
+        self,
+        *,
+        action: str,
+        controller_id: str | None = None,
+        reason: str | None = None,
+        diagnostics: tuple[str, ...] = (),
+    ) -> RunContinuationCheckpoint:
+        return self.model_copy(
+            update={
+                "state": "resolved",
+                "action": action,
+                "selected_controller_id": controller_id,
+                "reason": reason,
+                "resolved_at": utc_now(),
+                "settlement_plan": None,
+                "settlement_diagnostics": diagnostics,
+            }
+        )
 
 
 class SessionContinuationRequest(OuroModel):
@@ -178,7 +206,7 @@ class SessionContinuationRequest(OuroModel):
 
 
 class SessionRecord(VersionedOuroModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[5] = 5
     session_id: str = Field(default_factory=lambda: new_id("ses"))
     harness_version: str = Field(
         default_factory=lambda: new_id("harness"), pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
@@ -206,18 +234,26 @@ class SessionRecord(VersionedOuroModel):
     approval_mode: SessionApprovalMode = "inherit"
     interaction_mode: SessionInteractionMode = "interactive"
     controls: SessionControlState = Field(default_factory=SessionControlState)
-    active_compaction_id: str | None = None
+    context_selection: ContextSelection = Field(default_factory=ContextSelection)
     status: SessionStatus = "idle"
     active_run_id: str | None = None
     continuation_request: SessionContinuationRequest | None = None
     last_message_id: str | None = None
+    # A local lost reply can confirm this write while holding the mutation boundary.
+    # This is not a revision precondition or an archive of retryable operations.
+    last_commit_id: str | None = None
     last_run_id: str | None = None
     message_count: int = 0
+    run_count: int = Field(default=0, ge=0)
+    resource_count: int = Field(default=0, ge=0)
+    pending_input_ids: tuple[str, ...] = ()
     tags: list[str] = Field(default_factory=list)
     metadata: Metadata = MetadataField
 
     @model_validator(mode="after")
     def validate_session_identity(self) -> Self:
+        if len(set(self.pending_input_ids)) != len(self.pending_input_ids):
+            raise ValueError("Session pending input identities must be unique")
         if self.root_session_id is None:
             self.root_session_id = self.session_id
         if self.session_kind == "primary":
@@ -248,8 +284,16 @@ class SessionRecord(VersionedOuroModel):
         return self.root_session_id
 
 
+class RunRequestCounts(OuroModel):
+    """Narrow dispatch projection for shared budgets; RunRecord owns the counters."""
+
+    run_id: str
+    model_round_count: int = Field(ge=0)
+    summary_request_count: int = Field(ge=0)
+
+
 class RunRecord(VersionedOuroModel):
-    schema_version: Literal[5] = 5
+    schema_version: Literal[10] = 10
     history_epoch: int = Field(default=0, ge=0)
     run_id: str = Field(default_factory=lambda: new_id("run"))
     session_id: str
@@ -265,17 +309,34 @@ class RunRecord(VersionedOuroModel):
     model: str | None = None
     model_endpoint_id: str | None = None
     pending_approval_id: str | None = None
-    active_tool_batch: ToolCallBatchRecord | None = None
+    active_tool_batch: ToolBatchHead | None = None
     abort_requested: bool = False
     error: str | None = None
-    usage: dict[str, int | float] = Field(default_factory=dict)
-    usage_entry_ids: list[str] = Field(default_factory=list)
     model_round_count: int = Field(default=0, ge=0)
+    summary_request_count: int = Field(default=0, ge=0)
+    current_request_id: str | None = None
     continuation: RunContinuationCheckpoint | None = None
     driver: RunDriverBinding = Field(default_factory=RunDriverBinding)
     driver_checkpoint: DriverCheckpoint | None = None
     agent_catalog: AgentCatalogSnapshot | None = None
     metadata: Metadata = MetadataField
+
+    @property
+    def needs_recovery(self) -> bool:
+        """Whether execution or a terminal settlement still owns pending work."""
+        return (
+            self.status in ACTIVE_RUN_STATUSES
+            or (
+                self.status in RESUMABLE_RUN_STATUSES
+                and self.active_tool_batch is not None
+                and self.active_tool_batch.phase != "completed"
+            )
+            or (
+                self.kind == "agent"
+                and self.continuation is not None
+                and self.continuation.state == "pending"
+            )
+        )
 
     @property
     def control_bindings(self) -> tuple[RunControlBinding, ...]:

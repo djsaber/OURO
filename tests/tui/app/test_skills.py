@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
 from textual.widgets import Input, OptionList, Static
 
 from ouro.application.configuration.facade import ConfigurationFacade
-from ouro.application.contracts.configuration import SkillView
+from ouro.application.contracts.configuration import SkillCatalogView, SkillView
 from ouro.skills import SkillLoader
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
@@ -20,7 +21,7 @@ from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.editable import EditableChoiceScreen
 from ouro.tui.view_models import TuiPluginInstallConfiguration
 from tests.tui.app.support import _application, _write_skill_plugin
-from tests.tui.helpers import choose_menu, run_ready_app
+from tests.tui.helpers import choose_menu, run_ready_app, wait_for_events
 from tests.tui.helpers import wait_for_screen as _wait_for_screen
 from tests.tui.helpers import wait_for_worker_group as _wait_for_worker_group
 from tests.tui.helpers import wait_until as _wait_until
@@ -169,7 +170,9 @@ async def test_skill_directory_sources_use_shared_menu_and_persist_toggles(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_skill_menu_loads_live_plugin_skill_as_disabled_choice(tmp_path: Path) -> None:
+async def test_skill_menu_loads_live_plugin_skill_as_disabled_choice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     source = tmp_path / "skill-plugin"
     _write_skill_plugin(source)
     app = OuroTuiApp(application=_application(tmp_path))
@@ -181,12 +184,26 @@ async def test_skill_menu_loads_live_plugin_skill_as_disabled_choice(tmp_path: P
         )
         assert (await app._controller.enable_plugin(installed.plugin_id)).status == "active"
 
+        catalog_started, release_catalog = asyncio.Event(), asyncio.Event()
+        load_catalog = app._controller.skill_catalog
+
+        async def held_catalog() -> SkillCatalogView:
+            catalog_started.set()
+            await release_catalog.wait()
+            return await load_catalog()
+
+        monkeypatch.setattr(app._controller, "skill_catalog", held_catalog)
         await pilot.press("ctrl+p")
-        await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Manage skills"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        try:
+            await choose_menu(pilot, "Manage skills")
+            await wait_for_events(catalog_started, pilot=pilot, description="skill catalog read")
+            await pilot.pause()
+            # UI idleness does not complete the catalog read owned by the selection worker.
+            assert app.screen.query_one("#choice-title", Static).render().plain == "ACTIONS"
+        finally:
+            release_catalog.set()
+        await _wait_for_screen(app, ChoiceScreen, title="SKILLS")
 
         assert isinstance(app.screen, ChoiceScreen)
         assert app.screen.query_one("#choice-title", Static).render().plain == "SKILLS"
@@ -343,7 +360,7 @@ Review the requested code carefully.
 
         assert app.query_one(ConversationHistory).user_turns == ("@reviewer inspect app.py",)
         assert app._controller.session_id is not None
-        snapshot = application.runtime.store.load_runtime_session(app._controller.session_id)
+        snapshot = application.runtime.store.load_session(app._controller.session_id)
         message = next(item for item in snapshot.messages if item.skill_activations)
         assert message.skill_activations[0].name == "reviewer"
         assert message.text_content == "inspect app.py"

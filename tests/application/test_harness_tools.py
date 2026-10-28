@@ -7,10 +7,8 @@ from pathlib import Path
 import pytest
 
 from ouro.application.harness import capture_harness
-from ouro.application.runtime.service import RuntimeService
-from ouro.core.adapter import RuntimeAdapter
+from ouro.application.runs.tool_batches import load_tool_batch
 from ouro.core.errors import PersistenceError
-from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
@@ -18,24 +16,15 @@ from ouro.core.tools import ToolInvocation
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.worker.instance import WorkerPluginInstance
-from ouro.providers import FauxProvider
 from ouro.sdk.plugins import v5 as sdk
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.backends.files.commits import FileSessionCommits
-from ouro.tools import ToolExecutionContext, ToolExecutor, ToolRegistry
+from ouro.tools import ToolExecutionContext, ToolExecutor
 from tests.application.helpers import running_runtime_task
+from tests.application.tool_runtime import runtime
+from tests.application.tool_runtime import store as store
 from tests.harness_state import replace_harness_state
-
-
-@pytest.fixture(params=["files", "sqlite"])
-def store(tmp_path, request):
-    result = (
-        LocalSessionStore(tmp_path / "files")
-        if request.param == "files"
-        else SQLiteSessionStore(tmp_path / "sessions.db")
-    )
-    result.initialize()
-    return result
+from tests.run_facts import run_tool_results
+from tests.tool_batches import persist_tool_batch, resolved_tool_batch
 
 
 @pytest.fixture(params=["inprocess", "worker"])
@@ -85,38 +74,6 @@ async def state_tool(tmp_path, request):
         yield tool, manifest.plugin_id, {"value": "verify"}, {"calls": 1, "last_value": "verify"}
     finally:
         await worker.stop("shutdown", 0)
-
-
-def runtime(store, tool, arguments):
-    registry = ToolRegistry()
-    registry.register(tool)
-    return RuntimeService(
-        store=store,
-        tools=registry,
-        adapter=RuntimeAdapter(
-            FauxProvider(
-                event_batches=[
-                    [
-                        ProviderStreamEvent(
-                            type="tool_call_delta",
-                            tool_call_delta=ToolCallDelta(
-                                index=0,
-                                id_delta="call_state",
-                                name_delta=tool.definition.name,
-                                arguments_delta=json.dumps(arguments),
-                            ),
-                        ),
-                        ProviderStreamEvent(type="done"),
-                    ],
-                    [
-                        ProviderStreamEvent(type="text_delta", text="finished"),
-                        ProviderStreamEvent(type="done"),
-                    ],
-                ]
-            ),
-            ModelMetadata(model_id="faux", provider_id="faux"),
-        ),
-    )
 
 
 async def test_state_and_tool_message_commit_together_and_undo_restores_before_state(
@@ -184,7 +141,7 @@ async def test_failed_callback_discards_staged_state(store, failure):
     ).tools[0]
     app = runtime(store, tool, {})
     result = await app.run("try")
-    assert result.tool_results[0].is_error
+    assert run_tool_results(store, result)[0].is_error
     assert not store.load_harness(result.session.session_id).state.states
 
 
@@ -230,7 +187,7 @@ async def test_waiting_state_commits_with_request_and_resume_gets_a_fresh_view(
         state = store.load_harness(session_id).state
         assert state.states[0].payload == {"stage": "waiting"}
         run = store.load_run(session_id, pending.run.run_id)
-        assert run.active_tool_batch.calls[0].input_request.harness_change is None
+        assert load_tool_batch(store, run).calls[0].input_request.harness_change is None
         assert all(message.role != "tool_result" for message in snapshot.messages)
         result = await app.answer_user(session_id=session_id, run_id=run.run_id, answer="yes")
     else:
@@ -321,6 +278,10 @@ async def test_tool_result_retry_after_durable_decision_is_not_applied_twice(
         context=ToolExecutionContext(harness=capture_harness(store, session.session_id)),
     )
     assert outcome.result is not None and not outcome.result.is_error
+    batch = resolved_tool_batch(run, [outcome.result])
+    batch.calls[0].request.arguments = arguments
+    batch.calls[0].invocation = invocation.model_copy(update={"turn_id": batch.turn_id})
+    run = persist_tool_batch(store, run, batch)
     commit = store.commit_session
 
     def lose_response(request):
@@ -339,18 +300,17 @@ async def test_tool_result_retry_after_durable_decision_is_not_applied_twice(
         else:
             fault.setattr(FileSessionCommits, "_write_suffix", staticmethod(interrupt_application))
         with pytest.raises(OSError if failure_point == "response" else PersistenceError):
-            app.run_lifecycle.append_tool_result_message(
+            app.run_lifecycle.publish_tool_batch(
                 session=session,
                 run=run,
-                result=outcome.result,
-                sequence=1,
+                batch=batch,
             )
-    message = app.run_lifecycle.append_tool_result_message(
+    _, _, _, messages, _ = app.run_lifecycle.publish_tool_batch(
         session=session,
         run=run,
-        result=outcome.result,
-        sequence=1,
+        batch=batch,
     )
+    (message,) = messages
     snapshot = store.load_session(session.session_id)
     assert snapshot.messages == [message]
     assert store.load_harness(session.session_id).state.states[0].payload == expected
@@ -358,10 +318,9 @@ async def test_tool_result_retry_after_durable_decision_is_not_applied_twice(
         SessionCommit(before=snapshot.session, before_message_id=message.message_id)
     )
     with pytest.raises(SessionCommitConflict, match="withdrawn"):
-        app.run_lifecycle.append_tool_result_message(
+        app.run_lifecycle.publish_tool_batch(
             session=session,
             run=run,
-            result=outcome.result,
-            sequence=1,
+            batch=batch,
         )
     assert not store.load_session(session.session_id).messages

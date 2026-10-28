@@ -2,6 +2,7 @@
 
 import json
 
+from ouro.application.runs.tool_batches import load_tool_batch
 from ouro.application.usage import UsageService
 from ouro.billing import LocalUsageLedger
 from ouro.builtin_plugins.goal import GOAL_PLUGIN
@@ -73,7 +74,7 @@ async def test_user_plan_owns_its_gate_and_resumes_confirmation_after_restart(tm
         assert (await application.plugins.enable(plugin_id)).status == "active"
         pending = await runtime.run("Design the implementation", approval_mode="auto")
         assert pending.run.status == "waiting_user", pending.run.error
-        call = pending.run.active_tool_batch.calls[-1]
+        call = load_tool_batch(store, pending.run).calls[-1]
         assert call.invocation.plugin_id == plugin_id
         assert call.invocation.plugin_class == "user"
         assert call.input_request.data["type"] == "plan_confirmation"

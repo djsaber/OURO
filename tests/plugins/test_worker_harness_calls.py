@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from ouro.core.callbacks import CallbackCancelled
 from ouro.core.harness import HarnessState
 from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.plugins.harness_calls import invoke_plugin_callback
@@ -107,11 +108,12 @@ async def test_late_worker_state_cannot_escape_closed_call_or_enter_another_sess
                 pass
         if stop == "cancel":
             pending.cancel()
-            with pytest.raises(asyncio.CancelledError):
+            with pytest.raises(CallbackCancelled) as cancelled:
                 await pending
         else:
-            with pytest.raises(TimeoutError):
+            with pytest.raises(CallbackCancelled) as cancelled:
                 await asyncio.wait_for(pending, 0.01)
+        assert cancelled.value.result.content == "withdrawn"
         with pytest.raises(RuntimeError, match="closed"):
             views[0].read()
 

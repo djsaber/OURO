@@ -253,7 +253,7 @@ async def test_tui_submission_uses_capacity_and_host_detach_preserves_execution(
             provider.text("Beta", "after detach")
             provider.finish("Beta")
         await asyncio.wait_for(job.done.wait(), 5)
-        snapshot = application.runtime.store.load_runtime_session(second_id)
+        snapshot = application.runtime.store.load_session(second_id)
         assert snapshot.runs[-1].status == ("aborted" if finish == "abort" else "completed")
         if finish == "complete":
             assert "after detach" in snapshot.messages[-1].text_content

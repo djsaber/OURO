@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
+from collections.abc import Mapping
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -9,12 +12,16 @@ from pydantic import ValidationError
 
 from ouro.core.base import new_id, utc_now
 from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
+from ouro.core.inputs import resolve_input_content
 from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
-from ouro.core.resources import SessionResourceReferences
-from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.state import SessionRecord
 from ouro.local_io import write_model_atomic
 from ouro.local_locks import FileOwnerLock
+from ouro.sessions.backends.files.database import connect_data
+from ouro.sessions.backends.files.inputs import input_path, read_input
+from ouro.sessions.backends.files.journal import reverse_jsonl
+from ouro.sessions.backends.files.messages import FileMessageRecords
 from ouro.sessions.catalog import (
     SessionCatalogProjection,
     catalog_entry_from_projection,
@@ -27,6 +34,8 @@ from ouro.sessions.index import (
     SessionIndexEntry,
     invalid_session_index_entry,
 )
+from ouro.sessions.sqlite_connections import ExecutionConnections
+from ouro.sessions.sqlite_runs import read_run
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _MAX_PREVIEW_SCAN_BYTES = 64 * 1024
@@ -39,10 +48,12 @@ class LocalSessionIndex:
         self,
         sessions_dir: Path,
         locks_dir: Path,
+        connections: Mapping[str, ExecutionConnections],
     ) -> None:
         self.sessions_dir = sessions_dir
         self.index_path = sessions_dir / "index.json"
         self.lock_path = locks_dir / "catalog.lock"
+        self._connections = connections
 
     def try_initialize(self) -> str | None:
         """Create the initial empty projection without reading Session history."""
@@ -145,9 +156,21 @@ class LocalSessionIndex:
         if not _RECORD_ID.fullmatch(session_id):
             return self._corrupt_entry(session_dir)
         try:
-            raw_session = (session_dir / "session.json").read_text("utf-8")
-        except OSError as exc:
+            with connect_data(
+                session_dir, connections=self._connections.get(session_id)
+            ) as connection:
+                return self._read_entry(connection, session_dir)
+        except (OSError, PersistenceError) as exc:
             return self._corrupt_entry(session_dir, error_detail=str(exc))
+
+    def _read_entry(self, connection: sqlite3.Connection, session_dir: Path) -> SessionIndexEntry:
+        session_id = session_dir.name
+        row = connection.execute(
+            "SELECT payload FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        if row is None:
+            raise FileNotFoundError(session_id)
+        raw_session = row[0]
         try:
             session = decode_versioned_record_json(
                 SessionRecord,
@@ -169,7 +192,15 @@ class LocalSessionIndex:
             )
 
         try:
-            projection = self._load_projection(session_dir, session)
+            projection = SessionCatalogProjection(
+                latest_run=read_run(connection, session_id, session.last_run_id)
+                if session.last_run_id is not None
+                else None,
+                latest_message=self._latest_message(session_dir / "messages.jsonl"),
+                message_count=session.message_count,
+                run_count=session.run_count,
+                resource_count=session.resource_count,
+            )
         except UnsupportedDataVersionError as exc:
             return catalog_entry_from_session(
                 session,
@@ -184,58 +215,36 @@ class LocalSessionIndex:
             )
         return catalog_entry_from_projection(session, projection)
 
-    def _load_projection(
-        self,
-        session_dir: Path,
-        session: SessionRecord,
-    ) -> SessionCatalogProjection:
-        resource_count, missing_resource = self._resource_counts(session.session_id)
-        run_count = sum(1 for _ in (session_dir / "runs").glob("*.json"))
-        latest_run = None
-        if session.last_run_id is not None:
-            latest_run = decode_versioned_record_json(
-                RunRecord,
-                (session_dir / "runs" / f"{session.last_run_id}.json").read_text("utf-8"),
-                label=f"latest Run for catalog {session.session_id}",
-            )
-        return SessionCatalogProjection(
-            latest_run=latest_run,
-            latest_message=self._latest_message(session_dir / "messages.jsonl"),
-            message_count=session.message_count,
-            run_count=run_count,
-            resource_count=resource_count,
-            resource_missing=missing_resource,
-        )
-
     @staticmethod
     def _latest_message(path: Path) -> MessageRecord | None:
-        with path.open("rb") as stream:
-            end = stream.seek(0, 2)
-            scanned = 0
-            buffer = b""
-            while end > 0 and scanned < _MAX_PREVIEW_SCAN_BYTES:
-                size = min(8192, end, _MAX_PREVIEW_SCAN_BYTES - scanned)
-                end -= size
-                scanned += size
-                stream.seek(end)
-                buffer = stream.read(size) + buffer
-                lines = buffer.split(b"\n")
-                complete_lines = lines[1:] if end > 0 else lines
-                for raw in reversed(complete_lines):
-                    if not raw.strip():
-                        continue
-                    message = decode_versioned_record_json(
-                        MessageRecord,
-                        raw,
-                        label="message for catalog preview",
-                    )
-                    if (
-                        not message.scaffold
-                        and message.role in {"user", "assistant"}
-                        and message.text_content
-                    ):
-                        return message
-                buffer = lines[0] if end > 0 else b""
+        messages = FileMessageRecords()
+        directory = path.parent
+        scanned = 0
+        with closing(reverse_jsonl(path, block_size=8192)) as lines:
+            for _, raw in lines:
+                scanned += len(raw)
+                if scanned > _MAX_PREVIEW_SCAN_BYTES:
+                    break
+                fact = messages.entry(raw, session_id=directory.name)
+                if fact.scaffold or fact.role not in {"user", "assistant"}:
+                    continue
+                record = None
+                if fact.input_id is not None:
+                    scanned += input_path(directory, fact.input_id).stat().st_size
+                    if scanned > _MAX_PREVIEW_SCAN_BYTES:
+                        break
+                    record = read_input(directory, directory.name, fact.input_id)
+                # The preview uses only owned assistant text or the selected Input body.
+                # Original tool parameters and Outcomes do not contribute to this projection.
+                message = MessageRecord.model_validate(
+                    {**fact.model_dump(), **resolve_input_content(fact, record)}
+                )
+                if (
+                    not message.scaffold
+                    and message.role in {"user", "assistant"}
+                    and message.text_content
+                ):
+                    return message
         return None
 
     def _corrupt_entry(
@@ -263,21 +272,6 @@ class LocalSessionIndex:
             health=health,
             error_detail=error_detail,
         )
-
-    def _resource_counts(self, session_id: str) -> tuple[int, bool]:
-        path = self.sessions_dir / session_id / "resources" / "index.json"
-        try:
-            raw = json.loads(path.read_text("utf-8"))
-        except OSError, json.JSONDecodeError:
-            return 0, True
-        resources = raw.get("resources") if isinstance(raw, dict) else None
-        if not isinstance(resources, list):
-            return 0, True
-        try:
-            SessionResourceReferences.model_validate(raw)
-        except ValidationError:
-            return len(resources), True
-        return len(resources), False
 
     def _write(self, index: SessionIndex) -> SessionIndex:
         write_model_atomic(self.index_path, index)

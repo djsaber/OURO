@@ -48,7 +48,6 @@ def render_context_snapshot(snapshot: SessionContextSnapshot) -> str:
     return "\n".join(
         (
             render_context_status(snapshot.status),
-            f"Digest: {snapshot.context_digest}",
             "Provider context:",
             json.dumps(payload, ensure_ascii=False, indent=2),
         )

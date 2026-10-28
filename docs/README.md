@@ -47,3 +47,5 @@
 ## 规划与记录
 
 [路线图](plans/roadmap.md)描述未来方向；[规划索引](plans/README.md)列出当前待办和进入实施的条件。已完成审查保留在[完成记录](plans/archive/README.md)，用于追溯当时的范围和验证结果，不代替现行规格。
+
+会话数据与执行管线的[设计与验收](plans/archive/2026-10-26-session-data-implementation.md)包含数据所有权、提交边界、性能对照和验证范围。

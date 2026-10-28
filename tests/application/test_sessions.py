@@ -19,11 +19,14 @@ from ouro.core.agents import (
 )
 from ouro.core.compaction import (
     CompactionRecord,
-    compaction_source_digest,
-    validate_compaction_lineage,
 )
-from ouro.core.context import ContextBuilder, ContextView, estimate_message_tokens
-from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_digest
+from ouro.core.context import (
+    ContextBuilder,
+    ContextMetrics,
+    ProviderContext,
+    estimate_message_tokens,
+)
+from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.errors import PersistenceError, SessionBranchError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ToolResultReference
@@ -33,7 +36,10 @@ from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolCallRequest, ToolDefinition
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.layout import DATA_LAYOUT_VERSION
+from tests.context_facts import save_context
 from tests.harness_state import replace_harness_state
+from tests.session_storage import read_session_payload, session_connection, write_session_payload
+from tests.tool_batches import seed_tool_messages
 
 
 def _service(tmp_path) -> tuple[LocalSessionStore, SessionService]:
@@ -113,19 +119,37 @@ def test_run_record_reads_exact_identity_without_loading_history(tmp_path, backe
     second = RunRecord(session_id=session.session_id, status="running", model="second")
     store.save_run(first)
     store.save_run(second)
+    for run, text in ((first, "first answer"), (second, "other answer")):
+        store.append_message(
+            MessageRecord.text(
+                session_id=session.session_id,
+                run_id=run.run_id,
+                role="assistant",
+                text=text,
+            )
+        )
 
     def reject_history(*args, **kwargs):
         raise AssertionError("One Run read must not load Session history")
 
-    for method in ("load_session", "load_runtime_session", "load_runs", "load_events_page"):
+    for method in (
+        "load_session",
+        "load_runtime_session",
+        "load_runs",
+        "load_run_messages",
+        "load_events_page",
+    ):
         monkeypatch.setattr(store, method, reject_history)
     assert sessions.run_record(session.session_id, first.run_id) == first
+    result = sessions.run_result(session.session_id, first.run_id)
+    assert result.run == first
+    assert result.final_text == "first answer"
     with pytest.raises(PersistenceError, match="Run not found"):
         sessions.run_record(session.session_id, "run_missing")
 
 
 @pytest.mark.parametrize("backend", ("files", "sqlite"))
-def test_observation_snapshot_has_atomic_high_water_and_only_active_run_events(
+def test_observation_snapshot_has_atomic_high_water_without_historical_events(
     tmp_path,
     backend: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -179,7 +203,7 @@ def test_observation_snapshot_has_atomic_high_water_and_only_active_run_events(
     assert snapshot.session.session_id == session.session_id
     assert snapshot.event_high_water == active_event.sequence
     assert snapshot.messages[0].text_content == "persisted history"
-    assert snapshot.events == (active_event,)
+    assert snapshot.events == ()
     assert {run.run_id for run in snapshot.runs} == {completed.run_id, active.run_id}
 
 
@@ -212,6 +236,12 @@ def test_message_batch_round_trip_preserves_independent_semantics(tmp_path, back
         for index, role in enumerate(roles, start=1)
     ]
 
+    native_request = MessageRecord(
+        session_id=session.session_id,
+        role="assistant",
+        tool_calls=[ToolCallRequest(id="call_1", name="lookup")],
+    )
+    seed_tool_messages(store, native_request, [messages[-1]])
     store.append_messages(messages)
     reloaded = store.load_session(session.session_id).messages
 
@@ -256,12 +286,15 @@ def test_session_context_preserves_stored_tool_descriptions(tmp_path, backend, d
     store.initialize()
     sessions = SessionService(store)
     session = sessions.create(title="Stored tool contract").session
-    view = ContextView(
-        tool_definitions=[
-            ToolDefinition(name="Boundary", description=description, batch_behavior="exclusive")
+    prepared = ProviderContext(
+        tools=[
+            ToolDefinition(
+                name="Boundary", description=description, batch_behavior="exclusive"
+            ).model_dump()
         ]
     )
-    store.save_latest_context(
+    save_context(
+        store,
         ContextSnapshotRecord(
             session_id=session.session_id,
             run_id="run_1",
@@ -269,29 +302,29 @@ def test_session_context_preserves_stored_tool_descriptions(tmp_path, backend, d
             model_round=1,
             provider_id="test",
             model_id="test-model",
-            tool_definitions=view.tool_definitions,
-            metrics=view.metrics,
-            context_digest=context_view_digest(view),
-        )
+            metrics=ContextMetrics(estimated_input_tokens=0, estimated_fixed_tokens=0),
+            provider_context=prepared,
+        ),
     )
 
     restored = sessions.context(session.session_id)
 
     assert restored is not None
-    assert restored.provider_context.tools == view.provider_context().tools
+    assert restored.provider_context == prepared
     assert restored.provider_context.tools[0]["description"] == description
 
 
-def test_session_context_rejects_content_that_does_not_match_digest(tmp_path) -> None:
+def test_session_context_reads_prepared_values_without_reprojection(tmp_path, monkeypatch) -> None:
     store, sessions = _service(tmp_path)
-    session = sessions.create(title="Context digest").session
+    session = sessions.create(title="Prepared context").session
     message = MessageRecord.text(session_id=session.session_id, role="user", text="hello")
     view = (
         ContextBuilder()
         .build(messages=[message], tools=[])
         .model_copy(update={"context_id": "ctx_tampered"})
     )
-    store.save_latest_context(
+    save_context(
+        store,
         ContextSnapshotRecord(
             context_id="ctx_tampered",
             session_id=session.session_id,
@@ -300,15 +333,20 @@ def test_session_context_rejects_content_that_does_not_match_digest(tmp_path) ->
             model_round=1,
             provider_id="test",
             model_id="test-model",
-            source_messages=[message],
+            provider_context=view.provider_context,
             metrics=view.metrics,
-            context_digest="sha256:" + "0" * 64,
-        )
+        ),
     )
 
+    def forbidden(*args, **kwargs):
+        pytest.fail("query reprojected prepared Provider input")
+
+    import ouro.core.context as contexts
+
+    monkeypatch.setattr(contexts, "model_visible_message", forbidden)
+    monkeypatch.setattr(ContextBuilder, "build", forbidden)
     assert sessions.context_status(session.session_id) is not None
-    with pytest.raises(PersistenceError, match="does not match its stored digest"):
-        sessions.context(session.session_id)
+    assert sessions.context(session.session_id).provider_context == view.provider_context
 
 
 def test_message_page_does_not_load_full_large_session(monkeypatch, tmp_path) -> None:
@@ -593,7 +631,7 @@ def test_catalog_keeps_valid_sessions_visible_when_another_session_is_corrupt(tm
     valid = sessions.create(title="Valid").session
     corrupt_dir = store.sessions_dir / "ses_corrupt"
     corrupt_dir.mkdir()
-    (corrupt_dir / "session.json").write_text("{broken", encoding="utf-8")
+    (corrupt_dir / "session-data.sqlite3").write_text("{broken", encoding="utf-8")
     store.rebuild_catalog()
 
     result = sessions.catalog()
@@ -627,8 +665,7 @@ def test_catalog_scoped_trash_does_not_decode_canonical_records(
     )
     store.create_session(child)
     if backend == "files":
-        root_path = store.sessions_dir / root.session_id / "session.json"
-        root_path.write_text("{broken", encoding="utf-8")
+        write_session_payload(store, root.session_id, "{broken")
     else:
         with closing(sqlite3.connect(store.database)) as connection:
             connection.execute(
@@ -684,11 +721,10 @@ def test_stale_unreadable_projection_does_not_block_explicit_trash(
 ) -> None:
     store, sessions = _service(tmp_path)
     session = sessions.create(session_id="ses_repaired", title="Repaired").session
-    session_path = store.sessions_dir / session.session_id / "session.json"
-    canonical_payload = session_path.read_text(encoding="utf-8")
-    session_path.write_text("{broken", encoding="utf-8")
+    canonical_payload = read_session_payload(store, session.session_id)
+    write_session_payload(store, session.session_id, "{broken")
     store.rebuild_catalog()
-    session_path.write_text(canonical_payload, encoding="utf-8")
+    write_session_payload(store, session.session_id, canonical_payload)
 
     result = sessions.trash_from_catalog(session.session_id)
 
@@ -700,10 +736,9 @@ def test_stale_unreadable_projection_does_not_block_explicit_trash(
 def test_catalog_marks_incompatible_session_record_as_unsupported_version(tmp_path) -> None:
     store, sessions = _service(tmp_path)
     session = sessions.create(title="Old record").session
-    session_path = store.sessions_dir / session.session_id / "session.json"
-    raw = json.loads(session_path.read_text("utf-8"))
+    raw = json.loads(read_session_payload(store, session.session_id))
     raw.pop("schema_version")
-    session_path.write_text(json.dumps(raw), encoding="utf-8")
+    write_session_payload(store, session.session_id, json.dumps(raw))
 
     store.rebuild_catalog()
 
@@ -738,6 +773,7 @@ def test_branch_remaps_messages_and_expands_complete_tool_exchange(tmp_path) -> 
     ).model_copy(
         update={"tool_result": ToolResultReference(tool_call_id="call_1", tool_name="Read")}
     )
+    seed_tool_messages(store, assistant, [result])
     for message in (user, assistant, result):
         store.append_message(message)
     canonical = store.load_session(source.session_id).session
@@ -820,6 +856,7 @@ def test_branch_rejects_incomplete_tool_exchange_and_reports_previous_boundary(t
         text="",
         sequence=2,
     ).model_copy(update={"tool_calls": [ToolCallRequest(id="call_missing", name="Write")]})
+    seed_tool_messages(store, assistant, [])
     store.append_message(user)
     store.append_message(assistant)
 
@@ -1093,22 +1130,24 @@ def test_branch_publish_failure_leaves_source_unchanged_and_no_partial_branch(
         ),
     )
     before = store.load_session(source.session_id).model_dump()
-    original = store._write_json_atomic
+    import ouro.sessions.backends.files.store as files
 
-    def fail_resource_index(path, value) -> None:
-        if path.name == "index.json" and path.parent.name == "resources":
+    original = files.replace_path_with_retry
+
+    def fail_snapshot_publish(source, destination) -> None:
+        if source.name.startswith(".stage_") and destination.parent == store.sessions_dir:
             raise PersistenceError("injected branch publish failure")
-        original(path, value)
+        original(source, destination)
 
-    monkeypatch.setattr(store, "_write_json_atomic", fail_resource_index)
+    monkeypatch.setattr(files, "replace_path_with_retry", fail_snapshot_publish)
 
     with pytest.raises(PersistenceError, match="injected branch publish failure"):
         sessions.branch(source.session_id, message.message_id)
 
     assert store.load_session(source.session_id).model_dump() == before
     assert list(store.sessions_dir.glob("*.staging")) == []
-    assert [path for path in store.sessions_dir.glob("*/session.json")] == [
-        store.sessions_dir / source.session_id / "session.json"
+    assert [path for path in store.sessions_dir.glob("*/session-data.sqlite3")] == [
+        store.sessions_dir / source.session_id / "session-data.sqlite3"
     ]
 
 
@@ -1173,9 +1212,9 @@ def test_branch_inherits_only_compaction_lineage_available_at_boundary(
         strategy_id="test",
         trigger="manual",
         summary="first summary",
-        covered_message_ids=[messages[0].message_id],
+        covered_message_count=1,
+        covered_end_message_id=messages[0].message_id,
         history_boundary_message_id=messages[1].message_id,
-        source_digest=compaction_source_digest(messages[:1]),
         context_metrics_after=ContextBuilder().build(messages=messages[:2], tools=[]).metrics,
     )
     later = CompactionRecord(
@@ -1184,16 +1223,15 @@ def test_branch_inherits_only_compaction_lineage_available_at_boundary(
         strategy_id="test",
         trigger="manual",
         summary="later summary",
-        covered_message_ids=[message.message_id for message in messages[:4]],
-        # Its summary range fits the branch prefix, but this compaction did not
-        # become durable history until after the selected user request.
+        covered_message_count=4,
+        covered_end_message_id=messages[3].message_id,
+        # A later display anchor does not make valid coverage unavailable to a branch.
         history_boundary_message_id=messages[5].message_id,
-        source_digest=compaction_source_digest(messages[:4]),
     )
-    store.append_compaction(first)
-    store.activate_compaction(source.session_id, first.compaction_id)
-    store.append_compaction(later)
-    store.activate_compaction(source.session_id, later.compaction_id)
+    from tests.session_summaries import commit_summary
+
+    commit_summary(store, first)
+    commit_summary(store, later)
 
     result = sessions.branch(
         source.session_id,
@@ -1208,31 +1246,37 @@ def test_branch_inherits_only_compaction_lineage_available_at_boundary(
         "retained answer",
     ]
     assert result.source_message_id == messages[3].message_id
-    assert len(branch.compactions) == 1
-    inherited = branch.compactions[0]
-    assert inherited.compaction_id != first.compaction_id
+    assert len(branch.compactions) == 2
+    inherited = branch.compactions[-1]
+    assert inherited.compaction_id != later.compaction_id
+    assert inherited.metadata["source_compaction_id"] == later.compaction_id
+    assert inherited.covered_message_count == 4
+    assert inherited.covered_end_message_id == result.message_id_map[messages[3].message_id]
+    assert inherited.history_boundary_message_id == result.message_id_map[messages[3].message_id]
+    assert branch.session.context_selection.compaction_id == inherited.compaction_id
+    assert inherited.context_metrics_after is None
+
+    earlier = sessions.branch(source.session_id, messages[2].message_id)
+    inherited = store.load_active_compaction(earlier.session.session_id)
+    assert inherited is not None and inherited.covered_message_count == 1
     assert inherited.metadata["source_compaction_id"] == first.compaction_id
-    assert inherited.covered_message_ids == [result.message_id_map[messages[0].message_id]]
-    assert inherited.history_boundary_message_id == result.message_id_map[messages[1].message_id]
-    assert branch.session.active_compaction_id == inherited.compaction_id
-    assert inherited.context_metrics_after is not None
     assert first.context_metrics_after is not None
+    assert inherited.context_metrics_after is not None
     expected_input_tokens = first.context_metrics_after.estimated_input_tokens + sum(
-        estimate_message_tokens(message) for message in messages[2:4]
+        estimate_message_tokens(message) for message in messages[2:3]
     )
     assert inherited.context_metrics_after.estimated_input_tokens == expected_input_tokens
     assert inherited.estimated_tokens_after == expected_input_tokens
     assert (
         inherited.metadata["branch_context_extended_through_message_id"]
-        == (result.message_id_map[messages[3].message_id])
+        == (earlier.message_id_map[messages[2].message_id])
     )
-    assert validate_compaction_lineage(branch.messages, inherited) == 1
 
     first_boundary = sessions.branch(source.session_id, None)
     empty_branch = store.load_session(first_boundary.session.session_id)
     assert empty_branch.messages == []
     assert empty_branch.compactions == []
-    assert empty_branch.session.active_compaction_id is None
+    assert empty_branch.session.context_selection.compaction_id is None
     assert empty_branch.session.last_message_id is None
     assert empty_branch.session.message_count == 0
     assert first_boundary.source_message_id is None
@@ -1313,7 +1357,7 @@ def test_trash_discards_unfinished_durable_run_and_moves_session_tree_atomically
         / result.trash_id
         / "sessions"
         / running.session_id
-        / "session.json"
+        / "session-data.sqlite3"
     ).exists()
 
 
@@ -1338,8 +1382,11 @@ def test_trash_accepts_session_with_incompatible_runtime_records(tmp_path, backe
     payload = json.loads(run.model_dump_json())
     payload["agent_catalog"]["contract_hash"] = "sha256:" + "0" * 64
     if backend == "files":
-        run_path = store.sessions_dir / session.session_id / "runs" / f"{run.run_id}.json"
-        run_path.write_text(json.dumps(payload), encoding="utf-8")
+        with session_connection(store, session.session_id) as connection:
+            connection.execute(
+                "UPDATE runs SET payload = ? WHERE session_id = ? AND run_id = ?",
+                (json.dumps(payload), session.session_id, run.run_id),
+            )
     else:
         with closing(sqlite3.connect(store.database)) as connection:
             connection.execute(
@@ -1349,7 +1396,7 @@ def test_trash_accepts_session_with_incompatible_runtime_records(tmp_path, backe
             connection.commit()
 
     with pytest.raises(PersistenceError, match="agent catalog contract hash"):
-        store.load_runtime_session(session.session_id)
+        store.load_run(session.session_id, run.run_id)
 
     result = sessions.trash(session.session_id)
 
@@ -1398,6 +1445,7 @@ def test_trash_accepts_root_with_incompatible_delegation_record(tmp_path, backen
     payload.update(
         {
             "parent_tool_call_id": "call_old",
+            "parent_batch_id": "batch_old",
             "execution_mode": "async",
             "delivery_policy": "notify_only",
         }

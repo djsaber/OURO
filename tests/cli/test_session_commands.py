@@ -30,7 +30,9 @@ from ouro.transfer.archive import read_archive
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
-def test_export_contains_canonical_harness_checkpoints_and_receipts(tmp_path, capsys, backend):
+def test_export_contains_canonical_harness_and_message_facts_without_commit_receipts(
+    tmp_path, capsys, backend
+):
     services = build_local_session_services(tmp_path, session_backend=backend)
     store = services._store
     session = SessionRecord()
@@ -66,7 +68,9 @@ def test_export_contains_canonical_harness_checkpoints_and_receipts(tmp_path, ca
     assert payload["session"]["history_epoch"] == 0
     assert payload["session"]["harness_version"] == session.harness_version
     assert payload["harness_versions"][0]["version_id"] == session.harness_version
-    assert payload["commits"][0]["operation_id"] == commit.operation_id
+    assert "commits" not in payload
+    assert payload["messages"][0]["message_id"] == commit.messages[0].message_id
+    assert payload["messages"][0]["content"] == message.model_dump(mode="json")["content"]
 
 
 def test_session_list_shows_new_session(tmp_path, capsys) -> None:
@@ -151,7 +155,7 @@ def test_session_context_reports_latest_request_status_and_provider_content(
     )
     assert len(content_payload["provider_context"]["messages"]) == 1
     assert "message_id" not in content_payload["provider_context"]["messages"][0]
-    assert content_payload["context_digest"].startswith("sha256:")
+    assert "context_digest" not in content_payload
 
 
 def test_session_remove_with_force(tmp_path, capsys) -> None:
@@ -176,7 +180,7 @@ def test_session_remove_with_force(tmp_path, capsys) -> None:
     store = LocalSessionStore(tmp_path)
     assert not (store.sessions_dir / run_payload["session_id"]).exists()
     assert any(
-        (path / "sessions" / run_payload["session_id"] / "session.json").exists()
+        (path / "sessions" / run_payload["session_id"] / "session-data.sqlite3").exists()
         for path in store.trash_sessions_dir.iterdir()
     )
 
@@ -235,8 +239,8 @@ def test_session_remove_child_cascades_old_incompatible_agent_tree(tmp_path, cap
     assert set(result["removed"]) == {root.session_id, child.session_id}
     assert store.list_sessions() == []
     trash_root = store.trash_sessions_dir / result["trash_id"] / "sessions"
-    assert (trash_root / root.session_id / "session.json").exists()
-    assert (trash_root / child.session_id / "session.json").exists()
+    assert (trash_root / root.session_id / "session-data.sqlite3").exists()
+    assert (trash_root / child.session_id / "session-data.sqlite3").exists()
 
 
 def test_session_rename_archive_pin_and_filtered_list(tmp_path, capsys) -> None:

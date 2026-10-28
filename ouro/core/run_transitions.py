@@ -50,7 +50,7 @@ def plan_run_transition(
 
     The function is deliberately unaware of persistence, locking, events, and
     message bookkeeping. Callers supply the fully prepared next Run and the
-    latest Session basis, then persist the returned Run before its projection.
+    latest Session basis, then commit the returned Run and Session together.
     """
 
     if session.session_id != next_run.session_id:

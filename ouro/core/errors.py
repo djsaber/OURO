@@ -19,6 +19,10 @@ class PersistenceError(OuroError):
     """Local persistence failed."""
 
 
+class SessionRecoveryRequiredError(PersistenceError):
+    """A read encountered a pending native Session decision; recover explicitly."""
+
+
 class DelegationRevisionConflictError(PersistenceError):
     """A Delegation compare-and-swap lost to a concurrent durable update."""
 

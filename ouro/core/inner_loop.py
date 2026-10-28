@@ -1,21 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Protocol
 
-from ouro.core.messages import MessageRecord
 from ouro.core.run_drivers import DriverFinished, DriverResume, DriverSuspended, RunDriverContext
 
 
 @dataclass(frozen=True)
 class TurnCompletionPolicyResult:
     sequence: int
-    messages: list[MessageRecord] = field(default_factory=list)
+    should_continue: bool = False
     blocked_reason: str | None = None
-
-    @property
-    def should_continue(self) -> bool:
-        return bool(self.messages) and self.blocked_reason is None
 
 
 class DefaultRunTurns(Protocol):

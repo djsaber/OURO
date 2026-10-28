@@ -27,14 +27,12 @@ from ouro.core.compaction import (
     CompactionStrategyError,
     CompactionStrategyRegistry,
     CompactionTrigger,
-    compaction_source_digest,
     plan_compaction,
     project_compacted_messages,
 )
 from ouro.core.context import (
     ContextBuilder,
     ContextView,
-    estimate_message_tokens,
     estimate_text_tokens,
     project_recovery_messages,
 )
@@ -44,9 +42,10 @@ from ouro.core.context_providers import (
     ContextProviderCall,
     ContextProviderRegistry,
 )
+from ouro.core.context_selection import ContextSelection
 from ouro.core.context_snapshots import (
-    ContextSnapshotRecord,
-    context_view_digest,
+    ModelRequestHeader,
+    RequestManifestRecord,
 )
 from ouro.core.errors import (
     CompactionError,
@@ -56,7 +55,6 @@ from ouro.core.errors import (
     PersistenceError,
 )
 from ouro.core.events import EventRecord
-from ouro.core.media_context import MEDIA_CONTEXT_KEY, MediaElisionState
 from ouro.core.message_frames import project_tool_exchanges
 from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import (
@@ -64,10 +62,7 @@ from ouro.core.message_semantics import (
 )
 from ouro.core.messages import MessageRecord
 from ouro.core.observers import ContextPreparedObservation, FrozenJson, freeze_json
-from ouro.core.provider import (
-    Usage,
-)
-from ouro.core.session_commits import SessionCommitConflict
+from ouro.core.session_commits import SessionCommit, SessionCommitConflict
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolDefinition
 from ouro.prompts import AFK_CONTEXT_PROMPT
@@ -83,7 +78,6 @@ class ContextMessageAppender(Protocol):
         prompt: str,
         role: MessageRole,
         scaffold: bool,
-        sequence: int,
         metadata: dict[str, object],
         semantic_tag: SemanticTag | None = None,
     ) -> MessageRecord: ...
@@ -93,7 +87,15 @@ class ContextMessageAppender(Protocol):
 class CompactionExecution:
     record: CompactionRecord | None
     sequence: int
+    view: ContextView
     skipped: bool = False
+
+
+@dataclass(frozen=True)
+class _CompactionInput:
+    active: CompactionRecord | None
+    messages: list[MessageRecord]
+    view: ContextView
 
 
 async def _compact_until_aborted(
@@ -178,17 +180,44 @@ class ContextPreparationService:
         self.system_prompt = system_prompt
         self.prompt_context_resolver = prompt_context_resolver
         self.append_context_message = append_context_message
-        self.media_context = MediaContextPreparation(store, prepare_model_messages)
+        self.media_context = MediaContextPreparation(prepare_model_messages)
         self.usage_service = usage_service
+
+    def _load_history(
+        self, session_id: str
+    ) -> tuple[SessionRecord, CompactionRecord | None, list[MessageRecord]]:
+        """Materialize one selected suffix while its selection and head are stable."""
+        with self.store.session_read(session_id):
+            session = self.store.load_session_record(session_id)
+            active = self.store.load_active_compaction(session_id)
+            remaining = session.message_count - (active.covered_message_count if active else 0)
+            if remaining < 0:
+                raise PersistenceError("selected summary extends beyond canonical history")
+            messages = (
+                list(
+                    reversed(
+                        self.store.load_messages_tail(
+                            session_id,
+                            limit=remaining,
+                            include_media=self.media_context.prepare_messages is None,
+                        )
+                    )
+                )
+                if remaining
+                else []
+            )
+            if len(messages) != remaining:
+                raise PersistenceError(
+                    "selected history is shorter than the canonical message count"
+                )
+            return session, active, messages
 
     async def prepare(
         self,
-        emitted: list[EventRecord],
         sequence: int,
         *,
         session: SessionRecord,
         run: RunRecord,
-        messages: list[MessageRecord],
         tools: list[ToolDefinition],
         model_round: int,
         turn_id: str,
@@ -199,7 +228,8 @@ class ContextPreparationService:
         skill_instructions: str = "",
         prompt: str = "",
     ) -> tuple[ContextView, int]:
-        prompt_context = await self._resolve_prompt_context(emitted, sequence, session, run)
+        session, active, messages = await run_blocking(self._load_history, session.session_id)
+        prompt_context = await self._resolve_prompt_context(sequence, session, run)
         active_adapter = adapter or self.adapter
         active_context_providers = context_providers or self.context_providers
         provider_result = await active_context_providers.evaluate(
@@ -215,13 +245,12 @@ class ContextPreparationService:
                 else None,
                 session_id=session.session_id,
                 run_id=run.run_id,
-                message_count=len(messages),
+                message_count=session.message_count,
                 model_round=model_round,
                 workspace=session.workspace,
             )
         )
         sequence = await self.events.record_context_provider_failures(
-            emitted,
             sequence,
             provider_result.failures,
         )
@@ -249,8 +278,7 @@ class ContextPreparationService:
                 )
             )
         budget = self._input_budget(active_adapter)
-        active = await run_blocking(self.store.load_active_compaction, session.session_id)
-        source_messages, view = await run_blocking(
+        view = await run_blocking(
             self._project_context,
             session=session,
             messages=messages,
@@ -267,21 +295,19 @@ class ContextPreparationService:
         if self.config.policy.auto_enabled and estimated >= trigger_tokens:
             try:
                 execution = await self.compact(
-                    emitted,
                     sequence,
                     session=session,
                     run=run,
-                    messages=messages,
                     tools=tools,
                     added_context=added_context,
                     trigger="auto",
                     force=False,
                     abort_signal=abort_signal,
-                    estimated_tokens_before=estimated,
                     adapter=active_adapter,
                     strategies=strategies,
                     skill_instructions=skill_instructions,
                     prompt_context=prompt_context,
+                    prepared=_CompactionInput(active, messages, view),
                 )
             except CompactionError as exc:
                 if isinstance(exc, CompactionAbortedError):
@@ -301,12 +327,11 @@ class ContextPreparationService:
                         "compaction_error": str(exc),
                         "compaction_id": active.compaction_id if active else None,
                         "compaction_strategy": active.strategy_id if active else None,
-                        "covered_message_count": len(active.covered_message_ids) if active else 0,
+                        "covered_message_count": active.covered_message_count if active else 0,
                     }
                 )
                 final_view = view.model_copy(update={"context_metadata": metadata})
                 return await self._finalize_prepared_context(
-                    emitted,
                     sequence,
                     session=session,
                     run=run,
@@ -314,7 +339,6 @@ class ContextPreparationService:
                     model_round=model_round,
                     adapter=active_adapter,
                     view=final_view,
-                    source_messages=source_messages,
                 )
             sequence = execution.sequence
             if execution.record is None and view.metrics.over_budget:
@@ -322,25 +346,40 @@ class ContextPreparationService:
                     "context is over budget and no complete older context frame is eligible "
                     "for compaction"
                 )
-            active = execution.record or active
-            source_messages, view = await run_blocking(
-                self._project_context,
-                session=session,
-                messages=messages,
-                active=active,
-                tools=tools,
-                added_context=added_context,
-                adapter=active_adapter,
-                skill_instructions=skill_instructions,
-                prompt_context=prompt_context,
+            current = await run_blocking(self.store.load_session_record, session.session_id)
+            expected_selection = (
+                execution.view.selection if execution.record else session.context_selection
             )
+            if (
+                current.history_epoch == session.history_epoch
+                and current.message_count
+                == (active.covered_message_count if active else 0) + len(messages)
+                and current.context_selection == expected_selection
+            ):
+                # The accepted summary already has its exact next request view.
+                session, view = current, execution.view
+            else:
+                # A strategy may span a concurrent append or explicit selection change.
+                session, active, messages = await run_blocking(
+                    self._load_history, session.session_id
+                )
+                view = await run_blocking(
+                    self._project_context,
+                    session=session,
+                    messages=messages,
+                    active=active,
+                    tools=tools,
+                    added_context=added_context,
+                    adapter=active_adapter,
+                    skill_instructions=skill_instructions,
+                    prompt_context=prompt_context,
+                )
 
         if view.metrics.over_budget:
             raise ContextBlockedError(
                 "context remains over the model input budget after summary compaction"
             )
         return await self._finalize_prepared_context(
-            emitted,
             sequence,
             session=session,
             run=run,
@@ -348,30 +387,22 @@ class ContextPreparationService:
             model_round=model_round,
             adapter=active_adapter,
             view=view,
-            source_messages=source_messages,
         )
 
-    def record_provider_completion(
+    def record_request_settlement(
         self,
         *,
         session_id: str,
         context_id: str,
-        usage: Usage | None,
+        provider_done: bool,
+        usage_entry_id: str | None,
     ) -> None:
-        record = self.store.load_latest_context(session_id)
-        if record is None or record.context_id != context_id:
-            raise PersistenceError(
-                f"latest context for session {session_id} does not match {context_id}"
-            )
-        self.store.save_latest_context(
-            record.model_copy(
-                update={
-                    "completed_at": utc_now(),
-                    "provider_reported_input_tokens": (
-                        usage.input_tokens if usage is not None else None
-                    ),
-                }
-            )
+        self.store.settle_request_header(
+            session_id,
+            context_id,
+            settled_at=utc_now(),
+            provider_done=provider_done,
+            usage_entry_id=usage_entry_id,
         )
 
     def _materialize_context_fragments(
@@ -400,13 +431,8 @@ class ContextPreparationService:
                 f"{run.run_id}:{model_round}:{fragment.plugin_id}:"
                 f"{fragment.provider_id}:{fragment.fragment_index}"
             )
-            previous = next(
-                (
-                    message
-                    for message in reversed(messages)
-                    if message.metadata.get("context_provider_delivery_key") == delivery_key
-                ),
-                None,
+            previous = self.store.find_context_provider_message(
+                session.session_id, run.run_id, delivery_key
             )
             # Preparation can fail after persistence without advancing the model round.
             # Deduplicate unchanged retries; append changed state after the previous value.
@@ -435,7 +461,6 @@ class ContextPreparationService:
                     prompt=fragment.text,
                     role=fragment.role,
                     scaffold=fragment.scaffold,
-                    sequence=len(messages) + 1,
                     metadata=metadata,
                     semantic_tag=fragment.semantic_tag,
                 )
@@ -462,8 +487,8 @@ class ContextPreparationService:
             ContextPreparedObservation(
                 session_id=session.session_id,
                 run_id=run.run_id,
-                message_count=len(view.model_messages),
-                tool_count=len(view.tool_definitions),
+                message_count=len(view.provider_context.messages),
+                tool_count=len(view.provider_context.tools),
                 model_round=model_round,
                 context_metadata=metadata,
             )
@@ -471,7 +496,6 @@ class ContextPreparationService:
 
     async def _finalize_prepared_context(
         self,
-        emitted: list[EventRecord],
         sequence: int,
         *,
         session: SessionRecord,
@@ -480,7 +504,6 @@ class ContextPreparationService:
         model_round: int,
         adapter: RuntimeAdapter,
         view: ContextView,
-        source_messages: list[MessageRecord],
     ) -> tuple[ContextView, int]:
         context_id = new_id("ctx")
         prepared = view.model_copy(update={"context_id": context_id})
@@ -492,7 +515,6 @@ class ContextPreparationService:
             turn_id=turn_id,
             model_round=model_round,
             adapter=adapter,
-            source_messages=source_messages,
         )
         await self._observe_built_context(
             session=session,
@@ -511,100 +533,103 @@ class ContextPreparationService:
         turn_id: str,
         model_round: int,
         adapter: RuntimeAdapter,
-        source_messages: list[MessageRecord],
     ) -> None:
-        """Persist one fully materialized context snapshot on the I/O worker."""
+        """Publish the skeleton produced alongside the Adapter's actual input."""
 
         if context.context_id is None:
             raise ValueError("prepared model context is missing its identity")
-        injected_message_count = len(context.model_messages) - len(source_messages)
+        if context.manifest is None:
+            raise ValueError("prepared model context is missing its manifest")
         with self.store.session_mutation(session.session_id):
-            if (
-                run.history_epoch
-                != self.store.load_session_record(session.session_id).history_epoch
-            ):
+            current = self.store.load_session_record(session.session_id)
+            if run.history_epoch != current.history_epoch:
                 raise SessionCommitConflict("Run belongs to withdrawn Session history")
-            self.store.save_latest_context(
-                ContextSnapshotRecord(
-                    context_id=context.context_id,
-                    session_id=session.session_id,
-                    run_id=run.run_id,
-                    turn_id=turn_id,
-                    model_round=model_round,
-                    provider_id=adapter.model.provider_id,
-                    endpoint_id=adapter.model.endpoint_id,
-                    model_id=adapter.model.model_id,
-                    supports_image_input=adapter.model.supports_image_input,
-                    supports_audio_input=adapter.model.supports_audio_input,
-                    supports_video_input=adapter.model.supports_video_input,
-                    system_prompt=context.system_prompt,
-                    injected_messages=context.model_messages[:injected_message_count],
-                    source_messages=source_messages,
-                    tool_definitions=context.tool_definitions,
-                    metrics=context.metrics,
-                    context_metadata=context.context_metadata,
-                    context_digest=context_view_digest(context),
+            if current.context_selection != session.context_selection:
+                raise SessionCommitConflict("context selection changed during preparation")
+            latest = self.store.load_run(session.session_id, run.run_id)
+            if current.active_run_id != run.run_id or latest.abort_requested:
+                raise SessionCommitConflict("Run no longer owns request preparation")
+            self.store.commit_session(
+                SessionCommit(
+                    before=current,
+                    after=current.model_copy(update={"context_selection": context.selection}),
+                    runs=(latest.model_copy(update={"current_request_id": context.context_id}),),
+                    request_header=ModelRequestHeader(
+                        context_id=context.context_id,
+                        session_id=session.session_id,
+                        run_id=run.run_id,
+                        turn_id=turn_id,
+                        model_round=model_round,
+                        provider_id=adapter.model.provider_id,
+                        endpoint_id=adapter.model.endpoint_id,
+                        model_id=adapter.model.model_id,
+                        metrics=context.metrics,
+                        context_metadata=context.context_metadata,
+                    ),
+                    request_manifest=RequestManifestRecord(
+                        context_id=context.context_id,
+                        supports_image_input=adapter.model.supports_image_input,
+                        supports_audio_input=adapter.model.supports_audio_input,
+                        supports_video_input=adapter.model.supports_video_input,
+                        manifest=context.manifest,
+                    ),
                 )
             )
 
     async def compact(
         self,
-        emitted: list[EventRecord],
         sequence: int,
         *,
         session: SessionRecord,
         run: RunRecord,
-        messages: list[MessageRecord],
         tools: list[ToolDefinition],
         added_context: Sequence[str | ContextFragment] | None,
         trigger: CompactionTrigger,
         force: bool,
         abort_signal: AbortSignal,
-        estimated_tokens_before: int | None = None,
         adapter: RuntimeAdapter | None = None,
         strategies: CompactionStrategyRegistry | None = None,
         skill_instructions: str = "",
         prompt_context: PromptContext | None = None,
+        prepared: _CompactionInput | None = None,
     ) -> CompactionExecution:
+        if prepared is None:
+            session, active, messages = await run_blocking(self._load_history, session.session_id)
+        else:
+            active, messages = prepared.active, prepared.messages
         # Auto compaction shares the request snapshot; a manual command resolves its own.
         if prompt_context is None:
-            prompt_context = await self._resolve_prompt_context(emitted, sequence, session, run)
+            prompt_context = await self._resolve_prompt_context(sequence, session, run)
         active_adapter = adapter or self.adapter
         budget = self._input_budget(active_adapter)
-        active = await run_blocking(self.store.load_active_compaction, session.session_id)
-        _, initial_view = await run_blocking(
-            self._project_context,
-            session=session,
-            messages=messages,
-            active=active,
-            tools=tools,
-            added_context=added_context or [],
-            adapter=active_adapter,
-            skill_instructions=skill_instructions,
-            prompt_context=prompt_context,
+        initial_view = (
+            prepared.view
+            if prepared is not None
+            else await run_blocking(
+                self._project_context,
+                session=session,
+                messages=messages,
+                active=active,
+                tools=tools,
+                added_context=added_context or [],
+                adapter=active_adapter,
+                skill_instructions=skill_instructions,
+                prompt_context=prompt_context,
+            )
         )
-        # Lineage is validated against canonical history by _project_context.
-        # Only the uncovered suffix needs model projection and frame selection.
-        covered_count = len(active.covered_message_ids) if active else 0
+        # Activation/withdrawal establish validity. Project only the uncovered suffix.
+        covered_count = active.covered_message_count if active else 0
         materialized_messages, _ = await run_blocking(
             self._materialize_messages,
-            messages[covered_count:],
+            messages,
             active_adapter,
             session=session,
             history=messages,
         )
-        before_tokens = (
-            estimated_tokens_before
-            if estimated_tokens_before is not None
-            else initial_view.metrics.estimated_input_tokens
-        )
+        before_tokens = initial_view.metrics.estimated_input_tokens
         target_tokens = int(budget * self.config.policy.target_ratio)
         fixed_tokens = initial_view.metrics.estimated_fixed_tokens
-        summary_tokens = sum(
-            estimate_message_tokens(message, self.context_builder.token_estimator)
-            for message in initial_view.model_messages
-            if message.semantic_tag == "conversation-summary"
-        )
+        summary_tokens = initial_view.estimated_summary_tokens
         tail_budget = max(0, target_tokens - fixed_tokens - summary_tokens)
         plan = await run_blocking(
             plan_compaction,
@@ -619,19 +644,19 @@ class ContextPreparationService:
                     "context is over budget and no complete older turn is eligible for compaction"
                 )
             sequence = await self.events.emit(
-                emitted,
                 sequence,
                 session_id=session.session_id,
                 run_id=run.run_id,
                 event_type="compaction_skipped",
                 payload={"trigger": trigger, "reason": "no_eligible_closed_turn"},
             )
-            return CompactionExecution(record=None, sequence=sequence, skipped=True)
+            return CompactionExecution(
+                record=None, sequence=sequence, view=initial_view, skipped=True
+            )
 
         compaction_id = new_id("cmp")
         compaction_started_clock = monotonic()
         sequence = await self.events.emit(
-            emitted,
             sequence,
             session_id=session.session_id,
             run_id=run.run_id,
@@ -647,7 +672,6 @@ class ContextPreparationService:
             },
         )
         sequence = await self.events.emit(
-            emitted,
             sequence,
             session_id=session.session_id,
             run_id=run.run_id,
@@ -667,7 +691,7 @@ class ContextPreparationService:
             run_id=run.run_id,
             strategy_id=self.config.strategy_id,
             trigger=trigger,
-            agent_system_prompt=initial_view.system_prompt,
+            agent_system_prompt=initial_view.provider_context.system_prompt,
             previous_summary=active.summary if active else None,
             messages=plan.messages_to_compact,
         )
@@ -678,7 +702,6 @@ class ContextPreparationService:
                 strategies=strategies,
             )
             sequence = await self._record_model_outputs(
-                emitted,
                 sequence,
                 session=session,
                 run=run,
@@ -688,7 +711,15 @@ class ContextPreparationService:
             summary = artifact.summary.strip()
             if not summary:
                 raise CompactionError("compaction strategy returned an empty summary")
-            source_prefix = messages[: covered_count + len(plan.messages_to_compact)]
+            newly_covered = len(plan.messages_to_compact)
+            covered_end = covered_count + newly_covered
+            skill_sources = []
+            if active is not None:
+                for identity in active.retained_skill_message_ids:
+                    skill_sources.append(
+                        await run_blocking(self.store.load_message, session.session_id, identity)
+                    )
+            skill_sources.extend(messages[:newly_covered])
             record = CompactionRecord(
                 compaction_id=compaction_id,
                 session_id=session.session_id,
@@ -697,23 +728,29 @@ class ContextPreparationService:
                 strategy_version=strategy.version,
                 trigger=trigger,
                 summary=summary,
-                covered_message_ids=[message.message_id for message in source_prefix],
+                covered_message_count=covered_end,
+                covered_end_message_id=messages[newly_covered - 1].message_id,
+                retained_skill_message_ids=tuple(
+                    message.message_id
+                    for message in skill_sources
+                    if message.run_id is not None
+                    and message.run_id == messages[-1].run_id
+                    and message.skill_activations
+                ),
                 history_boundary_message_id=messages[-1].message_id,
-                source_digest=await run_blocking(compaction_source_digest, source_prefix),
                 model_provider=str(artifact.metadata.get("model_provider") or "") or None,
                 model_endpoint_id=(str(artifact.metadata.get("model_endpoint_id") or "") or None),
                 model_id=str(artifact.metadata.get("model_id") or "") or None,
                 prompt_version=str(artifact.metadata.get("prompt_version") or "") or None,
-                prompt_hash=str(artifact.metadata.get("prompt_hash") or "") or None,
                 estimated_tokens_before=before_tokens,
                 estimated_summary_tokens=estimate_text_tokens(summary),
                 usage=artifact.usage,
                 metadata=dict(artifact.metadata),
             )
-            _, final_view = await run_blocking(
+            final_view = await run_blocking(
                 self._project_context,
                 session=session,
-                messages=messages,
+                messages=messages[newly_covered:],
                 active=record,
                 tools=tools,
                 added_context=added_context or [],
@@ -736,11 +773,19 @@ class ContextPreparationService:
                     ),
                 }
             )
-            await run_blocking(self._commit_compaction, record, run)
+            events = await run_blocking(
+                self._commit_compaction,
+                record,
+                run,
+                selection=final_view.selection,
+                expected_selection=session.context_selection,
+                request_id=artifact.model_outputs[-1].request_id
+                if artifact.model_outputs
+                else None,
+            )
         except Exception as exc:
             if isinstance(exc, CompactionStrategyError):
                 sequence = await self._record_model_outputs(
-                    emitted,
                     sequence,
                     session=session,
                     run=run,
@@ -750,7 +795,6 @@ class ContextPreparationService:
             if isinstance(exc, CompactionAbortedError):
                 raise
             sequence = await self.events.emit(
-                emitted,
                 sequence,
                 session_id=session.session_id,
                 run_id=run.run_id,
@@ -767,29 +811,10 @@ class ContextPreparationService:
                 raise
             raise CompactionError(f"summary compaction failed: {exc}") from exc
 
-        sequence = await self.events.emit(
-            emitted,
-            sequence,
-            session_id=session.session_id,
-            run_id=run.run_id,
-            event_type="compaction_completed",
-            payload={
-                "compaction_id": record.compaction_id,
-                "trigger": trigger,
-                "strategy_id": record.strategy_id,
-                "covered_message_count": len(record.covered_message_ids),
-                "tokens_before": before_tokens,
-                "tokens_after": record.estimated_tokens_after,
-                "duration_seconds": record.duration_seconds,
-                "context_metrics_after": final_view.metrics.model_dump(mode="json"),
-                "model_provider": record.model_provider,
-                "model_endpoint_id": record.model_endpoint_id,
-                "model_id": record.model_id,
-                "model_route": record.metadata.get("model_route"),
-                "model_fallback_reason": record.metadata.get("model_fallback_reason"),
-            },
-        )
-        return CompactionExecution(record=record, sequence=sequence)
+        await self.events.publish_committed(events)
+        if events:
+            sequence = events[-1].sequence
+        return CompactionExecution(record=record, sequence=sequence, view=final_view)
 
     async def _execute_strategy(
         self,
@@ -849,7 +874,6 @@ class ContextPreparationService:
 
     async def _record_model_outputs(
         self,
-        emitted: list[EventRecord],
         sequence: int,
         *,
         session: SessionRecord,
@@ -859,7 +883,6 @@ class ContextPreparationService:
     ) -> int:
         for output in outputs:
             sequence = await self.events.emit(
-                emitted,
                 sequence,
                 session_id=session.session_id,
                 run_id=run.run_id,
@@ -873,7 +896,6 @@ class ContextPreparationService:
 
     async def _resolve_prompt_context(
         self,
-        emitted: list[EventRecord],
         sequence: int,
         session: SessionRecord,
         run: RunRecord,
@@ -885,7 +907,6 @@ class ContextPreparationService:
         except ConfigError as exc:
             message = f"Cannot prepare system instructions: {exc}"
             await self.events.emit(
-                emitted,
                 sequence,
                 session_id=session.session_id,
                 run_id=run.run_id,
@@ -912,12 +933,22 @@ class ContextPreparationService:
         adapter: RuntimeAdapter,
         skill_instructions: str,
         prompt_context: PromptContext,
-    ) -> tuple[list[MessageRecord], ContextView]:
+    ) -> ContextView:
         complete_messages, excluded = project_tool_exchanges(
             project_compacted_messages(messages, active)
         )
         # The durable compaction boundary fixes this prefix, including after recovery.
-        added_context = [*added_context, *compacted_skill_context(messages, active)]
+        added_context = [
+            *added_context,
+            *compacted_skill_context(
+                [
+                    self.store.load_message(session.session_id, identity)
+                    for identity in active.retained_skill_message_ids
+                ]
+                if active is not None
+                else []
+            ),
+        ]
         # Budget only native state that can belong to this request. Protocol and
         # account compatibility stay inside the codec; execution epochs stay here.
         candidate_runs = {
@@ -946,10 +977,11 @@ class ContextPreparationService:
             source_messages,
             adapter,
             session=session,
-            history=messages,
+            history=source_messages,
         )
         view = self._build_view(
             messages=effective_messages,
+            source_messages=messages,
             tools=tools,
             added_context=added_context,
             adapter=adapter,
@@ -959,11 +991,10 @@ class ContextPreparationService:
         metadata = dict(view.context_metadata)
         metadata.update(
             {
-                MEDIA_CONTEXT_KEY: media_state.model_dump(mode="json"),
                 "personal_prompt": prompt_context.metadata(),
                 "compaction_id": active.compaction_id if active else None,
                 "compaction_strategy": active.strategy_id if active else None,
-                "covered_message_count": len(active.covered_message_ids) if active else 0,
+                "covered_message_count": active.covered_message_count if active else 0,
                 "history_diagnostics": (
                     [{"code": "incomplete_tool_exchange", "message_ids": list(excluded)}]
                     if excluded
@@ -971,12 +1002,20 @@ class ContextPreparationService:
                 ),
             }
         )
-        return effective_messages, view.model_copy(update={"context_metadata": metadata})
+        return view.model_copy(
+            update={
+                "context_metadata": metadata,
+                "selection": media_state.model_copy(
+                    update={"compaction_id": active.compaction_id if active else None}
+                ),
+            }
+        )
 
     def _build_view(
         self,
         *,
         messages: list[MessageRecord],
+        source_messages: list[MessageRecord] | None = None,
         tools: list[ToolDefinition],
         added_context: Sequence[str | ContextFragment],
         adapter: RuntimeAdapter,
@@ -985,6 +1024,7 @@ class ContextPreparationService:
     ) -> ContextView:
         return self.context_builder.build(
             messages=messages,
+            source_messages=source_messages if source_messages is not None else (),
             tools=tools,
             system_prompt=prompt_context.system_prompt,
             added_context=added_context,
@@ -992,12 +1032,72 @@ class ContextPreparationService:
             budget=adapter.model.context_budget,
         )
 
-    def _commit_compaction(self, record: CompactionRecord, run: RunRecord) -> None:
+    def _commit_compaction(
+        self,
+        record: CompactionRecord,
+        run: RunRecord,
+        *,
+        selection: ContextSelection,
+        expected_selection: ContextSelection,
+        request_id: str | None = None,
+    ) -> tuple[EventRecord, ...]:
         with self.store.session_mutation(record.session_id):
-            if run.history_epoch != self.store.load_session_record(record.session_id).history_epoch:
+            session = self.store.load_session_record(record.session_id)
+            if run.history_epoch != session.history_epoch:
                 raise SessionCommitConflict("Run belongs to withdrawn Session history")
-            self.store.append_compaction(record)
-            self.store.activate_compaction(record.session_id, record.compaction_id)
+            if session.context_selection != expected_selection:
+                raise SessionCommitConflict("context selection changed during summary generation")
+            request_header = (
+                self.store.load_request_header(record.session_id, request_id)
+                if request_id is not None
+                else None
+            )
+            if request_header is not None:
+                if request_header.run_id != run.run_id or request_header.purpose != "compaction":
+                    raise SessionCommitConflict("summary output references a different request")
+                request_header = request_header.model_copy(
+                    update={
+                        "response_compaction_id": record.compaction_id,
+                        "response_closed_at": utc_now(),
+                    }
+                )
+            committed = self.store.commit_session(
+                SessionCommit(
+                    before=session,
+                    compaction=record,
+                    request_header=request_header,
+                    events=(
+                        EventRecord(
+                            session_id=record.session_id,
+                            run_id=run.run_id,
+                            event_type="compaction_completed",
+                            payload={
+                                "compaction_id": record.compaction_id,
+                                "trigger": record.trigger,
+                                "strategy_id": record.strategy_id,
+                                "covered_message_count": record.covered_message_count,
+                                "tokens_before": record.estimated_tokens_before,
+                                "tokens_after": record.estimated_tokens_after,
+                                "duration_seconds": record.duration_seconds,
+                                "context_metrics_after": record.context_metrics_after.model_dump(
+                                    mode="json"
+                                )
+                                if record.context_metrics_after is not None
+                                else None,
+                                "model_provider": record.model_provider,
+                                "model_endpoint_id": record.model_endpoint_id,
+                                "model_id": record.model_id,
+                                "model_route": record.metadata.get("model_route"),
+                                "model_fallback_reason": record.metadata.get(
+                                    "model_fallback_reason"
+                                ),
+                            },
+                        ),
+                    ),
+                    after=session.model_copy(update={"context_selection": selection}),
+                )
+            )
+        return committed.events
 
     def _materialize_messages(
         self,
@@ -1006,14 +1106,15 @@ class ContextPreparationService:
         *,
         session: SessionRecord,
         history: list[MessageRecord],
-    ) -> tuple[list[MessageRecord], MediaElisionState]:
-        return self.media_context.project(
-            messages,
-            session=session,
-            history=history,
-            input_modalities=adapter.model.input_modalities,
-            input_budget_tokens=self._input_budget(adapter),
-        )
+    ) -> tuple[list[MessageRecord], ContextSelection]:
+        with self.store.session_read(session.session_id):
+            return self.media_context.project(
+                messages,
+                session=session,
+                history=history,
+                input_modalities=adapter.model.input_modalities,
+                input_budget_tokens=self._input_budget(adapter),
+            )
 
     def _input_budget(self, adapter: RuntimeAdapter) -> int:
         return adapter.model.context_budget.input_tokens

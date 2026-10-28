@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import hashlib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Literal, Protocol
 
@@ -15,12 +14,12 @@ from ouro.core.context import (
     estimate_message_tokens,
     estimate_text_tokens,
 )
-from ouro.core.errors import CompactionError, CompactionStateError
+from ouro.core.errors import CompactionError, CompactionStateError, PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.message_frames import context_frames as compaction_frames
 from ouro.core.message_frames import conversation_turns as conversation_turns
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageFact, MessageRecord
 from ouro.core.provider import ProviderFinishReason
 from ouro.core.state import RunRecord, SessionRecord
 
@@ -121,7 +120,7 @@ class CompactionAbortedError(CompactionStrategyError):
 
 
 class CompactionRecord(VersionedOuroModel):
-    schema_version: int = 2
+    schema_version: Literal[3] = 3
     compaction_id: str = Field(default_factory=lambda: new_id("cmp"))
     session_id: str
     previous_compaction_id: str | None = None
@@ -129,8 +128,9 @@ class CompactionRecord(VersionedOuroModel):
     strategy_version: str = "1"
     trigger: CompactionTrigger
     summary: str
-    covered_message_ids: list[str] = Field(default_factory=list)
-    source_digest: str
+    covered_message_count: int = Field(ge=1)
+    covered_end_message_id: str = Field(min_length=1)
+    retained_skill_message_ids: tuple[str, ...] = ()
     history_boundary_message_id: str = Field(min_length=1)
     created_at: datetime = Field(default_factory=utc_now)
     duration_seconds: float | None = Field(default=None, ge=0.0)
@@ -138,13 +138,82 @@ class CompactionRecord(VersionedOuroModel):
     model_endpoint_id: str | None = None
     model_id: str | None = None
     prompt_version: str | None = None
-    prompt_hash: str | None = None
     estimated_tokens_before: int = 0
     estimated_summary_tokens: int = 0
     estimated_tokens_after: int = 0
     context_metrics_after: ContextMetrics | None = None
     usage: dict[str, int | float] = Field(default_factory=dict)
     metadata: Metadata = MetadataField
+
+    @property
+    def referenced_message_ids(self) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                (
+                    self.covered_end_message_id,
+                    self.history_boundary_message_id,
+                    *self.retained_skill_message_ids,
+                )
+            )
+        )
+
+
+def validate_compaction_sources(
+    record: CompactionRecord,
+    session_id: str,
+    message_count: int,
+    sources: Mapping[str, MessageFact | MessageRecord],
+) -> None:
+    """Check the finite references at activation or snapshot publication."""
+    endpoint = sources.get(record.covered_end_message_id)
+    placement = sources.get(record.history_boundary_message_id)
+    if (
+        record.session_id != session_id
+        or endpoint is None
+        or endpoint.sequence != record.covered_message_count
+        or endpoint.session_id != session_id
+        or placement is None
+        or placement.session_id != session_id
+        or not endpoint.sequence <= placement.sequence <= message_count
+    ):
+        raise CompactionStateError("compaction boundary does not match canonical history")
+    if any(
+        (source := sources.get(identity)) is None
+        or source.session_id != session_id
+        or not 1 <= source.sequence <= endpoint.sequence
+        for identity in record.retained_skill_message_ids
+    ):
+        raise CompactionStateError("compaction skill reference is outside its coverage")
+
+
+def validate_compaction_snapshot(
+    session: SessionRecord,
+    messages: Sequence[MessageRecord],
+    records: Sequence[CompactionRecord],
+) -> None:
+    """Validate imported dependencies once before publishing a new Session."""
+    if not records and session.context_selection.compaction_id is None:
+        return
+    sources = {item.message_id: item for item in messages}
+    accepted: set[str] = set()
+    for record in records:
+        if record.compaction_id in accepted:
+            raise PersistenceError("Session snapshot contains duplicate compaction identities")
+        if (
+            record.previous_compaction_id is not None
+            and record.previous_compaction_id not in accepted
+        ):
+            raise PersistenceError("Session snapshot has a missing compaction predecessor")
+        try:
+            validate_compaction_sources(record, session.session_id, len(messages), sources)
+        except CompactionStateError as exc:
+            raise PersistenceError(str(exc)) from exc
+        accepted.add(record.compaction_id)
+    if (
+        session.context_selection.compaction_id is not None
+        and session.context_selection.compaction_id not in accepted
+    ):
+        raise PersistenceError("Session snapshot has a missing active compaction")
 
 
 class CompactionPlan(OuroModel):
@@ -294,12 +363,13 @@ def plan_compaction(
 
 
 def project_compacted_messages(
-    messages: Sequence[MessageRecord],
+    uncovered_messages: Sequence[MessageRecord],
     active: CompactionRecord | None,
 ) -> list[MessageRecord]:
-    covered_count = validate_compaction_lineage(messages, active)
+    """Prepend the selected summary to its already selected canonical suffix."""
     if active is None:
-        return list(messages)
+        return list(uncovered_messages)
+    covered_count = active.covered_message_count
     summary = MessageRecord.text(
         session_id=active.session_id,
         role="system",
@@ -317,55 +387,53 @@ def project_compacted_messages(
             }
         }
     )
-    return [summary, *messages[covered_count:]]
-
-
-def validate_compaction_lineage(
-    messages: Sequence[MessageRecord],
-    active: CompactionRecord | None,
-) -> int:
-    if active is None:
-        return 0
-    canonical_prefix = [
-        message.message_id for message in messages[: len(active.covered_message_ids)]
-    ]
-    if canonical_prefix != active.covered_message_ids:
-        raise CompactionStateError(
-            f"compaction {active.compaction_id} does not match canonical message history"
-        )
-    digest = compaction_source_digest(messages[: len(active.covered_message_ids)])
-    if digest != active.source_digest:
-        raise CompactionStateError(
-            f"compaction {active.compaction_id} source digest does not match canonical history"
-        )
-    return len(active.covered_message_ids)
-
-
-def compaction_source_digest(messages: Sequence[MessageRecord]) -> str:
-    digest = hashlib.sha256()
-    for message in messages:
-        digest.update(message.model_dump_json(exclude_none=True).encode("utf-8"))
-        digest.update(b"\n")
-    return digest.hexdigest()
+    return [summary, *uncovered_messages]
 
 
 def _messages_tokens(messages: Sequence[MessageRecord], estimator: TokenEstimator) -> int:
     return sum(estimate_message_tokens(message, estimator) for message in messages)
 
 
-def retain_compactions(
-    compactions: Sequence[CompactionRecord], removed_message_ids: set[str]
-) -> list[CompactionRecord]:
-    """Remove summaries whose coverage, placement or previous summary was withdrawn."""
-    retained: list[CompactionRecord] = []
+class CompactionReference(OuroModel):
+    """Withdrawal dependencies and ordered membership, without the summary body."""
+
+    compaction_id: str
+    previous_compaction_id: str | None = None
+    covered_end_message_id: str
+    history_boundary_message_id: str
+
+    @classmethod
+    def from_record(cls, record: CompactionRecord) -> CompactionReference:
+        return cls(
+            compaction_id=record.compaction_id,
+            previous_compaction_id=record.previous_compaction_id,
+            covered_end_message_id=record.covered_end_message_id,
+            history_boundary_message_id=record.history_boundary_message_id,
+        )
+
+
+def retain_compaction_references(
+    compactions: Sequence[CompactionReference],
+    removed_message_ids: set[str],
+    *,
+    last_retained_message_id: str | None,
+) -> list[CompactionReference]:
+    """Withdraw affected coverage; a removed display anchor does not invalidate content."""
+    retained: list[CompactionReference] = []
     removed: set[str] = set()
     for compaction in compactions:
         if (
-            compaction.history_boundary_message_id in removed_message_ids
-            or removed_message_ids.intersection(compaction.covered_message_ids)
+            compaction.covered_end_message_id in removed_message_ids
             or compaction.previous_compaction_id in removed
         ):
             removed.add(compaction.compaction_id)
         else:
+            if compaction.history_boundary_message_id in removed_message_ids:
+                assert last_retained_message_id is not None
+                compaction = compaction.model_copy(
+                    update={
+                        "history_boundary_message_id": last_retained_message_id,
+                    }
+                )
             retained.append(compaction)
     return retained

@@ -9,6 +9,7 @@ from typing import Any, Protocol, cast
 
 from ouro.application.contracts.events import validate_runtime_event_payload
 from ouro.application.harness import capture_harness
+from ouro.application.observations.drafts import resolve_fact_event
 from ouro.application.observers import ObserverDispatcher
 from ouro.application.usage import UsageService
 from ouro.core.callbacks import run_blocking
@@ -25,6 +26,7 @@ from ouro.core.observers import (
     freeze_json,
 )
 from ouro.core.redaction import redact_data, redact_text
+from ouro.core.response_drafts import ResponseStreamPosition
 from ouro.core.turn_policies import TurnPolicyFailure
 from ouro.sessions import SessionRepository
 
@@ -186,13 +188,14 @@ class RuntimeEventRecorder:
 
     async def emit(
         self,
-        emitted: list[EventRecord],
         sequence: int,
         *,
         session_id: str,
         run_id: str,
         event_type: str,
         payload: dict[str, Any],
+        stream: ResponseStreamPosition | None = None,
+        history_epoch: int | None = None,
     ) -> int:
         validate_runtime_event_payload(event_type, payload)
         event = EventRecord(
@@ -202,9 +205,20 @@ class RuntimeEventRecorder:
             event_type=event_type,
             sequence=sequence + 1,
             payload=payload,
+            stream=stream,
         )
+        if stream is not None:
+            if history_epoch is None:
+                raise ValueError("stream publication requires its Run history epoch")
+            event = event.model_copy(
+                update={
+                    "sequence": sequence,
+                    "history_epoch": history_epoch,
+                }
+            )
+            await self._publish(event, notify_observers=True)
+            return sequence
         event = await self._record_event(event, notify_observers=True)
-        emitted.append(event)
         return event.sequence
 
     async def publish(
@@ -228,6 +242,22 @@ class RuntimeEventRecorder:
             notify_observers=True,
         )
 
+    async def publish_committed(self, events: Sequence[EventRecord]) -> None:
+        """Notify from one native commit; lost delivery is repaired by fact catch-up."""
+        for event in events:
+            if event.event_type in {
+                "model_response_committed",
+                "tool_call_requested",
+                "tool_call_completed",
+            }:
+                event = await run_blocking(self._fact_event, event)
+            await self._publish(event, notify_observers=True)
+
+    def _fact_event(self, event: EventRecord) -> EventRecord:
+        with self.store.session_read(event.session_id):
+            epoch = self.store.load_session_record(event.session_id).history_epoch
+            return resolve_fact_event(self.store, event, history_epoch=epoch)
+
     async def record_observer_failure(self, failure: ObserverFailure) -> None:
         await self._record_event(
             EventRecord(
@@ -241,7 +271,6 @@ class RuntimeEventRecorder:
 
     async def record_context_provider_failures(
         self,
-        emitted: list[EventRecord],
         sequence: int,
         failures: Sequence[ContextProviderFailure],
     ) -> int:
@@ -257,12 +286,10 @@ class RuntimeEventRecorder:
                 notify_observers=False,
             )
             sequence = event.sequence
-            emitted.append(event)
         return sequence
 
     async def record_turn_policy_failures(
         self,
-        emitted: list[EventRecord],
         sequence: int,
         failures: Sequence[TurnPolicyFailure],
     ) -> int:
@@ -279,7 +306,6 @@ class RuntimeEventRecorder:
                 notify_observers=False,
             )
             sequence = event.sequence
-            emitted.append(event)
         return sequence
 
     async def drain(self) -> None:

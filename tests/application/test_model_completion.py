@@ -5,6 +5,8 @@ import httpx
 import pytest
 
 from ouro.application.runtime.service import RuntimeService
+from ouro.application.usage import UsageService
+from ouro.billing import LocalUsageLedger
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.messages import ProviderContinuationArtifact
 from ouro.core.provider import (
@@ -19,6 +21,7 @@ from ouro.providers import FauxProvider, OpenAIChatCompletionsProvider
 from ouro.providers.http_transport import HttpxProviderHTTPTransport
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
+from tests.run_facts import run_events, run_tool_results
 
 
 @pytest.mark.parametrize("store_type", [LocalSessionStore, SQLiteSessionStore])
@@ -63,6 +66,7 @@ async def test_unsuccessful_completion_preserves_output_and_usage(
         ),
     ]
     runtime = RuntimeService(
+        usage_service=UsageService(LocalUsageLedger(tmp_path / "billing")),
         store=store,
         adapter=RuntimeAdapter(
             FauxProvider(events), ModelMetadata(model_id="test", provider_id="test")
@@ -75,7 +79,7 @@ async def test_unsuccessful_completion_preserves_output_and_usage(
         assert result.run.status == "failed"
         assert result.run.model_round_count == 1
         assert result.final_text == text
-        assert result.run.usage["output_tokens"] == 11
+        assert result.usage["output_tokens"] == 11
         assert snapshot.events[-1].payload["error_code"] == code
         completed = next(e for e in snapshot.events if e.event_type == "model_message_completed")
         assert completed.payload["finish_reason"] == reason
@@ -109,6 +113,7 @@ async def test_unsuccessful_completion_never_executes_tool_fragments(
     for tool in builtin_tools():
         tools.register(tool)
     runtime = RuntimeService(
+        usage_service=UsageService(LocalUsageLedger(tmp_path / "billing")),
         store=store,
         adapter=RuntimeAdapter(
             FauxProvider(
@@ -136,17 +141,17 @@ async def test_unsuccessful_completion_never_executes_tool_fragments(
     try:
         result = await runtime.run("write")
         assert result.run.status == "failed"
-        assert result.events[-1].payload["error_code"] in {
+        assert run_events(store, result)[-1].payload["error_code"] in {
             "model_output_limit",
             "model_content_filtered",
             "model_incomplete",
         }
         assert not (tmp_path / "unexpected.txt").exists()
-        assert not result.tool_results
+        assert not run_tool_results(store, result)
         assert result.run.active_tool_batch is None
-        assert not any(e.event_type == "tool_call_started" for e in result.events)
-        assert not any(e.event_type == "tool_call_requested" for e in result.events)
-        assert any(e.event_type == "model_message_completed" for e in result.events)
+        assert not any(e.event_type == "tool_call_started" for e in run_events(store, result))
+        assert not any(e.event_type == "tool_call_requested" for e in run_events(store, result))
+        assert any(e.event_type == "model_message_completed" for e in run_events(store, result))
     finally:
         await runtime.close()
 
@@ -191,6 +196,7 @@ async def test_wire_completion_reaches_runtime_without_losing_reason_or_usage(
         store = LocalSessionStore(tmp_path)
         store.initialize()
         runtime = RuntimeService(
+            usage_service=UsageService(LocalUsageLedger(tmp_path / "billing")),
             store=store,
             adapter=RuntimeAdapter(
                 provider,
@@ -202,12 +208,14 @@ async def test_wire_completion_reaches_runtime_without_losing_reason_or_usage(
             result = await runtime.run("answer")
             assert result.run.status == "failed"
             assert result.final_text == message.get("content", "")
-            assert result.events[-1].payload["error_code"] == code
-            completed = next(e for e in result.events if e.event_type == "model_message_completed")
+            assert run_events(store, result)[-1].payload["error_code"] == code
+            completed = next(
+                e for e in run_events(store, result) if e.event_type == "model_message_completed"
+            )
             assert completed.payload["finish_reason"] == reason
             assert completed.payload["usage"]["output_tokens"] == 8
             assert completed.payload["has_reasoning"] == bool(message.get("reasoning_content"))
-            assert result.run.usage["output_tokens"] == 8
+            assert result.usage["output_tokens"] == 8
             assert len(requests) == 1
         finally:
             await runtime.close()

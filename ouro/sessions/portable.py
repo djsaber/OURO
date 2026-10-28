@@ -10,20 +10,95 @@ from pydantic import ConfigDict, Field, model_validator
 
 from ouro.core.agents import DelegationRecord
 from ouro.core.base import OuroModel
-from ouro.core.context_snapshots import ContextSnapshotRecord
+from ouro.core.compaction import CompactionRecord
+from ouro.core.context_snapshots import (
+    ModelRequestHeader,
+    RequestManifestRecord,
+    validate_request_snapshot,
+)
 from ouro.core.errors import PersistenceError
+from ouro.core.events import EventRecord
+from ouro.core.harness import HarnessVersion
+from ouro.core.inputs import InputRecord, InputState, validate_input_snapshot
+from ouro.core.message_content import materialize_message, validate_tool_message_snapshot
+from ouro.core.messages import MessageFact
 from ouro.core.resources import SessionResourceReference
-from ouro.core.state import ACTIVE_RUN_STATUSES
+from ouro.core.session_extensions import SessionExtensionStateRecord
+from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
+from ouro.core.tool_batches import ToolCallState, validate_call_states
+from ouro.core.tool_facts import ToolCallFacts
+from ouro.resources.media import validate_media_references
 from ouro.sessions.base import SessionRepository, SessionSnapshot
 from ouro.sessions.layout import DATA_LAYOUT_VERSION
+
+
+class SessionArchiveSnapshot(OuroModel):
+    """The complete transfer representation stores message facts, never read projections."""
+
+    session: SessionRecord
+    messages: list[MessageFact] = Field(default_factory=list)
+    runs: list[RunRecord] = Field(default_factory=list)
+    compactions: list[CompactionRecord] = Field(default_factory=list)
+    events: list[EventRecord] = Field(default_factory=list)
+    extension_states: list[SessionExtensionStateRecord] = Field(default_factory=list)
+    harness_versions: list[HarnessVersion] = Field(default_factory=list)
+    inputs: list[InputRecord] = Field(default_factory=list)
+    input_states: list[InputState] = Field(default_factory=list)
+    tool_facts: ToolCallFacts = Field(default_factory=ToolCallFacts)
+    call_states: tuple[ToolCallState, ...] = ()
+    request_headers: list[ModelRequestHeader] = Field(default_factory=list)
+    latest_manifest: RequestManifestRecord | None = None
+
+    @classmethod
+    def from_snapshot(cls, snapshot: SessionSnapshot) -> SessionArchiveSnapshot:
+        return cls(
+            **snapshot.model_dump(exclude={"messages"}),
+            messages=[message.as_fact() for message in snapshot.messages],
+        )
+
+    def materialize(self) -> SessionSnapshot:
+        inputs = {record.item.queue_id: record for record in self.inputs}
+        calls = {call.identity: call for call in self.tool_facts.calls}
+        outcomes = {(item.identity, item.attempt): item for item in self.tool_facts.outcomes}
+        return SessionSnapshot(
+            **self.model_dump(exclude={"messages"}),
+            messages=[
+                materialize_message(
+                    fact,
+                    inputs.get(fact.input_id) if fact.input_id else None,
+                    calls=[
+                        calls[identity]
+                        for identity in fact.referenced_call_ids
+                        if identity in calls
+                    ],
+                    outcome=outcomes.get(
+                        (fact.outcome_ref.identity, fact.outcome_ref.outcome_attempt)
+                    )
+                    if fact.outcome_ref is not None and fact.outcome_ref.outcome_attempt is not None
+                    else None,
+                )
+                for fact in self.messages
+            ],
+        )
 
 
 class PortableSession(OuroModel):
     model_config = ConfigDict(extra="forbid")
 
-    snapshot: SessionSnapshot
+    snapshot: SessionArchiveSnapshot
     resources: list[SessionResourceReference] = Field(default_factory=list)
-    latest_context: ContextSnapshotRecord | None = None
+
+    @classmethod
+    def from_snapshot(
+        cls,
+        snapshot: SessionSnapshot,
+        *,
+        resources: list[SessionResourceReference] | None = None,
+    ) -> PortableSession:
+        return cls(
+            snapshot=SessionArchiveSnapshot.from_snapshot(snapshot),
+            resources=resources or [],
+        )
 
 
 class SessionBundle(OuroModel):
@@ -45,6 +120,13 @@ class SessionBundle(OuroModel):
                 raise ValueError("invalid Session identity")
             snapshot = item.snapshot
             session = snapshot.session
+            validate_input_snapshot(
+                identity,
+                session.pending_input_ids,
+                tuple(snapshot.inputs),
+                tuple(snapshot.input_states),
+                messages=snapshot.messages,
+            )
             if session.active_run_id is not None or session.status not in {"idle", "failed"}:
                 raise ValueError("only inactive Sessions can be transferred")
             for collection, attribute in (
@@ -60,6 +142,11 @@ class SessionBundle(OuroModel):
                 ):
                     raise ValueError("duplicate or foreign Session record")
             run_ids = {run.run_id for run in snapshot.runs}
+            snapshot.tool_facts.validate_snapshot(
+                identity, run_epochs={run.run_id: run.history_epoch for run in snapshot.runs}
+            )
+            validate_call_states(snapshot.call_states, snapshot.tool_facts, session_id=identity)
+            validate_tool_message_snapshot(snapshot.messages, snapshot.tool_facts)
             if any(run.status in ACTIVE_RUN_STATUSES for run in snapshot.runs):
                 raise ValueError("Session has unfinished Runs")
             if session.last_run_id is not None and session.last_run_id not in run_ids:
@@ -78,8 +165,20 @@ class SessionBundle(OuroModel):
                 for event in snapshot.events
             ):
                 raise ValueError("event references a missing Run")
-            if item.latest_context is not None and item.latest_context.session_id != identity:
-                raise ValueError("context belongs to a different Session")
+            validate_request_snapshot(identity, snapshot.request_headers, snapshot.latest_manifest)
+            validate_media_references(
+                snapshot.messages,
+                snapshot.latest_manifest,
+                (record.resource_id for record in item.resources),
+                snapshot.tool_facts.outcomes,
+            )
+            if snapshot.latest_manifest is not None:
+                body = snapshot.latest_manifest
+                referenced_messages = set(body.manifest.referenced_message_ids)
+                if not referenced_messages.issubset(
+                    message.message_id for message in snapshot.messages
+                ):
+                    raise ValueError("request references a missing message")
             if session.message_count != len(snapshot.messages) or session.last_message_id != (
                 snapshot.messages[-1].message_id if snapshot.messages else None
             ):
@@ -148,14 +247,19 @@ def populate_sessions(
 ) -> None:
     """Write into a private staging store or a backend transaction, then verify."""
     for item in bundle.sessions:
-        snapshot = item.snapshot
+        snapshot = item.snapshot.materialize()
         target.create_session_snapshot(
             snapshot.session,
             snapshot.messages,
             resource_references=item.resources,
             harness_versions=snapshot.harness_versions,
-            commits=snapshot.commits,
             compactions=snapshot.compactions,
+            inputs=tuple(snapshot.inputs),
+            input_states=tuple(snapshot.input_states),
+            tool_facts=snapshot.tool_facts,
+            call_states=snapshot.call_states,
+            request_headers=tuple(snapshot.request_headers),
+            latest_manifest=snapshot.latest_manifest,
             resource_contents=(
                 (record, resource_contents[snapshot.session.session_id][record.filename])
                 for record in item.resources
@@ -166,10 +270,8 @@ def populate_sessions(
         for run in snapshot.runs:
             target.save_run(run)
         target.append_events(snapshot.events)
-        if item.latest_context is not None:
-            target.save_latest_context(item.latest_context)
         actual = target.load_session(snapshot.session.session_id)
-        if actual != snapshot:
+        if SessionArchiveSnapshot.from_snapshot(actual) != item.snapshot:
             raise PersistenceError("Session transfer failed snapshot verification")
     for delegation in bundle.delegations:
         target.create_delegation(delegation)

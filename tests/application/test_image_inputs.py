@@ -35,16 +35,20 @@ async def test_image_input_keeps_observed_bytes_across_capability_changes(
         )
         assert first.run.status == "completed"
         assert encoded in str(provider.requests[-1])
-        observed = runtime.store.load_runtime_session(session.session_id).messages[0]
+        observed = runtime.store.load_session(session.session_id).messages[0]
         assert any(isinstance(part, ImageContent) for part in observed.content)
         first_snapshot = runtime.sessions.context(session.session_id)
         if source_kind == "reference":
             path.unlink()
 
-        def fail_read(*args, **kwargs):
-            pytest.fail("observed attachments must not be read again")
+        reads = []
+        read_ranges = runtime.resources._store.read_ranges
 
-        monkeypatch.setattr(runtime.resources._store, "read_ranges", fail_read)
+        def read_observed(session_id, record, ranges):
+            reads.append(record.resource_id)
+            return read_ranges(session_id, record, ranges)
+
+        monkeypatch.setattr(runtime.resources._store, "read_ranges", read_observed)
         runtime.adapter.model.supports_image_input = False
         assert runtime.sessions.context(session.session_id) == first_snapshot
         second = await runtime.run("Continue", session_id=session.session_id)
@@ -54,6 +58,7 @@ async def test_image_input_keeps_observed_bytes_across_capability_changes(
         assert wire.count("This model cannot view images.") == 1
         assert "Trying again or changing its size will not help." in wire
         second_snapshot = runtime.sessions.context(session.session_id)
+        assert reads == []
         assert not any(
             isinstance(part, ImageContent)
             for message in second_snapshot.provider_context.messages
@@ -65,7 +70,11 @@ async def test_image_input_keeps_observed_bytes_across_capability_changes(
         third = await runtime.run("Look again", session_id=session.session_id)
         assert third.run.status == "completed"
         assert encoded in str(provider.requests[-1])
-        assert runtime.store.load_runtime_session(session.session_id).messages[0] == observed
+        assert reads
+        assert set(reads) == {
+            part.resource_id for part in observed.content if isinstance(part, ImageContent)
+        }
+        assert runtime.store.load_session(session.session_id).messages[0] == observed
     finally:
         await app.close()
 
@@ -91,7 +100,7 @@ async def test_unsupported_image_records_observed_capability_without_mislabeling
     try:
         first = await runtime.run("Describe", session_id=session.session_id, attachments=(item,))
         assert first.run.status == "completed", first.run.error
-        observed = runtime.store.load_runtime_session(session.session_id).messages[0]
+        observed = runtime.store.load_session(session.session_id).messages[0]
         assert not any(isinstance(part, ImageContent) for part in observed.content)
         assert "model in use did not support it" in observed.text_content
 
@@ -106,6 +115,6 @@ async def test_unsupported_image_records_observed_capability_without_mislabeling
         third = await runtime.run("Look again", session_id=session.session_id, attachments=(item,))
         assert third.run.status == "completed", third.run.error
         assert encoded in str(provider.requests[-1])
-        assert runtime.store.load_runtime_session(session.session_id).messages[0] == observed
+        assert runtime.store.load_session(session.session_id).messages[0] == observed
     finally:
         await app.close()

@@ -19,6 +19,7 @@ from ouro.core.tools import ToolCallProducer, ToolCallRequest
 from ouro.local_application import LocalApplication, open_local_plugins
 from ouro.plugins.installation.package import validate_plugin_package
 from ouro.plugins.installation.paths import PluginPackageError
+from tests.run_facts import run_events
 
 PLUGIN = "test.protocol.provider"
 PROTOCOL = f"{PLUGIN}/providers/probe"
@@ -253,10 +254,16 @@ async def test_provider_retry_and_error_diagnostics_redact_resolved_credentials(
     )
     result = await app.runtime.run("diagnostic failure")
     assert result.run.status == "failed"
-    retry = next(event for event in result.events if event.event_type == "run_retry_scheduled")
+    retry = next(
+        event
+        for event in run_events(app.runtime.store, result)
+        if event.event_type == "run_retry_scheduled"
+    )
     assert "REDACTED" in retry.model_dump_json()
     assert secret not in result.run.model_dump_json()
-    assert all(secret not in event.model_dump_json() for event in result.events)
+    assert all(
+        secret not in event.model_dump_json() for event in run_events(app.runtime.store, result)
+    )
     adapter = app.runtime.models.adapter_for(f"{model.provider_id}/{model.endpoint_id}")
     check = await adapter.provider.check_connection(adapter.model)
     assert not check.ok

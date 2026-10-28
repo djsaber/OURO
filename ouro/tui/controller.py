@@ -2166,12 +2166,14 @@ class TuiController:
         parent_session_id: str,
         parent_run_id: str,
         parent_tool_call_id: str,
+        parent_batch_id: str | None = None,
     ) -> AgentTreeNode | None:
         return await asyncio.to_thread(
             self._agents().resolve_agent_navigation,
             parent_session_id=parent_session_id,
             parent_run_id=parent_run_id,
             parent_tool_call_id=parent_tool_call_id,
+            parent_batch_id=parent_batch_id,
         )
 
     async def _unarchive_current_session_after_update(self) -> None:
@@ -2181,9 +2183,6 @@ class TuiController:
         sessions = self._runtime().sessions
         await asyncio.to_thread(sessions.set_archived, session_id, False)
         self._session_archived = False
-
-    def _read_session(self, session_id: str) -> LoadedSession:
-        return self._loaded_snapshot(self._runtime().observation_snapshot(session_id))
 
     def _loaded_snapshot(self, snapshot: SessionObservationSnapshot) -> LoadedSession:
         session_id = snapshot.session.session_id
@@ -2197,6 +2196,9 @@ class TuiController:
             messages=snapshot.messages,
             events=snapshot.events,
             runs=snapshot.runs,
+            active_tool_calls=snapshot.active_tool_calls,
+            pending_interactions=snapshot.pending_interactions,
+            current_request=snapshot.current_request,
             context_status=snapshot.context_status,
             effective_context_metrics=snapshot.effective_context_metrics,
             compactions=snapshot.compactions,

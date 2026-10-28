@@ -52,7 +52,7 @@ async def test_adapter_close_waits_for_provider_resource_release() -> None:
                 closed.set()
 
     adapter = RuntimeAdapter(OpenProvider(), ModelMetadata(model_id="test", provider_id="test"))
-    stream = adapter.stream(ContextView(system_prompt="", model_messages=[], tool_definitions=[]))
+    stream = adapter.stream(ContextView())
     assert (await anext(stream)).type == "tool_call_delta"
 
     await stream.aclose()

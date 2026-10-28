@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
 from ouro.application.contracts.base import ApplicationStartupReport
 from ouro.application.events import RuntimeEventSink
@@ -13,6 +12,7 @@ from ouro.application.runtime.service import RuntimeService
 from ouro.cli.errors import error_exit_code
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.errors import OuroError
+from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.results import RunResult
 from ouro.deployment import SessionBackend, TaskBackend
@@ -69,6 +69,7 @@ async def run_print(
     session_backend: SessionBackend | None = None,
     task_backend: TaskBackend | None = None,
 ) -> int:
+    printer = _RunPrinter()
     try:
         runtime = build_default_runtime(
             home,
@@ -76,6 +77,7 @@ async def run_print(
             system_prompt=system_prompt,
             session_backend=session_backend,
         )
+        runtime.add_event_sink(printer)
         async with LocalApplication.from_runtime(
             runtime, home=home, task_backend=task_backend
         ) as application:
@@ -92,14 +94,8 @@ async def run_print(
     except OuroError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return error_exit_code(exc)
-    for event in result.events:
-        if event.event_type == "diagnostic":
-            message = event.payload.get("message") or event.payload.get("error")
-            if isinstance(message, str) and message:
-                severity = event.payload.get("severity", "error")
-                print(f"[{severity}] {message}", file=sys.stderr)
+    printer.finish(result.final_text)
     if result.run.status == "completed":
-        _print_run_events(result.events)
         return 0
     if result.run.status == "failed":
         print(f"Run failed: {result.run.error or 'unknown error'}", file=sys.stderr)
@@ -166,8 +162,9 @@ async def run_json(
                 "interaction_mode": result.session.interaction_mode,
                 "final_text": result.final_text,
                 "error": result.run.error,
-                "usage": result.run.usage,
-                "events": [event.model_dump(mode="json") for event in result.events],
+                "error_code": result.error_code,
+                "usage": result.usage,
+                "had_tool_error": result.had_tool_error,
                 "startup_diagnostics": [
                     item.model_dump(mode="json", exclude_none=True)
                     for item in startup_report.diagnostics
@@ -186,7 +183,7 @@ def _run_exit_code(result: RunResult) -> int:
         return 4
     if result.run.status == "aborted":
         return 5
-    if result.run.status == "failed" and any(item.is_error for item in result.tool_results):
+    if result.run.status == "failed" and result.had_tool_error:
         return 6
     return 1
 
@@ -198,35 +195,47 @@ def _print_startup_diagnostics(report: ApplicationStartupReport) -> None:
             print(f"  Action: {diagnostic.suggested_action}", file=sys.stderr)
 
 
-def _print_run_events(events: list[Any]) -> None:
-    """Print text deltas and render reasoning deltas in italics."""
+class _RunPrinter:
+    """Render the live stream with constant state, without retaining Run events."""
 
-    in_reasoning = False
-    streamed_text = False
+    def __init__(self) -> None:
+        self.in_reasoning = False
+        self.streamed_text = False
+        self.saw_text = False
 
-    for event in events:
-        if event.event_type == "model_text_delta":
+    def __call__(self, event: EventRecord) -> None:
+        if event.event_type == "diagnostic":
+            message = event.payload.get("message") or event.payload.get("error")
+            if isinstance(message, str) and message:
+                print(f"[{event.payload.get('severity', 'error')}] {message}", file=sys.stderr)
+        elif event.event_type == "model_text_delta":
             text = event.payload.get("text")
             if not isinstance(text, str) or not text:
-                continue
-            if in_reasoning:
+                return
+            if self.in_reasoning:
                 sys.stdout.write(f"{_RESET}\n")
-                in_reasoning = False
-            streamed_text = True
+                self.in_reasoning = False
+            self.streamed_text = self.saw_text = True
             sys.stdout.write(text)
         elif event.event_type == "model_reasoning_delta":
             reasoning = event.payload.get("reasoning_content")
             if not isinstance(reasoning, str) or not reasoning:
-                continue
-            if streamed_text:
+                return
+            if self.streamed_text:
                 sys.stdout.write("\n")
-                streamed_text = False
-            if not in_reasoning:
+                self.streamed_text = False
+            if not self.in_reasoning:
                 sys.stdout.write(_DIM_ITALIC)
-                in_reasoning = True
+                self.in_reasoning = True
             sys.stdout.write(reasoning)
 
-    if in_reasoning:
-        sys.stdout.write(_RESET)
-    sys.stdout.write("\n")
-    sys.stdout.flush()
+    def finish(self, final_text: str) -> None:
+        if not final_text and not self.saw_text and not self.in_reasoning:
+            return
+        if self.in_reasoning:
+            sys.stdout.write(f"{_RESET}\n")
+            self.in_reasoning = False
+        if not self.saw_text:
+            sys.stdout.write(final_text)
+        sys.stdout.write("\n")
+        sys.stdout.flush()

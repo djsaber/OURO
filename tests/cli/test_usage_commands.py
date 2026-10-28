@@ -73,7 +73,7 @@ async def test_default_runtime_records_provider_usage_not_context_estimates(tmp_
 
     ledger = LocalUsageLedger(tmp_path)
     entries = ledger.list_entries(UsageFilter()).entries
-    assert result.run.usage["input_tokens"] == 1
+    assert result.usage["input_tokens"] == 1
     assert len(entries) == 1
     assert entries[0].input_tokens == 1
     assert entries[0].output_tokens == 4

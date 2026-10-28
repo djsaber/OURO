@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-import json
+from pathlib import Path
 
 import pytest
 
 from ouro.core.errors import PersistenceError
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import InputMessageReference, MessageRecord
 from ouro.core.state import SessionRecord
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from tests.input_facts import append_input_messages
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
@@ -31,23 +32,29 @@ def test_message_queries_detect_equal_size_replacement_with_identical_suffix(
     retained = MessageRecord.text(session_id=session.session_id, role="user", text="retained")
     original = MessageRecord.text(
         session_id=session.session_id, role="user", text="question", run_id="run_old"
-    ).model_copy(update={"metadata": {"queued_input_id": "queue_old", "padding": "same" * 100}})
+    ).model_copy(
+        update={
+            "input_ref": InputMessageReference(input_id="queue_old"),
+            "metadata": {"padding": "same" * 100},
+        }
+    )
     replacement = original.model_copy(
         update={
             "message_id": original.message_id[:-3] + "new",
             "run_id": "run_new",
-            "metadata": {"queued_input_id": "queue_new", "padding": "same" * 100},
+            "input_ref": InputMessageReference(input_id="queue_new"),
+            "metadata": {"padding": "same" * 100},
         }
     )
     assert len(original.model_dump_json()) == len(replacement.model_dump_json())
-    writer.append_messages([retained, original])
+    append_input_messages(writer, [retained, original])
     assert reader.load_message(session.session_id, original.message_id) == original
     writer.truncate_messages(
         session.session_id,
         before_message_id=original.message_id,
         expected_last_message_id=original.message_id,
     )
-    writer.append_message(replacement)
+    append_input_messages(writer, [replacement])
     if append_more:
         writer.append_message(
             MessageRecord.text(session_id=session.session_id, role="assistant", text="reply")
@@ -84,11 +91,11 @@ def test_message_queries_follow_other_writer_and_history_truncation(tmp_path, ba
             role="user",
             run_id=run,
             text=text,
-        ).model_copy(update={"metadata": {"queued_input_id": queue}})
+        ).model_copy(update={"input_ref": InputMessageReference(input_id=queue)})
 
     first = message("run_one", "queue_one", "one")
     second = message("run_two", "queue_two", "two")
-    writer.append_messages([first, second])
+    append_input_messages(writer, [first, second])
     assert reader.load_run_messages(session.session_id, "run_one") == [first]
     assert reader.find_queued_input_message(session.session_id, "queue_two") == second
     writer.truncate_messages(
@@ -97,7 +104,7 @@ def test_message_queries_follow_other_writer_and_history_truncation(tmp_path, ba
         expected_last_message_id=second.message_id,
     )
     replacement = message("run_three", "queue_three", "replacement" * 200)
-    writer.append_message(replacement)
+    append_input_messages(writer, [replacement])
     # The file is now larger than the cached size; size alone is not a revision.
     assert reader.find_queued_input_message(session.session_id, "queue_two") is None
     assert reader.load_run_messages(session.session_id, "run_two") == []
@@ -106,7 +113,7 @@ def test_message_queries_follow_other_writer_and_history_truncation(tmp_path, ba
         reader.load_message(session.session_id, second.message_id)
 
 
-def test_repeated_local_queries_only_index_appended_records(tmp_path, monkeypatch):
+def test_cold_and_repeated_local_queries_never_scan_unselected_history(tmp_path, monkeypatch):
     store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord()
@@ -121,31 +128,53 @@ def test_repeated_local_queries_only_index_appended_records(tmp_path, monkeypatc
         for i in range(200)
     ]
     store.append_messages(history)
-    assert store.load_run_messages(session.session_id, "run_199") == history[-1:]
-    original = json.loads
-    indexed = []
+    original = Path.open
+    journal = store.sessions_dir / session.session_id / "messages.jsonl"
+    lines = journal.read_bytes().splitlines(keepends=True)
+    selected_offset = sum(map(len, lines[:-1]))
+    reads = []
 
-    def count(value, *args, **kwargs):
-        # Point reads validate the selected message through the same json
-        # module; count bytes containing any retained *other* record.
-        if (
-            isinstance(value, bytes)
-            and b'"message_id":' in value
-            and history[-1].message_id.encode() not in value
-        ):
-            indexed.append(value)
-        return original(value, *args, **kwargs)
+    class SelectedJournal:
+        def __init__(self, stream):
+            self.stream = stream
 
-    monkeypatch.setattr("ouro.sessions.backends.files.message_index.json.loads", count)
-    for _ in range(20):
-        assert store.find_queued_input_message(session.session_id, "absent") is None
-        assert store.load_message(session.session_id, history[-1].message_id) == history[-1]
-    assert len(indexed) == 0
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def readline(self, *args):
+            assert self.stream.tell() == selected_offset
+            value = self.stream.readline(*args)
+            reads.append(value)
+            return value
+
+        def read(self, *args):
+            pytest.fail("point query must seek directly to its selected record")
+
+        def __iter__(self):
+            pytest.fail("point query must not scan the journal")
+
+    def guarded(path, *args, **kwargs):
+        stream = original(path, *args, **kwargs)
+        return SelectedJournal(stream) if path == journal else stream
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", guarded)
+        for _ in range(3):
+            # Fresh adapters have no warmed offset table to conceal a scan.
+            reader = LocalSessionStore(tmp_path)
+            assert reader.load_run_messages(session.session_id, "run_199") == history[-1:]
+            assert reader.find_queued_input_message(session.session_id, "absent") is None
+            assert reader.load_message(session.session_id, history[-1].message_id) == history[-1]
+    assert reads == [lines[-1]] * 6
     appended = MessageRecord.text(session_id=session.session_id, role="user", text="new")
     store.append_message(appended)
     assert store.load_message(session.session_id, appended.message_id) == appended
-    # One new index entry and one validation of the selected point read.
-    assert len(indexed) == 2
 
 
 def test_other_reader_invalidates_offsets_even_when_last_record_is_identical(tmp_path):

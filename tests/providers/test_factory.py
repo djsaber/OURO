@@ -13,7 +13,7 @@ from ouro.config import (
     openai_chat_completions_effort_reasoning,
     reasoning_effort_preset,
 )
-from ouro.core.context import ContextView
+from ouro.core.context import ContextBuilder
 from ouro.core.errors import ConfigError
 from ouro.core.messages import ModelMessage
 from ouro.core.reasoning import ReasoningRequest
@@ -95,7 +95,9 @@ async def test_output_limit_follows_service_capability_not_billing_or_auth(
                 events = [
                     event
                     async for event in adapter.with_output_limit(override).stream(
-                        ContextView(model_messages=[ModelMessage.text(role="user", text="hello")]),
+                        ContextBuilder().build(
+                            tools=[], messages=[ModelMessage.text(role="user", text="hello")]
+                        ),
                     )
                 ]
                 assert events[-1].type == "done"
@@ -291,9 +293,10 @@ async def test_configured_endpoint_drives_model_metadata_and_provider_request(tm
     events = [
         event
         async for event in adapter.stream(
-            ContextView(
+            ContextBuilder().build(
+                tools=[],
                 system_prompt="System instructions.",
-                model_messages=[ModelMessage.text(role="user", text="hello")],
+                messages=[ModelMessage.text(role="user", text="hello")],
             )
         )
     ]
@@ -381,7 +384,9 @@ async def test_custom_compatible_endpoint_encodes_declared_reasoning_profile(
     events = [
         event
         async for event in adapter.stream(
-            ContextView(model_messages=[ModelMessage.text(role="user", text="hello")])
+            ContextBuilder().build(
+                tools=[], messages=[ModelMessage.text(role="user", text="hello")]
+            )
         )
     ]
 

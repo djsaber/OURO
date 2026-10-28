@@ -13,7 +13,7 @@ from ouro.sessions.backends.sqlite.store import SQLITE_SCHEMA_VERSION
 from ouro.sessions.layout import DATA_LAYOUT_VERSION
 
 
-@pytest.mark.parametrize("version", [None, 2, 3, 4, 5, 6, 7, 8, DATA_LAYOUT_VERSION + 1])
+@pytest.mark.parametrize("version", [None, *range(1, DATA_LAYOUT_VERSION), DATA_LAYOUT_VERSION + 1])
 def test_file_store_rejects_other_formats_without_reading_or_rewriting_records(tmp_path, version):
     session_dir = tmp_path / "sessions" / "ses_unsupported"
     session_dir.mkdir(parents=True)
@@ -32,7 +32,9 @@ def test_file_store_rejects_other_formats_without_reading_or_rewriting_records(t
     assert after == before
 
 
-@pytest.mark.parametrize("version", [None, 1, 2, 3, 4, 5, 6, SQLITE_SCHEMA_VERSION + 1])
+@pytest.mark.parametrize(
+    "version", [None, *range(1, SQLITE_SCHEMA_VERSION), SQLITE_SCHEMA_VERSION + 1]
+)
 def test_sqlite_store_rejects_other_formats_before_creating_current_tables(tmp_path, version):
     database = tmp_path / "sessions.sqlite3"
     with closing(sqlite3.connect(database)) as connection, connection:

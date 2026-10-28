@@ -7,6 +7,7 @@ from contextvars import ContextVar
 import pytest
 
 import ouro.plugins.worker.client as worker_client
+from ouro.core.callbacks import CallbackCancelled
 from ouro.plugins.worker.client import JsonRpcWorkerClient
 
 
@@ -93,6 +94,78 @@ async def test_reverse_call_preserves_parent_context_and_can_call_worker_at_capa
             authority.reset(token)
     finally:
         await client.close()
+
+
+async def test_cancel_before_transport_write_does_not_wait_for_an_unsent_result(
+    worker_program, monkeypatch
+):
+    client = JsonRpcWorkerClient(
+        ["{python}", worker_program.name], cwd=worker_program.parent, diagnostic=lambda *_: None
+    )
+    entered = asyncio.Event()
+    write = client._write
+
+    async def observe_write(message, **kwargs):
+        entered.set()
+        await write(message, **kwargs)
+
+    await client.start()
+    await client._write_lock.acquire()
+    monkeypatch.setattr(client, "_write", observe_write)
+    request = asyncio.create_task(client.request("inner", retain_result_on_cancel=True))
+    try:
+        await asyncio.wait_for(entered.wait(), 30)
+        request.cancel()
+        done, _ = await asyncio.wait((request,), timeout=30)
+        assert request in done
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        assert not client._pending
+        assert not client._pending_contexts
+    finally:
+        client._write_lock.release()
+        await client.close()
+        await asyncio.gather(request, return_exceptions=True)
+
+
+async def test_cancel_during_transport_drain_retains_the_written_request_result(
+    worker_program, monkeypatch
+):
+    client = JsonRpcWorkerClient(
+        ["{python}", worker_program.name], cwd=worker_program.parent, diagnostic=lambda *_: None
+    )
+    entered = asyncio.Event()
+    await client.start()
+    drain = client.process.stdin.drain
+
+    async def hold_first_drain():
+        await drain()
+        if not entered.is_set():
+            entered.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(client.process.stdin, "drain", hold_first_drain)
+    request = asyncio.create_task(
+        client.request("inner", {"observed": True}, retain_result_on_cancel=True)
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 30)
+        # The peer's response is the handshake; cancellation must not race its
+        # decision whether the request has executed.
+        response = next(iter(client._pending.values()))
+        assert await asyncio.wait_for(asyncio.shield(response), 30) == {"observed": True}
+        request.cancel()
+        done, _ = await asyncio.wait((request,), timeout=30)
+        assert request in done
+        with pytest.raises(CallbackCancelled) as cancelled:
+            await request
+        assert cancelled.value.result == {"observed": True}
+        assert not client._pending
+        assert not client._pending_contexts
+    finally:
+        request.cancel()
+        await client.close()
+        await asyncio.gather(request, return_exceptions=True)
 
 
 async def test_parent_cancellation_settles_accepted_host_calls(worker_program):
