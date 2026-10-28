@@ -222,7 +222,7 @@ calendar-plugin/
   "description": "Calendar tools and context.",
   "namespace": "calendar",
   "engines": {
-    "ouro": ">=0.3.0,<0.4.0",
+    "ouro": ">=0.4.0",
     "plugin_api": "^5.0.0"
   },
   "runtime": {

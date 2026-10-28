@@ -19,7 +19,7 @@ AGENT_CONTEXT_PLUGIN = BuiltinPluginDefinition(
                 "into the complete Agent system prompt."
             ),
             "namespace": "agent_context",
-            "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^5.0.0"},
+            "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
             "runtime": {
                 "kind": "python-inprocess",
                 "entrypoint": "agent_context_plugin:create_plugin",

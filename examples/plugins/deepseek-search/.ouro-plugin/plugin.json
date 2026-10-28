@@ -6,7 +6,7 @@
   "description": "Read-only web search and fetch tools backed by the DeepSeek Search and Fetch APIs.",
   "namespace": "deepseek_search",
   "engines": {
-    "ouro": ">=0.3.0,<0.4.0",
+    "ouro": ">=0.4.0",
     "plugin_api": "^5.0.0"
   },
   "runtime": {

@@ -51,7 +51,7 @@ def create_runtime(
                 "name": "Lifecycle",
                 "version": "1.0.0",
                 "namespace": "lifecycle",
-                "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^5.0.0"},
+                "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "lifecycle_plugin:create_plugin",

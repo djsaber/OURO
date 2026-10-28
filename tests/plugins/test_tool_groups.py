@@ -65,7 +65,7 @@ def make_runtime(tmp_path, instances, factory=Discovery, *, contributes=None):
             "namespace": "discovery",
             "name": "Discovery",
             "version": "1.0.0",
-            "engines": {"ouro": "^0.3.0", "plugin_api": "^5.0.0"},
+            "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
             "runtime": {"kind": "python-inprocess", "entrypoint": "discovery_plugin:create"},
             "tool_groups": [{"id": "remote", "permission_mode": "auto", "effect": "read_only"}],
             "contributes": contributes or {},

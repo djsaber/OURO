@@ -21,7 +21,7 @@ GOAL_PLUGIN = BuiltinPluginDefinition(
             "version": "2.0.0",
             "description": "Maintains and advances the latest user-owned Goal.",
             "namespace": "goal",
-            "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^5.0.0"},
+            "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
             "runtime": {
                 "kind": "python-inprocess",
                 "entrypoint": "goal_plugin:create_plugin",

@@ -573,7 +573,7 @@ wheels = [
 
 [[package]]
 name = "ouro-agent"
-version = "0.3.8"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
@@ -651,7 +651,7 @@ dev = [
 
 [[package]]
 name = "ouro-tui-themes"
-version = "0.3.6.post1"
+version = "0.3.6.post2"
 source = { editable = "packages/tui-themes" }
 dependencies = [
     { name = "numpy" },

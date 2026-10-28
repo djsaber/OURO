@@ -12,7 +12,7 @@ from packaging.version import InvalidVersion, Version
 
 from ouro.tui.welcome import WelcomeStyle
 
-THEME_PACKAGE_VERSION = "0.3.6.post1"
+THEME_PACKAGE_VERSION = "0.3.6.post2"
 INSTALL_HINT = "Install ouro-agent[themes] in the OURO environment and restart the TUI."
 
 
@@ -23,13 +23,13 @@ def load_theme_styles() -> tuple[tuple[WelcomeStyle, ...], str | None]:
     except PackageNotFoundError:
         return (), f"ouro-tui-themes is not installed. {INSTALL_HINT}"
     try:
-        compatible = Version(installed) == Version(THEME_PACKAGE_VERSION)
+        compatible = Version(installed) >= Version(THEME_PACKAGE_VERSION)
     except InvalidVersion:
         compatible = False
     if not compatible:
         return (), (
             f"ouro-tui-themes {installed} is incompatible; "
-            f"requires {THEME_PACKAGE_VERSION}. {INSTALL_HINT}"
+            f"requires >={THEME_PACKAGE_VERSION}. {INSTALL_HINT}"
         )
     try:
         package = import_module("ouro_tui_themes.styles")

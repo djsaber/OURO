@@ -4,7 +4,7 @@
   "name": "Scheduled Sync",
   "version": "0.1.0",
   "namespace": "scheduled_sync",
-  "engines": {"ouro": "^0.3.0", "plugin_api": "^5.0.0"},
+  "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
   "runtime": {"kind": "worker", "command": ["{python}", "worker.py"], "protocol": "3.0"},
   "permissions": [{"id": "background.run", "reason": "Manage and execute scheduled record synchronization."}],
   "exports": [{"id": "sync", "methods": {

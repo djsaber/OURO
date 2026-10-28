@@ -1,6 +1,6 @@
 [project]
 name = "ouro-agent"
-version = "0.3.8"
+version = "0.4.0"
 description = "Local-first personal agent runtime."
 readme = "README.md"
 license = "MIT"
@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-themes = ["ouro-tui-themes==0.3.6.post1"]
+themes = ["ouro-tui-themes>=0.3.6.post2"]
 
 [project.urls]
 Homepage = "https://github.com/djsaber/OURO"

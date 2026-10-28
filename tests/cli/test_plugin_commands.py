@@ -142,7 +142,7 @@ def test_plugin_cli_full_lifecycle_without_model_provider(tmp_path, capsys) -> N
         "name": "CLI plugin",
         "version": "1.0.0",
         "namespace": "cli_plugin",
-        "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^5.0.0"},
+        "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
         "runtime": {"kind": "python-inprocess", "entrypoint": "cli_plugin:create_plugin"},
         "contributes": {"commands": [{"id": "hello", "description": "Say hello."}]},
         "permissions": [],

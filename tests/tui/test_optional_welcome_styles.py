@@ -64,7 +64,7 @@ def test_missing_distribution_does_not_import_extension_code(monkeypatch):
     assert "not installed" in reason and "ouro-agent[themes]" in reason
 
 
-@pytest.mark.parametrize("installed", ["0.0.1", "99.0.0", "invalid"])
+@pytest.mark.parametrize("installed", ["0.0.1", "0.3.6.post1", "invalid"])
 def test_incompatible_distribution_is_rejected_before_import(monkeypatch, installed):
     monkeypatch.setattr(theme_packages, "version", lambda _: installed)
     monkeypatch.setattr(theme_packages, "import_module", lambda _: pytest.fail("unexpected import"))
@@ -73,9 +73,10 @@ def test_incompatible_distribution_is_rejected_before_import(monkeypatch, instal
     assert "incompatible" in reason
 
 
-def test_matching_distribution_supplies_style_metadata(monkeypatch):
+@pytest.mark.parametrize("installed", [theme_packages.THEME_PACKAGE_VERSION, "99.0.0"])
+def test_matching_distribution_supplies_style_metadata(monkeypatch, installed):
     styles = (replace(WELCOME_STYLES["basic"], style_id="installed-scene"),)
-    monkeypatch.setattr(theme_packages, "version", lambda _: theme_packages.THEME_PACKAGE_VERSION)
+    monkeypatch.setattr(theme_packages, "version", lambda _: installed)
     monkeypatch.setattr(theme_packages, "import_module", lambda _: SimpleNamespace(STYLES=styles))
     assert theme_packages.load_theme_styles() == (styles, None)
 

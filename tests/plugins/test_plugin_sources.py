@@ -39,7 +39,7 @@ def _create_repository(root) -> None:
                 "name": "Git example",
                 "version": "1.0.0",
                 "namespace": "git_example",
-                "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^5.0.0"},
+                "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
                 "runtime": {"kind": "declarative"},
                 "contributes": {},
                 "permissions": [],

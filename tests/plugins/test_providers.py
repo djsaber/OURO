@@ -47,7 +47,7 @@ def package(tmp_path, kind):
                 "namespace": "provider_probe",
                 "name": "Provider probe",
                 "version": "1.0.0",
-                "engines": {"ouro": "^0.3.0", "plugin_api": "^5.0.0"},
+                "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
                 "runtime": runtime,
                 "permissions": [
                     {"id": "models.request", "reason": "Generate"},

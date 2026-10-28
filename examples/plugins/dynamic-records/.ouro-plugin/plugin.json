@@ -4,7 +4,7 @@
   "name": "Dynamic Records",
   "version": "0.1.0",
   "namespace": "dynamic_records",
-  "engines": {"ouro": "^0.3.0", "plugin_api": "^5.0.0"},
+  "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
   "runtime": {"kind": "worker", "command": ["{python}", "worker.py"], "protocol": "3.0"},
   "tool_groups": [{"id": "records", "permission_mode": "auto", "effect": "state_changing"}],
   "contributes": {

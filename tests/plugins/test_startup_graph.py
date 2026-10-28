@@ -62,7 +62,7 @@ def graph_runtime(tmp_path, dependencies, *, fail=None, phase="prepare", on_prep
                         "name": key,
                         "namespace": key,
                         "version": "1.0.0",
-                        "engines": {"ouro": "^0.3.0", "plugin_api": "^5.0.0"},
+                        "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
                         "runtime": {
                             "kind": "python-inprocess",
                             "entrypoint": f"{key}_plugin:create",

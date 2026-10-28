@@ -6,7 +6,7 @@
   "description": "Read-only web search, extraction, crawling and mapping tools backed by the Tavily Search, Extract, Crawl and Map APIs.",
   "namespace": "tavily_search",
   "engines": {
-    "ouro": ">=0.3.0,<0.4.0",
+    "ouro": ">=0.4.0",
     "plugin_api": "^5.0.0"
   },
   "runtime": {

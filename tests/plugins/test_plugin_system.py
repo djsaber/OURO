@@ -118,7 +118,7 @@ def _write_native_plugin(
         "name": plugin_id.rsplit(".", 1)[-1].title(),
         "version": version,
         "namespace": plugin_id.rsplit(".", 1)[-1].replace("-", "_"),
-        "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^5.0.0"},
+        "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
         "runtime": runtime or {"kind": "declarative"},
         "contributes": contributes or {},
         "permissions": [],
@@ -193,7 +193,7 @@ def _builtin_plugin(
                 "name": plugin_id.rsplit(".", 1)[-1].title(),
                 "version": version,
                 "namespace": namespace,
-                "engines": {"ouro": ">=0.3.0,<0.4.0", "plugin_api": "^5.0.0"},
+                "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": f"{namespace}_plugin:create_plugin",
@@ -4107,7 +4107,7 @@ def test_native_manifest_model_ignores_unknown_fields() -> None:
             "name": "Strict",
             "version": "1.0.0",
             "namespace": "strict",
-            "engines": {"ouro": "^0.3.0", "plugin_api": "^5.0.0"},
+            "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
             "verified": True,
         }
     )
@@ -4124,7 +4124,7 @@ def test_native_manifest_rejects_tool_controlled_approval_permission() -> None:
                 "name": "Control",
                 "version": "1.0.0",
                 "namespace": "control",
-                "engines": {"ouro": "^0.3.0", "plugin_api": "^5.0.0"},
+                "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
                 "contributes": {
                     "tools": [
                         {
@@ -4149,7 +4149,7 @@ def test_native_manifest_rejects_unknown_activation_binding() -> None:
                 "name": "Bound",
                 "version": "1.0.0",
                 "namespace": "bound",
-                "engines": {"ouro": "^0.3.0", "plugin_api": "^5.0.0"},
+                "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
                 "contributes": {"context_providers": [{"id": "context", "active_when": "missing"}]},
             }
         )
@@ -4164,7 +4164,7 @@ def test_native_manifest_rejects_unknown_interaction_controller() -> None:
                 "name": "Bound",
                 "version": "1.0.0",
                 "namespace": "bound",
-                "engines": {"ouro": "^0.3.0", "plugin_api": "^5.0.0"},
+                "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
                 "contributes": {
                     "tools": [
                         {
