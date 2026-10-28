@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from itertools import accumulate
+from itertools import accumulate, pairwise
 
-from rich.cells import cell_len, chop_cells
+from rich._wrap import divide_line
+from rich.cells import cell_len, chop_cells, set_cell_size
 from rich.console import Console, ConsoleOptions, JustifyMethod, OverflowMethod
 from rich.containers import Lines
+from rich.control import strip_control_codes
 from rich.measure import Measurement
 from rich.text import Text
 from unicode_segmentation_rs import line_break_units
@@ -37,6 +39,33 @@ def wrap_offsets(text: str, width: int) -> list[int]:
             cells += cell_len(unit)
         position += len(unit)
     return offsets
+
+
+def wrap_plain_lines(source: str, width: int) -> list[str]:
+    """Apply ProseText's wrapping policy to unstyled text without span objects.
+
+    Rich owns ASCII word folding and cell clipping; Unicode prose uses the same
+    break offsets as ProseText. Only tab-bearing lines need Rich's tab expansion.
+    """
+    source = strip_control_codes(source)
+    ascii_source = source.isascii()
+    wrapped: list[str] = []
+    for line in source.split("\n"):
+        if "\t" in line:
+            tabbed = Text(line)
+            tabbed.expand_tabs(8)
+            line = tabbed.plain
+        offsets = divide_line(line, width) if ascii_source else wrap_offsets(line, width)
+        for start, end in pairwise((0, *offsets, len(line))):
+            section = line[start:end]
+            if len(section) > width:
+                excess = min(len(section) - width, len(section) - len(section.rstrip()))
+                if excess:
+                    section = section[:-excess]
+            if cell_len(section) > width:
+                section = set_cell_size(section, width)
+            wrapped.append(section)
+    return wrapped
 
 
 class ProseText(Text):

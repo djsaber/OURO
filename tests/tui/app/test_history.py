@@ -54,7 +54,7 @@ async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
-        conversation.set_reasoning_expanded(True)
+        await conversation.set_reasoning_expanded(True)
         await conversation.load_messages((message,))
         await wait_for_history_render(pilot)
 
@@ -144,7 +144,7 @@ async def test_history_restores_each_model_call_timing_with_one_run_summary(
         assert ("Answer 0" in history.rendered_text) is (not collapse_traces)
         assert "Answer 1" in history.rendered_text
         if collapse_traces:
-            history.toggle_trace(history.entries.index(summaries[0]))
+            await history.toggle_trace(history.entries.index(summaries[0]))
         # Expanding the trace must restore the earlier call's original timing.
         assert history.rendered_text.count("+ Thought • 500ms") == 2
         assert "Answer 0" in history.rendered_text

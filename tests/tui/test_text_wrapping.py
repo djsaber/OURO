@@ -13,12 +13,32 @@ from textual.geometry import Offset
 from ouro.tui.conversation.history_rendering import AssistantTailLines, _MessageContent
 from ouro.tui.markdown import assistant_markdown
 from ouro.tui.text_inputs import TuiTextArea
-from ouro.tui.text_wrapping import ProseText, wrap_offsets
+from ouro.tui.text_wrapping import ProseText, wrap_offsets, wrap_plain_lines
 from ouro.tui.theme import DEFAULT_TUI_THEME
 from ouro.tui.wrapped_document import ProseDocument
 from tests.tui.helpers import resize_terminal
 
 _CHINESE = "资质审核结果中触发的规则其实是模块内部的"
+
+
+@pytest.mark.parametrize("width", [1, 2, 8, 37, 100])
+@pytest.mark.parametrize(
+    "source",
+    [
+        "",
+        "ascii word " * 30,
+        "x" * 301,
+        "\n\n",
+        "  abc   \n     ",
+        "\tEnglish\n 中文\tEnglish 😀\t尾\n",
+        "中文测试标点——数字1-234·f(j)🙂 " * 12,
+        "Combining e\u0301\u0301 👩‍💻" * 10,
+        "a\r\nb\x08c\x1bd",
+    ],
+)
+def test_unstyled_line_preparation_matches_prose_text(source, width):
+    expected = ProseText(source).wrap(Console(), width, overflow="fold", no_wrap=False)
+    assert wrap_plain_lines(source, width) == [line.plain for line in expected]
 
 
 def test_user_message_fills_space_after_number_before_wrapping_chinese() -> None:

@@ -13,6 +13,7 @@ from textual.message import Message
 from textual.timer import Timer
 from textual.widgets import Label
 
+from ouro.tui.conversation.history_models import ReasoningLayout
 from ouro.tui.conversation.history_rendering import ReasoningLines, _reasoning_label_text
 from ouro.tui.selection import RangeSelectionOnly
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
@@ -91,6 +92,9 @@ class ReasoningView(RangeSelectionOnly, Vertical):
     @property
     def text(self) -> str:
         return self._content.text
+
+    async def completed_layout(self) -> ReasoningLayout | None:
+        return await self._content.completed_layout()
 
     @property
     def duration_seconds(self) -> float | None:

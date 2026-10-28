@@ -5,7 +5,7 @@ from threading import Event
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Static
+from textual.widgets import Input, Static
 
 from ouro.application.contracts.execution import RuntimeToolCallActivity
 from ouro.core.messages import MessageRecord, TextContent
@@ -49,6 +49,105 @@ class TraceApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield self.conversation
+
+
+async def test_collapsed_history_prepares_only_visible_entries_and_expands_once(monkeypatch):
+    import ouro.tui.conversation.history as history_module
+
+    rendered = []
+    render = history_module._render_entry_requests
+
+    def record(requests, **kwargs):
+        rendered.extend(request.entry_index for request in requests)
+        return render(requests, **kwargs)
+
+    monkeypatch.setattr(history_module, "_render_entry_requests", record)
+    app = TraceApp()
+    async with app.run_test(size=(80, 24)):
+        history = app.query_one(ConversationHistory)
+        await history.load(trace_entries())
+        assert set(rendered) == {0, 4, 5, 6, 7}
+        assert not {1, 2, 3}.intersection(history._piece_indexes_by_entry)
+        rendered.clear()
+        await history.toggle_trace(7)
+        assert set(rendered) == {1, 2, 3, 7}
+        expanded = history.rendered_text
+        rendered.clear()
+        await history.toggle_trace(7)
+        await history.toggle_trace(7)
+        assert set(rendered) == {7}
+        assert history.rendered_text == expanded
+
+
+async def test_cached_collapsed_history_can_restore_with_expanded_default():
+    app = TraceApp()
+    async with app.run_test(size=(80, 24)):
+        history = app.query_one(ConversationHistory)
+        entries = trace_entries()
+        await history.load(entries)
+        state = history.take_state()
+        await history.load(trace_entries("other"))
+        await app.conversation.set_collapse_traces(False)
+        await history.load(entries, reusable_state=state)
+        assert "Earlier thought" in history.rendered_text
+        assert "Investigating" in history.rendered_text
+
+
+@pytest.mark.parametrize("disclosure", ["trace", "reasoning"])
+async def test_first_disclosure_keeps_old_frame_and_accepts_input(disclosure, monkeypatch):
+    import ouro.tui.conversation.history as history_module
+
+    app = TraceApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        history = app.query_one(ConversationHistory)
+        field = Input()
+        await app.mount(field)
+        field.focus()
+        if disclosure == "trace":
+            await history.load(trace_entries())
+        else:
+            await app.conversation.set_reasoning_expanded(False)
+            await history.load(
+                (TranscriptEntry(kind="assistant", reasoning="long thought " * 4000),)
+            )
+        old_lines = list(history.lines)
+        entered, release = Event(), Event()
+        render = history_module._render_entry_requests
+
+        def held(requests, **kwargs):
+            entered.set()
+            assert release.wait(10)
+            return render(requests, **kwargs)
+
+        monkeypatch.setattr(history_module, "_render_entry_requests", held)
+        change = asyncio.create_task(
+            history.toggle_trace(7) if disclosure == "trace" else history.toggle_reasoning(0)
+        )
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            await pilot.press("x")
+            assert field.value == "x"
+            assert history.lines == old_lines
+        finally:
+            release.set()
+            await change
+        assert history.lines != old_lines
+
+
+async def test_new_run_classifies_only_its_own_trace(monkeypatch):
+    app = TraceApp()
+    async with app.run_test(size=(80, 24)):
+        history = app.query_one(ConversationHistory)
+        await history.load(trace_entries("old"))
+
+        def unexpected_rebuild():
+            raise AssertionError("a new Run must not rescan settled history")
+
+        monkeypatch.setattr(history, "_refresh_traces", unexpected_rebuild)
+        history.append_many(trace_entries("new"))
+        await history.wait_until_rendered()
+        assert set(history._trace_summary_indexes) == {"old", "new"}
+        assert history._trace_run_by_entry[9] == "new"
 
 
 def trace_entries(run_id="run", *, status="completed", final=True):
@@ -96,7 +195,7 @@ async def test_live_trace_collapses_only_at_summary_and_retains_final_thinking(s
     app = TraceApp(collapsed=collapsed)
     async with app.run_test(size=(80, 24)):
         history = app.query_one(ConversationHistory)
-        app.conversation.set_reasoning_expanded(True)
+        await app.conversation.set_reasoning_expanded(True)
         entries = trace_entries(status=status)
         history.append_many(entries[:-1])
         await history.wait_until_rendered()
@@ -137,7 +236,7 @@ async def test_runs_without_a_final_text_or_without_trace_cannot_collapse(ending
             entries = [entries[0], *entries[4:]]
         await history.load(entries)
         before = history.rendered_text
-        history.toggle_trace(len(entries) - 1)
+        await history.toggle_trace(len(entries) - 1)
         assert history.rendered_text == before
         assert not any(
             "ouro_trace_entry" in segment.style.meta
@@ -153,7 +252,7 @@ async def test_trace_toggle_reuses_markdown_and_hidden_tool_updates_stay_hidden(
         history = app.query_one(ConversationHistory)
         entries = trace_entries()
         await history.load(entries)
-        answer_strips = history._pieces[history._piece_indexes_by_entry[5][0]].strips
+        answer_rows = history._pieces[history._piece_indexes_by_entry[5][0]].rows
 
         def reject_markdown(*args, **kwargs):
             raise AssertionError("Trace toggle must reuse Markdown strips")
@@ -162,11 +261,11 @@ async def test_trace_toggle_reuses_markdown_and_hidden_tool_updates_stay_hidden(
         tool = entries[3].tool.model_copy(update={"status": "failed"})
         history.update_tools((tool,), run_id="run")
         assert "Read" not in history.rendered_text
-        history.toggle_trace(7)
+        await history.toggle_trace(7)
         assert "Investigating" in history.rendered_text
         assert "Read" in history.rendered_text
-        assert history._pieces[history._piece_indexes_by_entry[5][0]].strips is answer_strips
-        history.toggle_trace(7)
+        assert history._pieces[history._piece_indexes_by_entry[5][0]].rows is answer_rows
+        await history.toggle_trace(7)
         assert "Investigating" not in history.rendered_text
 
 
@@ -214,18 +313,18 @@ async def test_final_thinking_disclosure_remains_independent_of_trace():
     app = TraceApp()
     async with app.run_test(size=(80, 24)):
         history = app.query_one(ConversationHistory)
-        app.conversation.set_reasoning_expanded(False)
+        await app.conversation.set_reasoning_expanded(False)
         await history.load(trace_entries())
         assert "Thought" in history.rendered_text
         assert "Final thought" not in history.rendered_text
-        history.toggle_reasoning(4)
+        await history.toggle_reasoning(4)
         assert "Final thought" in history.rendered_text
         assert "Earlier thought" not in history.rendered_text
-        history.toggle_trace(7)
+        await history.toggle_trace(7)
         assert "Final thought" in history.rendered_text
         assert "Earlier thought" not in history.rendered_text
-        history.toggle_reasoning(1)
-        history.toggle_trace(7)
+        await history.toggle_reasoning(1)
+        await history.toggle_trace(7)
         assert "Earlier thought" not in history.rendered_text
         assert "Final thought" in history.rendered_text
 
@@ -236,7 +335,7 @@ async def test_trace_choices_survive_session_cache_resize_theme_and_prepend():
         history = app.query_one(ConversationHistory)
         entries = trace_entries()
         await history.load(entries)
-        history.toggle_trace(7)
+        await history.toggle_trace(7)
         state = history.take_state()
         await history.load(trace_entries("other"))
         assert "Investigating" not in history.rendered_text
@@ -250,9 +349,9 @@ async def test_trace_choices_survive_session_cache_resize_theme_and_prepend():
         history.prepend(trace_entries("older"))
         await history.wait_until_rendered()
         assert history.rendered_text.count("Investigating") == 1
-        history.toggle_trace(15)
+        await history.toggle_trace(15)
         assert "Investigating" not in history.rendered_text
-        app.conversation.set_collapse_traces(False)
+        await app.conversation.set_collapse_traces(False)
         # Explicit choices stay local; the default applies to untouched Runs.
         assert history.rendered_text.count("Investigating") == 1
 
@@ -273,7 +372,7 @@ async def test_prepend_adds_disclosure_to_previously_answer_only_run():
             for segment in line
             if segment.style
         )
-        history.toggle_trace(7)
+        await history.toggle_trace(7)
         assert "Investigating" in history.rendered_text
         assert "Final answer" in history.rendered_text
 
@@ -436,7 +535,7 @@ async def test_canonical_trace_projection_is_shared_by_all_session_kinds(tmp_pat
             for index, entry in enumerate(history.entries)
             if entry.kind == "run" and entry.run_id == run_id
         )
-        history.toggle_trace(summary_index)
+        await history.toggle_trace(summary_index)
         assert "Investigating" in history.rendered_text
         assert "Earlier thought" in history.rendered_text
 

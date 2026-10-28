@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 
 from ouro.application.contracts.execution import RuntimeToolCallActivity
 from ouro.core.compaction import CompactionRecord
@@ -249,9 +250,14 @@ def project_transcript_entries(
 
     transcript: list[TranscriptEntry] = []
     for message_index, entries in enumerate(message_entries):
-        transcript.extend(entries)
-        transcript.extend(run_entries.get(message_index, ()))
-        transcript.extend(compaction_entries.get(message_index, ()))
+        transcript.extend(
+            replace(entry, source_sequence=materialized[message_index].sequence)
+            for entry in (
+                *entries,
+                *run_entries.get(message_index, ()),
+                *compaction_entries.get(message_index, ()),
+            )
+        )
     return tuple(transcript), frozenset(presented_run_ids)
 
 

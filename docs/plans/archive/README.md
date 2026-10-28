@@ -5,6 +5,7 @@
 
 | 日期 | 记录 |
 |---|---|
+| 2026-10-29 | [TUI 性能改进计划](2026-10-29-tui-performance.md) |
 | 2026-10-26 | [会话数据与执行管线：设计与验收](2026-10-26-session-data-implementation.md) |
 | 2026-10-23 | [文档体系审查与整理](2026-10-23-documentation-review.md) |
 | 2026-10-23 | [会话协作功能实施与阶段验证](2026-10-23-session-observation.md)；剩余终端与性能验收见[当前计划](../session-observation.md) |

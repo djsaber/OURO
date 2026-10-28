@@ -401,3 +401,21 @@ Draft 实验固定输出字节数，分别拆成 10/1,000/100,000 片，使用�
 报告 Python 分配峰值、活动 Draft、终结后文件与事件、两后端原生数据库的分配/空闲页；
 Draft 内容字节按原生 content 列计数，文件总量包含数据库开销；采样 WAL 不代表峰值。
 不含 Provider/Tool 时间，不清 OS 缓存；tracemalloc 耗时不能当作端到端延迟。
+
+## TUI 会话进入与展开
+
+```powershell
+uv run --frozen --extra themes python -B -X utf8 -m dev.benchmarks.tui_sessions --messages 1000 10000 --repeat 3
+uv run --frozen --extra themes python -B -X utf8 -m dev.benchmarks.tui_history --snapshot <observation.json> --repeat 3
+```
+
+`tui_sessions` 使用临时 Files home、离线 Provider 和真实 OuroTuiApp。进入前保持 Run 运行，恢复 48,070 字符思考
+及开放答案尾部；分别测主页进入、补两页后经主页重进、后续实时分片。报告安装、输入响应、历史帧、草稿帧、
+最大事件循环延迟、投影消息数及布局缓存命中。`--reasoning-chars` 控制草稿大小，`--workdir` 指定临时目录的父目录。
+不计种子构造、应用启动和清理；按键计时从 Textual Key 入队到 Composer 内容改变，不包含物理键盘／终端传输。
+
+`tui_history` 只读取当前格式的 SessionObservationSnapshot JSON，不访问或修改会话目录。
+测冷／热历史、最大轨迹首次／再次展开、最长思考首次／再次展开及流式输出转历史；
+`--strips-output <path>` 可保存首轮文字、样式和交互 metadata 以对照布局。该输出包含会话内容，应留在本地。
+JSONL 保留每轮原始值；不清 OS 缓存。headless 刷新确认不等于真实终端 paint，三个样本不能证明 p95/p99。
+设计与测量结果见 [TUI 性能改进计划](../../docs/plans/archive/2026-10-29-tui-performance.md)。

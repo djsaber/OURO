@@ -6,36 +6,34 @@ import asyncio
 from collections.abc import Iterable
 from dataclasses import replace
 
-from rich.console import RenderableType
 from rich.segment import Segment
 from rich.style import Style
 from textual import events
+from textual.cache import LRUCache
 from textual.events import Resize
 from textual.geometry import Size
 from textual.message import Message
+from textual.scroll_view import ScrollView
 from textual.selection import Selection
 from textual.strip import Strip
-from textual.widgets import RichLog
-from textual.worker import Worker
 
 from ouro.application.contracts.agents import AgentTreeNode
 from ouro.application.contracts.execution import RuntimeToolCallActivity
 from ouro.tui.conversation.history_models import (
     ConversationHistoryState,
+    HistoryLine,
+    PreparedLine,
+    ReasoningLayout,
     ToolActivityRenderer,
     TranscriptEntry,
     TranscriptEntryKind,
     _EntryRenderRequest,
     _Piece,
-    _PieceTag,
     _RenderedEntry,
 )
 from ouro.tui.conversation.history_rendering import (
     _apply_selection_style,
-    _entry_renderables,
-    _reasoning_area,
     _render_entry_requests,
-    _render_strips_at_width,
 )
 from ouro.tui.conversation.markdown_stream import _BACKGROUND_MARKDOWN_CHARS
 from ouro.tui.conversation.messages import (
@@ -56,8 +54,11 @@ def _shift_piece_indexes(pieces: list[_Piece], offset: int) -> None:
     """Retain rendered text while moving its click targets to new entry indexes."""
     for piece in pieces:
         piece.entry_index += offset
-        shifted: list[Strip] = []
-        for strip in piece.strips:
+        shifted: list[HistoryLine] = []
+        for strip in piece.rows:
+            if isinstance(strip, PreparedLine):
+                shifted.append(strip)
+                continue
             segments: list[Segment] = []
             changed = False
             for segment in strip:
@@ -82,18 +83,24 @@ def _shift_piece_indexes(pieces: list[_Piece], offset: int) -> None:
                         changed = True
                 segments.append(segment)
             shifted.append(Strip(segments, strip.cell_length) if changed else strip)
-        piece.strips = shifted
+        piece.rows = shifted
 
 
-class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
+class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
     """Line-buffered rendering for immutable persisted conversation history.
 
-    Every entry renders into ``_Piece`` strip spans exactly once — blocks
-    frozen mid-stream and whole reloaded messages share the same buffer, so
-    streaming and finished output cannot drift apart. Toggling reasoning
-    visibility only filters which pieces contribute lines; completed content is
-    never re-rendered for a visibility change. Live output remains in regular
-    widgets below this buffer because it is still mutable.
+    Logical entries own visibility before rendering. Only visible entries need
+    row geometry; expanding a trace fills its missing rows through the same
+    render owner used by loading, streaming and reflow. Compatible rows survive
+    visibility changes. Mutable output remains in the live widgets below.
+    """
+
+    DEFAULT_CSS = """
+    ConversationHistory {
+        background: $surface;
+        color: $foreground;
+        overflow-y: scroll;
+    }
     """
 
     class ToggleReasoningRequested(Message):
@@ -119,12 +126,11 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         reasoning_expanded: bool = True,
         collapse_traces: bool = True,
     ) -> None:
-        super().__init__(
-            id="conversation-history",
-            wrap=True,
-            min_width=1,
-            auto_scroll=False,
-        )
+        super().__init__(id="conversation-history")
+        self.lines: list[HistoryLine] = []
+        self._line_cache: LRUCache[tuple[int, int, int], Strip] = LRUCache(1024)
+        self._widest_line_width = 0
+        self._size_known = False
         self.display = False
         self._render_tool = render_tool
         self._entries: list[TranscriptEntry] = []
@@ -140,7 +146,10 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._trace_collapsed_by_run: dict[str, bool] = {}
         self._trace_run_by_entry: dict[int, str] = {}
         self._trace_summary_indexes: dict[str, int] = {}
-        self._rendered_trace_runs: set[str] = set()
+        self._open_trace_entries: dict[str, list[int]] = {}
+        self._visibility_pending = False
+        self._prepared_reasoning: dict[int, ReasoningLayout] = {}
+        self._pending_history_state: ConversationHistoryState | None = None
         self._trace_visibility_dirty = False
         self._hovered_trace_entry_index: int | None = None
         self._hovered_message_entry_index: int | None = None
@@ -152,21 +161,31 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._render_theme: TuiTheme | None = None
         self._content_revision = 0
         self._full_render_pending = False
-        self._theme_render_revision = 0
-        self._theme_render_active = False
-        self._theme_render_idle = asyncio.Event()
-        self._theme_render_idle.set()
+        self._render_revision = 0
+        self._render_active = False
+        self._render_idle = asyncio.Event()
+        self._render_idle.set()
 
     @property
     def entries(self) -> tuple[TranscriptEntry, ...]:
         return tuple(self._entries)
 
     @property
+    def last_entry_kind(self) -> TranscriptEntryKind | None:
+        return self._entries[-1].kind if self._entries else None
+
+    @property
+    def content_revision(self) -> int:
+        return self._content_revision
+
+    @property
     def render_complete(self) -> bool:
         return (
             self._rendered_count == len(self._entries)
             and not self._prefix_pending
-            and not self._theme_render_active
+            and not self._render_active
+            and not self._visibility_pending
+            and not self._full_render_pending
         )
 
     def on_conversation_history_prefix_rendered(self, message: PrefixRendered) -> None:
@@ -191,11 +210,22 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
     def render_line(self, y: int) -> Strip:
         """Render one line with source offsets and any active selection.
 
-        RichLog emits styled line segments without Textual's source-offset metadata,
-        so the Screen cannot otherwise translate a drag gesture into text offsets.
+        Prepared rows acquire Textual caches only when visible. Source offsets
+        let Screen translate a drag gesture into text offsets.
         """
-        line = super().render_line(y)
         source_y = self.scroll_offset.y + y
+        width = self.scrollable_content_region.width
+        if source_y >= len(self.lines):
+            return Strip.blank(width, self.rich_style)
+        key = source_y, self.scroll_offset.x, width
+        if key in self._line_cache:
+            line = self._line_cache[key]
+        else:
+            row = self.lines[source_y]
+            line = row.to_strip() if isinstance(row, PreparedLine) else row
+            line = line.crop_extend(key[1], key[1] + width, self.rich_style)
+            self._line_cache[key] = line
+        line = line.apply_style(self.rich_style)
         selection = self.text_selection
         if selection is not None and (span := selection.get_span(source_y)) is not None:
             line = _apply_selection_style(
@@ -204,6 +234,13 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                 self.screen.get_component_rich_style("screen--selection", partial=True),
             )
         return line.apply_offsets(0, source_y)
+
+    def notify_style_update(self) -> None:
+        super().notify_style_update()
+        self._line_cache.clear()
+
+    def get_content_width(self, container: Size, viewport: Size) -> int:
+        return self.virtual_size.width if self._size_known else container.width
 
     def on_click(self, event: events.Click) -> None:
         if event.button != 1 or event.style is None:
@@ -339,6 +376,8 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._rendered_count = 0
         self._prefix_pending = 0
         self._entries = []
+        self._prepared_reasoning.clear()
+        self._pending_history_state = None
         self._pieces = []
         self._piece_line_starts = []
         self._piece_indexes_by_entry = {}
@@ -351,7 +390,8 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._trace_collapsed_by_run = {}
         self._trace_run_by_entry = {}
         self._trace_summary_indexes = {}
-        self._rendered_trace_runs = set()
+        self._open_trace_entries = {}
+        self._visibility_pending = False
         self._line_cache.clear()
         self.virtual_size = Size(0, 0)
         self.display = False
@@ -364,9 +404,12 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         reusable_state: ConversationHistoryState | None = None,
         wait_for_render: bool = True,
     ) -> None:
-        """Install canonical entries; the render owner fills their strip buffer."""
+        """Install canonical entries; the render owner prepares their row geometry."""
         self._content_revision += 1
         self._prefix_pending = 0
+        self._prepared_reasoning.clear()
+        self._pending_history_state = None
+        self._visibility_pending = False
         self._render_failed = False
         self._hovered_message_entry_index = None
         self._hovered_tool_entry_index = None
@@ -380,10 +423,16 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         if rendered is None:
             self._reasoning_expanded_by_entry.clear()
             self._reset_buffer(materialized)
+            if not self._size_known or self.scrollable_content_region.width <= 0:
+                self._pending_history_state = reusable_state
         else:
             self._rendered_count = rendered
         self._full_render_pending = False
-        if self._rendered_count < len(self._entries):
+        self._visibility_pending = rendered is not None and any(
+            self._entry_needs_render(index) and not self._trace_entry_hidden(index)
+            for index in range(self._rendered_count)
+        )
+        if self._rendered_count < len(self._entries) or self._visibility_pending:
             self._schedule_buffer_render(rebuild=False)
         if wait_for_render:
             await self.wait_until_rendered()
@@ -415,11 +464,6 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self._entries = state.entries
         self._refresh_traces()
         self._pieces = state.pieces
-        self._rendered_trace_runs = {
-            entry.run_id
-            for entry in state.entries[: state.rendered_count]
-            if entry.kind == "run" and entry.run_id is not None
-        }
         self._piece_line_starts = state.piece_line_starts
         self._piece_indexes_by_entry = state.piece_indexes_by_entry
         self._user_lines = state.user_lines
@@ -493,9 +537,11 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             return cached.run_id == current.run_id
         return cached == current
 
-    def _write_entries(self, start: int, stop: int) -> int:
-        """Render entries[start:stop] into pieces; returns the next index."""
+    def _write_entries(self, start: int, stop: int) -> None:
+        """Prepare visible entries[start:stop] and publish their geometry."""
         for index in range(start, stop):
+            if self._trace_entry_hidden(index):
+                continue
             entry = self._entries[index]
             previous_kind = self._entries[index - 1].kind if index > 0 else None
             self._write_entry(
@@ -505,15 +551,17 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                 sync_size=False,
             )
         self._sync_virtual_size()
-        return stop
 
     def append(
         self,
         entry: TranscriptEntry,
         *,
         reasoning_expanded: bool | None = None,
+        reasoning_layout: ReasoningLayout | None = None,
     ) -> None:
-        self._register_entry(entry, reasoning_expanded=reasoning_expanded)
+        index = self._register_entry(entry, reasoning_expanded=reasoning_expanded)
+        if reasoning_layout is not None:
+            self._prepared_reasoning[index] = reasoning_layout
         self._render_append()
 
     def append_many(self, entries: Iterable[TranscriptEntry]) -> None:
@@ -535,8 +583,16 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         ):
             self._set_hovered_entry(attribute, None)
         offset = len(entries)
+        self._prepared_reasoning = {
+            index + offset: layout for index, layout in self._prepared_reasoning.items()
+        }
         previous_traces = set(self._trace_summary_indexes)
         self._entries = [*entries, *self._entries]
+        self._tool_entry_indexes = {
+            (entry.run_id, entry.tool.batch_id, entry.tool.tool_call_id): index
+            for index, entry in enumerate(self._entries)
+            if entry.tool is not None
+        }
         self._refresh_traces()
         self._reasoning_expanded_by_entry = {
             index + offset: expanded
@@ -560,7 +616,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self.display = bool(self._entries)
         remaining = tuple(self._entries[self._rendered_count :])
         if (
-            not self._theme_render_active
+            not self._render_active
             and not self._prefix_pending
             and self._size_known
             and self.scrollable_content_region.width > 0
@@ -581,8 +637,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
     ) -> int:
         entry_index = len(self._entries)
         self._entries.append(entry)
-        if entry.kind == "run":
-            self._refresh_traces()
+        self._track_trace_entry(entry_index, entry)
         if entry.tool is not None:
             self._tool_entry_indexes[
                 (entry.run_id, entry.tool.batch_id, entry.tool.tool_call_id)
@@ -601,17 +656,21 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             return True
         if any(entry.tool is not None for entry in entries):
             return True
-        return sum(len(entry.text) for entry in entries) >= _BACKGROUND_MARKDOWN_CHARS
+        return sum(len(entry.text) + len(entry.reasoning) for entry in entries) >= (
+            _BACKGROUND_MARKDOWN_CHARS
+        )
 
     async def wait_until_rendered(self) -> None:
         """Wait for this content's pending layout, without owning its lifetime."""
-        for _attempt in range(4):
+        while self.is_mounted and not self._render_failed:
             if self.render_complete:
                 return
             self._schedule_buffer_render(rebuild=False)
-            await self._theme_render_idle.wait()
+            await self._render_idle.wait()
             if self.render_complete:
                 return
+            if not self.is_mounted or self._render_failed:
+                break
             await self.wait_for_refresh()
         raise RuntimeError("Session history layout did not complete")
 
@@ -633,12 +692,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             entry = self._entries[index]
             matched.add(tool.tool_call_id)
             if entry.tool != tool:
-                self._entries[index] = TranscriptEntry(
-                    kind="tool",
-                    run_id=entry.run_id,
-                    tool=tool,
-                    agent=entry.agent,
-                )
+                self._entries[index] = replace(entry, tool=tool)
                 changed_indexes.append(index)
         if changed_indexes:
             if not all(self._rerender_entry(index) for index in changed_indexes):
@@ -658,12 +712,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             entry = self._entries[index]
             if entry.agent == agent:
                 continue
-            self._entries[index] = TranscriptEntry(
-                kind="tool",
-                run_id=entry.run_id,
-                tool=entry.tool,
-                agent=agent,
-            )
+            self._entries[index] = replace(entry, agent=agent)
             changed_indexes.append(index)
         if changed_indexes:
             if not all(self._rerender_entry(index) for index in changed_indexes):
@@ -677,26 +726,21 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         """Coalesce theme and geometry changes through the same render owner."""
 
         if rebuild:
-            self._theme_render_revision += 1
-            self._full_render_pending = True
-        if (
-            not self._entries
-            or not self.is_mounted
-            or self._theme_render_active
-            or self._render_failed
-        ):
+            self._render_revision += 1
+            self._full_render_pending = bool(self._entries)
+        if not self._entries or not self.is_mounted or self._render_active or self._render_failed:
             return
-        self._theme_render_active = True
-        self._theme_render_idle.clear()
-        _worker: Worker[None] = self.run_worker(
-            self._refresh_buffer_async,
-            group="conversation-history-theme",
+        self._render_active = True
+        self._render_idle.clear()
+        self.run_worker(
+            self._refresh_buffer_async(),
+            group="conversation-history",
         )
 
     async def wait_for_theme_refresh(self) -> None:
         """Wait until the latest coalesced theme render reaches the visible buffer."""
 
-        await self._theme_render_idle.wait()
+        await self._render_idle.wait()
 
     async def _refresh_buffer_async(self) -> None:
         """Own cold, incremental, theme and geometry rendering in one worker."""
@@ -705,15 +749,25 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                 width = self.scrollable_content_region.width
                 if width <= 0 or not self._size_known:
                     return
-                revision = self._content_revision, self._theme_render_revision
+                if self._pending_history_state is not None:
+                    state, self._pending_history_state = self._pending_history_state, None
+                    restored = self._restore_state(state, self._entries)
+                    if restored is not None:
+                        self._rendered_count = restored
+                        self._visibility_pending = any(
+                            self._entry_needs_render(index) and not self._trace_entry_hidden(index)
+                            for index in range(restored)
+                        )
+                revision = self._content_revision, self._render_revision
                 rebuild = self._full_render_pending or (
                     self._rendered_count > 0 and width != self._render_width
                 )
                 prefix = self._prefix_pending
-                start = 0 if rebuild or prefix else self._rendered_count
+                visibility = self._visibility_pending
+                start = 0 if rebuild or prefix or visibility else self._rendered_count
                 stop = (
                     min(prefix + 1, self._rendered_count)
-                    if prefix and not rebuild
+                    if prefix and not rebuild and not visibility
                     else len(self._entries)
                 )
                 if start == stop:
@@ -722,6 +776,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                     tuple(self._entries[start:stop]),
                     start_index=start,
                     previous_kind=self._entries[start - 1].kind if start else None,
+                    missing_only=visibility and not rebuild and not prefix,
                 )
                 console = self.app.console
                 try:
@@ -736,16 +791,16 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                                 requests[offset : offset + _LOAD_CHUNK_ENTRIES],
                                 render_tool=self._render_tool,
                                 console=console,
-                                options=console.options.update_width(max(width, self.min_width)),
+                                options=console.options.update_width(max(width, 1)),
                             )
                         )
                         if (
-                            revision != (self._content_revision, self._theme_render_revision)
+                            revision != (self._content_revision, self._render_revision)
                             or self.scrollable_content_region.width != width
                         ):
                             break
                 except Exception as exc:  # noqa: BLE001 - isolate this history renderer.
-                    if revision != (self._content_revision, self._theme_render_revision):
+                    if revision != (self._content_revision, self._render_revision):
                         continue
                     self._render_failed = True
                     self.notify(
@@ -755,24 +810,54 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                     )
                     return
                 if (
-                    revision != (self._content_revision, self._theme_render_revision)
+                    revision != (self._content_revision, self._render_revision)
                     or self.scrollable_content_region.width != width
                     or requests
                     != self._render_requests(
                         tuple(self._entries[start:stop]),
                         start_index=start,
                         previous_kind=self._entries[start - 1].kind if start else None,
+                        missing_only=visibility and not rebuild and not prefix,
                     )
                 ):
                     continue
                 if rebuild:
                     self._reset_buffer(self._entries)
-                if prefix and not rebuild:
+                if visibility and not rebuild and not prefix:
+                    changed = {entry.entry_index for entry in rendered}
+                    self._pieces = sorted(
+                        [
+                            *(piece for piece in self._pieces if piece.entry_index not in changed),
+                            *(
+                                _Piece(
+                                    rows,
+                                    tag,
+                                    entry.entry_index,
+                                    entry.reasoning_layout,
+                                    entry.reasoning_expanded,
+                                    entry.trace_collapsed,
+                                )
+                                for entry in rendered
+                                for rows, tag in entry.pieces
+                            ),
+                        ],
+                        key=lambda piece: piece.entry_index,
+                    )
+                    self._rebuild_lines()
+                    self._rendered_count = stop
+                elif prefix and not rebuild:
                     self._pieces = [
                         *(
-                            _Piece(strips=strips, tag=tag, entry_index=entry.entry_index)
+                            _Piece(
+                                rows,
+                                tag,
+                                entry.entry_index,
+                                entry.reasoning_layout,
+                                entry.reasoning_expanded,
+                                entry.trace_collapsed,
+                            )
                             for entry in rendered
-                            for strips, tag in entry.pieces
+                            for rows, tag in entry.pieces
                         ),
                         *(piece for piece in self._pieces if piece.entry_index >= stop),
                     ]
@@ -782,50 +867,32 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                     self._rendered_count = stop
                 if prefix:
                     self._prefix_pending = 0
-                    first = self._piece_indexes_by_entry.get(prefix)
-                    delta = self._piece_line_starts[first[0]] if first else len(self.lines)
+                    delta = self.entry_line(prefix)
                     self.post_message(self.PrefixRendered(delta, self._content_revision))
                 self._render_width = width
-                self._render_theme = requests[0].theme
+                self._render_theme = theme_for(self)
                 self._full_render_pending = False
+                self._visibility_pending = False
+                for entry in rendered:
+                    self._prepared_reasoning.pop(entry.entry_index, None)
                 self.refresh(layout=True)
                 if stop < len(self._entries):
                     await self.wait_for_refresh()
         finally:
-            self._theme_render_active = False
-            self._theme_render_idle.set()
+            self._render_active = False
+            self._render_idle.set()
 
-    def set_reasoning_expanded(self, expanded: bool, *, above_line: int) -> int:
-        """Switch reasoning pieces between their collapsed and expanded variants.
-
-        Only reasoning pieces re-render — a plain-text render bounded by each
-        block; every other piece's strips are reused verbatim. Returns the net
-        line delta at indexes below ``above_line`` so the caller can keep the
-        viewport anchored over unchanged content.
-        """
+    async def set_reasoning_expanded(self, expanded: bool, *, above_line: int) -> int:
+        """Prepare changed reasoning bodies once, preserving the review anchor."""
         if self._reasoning_expanded == expanded and not self._reasoning_expanded_by_entry:
             return 0
+        before = self._height_before(above_line)
         self._reasoning_expanded = expanded
         self._reasoning_expanded_by_entry.clear()
-        delta = 0
-        position = 0
-        changed = False
-        for piece in self._pieces:
-            visible = not self._trace_entry_hidden(piece.entry_index)
-            old_length = len(piece.strips)
-            if piece.tag == "reasoning":
-                new_strips = self._render_reasoning_piece(piece, expanded=expanded)
-                if visible and position < above_line:
-                    delta += len(new_strips) - len(piece.strips)
-                piece.strips = new_strips
-                changed = True
-            if visible:
-                position += old_length
-        if changed:
-            self._rebuild_lines()
-        return delta
+        await self._apply_visibility()
+        return self._height_at_boundary(before[1]) - before[0]
 
-    def toggle_reasoning(self, entry_index: int) -> None:
+    async def toggle_reasoning(self, entry_index: int) -> None:
         """Toggle one reasoning entry without changing the global display default."""
         if not (0 <= entry_index < len(self._entries)):
             return
@@ -837,12 +904,7 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             self._reasoning_expanded_by_entry.pop(entry_index, None)
         else:
             self._reasoning_expanded_by_entry[entry_index] = expanded
-        for piece in self._pieces:
-            if piece.tag != "reasoning" or piece.entry_index != entry_index:
-                continue
-            piece.strips = self._render_reasoning_piece(piece, expanded=expanded)
-            self._rebuild_lines()
-            return
+        await self._apply_visibility()
 
     def is_reasoning_expanded(self, entry_index: int) -> bool:
         """Return whether a reasoning entry is currently expanded."""
@@ -851,23 +913,10 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             self._reasoning_expanded,
         )
 
-    def _render_reasoning_piece(self, piece: _Piece, *, expanded: bool) -> list[Strip]:
-        entry_index = piece.entry_index
-        entry = self._entries[entry_index]
-        top = 1 if (entry_index > 0 and self._entries[entry_index - 1].kind == "tool") else 0
-        renderable, _tag = _reasoning_area(
-            entry,
-            entry_index=entry_index,
-            expanded=expanded,
-            top=top,
-            theme=theme_for(self),
-            highlighted=self._hovered_reasoning_entry_index == entry_index,
-        )
-        return self._render_strips(renderable)
-
     def on_resize(self, event: Resize) -> None:
         size_was_known = self._size_known
-        super().on_resize(event)
+        if event.size.width:
+            self._size_known = True
         width = self.scrollable_content_region.width
         if (
             self._entries
@@ -883,15 +932,18 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             )
 
     def _reset_buffer(self, entries: list[TranscriptEntry]) -> bool:
-        """Reset the strip buffer for a full replacement; True when width is known."""
+        """Reset prepared rows for a full replacement; True when width is known."""
         self._content_revision += 1
         self._rendered_count = 0
         self._prefix_pending = 0
         self._render_failed = False
+        self._full_render_pending = False
         self._entries = entries
         self._refresh_traces()
         self._pieces.clear()
-        self._rendered_trace_runs.clear()
+        self._prepared_reasoning.clear()
+        self._pending_history_state = None
+        self._visibility_pending = False
         self._piece_line_starts.clear()
         self._piece_indexes_by_entry.clear()
         self._tool_entry_indexes = {
@@ -930,16 +982,8 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         entry_index: int,
         sync_size: bool = True,
     ) -> None:
-        pieces = tuple(
-            (self._render_strips(renderable), tag)
-            for renderable, tag in self._entry_pieces(
-                entry,
-                previous_kind=previous_kind,
-                entry_index=entry_index,
-            )
-        )
         self._append_rendered_entry(
-            _RenderedEntry(entry_index=entry_index, pieces=pieces),
+            self._render_one(entry, previous_kind=previous_kind, entry_index=entry_index),
             sync_size=sync_size,
         )
 
@@ -954,22 +998,21 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         *,
         sync_size: bool,
     ) -> None:
-        entry = self._entries[rendered.entry_index]
-        if entry.kind == "run" and entry.run_id in self._trace_summary_indexes:
-            assert entry.run_id is not None
-            self._rendered_trace_runs.add(entry.run_id)
-            self._trace_visibility_dirty = True
-        for strips, tag in rendered.pieces:
+        self._prepared_reasoning.pop(rendered.entry_index, None)
+        for rows, tag in rendered.pieces:
             if tag == "user":
                 self._user_lines.append(len(self.lines))
             self._piece_line_starts.append(len(self.lines))
             if not self._trace_entry_hidden(rendered.entry_index):
-                self._append_strips(strips)
+                self._append_rows(rows)
             self._pieces.append(
                 _Piece(
-                    strips=strips,
+                    rows=rows,
                     tag=tag,
                     entry_index=rendered.entry_index,
+                    reasoning_layout=rendered.reasoning_layout,
+                    reasoning_expanded=rendered.reasoning_expanded,
+                    trace_collapsed=rendered.trace_collapsed,
                 )
             )
             self._piece_indexes_by_entry.setdefault(rendered.entry_index, []).append(
@@ -981,28 +1024,32 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
     def _rerender_entry(self, entry_index: int) -> bool:
         piece_indexes = self._piece_indexes_by_entry.get(entry_index)
         if not piece_indexes:
-            return False
+            return self._trace_entry_hidden(entry_index)
         entry = self._entries[entry_index]
+        if entry.reasoning and self._visibility_pending and self._entry_needs_render(entry_index):
+            return False
         previous_kind = self._entries[entry_index - 1].kind if entry_index > 0 else None
-        renderables = self._entry_pieces(
+        rendered = self._render_one(
             entry,
             previous_kind=previous_kind,
             entry_index=entry_index,
         )
-        if len(renderables) != len(piece_indexes):
+        if len(rendered.pieces) != len(piece_indexes):
             return False
-        for piece_index, (renderable, tag) in zip(piece_indexes, renderables, strict=True):
+        for piece_index, (new_rows, tag) in zip(piece_indexes, rendered.pieces, strict=True):
             piece = self._pieces[piece_index]
-            old_length = len(piece.strips)
+            piece.reasoning_layout = rendered.reasoning_layout
+            piece.reasoning_expanded = rendered.reasoning_expanded
+            piece.trace_collapsed = rendered.trace_collapsed
+            old_length = len(piece.rows)
             start = self._piece_line_starts[piece_index]
-            new_strips = self._render_strips(renderable)
             if self._trace_entry_hidden(entry_index):
-                piece.strips = new_strips
+                piece.rows = new_rows
                 piece.tag = tag
                 continue
-            self.lines[start : start + old_length] = new_strips
-            delta = len(new_strips) - old_length
-            piece.strips = new_strips
+            self.lines[start : start + old_length] = new_rows
+            delta = len(new_rows) - old_length
+            piece.rows = new_rows
             piece.tag = tag
             if delta:
                 for later in range(piece_index + 1, len(self._piece_line_starts)):
@@ -1013,26 +1060,33 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                 ]
             self._widest_line_width = max(
                 self._widest_line_width,
-                new_strips[0].cell_length,
+                new_rows[0].cell_length,
             )
             self.virtual_size = Size(self._widest_line_width, len(self.lines))
             self._line_cache.clear()
             self.refresh(layout=bool(delta))
         return True
 
-    def _entry_pieces(
+    def _render_one(
         self,
         entry: TranscriptEntry,
         *,
         previous_kind: TranscriptEntryKind | None,
         entry_index: int,
-    ) -> list[tuple[RenderableType, _PieceTag]]:
-        request = self._render_requests(
+    ) -> _RenderedEntry:
+        requests = self._render_requests(
             (entry,),
             start_index=entry_index,
             previous_kind=previous_kind,
+            visible_only=False,
+        )
+        console = self.app.console
+        return _render_entry_requests(
+            requests,
+            render_tool=self._render_tool,
+            console=console,
+            options=console.options.update_width(max(self.scrollable_content_region.width, 1)),
         )[0]
-        return _entry_renderables(request, self._render_tool)
 
     def _render_requests(
         self,
@@ -1040,12 +1094,19 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         *,
         start_index: int,
         previous_kind: TranscriptEntryKind | None,
+        missing_only: bool = False,
+        visible_only: bool = True,
     ) -> tuple[_EntryRenderRequest, ...]:
         theme = theme_for(self)
         requests: list[_EntryRenderRequest] = []
         previous = previous_kind
         for offset, entry in enumerate(entries):
             entry_index = start_index + offset
+            if (visible_only and self._trace_entry_hidden(entry_index)) or (
+                missing_only and not self._entry_needs_render(entry_index)
+            ):
+                previous = entry.kind
+                continue
             requests.append(
                 _EntryRenderRequest(
                     entry=entry,
@@ -1055,6 +1116,15 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                     reasoning_expanded=self._reasoning_expanded_by_entry.get(
                         entry_index,
                         self._reasoning_expanded,
+                    ),
+                    reasoning_layout=self._prepared_reasoning.get(entry_index)
+                    or next(
+                        (
+                            self._pieces[index].reasoning_layout
+                            for index in self._piece_indexes_by_entry.get(entry_index, ())
+                            if self._pieces[index].tag == "reasoning"
+                        ),
+                        None,
                     ),
                     message_highlighted=self._hovered_message_entry_index == entry_index,
                     tool_highlighted=self._hovered_tool_entry_index == entry_index,
@@ -1070,18 +1140,29 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             previous = entry.kind
         return tuple(requests)
 
-    def _render_strips(self, renderable: RenderableType) -> list[Strip]:
-        """Render one piece at the content width, mirroring ``RichLog.write``."""
-        console = self.app.console
-        render_width = max(self.scrollable_content_region.width, self.min_width)
-        options = console.options.update_width(render_width)
-        return _render_strips_at_width(console, options, renderable)
+    def _entry_needs_render(self, entry_index: int) -> bool:
+        indexes = self._piece_indexes_by_entry.get(entry_index)
+        entry = self._entries[entry_index]
+        trace_collapsed = (
+            self.is_trace_collapsed(entry.run_id)
+            if entry.kind == "run" and entry.run_id in self._trace_summary_indexes
+            else None
+        )
+        return not indexes or any(
+            (
+                self._pieces[index].tag == "reasoning"
+                and self._pieces[index].reasoning_expanded
+                != self.is_reasoning_expanded(entry_index)
+            )
+            or self._pieces[index].trace_collapsed != trace_collapsed
+            for index in indexes
+        )
 
-    def _append_strips(self, strips: list[Strip]) -> None:
-        self.lines.extend(strips)
+    def _append_rows(self, rows: list[HistoryLine]) -> None:
+        self.lines.extend(rows)
         self._widest_line_width = max(
             self._widest_line_width,
-            strips[0].cell_length,
+            rows[0].cell_length,
         )
 
     def _sync_virtual_size(self) -> None:
@@ -1093,16 +1174,10 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         self.virtual_size = Size(self._widest_line_width, len(self.lines))
 
     def _rebuild_lines(self) -> None:
-        """Rebuild the visible line space from pieces; strips are reused as-is."""
+        """Rebuild visible line offsets from the prepared rows."""
         self._trace_visibility_dirty = False
-        self._rendered_trace_runs = {
-            entry.run_id
-            for piece in self._pieces
-            if (entry := self._entries[piece.entry_index]).kind == "run"
-            and entry.run_id is not None
-        }
         self._line_cache.clear()
-        lines: list[Strip] = []
+        lines: list[HistoryLine] = []
         starts: list[int] = []
         user_lines: list[int] = []
         piece_indexes_by_entry: dict[int, list[int]] = {}
@@ -1114,16 +1189,11 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
                 continue
             if piece.tag == "user":
                 user_lines.append(len(lines))
-            widest = max(widest, piece.strips[0].cell_length)
-            lines.extend(piece.strips)
+            widest = max(widest, piece.rows[0].cell_length)
+            lines.extend(piece.rows)
         self.lines = lines
         self._piece_line_starts = starts
         self._piece_indexes_by_entry = piece_indexes_by_entry
-        self._tool_entry_indexes = {
-            (entry.run_id, entry.tool.batch_id, entry.tool.tool_call_id): index
-            for index, entry in enumerate(self._entries)
-            if entry.tool is not None
-        }
         self._user_lines = user_lines
         self._widest_line_width = widest
         self.virtual_size = Size(widest, len(lines))
@@ -1136,40 +1206,43 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
         Earlier assistant output and tools form the trace; user/scaffold/notice
         entries are never swallowed. A tool or thinking-only ending has no reply.
         """
-        pending: dict[str, list[int]] = {}
         previous = self._trace_run_by_entry
         self._trace_run_by_entry = {}
         self._trace_summary_indexes = {}
+        self._open_trace_entries = {}
         for index, entry in enumerate(self._entries):
-            run_id = entry.run_id
-            if run_id is None:
-                continue
-            if entry.kind in {"assistant", "tool"}:
-                pending.setdefault(run_id, []).append(index)
-            elif (
-                entry.kind == "run"
-                and entry.run is not None
-                and entry.run.duration_seconds is not None
-            ):
-                indexes = pending.pop(run_id, [])
-                split = len(indexes)
-                while split:
-                    tail = self._entries[indexes[split - 1]]
-                    if tail.kind != "assistant" or not tail.text.strip():
-                        break
-                    split -= 1
-                    if tail.reasoning:
-                        break
-                if split < len(indexes) and split:
-                    preceding = self._entries[indexes[split - 1]]
-                    if preceding.kind == "assistant" and preceding.reasoning:
-                        split -= 1
-                if 0 < split < len(indexes):
-                    self._trace_summary_indexes[run_id] = index
-                    self._trace_run_by_entry.update(
-                        (trace_index, run_id) for trace_index in indexes[:split]
-                    )
+            self._track_trace_entry(index, entry)
         self._trace_visibility_dirty = previous != self._trace_run_by_entry
+
+    def _track_trace_entry(self, index: int, entry: TranscriptEntry) -> None:
+        """A terminal Run classifies only its own entries, independent of older history."""
+        run_id = entry.run_id
+        if run_id is None:
+            return
+        if entry.kind in {"assistant", "tool"}:
+            self._open_trace_entries.setdefault(run_id, []).append(index)
+        elif (
+            entry.kind == "run" and entry.run is not None and entry.run.duration_seconds is not None
+        ):
+            indexes = self._open_trace_entries.pop(run_id, [])
+            split = len(indexes)
+            while split:
+                tail = self._entries[indexes[split - 1]]
+                if tail.kind != "assistant" or not tail.text.strip():
+                    break
+                split -= 1
+                if tail.reasoning:
+                    break
+            if split < len(indexes) and split:
+                preceding = self._entries[indexes[split - 1]]
+                if preceding.kind == "assistant" and preceding.reasoning:
+                    split -= 1
+            if 0 < split < len(indexes):
+                self._trace_summary_indexes[run_id] = index
+                self._trace_run_by_entry.update(
+                    (trace_index, run_id) for trace_index in indexes[:split]
+                )
+                self._trace_visibility_dirty = True
 
     def is_trace_collapsed(self, run_id: str | None) -> bool:
         return (
@@ -1180,18 +1253,23 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
 
     def _trace_entry_hidden(self, entry_index: int) -> bool:
         run_id = self._trace_run_by_entry.get(entry_index)
-        return (
-            run_id is not None
-            and run_id in self._rendered_trace_runs
-            and self.is_trace_collapsed(run_id)
-        )
+        return run_id is not None and self.is_trace_collapsed(run_id)
 
     def entry_line(self, entry_index: int) -> int:
         indexes = self._piece_indexes_by_entry.get(entry_index)
-        return self._piece_line_starts[indexes[0]] if indexes else len(self.lines)
+        if indexes:
+            return self._piece_line_starts[indexes[0]]
+        return next(
+            (
+                start
+                for piece, start in zip(self._pieces, self._piece_line_starts, strict=True)
+                if piece.entry_index > entry_index
+            ),
+            len(self.lines),
+        )
 
-    def toggle_trace(self, entry_index: int) -> int:
-        """Toggle cached pieces and return the summary's displacement."""
+    async def toggle_trace(self, entry_index: int) -> int:
+        """Prepare newly visible content before publishing the changed geometry."""
         if not 0 <= entry_index < len(self._entries):
             return 0
         run_id = self._entries[entry_index].run_id
@@ -1199,29 +1277,45 @@ class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
             return 0
         before = self.entry_line(entry_index)
         self._trace_collapsed_by_run[run_id] = not self.is_trace_collapsed(run_id)
-        self._rebuild_lines()
-        self._rerender_entry(entry_index)
+        await self._apply_visibility()
         return self.entry_line(entry_index) - before
 
-    def set_collapse_traces(self, collapsed: bool, *, above_line: int) -> int:
+    async def _apply_visibility(self) -> None:
+        if not self._entries:
+            return
+        self._render_revision += 1
+        self._visibility_pending = True
+        self._schedule_buffer_render(rebuild=False)
+        await self.wait_until_rendered()
+
+    async def set_collapse_traces(self, collapsed: bool, *, above_line: int) -> int:
         """Apply the default while retaining explicit per-Run choices."""
         if self._collapse_traces == collapsed:
             return 0
+        before, boundary = self._height_before(above_line)
+        self._collapse_traces = collapsed
+        await self._apply_visibility()
+        return self._height_at_boundary(boundary) - before
+
+    def _height_before(self, above_line: int) -> tuple[int, int]:
         before = sum(
-            len(piece.strips)
+            len(piece.rows)
             for piece, start in zip(self._pieces, self._piece_line_starts, strict=True)
             if start < above_line and not self._trace_entry_hidden(piece.entry_index)
         )
-        visible_before = {
-            index for index, start in enumerate(self._piece_line_starts) if start < above_line
-        }
-        self._collapse_traces = collapsed
-        self._rebuild_lines()
-        after = sum(
-            len(piece.strips)
-            for index, piece in enumerate(self._pieces)
-            if index in visible_before and not self._trace_entry_hidden(piece.entry_index)
+        boundary = next(
+            (
+                piece.entry_index
+                for piece, start in zip(self._pieces, self._piece_line_starts, strict=True)
+                if start >= above_line
+            ),
+            len(self._entries),
         )
-        for index in self._trace_summary_indexes.values():
-            self._rerender_entry(index)
-        return after - before
+        return before, boundary
+
+    def _height_at_boundary(self, boundary: int) -> int:
+        return sum(
+            len(piece.rows)
+            for piece in self._pieces
+            if piece.entry_index < boundary and not self._trace_entry_hidden(piece.entry_index)
+        )

@@ -6,18 +6,16 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from rich.segment import Segment
-from textual.strip import Strip
 
+import ouro.tui.conversation.history_rendering as history_rendering
 import ouro.tui.conversation.reasoning as tui_reasoning
 import ouro.tui.conversation.tools as tui_widgets_tools
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.tui.app import OuroTuiApp, _active_stream_tail
+from ouro.tui.conversation.history import ConversationHistory
 from ouro.tui.conversation.history_rendering import (
     AssistantTailLines,
-    ReasoningLines,
-    _ReasoningContent,
 )
 from ouro.tui.conversation.turn import AssistantTurn
 from ouro.tui.conversation.view import ConversationView
@@ -28,19 +26,43 @@ from tests.tui.helpers import run_ready_app
 from tests.tui.helpers import wait_until as _wait_until
 
 
+async def test_reasoning_freeze_and_reexpand_reuse_live_body(tmp_path, monkeypatch):
+    app = OuroTuiApp(application=_application(tmp_path))
+    async with run_ready_app(app, size=(100, 32)) as pilot:
+        conversation = app.query_one(ConversationView)
+        await conversation.set_reasoning_expanded(True)
+        await conversation.append_reasoning("Thought 中文 with **literal** syntax. " * 1600)
+        await pilot.pause()
+        body = app.query_one(AssistantTurn).reasoning._content
+        await body.wait_until_rendered()
+        assert body._render_width > 0
+
+        def unexpected_preparation(*args, **kwargs):
+            raise AssertionError("completed reasoning must not be wrapped again")
+
+        monkeypatch.setattr(history_rendering, "_prepare_reasoning_layout", unexpected_preparation)
+        await conversation.finish_assistant()
+        history = app.query_one(ConversationHistory)
+        assert "Thought 中文" in history.rendered_text
+        await history.toggle_reasoning(0)
+        await history.toggle_reasoning(0)
+        assert "Thought 中文" in history.rendered_text
+
+
 @pytest.mark.asyncio
 async def test_streaming_assistant_renders_completed_source_lines_once(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     rendered_source: list[str] = []
-    real_render = AssistantTailLines._render_source_line
+    real_render = history_rendering._render_stream_line
 
-    def counting_render(self: AssistantTailLines, line: str):
-        rendered_source.append(line)
-        return real_render(self, line)
+    def counting_render(line, **kwargs):
+        if kwargs["plain"]:
+            rendered_source.append(line)
+        return real_render(line, **kwargs)
 
-    monkeypatch.setattr(AssistantTailLines, "_render_source_line", counting_render)
+    monkeypatch.setattr(history_rendering, "_render_stream_line", counting_render)
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with run_ready_app(app, size=(80, 24)) as pilot:
@@ -148,7 +170,7 @@ async def test_reasoning_stream_renders_markup_syntax_as_plain_text(tmp_path: Pa
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
-        app.query_one(ConversationView).set_reasoning_expanded(True)
+        await app.query_one(ConversationView).set_reasoning_expanded(True)
         session_id = "ses_reasoning_markup"
         app._projection = TuiSessionProjection(session_id)
         fragments = (" [", "data", '-theme="')
@@ -235,20 +257,21 @@ async def test_reasoning_stream_renders_each_completed_line_once(
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
-        app.query_one(ConversationView).set_reasoning_expanded(True)
+        await app.query_one(ConversationView).set_reasoning_expanded(True)
         session_id = "ses_reasoning_bounded_work"
         app._projection = TuiSessionProjection(session_id)
         fragments = tuple(f"thought {number}\n" for number in range(40))
         events = _reasoning_delta_events(session_id, "run_reasoning_bounded", fragments)
 
         rendered: list[str] = []
-        original_render = ReasoningLines._render_source_line
+        original_render = history_rendering._render_stream_line
 
-        def counting_render(self: ReasoningLines, line: str) -> list[Strip]:
-            rendered.append(line)
-            return original_render(self, line)
+        def counting_render(line, **kwargs):
+            if not kwargs["plain"]:
+                rendered.append(line)
+            return original_render(line, **kwargs)
 
-        monkeypatch.setattr(ReasoningLines, "_render_source_line", counting_render)
+        monkeypatch.setattr(history_rendering, "_render_stream_line", counting_render)
         # One batch per fragment exercises the append path fragment by
         # fragment, the way runtime event batches arrive while thinking.
         for event in events:
@@ -274,7 +297,7 @@ async def test_reasoning_stream_lines_match_whole_block_rendering(tmp_path: Path
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
-        app.query_one(ConversationView).set_reasoning_expanded(True)
+        await app.query_one(ConversationView).set_reasoning_expanded(True)
         session_id = "ses_reasoning_parity"
         app._projection = TuiSessionProjection(session_id)
         long_line = " ".join(f"word{number}" for number in range(40))
@@ -298,14 +321,17 @@ async def test_reasoning_stream_lines_match_whole_block_rendering(tmp_path: Path
         # the same width: that equality is what freezing later preserves.
         console = app.console
         options = console.options.update_width(body._render_width)
-        segments = console.render(_ReasoningContent(text), options)
-        whole_block = [
-            strip.text.rstrip() for strip in Strip.from_lines(list(Segment.split_lines(segments)))
-        ]
+        from ouro.tui.text_wrapping import ProseText
+
+        lines = console.render_lines(
+            ProseText(text), options.update_width(body._render_width - 2), pad=False
+        )
+        whole_block = ["│ " + "".join(segment.text for segment in line).rstrip() for line in lines]
+        whole_block = [line.rstrip() for line in whole_block]
         assert body.rendered_text.splitlines() == whole_block
         assert body.rendered_text.splitlines()[0] == "│ first thought"
         assert any("word39" in line for line in body.rendered_text.splitlines())
-        for strip in (*body._line_strips, *body._pending_strips):
+        for strip in (*body._lines, *body._pending_lines):
             for segment in strip:
                 if segment.text.strip() and segment.text != "│":
                     assert segment.style is not None

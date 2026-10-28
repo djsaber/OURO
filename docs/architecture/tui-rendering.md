@@ -350,7 +350,7 @@ Rich `markdown.*` 命名样式和 SyntaxTheme 由 TuiTheme 的纯投影方法提
 颜色或样式语义。该模块不读取 Session、Application、文件、环境变量或 Widget 状态。
 
 `conversation/history_models.py` 定义历史条目与渲染记录，`history_rendering.py` 负责行呈现，
-`history.py` 拥有异步渲染、Strip 缓存和滚动状态；这些模块不定义 Markdown
+`history.py` 拥有异步准备、行几何、视口 Strip 缓存和滚动状态；这些模块不定义 Markdown
 颜色或 Pygments theme。
 
 完成块、重新加载历史和后台批量渲染调用同一个 Markdown factory。活动 Markdown tail 使用追加式纯文本，在稳定块
@@ -404,40 +404,41 @@ OuroTuiApp 在任何历史渲染 worker 启动前确定活动 TuiTheme。Rich Ma
 由主题值惰性投影并有界缓存，每个等值主题只构造一份投影。单个 TuiTheme 值不可变；主题切换通过替换
 活动值完成，worker 只读取请求捕获的主题。
 
-`_EntryRenderRequest` 捕获：
+`_EntryRenderRequest` 捕获 TranscriptEntry、前一条目的类型、TuiTheme、展开选择和交互高亮状态；
+批次同时捕获排版宽度。`ConversationHistoryState` 保存已准备的行、完整主题值和条目覆盖范围。
+恢复时比较宽度、reasoning 展开状态、主题与条目边界，复用兼容部分。
 
-- TranscriptEntry；
-- previous entry kind；
-- render width；
-- TuiTheme；
-- reasoning 展开、执行轨迹折叠与交互高亮状态。
+Application 的 `SessionContentProjection` 负责会话语义，TUI 在线程中准备 TranscriptEntry，确认目标版本后安装。
+ConversationHistory 统一调度冷加载、增量、展开、宽度与主题排版。批次在线程中分块准备，完成后一次发布行缓冲与准确尺寸；
+发布前检查内容版本、条目、宽度与主题。切换或重新排版使过期结果失效。
 
-`ConversationHistoryState` 保存生成 Strip 所使用的完整 TuiTheme 和已绘制条目数。恢复缓存需要同时满足：
+快照中的稳定流式块与正式历史一起准备，开放尾部单独恢复。快照安装和历史行准备分别推进。
+活动正文、思考或工具移入历史时，呈现 worker 等待替代行就绪再释放旧表面；输入消息泵和其他观察者继续运行。
+排版失败保留原表面并向等待方报告错误。宽度或主题刷新期间保留已有画面，准备完成后替换。
+从欢迎页返回时，history owner 持有待恢复状态，待实际宽度确定后检查兼容性。
+滚动恢复保留目标偏移直到布局完成，用户主动滚动接管锚点。
 
-- render width 相同；
-- reasoning 展开状态兼容；
-- TuiTheme 值相同；
-- entry boundary 相同。
+缓存逻辑条目记录 canonical 消息 sequence，实时尚未持久化的片段没有该坐标。
+重进先读取近期窗口，复用同 epoch、同脚手架展示策略下的稳定前缀；离开期间新增超过窗口时，
+history_window 补齐中间缺口。投影范围为新窗口与缺口，展示策略改变时重新投影保留范围，历史代次改变时清除旧前缀。
+缓存转移展示结果，canonical 正文由 Application 管理。分页游标随缓存原样保留，不能由消息 sequence 推导；
+源 Run 集合包含隐藏 scaffold 的 Run，以保持前缀补页的摘要边界。
 
-内容与绘制分别推进。Application 的 `SessionContentProjection` 负责会话语义，TUI 在线程中准备
-TranscriptEntry，确认目标版本后安装内容；`ConversationHistory` 接管条目并统一调度冷加载、增量、宽度与主题排版。
-冷加载快照安装不等待历史生成 Strip。快照中的稳定流式块与正式历史一起准备，开放尾部单独恢复，
-不通过逐片段回放重建页面。运行中正文、思考或工具从活动区移入历史时，呈现 worker 异步等待替代行就绪后
-再释放旧表面；输入消息泵和其他观察者继续运行。排版失败保留原表面，等待调用方得到失败，不能将失败视为移交完成。
+执行轨迹属于历史可见性投影。ConversationHistory 按 Run 终态摘要识别最终文本后缀及相邻思考，
+将之前的 assistant/tool 条目归入折叠范围；用户、脚手架、通知和压缩摘要独立呈现。
+首次加载按可见范围准备行，展开时补齐缺失布局，内容与高度一次发布。已有行随历史状态保留；
+隐藏工具更新逻辑条目和已有行，尚未准备的条目在展开时排版。
+Run 摘要追加时仅分类该 Run 累积的条目，载入与前缀结构变化重建分类；工具索引随历史结构更新。
+模型摘要的 disclosure metadata 与悬停高亮保持固定行高。视图在用户未主动滚动时保持点击摘要的位置；
+默认偏好和按 Run 的手动选择随缓存恢复，布局失效后保留手动选择。
 
-一个待绘制批次在线程中分块准备，整批完成后一次发布行缓冲及其几何尺寸。首次进入直接呈现近期窗口末尾；
-排版分块只用于控制工作量和检查失效，不构成可见消息更新。宽度或主题刷新保留旧 buffer，准备完成后替换。
-工作结果校验内容版本、条目、宽度与主题，切换后不提交旧结果或启动旧目标剩余块。
-会话缓存保存已发布的兼容内容，重进只准备缺失部分，再一次并入显示。
-滚动恢复保留目标偏移直到历史布局完成；用户主动滚动会接管锚点。
+思考正文与活动纯文本尾部共用 Unicode / Rich ASCII 断行规则。ReasoningLayout 保存正文行、宽度和主题，
+活动思考完成后将布局交给历史 owner；折叠、再次展开和悬停复用正文，内容、宽度或主题变化时重排。
+大段恢复与首次展开在线程中准备，短增量处理未完成行和新增内容；view worker 等待发布，输入与滚动消息泵继续响应。
 
-执行轨迹折叠属于历史可见性投影。ConversationHistory 按 Run 终态摘要识别最终文本后缀及其相邻思考，
-仅将之前的 assistant/tool 条目归入可折叠范围；用户、脚手架、通知及压缩摘要不进入该范围。
-折叠保留所有条目和 Strip，只过滤可见行；隐藏工具的后续状态更新仍更新其缓存，不向可见缓冲插入内容。
-模型摘要复用主题 disclosure 标记与 metadata 交互，悬停使用固定行高。手动切换返回摘要位移，
-ConversationView 通过现有滚动恢复入口，在同一布局帧保持锚点。后台渲染请求捕获轨迹交互状态，
-发布前沿用现有请求比较规则拒绝过期结果。默认偏好和按 Run 的手动选择随历史缓存恢复；
-宽度或主题导致 Strip 缓存失效时，手动选择仍保留。
+PreparedLine 保存纯文本行的不可变 segments 与 cell_length。ConversationHistory 使用 ScrollView 行接口，
+行几何提供准确高度与选择文本，仅视口行转换为 Strip，并使用有界绘制缓存。Markdown 等 Rich 结果保存为 Strip。
+正文行包含右侧留白，行缓冲与终端对象共享同一份准备结果。
 
 不同 App 或不同 TuiTheme 值不共享 Markdown style、SyntaxTheme 或 history Strip。theme id 只用于身份和 preference，
 不能替代完整主题值参与缓存判断。实现不使用全局 mutable current theme、ContextVar 或线程局部主题。

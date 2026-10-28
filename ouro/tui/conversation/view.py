@@ -7,7 +7,7 @@ from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Iterable
 from datetime import datetime
 
-from textual import events
+from textual import events, work
 from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.geometry import Size
@@ -251,16 +251,16 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         if self._welcome_state_changed is not None:
             self._welcome_state_changed(showing)
 
-    def set_reasoning_expanded(self, expanded: bool) -> None:
+    async def set_reasoning_expanded(self, expanded: bool) -> None:
+        revision = self._history.content_revision
+        self._reasoning_expanded = expanded
+        if self._assistant is not None:
+            self._assistant.set_reasoning_expanded(expanded)
+        delta = await self._history.set_reasoning_expanded(
+            expanded, above_line=round(self.scroll_y)
+        )
         with self.app.batch_update():
-            self._reasoning_expanded = expanded
-            delta = self._history.set_reasoning_expanded(
-                expanded,
-                above_line=round(self.scroll_y),
-            )
-            if self._assistant is not None:
-                self._assistant.set_reasoning_expanded(expanded)
-            if delta and not self._follow_tail:
+            if delta and revision == self._history.content_revision and not self._follow_tail:
                 self.scroll_to(y=max(0.0, self.scroll_y + delta), animate=False, immediate=True)
 
     def on_reasoning_label_toggle_requested(
@@ -280,27 +280,36 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         self,
         message: ConversationHistory.ToggleReasoningRequested,
     ) -> None:
-        with self.app.batch_update():
-            if not self._history.is_reasoning_expanded(message.entry_index):
-                self.release_anchor()
-            self._history.toggle_reasoning(message.entry_index)
+        self._toggle_reasoning(message.entry_index)
         message.stop()
+
+    @work(exclusive=True, group="history-disclosure")
+    async def _toggle_reasoning(self, entry_index: int) -> None:
+        if not self._history.is_reasoning_expanded(entry_index):
+            self.release_anchor()
+        await self._history.toggle_reasoning(entry_index)
 
     def on_conversation_history_toggle_trace_requested(
         self,
         message: ConversationHistory.ToggleTraceRequested,
     ) -> None:
-        with self.app.batch_update():
-            # Keep the clicked summary under the pointer in the same layout pass.
-            scroll_y = self.scroll_y
-            delta = self._history.toggle_trace(message.entry_index)
-            self._restore_scroll_y(scroll_y + delta)
+        self._toggle_trace(message.entry_index)
         message.stop()
 
-    def set_collapse_traces(self, collapsed: bool) -> None:
+    @work(exclusive=True, group="history-disclosure")
+    async def _toggle_trace(self, entry_index: int) -> None:
+        scroll_y = self.scroll_y
+        revision = self._history.content_revision
+        delta = await self._history.toggle_trace(entry_index)
+        if revision == self._history.content_revision and self.scroll_y == scroll_y:
+            with self.app.batch_update():
+                self._restore_scroll_y(scroll_y + delta)
+
+    async def set_collapse_traces(self, collapsed: bool) -> None:
+        revision = self._history.content_revision
+        delta = await self._history.set_collapse_traces(collapsed, above_line=round(self.scroll_y))
         with self.app.batch_update():
-            delta = self._history.set_collapse_traces(collapsed, above_line=round(self.scroll_y))
-            if not self._follow_tail:
+            if revision == self._history.content_revision and not self._follow_tail:
                 self._restore_scroll_y(self.scroll_y + delta)
 
     def take_history_state(self) -> ConversationHistoryState | None:
@@ -512,6 +521,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                         run_id=turn.run_id,
                     ),
                     reasoning_expanded=turn.reasoning_expanded,
+                    reasoning_layout=await turn.reasoning.completed_layout(),
                 )
         self._history.append_many(
             TranscriptEntry(kind="assistant", text=block, run_id=turn.run_id)
@@ -532,8 +542,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
 
     @property
     def _history_ends_with_tool(self) -> bool:
-        entries = self._history.entries
-        return bool(entries and entries[-1].kind == "tool")
+        return self._history.last_entry_kind == "tool"
 
     def finish_reasoning(self, duration_seconds: float | None = None) -> None:
         if self._assistant is not None:

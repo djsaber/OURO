@@ -188,8 +188,10 @@ async def test_opening_a_live_session_does_not_read_full_execution_history(
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
+@pytest.mark.parametrize("new_messages", [1, 450])
+@pytest.mark.parametrize("destination", ["other", "home"])
 async def test_recent_window_pages_and_cached_reentry_keep_the_same_history_start(
-    tmp_path, backend
+    tmp_path, backend, new_messages, destination, monkeypatch
 ):
     application = streaming_application(tmp_path, None, backend=backend)
     session, messages = seed(application, 605)
@@ -215,18 +217,44 @@ async def test_recent_window_pages_and_cached_reentry_keep_the_same_history_star
         conversation.scroll_to(y=100, animate=False)
         await pilot.pause()
         held = conversation.held_scroll_y()
-        await app._open_session(other.session_id)
-        extra = MessageRecord.text(
-            session_id=session.session_id, role="user", text="new while away"
-        )
-        application.runtime.store.append_message(extra)
+        if destination == "home":
+            await app._new_session()
+            await pilot.pause()
+        else:
+            await app._open_session(other.session_id)
+        extra = [
+            MessageRecord.text(
+                session_id=session.session_id, role="user", text=f"new while away {index}"
+            )
+            for index in range(new_messages)
+        ]
+        application.runtime.store.append_messages(extra)
+        projected = []
+        prepare = app._prepare_loaded_session
+
+        def record_projection(loaded, *args, **kwargs):
+            projected.extend(message.sequence for message in loaded.messages)
+            return prepare(loaded, *args, **kwargs)
+
+        monkeypatch.setattr(app, "_prepare_loaded_session", record_projection)
+        rendered = []
+        render = history_module._render_entry_requests
+
+        def record_render(requests, **kwargs):
+            rendered.extend(request.entry.source_sequence for request in requests)
+            return render(requests, **kwargs)
+
+        monkeypatch.setattr(history_module, "_render_entry_requests", record_render)
         await app._open_session(session.session_id)
         await history.wait_until_rendered()
         await pilot.pause()
         assert [entry.text for entry in history.entries] == [
             *(message.text_content for message in messages[-400:]),
-            extra.text_content,
+            *(message.text_content for message in extra),
         ]
+        assert len(projected) == (200 if new_messages == 1 else 600)
+        assert min(projected) > 206  # The stable retained prefix was not read/projected again.
+        assert all(sequence is not None and sequence > 605 for sequence in rendered)
         assert conversation.held_scroll_y() == held
         assert app.query_one(Composer).text == "x"
 
@@ -696,3 +724,50 @@ async def test_older_page_finishing_after_a_switch_cannot_mutate_the_new_view(
         assert app._projection.session_id == other.session_id
         assert not app.query_one(ConversationHistory).entries
         assert app._history_before_cursor is None
+
+
+async def test_cached_reentry_retains_run_boundaries_in_hidden_scaffold_messages(tmp_path):
+    application = streaming_application(tmp_path, None)
+    session, _ = seed(application, 0)
+    store = application.runtime.store
+    run = RunRecord(
+        session_id=session.session_id,
+        status="completed",
+        started_at=utc_now() - timedelta(seconds=2),
+        ended_at=utc_now(),
+    )
+    record = store.load_session_record(session.session_id)
+    store.commit_session(SessionCommit(before=record, runs=(run,)))
+    store.append_messages(
+        [
+            MessageRecord.text(
+                session_id=session.session_id,
+                role="user",
+                text=f"message {index}",
+                run_id=run.run_id if index < 300 else None,
+                scaffold=200 <= index < 300,
+            )
+            for index in range(405)
+        ]
+    )
+    app = OuroTuiApp(application=application)
+    async with run_ready_app(app) as pilot:
+        await app._open_session(session.session_id)
+        history = app.query_one(ConversationHistory)
+        await history.wait_until_rendered()
+        assert not any(entry.run_id == run.run_id for entry in history.entries)
+        assert run.run_id in app._history_run_ids
+        await app._new_session()
+        await pilot.pause()
+        store.append_messages(
+            [
+                MessageRecord.text(session_id=session.session_id, role="user", text=f"new {index}")
+                for index in range(195)
+            ]
+        )
+        await app._open_session(session.session_id)
+        await history.wait_until_rendered()
+        assert run.run_id in app._history_run_ids
+        assert await app._prepend_history_window(app._view_revision)
+        await history.wait_until_rendered()
+        assert not any(entry.kind == "run" for entry in history.entries)

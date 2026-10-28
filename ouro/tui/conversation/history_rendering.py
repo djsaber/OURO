@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
-from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
+from rich.cells import cell_len
+from rich.console import Console, ConsoleOptions, RenderableType, RenderResult
 from rich.padding import Padding
 from rich.segment import Segment
 from rich.style import Style
@@ -19,12 +21,15 @@ from textual.widget import Widget
 
 from ouro.tui.conversation.history_models import (
     CompactionPresentation,
+    HistoryLine,
+    PreparedLine,
+    ReasoningLayout,
     ToolActivityRenderer,
-    TranscriptEntry,
     _EntryRenderRequest,
     _PieceTag,
     _RenderedEntry,
 )
+from ouro.tui.conversation.markdown_stream import _BACKGROUND_MARKDOWN_CHARS
 from ouro.tui.conversation.messages import (
     _MESSAGE_META,
     _REASONING_ENTRY_META,
@@ -39,7 +44,7 @@ from ouro.tui.state import (
     format_duration,
     format_reasoning_label_parts,
 )
-from ouro.tui.text_wrapping import ProseText
+from ouro.tui.text_wrapping import ProseText, wrap_plain_lines
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 
 
@@ -174,36 +179,6 @@ def _format_user_message_timestamp(
     return f"{date_label}{separator}{time_label}"
 
 
-@dataclass(frozen=True)
-class _ReasoningContent:
-    """Render completed reasoning with the same structure as its live view.
-
-    RichLog stores completed transcript entries as renderables rather than child
-    widgets. Prefixing after Rich has wrapped the content preserves the border on
-    every visual line without adding a widget per historical reasoning block.
-    """
-
-    text: str
-    theme: TuiTheme = DEFAULT_TUI_THEME
-
-    def __rich_console__(
-        self,
-        console: Console,
-        options: ConsoleOptions,
-    ) -> RenderResult:
-        prefix_width = 2
-        content_options = options.update_width(max(1, options.max_width - prefix_width))
-        content = ProseText(self.text, style=f"italic {self.theme.text_lowlight}")
-        lines = console.render_lines(content, content_options, pad=False)
-        border = Segment("│", Style(color=self.theme.border))
-        gap = Segment(" ")
-        for line in lines:
-            yield border
-            yield gap
-            yield from line
-            yield Segment.line()
-
-
 def _apply_selection_style(
     strip: Strip,
     start: int,
@@ -245,24 +220,76 @@ def _apply_selection_style(
     return Strip(segments, strip.cell_length)
 
 
-class ReasoningLines(RangeSelectionOnly, Widget):
-    """Append-only strip buffer for one streaming plain-text block.
+def _render_stream_line(
+    line: str, *, width: int, theme: TuiTheme, plain: bool, right_gutter: int = 0
+) -> PreparedLine:
+    """Decorate an already wrapped line without asking Rich to wrap it again."""
+    style = Style(color=theme.text_emphasis if plain else theme.text_lowlight, italic=not plain)
+    segments = [Segment(line, style)]
+    if not plain:
+        segments[:0] = [Segment("│", Style(color=theme.border)), Segment(" ")]
+    cells = cell_len(line) + (0 if plain else 2)
+    padding_style = Style(color=theme.text_emphasis) if plain else Style.null()
+    if cells < width:
+        segments.append(Segment(" " * (width - cells), padding_style))
+    elif cells > width:
+        segments = list(Segment.adjust_line_length(segments, width, padding_style))
+    if right_gutter:
+        segments.append(Segment(" " * right_gutter, Style.null()))
+    return PreparedLine(tuple(segments), width + right_gutter)
 
-    Completed visual lines render exactly once through the shared reasoning
-    renderable. Only the final, not-yet-full visual line re-renders while it
+
+def _prepare_reasoning_layout(source: str, *, width: int, theme: TuiTheme) -> ReasoningLayout:
+    wrapped = wrap_plain_lines(source, max(1, width - 2))
+    return ReasoningLayout(
+        width,
+        theme,
+        # Frozen reasoning includes the live widget's right padding. Build its
+        # final row once, rather than allocating a second Strip per body line.
+        tuple(
+            _render_stream_line(line, width=width, theme=theme, plain=False, right_gutter=1)
+            for line in wrapped
+        ),
+    )
+
+
+def _prepare_stream_text(
+    source: str, *, width: int, theme: TuiTheme, plain: bool
+) -> tuple[list[PreparedLine], str, list[PreparedLine]]:
+    wrapped = wrap_plain_lines(source, max(1, width if plain else width - 2))
+    stable = [
+        _render_stream_line(line, width=width, theme=theme, plain=plain) for line in wrapped[:-1]
+    ]
+    trailing = wrapped[-1] if wrapped else ""
+    tail = (
+        [_render_stream_line(trailing, width=width, theme=theme, plain=plain)] if trailing else []
+    )
+    return stable, trailing, tail
+
+
+class ReasoningLines(RangeSelectionOnly, Widget):
+    """Append-only row geometry for one streaming plain-text block.
+
+    Completed visual lines render exactly once through the shared plain-text
+    preparation. Only the final, not-yet-full visual line re-renders while it
     grows, so even a source line without newlines has bounded per-flush cost.
     """
 
     can_focus = False
+    _plain_text = False
 
     def __init__(self, *, classes: str = "reasoning-lines") -> None:
         super().__init__(classes=classes)
         self._source_parts: list[str] = []
         self._pending_parts: list[str] = []
-        self._line_strips: list[Strip] = []
-        self._pending_strips: list[Strip] = []
+        self._lines: list[PreparedLine] = []
+        self._pending_lines: list[PreparedLine] = []
         self._render_width = 0
         self._deferred_render = False
+        self._source_revision = 0
+        self._render_active = False
+        self._render_idle = asyncio.Event()
+        self._render_idle.set()
 
     @property
     def text(self) -> str:
@@ -271,9 +298,7 @@ class ReasoningLines(RangeSelectionOnly, Widget):
 
     @property
     def rendered_text(self) -> str:
-        return "\n".join(
-            strip.text.rstrip() for strip in (*self._line_strips, *self._pending_strips)
-        )
+        return "\n".join(line.text.rstrip() for line in (*self._lines, *self._pending_lines))
 
     def append(self, fragment: str) -> None:
         if not fragment:
@@ -284,19 +309,18 @@ class ReasoningLines(RangeSelectionOnly, Widget):
 
     def replace(self, text: str) -> None:
         """Replace the source after an infrequent structural boundary."""
+        self._source_revision += 1
         self._source_parts = [text] if text else []
         self._pending_parts = [text] if text else []
-        self._line_strips.clear()
-        self._pending_strips.clear()
+        self._lines.clear()
+        self._pending_lines.clear()
         self._render_updates()
         if not text:
             self.refresh(layout=True)
 
     def refresh_theme(self) -> None:
-        source = self.text
-        self._line_strips.clear()
-        self._pending_strips.clear()
-        self._pending_parts = [source] if source else []
+        self._source_revision += 1
+        self._render_width = 0
         self._render_updates()
 
     def on_resize(self, event: Resize) -> None:
@@ -307,37 +331,44 @@ class ReasoningLines(RangeSelectionOnly, Widget):
         # block grows, so sizing the widget never renders its content.
         if not width:
             return 0
-        return len(self._line_strips) + len(self._pending_strips)
+        return len(self._lines) + len(self._pending_lines)
 
     def render_line(self, y: int) -> Strip:
-        committed = len(self._line_strips)
+        committed = len(self._lines)
         if y < committed:
-            line = self._line_strips[y]
-        elif y - committed < len(self._pending_strips):
-            line = self._pending_strips[y - committed]
+            line = self._lines[y]
+        elif y - committed < len(self._pending_lines):
+            line = self._pending_lines[y - committed]
         else:
             return Strip.blank(
                 self.size.width or 1,
                 Style(color=theme_for(self).text_primary),
             )
-        # Pre-rendered strips carry neither selection styling nor Textual's
+        # Prepared rows carry neither selection styling nor Textual's
         # source-offset metadata, so both are attached per line here.
+        painted = line.to_strip().apply_style(
+            Style(
+                color=theme_for(self).text_emphasis
+                if self._plain_text
+                else theme_for(self).text_primary
+            )
+        )
         selection = self.text_selection
         if selection is not None and (span := selection.get_span(y)) is not None:
-            line = _apply_selection_style(
-                line,
+            painted = _apply_selection_style(
+                painted,
                 *span,
                 self.screen.get_component_rich_style("screen--selection", partial=True),
             )
-        return line.apply_offsets(0, y)
+        return painted.apply_offsets(0, y)
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         return selection.extract(self.rendered_text), "\n"
 
     def _render_updates(self) -> None:
-        """Render buffered source into strips at the current content width.
+        """Prepare buffered source at the current content width.
 
-        A width change rebuilds every strip (rare); otherwise only newly
+        A width change rebuilds every row (rare); otherwise only newly
         completed visual lines and the trailing partial visual line render, so
         per-flush work stays proportional to the new text.
         """
@@ -349,56 +380,95 @@ class ReasoningLines(RangeSelectionOnly, Widget):
                 self._deferred_render = True
                 self.call_after_refresh(self._render_deferred_updates)
             return
-        previous_height = len(self._line_strips) + len(self._pending_strips)
+        if self._render_active:
+            return
         rebuild = width != self._render_width
-        if rebuild:
-            self._render_width = width
-            self._line_strips.clear()
-            source = self.text
-            self._pending_parts = [source] if source else []
-        if not self._pending_parts:
+        source = self.text if rebuild else "".join(self._pending_parts)
+        if not source:
             return
 
-        pending = "".join(self._pending_parts)
-        wrapped = self._wrap_source(pending)
-        for line in wrapped[:-1]:
-            self._line_strips.extend(self._render_source_line(line))
-        trailing = wrapped[-1] if wrapped else ""
-        self._pending_parts = [trailing] if trailing else []
-        self._pending_strips = self._render_source_line(trailing) if trailing else []
-        current_height = len(self._line_strips) + len(self._pending_strips)
-        self.refresh(layout=rebuild or current_height != previous_height)
+        if len(source) >= _BACKGROUND_MARKDOWN_CHARS:
+            self._render_active = True
+            self._render_idle.clear()
+            self.run_worker(self._render_pending(), group="stream-lines")
+        else:
+            self._commit_lines(
+                _prepare_stream_text(
+                    source,
+                    width=width,
+                    theme=theme_for(self),
+                    plain=self._plain_text,
+                ),
+                consumed=len(self._pending_parts),
+                rebuild=rebuild,
+                width=width,
+            )
+
+    def _commit_lines(
+        self,
+        prepared: tuple[list[PreparedLine], str, list[PreparedLine]],
+        *,
+        consumed: int,
+        rebuild: bool,
+        width: int,
+    ) -> None:
+        previous_height = len(self._lines) + len(self._pending_lines)
+        stable, trailing, tail = prepared
+        if rebuild:
+            self._lines.clear()
+        self._lines.extend(stable)
+        self._render_width = width
+        self._pending_parts[:consumed] = [trailing] if trailing else []
+        self._pending_lines = tail
+        self.refresh(layout=rebuild or len(self._lines) + len(tail) != previous_height)
+
+    async def _render_pending(self) -> None:
+        try:
+            while self.is_mounted and self._source_parts:
+                width = self.content_region.width
+                if width <= 0:
+                    return
+                rebuild = width != self._render_width
+                revision, theme = self._source_revision, theme_for(self)
+                consumed = len(self._pending_parts)
+                prepared = await asyncio.to_thread(
+                    _prepare_stream_text,
+                    self.text if rebuild else "".join(self._pending_parts),
+                    width=width,
+                    theme=theme,
+                    plain=self._plain_text,
+                )
+                if (
+                    revision != self._source_revision
+                    or width != self.content_region.width
+                    or theme != theme_for(self)
+                ):
+                    continue
+                more = len(self._pending_parts) > consumed
+                self._commit_lines(prepared, consumed=consumed, rebuild=rebuild, width=width)
+                if not more:
+                    return
+        finally:
+            self._render_active = False
+            self._render_idle.set()
+
+    async def wait_until_rendered(self) -> None:
+        await self._render_idle.wait()
+
+    async def completed_layout(self) -> ReasoningLayout | None:
+        """Transfer completed geometry; an unlaid-out body has nothing to reuse."""
+        await self.wait_until_rendered()
+        width = self.content_region.width
+        if width <= 0 or self._render_width != width:
+            return None
+        lines = (*self._lines, *self._pending_lines)
+        if self.text.endswith("\n"):
+            lines += (_render_stream_line("", width=width, theme=theme_for(self), plain=False),)
+        return ReasoningLayout(width, theme_for(self), lines)
 
     def _render_deferred_updates(self) -> None:
         self._deferred_render = False
         self._render_updates()
-
-    def _wrap_source(self, source: str) -> list[str]:
-        lines = ProseText(source).wrap(
-            self.app.console,
-            self._source_wrap_width(),
-            overflow="fold",
-            no_wrap=False,
-        )
-        return [line.plain for line in lines]
-
-    def _source_wrap_width(self) -> int:
-        return max(1, self._render_width - 2)
-
-    def _render_source_line(self, line: str) -> list[Strip]:
-        """Render one pre-wrapped line the way frozen reasoning renders it.
-
-        The line already fits reasoning's content width, so rendering it as a
-        separate bordered row matches the equivalent whole-block row.
-        """
-        console = self.app.console
-        base_style = Style(color=theme_for(self).text_primary)
-        options = console.options.update_width(self._render_width)
-        segments = console.render(_ReasoningContent(line, theme_for(self)), options)
-        return [
-            strip.adjust_cell_length(self._render_width, base_style).apply_style(base_style)
-            for strip in Strip.from_lines(list(Segment.split_lines(segments)))
-        ]
 
 
 class AssistantTailLines(ReasoningLines):
@@ -412,22 +482,7 @@ class AssistantTailLines(ReasoningLines):
     def __init__(self) -> None:
         super().__init__(classes="assistant-markdown")
 
-    def _source_wrap_width(self) -> int:
-        return self._render_width
-
-    def _render_source_line(self, line: str) -> list[Strip]:
-        console = self.app.console
-        base_style = Style(color=theme_for(self).text_emphasis)
-        options = console.options.update_width(self._render_width)
-        rendered_lines = console.render_lines(Text(line, style=base_style), options, pad=False)
-        if not rendered_lines:
-            return [Strip.blank(self._render_width, base_style)]
-        return [
-            Strip(segments)
-            .adjust_cell_length(self._render_width, base_style)
-            .apply_style(base_style)
-            for segments in rendered_lines
-        ]
+    _plain_text = True
 
 
 def _summary_line(
@@ -499,38 +554,31 @@ def _run_summary(run: RunPresentation, theme: TuiTheme) -> Text:
     )
 
 
-def _reasoning_area(
-    entry: TranscriptEntry,
-    *,
-    entry_index: int,
-    expanded: bool,
-    top: int,
-    theme: TuiTheme,
-    highlighted: bool = False,
-) -> tuple[RenderableType, _PieceTag]:
-    """The reasoning area of one entry: label plus the togglable body.
-
-    The area always ends in exactly one blank line — the gap belongs between
-    reasoning and its answer whether or not an answer follows.
-    """
+def _reasoning_rows(
+    request: _EntryRenderRequest,
+    layout: ReasoningLayout | None,
+    console: Console,
+    options: ConsoleOptions,
+) -> list[HistoryLine]:
+    """Compose the label and already wrapped body without re-rendering every line."""
     label = _thought_label(
-        entry.reasoning_seconds,
-        entry_index=entry_index,
-        expanded=expanded,
-        theme=theme,
-        highlighted=highlighted,
+        request.entry.reasoning_seconds,
+        entry_index=request.entry_index,
+        expanded=request.reasoning_expanded,
+        theme=request.theme,
+        highlighted=request.reasoning_highlighted,
     )
-    if expanded:
-        area: RenderableType = Group(
-            label,
-            # Keep the border in the label's column. The trailing cell mirrors
-            # ReasoningLines' right padding, so live and frozen thoughts retain
-            # the same content width and wrapping when the stream is promoted.
-            Padding(_ReasoningContent(entry.reasoning, theme), (1, 1, 0, 0)),
+    top = 1 if request.previous_kind == "tool" else 0
+    rows = _render_strips_at_width(console, options, Padding(label, (top, 0, 1, 0)))
+    if request.reasoning_expanded and layout is not None:
+        rows.extend(
+            row
+            if row.cell_length == options.max_width
+            else PreparedLine((*row.segments, Segment(" ", Style.null())), options.max_width)
+            for row in layout.lines
         )
-    else:
-        area = label
-    return Padding(area, (top, 0, 1, 0)), "reasoning"
+        rows.append(Strip.blank(options.max_width, Style.null()))
+    return rows
 
 
 def _entry_renderables(
@@ -605,17 +653,6 @@ def _entry_renderables(
 
     pieces: list[tuple[RenderableType, _PieceTag]] = []
     top = 1 if request.previous_kind == "tool" else 0
-    if entry.reasoning:
-        pieces.append(
-            _reasoning_area(
-                entry,
-                entry_index=request.entry_index,
-                expanded=request.reasoning_expanded,
-                top=top,
-                theme=theme,
-                highlighted=request.reasoning_highlighted,
-            )
-        )
     if entry.text:
         text_top = 0 if entry.reasoning else top
         pieces.append(
@@ -631,11 +668,11 @@ def _render_strips_at_width(
     console: Console,
     options: ConsoleOptions,
     renderable: RenderableType,
-) -> list[Strip]:
+) -> list[HistoryLine]:
     """Render one immutable piece using captured console geometry."""
 
     segments = console.render(renderable, options)
-    strips = [
+    strips: list[HistoryLine] = [
         strip.adjust_cell_length(options.max_width)
         for strip in Strip.from_lines(list(Segment.split_lines(segments)))
     ]
@@ -674,19 +711,33 @@ def _render_entry_requests(
             render_contexts[theme] = context
             return context
 
-    return tuple(
-        _RenderedEntry(
-            entry_index=request.entry_index,
-            pieces=tuple(
-                (
-                    _render_strips_at_width(
-                        *context_for(request.theme),
-                        renderable,
-                    ),
-                    tag,
-                )
-                for renderable, tag in _entry_renderables(request, render_tool)
-            ),
+    rendered: list[_RenderedEntry] = []
+    for request in requests:
+        layout = request.reasoning_layout
+        if layout is not None and (
+            layout.width != max(1, options.max_width - 1) or layout.theme != request.theme
+        ):
+            layout = None
+        if request.entry.reasoning and request.reasoning_expanded and layout is None:
+            layout = _prepare_reasoning_layout(
+                request.entry.reasoning, width=max(1, options.max_width - 1), theme=request.theme
+            )
+        pieces: list[tuple[list[HistoryLine], _PieceTag]] = (
+            [(_reasoning_rows(request, layout, *context_for(request.theme)), "reasoning")]
+            if request.entry.kind == "assistant" and request.entry.reasoning
+            else []
         )
-        for request in requests
-    )
+        pieces.extend(
+            (_render_strips_at_width(*context_for(request.theme), renderable), tag)
+            for renderable, tag in _entry_renderables(request, render_tool)
+        )
+        rendered.append(
+            _RenderedEntry(
+                entry_index=request.entry_index,
+                pieces=tuple(pieces),
+                reasoning_layout=layout,
+                reasoning_expanded=request.reasoning_expanded,
+                trace_collapsed=request.trace_collapsed,
+            )
+        )
+    return tuple(rendered)

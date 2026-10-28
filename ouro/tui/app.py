@@ -190,6 +190,11 @@ class ObservationDelivery:
 class CachedSessionHistory:
     state: ConversationHistoryState
     anchor: SessionHistoryAnchor | None
+    through_sequence: int
+    show_scaffold_messages: bool
+    run_ids: frozenset[str]
+    # Application cursors are opaque; a Files cursor is not a message sequence.
+    before_cursor: int | None
 
 
 @dataclass
@@ -958,6 +963,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._held_session_scroll_y: dict[str, float] = {}
         self._session_history_states: OrderedDict[str, CachedSessionHistory] = OrderedDict()
         self._history_anchor: SessionHistoryAnchor | None = None
+        self._history_last_sequence = 0
+        self._history_show_scaffold_messages = self._preferences.show_scaffold_messages
         self._history_before_cursor: int | None = None
         self._history_run_ids: set[str] = set()
         self._history_request: HistoryLoadRequest | None = None
@@ -3792,16 +3799,95 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._session_history_states.pop(session_id, None)
         if state is None:
             return
-        self._session_history_states[session_id] = CachedSessionHistory(state, self._history_anchor)
+        self._session_history_states[session_id] = CachedSessionHistory(
+            state,
+            self._history_anchor,
+            self._history_last_sequence,
+            self._history_show_scaffold_messages,
+            frozenset(self._history_run_ids),
+            self._history_before_cursor,
+        )
         while len(self._session_history_states) > _SESSION_HISTORY_CACHE_SIZE:
             removed, _state = self._session_history_states.popitem(last=False)
             self._held_session_scroll_y.pop(removed, None)
 
-    def _retained_history_anchor(self, session_id: str) -> SessionHistoryAnchor | None:
+    def _history_reprojection_anchor(self, session_id: str) -> SessionHistoryAnchor | None:
+        """Only reproject the retained range when its presentation policy changes."""
         if self._projection is not None and self._projection.session_id == session_id:
-            return self._history_anchor
+            return (
+                self._history_anchor
+                if self._history_show_scaffold_messages != self._preferences.show_scaffold_messages
+                else None
+            )
         cached = self._session_history_states.get(session_id)
-        return cached.anchor if cached is not None else None
+        return (
+            cached.anchor
+            if cached is not None
+            and cached.show_scaffold_messages != self._preferences.show_scaffold_messages
+            else None
+        )
+
+    async def _prepare_retained_history(
+        self, loaded: LoadedSession, revision: int
+    ) -> tuple[LoadedSession, tuple[TranscriptEntry, ...], SessionHistoryAnchor | None]:
+        """Read only a missing gap, then reuse the canonical presentation prefix."""
+        session = loaded.detail.session
+        cached = self._session_history_states.get(session.session_id)
+        if self._visible_session_id() == session.session_id:
+            entries = self.query_one(ConversationHistory).entries
+            anchor = self._history_anchor
+            through = self._history_last_sequence
+            scaffold = self._history_show_scaffold_messages
+        elif cached is not None:
+            entries = tuple(cached.state.entries)
+            anchor = cached.anchor
+            through = cached.through_sequence
+            scaffold = cached.show_scaffold_messages
+        else:
+            return loaded, (), None
+        if (
+            anchor is None
+            or anchor.history_epoch != session.history_epoch
+            or scaffold != self._preferences.show_scaffold_messages
+            or not loaded.messages
+        ):
+            return loaded, (), None
+        pages = [loaded.messages]
+        first_sequence = loaded.messages[0].sequence
+        runs = {run.run_id: run for run in loaded.runs}
+        compactions = {item.compaction_id: item for item in loaded.compactions}
+        before = loaded.history_before_cursor
+        while before is not None and first_sequence > through + 1:
+            window = await self._controller.history_window(
+                session.session_id, before=before, history_epoch=session.history_epoch
+            )
+            if self._host_closing or revision != self._view_revision:
+                return loaded, (), None
+            pages.append(window.messages)
+            if window.messages:
+                first_sequence = window.messages[0].sequence
+            for run in window.runs:
+                runs.setdefault(run.run_id, run)
+            for item in window.compactions:
+                compactions.setdefault(item.compaction_id, item)
+            before = window.before_cursor
+        messages = tuple(message for page in reversed(pages) for message in page)
+        prefix = tuple(
+            entry
+            for entry in entries
+            if entry.source_sequence is not None and entry.source_sequence < messages[0].sequence
+        )
+        return (
+            replace(
+                loaded,
+                messages=messages,
+                runs=tuple(runs.values()),
+                compactions=tuple(compactions.values()),
+                history_before_cursor=before,
+            ),
+            prefix,
+            anchor if anchor.first_sequence < messages[0].sequence else None,
+        )
 
     def _remember_visible_session_history(self) -> None:
         session_id = self._visible_session_id()
@@ -4073,7 +4159,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         status_line.set_activity("loading_session")
         observation: TuiSessionObservation | None = None
         try:
-            anchor = self._retained_history_anchor(session_id)
+            anchor = self._history_reprojection_anchor(session_id)
             observation = (
                 await self._controller.prepare_session_selection(session_id, history_anchor=anchor)
                 if anchor is not None
@@ -4131,12 +4217,37 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         selection: TuiSessionObservation | None = None,
     ) -> bool:
         session = loaded.detail.session
+        loaded, retained_prefix, retained_anchor = await self._prepare_retained_history(
+            loaded, revision
+        )
+        if self._host_closing or revision != self._view_revision:
+            return False
+        retained_run_ids: frozenset[str] = frozenset()
+        retained_before_cursor: int | None = None
+        if retained_anchor is not None:
+            cached = self._session_history_states.get(session.session_id)
+            if self._visible_session_id() == session.session_id:
+                retained_run_ids = frozenset(self._history_run_ids)
+                retained_before_cursor = self._history_before_cursor
+            elif cached is not None:
+                retained_run_ids = cached.run_ids
+                retained_before_cursor = cached.before_cursor
         projection, transcript, active_stream_tail = await asyncio.to_thread(
             self._prepare_loaded_session,
             loaded,
             self._models,
             show_scaffold_messages=self._preferences.show_scaffold_messages,
         )
+        if retained_prefix:
+            transcript = (
+                (*retained_prefix, *transcript[0]),
+                transcript[1]
+                | frozenset(
+                    entry.run_id
+                    for entry in retained_prefix
+                    if entry.kind == "run" and entry.run_id is not None
+                ),
+            )
         if self._host_closing or revision != self._view_revision:
             return False
         tree = self._agent_tree_subscription
@@ -4251,11 +4362,21 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                         held_scroll_y=self._held_session_scroll_y.get(session.session_id),
                         reusable_history=reusable_history.state if reusable_history else None,
                     )
-                    self._history_anchor = _history_anchor(session.history_epoch, loaded.messages)
-                    self._history_before_cursor = loaded.history_before_cursor
+                    self._history_anchor = retained_anchor or _history_anchor(
+                        session.history_epoch, loaded.messages
+                    )
+                    self._history_last_sequence = (
+                        loaded.messages[-1].sequence if loaded.messages else 0
+                    )
+                    self._history_show_scaffold_messages = self._preferences.show_scaffold_messages
+                    self._history_before_cursor = (
+                        retained_before_cursor
+                        if retained_anchor is not None
+                        else loaded.history_before_cursor
+                    )
                     self._history_run_ids = {
                         message.run_id for message in loaded.messages if message.run_id is not None
-                    }
+                    } | retained_run_ids
                     self._history_request = None
                     self._history_load_failed = False
                     self.query_one(QueuedInputPanel).set_inputs(
@@ -4321,7 +4442,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._view_revision += 1
         revision = self._view_revision
         observation = await self._controller.observe_session(
-            session_id, history_anchor=self._retained_history_anchor(session_id)
+            session_id, history_anchor=self._history_reprojection_anchor(session_id)
         )
         try:
             await self._install_session_surface(
@@ -5448,7 +5569,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self.notify(str(exc), severity="error", markup=False)
                 return False
             self._preferences = preferences
-        self.query_one(ConversationView).set_collapse_traces(collapsed)
+        await self.query_one(ConversationView).set_collapse_traces(collapsed)
         return True
 
     async def _choose_scaffold_messages(self, *, menu: ChoiceScreen) -> None:
@@ -5796,7 +5917,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 return False
             self._preferences = preferences
         self._session_history_states.clear()
-        self.query_one(ConversationView).set_reasoning_expanded(expanded)
+        await self.query_one(ConversationView).set_reasoning_expanded(expanded)
         return True
 
     async def _set_input_draft_memory(self, value: str) -> bool:

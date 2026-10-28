@@ -15,7 +15,11 @@ import ouro.tui.conversation.markdown_stream as conversation_history_markdown_st
 import ouro.tui.markdown as tui_markdown
 from ouro.application.contracts.execution import RuntimeToolCallActivity
 from ouro.tui.conversation.history import ConversationHistory
-from ouro.tui.conversation.history_models import CompactionPresentation, TranscriptEntry
+from ouro.tui.conversation.history_models import (
+    CompactionPresentation,
+    PreparedLine,
+    TranscriptEntry,
+)
 from ouro.tui.conversation.history_rendering import (
     AssistantTailLines,
     _compaction_summary,
@@ -252,6 +256,29 @@ class _StreamingLinesApp(App[None]):
         yield self.tail
 
 
+async def test_long_reasoning_materializes_only_viewport_rows(monkeypatch):
+    painted = []
+    original = PreparedLine.to_strip
+
+    def materialize(row):
+        painted.append(row)
+        return original(row)
+
+    monkeypatch.setattr(PreparedLine, "to_strip", materialize)
+    app = _ThemedHistoryApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await app.history.load((TranscriptEntry(kind="assistant", reasoning="thought\n" * 5000),))
+        await pilot.pause()
+        assert len(app.history.lines) > 5000
+        assert 0 < len(painted) < 10 * app.history.size.height
+        initial = len(painted)
+        assert app.history.rendered_text.count("thought") == 5000
+        assert len(painted) == initial
+        app.history.scroll_end(animate=False, immediate=True)
+        await pilot.pause()
+        assert 0 < len(painted) - initial < 10 * app.history.size.height
+
+
 class _ConversationApp(App[None]):
     def compose(self) -> ComposeResult:
         yield ConversationView()
@@ -326,7 +353,7 @@ async def test_command_output_preserves_literal_content_and_frame_layout(show_sc
         await history.load((command, replace(command, kind="scaffold", scaffold=True)))
         pieces = history._pieces
         assert len(pieces) == 2
-        assert [line.text for line in pieces[0].strips] == [line.text for line in pieces[1].strips]
+        assert [line.text for line in pieces[0].rows] == [line.text for line in pieces[1].rows]
         await resize_terminal(pilot, width + 12, 30)
         await history.wait_until_rendered()
         assert history.entries[0].text == source
@@ -451,7 +478,7 @@ async def test_streaming_tail_strips_carry_styles_and_preserve_text() -> None:
         app.tail.append("streaming tail\nnext line")
         await pilot.pause()
 
-        strips = (*app.tail._line_strips, *app.tail._pending_strips)
+        strips = (*app.tail._lines, *app.tail._pending_lines)
         assert strips
         assert app.tail.rendered_text == "streaming tail\nnext line"
         assert all(segment.style is not None for strip in strips for segment in strip)
@@ -581,7 +608,7 @@ async def test_prepend_reuses_existing_strips_and_remaps_message_click_targets(m
             segment.style.meta.get("ouro_message")
             for piece in app.history._pieces
             if piece.entry_index == 17
-            for strip in piece.strips
+            for strip in piece.rows
             for segment in strip
             if segment.style is not None and "ouro_message" in segment.style.meta
         }
@@ -746,15 +773,15 @@ async def test_same_session_history_reuse_updates_mutable_entry_in_place(
         await pilot.pause()
         await app.history.load(entries)
         state = app.history.take_state()
-        render_strips = app.history._render_strips
+        render_one = app.history._render_one
         rendered_pieces = 0
 
-        def count_rendered_piece(renderable):
+        def count_rendered_piece(entry, **kwargs):
             nonlocal rendered_pieces
             rendered_pieces += 1
-            return render_strips(renderable)
+            return render_one(entry, **kwargs)
 
-        monkeypatch.setattr(app.history, "_render_strips", count_rendered_piece)
+        monkeypatch.setattr(app.history, "_render_one", count_rendered_piece)
         completed_tool = running_tool.model_copy(update={"status": "completed"})
         updated = (
             entries[0],
@@ -904,13 +931,13 @@ async def test_theme_refresh_is_off_loop_and_coalesces_rapid_theme_changes(
         finally:
             release.set()
         await wait_until(
-            lambda: not app.history._theme_render_active,
+            lambda: not app.history._render_active,
             pilot,
             description="latest theme render completion",
         )
 
         assert app.tui_theme == latest
-        assert app.history._theme_render_active is False
+        assert app.history._render_active is False
         assert render_threads
         assert all(thread_id != event_loop_thread for thread_id in render_threads)
         assert maximum_active_renders == 1
