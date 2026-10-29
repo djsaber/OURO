@@ -1,0 +1,40 @@
+{
+  "data_layout_version": 41,
+  "generation": "idx_a54a6271c9204a61bc50371d66aa8607",
+  "generated_at": "2026-10-29T17:48:23.394576Z",
+  "sessions": [
+    {
+      "session_id": "ses_fixture",
+      "namespace": "default",
+      "session_kind": "primary",
+      "root_session_id": "ses_fixture",
+      "parent_session_id": null,
+      "title": "New conversation",
+      "title_source": "fallback",
+      "title_locked": false,
+      "created_at": "2026-09-01T00:00:00Z",
+      "updated_at": "2026-09-01T00:00:00Z",
+      "last_activity_at": "2026-09-01T00:00:00Z",
+      "status": "completed",
+      "active_run_id": null,
+      "pending_interaction": null,
+      "current_provider": null,
+      "current_endpoint": null,
+      "current_model": null,
+      "approval_mode": "inherit",
+      "interaction_mode": "interactive",
+      "workspace": null,
+      "workspace_trusted": false,
+      "archived": false,
+      "pinned": false,
+      "tags": [],
+      "message_count": 3,
+      "run_count": 1,
+      "resource_count": 0,
+      "last_message_preview": "",
+      "health": "ok",
+      "error_detail": null,
+      "catalog_error": null
+    }
+  ]
+}

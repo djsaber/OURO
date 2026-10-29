@@ -86,6 +86,7 @@ def upgrade(
                 units.run(
                     UpgradeUnit("session_store", "files"),
                     partial(session_upgrade.files, work, units),
+                    remove=partial(session_upgrade.remove_files, work),
                 )
             else:
                 units.run(
@@ -97,10 +98,15 @@ def upgrade(
                         partial(session_upgrade.sqlite, units=units),
                         current=session_upgrade.current_sqlite,
                     ),
+                    remove=partial(databases.remove_database, work, "sessions.sqlite3"),
                 )
             work.progress("tasks")
             if tasks == "files":
-                units.run(UpgradeUnit("task_store", "files"), partial(files.tasks, work, units))
+                units.run(
+                    UpgradeUnit("task_store", "files"),
+                    partial(files.tasks, work, units),
+                    remove=partial(work.remove_directory, "tasks"),
+                )
             else:
                 units.run(
                     UpgradeUnit("task_store", "sqlite"),

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "session_id": "ses_fixture",
+  "input_id": "input_consumed",
+  "history_epoch": 0,
+  "history_bound": false,
+  "mode": "follow_up",
+  "source": "user",
+  "role": "user",
+  "scaffold": false,
+  "semantic_tag": null,
+  "coalesce_key": null,
+  "plugin_id": null,
+  "contribution_id": null,
+  "session_control_controller_id": null,
+  "session_control_activation_id": null,
+  "status": "consumed",
+  "message_ids": [
+    "msg_input"
+  ]
+}

@@ -9,19 +9,80 @@ import os
 import platform
 import shutil
 import sqlite3
-from contextlib import closing
+from contextlib import closing, nullcontext
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter
 from typing import cast
 from unittest.mock import patch
 
+from dev.benchmarks.harness_lifecycle import process_io
 from ouro.deployment import SessionBackend
 from ouro.local_permissions import restrict_to_user
 from ouro_upgrade.engine import upgrade
 from ouro_upgrade.progress import UpgradeProgress
 
 FIXTURES = Path(__file__).resolve().parents[2] / "tests/upgrade/fixtures"
+
+
+def native_home(home: Path, backend: str, messages: int) -> None:
+    """Extend frozen native writer output without using the current storage writer."""
+    shutil.copytree(FIXTURES / "native" / backend, home)
+    source = home / "session.sql"
+    directory = home / "sessions/ses_fixture"
+    database = (
+        directory / "session-data.sqlite3" if backend == "files" else home / "sessions.sqlite3"
+    )
+    with closing(sqlite3.connect(database)) as connection:
+        connection.executescript(source.read_text("utf-8"))
+        source.unlink()
+        first = (
+            (directory / "messages.jsonl").read_text("utf-8").splitlines()[0]
+            if backend == "files"
+            else connection.execute("SELECT payload FROM messages WHERE row_id=1").fetchone()[0]
+        )
+        message = json.loads(first)
+        message["content"] = [{"type": "text", "text": "x" * 4096}]
+        with (
+            (directory / "messages.jsonl").open("ab")
+            if backend == "files"
+            else nullcontext() as stream
+        ):
+            for index in range(messages):
+                identity, sequence = f"msg_bench_{index}", index + 5
+                message.update(message_id=identity, sequence=sequence)
+                payload = json.dumps(message, separators=(",", ":"))
+                if stream is not None:
+                    connection.execute(
+                        "INSERT INTO locations(position,message_id,offset,role,resource_refs) "
+                        "VALUES(?,?,?,'user','[]')",
+                        (sequence, identity, stream.tell()),
+                    )
+                    stream.write((payload + "\n").encode("utf-8"))
+                else:
+                    connection.execute(
+                        "INSERT INTO messages(session_id,message_id,sequence,role,"
+                        "resource_refs,payload) "
+                        "VALUES('ses_fixture',?,?,'user','[]',?)",
+                        (identity, sequence, payload),
+                    )
+            if messages:
+                connection.execute(
+                    "UPDATE sessions SET payload=json_set(payload,'$.message_count',?,"
+                    "'$.last_message_id',?)",
+                    (messages + 4, identity),
+                )
+                if backend == "sqlite":
+                    connection.execute(
+                        "UPDATE session_catalog SET payload=json_set(payload,'$.message_count',?)",
+                        (messages + 4,),
+                    )
+        connection.commit()
+    if backend == "files":
+        index = home / "sessions/index.json"
+        catalog = json.loads(index.read_text("utf-8"))
+        catalog["sessions"][0]["message_count"] = messages + 4
+        index.write_text(json.dumps(catalog), "utf-8")
 
 
 def synthetic_home(home: Path, backend: str, operations: int) -> None:
@@ -79,6 +140,7 @@ def sample(
             sync_seconds += perf_counter() - started
 
     profiler = cProfile.Profile() if profile else None
+    before_io = process_io()
     started = perf_counter()
     try:
         with patch("os.fsync", sync):
@@ -93,6 +155,7 @@ def sample(
             )
     finally:
         elapsed = perf_counter() - started
+        after_io = process_io()
         if profiler:
             profiler.disable()
             assert profile is not None
@@ -104,6 +167,7 @@ def sample(
         "python_fsync_seconds": sync_seconds,
         "status": report["status"],
         "changed_files": len(cast(list[str], report["files"])),
+        "process_io": {name: after_io[name] - value for name, value in before_io.items()},
     }
 
 
@@ -113,6 +177,11 @@ def main() -> None:
     parser.add_argument("--operations", type=int, default=1000)
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument(
+        "--native-messages",
+        type=int,
+        help="Upgrade layout 41/schema 26 with this many additional 4 KiB messages",
+    )
     parser.add_argument(
         "--profile", type=Path, help="Save cProfile statistics (requires --repeat 1)"
     )
@@ -124,6 +193,8 @@ def main() -> None:
         parser.error("operations must be nonnegative and repeat must be positive")
     if args.profile and args.repeat != 1:
         parser.error("--profile requires --repeat 1")
+    if args.native_messages is not None and (args.native_messages < 0 or args.source_home):
+        parser.error("--native-messages requires a nonnegative count and no --source-home")
     print(
         json.dumps(
             {
@@ -131,7 +202,10 @@ def main() -> None:
                 "python": platform.python_version(),
                 "backend": args.backend,
                 "source": "explicit home copy" if args.source_home else "synthetic history",
-                "operations": None if args.source_home else args.operations + 1,
+                "operations": None
+                if args.source_home or args.native_messages is not None
+                else args.operations + 1,
+                "native_messages": args.native_messages,
                 "profiled": bool(args.profile),
             }
         ),
@@ -144,9 +218,13 @@ def main() -> None:
             home = root / "home"
             if args.source_home:
                 shutil.copytree(args.source_home, home, ignore=shutil.ignore_patterns(".upgrade"))
+            elif args.native_messages is not None:
+                native_home(home, args.backend, args.native_messages)
             else:
                 synthetic_home(home, args.backend, args.operations)
             result = sample(home, backend=args.backend, check=args.check, profile=args.profile)
+            if args.native_messages is not None:
+                assert result["status"] == ("upgrade_required" if args.check else "upgraded")
             print(json.dumps({"sample": index + 1, **result}), flush=True)
 
 

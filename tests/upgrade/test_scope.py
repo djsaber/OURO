@@ -87,13 +87,13 @@ def test_resource_migration_updates_metadata_without_reading_attachment_content(
     assert not (directory / "files/attachment.txt").exists()
 
 
-def test_unknown_event_version_is_rejected_even_without_registered_event_steps(historical_home):
+def test_obsolete_event_journal_is_retired_without_parsing(historical_home):
     journal = historical_home / "sessions/ses_fixture/events.jsonl"
-    journal.write_text('{"schema_version":999}\n', encoding="utf-8")
-    before = hashes(historical_home)
-    with pytest.raises(UpgradeError, match="unsupported event version"):
-        upgrade(historical_home)
-    assert hashes(historical_home) == before
+    journal.write_bytes(b"obsolete notifications are not conversion input")
+    report = upgrade(historical_home)
+    assert report["status"] == "upgraded"
+    assert journal.relative_to(historical_home).as_posix() in report["files"]
+    assert not journal.exists()
 
 
 def test_current_catalog_input_errors_do_not_expose_record_values(historical_home):

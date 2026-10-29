@@ -90,7 +90,7 @@ async def test_unsupported_upgrade_preserves_data_and_offers_safe_default(
             for name, value in before.items()
             if name.startswith("tasks/")
         )
-        assert {choice.value for choice in app._menu._choices} == {"retry", "exit"}
+        assert {choice.value for choice in app._menu._choices} == {"retry", "discard", "exit"}
         options = app.screen.query_one(OptionList)
         assert options.get_option_at_index(options.highlighted).id == "exit"
         assert (
@@ -100,12 +100,17 @@ async def test_unsupported_upgrade_preserves_data_and_offers_safe_default(
     assert hashes(historical_home) != before
 
 
+@pytest.mark.parametrize("damage", ["invalid-context", "missing-session"])
 async def test_discard_confirmation_defaults_to_cancel_and_preserves_successful_data(
     historical_home,
+    damage,
 ) -> None:
     home = historical_home
     bad = clone_files(home, "sessions/ses_fixture", "ses_bad")
-    (bad / "context.json").write_bytes(b'{"schema_version":999}')
+    if damage == "missing-session":
+        (bad / "session.json").unlink()
+    else:
+        (bad / "context.json").write_bytes(b'{"schema_version":999}')
     (home / "plugins").mkdir()
     (home / "plugins/private.json").write_text("plugin data", encoding="utf-8")
     (home / "credentials.json").write_text("private credentials", encoding="utf-8")

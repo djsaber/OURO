@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Literal
 
-from ouro_upgrade.errors import UpgradeBlockedError, UpgradeDataError
+from ouro_upgrade.errors import UpgradeDataError
 from ouro_upgrade.workspace import Workspace
 
 
@@ -46,24 +45,19 @@ class UpgradeUnits:
         convert: Callable[[], T],
         *,
         remove: Callable[[], None] | None = None,
-        connection: sqlite3.Connection | None = None,
     ) -> T | None:
         checkpoint = len(self.work.changes)
         failures = len(self.failures)
         discarded = len(self.discarded)
-        if connection is not None:
-            connection.execute("SAVEPOINT upgrade_unit")
         try:
             return convert()
         except UpgradeDataError as exc:
             if not self.isolate:
                 raise
-            if connection is not None:
-                connection.execute("ROLLBACK TO upgrade_unit")
             self.work.rollback_staging(checkpoint)
             del self.failures[failures:]
             del self.discarded[discarded:]
-            discardable = remove is not None and not isinstance(exc, UpgradeBlockedError)
+            discardable = remove is not None
             if discardable and unit in self.discard:
                 assert remove is not None
                 remove()
@@ -71,9 +65,6 @@ class UpgradeUnits:
             else:
                 self.failures.append(UpgradeFailure(unit, str(exc), discardable))
             return None
-        finally:
-            if connection is not None:
-                connection.execute("RELEASE upgrade_unit")
 
     def report(self) -> dict[str, object]:
         return {

@@ -21,3 +21,20 @@ def historical_home(tmp_path: Path, request: pytest.FixtureRequest) -> Path:
         source.unlink()
 
     return home
+
+
+@pytest.fixture(params=["files", "sqlite"])
+def native_home(tmp_path: Path, request: pytest.FixtureRequest) -> tuple[Path, str]:
+    backend = request.param
+    home = tmp_path / "home"
+    shutil.copytree(FIXTURES / "native" / backend, home)
+    source = home / "session.sql"
+    database = (
+        home / "sessions/ses_fixture/session-data.sqlite3"
+        if backend == "files"
+        else home / "sessions.sqlite3"
+    )
+    with closing(sqlite3.connect(database)) as connection:
+        connection.executescript(source.read_text("utf-8"))
+    source.unlink()
+    return home, backend

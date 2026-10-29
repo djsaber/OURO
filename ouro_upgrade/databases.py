@@ -11,7 +11,7 @@ from pathlib import Path
 from ouro.billing.local import LocalUsageLedger
 from ouro.billing.schema import USAGE_SCHEMA
 from ouro.core.billing import ProviderUsageEntry
-from ouro_upgrade.errors import UpgradeBlockedError, UpgradeDataError, UpgradeError, require
+from ouro_upgrade.errors import UpgradeDataError, UpgradeError, require
 from ouro_upgrade.records import convert, convert_task, dumps, loads, validate
 from ouro_upgrade.workspace import Workspace
 
@@ -21,11 +21,6 @@ _IDENTITIES = {
     "usage": ("entry_id",),
     "usage_event": ("event_id",),
 }
-
-
-def require_structure(condition: bool, location: str, reason: str) -> None:
-    if not condition:
-        raise UpgradeBlockedError(f"{location}: {reason}")
 
 
 def database(
@@ -53,7 +48,7 @@ def database(
                 sqlite3.SQLITE_NOTADB,
                 sqlite3.SQLITE_ERROR,
             }:
-                raise UpgradeBlockedError(f"{relative}: invalid SQLite structure") from exc
+                raise UpgradeDataError(f"{relative}: invalid SQLite structure") from exc
             raise
     work.source(relative)
     directory = work.temporary()
@@ -73,7 +68,7 @@ def database(
             # This disposable database cannot be published until Workspace syncs
             # its closed, validated main file together with the rollback material.
             connection.execute("PRAGMA synchronous=OFF")
-            require_structure(
+            require(
                 connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE type IN ('trigger','view') LIMIT 1"
                 ).fetchone()
@@ -90,18 +85,19 @@ def database(
     except sqlite3.Error as exc:
         code = getattr(exc, "sqlite_errorcode", 0) & 0xFF
         error = (
-            UpgradeBlockedError
+            UpgradeDataError
             if code
             in {
                 sqlite3.SQLITE_CORRUPT,
                 sqlite3.SQLITE_NOTADB,
                 sqlite3.SQLITE_ERROR,
+                sqlite3.SQLITE_CONSTRAINT,
             }
             else UpgradeError
         )
         raise error(f"{relative}: SQLite validation failed ({type(exc).__name__})") from exc
     except UpgradeDataError as exc:
-        raise type(exc)(f"{relative}: {exc}") from exc
+        raise UpgradeDataError(f"{relative}: {exc}") from exc
     if isinstance(changed, Path):
         target = changed
         with closing(sqlite3.connect(target)) as connection:
@@ -113,12 +109,12 @@ def database(
 
 
 def check_integrity(connection: sqlite3.Connection) -> None:
-    require_structure(
+    require(
         connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok",
         "SQLite",
         "integrity check failed",
     )
-    require_structure(
+    require(
         connection.execute("PRAGMA foreign_key_check").fetchone() is None,
         "SQLite",
         "foreign key check failed",
@@ -156,8 +152,8 @@ def payloads(
 
 def usage(connection: sqlite3.Connection) -> bool:
     version = connection.execute("PRAGMA user_version").fetchone()[0]
-    require_structure(version in (1, 2, 5), "usage", "unsupported database schema")
-    require_structure(
+    require(version in (1, 2, 5), "usage", "unsupported database schema")
+    require(
         connection.execute("PRAGMA application_id").fetchone()[0] == 0x4F555242,
         "usage",
         "unexpected database application id",
@@ -192,7 +188,7 @@ def usage(connection: sqlite3.Connection) -> bool:
 
 def tasks(connection: sqlite3.Connection) -> bool:
     version = connection.execute("PRAGMA user_version").fetchone()[0]
-    require_structure(version in (1, 3), "tasks", "expected database schema 1 or 3")
+    require(version in (1, 3), "tasks", "expected database schema 1 or 3")
     if version == 3:
         return False
     changed = payloads(connection, "tasks", "task", version=version)

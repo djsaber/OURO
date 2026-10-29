@@ -131,10 +131,22 @@ def test_sqlite_container_failure_preserves_source_and_upgrades_other_domains(hi
     before = (home / "sessions.sqlite3").read_bytes()
     report = upgrade(home, session_backend="sqlite", task_backend="sqlite", isolate_failures=True)
     assert report["status"] == "partial"
-    assert not confirmed(report)
+    assert confirmed(report) == {UpgradeUnit("session_store", "sqlite")}
     assert (home / "sessions.sqlite3").read_bytes() == before
     assert report["failures"][0]["unit"]["kind"] == "session_store"
     assert LocalUsageLedger(home).get("usage_kept").input_tokens == 123
+    assert (
+        upgrade(
+            home,
+            session_backend="sqlite",
+            task_backend="sqlite",
+            isolate_failures=True,
+            discard=confirmed(report),
+        )["status"]
+        == "upgraded"
+    )
+    assert not (home / "sessions.sqlite3").exists()
+    assert (home / "sessions/ses_bad/resources/files/attachment.txt").exists()
 
 
 def test_confirmation_rechecks_repaired_units_and_does_not_delete_new_failures(historical_home):
@@ -156,7 +168,7 @@ def test_confirmation_rechecks_repaired_units_and_does_not_delete_new_failures(h
     assert task.exists()
 
 
-def test_shared_layout_failure_does_not_block_other_domains_or_offer_whole_home_deletion(
+def test_shared_layout_failure_can_remove_only_its_confirmed_container(
     historical_home,
 ):
     home = historical_home
@@ -165,12 +177,16 @@ def test_shared_layout_failure_does_not_block_other_domains_or_offer_whole_home_
     before = hashes(home)
     report = upgrade(home, isolate_failures=True)
     assert report["status"] == "partial"
-    assert confirmed(report) == set()
+    assert confirmed(report) == {UpgradeUnit("task_store", "files")}
     assert report["failures"][0]["unit"] == {"kind": "task_store", "identity": "files"}
     assert any(name.startswith("sessions/") for name in report["files"])
     assert all(
         hashes(home)[name] == value for name, value in before.items() if name.startswith("tasks/")
     )
+    result = upgrade(home, isolate_failures=True, discard=confirmed(report))
+    assert result["status"] == "upgraded"
+    assert not (home / "tasks").exists()
+    assert LocalSessionStore(home).load_session("ses_fixture").messages
 
 
 def test_io_failure_is_not_a_discardable_record_error(historical_home, monkeypatch):
@@ -255,14 +271,16 @@ def test_usage_failure_keeps_other_units_and_removes_only_ledger_on_confirmation
 
 
 @pytest.mark.parametrize("historical_home", ["sqlite"], indirect=True)
-def test_structural_database_error_blocks_deletion_but_allows_other_domains(historical_home):
+def test_structural_database_error_offers_its_container_and_preserves_other_domains(
+    historical_home,
+):
     home = historical_home
     path = home / "sessions.sqlite3"
     path.write_bytes(b"unreadable database")
     report = upgrade(home, session_backend="sqlite", task_backend="sqlite", isolate_failures=True)
     assert report["status"] == "partial"
     assert report["failures"][0]["unit"] == {"kind": "session_store", "identity": "sqlite"}
-    assert confirmed(report) == set()
+    assert confirmed(report) == {UpgradeUnit("session_store", "sqlite")}
     assert path.read_bytes() == b"unreadable database"
     assert "tasks.sqlite3" in report["files"]
     assert "billing/usage.sqlite3" in report["files"]
@@ -285,20 +303,43 @@ def test_malformed_record_data_is_isolated_without_leaking_contents(
 
 
 @pytest.mark.parametrize("case", ["missing-session", "pending-commit"])
-def test_unowned_or_unfinished_session_is_not_discardable(historical_home, case):
+def test_missing_or_unfinished_session_can_be_removed_after_confirmation(historical_home, case):
     home = historical_home
     bad = clone_files(home, "sessions/ses_fixture", "ses_bad")
     if case == "missing-session":
         (bad / "session.json").unlink()
     else:
         (bad / "commit.json").write_bytes(b"pending source publication")
-    report = upgrade(
-        home, isolate_failures=True, discard=frozenset({UpgradeUnit("session", "ses_bad")})
-    )
+    report = upgrade(home, isolate_failures=True)
     assert report["status"] == "partial"
-    assert confirmed(report) == set()
+    assert confirmed(report) == {UpgradeUnit("session", "ses_bad")}
     assert bad.exists()
     assert "sessions/ses_fixture/context.json" in report["files"]
+    # The home now has the current layout; the orphan must remain visible on retry.
+    assert confirmed(upgrade(home, isolate_failures=True)) == confirmed(report)
+    result = upgrade(home, isolate_failures=True, discard=confirmed(report))
+    assert result["status"] == "upgraded"
+    assert not bad.exists()
+    assert LocalSessionStore(home).load_session("ses_fixture").messages
+    assert upgrade(home)["status"] == "current"
+
+
+def test_unreadable_session_layout_offers_its_container_without_removing_other_domains(
+    historical_home,
+):
+    home = historical_home
+    (home / "layout.json").write_bytes(b"invalid layout")
+    report = upgrade(home, isolate_failures=True)
+    assert confirmed(report) == {UpgradeUnit("session_store", "files")}
+    assert (home / "sessions/ses_fixture").exists()
+    tasks = hashes(home / "tasks")
+    result = upgrade(home, isolate_failures=True, discard=confirmed(report))
+    assert result["status"] == "upgraded"
+    assert not (home / "sessions").exists()
+    assert not (home / "layout.json").exists()
+    assert hashes(home / "tasks") == tasks
+    assert LocalUsageLedger(home).get("usage_kept").input_tokens == 123
+    LocalSessionStore(home).initialize()
 
 
 def test_directory_restore_validates_all_backups_before_changing_any_data(

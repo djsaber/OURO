@@ -104,7 +104,6 @@ def _required_facts(parsed: object, raw: object) -> None:
             "RunRecord": ("history_epoch", "status", "driver", "driver_checkpoint"),
             "TaskRecord": ("revision", "enabled", "status"),
             "TaskExecution": ("status",),
-            "EventRecord": ("sequence",),
             "ProviderUsageEntry": ("revision", "input_tokens", "output_tokens"),
             "ToolCallBatchRecord": ("producer",),
             "ToolResultReference": ("producer",),

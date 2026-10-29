@@ -1,0 +1,2 @@
+# Stored message offsets and digests depend on the original fixture bytes.
+files/sessions/** -text

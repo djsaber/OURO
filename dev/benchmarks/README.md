@@ -168,11 +168,16 @@ Catalog 文件计数、当前 Run 与 Draft 恢复等保留工作仍计入入口
 uv run --frozen python -m dev.benchmarks.data_upgrade --operations 1000 --repeat 3
 uv run --frozen python -m dev.benchmarks.data_upgrade --backend sqlite --operations 1000 --repeat 3
 uv run --frozen python -m dev.benchmarks.data_upgrade --check --operations 1000 --repeat 3
+uv run --frozen python -m dev.benchmarks.data_upgrade --native-messages 10000 --repeat 3
+uv run --frozen python -m dev.benchmarks.data_upgrade --backend sqlite --native-messages 10000 --repeat 3
 ```
 
 使用固定历史夹具，增加指定数量的 Session 提交记录，保留夹具中的消息、任务和用量数据。
-每个样本重新准备临时 home，输出总时间、阶段时间、变更文件数，以及 Python `os.fsync` 的调用次数和耗时；
-同步计数不包括 SQLite 内部调用或物理磁盘写入。计时包含升级工作区初始化及收尾，不包含输入构造、复制和 Python 导入，
+`--native-messages` 使用 layout 41 / schema 26 的固定原生夹具，另外加入指定数量的 4 KiB 消息，
+检验升级是否绕过正文解码与重建。该模式保留待处理及已消费输入、调用事实和当前草稿，不叠加旧提交记录。
+每个样本重新准备临时 home，输出总时间、阶段时间、变更文件数、进程 I/O，以及 Python `os.fsync` 的调用次数和耗时；
+进程 I/O 包含 SQLite 原生调用和缓存命中的读写，不等同于物理设备写入；Python 同步计数不包括 SQLite 内部调用。
+计时包含升级工作区初始化及收尾，不包含输入构造、复制和 Python 导入，
 不清除 OS 缓存。`--profile PATH --repeat 1` 可保存 cProfile 数据，采样开销计入该次测量。
 
 排查实际数据时可使用 `--source-home 'C:\data\ouro-home' --repeat 1`；请替换路径并停止该 home 的写入者。

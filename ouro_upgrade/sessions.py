@@ -18,6 +18,7 @@ from ouro.sessions.backends.files.database import initialize_index
 from ouro.sessions.backends.files.message_locations import FileMessageIndex, FileMessageReference
 from ouro.sessions.backends.sqlite.commits import SQLiteSessionCommits
 from ouro.sessions.backends.sqlite.messages import write_messages
+from ouro.sessions.backends.sqlite.store import SQLITE_SCHEMA_VERSION
 from ouro.sessions.catalog import SessionCatalogProjection, catalog_entry_from_projection
 from ouro.sessions.index import SessionIndex, SessionIndexEntry, invalid_session_index_entry
 from ouro.sessions.layout import DATA_LAYOUT_VERSION
@@ -27,9 +28,9 @@ from ouro.sessions.sqlite_requests import write_header
 from ouro.sessions.sqlite_resources import insert_reference
 from ouro.sessions.sqlite_runs import write_run
 from ouro.sessions.sqlite_sessions import write_session
-from ouro_upgrade import session_records
+from ouro_upgrade import session_records, session_storage
 from ouro_upgrade.delegations import resolve_file_parents, save_delegation
-from ouro_upgrade.errors import UpgradeBlockedError, UpgradeDataError, require
+from ouro_upgrade.errors import UpgradeDataError, require
 from ouro_upgrade.files import children, decode, read_json
 from ouro_upgrade.records import convert, loads, validate
 from ouro_upgrade.units import UpgradeUnit, UpgradeUnits
@@ -148,9 +149,9 @@ def _write(
 def file_session(work: Workspace, directory: Path) -> SessionIndexEntry:
     relative = directory.relative_to(work.home).as_posix()
     if not (directory / "session.json").is_file():
-        raise UpgradeBlockedError(f"{relative}: missing Session record; ownership is unknown")
+        raise UpgradeDataError(f"{relative}: missing Session record")
     if (directory / "commit.json").exists():
-        raise UpgradeBlockedError(
+        raise UpgradeDataError(
             f"{relative}: unfinished Session commit; recover using original OURO"
         )
     data: dict[str, list[dict[str, Any]]] = {
@@ -236,31 +237,47 @@ def files(work: Workspace, units: UpgradeUnits) -> None:
     layout = read_json(work, "layout.json")
     version = layout.get("data_layout_version")
     require(
-        type(version) is int and version in (9, DATA_LAYOUT_VERSION),
+        type(version) is int and version in (9, 41, DATA_LAYOUT_VERSION),
         "layout",
         "unsupported Session layout",
     )
     entries = []
     directories = [item for item in children(root, "*") if item.is_dir()]
-    historical = [directory for directory in directories if (directory / "session.json").exists()]
-    if version == DATA_LAYOUT_VERSION and not historical:
+    unfinished = any(not (directory / "session-data.sqlite3").exists() for directory in directories)
+    if version == DATA_LAYOUT_VERSION and not unfinished:
         return
 
     previous = (
         read_json(work, "sessions/index.json")
-        if version == DATA_LAYOUT_VERSION and work.path("sessions/index.json").exists()
+        if version != 9 and work.path("sessions/index.json").exists()
         else {"sessions": []}
     )
     current_entries = (
-        {item.session_id: item for item in SessionIndex.model_validate(previous).sessions}
-        if version == DATA_LAYOUT_VERSION
+        {
+            item.session_id: item
+            for item in validate(
+                SessionIndex, {**previous, "data_layout_version": DATA_LAYOUT_VERSION}
+            ).sessions
+        }
+        if version != 9
         else {}
     )
+    failures = len(units.failures)
     work.progress("sessions", 0, len(directories))
     for number, directory in enumerate(directories, 1):
         if (directory / "session-data.sqlite3").exists():
-            if directory.name in current_entries:
+            unit = UpgradeUnit("session", directory.name)
+            if version == 41:
+                units.run(
+                    unit,
+                    partial(session_storage.file_session, work, directory),
+                    remove=partial(
+                        work.remove_directory, directory.relative_to(work.home).as_posix()
+                    ),
+                )
+            if unit not in units.discarded and directory.name in current_entries:
                 entries.append(current_entries[directory.name])
+            work.progress("sessions", number, len(directories))
             continue
         entry = units.run(
             UpgradeUnit("session", directory.name),
@@ -279,8 +296,12 @@ def files(work: Workspace, units: UpgradeUnits) -> None:
                 )
             )
         work.progress("sessions", number, len(directories))
+    # Keep the home gated until every native container supports the current reader.
+    if version == 41 and len(units.failures) > failures:
+        return
     work.json("sessions/index.json", SessionIndex(sessions=entries).model_dump(mode="json"))
-    work.json("layout.json", {**layout, "data_layout_version": DATA_LAYOUT_VERSION})
+    if version != DATA_LAYOUT_VERSION:
+        work.json("layout.json", {**layout, "data_layout_version": DATA_LAYOUT_VERSION})
 
 
 def sqlite(connection: sqlite3.Connection, units: UpgradeUnits) -> bool | Path:
@@ -288,10 +309,20 @@ def sqlite(connection: sqlite3.Connection, units: UpgradeUnits) -> bool | Path:
         "SELECT value FROM metadata WHERE key='sqlite_schema_version'"
     ).fetchone()
     require(
-        version is not None and version[0] in ("7", "27"), "sessions", "unsupported SQLite schema"
+        version is not None and version[0] in ("7", "26", str(SQLITE_SCHEMA_VERSION)),
+        "sessions",
+        "unsupported SQLite schema",
     )
-    if version[0] == "27":
+    if version[0] == str(SQLITE_SCHEMA_VERSION):
         return False
+    if version[0] == "26":
+        session_storage.observation_schema(connection)
+        connection.execute("CREATE INDEX messages_sequence ON messages(session_id, sequence)")
+        connection.execute(
+            "UPDATE metadata SET value=? WHERE key='sqlite_schema_version'",
+            (str(SQLITE_SCHEMA_VERSION),),
+        )
+        return True
     work = units.work
     target = work.temporary()
     store = SQLiteSessionStore(target)
@@ -342,4 +373,10 @@ def current_sqlite(connection: sqlite3.Connection) -> bool:
     row = connection.execute(
         "SELECT value FROM metadata WHERE key='sqlite_schema_version'"
     ).fetchone()
-    return row is not None and row[0] == "27"
+    return row is not None and row[0] == str(SQLITE_SCHEMA_VERSION)
+
+
+def remove_files(work: Workspace) -> None:
+    """Remove the selected file container after an unreadable layout is confirmed."""
+    work.remove_directory("sessions")
+    work.stage("layout.json", None)
