@@ -20,7 +20,6 @@ from ouro.core.session_commits import (
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
 from ouro.core.tool_batches import validate_call_states
 from ouro.core.tool_facts import ToolCallFacts, ToolOutcomeRecord
-from ouro.sessions.backends.sqlite.inputs import read_state, write_input, write_state
 from ouro.sessions.backends.sqlite.messages import truncate_messages, write_messages
 from ouro.sessions.sqlite_compactions import (
     insert_compaction,
@@ -28,8 +27,9 @@ from ouro.sessions.sqlite_compactions import (
     update_compaction_boundary,
 )
 from ouro.sessions.sqlite_drafts import publish_draft
-from ouro.sessions.sqlite_events import insert_events, latest_sequence
 from ouro.sessions.sqlite_facts import load_required, write_call_state, write_fact
+from ouro.sessions.sqlite_inputs import read_state, write_input, write_state
+from ouro.sessions.sqlite_observation import advance_revision
 from ouro.sessions.sqlite_requests import write_header
 from ouro.sessions.sqlite_runs import read_pending_runs, write_run
 from ouro.sessions.sqlite_sessions import read_session
@@ -79,7 +79,6 @@ class SQLiteSessionCommits:
         harness = self.load_harness(session_id, current.harness_version) if request.steps else None
         if current.last_commit_id == request.operation_id:
             raise SessionCommitConflict("commit already applied; query the domain result")
-        event_sequence = latest_sequence(connection, session_id)
         truncation = None
         restore = None
         compaction_references = None
@@ -246,7 +245,6 @@ class SQLiteSessionCommits:
             request,
             current,
             harness,
-            event_sequence=event_sequence,
             truncation=truncation,
             restore=restore,
             retained_compaction_ids=(
@@ -270,6 +268,7 @@ class SQLiteSessionCommits:
             ),
         )
         result = decision.result
+        revision = advance_revision(connection, session_id)
         if decision.clear_response_draft:
             # The formal response can reuse its Draft pages within this same
             # transaction. Readers keep the old snapshot until publication.
@@ -277,19 +276,21 @@ class SQLiteSessionCommits:
         for fact in decision.tool_facts.records:
             write_fact(connection, fact)
         for call_state in decision.call_states:
-            write_call_state(connection, call_state)
+            write_call_state(connection, call_state, revision=revision)
         for version in decision.versions:
             self.save_version(version)
         for record in decision.inputs:
             write_input(connection, record)
         for state in decision.input_states:
-            write_state(connection, state)
+            write_state(connection, state, revision=revision)
         if cut_row is not None:
             truncate_messages(connection, session_id, cut_row)
         write_messages(connection, result.messages, resource_refs=message_resources)
         for run in decision.runs:
             result.session.run_count += int(
-                write_run(connection, run, history_epoch=result.session.history_epoch)
+                write_run(
+                    connection, run, history_epoch=result.session.history_epoch, revision=revision
+                )
             )
         if result.truncation is not None:
             connection.execute(
@@ -305,7 +306,7 @@ class SQLiteSessionCommits:
         for item in decision.updated_compactions:
             update_compaction_boundary(connection, item)
         if decision.compaction is not None:
-            insert_compaction(connection, decision.compaction)
+            insert_compaction(connection, decision.compaction, revision=revision)
         if decision.invalidate_context:
             connection.execute("DELETE FROM latest_contexts WHERE session_id = ?", (session_id,))
         if request.request_manifest is not None:
@@ -324,7 +325,7 @@ class SQLiteSessionCommits:
             "UPDATE sessions SET payload = ? WHERE session_id = ?",
             (result.session.model_dump_json(), session_id),
         )
-        insert_events(connection, result.events)
+        result.published_at(revision)
         return result
 
     def commit_outcome(self, outcome: ToolOutcomeRecord) -> ToolOutcomeRecord:
@@ -338,6 +339,7 @@ class SQLiteSessionCommits:
         )
         if prepared.outcomes:
             write_fact(self.connection, outcome)
+            advance_revision(self.connection, outcome.session_id)
         return outcome
 
     def _prepare_tool_facts(

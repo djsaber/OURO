@@ -15,12 +15,12 @@ from ouro.core.context_snapshots import (
     ModelRequestHeader,
     RequestManifestRecord,
 )
-from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessVersion
 from ouro.core.inputs import InputRecord, InputState
 from ouro.core.message_frames import MessageTruncation
 from ouro.core.message_statistics import RunMessageCounts, RunResultReferences
 from ouro.core.messages import MessageFact, MessageRecord
+from ouro.core.provider import ProviderRetryNotice
 from ouro.core.resources import ResourceRecord, SessionResourceReference
 from ouro.core.response_drafts import ResponseDraftChunk, ResponseDraftPage
 from ouro.core.session_commits import SessionCommit, SessionCommitResult
@@ -38,6 +38,8 @@ from ouro.sessions.index import SessionIndex
 
 if TYPE_CHECKING:
     from ouro.sessions.portable import SessionBundle
+
+from ouro.sessions.observation import FactCursor, SessionFactPage
 
 
 class RuntimeSessionSnapshot(OuroModel):
@@ -65,9 +67,8 @@ class SessionHistorySnapshot(RuntimeSessionSnapshot):
 
 
 class SessionSnapshot(SessionHistorySnapshot):
-    """Complete Session view for inspection, export, and replay."""
+    """Complete Session view for inspection and export."""
 
-    events: list[EventRecord] = Field(default_factory=list)
     extension_states: list[SessionExtensionStateRecord] = Field(default_factory=list)
     harness_versions: list[HarnessVersion] = Field(default_factory=list)
     inputs: list[InputRecord] = Field(default_factory=list)
@@ -78,12 +79,6 @@ class SessionSnapshot(SessionHistorySnapshot):
     latest_manifest: RequestManifestRecord | None = None
 
 
-class SessionObservationState(SessionHistorySnapshot):
-    """Atomic persistence view for Host snapshot/live event handoff."""
-
-    event_high_water: int = Field(default=0, ge=0)
-
-
 class SessionLock(Protocol):
     def release(self) -> None: ...
 
@@ -92,8 +87,8 @@ class SessionRepository(Protocol):
     """Canonical Session persistence required by application behavior.
 
     Deployment paths, initialization and disposable catalog maintenance are
-    deliberately excluded. Implementations must provide real mutation and
-    ordered-event guarantees; silently degrading either guarantee is unsafe.
+    deliberately excluded. Implementations provide atomic fact mutations and
+    consistent, bounded reads for observation.
     """
 
     def load_harness(self, session_id: str, version_id: str | None = None) -> HarnessVersion: ...
@@ -221,14 +216,6 @@ class SessionRepository(Protocol):
         """
         ...
 
-    def append_event(self, event: EventRecord) -> None: ...
-
-    def append_events(self, events: list[EventRecord]) -> None:
-        """Append one Session's existing events within a staging store or transaction."""
-        ...
-
-    def append_ordered_event(self, event: EventRecord) -> EventRecord: ...
-
     def save_run(self, run: RunRecord) -> None: ...
 
     def append_response_draft(
@@ -241,6 +228,12 @@ class SessionRepository(Protocol):
         self, session_id: str, context_id: str, *, after_cursor: int = 0, limit: int | None = None
     ) -> ResponseDraftPage | None:
         """Read current output; None means this request was replaced or closed."""
+        ...
+
+    def record_request_retry(
+        self, session_id: str, context_id: str, retry: ProviderRetryNotice
+    ) -> None:
+        """Replace current retry progress without retaining past notices."""
         ...
 
     def settle_request_header(
@@ -285,13 +278,41 @@ class SessionRepository(Protocol):
         """
         ...
 
-    def load_session_observation(self, session_id: str) -> SessionObservationState: ...
+    def load_session_observation(self, session_id: str) -> SessionHistorySnapshot: ...
 
     def load_active_compaction(self, session_id: str) -> CompactionRecord | None: ...
 
+    def load_compaction(self, session_id: str, compaction_id: str) -> CompactionRecord: ...
+
     def load_compactions(self, session_id: str) -> list[CompactionRecord]: ...
 
-    def latest_event_sequence(self, session_id: str) -> int: ...
+    def load_compactions_in_range(
+        self, session_id: str, *, first_sequence: int, last_sequence: int
+    ) -> list[CompactionRecord]: ...
+
+    def load_observation_changes(
+        self,
+        session_id: str,
+        *,
+        after_revision: int,
+        through_revision: int,
+        limit: int,
+        cursor: FactCursor | None = None,
+    ) -> SessionFactPage: ...
+
+    def observation_revision(self, session_id: str) -> int:
+        """Current committed fact revision; draft appends have their own cursor."""
+        ...
+
+    def load_messages_after(
+        self,
+        session_id: str,
+        *,
+        after_sequence: int,
+        limit: int,
+    ) -> tuple[list[MessageRecord], bool]:
+        """Read only the published message suffix in canonical Session order."""
+        ...
 
     def load_messages_page(
         self,
@@ -317,6 +338,10 @@ class SessionRepository(Protocol):
 
     def load_run_messages(self, session_id: str, run_id: str) -> list[MessageRecord]:
         """Read only one Run's canonical messages, in journal order."""
+        ...
+
+    def run_message_end(self, session_id: str, run_id: str) -> int:
+        """Last published message position for this Run, without reading content."""
         ...
 
     def has_run_messages(self, session_id: str, run_id: str) -> bool:
@@ -346,23 +371,6 @@ class SessionRepository(Protocol):
     def find_queued_input_message(self, session_id: str, queue_id: str) -> MessageRecord | None:
         """Find the canonical receipt of an already consumed queued input."""
         ...
-
-    def load_events_page(
-        self,
-        session_id: str,
-        *,
-        cursor: int = 0,
-        limit: int = 100,
-        run_id: str | None = None,
-    ) -> tuple[list[EventRecord], int | None]: ...
-
-    def load_events_after(
-        self,
-        session_id: str,
-        *,
-        after_sequence: int = 0,
-        limit: int = 100,
-    ) -> tuple[list[EventRecord], bool]: ...
 
     def load_run(self, session_id: str, run_id: str) -> RunRecord: ...
 

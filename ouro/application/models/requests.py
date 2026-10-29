@@ -20,7 +20,13 @@ from ouro.core.model_requests import (
     RunModelRequest,
     RunModelResult,
 )
-from ouro.core.provider import ModelMetadata, ProviderCompletion, ProviderStreamEvent, Usage
+from ouro.core.provider import (
+    ModelMetadata,
+    ProviderCompletion,
+    ProviderRetryNotice,
+    ProviderStreamEvent,
+    Usage,
+)
 from ouro.core.request_context import ProviderRequestContext
 from ouro.core.response_drafts import ResponseDraftChunk, ResponseStreamPosition
 from ouro.core.run_budget import RunBudgetPolicy, RunPauseReason
@@ -110,6 +116,7 @@ class ModelRequestPorts:
     commit_model_request: ModelRoundCommitter
     publish_committed: Callable[[Sequence[EventRecord]], Awaitable[None]]
     append_draft: Callable[[str, str, ResponseDraftChunk], int]
+    record_retry: Callable[[str, str, ProviderRetryNotice], None]
     resolve_model_request: ModelRequestResolver | None = None
     begin_model_round: ModelRoundStarter | None = None
     shared_budget_reason: Callable[[RunRecord, int], Awaitable[RunPauseReason | None]] | None = None
@@ -258,6 +265,10 @@ class RunModelRequests:
             if request.abort_signal.is_aborted():
                 return
             event = progress.event
+            if event.retry is not None:
+                await run_blocking(
+                    self.ports.record_retry, session.session_id, context_id, event.retry
+                )
             chunk = None
             if event.type == "text_delta" and event.text:
                 chunk = ResponseDraftChunk(channel="text", content=event.text)

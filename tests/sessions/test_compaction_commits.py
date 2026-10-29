@@ -247,7 +247,7 @@ async def test_native_failure_never_exposes_a_half_activated_summary(tmp_path, s
 
     with session_connection(store, session.session_id) as connection:
         connection.execute(
-            "CREATE TRIGGER fail_activation BEFORE INSERT ON events "
+            "CREATE TRIGGER fail_activation BEFORE INSERT ON compactions "
             "BEGIN SELECT RAISE(ABORT, 'activation failed'); END"
         )
     with pytest.raises((PersistenceError, sqlite3.IntegrityError), match="activation failed"):
@@ -261,7 +261,7 @@ async def test_native_failure_never_exposes_a_half_activated_summary(tmp_path, s
     assert cold.load_request_header(session.session_id, header.context_id) == header
     assert cold.load_active_compaction(session.session_id) is None
     assert cold.load_compactions(session.session_id) == []
-    assert cold.load_events_page(session.session_id, limit=100)[0] == []
+    assert not cold.load_compactions(session.session_id)
     with session_connection(store, session.session_id) as connection:
         connection.execute("DROP TRIGGER fail_activation")
     activate()
@@ -275,11 +275,7 @@ async def test_native_failure_never_exposes_a_half_activated_summary(tmp_path, s
         pass
     assert cold.load_compactions(session.session_id) == [candidate]
 
-    events, _ = cold.load_events_page(session.session_id, limit=100)
-    assert len(events) == 1
-    assert events[0].event_type == "compaction_completed"
-    assert events[0].payload["compaction_id"] == candidate.compaction_id
-    assert events[0].run_id == run.run_id
+    assert "events" not in cold.load_session(session.session_id).model_dump()
     await runtime.close()
 
 

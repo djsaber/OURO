@@ -41,9 +41,11 @@ def write_input(connection: sqlite3.Connection, record: InputRecord) -> None:
     )
 
 
-def write_state(connection: sqlite3.Connection, state: InputState) -> None:
+def write_state(connection: sqlite3.Connection, state: InputState, *, revision: int = 0) -> None:
     connection.execute(
-        "INSERT INTO input_states(session_id, input_id, payload) VALUES (?, ?, ?) "
-        "ON CONFLICT(session_id, input_id) DO UPDATE SET payload = excluded.payload",
-        (state.session_id, state.input_id, state.model_dump_json()),
+        "INSERT INTO input_states(session_id, input_id, payload, modified_revision) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(session_id, input_id) DO UPDATE SET payload = excluded.payload, "
+        "modified_revision = excluded.modified_revision",
+        (state.session_id, state.input_id, state.model_dump_json(), revision),
     )

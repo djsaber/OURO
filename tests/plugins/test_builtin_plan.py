@@ -41,6 +41,7 @@ from ouro.tools import (
     ToolResult,
     builtin_tools,
 )
+from tests.event_capture import recorded_events
 from tests.run_facts import run_events, run_tool_results
 
 PLUGIN_ID = "dev.ouro.plan"
@@ -546,7 +547,9 @@ async def test_plan_mode_exit_uses_unattended_resolution_in_afk_mode(tmp_path) -
     assert "The user was not asked to approve" in exit_result.content
     event_snapshot = store.load_session(completed.session.session_id)
     resolved_event = next(
-        event for event in event_snapshot.events if event.event_type == "ask_user_resolved"
+        event
+        for event in recorded_events(event_snapshot.session.session_id)
+        if event.event_type == "ask_user_resolved"
     )
     assert resolved_event.payload["resolution"]["kind"] == "unattended"
     assert not store.load_session_record(completed.session.session_id).controls.activations
@@ -594,7 +597,7 @@ async def test_plan_mode_denies_builtin_writer_outside_current_plan_and_continue
     assert denied.is_error is True
     assert denied.structured["error_type"] == "ToolPermissionDenied"
     assert "does not exclusively target the current plan file" in denied.content
-    events = store.load_session(result.session.session_id).events
+    events = recorded_events(result.session.session_id)
     policy_event = next(
         event
         for event in events
@@ -687,9 +690,7 @@ async def test_plan_off_cancels_activation_bound_pending_approval(tmp_path) -> N
     assert snapshot.session.status == "idle"
     assert snapshot.session.active_run_id is None
     assert released.data["session_controls"][0]["data"]["cancelled_run_id"] == cancelled.run_id
-    events, _ = store.load_events_page(
-        waiting.session.session_id, run_id=cancelled.run_id, limit=100
-    )
+    events = recorded_events(waiting.session.session_id, run_id=cancelled.run_id)
     aborted = [event for event in events if event.event_type == "run_aborted"]
     assert len(aborted) == 1 and aborted[0].payload["reason"] == "session_control_released"
     with pytest.raises(ValueError, match="not waiting for user input"):

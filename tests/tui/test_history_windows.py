@@ -142,9 +142,7 @@ async def test_opening_a_live_session_does_not_read_full_execution_history(
             handle = await application.supervisor.submit("live", session_id=session.session_id)
             await wait_until(prefix_ready.is_set, pilot, description="provider prefix ready")
             if prefix_before_open:
-                subscription = await application.supervisor.subscribe(
-                    session.session_id, after_sequence=0
-                )
+                subscription = await application.supervisor.subscribe(session.session_id)
                 try:
                     release_prefix.set()
                     # Provider entry precedes publication. Wait for the durable
@@ -576,15 +574,12 @@ async def test_window_reset_keeps_loaded_prefix_only_within_the_same_epoch(tmp_p
     async with run_ready_app(app) as pilot:
         assert await app._prepend_history_window(app._view_revision)
         await app.query_one(ConversationHistory).wait_until_rendered()
-        resume = store.append_ordered_event(
-            EventRecord(
-                session_id=session.session_id,
-                event_type="run_status_changed",
-                payload={"resumed": True},
-            )
+        store.save_session(
+            store.load_session_record(session.session_id).model_copy(update={"title": "resumed"})
         )
+        revision = store.observation_revision(session.session_id)
         async with asyncio.timeout(10):
-            while app._observation_subscription.applied_sequence < resume.sequence:
+            while app._observation_subscription.applied_position.revision < revision:
                 await pilot.pause()
         assert len(app.query_one(ConversationHistory).entries) == 400
         withdrawal = store.commit_session(

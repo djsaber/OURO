@@ -28,7 +28,6 @@ from ouro.core.context import (
 )
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.errors import PersistenceError, SessionBranchError, SessionBusyError
-from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ToolResultReference
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.session_extensions import SessionExtensionStateRecord
@@ -137,7 +136,6 @@ def test_run_record_reads_exact_identity_without_loading_history(tmp_path, backe
         "load_runtime_session",
         "load_runs",
         "load_run_messages",
-        "load_events_page",
     ):
         monkeypatch.setattr(store, method, reject_history)
     assert sessions.run_record(session.session_id, first.run_id) == first
@@ -177,31 +175,16 @@ def test_observation_snapshot_has_atomic_high_water_without_historical_events(
             sequence=1,
         )
     )
-    store.append_ordered_event(
-        EventRecord(
-            session_id=session.session_id,
-            run_id=completed.run_id,
-            event_type="run_completed",
-        )
-    )
-    active_event = store.append_ordered_event(
-        EventRecord(
-            session_id=session.session_id,
-            run_id=active.run_id,
-            event_type="model_text_delta",
-            payload={"text": "live"},
-        )
-    )
 
     def reject_complete_history(*_args, **_kwargs):
-        raise AssertionError("Host observation must not materialize complete event history")
+        raise AssertionError("Host observation must not materialize unrelated session collections")
 
     monkeypatch.setattr(store, "load_session", reject_complete_history)
 
     snapshot = sessions.observation_snapshot(session.session_id)
 
     assert snapshot.session.session_id == session.session_id
-    assert snapshot.event_high_water == active_event.sequence
+    assert snapshot.position.revision == store.observation_revision(session.session_id)
     assert snapshot.messages[0].text_content == "persisted history"
     assert snapshot.events == ()
     assert {run.run_id for run in snapshot.runs} == {completed.run_id, active.run_id}
@@ -255,7 +238,7 @@ def test_message_batch_round_trip_preserves_independent_semantics(tmp_path, back
     ]
 
 
-def test_session_run_history_reads_run_facts_without_event_replay(tmp_path, monkeypatch) -> None:
+def test_session_run_history_reads_run_facts_without_full_history(tmp_path, monkeypatch) -> None:
     store, sessions = _service(tmp_path)
     session = sessions.create(title="Run history").session
     runs = (
@@ -265,11 +248,11 @@ def test_session_run_history_reads_run_facts_without_event_replay(tmp_path, monk
     for run in runs:
         store.save_run(run)
 
-    def unexpected_events(*_args, **_kwargs):
-        raise AssertionError("run history must not read the event journal")
+    def unexpected_history(*_args, **_kwargs):
+        raise AssertionError("run history must not load messages")
 
-    monkeypatch.setattr(store, "load_events_page", unexpected_events)
-
+    monkeypatch.setattr(store, "load_session_observation", unexpected_history)
+    monkeypatch.setattr(store, "load_session", unexpected_history)
     assert sessions.run_history(session.session_id) == runs
 
 
@@ -396,13 +379,6 @@ def test_open_session_returns_bounded_detail_without_loading_history(
         ],
     )
     store.save_run(run)
-    store.append_ordered_event(
-        EventRecord(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            event_type="run_completed",
-        )
-    )
 
     def reject_full_history(*_args, **_kwargs):
         raise AssertionError("open must not load complete Session history")
@@ -816,7 +792,7 @@ def test_branch_preserves_canonical_title_state_without_display_markers(tmp_path
     assert branch.forked_from_run_id is None
 
 
-def test_branch_does_not_load_event_history_or_runtime_aggregate(
+def test_branch_does_not_load_complete_session_or_runtime_aggregate(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -1280,64 +1256,6 @@ def test_branch_inherits_only_compaction_lineage_available_at_boundary(
     assert empty_branch.session.last_message_id is None
     assert empty_branch.session.message_count == 0
     assert first_boundary.source_message_id is None
-
-
-def test_replay_is_a_sorted_read_only_event_projection(tmp_path) -> None:
-    store, sessions = _service(tmp_path)
-    session = sessions.create(title="Replay").session
-    second = EventRecord(
-        session_id=session.session_id,
-        run_id="run_1",
-        event_type="model_text_delta",
-        sequence=2,
-    )
-    first = EventRecord(
-        session_id=session.session_id,
-        run_id="run_1",
-        event_type="run_started",
-        sequence=1,
-    )
-    store.append_event(second)
-    store.append_event(first)
-
-    replay = sessions.replay(session.session_id, run_id="run_1")
-
-    assert [frame.event.event_id for frame in replay.frames] == [first.event_id, second.event_id]
-    assert [event.event_id for event in store.load_session(session.session_id).events] == [
-        second.event_id,
-        first.event_id,
-    ]
-
-
-def test_run_replay_reads_filtered_event_pages_without_complete_session(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    store, sessions = _service(tmp_path)
-    session = sessions.create(title="Replay").session
-    selected = EventRecord(
-        session_id=session.session_id,
-        run_id="run_selected",
-        event_type="run_started",
-        sequence=1,
-    )
-    unrelated = EventRecord(
-        session_id=session.session_id,
-        run_id="run_other",
-        event_type="run_started",
-        sequence=2,
-    )
-    store.append_event(selected)
-    store.append_event(unrelated)
-
-    def reject_full_history(*_args, **_kwargs):
-        raise AssertionError("replay must read the event journal directly")
-
-    monkeypatch.setattr(store, "load_session", reject_full_history)
-
-    replay = sessions.replay(session.session_id, run_id="run_selected")
-
-    assert [frame.event.event_id for frame in replay.frames] == [selected.event_id]
 
 
 def test_trash_discards_unfinished_durable_run_and_moves_session_tree_atomically(

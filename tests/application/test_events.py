@@ -1,5 +1,4 @@
 import asyncio
-import threading
 
 import pytest
 
@@ -15,9 +14,10 @@ from ouro.core.observers import (
 )
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore
+from tests.event_capture import recorded_events
 
 
-async def test_host_sink_filter_excludes_events_from_backlog_without_affecting_persistence(
+async def test_host_sink_filter_excludes_events_from_backlog_without_affecting_delivery(
     tmp_path,
 ) -> None:
     store = LocalSessionStore(tmp_path)
@@ -66,14 +66,14 @@ async def test_host_sink_filter_excludes_events_from_backlog_without_affecting_p
         await recorder.drain()
 
         assert seen == [first, last]
-        assert store.load_session(background.session_id).events == [*background_events, last]
-        assert store.load_session(foreground.session_id).events == [first]
+        assert recorded_events(background.session_id) == [*background_events, last]
+        assert recorded_events(foreground.session_id) == [first]
     finally:
         release.set()
         await recorder.close()
 
 
-async def test_host_sink_filter_failure_isolated_from_persistence_and_other_sinks(tmp_path) -> None:
+async def test_host_sink_filter_failure_isolated_from_delivery_and_other_sinks(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Filter failure")
@@ -96,7 +96,7 @@ async def test_host_sink_filter_failure_isolated_from_persistence_and_other_sink
             payload={"text": "Durable"},
         )
         await recorder.drain()
-        persisted = store.load_session(session.session_id).events
+        persisted = recorded_events(session.session_id)
         assert persisted[0] == event
         assert persisted[1].event_type == "event_sink_failed"
         assert persisted[1].payload["error_type"] == "ValueError"
@@ -106,7 +106,7 @@ async def test_host_sink_filter_failure_isolated_from_persistence_and_other_sink
 
 
 @pytest.mark.asyncio
-async def test_event_recorder_persists_event_and_dispatches_runtime_event_observer(
+async def test_event_recorder_publishes_event_and_dispatches_runtime_event_observer(
     tmp_path,
 ) -> None:
     store = LocalSessionStore(tmp_path)
@@ -141,8 +141,8 @@ async def test_event_recorder_persists_event_and_dispatches_runtime_event_observ
     snapshot = store.load_session(session.session_id)
 
     assert sequence == 1
-    assert snapshot.events[0].event_type == "run_started"
-    assert snapshot.events[0].event_type == "run_started"
+    assert recorded_events(snapshot.session.session_id)[0].event_type == "run_started"
+    assert recorded_events(snapshot.session.session_id)[0].event_type == "run_started"
     assert seen == ["run_started"]
 
 
@@ -179,13 +179,11 @@ async def test_runtime_event_observer_receives_a_redacted_payload(tmp_path) -> N
     await recorder.close()
 
     assert seen == ["token=***"]
-    assert store.load_session(session.session_id).events[0].payload["text"] == (
-        "token=observer-secret"
-    )
+    assert recorded_events(session.session_id)[0].payload["text"] == ("token=observer-secret")
 
 
 @pytest.mark.asyncio
-async def test_application_event_publish_uses_same_durable_observer_boundary(tmp_path) -> None:
+async def test_application_event_publish_uses_same_observer_boundary(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Application events")
@@ -231,7 +229,7 @@ async def test_application_event_publish_uses_same_durable_observer_boundary(tmp
     await recorder.close()
 
     assert event.sequence == 1
-    assert store.load_session(session.session_id).events == [event]
+    assert recorded_events(session.session_id) == [event]
     assert seen == [event]
 
 
@@ -320,7 +318,7 @@ async def test_unmatched_runtime_event_skips_observation_projection(
     )
     await recorder.close()
 
-    assert store.latest_event_sequence(session.session_id) == 1
+    assert len(recorded_events(session.session_id)) == 1
 
 
 @pytest.mark.asyncio
@@ -360,7 +358,7 @@ async def test_runtime_event_matcher_short_circuits_catalog_resolution(tmp_path)
     await recorder.close()
 
     assert resolutions == 0
-    assert store.latest_event_sequence(session.session_id) == 1
+    assert len(recorded_events(session.session_id)) == 1
 
 
 @pytest.mark.asyncio
@@ -385,8 +383,8 @@ async def test_event_recorder_records_observer_failures_as_events(tmp_path) -> N
     await recorder.close()
     snapshot = store.load_session(session.session_id)
 
-    assert snapshot.events[0].event_type == "plugin_observer_failed"
-    assert snapshot.events[0].payload["plugin_id"] == "bad"
+    assert recorded_events(snapshot.session.session_id)[0].event_type == "plugin_observer_failed"
+    assert recorded_events(snapshot.session.session_id)[0].payload["plugin_id"] == "bad"
 
 
 @pytest.mark.asyncio
@@ -422,18 +420,18 @@ async def test_event_recorder_converts_observer_failure_to_failure_event(tmp_pat
     snapshot = store.load_session(session.session_id)
 
     assert sequence == 1
-    assert [
-        event.event_type for event in store.load_events_after(session.session_id, limit=1)[0]
-    ] == ["run_started"]
-    assert [event.event_type for event in snapshot.events] == [
+    assert [event.event_type for event in recorded_events(session.session_id)[:1]] == [
+        "run_started"
+    ]
+    assert [event.event_type for event in recorded_events(snapshot.session.session_id)] == [
         "run_started",
         "plugin_observer_failed",
     ]
-    assert snapshot.events[1].payload["observer_id"] == "events"
+    assert recorded_events(snapshot.session.session_id)[1].payload["observer_id"] == "events"
 
 
 @pytest.mark.asyncio
-async def test_event_recorder_allocates_unique_sequences_across_concurrent_emitters(
+async def test_event_sequences_belong_to_each_online_publisher(
     tmp_path,
 ) -> None:
     store = LocalSessionStore(tmp_path)
@@ -479,131 +477,15 @@ async def test_event_recorder_allocates_unique_sequences_across_concurrent_emitt
     await second.close()
 
     snapshot = store.load_session(session.session_id)
-    assert [event.sequence for event in snapshot.events] == [1, 2]
-    assert snapshot.events[0].sequence == 1
-    assert snapshot.events[1].sequence == 2
+    assert [event.sequence for event in recorded_events(snapshot.session.session_id)] == [1, 1]
+    assert recorded_events(snapshot.session.session_id)[0].sequence == 1
+    assert recorded_events(snapshot.session.session_id)[1].sequence == 1
     assert first_sequence == 1
-    assert second_sequence == 2
+    assert second_sequence == 1
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cancel_first", [False, True])
-async def test_event_recorder_fanout_preserves_same_session_persistence_order(
-    tmp_path, cancel_first
-) -> None:
-    first_persisted = threading.Event()
-    release_first = threading.Event()
-
-    class DelayedReturnStore(LocalSessionStore):
-        def append_ordered_event(self, event: EventRecord) -> EventRecord:
-            recorded = super().append_ordered_event(event)
-            if event.event_type == "run_started":
-                first_persisted.set()
-                assert release_first.wait(timeout=2)
-            return recorded
-
-    store = DelayedReturnStore(tmp_path)
-    store.initialize()
-    session = SessionRecord(title="Ordered fan-out")
-    store.create_session(session)
-    store.save_run(RunRecord(session_id=session.session_id, run_id="run_1"))
-    seen: list[int] = []
-    recorder = RuntimeEventRecorder(
-        store=store,
-        observers=ObserverRegistry(),
-        event_sink=lambda event: seen.append(event.sequence),
-    )
-    first = asyncio.create_task(
-        recorder.publish(
-            session_id=session.session_id,
-            run_id="run_1",
-            event_type="run_started",
-            payload={},
-        )
-    )
-    assert await asyncio.to_thread(first_persisted.wait, 1)
-    if cancel_first:
-        first.cancel()
-        await asyncio.sleep(0)
-        first.cancel()
-    second = asyncio.create_task(
-        recorder.publish(
-            session_id=session.session_id,
-            run_id="run_1",
-            event_type="model_request_started",
-            payload={},
-        )
-    )
-    await asyncio.sleep(0)
-    assert second.done() is False
-
-    release_first.set()
-    recorded = await asyncio.gather(first, second, return_exceptions=True)
-    await recorder.drain()
-
-    if cancel_first:
-        assert isinstance(recorded[0], asyncio.CancelledError)
-        assert isinstance(recorded[1], EventRecord) and recorded[1].sequence == 2
-    else:
-        assert [event.sequence for event in recorded] == [1, 2]
-    assert seen == [1, 2]
-    await recorder.close()
-
-
-@pytest.mark.asyncio
-async def test_slow_file_persistence_does_not_block_another_session(tmp_path) -> None:
-    entered = threading.Event()
-    release = threading.Event()
-
-    class BlockingStore(LocalSessionStore):
-        blocked_session_id = ""
-
-        def append_ordered_event(self, event: EventRecord) -> EventRecord:
-            if event.session_id == self.blocked_session_id:
-                entered.set()
-                assert release.wait(timeout=2)
-            return super().append_ordered_event(event)
-
-    store = BlockingStore(tmp_path)
-    store.initialize()
-    blocked = SessionRecord(title="Blocked")
-    independent = SessionRecord(title="Independent")
-    store.create_session(blocked)
-    store.save_run(RunRecord(session_id=blocked.session_id, run_id="run_blocked"))
-    store.create_session(independent)
-    store.save_run(RunRecord(session_id=independent.session_id, run_id="run_independent"))
-    store.blocked_session_id = blocked.session_id
-    recorder = RuntimeEventRecorder(store=store, observers=ObserverRegistry())
-
-    blocked_emit = asyncio.create_task(
-        recorder.emit(
-            0,
-            session_id=blocked.session_id,
-            run_id="run_blocked",
-            event_type="run_started",
-            payload={},
-        )
-    )
-    assert await asyncio.to_thread(entered.wait, 1)
-    independent_sequence = await asyncio.wait_for(
-        recorder.emit(
-            0,
-            session_id=independent.session_id,
-            run_id="run_independent",
-            event_type="run_started",
-            payload={},
-        ),
-        timeout=0.5,
-    )
-    release.set()
-    await blocked_emit
-    await recorder.close()
-
-    assert independent_sequence == 1
-
-
-@pytest.mark.asyncio
-async def test_observer_timeout_cannot_block_durable_event(tmp_path) -> None:
+async def test_observer_timeout_cannot_block_event_delivery(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Observer timeout")
@@ -639,11 +521,11 @@ async def test_observer_timeout_cannot_block_durable_event(tmp_path) -> None:
 
     assert sequence == 1
     snapshot = store.load_session(session.session_id)
-    assert [event.event_type for event in snapshot.events] == [
+    assert [event.event_type for event in recorded_events(snapshot.session.session_id)] == [
         "run_started",
         "plugin_observer_failed",
     ]
-    assert snapshot.events[1].payload["error_type"] == "TimeoutError"
+    assert recorded_events(snapshot.session.session_id)[1].payload["error_type"] == "TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -688,7 +570,7 @@ async def test_event_recorder_close_applies_observer_shutdown_deadline(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_stable_runtime_event_payload_is_validated_before_persistence(tmp_path) -> None:
+async def test_stable_runtime_event_payload_is_validated_before_delivery(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Invalid event")
@@ -706,7 +588,7 @@ async def test_stable_runtime_event_payload_is_validated_before_persistence(tmp_
         )
 
     await recorder.close()
-    assert store.load_session(session.session_id).events == []
+    assert recorded_events(session.session_id) == []
 
 
 @pytest.mark.asyncio
@@ -738,13 +620,12 @@ async def test_tool_output_with_malformed_url_does_not_break_event_delivery(tmp_
     await recorder.drain()
 
     assert sequence == 1
-    assert [
-        event.event_type for event in store.load_events_after(session.session_id, limit=1)[0]
-    ] == ["tool_call_completed"]
+    assert [event.event_type for event in recorded_events(session.session_id)[:1]] == [
+        "tool_call_completed"
+    ]
     assert seen == ["tool_call_completed"]
     assert not any(
-        event.event_type == "event_sink_failed"
-        for event in store.load_session(session.session_id).events
+        event.event_type == "event_sink_failed" for event in recorded_events(session.session_id)
     )
     await recorder.close()
 
@@ -778,7 +659,7 @@ async def test_host_event_sink_registration_detaches_without_closing_runtime(tmp
     await recorder.drain()
 
     assert seen == ["run_started"]
-    assert [event.event_type for event in store.load_session(session.session_id).events] == [
+    assert [event.event_type for event in recorded_events(session.session_id)] == [
         "run_started",
         "run_completed",
     ]

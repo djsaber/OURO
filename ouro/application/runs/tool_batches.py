@@ -54,10 +54,15 @@ def load_tool_batch(store: SessionRepository, run: RunRecord) -> ToolCallBatchRe
 
 
 def load_batch_call(
-    store: SessionRepository, session_id: str, identity: ToolCallIdentity
+    store: SessionRepository,
+    session_id: str,
+    identity: ToolCallIdentity,
+    *,
+    state: ToolCallState | None = None,
 ) -> ToolBatchCall:
     call = store.load_tool_call(session_id, identity)
-    state = store.load_tool_call_state(session_id, identity)
+    if state is None:
+        state = store.load_tool_call_state(session_id, identity)
     if call is None or state is None:
         raise PersistenceError("active batch references a missing Call or Call state")
     start = (

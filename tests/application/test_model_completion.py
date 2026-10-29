@@ -21,6 +21,7 @@ from ouro.providers import FauxProvider, OpenAIChatCompletionsProvider
 from ouro.providers.http_transport import HttpxProviderHTTPTransport
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
+from tests.event_capture import recorded_events
 from tests.run_facts import run_events, run_tool_results
 
 
@@ -80,13 +81,22 @@ async def test_unsuccessful_completion_preserves_output_and_usage(
         assert result.run.model_round_count == 1
         assert result.final_text == text
         assert result.usage["output_tokens"] == 11
-        assert snapshot.events[-1].payload["error_code"] == code
-        completed = next(e for e in snapshot.events if e.event_type == "model_message_completed")
+        assert recorded_events(snapshot.session.session_id)[-1].payload["error_code"] == code
+        completed = next(
+            e
+            for e in recorded_events(snapshot.session.session_id)
+            if e.event_type == "model_message_completed"
+        )
         assert completed.payload["finish_reason"] == reason
         assert completed.payload["provider_finish_reason"] == reason
         assert completed.payload["usage"]["output_tokens"] == 11
-        assert not any(e.event_type == "run_completed" for e in snapshot.events)
-        assert not any(e.event_type == "run_retry_scheduled" for e in snapshot.events)
+        assert not any(
+            e.event_type == "run_completed" for e in recorded_events(snapshot.session.session_id)
+        )
+        assert not any(
+            e.event_type == "run_retry_scheduled"
+            for e in recorded_events(snapshot.session.session_id)
+        )
         if text or reasoning:
             assistant = snapshot.messages[-1]
             assert assistant.role == "assistant"

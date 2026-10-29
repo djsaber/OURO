@@ -16,7 +16,7 @@ from ouro.application.sessions.service import SessionService
 from ouro.core.callbacks import run_blocking
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
-from ouro.core.response_drafts import ResponseStreamPosition
+from ouro.core.session_observation import SessionObservationPosition
 
 _INPUT_EVENTS = frozenset(
     {"user_message_added", "host_message_added", "plugin_message_added", "queued_input_consumed"}
@@ -49,6 +49,9 @@ def observation_event(event: RuntimeEventView) -> EventRecord:
         created_at=event.created_at,
         sequence=event.sequence,
         stream=event.stream,
+        position=event.position,
+        commit_revision=event.commit_revision,
+        message_after=event.message_after,
         payload=dict(event.data),
     )
 
@@ -64,13 +67,7 @@ def redact_observation(snapshot: SessionObservationSnapshot) -> SessionObservati
 
 
 class SessionObservation(AsyncIterator[SessionObservationBatch]):
-    """Snapshot and independent durable catch-up, confirmed only after content application.
-
-    ``get`` retains one pending batch until ``acknowledge`` confirms successful
-    application. Reading, buffering and rendering do not implicitly confirm it.
-    The live source is only an acceleration cache; overflow starts bounded replay
-    from this consumer's applied cursor rather than truncating its history.
-    """
+    """One applied position for shared delivery and bounded fact catch-up."""
 
     def __init__(
         self,
@@ -89,17 +86,17 @@ class SessionObservation(AsyncIterator[SessionObservationBatch]):
         self._read_snapshot = read_snapshot
         self._page_size = page_size
         self._history_anchor = history_anchor
-        self._pending: SessionObservationBatch | None = self._snapshot_batch(snapshot)
-        self._applied_sequence = 0
-        self._draft_position: ResponseStreamPosition | None = None
+        self._position = SessionObservationPosition()
         self._history_epoch = snapshot.session.history_epoch
+        self._pending: SessionObservationBatch | None = self._snapshot_batch(snapshot)
         self._catching_up = False
+        self._next_notification: RuntimeNotification | None = None
         self._read_lock = asyncio.Lock()
         self.closed = False
 
     @property
-    def applied_sequence(self) -> int:
-        return self._applied_sequence
+    def applied_position(self) -> SessionObservationPosition:
+        return self._position
 
     def __aiter__(self) -> SessionObservation:
         return self
@@ -115,17 +112,13 @@ class SessionObservation(AsyncIterator[SessionObservationBatch]):
                 return self._pending
             try:
                 batch = await self._next_batch()
-                if self.closed:
-                    raise StopAsyncIteration
             except StopAsyncIteration:
                 self.close()
                 raise
             except asyncio.CancelledError:
-                # The source may already have yielded events before a message
-                # read was cancelled. Only the applied cursor is safe to resume.
                 self._catching_up = True
                 raise
-            except Exception as exc:  # noqa: BLE001 - isolate this observation's read failure.
+            except Exception as exc:  # noqa: BLE001 - isolate this consumer's read failure.
                 batch = self._diagnostic_batch(
                     Diagnostic(
                         code="session_observation_read_failed",
@@ -144,15 +137,10 @@ class SessionObservation(AsyncIterator[SessionObservationBatch]):
             return batch
 
     def acknowledge(self, batch: SessionObservationBatch) -> None:
-        """Confirm an exact delivered batch after its content projection succeeds."""
         if self.closed or batch is not self._pending:
             raise ValueError("Only this observation's pending batch can be acknowledged")
-        self._applied_sequence = batch.event_high_water
+        self._position = batch.position
         self._history_epoch = batch.history_epoch
-        events = batch.snapshot.events if batch.snapshot is not None else batch.events
-        for event in events:
-            if event.stream is not None and event.stream.cursor is not None:
-                self._draft_position = event.stream
         self._pending = None
 
     def close(self) -> None:
@@ -162,7 +150,6 @@ class SessionObservation(AsyncIterator[SessionObservationBatch]):
             self._source.close()
 
     def retain_history_from(self, anchor: SessionHistoryAnchor) -> None:
-        """Preserve a Host's loaded window across same-epoch snapshot resets."""
         if anchor.history_epoch != self._history_epoch:
             raise ValueError("history anchor belongs to another history epoch")
         self._history_anchor = anchor
@@ -171,16 +158,16 @@ class SessionObservation(AsyncIterator[SessionObservationBatch]):
         return SessionObservationBatch(
             session_id=self.session_id,
             history_epoch=snapshot.session.history_epoch,
-            event_high_water=snapshot.event_high_water,
             snapshot=snapshot,
+            position=snapshot.position,
         )
 
     def _diagnostic_batch(self, diagnostic: Diagnostic) -> SessionObservationBatch:
         return SessionObservationBatch(
             session_id=self.session_id,
             history_epoch=self._history_epoch,
-            event_high_water=self._applied_sequence,
             diagnostic=diagnostic,
+            position=self._position,
         )
 
     async def _reset(self) -> SessionObservationBatch:
@@ -199,59 +186,93 @@ class SessionObservation(AsyncIterator[SessionObservationBatch]):
     async def _next_batch(self) -> SessionObservationBatch:
         while not self.closed:
             if self._catching_up:
-                batch, more = await run_blocking(
-                    self._sessions.observation_events,
+                batch, self._catching_up = await run_blocking(
+                    self._sessions.observation_changes,
                     self.session_id,
-                    after_sequence=self._applied_sequence,
+                    after=self._position,
+                    history_epoch=self._history_epoch,
                     limit=self._page_size,
-                    draft_position=self._draft_position,
                 )
-                if batch.history_epoch != self._history_epoch or any(
-                    self._requires_snapshot(event) for event in batch.events
-                ):
+                if batch.history_epoch != self._history_epoch:
                     return await self._reset()
-                self._catching_up = more
-                if batch.events or batch.event_high_water > self._applied_sequence:
+                if batch.facts is not None or batch.messages or batch.events:
                     return batch
-            notification = await self._source.get()
+            notification = self._next_notification or await self._source.get()
+            self._next_notification = None
+            if notification.facts is not None:
+                batch = notification.facts
+                if batch.history_epoch != self._history_epoch:
+                    return await self._reset()
+                if batch.after == self._position:
+                    return batch
+                if batch.position != self._position:
+                    self._catching_up = True
+                continue
             events: list[RuntimeEventView] = []
+            position = self._position
             while True:
                 if notification.diagnostic is not None:
                     if notification.diagnostic.code != "runtime_subscription_lagged":
                         return self._diagnostic_batch(notification.diagnostic)
-                    # None of this batch has been applied. Re-read its complete suffix.
                     self._catching_up = True
                     break
                 event = notification.event
-                if event is not None and (
-                    event.sequence > self._applied_sequence
-                    or (
-                        event.stream is not None
-                        and (
-                            event.stream.cursor is None
-                            or self._draft_position is None
-                            or event.stream.context_id != self._draft_position.context_id
-                            or event.stream.cursor > (self._draft_position.cursor or 0)
-                        )
-                    )
-                ):
-                    if self._requires_snapshot(event):
+                if event is not None:
+                    if event.history_epoch > self._history_epoch:
                         return await self._reset()
-                    events.append(event)
+                    covered = event.history_epoch < self._history_epoch or (
+                        event.commit_revision is not None
+                        and event.commit_revision <= position.revision
+                    )
+                    if (
+                        event.message_after is not None
+                        and event.message_after > position.message_sequence
+                    ):
+                        self._catching_up = True
+                        covered = True
+                    stream = event.stream
+                    if stream is not None and stream.cursor is not None:
+                        previous = position.draft
+                        covered = covered or (
+                            previous is not None
+                            and previous.context_id == stream.context_id
+                            and stream.cursor <= (previous.cursor or 0)
+                        )
+                        if not covered:
+                            position = position.model_copy(update={"draft": stream})
+                    if not covered:
+                        events.append(event)
+                        if event.position is not None:
+                            if (
+                                event.position.revision == position.revision + 1
+                                and position.facts is None
+                            ):
+                                position = event.position.model_copy(
+                                    update={"draft": position.draft}
+                                )
+                            else:
+                                position = position.model_copy(
+                                    update={
+                                        "message_sequence": event.position.message_sequence,
+                                    }
+                                )
+                                self._catching_up = True
                 if len(events) >= self._page_size:
                     break
                 try:
                     notification = self._source.get_nowait()
                 except asyncio.QueueEmpty:
                     break
-            if self._catching_up or not events:
+                if notification.facts is not None:
+                    self._next_notification = notification
+                    break
+            if not events:
                 continue
             ids = tuple(
                 dict.fromkeys(
                     identity
                     for event in events
-                    if event.history_epoch == self._history_epoch
-                    and event.event_type in _INPUT_EVENTS
+                    if event.event_type in _INPUT_EVENTS
                     if isinstance((identity := event.data.get("message_id")), str)
                 )
             )
@@ -269,15 +290,9 @@ class SessionObservation(AsyncIterator[SessionObservationBatch]):
             return SessionObservationBatch(
                 session_id=self.session_id,
                 history_epoch=self._history_epoch,
-                event_high_water=max(self._applied_sequence, *(event.sequence for event in events)),
                 events=tuple(events),
                 messages=messages,
+                after=self._position,
+                position=position,
             )
         raise StopAsyncIteration
-
-    def _requires_snapshot(self, event: RuntimeEventView) -> bool:
-        return event.history_epoch > self._history_epoch or (
-            event.history_epoch == self._history_epoch
-            and event.event_type == "run_status_changed"
-            and event.data.get("resumed") is True
-        )

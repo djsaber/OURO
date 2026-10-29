@@ -29,3 +29,23 @@ def openai_callback(monkeypatch):
         return f"http://127.0.0.1:{port}/auth/callback"
 
     return callback_url
+
+
+@pytest.fixture(autouse=True)
+def capture_runtime_notifications(monkeypatch):
+    """Business assertions inspect online publication explicitly, without event storage."""
+    from ouro.application.events import RuntimeEventRecorder
+    from tests.event_capture import captured
+
+    captured.clear()
+    publish = RuntimeEventRecorder._publish
+
+    async def capture(recorder, event, *, notify_observers):
+        delivering = not recorder._closed or not notify_observers
+        await publish(recorder, event, notify_observers=notify_observers)
+        if delivering and event.stream is None:
+            captured[event.session_id].append(event.model_copy())
+
+    monkeypatch.setattr(RuntimeEventRecorder, "_publish", capture)
+    yield
+    captured.clear()

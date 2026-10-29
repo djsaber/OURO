@@ -114,8 +114,6 @@ def experiment(root: Path, backend: str, fragments: int, output_bytes: int):
     tracemalloc.stop()
     terminal = storage(root, backend)
     assert store.load_response_draft(session.session_id, header.context_id) is None
-    events, more = store.load_events_after(session.session_id)
-    assert not more and [event.event_type for event in events] == ["model_response_committed"]
     assert (
         store.load_message(session.session_id, response.message_id).text_content
         == "x" * output_bytes
@@ -130,8 +128,6 @@ def experiment(root: Path, backend: str, fragments: int, output_bytes: int):
         "completion_python_peak": completion_peak,
         "active": active,
         "terminal": terminal,
-        "permanent_event_count": len(events),
-        "permanent_event_bytes": sum(len(event.model_dump_json().encode()) for event in events),
     }
 
 

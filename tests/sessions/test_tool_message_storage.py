@@ -21,6 +21,7 @@ from ouro.core.tool_facts import ToolCallRecord, ToolOutcomeRecord
 from ouro.core.tools import ToolResult, ToolResultFeedback, ToolResultValue
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.portable import PortableSession, SessionBundle, populate_sessions
+from tests.event_capture import recorded_events
 from tests.tool_batches import persist_tool_batch, resolved_tool_batch
 
 
@@ -522,7 +523,7 @@ def test_native_frame_failure_never_exposes_partial_history_or_driver_ready(stor
     )
     events = [
         event
-        for event in store.load_session(session.session_id).events
+        for event in recorded_events(session.session_id)
         if event.event_type == "tool_batch_completed"
     ]
     assert len(events) == 1

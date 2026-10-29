@@ -20,6 +20,7 @@ from ouro.core.state import RunRecord, SessionRecord
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
+from tests.event_capture import recorded_events
 
 
 @pytest.mark.parametrize("store_type", [LocalSessionStore, SQLiteSessionStore])
@@ -142,6 +143,7 @@ async def test_model_port_records_requests_and_usage_without_driving_or_finishin
             commit_model_request=runtime._commit_model_request,
             publish_committed=runtime.event_recorder.publish_committed,
             append_draft=runtime.store.append_response_draft,
+            record_retry=runtime.store.record_request_retry,
             emit=runtime.event_recorder.emit,
         ),
     )
@@ -180,9 +182,16 @@ async def test_model_port_records_requests_and_usage_without_driving_or_finishin
         assert runtime.usage.request_usage(latest_context).input_tokens == 5
         snapshot = store.load_session(session.session_id)
         assert snapshot.messages == []
-        assert [event.event_type for event in snapshot.events].count("model_request_started") == 2
-        assert [event.event_type for event in snapshot.events].count("model_message_completed") == 2
-        assert not any(event.event_type == "run_completed" for event in snapshot.events)
+        assert [event.event_type for event in recorded_events(snapshot.session.session_id)].count(
+            "model_request_started"
+        ) == 2
+        assert [event.event_type for event in recorded_events(snapshot.session.session_id)].count(
+            "model_message_completed"
+        ) == 2
+        assert not any(
+            event.event_type == "run_completed"
+            for event in recorded_events(snapshot.session.session_id)
+        )
     finally:
         await runtime.close()
 
@@ -232,6 +241,7 @@ async def test_abort_during_usage_commit_keeps_usage_and_closes_stream(tmp_path)
             commit_model_request=runtime._commit_model_request,
             publish_committed=runtime.event_recorder.publish_committed,
             append_draft=runtime.store.append_response_draft,
+            record_retry=runtime.store.record_request_retry,
             emit=runtime.event_recorder.emit,
         ),
     )
@@ -245,7 +255,7 @@ async def test_abort_during_usage_commit_keeps_usage_and_closes_stream(tmp_path)
         assert closed.is_set()
         assert not any(
             event.event_type == "model_message_completed"
-            for event in store.load_session(session.session_id).events
+            for event in recorded_events(session.session_id)
         )
     finally:
         await runtime.close()

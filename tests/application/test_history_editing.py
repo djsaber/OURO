@@ -15,6 +15,7 @@ from ouro.core.tools import ToolCallRequest, ToolResult
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
+from tests.event_capture import recorded_events
 from tests.response_drafts import persist_response_draft
 from tests.run_facts import run_events
 from tests.tool_batches import bind_tool_messages, persist_tool_batch
@@ -373,7 +374,7 @@ async def test_continue_can_retry_repeated_provider_failure_without_extra_runs(s
         assert len(store.load_runs(first.session.session_id)) == 1
         assert [
             event.payload["round"]
-            for event in store.load_session(first.session.session_id).events
+            for event in recorded_events(first.session.session_id)
             if event.event_type == "model_request_started"
         ] == [1, 2, 3]
     finally:

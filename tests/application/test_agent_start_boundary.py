@@ -9,6 +9,7 @@ from ouro.application.runs.lifecycle import request_run_abort_state
 from ouro.application.sessions.editing import undo_user_input
 from tests.application.test_agent_call_identity import ReusedCallProvider
 from tests.application.test_agent_multi_host import application
+from tests.event_capture import recorded_events
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
@@ -61,7 +62,7 @@ async def test_child_start_rechecks_parent_after_scheduler_admission(
             provider.release[0].set()
             release.set()
             result = await asyncio.wait_for(app.supervisor.wait_run(child_id, child_run_id), 60)
-            events, _ = store.load_events_after(child_id, after_sequence=0, limit=100)
+            events = recorded_events(child_id)
             if parent_change == "completed":
                 assert result.status == "completed"
                 assert provider.effects.read_text(encoding="utf-8").splitlines() == ["child 0"]

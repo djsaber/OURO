@@ -82,7 +82,7 @@ class AgentTreeProjector:
             except FileNotFoundError, KeyError, SessionNotFoundError:
                 root_activity = None
             relations = self.store.list_delegations(root_session_id)
-            revision = self.store.latest_event_sequence(root_session_id)
+            revision = self.store.observation_revision(root_session_id)
         root_budget = self._run_budget(root_run)
         nodes: list[AgentTreeNode] = []
         edges: list[AgentTreeEdge] = []
@@ -101,7 +101,7 @@ class AgentTreeProjector:
             if relation.child_session_id is None:
                 continue
             try:
-                revision += self.store.latest_event_sequence(relation.child_session_id)
+                revision += self.store.observation_revision(relation.child_session_id)
             except FileNotFoundError:
                 pass
             status = delegation_status(self.store, relation)

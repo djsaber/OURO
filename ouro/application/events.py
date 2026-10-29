@@ -9,11 +9,9 @@ from typing import Any, Protocol, cast
 
 from ouro.application.contracts.events import validate_runtime_event_payload
 from ouro.application.harness import capture_harness
-from ouro.application.observations.drafts import resolve_fact_event
 from ouro.application.observers import ObserverDispatcher
 from ouro.application.usage import UsageService
 from ouro.core.callbacks import run_blocking
-from ouro.core.cancellation import settle_owned_tasks
 from ouro.core.context_providers import ContextProviderFailure
 from ouro.core.events import EventRecord
 from ouro.core.observers import (
@@ -75,11 +73,10 @@ class RuntimeEventSinkRegistration:
 
 
 class RuntimeEventRecorder:
-    """Persist canonical events, then fan them out through bounded observers.
+    """Deliver transient notifications through independent bounded observers.
 
-    Persistence is the only required part of ``emit``. Host sinks and plugin
-    Observers run outside the durable critical path with independent bounded
-    delivery, so one UI or plugin cannot stall another Session.
+    Work facts are committed by their owners. Notifications never write storage;
+    consumers recover missing content from those facts.
     """
 
     def __init__(
@@ -110,7 +107,7 @@ class RuntimeEventRecorder:
         self._observer_dispatcher = observer_dispatcher or ObserverDispatcher()
         self._observer_dispatcher.set_failure_sink(self.record_observer_failure)
         self._diagnostic_tasks: set[asyncio.Task[None]] = set()
-        self._session_event_locks: dict[str, asyncio.Lock] = {}
+        self._sequences: dict[str, int] = {}
         self._closed = False
         if event_sink is not None:
             self.add_event_sink(event_sink)
@@ -124,7 +121,7 @@ class RuntimeEventRecorder:
         """Register a Host consumer with an optional pre-enqueue selection.
 
         Filters run synchronously on committed event metadata and must not block
-        or perform I/O. A rejected event remains durable and available to other
+        or perform I/O. A rejected event remains available to other
         consumers; a failing filter disables only its own sink.
         """
 
@@ -229,7 +226,7 @@ class RuntimeEventRecorder:
         event_type: str,
         payload: dict[str, Any],
     ) -> EventRecord:
-        """Persist and publish an application event outside a Run loop transaction."""
+        """Publish an application notification outside a Run loop transaction."""
 
         validate_runtime_event_payload(event_type, payload)
         return await self._record_event(
@@ -245,18 +242,7 @@ class RuntimeEventRecorder:
     async def publish_committed(self, events: Sequence[EventRecord]) -> None:
         """Notify from one native commit; lost delivery is repaired by fact catch-up."""
         for event in events:
-            if event.event_type in {
-                "model_response_committed",
-                "tool_call_requested",
-                "tool_call_completed",
-            }:
-                event = await run_blocking(self._fact_event, event)
             await self._publish(event, notify_observers=True)
-
-    def _fact_event(self, event: EventRecord) -> EventRecord:
-        with self.store.session_read(event.session_id):
-            epoch = self.store.load_session_record(event.session_id).history_epoch
-            return resolve_fact_event(self.store, event, history_epoch=epoch)
 
     async def record_observer_failure(self, failure: ObserverFailure) -> None:
         await self._record_event(
@@ -337,19 +323,8 @@ class RuntimeEventRecorder:
         if sink_tasks:
             await asyncio.gather(*sink_tasks, return_exceptions=True)
 
-    async def _append_ordered_event(self, event: EventRecord) -> EventRecord:
-        return await asyncio.to_thread(self._append_event_in_history, event)
-
     def _load_run_history_epoch(self, session_id: str, run_id: str) -> int:
         return self.store.load_run(session_id, run_id).history_epoch
-
-    def _append_event_in_history(self, event: EventRecord) -> EventRecord:
-        epoch = (
-            self._run_history_epoch(event.session_id, event.run_id)
-            if event.run_id is not None
-            else self.store.load_session_record(event.session_id).history_epoch
-        )
-        return self.store.append_ordered_event(event.model_copy(update={"history_epoch": epoch}))
 
     async def _record_event(
         self,
@@ -357,33 +332,24 @@ class RuntimeEventRecorder:
         *,
         notify_observers: bool,
     ) -> EventRecord:
-        """Keep persistence order and live fan-out order identical per Session."""
-
-        lock = self._session_event_locks.setdefault(event.session_id, asyncio.Lock())
-        async with lock:
-            # Keep the session lock through both persistence and publication,
-            # including when the owner is cancelled during a thread write.
-            task = asyncio.create_task(
-                self._persist_and_publish(event, notify_observers=notify_observers)
-            )
-            try:
-                return await asyncio.shield(task)
-            except asyncio.CancelledError:
-                await settle_owned_tasks(task)
-                if not task.cancelled():
-                    task.exception()
-                raise
-
-    async def _persist_and_publish(
-        self, event: EventRecord, *, notify_observers: bool
-    ) -> EventRecord:
-        recorded = await self._append_ordered_event(event)
-        await self._publish(recorded, notify_observers=notify_observers)
-        return recorded
+        event.history_epoch = (
+            await run_blocking(self._run_history_epoch, event.session_id, event.run_id)
+            if event.run_id is not None
+            else (
+                await run_blocking(self.store.load_session_record, event.session_id)
+            ).history_epoch
+        )
+        await self._publish(event, notify_observers=notify_observers)
+        return event
 
     async def _publish(self, event: EventRecord, *, notify_observers: bool) -> None:
-        if self._closed:
+        if self._closed and notify_observers:
             return
+        sequence = self._sequences.get(event.session_id, 0)
+        if event.stream is None:
+            sequence += 1
+            self._sequences[event.session_id] = sequence
+        event.sequence = sequence
         self._ensure_sink_observers_started()
         for observer in self._sink_observers:
             if not observer.enabled:
@@ -525,13 +491,13 @@ class RuntimeEventRecorder:
         payload: dict[str, Any],
     ) -> None:
         task = asyncio.create_task(
-            self._persist_observer_diagnostic(source, event_type=event_type, payload=payload),
+            self._publish_observer_diagnostic(source, event_type=event_type, payload=payload),
             name=f"ouro-{event_type}",
         )
         self._diagnostic_tasks.add(task)
         task.add_done_callback(self._diagnostic_tasks.discard)
 
-    async def _persist_observer_diagnostic(
+    async def _publish_observer_diagnostic(
         self,
         source: EventRecord,
         *,

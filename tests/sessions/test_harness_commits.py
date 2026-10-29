@@ -156,7 +156,8 @@ def test_ordered_message_boundaries_restore_the_exact_before_state(store):
     assert store.load_session_record(session.session_id).last_commit_id == undo.operation_id
     with pytest.raises(SessionCommitConflict, match="already applied"):
         store.commit_session(undo)
-    assert store.load_session(session.session_id).events == list(committed.events)
+    assert store.observation_revision(session.session_id) > 0
+    assert "events" not in store.load_session(session.session_id).model_dump()
 
 
 def test_unchanged_business_value_reuses_checkpoint(store):
@@ -224,7 +225,7 @@ def test_state_and_epoch_conflicts_do_not_append_effects(store, metadata_only):
             )
         )
     assert store.load_messages_tail(session.session_id) == []
-    assert store.load_events_after(session.session_id) == ([], False)
+    assert store.load_messages_tail(session.session_id) == []
 
 
 def test_current_commit_identity_cannot_be_reused_for_another_proposal(store):
@@ -318,7 +319,8 @@ def test_run_event_queue_and_state_share_one_decision(store):
     )
     assert store.load_run(session.session_id, run.run_id) == run
     assert store.load_session_record(session.session_id).metadata == after.metadata
-    assert store.load_session(session.session_id).events == list(result.events)
+    assert result.events
+    assert "events" not in store.load_session(session.session_id).model_dump()
     assert store.load_harness(session.session_id).state.states[0].payload == "waiting"
 
 
@@ -361,17 +363,21 @@ def test_file_decision_recovers_without_reexecuting_operation(tmp_path, monkeypa
     snapshot = reopened.load_session(session.session_id)
     assert snapshot.session.title == "New conversation"
     assert snapshot.session.title_source == "placeholder"
-    assert snapshot.messages == snapshot.events == []
+    assert snapshot.messages == []
     assert reopened.load_harness(session.session_id).state.states == ()
 
 
-def test_sqlite_failure_rolls_back_the_entire_decision(tmp_path):
+def test_sqlite_failure_rolls_back_the_entire_decision(tmp_path, monkeypatch):
     store = SQLiteSessionStore(tmp_path / "sessions.db")
     store.initialize()
     session = SessionRecord(title_source="placeholder")
     store.create_session(session)
     existing = EventRecord(session_id=session.session_id, sequence=1, event_type="existing")
-    store.append_event(existing)
+
+    def fail(*args, **kwargs):
+        raise SessionCommitConflict("injected write failure")
+
+    monkeypatch.setattr("ouro.sessions.backends.sqlite.commits.write_messages", fail)
     with pytest.raises(SessionCommitConflict):
         store.commit_session(
             SessionCommit(
@@ -394,7 +400,7 @@ def test_sqlite_failure_rolls_back_the_entire_decision(tmp_path):
     assert store.load_session_record(session.session_id).title_source == "placeholder"
 
 
-@pytest.mark.parametrize("failure_point", ["messages", "session", "events", "completion"])
+@pytest.mark.parametrize("failure_point", ["messages", "session", "revision", "completion"])
 def test_file_recovery_finishes_a_partially_applied_decision(tmp_path, monkeypatch, failure_point):
     from pathlib import Path
 
@@ -421,7 +427,7 @@ def test_file_recovery_finishes_a_partially_applied_decision(tmp_path, monkeypat
     )
     write_suffix = FileSessionCommits._write_suffix
     save_session = file_commits.write_session
-    insert_events = file_commits.insert_events
+    revision_write = file_commits.advance_revision
     unlink = Path.unlink
 
     def interrupted_suffix(path, offset, records):
@@ -434,10 +440,11 @@ def test_file_recovery_finishes_a_partially_applied_decision(tmp_path, monkeypat
         if failure_point == "session":
             raise OSError("injected after state switch")
 
-    def interrupted_events(connection, events):
-        insert_events(connection, events)
-        if failure_point == "events":
-            raise OSError("injected after event insertion")
+    def interrupted_revision(connection, session_id):
+        result = revision_write(connection, session_id)
+        if failure_point == "revision":
+            raise OSError("injected after revision write")
+        return result
 
     def interrupted_unlink(path, *args, **kwargs):
         if failure_point == "completion" and path.name == "commit.json":
@@ -447,7 +454,7 @@ def test_file_recovery_finishes_a_partially_applied_decision(tmp_path, monkeypat
     with monkeypatch.context() as patch:
         patch.setattr(FileSessionCommits, "_write_suffix", staticmethod(interrupted_suffix))
         patch.setattr(file_commits, "write_session", interrupted_session)
-        patch.setattr(file_commits, "insert_events", interrupted_events)
+        patch.setattr(file_commits, "advance_revision", interrupted_revision)
         patch.setattr(Path, "unlink", interrupted_unlink)
         with pytest.raises(PersistenceError, match="injected"):
             store.commit_session(request)
@@ -468,7 +475,7 @@ def test_file_recovery_finishes_a_partially_applied_decision(tmp_path, monkeypat
     assert snapshot.messages[0] == prefix
     assert snapshot.session.message_count == 2
     assert snapshot.runs == [run]
-    assert len(snapshot.events) == 1
+    assert "events" not in snapshot.model_dump()
     assert snapshot.extension_states[0].payload == 1
     assert current.last_commit_id == request.operation_id
     with pytest.raises(SessionCommitConflict, match="already applied"):
@@ -616,9 +623,8 @@ def test_metadata_commit_preserves_harness_without_decoding_private_state(
     assert store.load_session_record(session.session_id) == result.session
     if publish_run:
         assert store.load_run(session.session_id, run.run_id) == run
-    events, more = store.load_events_after(session.session_id)
-    assert not more
-    assert [event.event_type for event in events] == ["updated"]
+    assert [event.event_type for event in result.events] == ["updated"]
+    assert result.events[-1].position.revision == store.observation_revision(session.session_id)
 
 
 @pytest.mark.parametrize("capture", [False, True])
@@ -754,7 +760,7 @@ def test_file_paired_read_keeps_recovery_checkpoint_verification(tmp_path, monke
     assert not (directory / "commit.json").exists()
 
 
-def test_native_commit_rolls_back_head_run_and_event_without_file_recovery(store):
+def test_native_commit_rolls_back_head_run_and_revision_without_file_recovery(store):
     session = SessionRecord(title="before")
     store.create_session(session)
     run = RunRecord(session_id=session.session_id, status="running")
@@ -769,20 +775,21 @@ def test_native_commit_rolls_back_head_run_and_event_without_file_recovery(store
     )
     with session_connection(store, session.session_id) as connection:
         connection.execute(
-            "CREATE TRIGGER reject_event BEFORE INSERT ON events "
+            "CREATE TRIGGER reject_revision BEFORE UPDATE ON session_revisions "
             "BEGIN SELECT RAISE(ABORT, 'injected native failure'); END"
         )
     with pytest.raises(PersistenceError, match="injected native failure"):
         store.commit_session(request)
     assert store.load_session_record(session.session_id) == before
     assert store.load_run(session.session_id, run.run_id) == run
-    assert store.load_events_page(session.session_id)[0] == []
+    assert store.observation_revision(session.session_id) == 1
     with session_connection(store, session.session_id) as connection:
-        connection.execute("DROP TRIGGER reject_event")
+        connection.execute("DROP TRIGGER reject_revision")
     result = store.commit_session(request)
     assert store.load_session_record(session.session_id) == result.session
     assert store.load_run(session.session_id, run.run_id) == completed
-    assert store.load_events_page(session.session_id)[0] == list(result.events)
+    assert store.observation_revision(session.session_id) == 2
+    assert result.events[-1].position.revision == 2
     if isinstance(store, LocalSessionStore):
         directory = store.sessions_dir / session.session_id
         assert not (directory / "commit.json").exists()

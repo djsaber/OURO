@@ -29,6 +29,7 @@ from ouro.core.tools import ToolCallRequest, ToolResult
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
+from tests.event_capture import recorded_events
 from tests.tool_batches import bind_tool_messages, persist_tool_batch
 
 
@@ -301,7 +302,7 @@ async def test_queue_consumption_failure_is_one_native_decision(
         assert len(after.runs) == int(decided or boundary == "steer")
         notifications = [
             event
-            for event in after.events
+            for event in recorded_events(after.session.session_id)
             if event.event_type in {"plugin_message_added", "queued_input_consumed"}
         ]
         assert len(notifications) == (len(inputs) if decided else 0)

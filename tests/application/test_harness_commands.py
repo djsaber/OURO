@@ -287,7 +287,7 @@ async def test_sqlite_post_head_failure_cannot_acknowledge_a_rolled_back_command
     store.create_session(session)
     with closing(sqlite3.connect(store.database)) as connection, connection:
         connection.execute(
-            "CREATE TRIGGER reject_command AFTER INSERT ON events "
+            "CREATE TRIGGER reject_command AFTER UPDATE ON sessions "
             "BEGIN SELECT RAISE(ABORT, 'injected post-head fault'); END"
         )
     with pytest.raises(PersistenceError):

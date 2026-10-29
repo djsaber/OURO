@@ -10,6 +10,7 @@ from ouro.providers import FauxProvider
 from ouro.resources import LocalResourceStore
 from ouro.sessions import SQLiteSessionStore
 from ouro.tools import ToolRegistry
+from tests.event_capture import recorded_events
 
 
 async def test_runtime_executes_against_sqlite_session_store(tmp_path) -> None:
@@ -30,7 +31,7 @@ async def test_runtime_executes_against_sqlite_session_store(tmp_path) -> None:
     assert result.run.status == "completed"
     assert [message.role for message in snapshot.messages] == ["user", "assistant"]
     assert snapshot.messages[0].text_content == "hello from sqlite"
-    assert snapshot.events[-1].event_type == "run_completed"
+    assert recorded_events(snapshot.session.session_id)[-1].event_type == "run_completed"
 
 
 def test_sqlite_sessions_compose_with_local_blob_store(tmp_path) -> None:

@@ -107,6 +107,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         self._tools: dict[str, ToolActivityRow] = {}
         self._current_run_id: str | None = None
         self._presented_run_ids: set[str] = set()
+        self._presented_compaction_ids: set[str] = set()
         self._visible_scaffold_delegation_id: str | None = None
 
     def compose(self) -> ComposeResult:
@@ -145,6 +146,11 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
     def prepend_transcript(self, prepared: PreparedTranscript) -> None:
         entries, run_ids = prepared
         self._presented_run_ids.update(run_ids)
+        self._presented_compaction_ids.update(
+            entry.compaction.compaction_id
+            for entry in entries
+            if entry.compaction and entry.compaction.compaction_id is not None
+        )
         self._history.prepend(entries)
 
     def arrange(self, size: Size, optimal: bool = False) -> DockArrangeResult:
@@ -233,6 +239,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         self._tools.clear()
         self._current_run_id = None
         self._presented_run_ids.clear()
+        self._presented_compaction_ids.clear()
         self.anchor()
 
     def set_system_status(self, status: TuiSystemStatus) -> None:
@@ -379,10 +386,16 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         self._tools.clear()
         self._current_run_id = None
         self._presented_run_ids.clear()
+        self._presented_compaction_ids.clear()
         self._visible_scaffold_delegation_id = visible_scaffold_delegation_id
 
         transcript, presented_run_ids = prepared
         self._presented_run_ids.update(presented_run_ids)
+        self._presented_compaction_ids.update(
+            entry.compaction.compaction_id
+            for entry in transcript
+            if entry.compaction and entry.compaction.compaction_id is not None
+        )
 
         if not transcript:
             # An empty body may belong to an accepted input awaiting execution.
@@ -610,6 +623,35 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             self._tools.clear()
             await asyncio.shield(self._transcript.remove_children(terminal_rows))
 
+    async def apply_tool_result(self, message: MessageRecord) -> None:
+        result = message.tool_result
+        if result is None:
+            return
+        batch_id = message.outcome_ref.identity.batch_id if message.outcome_ref else None
+        row = self._tools.get(result.tool_call_id)
+        tool = (
+            row.tool
+            if row is not None
+            else self._history.tool_activity(
+                message.run_id,
+                batch_id,
+                result.tool_call_id,
+            )
+        )
+        if tool is not None:
+            timing = message.tool_execution
+            await self.sync_tools(
+                (
+                    tool.model_copy(
+                        update={
+                            "status": "failed" if result.is_error else "completed",
+                            "started_at": timing.started_at if timing else tool.started_at,
+                            "ended_at": timing.ended_at if timing else message.created_at,
+                        }
+                    ),
+                )
+            )
+
     def _adopt_streaming_tool_rows(
         self,
         tools: tuple[RuntimeToolCallActivity, ...],
@@ -667,17 +709,23 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
     async def add_compaction(
         self,
         *,
+        compaction_id: str | None = None,
         covered_message_count: int,
         tokens_before: int | None,
         tokens_after: int | None,
         duration_seconds: float | None,
     ) -> None:
+        if compaction_id is not None:
+            if compaction_id in self._presented_compaction_ids:
+                return
+            self._presented_compaction_ids.add(compaction_id)
         await self._dismiss_welcome()
         await self.finish_assistant()
         self._history.append(
             TranscriptEntry(
                 kind="compaction",
                 compaction=_compaction_presentation(
+                    compaction_id=compaction_id,
                     covered_message_count=covered_message_count,
                     tokens_before=tokens_before,
                     tokens_after=tokens_after,

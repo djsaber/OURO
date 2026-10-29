@@ -16,6 +16,7 @@ from textual.message import Message
 from textual.scroll_view import ScrollView
 from textual.selection import Selection
 from textual.strip import Strip
+from textual.worker import Worker
 
 from ouro.application.contracts.agents import AgentTreeNode
 from ouro.application.contracts.execution import RuntimeToolCallActivity
@@ -674,6 +675,15 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
             await self.wait_for_refresh()
         raise RuntimeError("Session history layout did not complete")
 
+    def tool_activity(
+        self,
+        run_id: str | None,
+        batch_id: str | None,
+        tool_call_id: str,
+    ) -> RuntimeToolCallActivity | None:
+        index = self._tool_entry_indexes.get((run_id, batch_id, tool_call_id))
+        return self._entries[index].tool if index is not None else None
+
     def update_tools(
         self,
         tools: Iterable[RuntimeToolCallActivity],
@@ -732,8 +742,8 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
             return
         self._render_active = True
         self._render_idle.clear()
-        self.run_worker(
-            self._refresh_buffer_async(),
+        _worker: Worker[None] = self.run_worker(
+            self._refresh_buffer_async,
             group="conversation-history",
         )
 

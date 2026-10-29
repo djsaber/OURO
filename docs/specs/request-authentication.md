@@ -65,7 +65,7 @@ Proxy-Connection、Content-Type、Accept、Accept-Encoding、Content-Encoding �
 
 transport 保留内部 HTTP status、Retry-After 和用于服务规则比较的供应商 error code。供应商 code 只参与内部精确比较，不直接复制到公开 code。managed HTTP 错误、异常和报文内错误不回显原始响应、请求 URL 或秘密。
 
-`ProviderStreamEvent.error_code` 是仅允许在 error 事件出现的可选字符串；`ProviderCheckResult` 同样可返回 code。已识别认证、权限、限速、额度错误携带供应商无关 code；static 未分类错误可为空；managed 未分类传输/响应错误分别使用 provider_request_failed/provider_response_failed，使上层能够停止跨模型回退而无需解释认证实现。Core 将 code 传给 Application，持久化到 `run_failed.payload.error_code`，CLI `run --json` 的 events 原样携带；不在 RunRecord 增加重复认证状态。
+`ProviderStreamEvent.error_code` 是仅允许在 error 事件出现的可选字符串；`ProviderCheckResult` 同样可返回 code。已识别认证、权限、限速、额度错误携带供应商无关 code；static 未分类错误可为空；managed 未分类传输/响应错误分别使用 provider_request_failed/provider_response_failed，使上层能够停止跨模型回退而无需解释认证实现。Core 将 code 传给 Application，由 `RunRecord.error_code` 保存，在线通知使用 `run_failed.payload.error_code`，CLI `run --json` 直接返回 RunResult.error_code；它是运行失败原因，不保存认证材料。
 
 ## 装配范围与验收
 
@@ -94,5 +94,5 @@ LocalApplication 与轻量认证组合均内建 openai-codex 浏览器驱动；�
 - `tests/application/test_models.py`：默认/非默认路由重绑定、inline Key 指纹、进程覆盖、构造间隙更新及并发缓存发布。
 - `tests/application/test_compaction.py`：已分类服务错误不切换账户/模型，普通摘要回退回归。
 - `tests/config/test_provider_auth_config.py`：managed factory 延迟认证与静态 resolver 隔离。
-- `tests/cli/test_provider_error_codes.py`：Runtime → 持久化事件 → CLI JSON 的安全 code 传播。
+- `tests/cli/test_provider_error_codes.py`：Runtime → RunResult → CLI JSON 的安全 code 传播。
 - `tests/architecture/test_boundaries.py`：providers 只借用请求认证端口，Core/config 无认证实现依赖。

@@ -7,7 +7,6 @@ import pytest
 
 from ouro.application.contracts.execution import ShutdownPolicy
 from ouro.application.runtime.service import RuntimeService
-from ouro.application.sessions.service import SessionService
 from ouro.application.supervisor import RuntimeSupervisor
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import AgentCatalogSnapshot
@@ -30,6 +29,7 @@ from tests.application.helpers import (
     wait_for_runtime_event,
     wait_for_session_state,
 )
+from tests.event_capture import recorded_events
 from tests.session_storage import session_connection
 
 
@@ -343,8 +343,6 @@ async def test_activity_subscription_exposes_initial_and_live_fine_grained_state
             assert subscription.initial_activity is not None
             assert subscription.initial_activity.activity == "queued"
 
-            # Finish replay while the worker is occupied. Earlier live snapshots
-            # may otherwise be superseded by replay's durable event cursor.
             release_blocker.set()
             assert (await supervisor.wait(blocker)).status == "completed"
             observed: list[str] = []
@@ -509,64 +507,28 @@ async def test_slow_subscription_reports_lag_without_blocking_run(tmp_path) -> N
 
 
 @pytest.mark.asyncio
-async def test_activity_initial_snapshot_remains_available_when_event_replay_lags(tmp_path) -> None:
+async def test_activity_initial_snapshot_does_not_replay_past_notifications(tmp_path) -> None:
     supervisor = RuntimeSupervisor(_runtime(tmp_path, FauxProvider()), max_concurrency=1)
     handle = await supervisor.submit("hello")
     await supervisor.wait(handle)
-
     subscription = await supervisor.subscribe(
-        handle.session_id,
-        max_buffer=1,
-        include_activity=True,
+        handle.session_id, max_buffer=1, include_activity=True
     )
-    notification = await subscription.get()
-
-    assert subscription.initial_activity is not None
-    assert subscription.initial_activity.activity == "completed"
-    assert notification.kind == "diagnostic"
-    assert notification.diagnostic is not None
-    assert notification.diagnostic.code == "runtime_subscription_lagged"
-    subscription.close()
-    await supervisor.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_subscription_replay_is_bounded_and_never_loads_full_history(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    runtime = _runtime(tmp_path, FauxProvider())
-    session = runtime.sessions.create(title="Bounded replay").session
-    for index in range(8):
-        runtime.store.append_ordered_event(
-            EventRecord(
-                session_id=session.session_id,
-                run_id="run_history",
-                event_type="history",
-                payload={"index": index},
-            )
-        )
-
-    def reject_full_history(*_args, **_kwargs):
-        raise AssertionError("supervisor must not load complete Session history")
-
-    monkeypatch.setattr(runtime.store, "load_session", reject_full_history)
-    supervisor = RuntimeSupervisor(runtime)
-    subscription = await supervisor.subscribe(session.session_id, max_buffer=2)
-
-    notification = await subscription.get()
-    assert notification.kind == "diagnostic"
-    assert notification.diagnostic is not None
-    assert notification.diagnostic.code == "runtime_subscription_lagged"
-    subscription.close()
-    await supervisor.shutdown()
+    try:
+        assert subscription.initial_activity is not None
+        assert subscription.initial_activity.activity == "completed"
+        with pytest.raises(asyncio.QueueEmpty):
+            subscription.get_nowait()
+    finally:
+        subscription.close()
+        await supervisor.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_host_event_projection_is_typed_and_redacts_payload_secrets(tmp_path) -> None:
     runtime = _runtime(tmp_path, FauxProvider())
     session = runtime.sessions.create(title="Typed events").session
-    runtime.store.append_ordered_event(
+    event = EventRecord.model_validate(
         EventRecord(
             session_id=session.session_id,
             run_id="run_typed",
@@ -577,6 +539,7 @@ async def test_host_event_projection_is_typed_and_redacts_payload_secrets(tmp_pa
     supervisor = RuntimeSupervisor(runtime)
     subscription = await supervisor.subscribe(session.session_id)
 
+    await supervisor._on_event(event)
     notification = await subscription.get()
     assert notification.event is not None
     assert notification.event.category == "text"
@@ -588,49 +551,10 @@ async def test_host_event_projection_is_typed_and_redacts_payload_secrets(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_observation_high_water_hands_off_to_subscription_without_a_gap(
-    tmp_path,
-) -> None:
-    runtime = _runtime(tmp_path, FauxProvider())
-    session = runtime.sessions.create(title="Observation handoff").session
-    first = runtime.store.append_ordered_event(
-        EventRecord(
-            session_id=session.session_id,
-            run_id="run_live",
-            event_type="model_text_delta",
-            payload={"text": "before"},
-        )
-    )
-    snapshot = SessionService(runtime.store).observation_snapshot(session.session_id)
-    second = runtime.store.append_ordered_event(
-        EventRecord(
-            session_id=session.session_id,
-            run_id="run_live",
-            event_type="model_text_delta",
-            payload={"text": "after"},
-        )
-    )
-    supervisor = RuntimeSupervisor(runtime)
-
-    subscription = await supervisor.subscribe(
-        session.session_id,
-        after_sequence=snapshot.event_high_water,
-    )
-    notification = await subscription.get()
-
-    assert snapshot.event_high_water == first.sequence
-    assert notification.event is not None
-    assert notification.event.sequence == second.sequence
-    assert notification.event.text == "after"
-    subscription.close()
-    await supervisor.shutdown()
-
-
-@pytest.mark.asyncio
 async def test_agent_relation_events_have_a_dedicated_category(tmp_path) -> None:
     runtime = _runtime(tmp_path, FauxProvider())
     session = runtime.sessions.create(title="Agent relation events").session
-    runtime.store.append_ordered_event(
+    event = EventRecord.model_validate(
         EventRecord(
             session_id=session.session_id,
             run_id="run_parent",
@@ -652,6 +576,7 @@ async def test_agent_relation_events_have_a_dedicated_category(tmp_path) -> None
     supervisor = RuntimeSupervisor(runtime)
     subscription = await supervisor.subscribe(session.session_id)
 
+    await supervisor._on_event(event)
     notification = await subscription.get()
 
     assert notification.event is not None
@@ -999,23 +924,7 @@ async def test_wait_run_rechecks_exact_run_across_snapshot_subscribe_gap(
 
     async def cross_boundary(*args, **kwargs):
         def finish():
-            for _ in range(300 if overflow else 0):
-                other.append_ordered_event(
-                    EventRecord(
-                        session_id=session.session_id,
-                        run_id=run.run_id,
-                        event_type="model_text_delta",
-                        payload={"text": "delta"},
-                    )
-                )
             other.save_run(run.model_copy(update={"status": "completed"}))
-            other.append_ordered_event(
-                EventRecord(
-                    session_id=session.session_id,
-                    run_id=run.run_id,
-                    event_type="run_completed",
-                )
-            )
             later = RunRecord(session_id=session.session_id, status="queued")
             other.save_run(later)
             other.save_session(
@@ -1066,8 +975,7 @@ async def test_recovery_preserves_a_supervised_queued_run(tmp_path) -> None:
 
         assert runtime.store.load_run(session.session_id, run.run_id).status == "queued"
         assert not any(
-            event.event_type == "run_recovered"
-            for event in runtime.store.load_session(session.session_id).events
+            event.event_type == "run_recovered" for event in recorded_events(session.session_id)
         )
         assert (await supervisor.abort(handle)).status == "aborted"
         assert runtime.store.load_run(session.session_id, run.run_id).status == "aborted"

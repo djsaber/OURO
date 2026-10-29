@@ -7,10 +7,10 @@ import os
 import pytest
 
 from ouro.application.observations.content import restore_session_content
-from ouro.application.observations.events import SessionEventStream
 from ouro.application.observations.sessions import observation_event
 from ouro.application.runtime.service import RuntimeService
 from ouro.application.sessions.recovery import SessionRecoveryService
+from ouro.application.sessions.service import SessionService
 from ouro.application.supervisor import RuntimeSupervisor
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import utc_now
@@ -19,10 +19,12 @@ from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.response_drafts import ResponseDraftChunk
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
+from ouro.core.session_observation import SessionObservationPosition
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
+from tests.event_capture import recorded_events
 from tests.response_drafts import persist_response_draft
 
 
@@ -71,17 +73,11 @@ def test_fact_page_reads_one_history_boundary(stores, monkeypatch):
         return load_head(session_id)
 
     monkeypatch.setattr(reader, "load_session_record", counted_head)
-    stream = SessionEventStream(
-        reader,
-        session.session_id,
-        after_sequence=0,
-        publish=lambda event: None,
-        report=lambda diagnostic: pytest.fail(str(diagnostic)),
-        is_running=lambda: False,
+    batch, more = SessionService(reader).observation_changes(
+        session.session_id, after=SessionObservationPosition(), history_epoch=0, limit=128
     )
-    events, more = stream._read_page()
     assert not more
-    assert [event.payload["text"] for event in events] == [
+    assert [message.text_content for message in batch.messages] == [
         message.text_content for message in messages
     ]
     assert head_reads == 1
@@ -121,6 +117,10 @@ async def test_cross_host_draft_snapshot_live_and_closed_cursor_converge(stores)
             while projection.assistant_text != "prefix tail":
                 batch = await observation.get()
                 assert batch.diagnostic is None
+                for message in batch.messages:
+                    projection.apply_response(message)
+                if batch.facts:
+                    projection.apply_facts(batch.facts)
                 for event in batch.events:
                     projection.apply(observation_event(event))
                 observation.acknowledge(batch)
@@ -145,11 +145,15 @@ async def test_cross_host_draft_snapshot_live_and_closed_cursor_converge(stores)
                 steps=(SessionCommitStep(message=response),),
             )
         )
-        through = result.events[-1].sequence
+        through = result.session.message_count
         async with asyncio.timeout(60):
-            while observation.applied_sequence < through:
+            while observation.applied_position.message_sequence < through:
                 batch = await observation.get()
                 assert batch.diagnostic is None
+                for message in batch.messages:
+                    projection.apply_response(message)
+                if batch.facts:
+                    projection.apply_facts(batch.facts)
                 for event in batch.events:
                     projection.apply(observation_event(event))
                 observation.acknowledge(batch)
@@ -158,7 +162,7 @@ async def test_cross_host_draft_snapshot_live_and_closed_cursor_converge(stores)
         assert reader.load_response_draft(session.session_id, header.context_id) is None
         assert all(
             event.event_type not in MODEL_STREAM_DELTA_EVENT_TYPES
-            for event in writer.load_session(session.session_id).events
+            for event in recorded_events(session.session_id)
         )
     finally:
         observation.close()
@@ -193,7 +197,8 @@ async def test_runtime_stream_fragments_are_current_only_and_live_sinks_still_re
             for event in observed
         )
         assert all(
-            event.event_type not in MODEL_STREAM_DELTA_EVENT_TYPES for event in snapshot.events
+            event.event_type not in MODEL_STREAM_DELTA_EVENT_TYPES
+            for event in recorded_events(snapshot.session.session_id)
         )
         header = store.load_latest_context_header(result.session.session_id)
         assert header.response_closed_at is not None
@@ -203,7 +208,7 @@ async def test_runtime_stream_fragments_are_current_only_and_live_sinks_still_re
 
 
 def test_recovery_reads_only_current_draft_and_never_turns_parameters_into_calls(
-    stores, monkeypatch
+    stores,
 ):
     store, cold = stores
     session = SessionRecord()
@@ -221,20 +226,7 @@ def test_recovery_reads_only_current_draft_and_never_turns_parameters_into_calls
         provider_done=True,
         usage_entry_id=None,
     )
-    store.append_ordered_event(
-        EventRecord(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            event_type="model_tool_call_delta",
-            payload={"arguments_delta": "unexecutable"},
-        )
-    )
 
-    def forbid(*args, **kwargs):
-        pytest.fail("recovery scanned the event journal")
-
-    monkeypatch.setattr(cold, "load_events_page", forbid)
-    monkeypatch.setattr(cold, "load_events_after", forbid)
     recovery = SessionRecoveryService(cold)
     recovery.recover_runtime(session.session_id)
     response = cold.find_assistant_message(session.session_id, run.run_id, "turn")

@@ -128,7 +128,7 @@ logout/forget 只清除本地秘密，不撤销远端会话；共享引用和无
 Application 状态与条件提交的权威契约见[Provider 认证用例规格](provider-authentication.md)。
 证据见 `tests/cli/test_provider_auth_commands.py`、`tests/application/test_local_provider_auth.py` 及架构依赖测试。
 Runtime 和 TUI 共用应用层认证服务，浏览器订阅驱动由本地组合根装配；模型协议的请求认证见[请求认证规格](request-authentication.md)。
-模型请求的安全错误码由 run_failed.payload.error_code 传入 run --json 的 events；Host 无需解析错误文本推断认证原因。
+模型请求的安全错误码由 RunResult.error_code 传入 run --json 的摘要；Host 无需解析错误文本推断认证原因。
 
 ## Agent 控制面
 
@@ -165,7 +165,7 @@ Home 解析优先级：子命令 `--home`、顶层 `--home`、`OURO_HOME`、`~/.
 - Provider、config 和 Skills 命令通过类型化 `ConfigurationFacade`；公开 DTO 不暴露凭据值。
 - CLI 不直接编辑 JSONL、Run 文件或 index。
 
-`session messages/events` 使用 byte cursor 和 limit 增量读取 JSONL；响应返回 `next_cursor`。`run --resource`
+`session messages` 使用后端游标和 limit 增量读取消息；响应返回 `next_cursor`。`run --resource`
 可重复指定当前 Session 已导入资源，资源解析与模型投影由 application 完成。
 
 `run --queue-mode follow-up|steer` 在目标 Session 已有 active Run 时选择交付边界；CLI adapter 将连字符形式映射为

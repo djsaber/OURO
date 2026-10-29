@@ -134,9 +134,9 @@ def test_native_failure_keeps_recovered_response_state_and_event_together(
             recovered.runs[0].metadata["recovered_partial_assistant_message_id"]
             == response.message_id
         )
-    assert [event.sequence for event in recovered.events] == [1, 2]
-    assert any(event.payload.get("to_status") == "recoverable" for event in recovered.events)
+    revision = cold.observation_revision(session.session_id)
     assert recovery.recover(session.session_id) == recovered
+    assert cold.observation_revision(session.session_id) == revision
 
 
 def test_recovery_does_not_revive_withdrawn_output(store):

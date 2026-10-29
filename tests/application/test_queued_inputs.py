@@ -1,21 +1,19 @@
 import json
-import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
 from threading import Barrier
 
 import pytest
 from pydantic import ValidationError
 
-from ouro import local_io
 from ouro.application.inputs.queue import QueuedInputQueue, consumption_changes
-from ouro.core.errors import PersistenceError, SessionRecoveryRequiredError
+from ouro.core.errors import PersistenceError
 from ouro.core.messages import InputMessageReference, MessageRecord, SkillActivationContent
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_controls import HostSessionInput, SessionInputRequest
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.backends.files.inputs import input_path
+from tests.session_storage import session_connection
 
 
 def test_queued_input_queue_persists_items_fifo_and_clears_when_empty(tmp_path) -> None:
@@ -135,12 +133,12 @@ def test_queued_input_query_reports_missing_state_without_repairing(tmp_path) ->
         role="user",
         scaffold=False,
     )
-    path = input_path(store.sessions_dir / session.session_id, item.queue_id, state=True)
-    path.unlink()
+    with session_connection(store, session.session_id) as connection:
+        connection.execute("DELETE FROM input_states WHERE input_id = ?", (item.queue_id,))
     with pytest.raises(PersistenceError, match="state not found"):
         queue.peek(store.load_runtime_session(session.session_id))
     assert store.load_session_record(session.session_id).pending_input_ids == (item.queue_id,)
-    assert not path.exists()
+    assert store.load_input_state(session.session_id, item.queue_id) is None
 
 
 def test_queued_input_queue_rejects_host_item_without_source_attribution(tmp_path) -> None:
@@ -532,7 +530,7 @@ def test_host_receipt_is_atomic_across_pending_and_consumed_input(tmp_path, back
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
 @pytest.mark.parametrize("operation", ["accept", "cancel"])
-def test_queue_state_and_event_share_native_failure_boundary(
+def test_queue_state_and_position_share_native_failure_boundary(
     tmp_path, monkeypatch, backend, operation
 ):
     store = (
@@ -564,51 +562,30 @@ def test_queue_state_and_event_share_native_failure_boundary(
             return accept()
         return queue.cancel_user_input(session_id=session.session_id, queue_id="input-atomic")
 
-    if backend == "files":
-        target = input_path(store.sessions_dir / session.session_id, "input-atomic", state=True)
-        replace = local_io.replace_path_with_retry
-        interrupted = []
-
-        def interrupt(source, destination):
-            replace(source, destination)
-            if destination == target:
-                interrupted.append(True)
-                raise OSError("input state installed before event")
-
-        with monkeypatch.context() as patch:
-            patch.setattr(local_io, "replace_path_with_retry", interrupt)
-            with pytest.raises(PersistenceError):
-                change()
-        assert interrupted == [True]
-        with pytest.raises(SessionRecoveryRequiredError):
-            store.load_session_record(session.session_id)
-        with store.session_mutation(session.session_id):
-            pass
-    else:
-        with closing(sqlite3.connect(store.database)) as connection, connection:
-            connection.execute(
-                "CREATE TRIGGER fail_input_event BEFORE INSERT ON events BEGIN "
-                "SELECT RAISE(ABORT, 'input event'); END"
-            )
-        with pytest.raises(PersistenceError):
-            change()
-        assert store.load_session_record(session.session_id).pending_input_ids == (
-            ("input-atomic",) if operation == "cancel" else ()
+    with session_connection(store, session.session_id) as connection:
+        connection.execute(
+            "CREATE TRIGGER fail_input BEFORE UPDATE ON sessions BEGIN "
+            "SELECT RAISE(ABORT, 'input transaction'); END"
         )
-        with closing(sqlite3.connect(store.database)) as connection, connection:
-            connection.execute("DROP TRIGGER fail_input_event")
+    with pytest.raises(PersistenceError):
         change()
-
+    with session_connection(store, session.session_id) as connection:
+        head = SessionRecord.model_validate_json(
+            connection.execute("SELECT payload FROM sessions").fetchone()[0]
+        )
+        assert head.pending_input_ids == (("input-atomic",) if operation == "cancel" else ())
+        connection.execute("DROP TRIGGER fail_input")
+    with store.session_mutation(session.session_id):
+        pass
+    change()
     before = store.load_session(session.session_id)
+    revision = store.observation_revision(session.session_id)
     if operation == "accept":
         assert accept()[-1] == ()
     else:
         assert change() is None
     after = store.load_session(session.session_id)
-    assert after.events == before.events
-    types = [event.event_type for event in after.events]
-    assert types == ["follow_up_input_queued"] + (
-        ["queued_input_cancelled"] if operation == "cancel" else []
-    )
+    assert after == before
+    assert store.observation_revision(session.session_id) == revision
     assert after.session.pending_input_ids == (("input-atomic",) if operation == "accept" else ())
     assert store.load_input(session.session_id, "input-atomic").item.prompt == "accepted once"

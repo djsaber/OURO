@@ -706,7 +706,7 @@ Session 状态视图。状态返回与 Host 接受保持分离；只读与失效
 Observer 接收 frozen、以事件名为判别字段的 typed observation，handler 返回 `None`。Application 只执行非阻塞
 enqueue，不等待回调；每个 registration 有 generation-owned、有界、FIFO mailbox 和独立 consumer。queue full、
 timeout、异常或取消只影响该 observer，不能改变模型、工具、Run 或 Session 的结果。投递为进程内 at-most-once；
-可靠审计以 canonical event store 为准。diagnostic 走统一的 Host 通道，不通过无人消费的返回值传递。
+运行结果与恢复依据以会话业务事实为准；诊断通知不保证历史留存。diagnostic 走统一的 Host 通道，不通过无人消费的返回值传递。
 
 Observer provenance 只用于归属、过滤、诊断和 contract，不建立不同 observer 之间的业务顺序。`runtime_event` 可声明
 精确 `event_types` allowlist；Host 在入队前过滤和脱敏。队列项持有精确 generation lease，处理、丢弃或取消后恰好

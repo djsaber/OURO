@@ -290,7 +290,6 @@ class LoadedSession:
     compactions: tuple[CompactionRecord, ...] = ()
     queued_inputs: tuple[QueuedUserInputView, ...] = ()
     session_controls: tuple[TuiSessionControlStatus, ...] = ()
-    event_high_water: int = 0
     history_before_cursor: int | None = None
     approval_preset: TuiApprovalPreset = "inherit"
     reasoning_state: ModelReasoningState | None = None

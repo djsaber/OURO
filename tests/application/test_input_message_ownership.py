@@ -10,6 +10,7 @@ from ouro.application.inputs.requests import UserInputRequest
 from ouro.application.inputs.skills import SkillInvocationRequest
 from ouro.core.input_content import InputFileReference
 from ouro.sessions.portable import PortableSession, SessionBundle
+from tests.event_capture import recorded_events
 from tests.tui.test_history_commands import application_at
 
 
@@ -58,7 +59,7 @@ async def test_input_owns_body_and_attachments_across_history_branch_and_export(
         snapshot = store.load_session(session_id)
         consumed = [
             event
-            for event in snapshot.events
+            for event in recorded_events(snapshot.session.session_id)
             if event.payload.get("queued_input_id") == request.input_id
         ]
         assert consumed and all(

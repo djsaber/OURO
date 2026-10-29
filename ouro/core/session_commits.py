@@ -15,6 +15,7 @@ from ouro.core.harness import HarnessState, HarnessVersion
 from ouro.core.inputs import InputRecord, InputState, InputStateChange
 from ouro.core.message_frames import MessageTruncation
 from ouro.core.messages import MessageFact, MessageRecord
+from ouro.core.session_observation import SessionObservationPosition
 from ouro.core.session_titles import fill_session_title
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolCallState
@@ -136,8 +137,28 @@ class SessionCommitResult(OuroModel):
     operation_id: str
     session: SessionRecord
     messages: tuple[MessageFact, ...] = ()
-    events: tuple[EventRecord, ...] = ()
+    events: tuple[EventRecord, ...] = Field(default=(), exclude=True)
     truncation: MessageTruncation | None = None
+
+    def published_at(self, revision: int) -> None:
+        """Only the last notification confirms the complete fact publication."""
+        if self.events:
+            for event in self.events:
+                event.commit_revision = revision
+                event.message_after = (
+                    self.messages[0].sequence - 1 if self.messages else self.session.message_count
+                )
+            self.events = (
+                *self.events[:-1],
+                self.events[-1].model_copy(
+                    update={
+                        "position": SessionObservationPosition(
+                            revision=revision,
+                            message_sequence=self.session.message_count,
+                        ),
+                    }
+                ),
+            )
 
 
 class PreparedSessionCommit(VersionedOuroModel):
@@ -163,7 +184,6 @@ def prepare_session_commit(
     current: SessionRecord,
     harness: HarnessVersion | None,
     *,
-    event_sequence: int,
     truncation: MessageTruncation | None = None,
     restore: HarnessVersion | None = None,
     retained_compaction_ids: tuple[str, ...] | None = None,
@@ -341,20 +361,22 @@ def prepare_session_commit(
                 payload={
                     "context_id": current_request.context_id,
                     "message_id": response.message_id,
+                    "message_sequence": response.sequence,
+                    "text": response.text_content,
+                    "reasoning_content": response.reasoning_content,
                 },
             ),
         )
     events = tuple(
         event.model_copy(
             update={
-                "sequence": event_sequence + index + 1,
+                "sequence": index + 1,
                 "history_epoch": next(
                     (run.history_epoch for run in request.runs if run.run_id == event.run_id),
                     session.history_epoch,
                 ),
                 "metadata": {**event.metadata, "operation_id": request.operation_id},
             },
-            deep=True,
         )
         for index, event in enumerate(proposed_events)
     )

@@ -219,17 +219,21 @@ def read_call_state(
     return state
 
 
-def write_call_state(connection: sqlite3.Connection, state: ToolCallState) -> None:
+def write_call_state(
+    connection: sqlite3.Connection, state: ToolCallState, *, revision: int = 0
+) -> None:
     connection.execute(
-        "INSERT INTO tool_call_states(session_id, run_id, batch_id, tool_call_id, payload) "
-        "VALUES(?, ?, ?, ?, ?) ON CONFLICT(session_id, run_id, batch_id, tool_call_id) "
-        "DO UPDATE SET payload = excluded.payload",
+        "INSERT INTO tool_call_states(session_id, run_id, batch_id, tool_call_id, "
+        "payload, modified_revision) "
+        "VALUES(?, ?, ?, ?, ?, ?) ON CONFLICT(session_id, run_id, batch_id, tool_call_id) "
+        "DO UPDATE SET payload = excluded.payload, modified_revision = excluded.modified_revision",
         (
             state.session_id,
             state.identity.run_id,
             state.identity.batch_id,
             state.identity.tool_call_id,
             state.model_dump_json(),
+            revision,
         ),
     )
 

@@ -74,6 +74,7 @@ def _tool_activities_from_messages(
 
 def _compaction_presentation(
     *,
+    compaction_id: str | None = None,
     covered_message_count: int,
     tokens_before: int | None,
     tokens_after: int | None,
@@ -87,6 +88,7 @@ def _compaction_presentation(
     ):
         tokens_reduced = max(0, tokens_before - tokens_after)
     return CompactionPresentation(
+        compaction_id=compaction_id,
         covered_message_count=covered_message_count,
         tokens_reduced=tokens_reduced,
         duration_seconds=duration_seconds,
@@ -240,6 +242,7 @@ def project_transcript_entries(
             TranscriptEntry(
                 kind="compaction",
                 compaction=_compaction_presentation(
+                    compaction_id=compaction.compaction_id,
                     covered_message_count=compaction.covered_message_count,
                     tokens_before=compaction.estimated_tokens_before,
                     tokens_after=compaction.estimated_tokens_after,

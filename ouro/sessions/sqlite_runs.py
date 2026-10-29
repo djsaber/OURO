@@ -47,7 +47,9 @@ def _decode_run(payload: str, session_id: str, run_id: str) -> RunRecord:
     return run
 
 
-def write_run(connection: sqlite3.Connection, run: RunRecord, *, history_epoch: int) -> bool:
+def write_run(
+    connection: sqlite3.Connection, run: RunRecord, *, history_epoch: int, revision: int = 0
+) -> bool:
     added = (
         connection.execute(
             "SELECT 1 FROM runs WHERE session_id = ? AND run_id = ?", (run.session_id, run.run_id)
@@ -56,12 +58,13 @@ def write_run(connection: sqlite3.Connection, run: RunRecord, *, history_epoch: 
     )
     connection.execute(
         "INSERT INTO runs(session_id, run_id, started_at, history_epoch, needs_recovery, "
-        "model_round_count, summary_request_count, payload) "
-        "VALUES(?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id, run_id) DO UPDATE SET "
+        "model_round_count, summary_request_count, payload, modified_revision) "
+        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id, run_id) DO UPDATE SET "
         "started_at = excluded.started_at, history_epoch = excluded.history_epoch, "
         "model_round_count = excluded.model_round_count, "
         "summary_request_count = excluded.summary_request_count, "
-        "needs_recovery = excluded.needs_recovery, payload = excluded.payload",
+        "needs_recovery = excluded.needs_recovery, payload = excluded.payload, "
+        "modified_revision = excluded.modified_revision",
         (
             run.session_id,
             run.run_id,
@@ -71,6 +74,7 @@ def write_run(connection: sqlite3.Connection, run: RunRecord, *, history_epoch: 
             run.model_round_count,
             run.summary_request_count,
             run.model_dump_json(),
+            revision,
         ),
     )
     return added

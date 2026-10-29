@@ -144,7 +144,6 @@ def main() -> None:
         effective_context_metrics=snapshot.effective_context_metrics,
         compactions=snapshot.compactions,
         queued_inputs=snapshot.queued_inputs,
-        event_high_water=snapshot.event_high_water,
         history_before_cursor=snapshot.history_before_cursor,
     )
     start = perf_counter()

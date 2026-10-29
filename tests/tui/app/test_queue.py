@@ -23,6 +23,7 @@ from ouro.tui.interactions.bar import InteractionBar
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.subagent_navigation import SubagentNavigationPanel
 from ouro.tui.theme import DEFAULT_TUI_THEME
+from tests.event_capture import recorded_events
 from tests.tui.app.providers import BlockingStreamProvider, QueuedSubagentApprovalProvider
 from tests.tui.app.support import (
     _application,
@@ -244,7 +245,10 @@ async def test_unqueue_command_selects_message_and_returns_it_to_composer(
 
         snapshot = application.runtime.store.load_session(app._controller.session_id or "")
         assert "return to composer" not in [message.text_content for message in snapshot.messages]
-        assert any(event.event_type == "queued_input_cancelled" for event in snapshot.events)
+        assert any(
+            event.event_type == "queued_input_cancelled"
+            for event in recorded_events(snapshot.session.session_id)
+        )
 
 
 @pytest.mark.asyncio

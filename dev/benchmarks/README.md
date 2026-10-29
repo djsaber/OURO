@@ -27,7 +27,7 @@ uv run --frozen --extra themes python -B -X utf8 -m dev.benchmarks.session_refac
 - `history`：100/1,000/10,000 条各 1 KiB 的消息，固定八条活动消息及一条摘要。
   测闲置会话恢复、Python 分配峰值、完整一轮、会话头/末尾 16 条/全量观察读取。
   另测 32 个逐次确认的 256 B 分片写入与独立观察延迟，以及连续 128 个分片的 32 KiB 有效吞吐。
-  独立观察只经过框架 `SessionEventStream`，不注入本地推送，不含 Host 呈现；连续输出允许框架原有的分片合并，
+  独立观察使用公开 `observe_session` 接口，不注入本地推送，不含 Host 呈现；连续输出允许框架原有的分片合并，
   写入吞吐计至最后正文被本地事件 sink 收到，独立读取计至完整正文被观察者收到。
 
 `long_run` 和 `agent_io` 支持 `--structured-bytes 65536` 增加每个工具结果的独立结构化正文；
@@ -49,8 +49,11 @@ uv run --frozen --extra themes python -B -X utf8 -m dev.benchmarks.session_refac
 
 `stream_io` 在同样的一万条历史上单独测连续输出，`--stream-chunks 131072` 对应 32 MiB。
 较长输出跨越多个观察分页和轮询周期，减小 2 MiB 短流受轮询相位的影响；不更改框架轮询或分页设置。
-同时报告完整 Run 耗时、两端收齐正文后到 Run/事件处理完成的收尾时间，以及前后逻辑存储与原生空闲页。
+同时报告完整 Run 耗时、两端收齐正文后到 Run 与观察处理完成的收尾时间，以及前后逻辑存储与原生空闲页。
 观察计数按新增字节递增，不反复求和已收到的前缀；最终仍校验两端完整内容。
+
+`navigation` 单独重复加载、翻页与重进，每个样本的每项操作执行 30 次；`tui` 使用 Textual 测试终端，
+测量首次进入、缓存返回、键入和新增输出。调用方式与测量口径见[会话事实观察验收](../../docs/plans/archive/2026-10-30-session-observation-without-event-log.md)。
 
 `interaction` 补充实际 Application/Supervisor 入口的交互成本：
 
@@ -151,13 +154,13 @@ uv run --frozen python -m dev.benchmarks.compaction_boundaries --repeat 3
 uv run --frozen python -m dev.benchmarks.runtime_history --repeat 3
 ```
 
-两后端每个样本重新生成隔离的目标格式数据，固定两条活动消息、两个当前请求事件和一条短 partial，
+两后端每个样本重新生成隔离的目标格式数据，固定两条活动消息、一个当前请求头和一条短 Draft，
 分别增加已覆盖消息（64/4,096）、旧 Run（1/512）及摘要（1/512）。分别测新适配器初始化与显式恢复、
 Runtime 创建与完整一轮 FauxProvider 请求，记录耗时、Python 读取字节与打开次数、tracemalloc 峰值、
 真实文件数、逻辑字节及 SQLite WAL/页数/空闲页。准备数据不计时，未清 OS 缓存，不代表冷磁盘。
 FauxProvider 不含网络或真实 Provider 编码；内存不是 RSS，读取计数不含 SQLite 原生 I/O。
 当前执行头与待处理 Run 的读取边界见[提交与执行](../../docs/plans/archive/2026-10-26-session-data-implementation.md#提交与执行)。
-Catalog 文件计数、当前 Run 事件恢复等保留工作仍计入入口；不能用定向正文读取推断所有历史轴或整个冷恢复已收敛。
+Catalog 文件计数、当前 Run 与 Draft 恢复等保留工作仍计入入口；不能用定向正文读取推断所有历史轴或整个冷恢复已收敛。
 
 ## 历史数据升级
 
@@ -398,7 +401,7 @@ uv run --frozen python -m dev.benchmarks.response_drafts --repeat 3
 ```
 
 Draft 实验固定输出字节数，分别拆成 10/1,000/100,000 片，使用隔离会话的真实追加和响应提交端口。
-报告 Python 分配峰值、活动 Draft、终结后文件与事件、两后端原生数据库的分配/空闲页；
+报告 Python 分配峰值、活动 Draft、终结后文件占用、两后端原生数据库的分配/空闲页；
 Draft 内容字节按原生 content 列计数，文件总量包含数据库开销；采样 WAL 不代表峰值。
 不含 Provider/Tool 时间，不清 OS 缓存；tracemalloc 耗时不能当作端到端延迟。
 

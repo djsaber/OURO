@@ -66,6 +66,7 @@ from ouro.plugins.session_controllers import (
 )
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
+from tests.event_capture import recorded_events
 from tests.session_storage import session_connection
 from tests.tool_batches import bind_tool_messages, persist_tool_batch, seed_tool_messages
 
@@ -423,7 +424,7 @@ async def test_plugin_continuation_creates_attributed_scaffold_follow_up(
     assert scaffold.metadata["contribution_id"] == "goal"
     assert scaffold.metadata["continuation_decision_id"]
     assert scaffold.text_content.startswith("Check the goal")
-    events, _ = store.load_events_page(result.session.session_id, limit=100)
+    events = recorded_events(result.session.session_id)
     assert any(event.event_type == "run_continuation_resolved" for event in events)
 
     await application.close()
@@ -1050,7 +1051,7 @@ async def test_runtime_startup_reconciliation_replays_pending_settlement_without
 
     restored = store.load_run(session.session_id, run.run_id)
     queued = runtime.queued_inputs.eligible(store.load_runtime_session(session.session_id))
-    events, _ = store.load_events_page(session.session_id, limit=100)
+    events = recorded_events(session.session_id)
     assert first == (run.run_id,)
     assert second == ()
     assert policy_calls == 0
@@ -1062,7 +1063,8 @@ async def test_runtime_startup_reconciliation_replays_pending_settlement_without
     assert queued[0].scaffold is True
     assert queued[0].semantic_tag == "goal-continue"
     assert queued[0].coalesce_key == "goal-continuation"
-    assert [event.event_type for event in events].count("run_continuation_resolved") == 1
+    assert not events
+    assert restored.continuation.state == "resolved"
     await runtime.close()
 
 
@@ -1161,8 +1163,7 @@ async def test_repeated_continuation_settlement_enqueues_once(tmp_path, backend)
     assert second.settled is False
     assert len(queued) == 1
     assert queued[0].queue_id == first.run.continuation.queue_id
-    events, _ = store.load_events_page(session.session_id, limit=100)
-    assert tuple(events) == first.events
+    events = first.events
     assert second.events == ()
     assert [event.event_type for event in events] == [
         "follow_up_input_queued",
@@ -1229,11 +1230,8 @@ async def test_cancel_after_continuation_commit_uses_run_settlement_without_rece
         assert checkpoint.state == "resolved" and checkpoint.settlement_plan is None
         assert result.settled and result.queued is (not superseded)
         assert result.diagnostics == checkpoint.settlement_diagnostics
-        events, _ = store.load_events_page(session.session_id, limit=100)
-        resolutions = [event for event in events if event.event_type == "run_continuation_resolved"]
-        assert len(resolutions) == 1
-        assert resolutions[0].payload["queued"] is (not superseded)
-        assert resolutions[0].payload["diagnostics"] == list(result.diagnostics)
+        assert result.events == ()
+        assert result.run.continuation == checkpoint
         assert bool(result.diagnostics) is superseded
         assert prompt not in store.load_run(session.session_id, run.run_id).model_dump_json()
         accepted = store.load_input(session.session_id, checkpoint.queue_id)
@@ -1359,12 +1357,11 @@ async def test_releasing_controller_cancels_its_queued_continuation(tmp_path, ba
     )
 
     assert released.data["cancelled_queue_ids"] == [queued[0].queue_id]
-    events, _ = store.load_events_page(session.session_id, limit=100)
-    assert events[-2].event_type == "session_control_transition"
-    assert events[-2].payload["phase"] == "applied"
-    assert events[-1].event_type == "queued_input_cancelled"
-    assert events[-1].payload["queue_id"] == queued[0].queue_id
-    assert events[-1].payload["activation_id"] == activation.activation_id
+    assert store.load_input_state(session.session_id, queued[0].queue_id).status == "cancelled"
+    assert all(
+        item.activation_id != activation.activation_id
+        for item in store.load_session_record(session.session_id).controls.activations
+    )
     assert queue.eligible(store.load_runtime_session(session.session_id)) == []
 
 
@@ -1637,7 +1634,8 @@ async def test_continuation_state_queue_and_event_share_native_failure_boundary(
 
     with session_connection(store, session.session_id) as connection:
         connection.execute(
-            "CREATE TRIGGER fail_continuation_event BEFORE INSERT ON events BEGIN "
+            "CREATE TRIGGER fail_continuation_event BEFORE UPDATE ON runs "
+            "WHEN json_extract(NEW.payload, '$.continuation.state') = 'resolved' BEGIN "
             "SELECT RAISE(ABORT, 'continuation event'); END"
         )
     with pytest.raises(PersistenceError):
@@ -1655,25 +1653,23 @@ async def test_continuation_state_queue_and_event_share_native_failure_boundary(
         )
         assert stored_run.continuation.state == "pending"
         assert stored_session.pending_input_ids == ()
-        assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM input_states").fetchone()[0] == 0
         connection.execute("DROP TRIGGER fail_continuation_event")
     with store.session_mutation(session.session_id):
         pass
     await service.settle(session_id=session.session_id, run_id=run.run_id)
 
     before = store.load_session(session.session_id)
+    revision = store.observation_revision(session.session_id)
     repeated = await service.settle(session_id=session.session_id, run_id=run.run_id)
     assert not repeated.settled and repeated.events == ()
-    after = store.load_session(session.session_id)
-    assert before.events == after.events
-    assert [event.event_type for event in after.events] == (
-        ["follow_up_input_queued"] if continue_run else []
-    ) + ["run_continuation_resolved"]
-    assert after.events[-1].payload["action"] == ("continue" if continue_run else "complete")
-    assert after.events[-1].payload["queued"] is continue_run
+    assert store.load_session(session.session_id) == before
+    assert store.observation_revision(session.session_id) == revision
+    assert bool(before.session.pending_input_ids) is continue_run
+    assert repeated.run.continuation.action == ("continue" if continue_run else "complete")
     checkpoint = repeated.run.continuation
     assert checkpoint.state == "resolved" and checkpoint.settlement_plan is None
-    assert after.session.pending_input_ids == ((checkpoint.queue_id,) if continue_run else ())
+    assert before.session.pending_input_ids == ((checkpoint.queue_id,) if continue_run else ())
     assert policy_calls == ([run.run_id] if continue_run else [])
     if continue_run:
         assert (

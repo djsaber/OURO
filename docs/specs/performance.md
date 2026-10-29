@@ -71,14 +71,14 @@ filter 不执行 I/O，拒绝投递不影响持久化或其他消费者。Plugin
 
 ## 会话状态观察
 
-正文与 Agent 状态观察共享每 Session 的有序事件跟随器。状态观察只合并活动或关系变化，不缓存历史树快照；
+正文与 Agent 状态观察共享每 Session 的事实增量跟踪器。状态观察只合并活动或关系变化，不缓存历史树快照；
 无关文本片段不会触发树查询。每个观察者按需执行 canonical projector，同一观察者最多一个查询在途。
 存储读取在线程中执行，读取边界在投影和排版前释放；关闭最后一个正文或状态观察者后回收跟随器。
-根节点的 Session、选中 Run、关系与事件水位共用一个短只读边界，复用数据库连接；读取 child 前释放根边界，
+根节点的 Session、选中 Run、关系与事实修订号共用一个短只读边界，复用数据库连接；读取 child 前释放根边界，
 不嵌套不同 Session 的文件锁。活动状态仍使用 Supervisor 的现有投影，不增加常驻树缓存。
 
 交互式历史使用 Application 的近期窗口与 before 游标，读取成本由请求的完整帧决定；Run/compaction 元数据与
-当前请求/Draft 和业务事件水位独立读取，不为状态窗口加载整 Run 事件。TUI 初始窗口为 200 条消息的软限制，向前加载复用既有 Strip，不重新排版全部已加载正文。
+当前请求/Draft 和事实修订号在同一短读边界取得，不读取历史通知。TUI 初始窗口为 200 条消息的软限制，向前加载复用既有 Strip，不重新排版全部已加载正文。
 选择仍有执行者的会话时，恢复入口先查询执行归属；已有 owner 不进入完整执行恢复读取。显示窗口和完整导出互不替代。
 上下文状态读取持久化 header 索引，避免为请求身份、时间与 token metrics 反序列化完整输入和媒体正文。
 
@@ -91,7 +91,7 @@ filter 不执行 I/O，拒绝投递不影响持久化或其他消费者。Plugin
 ## 工具结果消息
 
 确定 Outcome 按到达顺序独立保存，模型历史按 `source_index` 形成完整工具帧。消息引用、Call 发布状态、
-Harness 意图、Driver ready 和对应小事件共用原生提交，提交成功后才推进内存状态并通知消费者。
+Harness 意图、Driver ready 和事实修订号共用原生提交，提交成功后才推进内存状态并通知消费者。
 恢复安装已接受决定或发布待处理事实，不重调工具，也不逐条补齐半个工具帧。资源先发布、再提交引用；
 详细契约见[工具事实与整帧提交](session-persistence.md#工具事实存储)。
 
@@ -120,7 +120,7 @@ Files 使用对应 Session 锁维护读取寿命，避免同时删除资源留�
   和事务定义；“同一 worker”只约束一次完整操作；
 - caller cancellation 不能遗弃仍持锁或正在修改 durable state 的线程。worker 必须先 settle，随后再向 caller 传播
   cancellation；
-- canonical event 仍在 durable boundary 成功后由事件循环按序发布。
+- 在线通知在事实提交成功后由事件循环按序发布，不永久保存。
 
 Windows 的文件/目录原子发布共享同一个有界 transient sharing-race 重试；重试发生在 worker 上，不得冻结 TUI。
 
@@ -138,7 +138,7 @@ Provider 和工具执行中的 `AbortSignal.is_aborted()` 是高频同步检查�
 ## TUI 流式消费与结构边界
 
 - Host 的 Runtime/Agent tree 订阅建立是异步操作：Store 当前状态与事实投影在 worker 中完成，订阅队列、任务与
-  Supervisor 内存状态始终由事件循环拥有。先登记有界 live 队列，再读取当前快照，按 sequence 追赶业务事实；
+  Supervisor 内存状态始终由事件循环拥有。先登记有界 live 队列，再读取当前快照，按已确认事实位置补齐正文和当前状态；
   初始化期间溢出继续发布 lagged，失败或取消必须撤销订阅。不得在线程中运行持有 asyncio 队列的整个 Supervisor。
 - Supervisor 的提交、交互恢复和 enqueue 前查询离开事件循环；最后一次 await 后必须重新检查关闭状态和 Session
   调度所有权，再一次性登记 job。Agent tree 的持久化查询同样在 worker 执行，订阅集合的变更留在 loop。
@@ -200,7 +200,7 @@ Skill 资源遍历在下降前剪枝忽略目录，不枚举其内部文件再�
 
 ## IO 所有权与响应性验证
 
-事件写入取消须持有 per-Session 顺序锁，直到 worker 写入和 live publication 都结束。Spawn submission 的持久化
+通知发布不进行持久化，不持有事件写入锁。业务提交的取消仍等待所拥有的提交完成。Spawn submission 的持久化
 更新使用 delegation 生命周期锁，避免与结果结算竞争。HITL 可以在原 Run 释放执行锁前呈现；审批/回答通过
 `acquire_parked` 每 50 ms 重试，默认最多 5 秒，Run 离开预期等待态即停止。取得执行锁后重新验证准确交互身份。
 文件锁是最终排他边界，取消 acquisition 必须收回线程已获得但尚未交给调用方的锁。

@@ -43,6 +43,7 @@ from ouro.tui.view_models import (
     TuiSystemStatus,
     TuiToolExecutionConfiguration,
 )
+from tests.event_capture import recorded_events
 from tests.tui.helpers import StaticRouteCatalog, two_route_application
 
 
@@ -1841,7 +1842,7 @@ async def test_controller_submits_plugin_input_batch_as_one_run(tmp_path: Path) 
         assert len({message.run_id for message in messages}) == 1
         added = [
             event
-            for event in snapshot.events
+            for event in recorded_events(snapshot.session.session_id)
             if event.run_id == result.run_results[0].run.run_id
             and event.event_type == "plugin_message_added"
         ]
@@ -2008,20 +2009,14 @@ async def test_controller_observes_another_session_without_changing_control_targ
     try:
         controlled = await controller.submit("controlled conversation")
         observed = application.runtime.sessions.create(title="Observed child").session
-        event = application.runtime.store.append_ordered_event(
-            EventRecord(
-                session_id=observed.session_id,
-                run_id="run_observed",
-                event_type="run_started",
-                payload={"trigger": "delegation"},
-            )
-        )
-
         observation = await controller.observe_session(observed.session_id)
 
         assert controller.session_id == controlled.session.session_id
         assert observation.loaded.detail.session.session_id == observed.session_id
-        assert observation.loaded.event_high_water == event.sequence
+        assert (
+            observation.subscription.initial_snapshot.position.revision
+            == application.runtime.store.observation_revision(observed.session_id)
+        )
         observation.subscription.close()
     finally:
         await controller.close()
@@ -2310,7 +2305,7 @@ async def test_controller_session_catalog_includes_subagents_only_when_requested
 
 
 @pytest.mark.asyncio
-async def test_controller_does_not_replay_events_for_completed_session(
+async def test_controller_loads_completed_session_without_runtime_recovery(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2328,11 +2323,7 @@ async def test_controller_does_not_replay_events_for_completed_session(
         async def unexpected_reconciliation(_session_id: str) -> None:
             raise AssertionError("opening history must not reconcile Runtime execution state")
 
-        def unexpected_event_page(*_args, **_kwargs):
-            raise AssertionError("completed Sessions must not replay the event journal")
-
         monkeypatch.setattr(application.runtime, "reconcile_session", unexpected_reconciliation)
-        monkeypatch.setattr(application.runtime.sessions, "event_page", unexpected_event_page)
 
         loaded = await controller.load_session(result.session.session_id)
 

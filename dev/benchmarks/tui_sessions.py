@@ -20,7 +20,7 @@ from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.state import SessionRecord
 from ouro.local_application import LocalApplication
-from ouro.sessions import LocalSessionStore
+from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
@@ -59,8 +59,12 @@ async def until(predicate) -> None:
             await asyncio.sleep(0.005)
 
 
-async def sample(home: Path, *, messages: int, reasoning_chars: int) -> dict:
-    store = LocalSessionStore(home)
+async def sample(
+    home: Path, *, messages: int, reasoning_chars: int, backend: str = "files"
+) -> dict:
+    store = (
+        LocalSessionStore(home) if backend == "files" else SQLiteSessionStore(home / "sessions.db")
+    )
     store.initialize()
     session = SessionRecord(title="Synthetic long history", current_model="faux/faux")
     store.create_session_snapshot(

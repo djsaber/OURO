@@ -22,18 +22,22 @@ from ouro.application.contracts.execution import (
     SupervisorRunStatus,
     SupervisorStartResult,
 )
-from ouro.application.contracts.sessions import SessionHistoryAnchor
+from ouro.application.contracts.sessions import SessionHistoryAnchor, SessionObservationBatch
 from ouro.application.inputs.requests import UserInputRequest, UserInputSubmission
 from ouro.application.observations.activity import (
+    apply_observed_activity,
     project_runtime_activity_state,
     queued_runtime_activity,
     reduce_runtime_activity,
     runtime_activity_changed,
     runtime_activity_for_status,
 )
-from ouro.application.observations.drafts import read_draft_events, resolve_fact_event
 from ouro.application.observations.events import SessionEventStream
-from ouro.application.observations.sessions import SessionObservation, redact_observation
+from ouro.application.observations.sessions import (
+    SessionObservation,
+    observation_event,
+    redact_observation,
+)
 from ouro.application.observations.subscription import SessionStateSubscription
 from ouro.application.runs.lifecycle import maybe_active_run
 from ouro.application.runs.ownership import RunReservation
@@ -48,6 +52,7 @@ from ouro.core.events import EventRecord
 from ouro.core.response_drafts import ResponseStreamPosition
 from ouro.core.results import RunResult
 from ouro.core.session_controls import DelegatedTaskInput, HostSessionInput
+from ouro.core.session_observation import SessionObservationPosition
 from ouro.core.state import (
     ACTIVE_RUN_STATUSES,
     RESUMABLE_RUN_STATUSES,
@@ -104,8 +109,8 @@ class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
     """Bounded non-blocking view of one Session's runtime stream.
 
     When activity is requested, ``initial_activity`` reflects the same
-    subscription boundary used to select replay events. Replayed events remain
-    historical; subsequent activity notifications describe live state changes.
+    fact position used to start observation. Subsequent activity notifications
+    describe changes from online delivery and the shared fact reader.
     """
 
     def __init__(
@@ -116,7 +121,6 @@ class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
         max_buffer: int,
         include_activity: bool,
         initial_activity: RuntimeActivitySnapshot | None,
-        after_sequence: int = 0,
     ) -> None:
         self.session_id = session_id
         self.include_activity = include_activity
@@ -124,7 +128,7 @@ class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
         self._supervisor = supervisor
         self._queue: asyncio.Queue[RuntimeNotification | object] = asyncio.Queue(max_buffer)
         self._closed = False
-        self._event_sequence = after_sequence
+        self._event_sequence = 0
         self._draft_position: ResponseStreamPosition | None = None
 
     def __aiter__(self) -> RuntimeSubscription:
@@ -196,44 +200,6 @@ class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
             self._queue.get_nowait()
         self._queue.put_nowait(RuntimeNotification(kind="diagnostic", diagnostic=diagnostic))
 
-    def _prepend_replay(
-        self,
-        replay: tuple[RuntimeNotification, ...],
-        *,
-        after_sequence: int,
-        truncated: bool,
-    ) -> None:
-        """Merge replay and live arrivals before exposing this subscription."""
-
-        pending: list[RuntimeNotification] = []
-        while not self._queue.empty():
-            item = self._queue.get_nowait()
-            if isinstance(item, RuntimeNotification):
-                pending.append(item)
-        for item in pending:
-            if (
-                item.diagnostic is not None
-                and item.diagnostic.code != "runtime_subscription_lagged"
-            ):
-                # A failed live reader cannot be repaired by replay merging.
-                # Preserve its cause instead of asking hosts to reload in a loop.
-                self._offer(item)
-                return
-        if truncated or any(item.kind == "diagnostic" for item in pending):
-            self._offer_lagged()
-            return
-        self._event_sequence = after_sequence
-        self._draft_position = None
-        for notification in (*replay, *pending):
-            if (
-                notification.activity is not None
-                and notification.activity.sequence < self._event_sequence
-            ):
-                # Replay already crossed this activity's durable boundary.
-                # Do not move a consumer back to an older live snapshot.
-                continue
-            self._offer(notification)
-
     def _offer_lagged(self) -> None:
         if self._closed:
             return
@@ -247,7 +213,7 @@ class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
             message="subscriber buffer overflowed; one or more events were skipped",
             session_id=self.session_id,
             recoverable=True,
-            suggested_action="Reload durable events with the paged Session API.",
+            suggested_action="Read the missing facts from the applied Session position.",
         )
         self._queue.put_nowait(RuntimeNotification(kind="diagnostic", diagnostic=diagnostic))
 
@@ -732,7 +698,7 @@ class RuntimeSupervisor:
                         raise SessionBusyError("prepared Run is no longer queued")
                 return (
                     self.store.load_session_record(session_id).history_epoch,
-                    self.store.latest_event_sequence(session_id),
+                    0,
                 )
 
         if job.prepared_run is not None:
@@ -793,15 +759,13 @@ class RuntimeSupervisor:
         read_snapshot = self.runtime.observation_snapshot
         if history_limit is not None:
             read_snapshot = partial(read_snapshot, history_limit=history_limit)
-        snapshot = (
-            await run_blocking(read_snapshot, session_id, history_anchor=history_anchor)
-            if history_anchor is not None
-            else await run_blocking(read_snapshot, session_id)
-        )
-        source = await self.subscribe(
-            session_id, after_sequence=snapshot.event_high_water, max_buffer=max_buffer
-        )
+        source = await self.subscribe(session_id, max_buffer=max_buffer)
         try:
+            snapshot = (
+                await run_blocking(read_snapshot, session_id, history_anchor=history_anchor)
+                if history_anchor is not None
+                else await run_blocking(read_snapshot, session_id)
+            )
             snapshot = await run_blocking(redact_observation, snapshot)
             return SessionObservation(
                 snapshot,
@@ -819,7 +783,6 @@ class RuntimeSupervisor:
         self,
         session_id: str,
         *,
-        after_sequence: int = 0,
         max_buffer: int = 256,
         include_activity: bool = False,
     ) -> RuntimeSubscription:
@@ -833,57 +796,14 @@ class RuntimeSupervisor:
             max_buffer=max_buffer,
             include_activity=include_activity,
             initial_activity=None,
-            after_sequence=after_sequence,
         )
-        # Attach before the read yields: every event is covered by durable
-        # replay, the bounded live queue, or both. Neither producer is paused.
+        # Register before reading state; missed local deliveries use the same fact reader.
         self._subscriptions.setdefault(session_id, set()).add(subscription)
         try:
             initial = await self._observe_session_state(session_id)
             if include_activity:
                 subscription.initial_activity = initial
 
-            def read_replay() -> tuple[tuple[RuntimeNotification, ...], bool]:
-                with self.store.session_read(session_id):
-                    epoch = self.store.load_session_record(session_id).history_epoch
-                    events, truncated = self.store.load_events_after(
-                        session_id,
-                        after_sequence=after_sequence,
-                        limit=max_buffer,
-                    )
-                    sequence = events[-1].sequence if events else after_sequence
-                    events = [
-                        resolve_fact_event(self.store, event, history_epoch=epoch)
-                        for event in events
-                    ]
-                    if not truncated:
-                        draft = read_draft_events(
-                            self.store,
-                            session_id,
-                            sequence=sequence,
-                            history_epoch=epoch,
-                            limit=max_buffer,
-                        )
-                        events.extend(draft)
-                        truncated = len(events) > max_buffer
-                replay = (
-                    tuple(
-                        RuntimeNotification(kind="event", event=project_runtime_event(event))
-                        for event in events
-                        if event.history_epoch >= initial.history_epoch
-                    )
-                    if not truncated
-                    else ()
-                )
-                return replay, truncated
-
-            replay, truncated = await run_blocking(read_replay)
-            if self._closed:
-                raise OuroError("runtime supervisor is closed")
-            if not subscription.closed:
-                subscription._prepend_replay(
-                    replay, after_sequence=after_sequence, truncated=truncated
-                )
         except BaseException as exc:
             subscription.close()
             if isinstance(exc, FileNotFoundError):
@@ -896,31 +816,34 @@ class RuntimeSupervisor:
         status_override = (
             self._snapshots[active_job.handle.handle_id].status if active_job is not None else None
         )
-        cached = self._activities.get(session_id)
-        # Local execution and an attached journal follower both maintain this
-        # projection. Rebuilding an active Run at its latest cursor discards
-        # stream activity that the bounded Run checkpoint cannot reconstruct.
-        initial = cached if session_id in self._event_streams or active_job is not None else None
-        if initial is None:
-            initial = await run_blocking(
-                self._load_activity, session_id, status_override=status_override
+        position = None
+        previous = self._activities.get(session_id)
+        cached = previous if session_id in self._event_streams else None
+        initial: RuntimeActivitySnapshot
+        if cached is None:
+            initial, position, epoch = await run_blocking(
+                self._load_observed_state, session_id, status_override=status_override
             )
+        else:
+            initial = cached
         if self._closed or not (
             self._subscriptions.get(session_id) or self._state_subscriptions.get(session_id)
         ):
             raise OuroError("runtime supervisor is closed")
         current = self._activities.get(session_id)
-        if current is None or current.sequence <= initial.sequence:
+        # Only a live update during this read may supersede the fresh snapshot.
+        # Delivery sequence numbers do not survive a follower's lifetime.
+        if current is None or current is previous:
             self._activities[session_id] = initial
-        if session_id not in self._event_streams:
-            # Seed the reducer before following this exact snapshot cursor.
-            # A concurrent writer may commit while the read transaction is
-            # open; those events must update activity as well as reach Hosts.
+        if session_id not in self._event_streams and position is not None:
             stream = SessionEventStream(
-                self.store,
+                self.runtime.sessions,
                 session_id,
-                after_sequence=initial.sequence,
+                position=position,
+                history_epoch=epoch,
+                sequence=self._activities[session_id].sequence,
                 publish=self._publish_observed_event,
+                publish_facts=self._publish_observed_facts,
                 report=self._report_observation_error,
                 is_running=lambda: (
                     session_id in self._jobs_by_session
@@ -936,6 +859,18 @@ class RuntimeSupervisor:
             task.add_done_callback(self._event_stream_tasks.discard)
 
         return initial
+
+    def _load_observed_state(
+        self, session_id: str, *, status_override: SupervisorRunStatus | None = None
+    ) -> tuple[RuntimeActivitySnapshot, SessionObservationPosition, int]:
+        with self.store.session_read(session_id):
+            activity = self._load_activity(session_id, status_override=status_override)
+            session = self.store.load_session_record(session_id)
+            position = SessionObservationPosition(
+                revision=self.store.observation_revision(session_id),
+                message_sequence=session.message_count,
+            )
+            return activity, position, session.history_epoch
 
     async def subscribe_state(
         self, session_id: str, *, event_types: frozenset[str] = frozenset()
@@ -1048,14 +983,9 @@ class RuntimeSupervisor:
         """Wait for a durable Run, including execution owned by another Host.
 
         Job receipts stop at approval/parking boundaries. A Run wait spans those
-        boundaries and uses the shared journal follower, without polling Run
+        boundaries and uses the shared fact follower, without polling Run
         history or reloading checkpoints for each streamed token.
         """
-
-        def boundary() -> tuple[RunRecord, int]:
-            with self.store.session_read(session_id):
-                run = self.store.load_run(session_id, run_id)
-                return run, self.store.latest_event_sequence(session_id)
 
         job = self._jobs_by_session.get(session_id)
         if (
@@ -1066,31 +996,44 @@ class RuntimeSupervisor:
             # A scheduled continuation reuses a terminal Run. Observe its
             # accepted attempt before interpreting the previous terminal state.
             await job.execution_started.wait()
-        run, sequence = await run_blocking(boundary)
-        if run.status not in ACTIVE_RUN_STATUSES or run.status in until:
-            return run
-        subscription = await self.subscribe(session_id, after_sequence=sequence)
+        subscription = await self.subscribe(session_id)
         try:
+            run = await run_blocking(self.store.load_run, session_id, run_id)
+            if run.status not in ACTIVE_RUN_STATUSES or run.status in until:
+                return run
             async for notification in subscription:
                 diagnostic = notification.diagnostic
                 if diagnostic is not None and diagnostic.code != "runtime_subscription_lagged":
                     raise OuroError(diagnostic.message)
                 event = notification.event
-                if diagnostic is None and (
-                    event is None
-                    or event.run_id != run_id
-                    or event.event_type
-                    not in {
-                        "run_completed",
-                        "run_failed",
-                        "run_aborted",
-                        "run_paused",
-                        "run_status_changed",
-                        "run_started",
-                    }
+                if (
+                    diagnostic is None
+                    and notification.facts is None
+                    and (
+                        event is None
+                        or event.run_id != run_id
+                        or event.event_type
+                        not in {
+                            "run_completed",
+                            "run_failed",
+                            "run_aborted",
+                            "run_paused",
+                            "run_status_changed",
+                            "run_started",
+                        }
+                    )
                 ):
                     continue
-                run = await run_blocking(self.store.load_run, session_id, run_id)
+                if notification.facts is not None and notification.facts.facts is not None:
+                    observed = next(
+                        (item for item in notification.facts.facts.runs if item.run_id == run_id),
+                        None,
+                    )
+                    if observed is None:
+                        continue
+                    run = observed
+                else:
+                    run = await run_blocking(self.store.load_run, session_id, run_id)
                 if run.status not in ACTIVE_RUN_STATUSES or run.status in until:
                     return run
             raise OuroError("Run observation closed before completion")
@@ -1196,7 +1139,7 @@ class RuntimeSupervisor:
         }:
             if snapshot.run_id is None:
                 # A worker is between its process-local running transition and
-                # the first durable Run event. Wait for that identity instead of
+                # the committed Run identity. Wait for that identity instead of
                 # guessing the active Run from a snapshot that may still be empty.
                 await job.run_identified.wait()
                 identified = self._snapshots.get(job.handle.handle_id)
@@ -1492,6 +1435,21 @@ class RuntimeSupervisor:
         if previous is not None:
             self._publish_activity(reduce_runtime_activity(previous, event))
 
+    def _publish_observed_facts(self, batch: SessionObservationBatch) -> None:
+        notification = RuntimeNotification(kind="facts", facts=batch)
+        for subscription in tuple(self._subscriptions.get(batch.session_id, ())):
+            subscription._offer(notification)
+        current = self._activities.get(batch.session_id)
+        if current is not None:
+            if batch.facts is not None:
+                current = apply_observed_activity(current, batch.facts)
+            for event in batch.events:
+                current = reduce_runtime_activity(current, observation_event(event))
+            self._publish_activity(current)
+        if batch.facts is not None:
+            for state_subscription in tuple(self._state_subscriptions.get(batch.session_id, ())):
+                state_subscription.offer(notification)
+
     def _report_observation_error(self, diagnostic: Diagnostic) -> None:
         assert diagnostic.session_id is not None
         stream = self._event_streams.pop(diagnostic.session_id, None)
@@ -1509,8 +1467,7 @@ class RuntimeSupervisor:
         run_id: str | None = None,
         status_override: SupervisorRunStatus | None = None,
     ) -> RuntimeActivitySnapshot:
-        # The Run and cursor must describe one read boundary. Reading a newer
-        # cursor after an older Run would permanently hide its terminal event.
+        # Current records are read together; no historical notification is replayed.
         with self.store.session_read(session_id):
             session = self.store.load_session_record(session_id)
             selected_run_id = run_id or session.active_run_id or session.last_run_id
@@ -1519,18 +1476,32 @@ class RuntimeSupervisor:
                 if selected_run_id is not None
                 else None
             )
-            sequence = self.store.latest_event_sequence(session_id)
             batch = load_tool_batch(self.store, run) if run is not None else None
-            context_status = self.runtime.sessions.context_status(session_id)
-            metrics = self.runtime.sessions.effective_context_metrics(session_id)
+            context = self.store.load_latest_context_header(session_id)
+            context_status = (
+                self.runtime.sessions.project_context_status(context) if context else None
+            )
+            metrics = context.metrics if context else None
+            active_id = session.context_selection.compaction_id
+            active = self.store.load_compaction(session_id, active_id) if active_id else None
+            if active is not None and active.context_metrics_after is not None:
+                if context is None or active.created_at > context.prepared_at:
+                    metrics = active.context_metrics_after
+            current_request = context
+            if run is not None and run.current_request_id is not None:
+                if context is None or context.context_id != run.current_request_id:
+                    current_request = self.store.load_request_header(
+                        session_id, run.current_request_id
+                    )
         return project_runtime_activity_state(
             session,
             run,
-            sequence=sequence,
+            sequence=0,
             status_override=status_override if run is None else None,
             context_status=context_status,
             effective_context_metrics=metrics,
             batch=batch,
+            current_request=current_request,
         )
 
     def _resolve_job(self, handle_or_session: RunHandle | str) -> _RunJob:
@@ -1553,7 +1524,7 @@ class RuntimeSupervisor:
         self._snapshots[job.handle.handle_id] = snapshot
         current_activity = self._activities.get(job.handle.session_id)
         # A job is one process's execution attempt. Once a Run is identified,
-        # only its ordered events may advance the shared Session projection:
+        # only observation may advance the shared Session projection:
         # another Host may already have resumed or finished this same Run.
         if current_activity is None and snapshot.run_id is None:
             current_activity = RuntimeActivitySnapshot(

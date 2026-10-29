@@ -220,15 +220,11 @@ workspace 约束只限制命令行工具的工作目录，不是操作系统命�
 batch/call/approval/AskUser 事件。
 Observer 失败隔离为 `plugin_observer_failed`，不改变工具的实际结果。
 
-调用接受、started、批次执行阶段、审批等待与决议、用户回答与再次提问、子结果等待与决议的业务事件，
-与各自 Call/Run 状态在同一次原生提交中保存。审批请求不会先于其持久等待状态向 Host 公布。
-工具帧完成事件与消息、Call 发布状态和 Driver ready 同提交；中断批次及恢复补齐事件也使用各自的提交边界。
-提交后通知不再写入第二条事件，丢失通知时按 Session sequence 追赶。
-
-永久 `tool_call_requested` 只保存 Call 身份及少量展示元数据，不复制 arguments。
-永久 `tool_call_completed` 以 Call 身份和固定 `outcome_attempt` 引用确定结果，保留当时的结算反馈，
-不复制原始 structured；未知结果没有 Outcome 引用。Application 在观察读取边界内物化 arguments/result_data，
-不会用后来变化的当前 attempt 或迟到结果改写历史通知。结果的独立保存仍先于业务结算，通知不承担恢复事实所有权。
+调用接受、started、批次执行阶段、审批等待与决议、用户回答、子结果等待与决议由对应 Call/Run 事实保存。
+工具帧的消息、Call 发布状态和 Driver ready 在同一次原生提交中生效；审批请求不会先于持久等待状态向 Host 公布。
+提交成功后直接发送在线通知，使用执行者已持有的 arguments/result_data，不为通知补读磁盘或写入永久事件。
+遗漏通知时按事实修订号和消息位置补齐当前状态与成果，不重放过去的审批请求或启动动作。
+结果的独立保存仍先于业务结算，历史消息使用固定 Call/Outcome 引用，迟到结果不能改写已经发布的未知反馈。
 
 ## 状态效果与历史代次
 

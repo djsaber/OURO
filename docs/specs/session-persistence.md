@@ -23,7 +23,6 @@ OURO_HOME/
     index.json
     <session_id>/
       inputs/records/<input_key>.json
-      inputs/states/<input_key>.json
       messages.jsonl
       session-data.sqlite3
       request-content/<context_id>.json
@@ -38,7 +37,7 @@ OURO_HOME/
   trash/sessions/<trash_id>/
 ```
 
-当前 `data_layout_version` 为 41，SQLite schema 为 26；各持久记录的版本见下文 Canonical 数据与投影。
+当前 `data_layout_version` 为 42，SQLite schema 为 27；各持久记录的版本见下文 Canonical 数据与投影。
 SQLite 同样使用会话文件目录保存附件，资源元信息保存在数据库；跨后端传输使用统一归档。
 初始化只接受当前格式；不支持或缺失的版本抛出 `UnsupportedDataVersionError`，不扫描或转换历史记录。
 空数据目录/数据库初始化为当前格式。已有数据不自动清空，由用户选择新目录或清理失效测试数据。
@@ -48,8 +47,8 @@ schema 检查、WAL 设置和版本记录创建在同一初始化所有权内完
 业务读写仍使用原有 SQLite 事务和 Session 执行锁。
 
 当前格式的未完成提交仍按原生决定恢复，不重新运行插件、转换 schema 或重写审计事实。
-Harness、资源列表、事件高水位、事件分页和 sequence 追赶同样使用只读边界；Files 查询发现未决决定时
-报告该会话需恢复。事件与执行记录共同存于原生数据库，高水位和分页直接通过索引查询，不扫描正文或重建索引。
+Harness、资源列表、事实修订号与消息后缀查询使用只读边界；Files 查询发现未决决定时报告该会话需恢复。
+修订号与当前事实共同存于原生数据库，通过索引发现和定位变化，不扫描正文或重建索引。
 owner 业务状态由相应执行契约读取，不支持的 schema 明确拒绝；没有状态迁移命令。
 当前格式的 Session、Run、消息与 Harness 可在插件变化后继续读取。ToolInvocation 保存 resumable 声明及
 实际执行所需的插件契约或 Host 工具定义摘要；恢复核对保存的执行契约、当前定义及授权，不能推断未知私有状态。
@@ -59,8 +58,8 @@ owner 业务状态由相应执行契约读取，不支持的 schema 明确拒绝
 
 Canonical 数据包括：
 
-- `inputs/records/<input_key>.json` 的已接受输入，以及 `inputs/states/<input_key>.json` 的小生命周期状态；
-- `session-data.sqlite3` 的 Session 头、Run、有序事件、独立调用、实际执行开始、确定结果事实、资源元信息、可变 Call 状态、有序摘要记录、请求小头、当前请求定位与 Draft；
+- `inputs/records/<input_key>.json` 的已接受输入，以及原生 `input_states` 表的小生命周期状态；
+- `session-data.sqlite3` 的 Session 头、Run、独立调用、实际执行开始、确定结果事实、资源元信息、可变 Call 状态、有序摘要记录、请求小头、当前请求定位与 Draft；
 - `messages.jsonl` 的有序消息事实；
 - root Session 下的 `delegations/*.json`；
 - `latest_contexts` 指向的唯一 `request-content/<context_id>.json` Manifest；
@@ -69,7 +68,7 @@ Canonical 数据包括：
 - 输入接受与 Run 结算事实，以及文件后端的短期未完成提交决定。
 
 Files 将消息自己拥有的内容及领域引用顺序存入 `messages.jsonl`，使用 UTF-8 和 LF，偏移按字节计算。
-`session-data.sqlite3` 保存消息 ID、位置、正文偏移和业务查询键，并唯一拥有 Session 头、Run、事件、Call、started、Outcome、资源元信息、Call 状态与摘要。
+`session-data.sqlite3` 保存消息 ID、位置、正文偏移和业务查询键，并唯一拥有 Session 头、Run、Call、started、Outcome、资源元信息、Call 状态与摘要。
 消息位置的查询键使用原生列与索引；资源 ID 列表单独编码。
 相关工具事实、调用状态、摘要和消息位置在一个原生事务中关联和更新；Files 的后端选择和领域接口保持不变。
 摘要按身份点查或按创建顺序一次读取，前驱、覆盖终点和展示锚点由覆盖索引提供；撤销只读写需调整锚点的摘要正文。
@@ -77,8 +76,8 @@ Files 将消息自己拥有的内容及领域引用顺序存入 `messages.jsonl`
 消息的持久位置由有序成员索引保存，独立于传入的 sequence，不在正文重复保存；点查核对正文身份。
 分页、倒序窗口和完整历史直接读顺序正文；撤销按位置选择小成员记录，只解析首条移除和最后保留的边界事实，
 不读取待移除的全部正文。成员、Call 关联及 Run 小计数随会话数据事务更新；正文与数据库共同由已有
-`commit.json` 决定发布。数据库事务前中断时重放文件后缀并提交事务；Session 的 `last_commit_id` 与事实、事件
-同事务生效，已完成的决定只清理过期 Manifest 和决定槽位，不重复插入事实或事件。查询只读索引，不建立全历史内存表。
+`commit.json` 决定发布。数据库事务前中断时重放文件后缀并提交事务；Session 的 `last_commit_id` 与事实和修订号
+同事务生效，已完成的决定只清理过期 Manifest 和决定槽位，不重复插入事实。查询只读索引，不建立全历史内存表。
 完整快照在未发布目录中单次编码、顺序写入正文。Files 空 schema 初始化独立于会话发布，失败重试可复用空 schema；
 消息位置、工具事实、状态、摘要、请求头、资源元信息与 Session 头在同一个数据事务中发布。
 原生数据发布失败时不会留下部分会话，已预留的不可变资源仍可用于重试。
@@ -146,7 +145,7 @@ SQLite 在同一事务中插入摘要并更新 Session。查询使用只读边�
 
 Session 的 `pending_input_ids` 只保存待处理输入的 FIFO 身份。`InputRecord` 保存接受时的原文、固定技能内容、
 附件、来源与执行归属；`InputState` 保存路由字段及 pending/consumed/cancelled/withdrawn 状态和已提交消息身份。
-SQLite 使用 `inputs`、`input_states` 两张按 Session/input ID 定位的表实现同一契约。
+两个后端共享原生 `input_states` 表；SQLite 的输入正文在 `inputs` 表，Files 的不可变正文在输入文件。
 Files 的 `input_key` 是原 input ID UTF-8 字节的 SHA-256 十六进制值，只用于确定文件名；原 ID 在记录中完整保留并校验。
 Host 身份中的分隔符、Unicode 和长身份不会成为路径，也不要求扫描映射表。这里不对输入正文或提交提案计算身份摘要。
 接受只写一次正文，消费或取消只更新对应小状态与 Session 待处理身份，不读取或重写其他已接受输入正文。
@@ -170,12 +169,11 @@ Host 身份中的分隔符、Unicode 和长身份不会成为路径，也不要�
 归档消息同样使用 `MessageFact` 并携带其 Input 闭包，导入只解析已保存的固定事实，不调用技能解析器或读取原始附件路径。
 分支重映射消息位置而保留输入原意；撤销返回显式物化的原始输入，原始文件或技能已变化不影响还原。
 
-两个后端的 `events` 表以一份完整 JSON 唯一保存事件；可选空字段和空的默认值不重复编码，schema_version 始终保留。
-查询身份列由 SQLite 从该 JSON 生成，`(session_id, sequence)`、Session/Run 行游标索引用于高水位、追赶和分页。
-身份列通过原生表达式取得。索引由同一插入事务维护，高水位直接读取索引值，不解析事件 JSON。
-分页游标是后端私有的位置，不是事件 sequence。查询只解码选中的事件，水位读取不解码事件正文；
-不维护额外事件文件、派生游标文件、内存事件索引或回退扫描。Session、Run、调用事实、请求头、摘要和事件
-共享同一原生事务。没有消息正文、输入文件、Harness 或 Manifest 文件变更时直接提交事务，不创建 `commit.json`。
+两个后端不保存永久会话事件。`session_revisions` 只保存各 Session 的当前修订号；Run、Input 状态、Call 状态和摘要
+记录各自的最新修改号。相关变化与修订号在同一原生事务中生效，一个对象反复变化不积累旧状态或变更清单。
+`load_observation_changes` 按修订号与身份索引有界分页，`load_messages_after` 按已有消息位置取得后缀。
+当前请求头、委派等变化也推进会话修订号，Draft 增长只推进自身偏移。新建或导入后按当前事实建立查询索引。
+没有消息正文、输入文件、Harness 或 Manifest 文件变更时直接提交事务，不创建 `commit.json`。
 
 共享预算的 `load_run_request_counts` 只读取 Run 身份、model_round_count 和 summary_request_count。
 这些数值由 Run 拥有：两后端在原生 Run 行中同步投影两列并通过覆盖索引读取。读取不解析 Run 正文；完整转存按 Run 重建投影。该读取随相关 Session 的
@@ -214,7 +212,7 @@ Files 的 `session_read` 遇到未决 `commit.json` 抛出 `SessionRecoveryRequi
 使用同一只读边界，不隐式恢复；创建和 CAS 更新仍显式进入 mutation。其余旧查询入口继续按执行恢复职责审查。
 
 Session、Run、Message、Event、Compaction、ContextSnapshot 和 Delegation 是独立持久化根记录。每个 payload
-必须显式携带各自当前 `schema_version`：Session 为 5，Event 为 2，Run 为 10，ModelRequestHeader 为 11、Manifest 为 10，Message 为 8，Compaction 为 3，Delegation 为 2，InputRecord/InputState/ToolCallRecord/ToolCallStart/ToolCallState 为 1，ToolOutcomeRecord 为 2；ResourceRecord 为 3。
+必须显式携带各自当前 `schema_version`：Session 为 5，Run 为 10，ModelRequestHeader 为 11、Manifest 为 10，Message 为 8，Compaction 为 3，Delegation 为 2，InputRecord/InputState/ToolCallRecord/ToolCallStart/ToolCallState 为 1，ToolOutcomeRecord 为 2；ResourceRecord 为 3。
 
 最近请求通过统一 Session 提交接收小头和 `RequestManifestRecord`，不接受完整查询 DTO 作为持久正文。
 `load_latest_request` 返回已存骨架；完整 `load_latest_context` 在同一个 Session 读边界内点读其固定消息引用，
@@ -301,7 +299,7 @@ Files 提交准备同样在一个读事务中完成 Session、Run、所选事实
 原生写事务之前结束。独立 Outcome 的准备与写入共用其写事务连接。连接由读作用域或既有 Run 执行所有权释放，
 不跨借用保留事务，不增加全历史缓存。
 独立 Outcome 直接提交原生事务；失败完整回滚，提交成功但调用方未收到确认时，可通过事实查询和同内容重提确认结果。
-同一 Session 提交中的消息位置、工具事实、Call 状态、Session 头和事件在一个事务中生效；涉及消息日志等文件时
+同一 Session 提交中的消息位置、工具事实、Call 状态、Session 头和修订号在一个事务中生效；涉及消息日志等文件时
 才使用跨文件决定恢复。已有事实的同内容重提由领域准备阶段识别；原生插入不忽略唯一键冲突。
 SQLite 使用 tool_calls、tool_call_starts、
 tool_outcomes 的复合键，在原生事务内保存同一语义；Outcome 失败不改变此前的 Call、started 或 Session 业务状态。
@@ -371,7 +369,7 @@ Files 未决帧决定使消息、Call 状态与 Run 点查明确报需恢复，�
 
 所有赋值入口使用同一校验：合并连续空白后，标题必须包含 1–160 个字符。手动重命名将来源设为 `user`
 并锁定标题。`SessionService.generate_title` 接受异步 `SessionTitleGenerator`，向其提供 Session 视图和
-最早至多 20 条 canonical 消息，不加载全部消息、事件或 Run 历史。生成器返回标题文字；应用层负责校验与提交。
+最早至多 20 条 canonical 消息，不加载全部消息或 Run 历史。生成器返回标题文字；应用层负责校验与提交。
 当前没有自动生成调度或内置模型生成器。
 
 生成期间不持有 Session 执行锁。结果写入时，在执行锁和 mutation 边界内重新检查用户命名与 `history_epoch`：
@@ -385,7 +383,7 @@ diagnostic。消息提取只遍历本次提交批次，不增加历史读取或�
 `active` 标记；标记来自同一 Session read 边界读取的当前生效指针，不以最后一条记录推断。
 正文来自已持久化的 `CompactionRecord.summary`，不包含失败请求或分块压缩的中间模型输出。
 
-查询不创建 Run、不调用模型、不恢复执行状态，也不读取完整消息或事件历史。空历史返回空元组；会话不存在、
+查询不创建 Run、不调用模型、不恢复执行状态，也不读取完整消息历史。空历史返回空元组；会话不存在、
 摘要记录损坏或 active 指针引用缺失记录时明确报错。File/SQLite 使用同一接口。
 CLI/TUI 自行决定参数、文字和展示样式，框架只返回类型化摘要事实。
 
@@ -405,8 +403,8 @@ CLI/TUI 自行决定参数、文字和展示样式，框架只返回类型化摘
   观察读事务固定当前前缀，WAL 允许追加与读取并行；Files 消息与 Harness 文件仍受原 Session 读取边界保护。
   活动读取直接使用该容器；容器不存在时按请求头区分尚未 started 的空响应与已关闭或被替换的请求。
 - 正式/partial assistant 消息、请求头 `response_closed_at/response_message_id`、Draft 清理与
-  `model_response_committed` 引用事件同提交。终态无正文也关闭 Draft；请求替换和撤销清除当前 Draft。
-  永久响应事件只保存 context/message 身份，观察时在读边界物化正文。关闭后的旧 Draft 游标转向正式事实。
+  提交后在线发送 `model_response_committed`，直接使用已经持有的正文。终态无正文也关闭 Draft；请求替换和撤销清除当前 Draft。
+  通知遗漏时按消息位置读取正式事实，不保存永久响应事件。
   SQLite 在同一事务中先释放 Draft 再安装正式消息，使最终正文复用已有页；事务失败仍恢复原前缀。
   Files 的正式正文位于 JSONL，其原生数据库使用 FULL auto-vacuum 在提交时回收空闲尾页，
   避免永久保留已关闭 Draft 的最大体积。WAL 检查点和活动读取寿命仍决定物理文件何时完成回收。
@@ -417,7 +415,7 @@ CLI/TUI 自行决定参数、文字和展示样式，框架只返回类型化摘
 
 ## SessionStore 契约
 
-端口覆盖：创建 snapshot、Session/Run 保存、消息/事件追加、摘要原子激活、Delegation repository、加载、
+端口覆盖：创建 snapshot、Session/Run 保存、消息追加与事实增量查询、摘要原子激活、Delegation repository、加载、
 索引、回收站发布以及 session lock；部署初始化和 catalog 维护不属于该端口。新的后端必须保持这些行为语义，
 而不只是复制方法签名。
 
@@ -436,7 +434,7 @@ Session 原生头保存当前 `controls` 读取投影，与 `harness_version` �
 `HarnessVersion`。文件后端使用 Session 只读边界，未决提交明确报需恢复；SQLite 沿用已有读事务，
 处于 mutation 中时复用该事务连接。版本身份、归属、缺失与损坏检查在读取边界保留。
 Session 的可变 `controls` 投影与返回的 Harness 控制状态隔离，修改读取结果不会影响另一份视图或后续读取。
-此查询不引入跨操作缓存，不加载消息或事件历史，也不创建版本或回执。
+此查询不引入跨操作缓存，不加载消息历史，也不创建版本或回执。
 
 两后端的原生连接由现有 Run 执行锁保留：运行期间独占借用空闲连接，每次借用结束必须退出事务；
 读取与写入复用普通原生句柄，使最后退出的观察连接也能完成 WAL 收尾；Files 独立读取也使用能完成该收尾的句柄。
@@ -454,12 +452,12 @@ SQLite 查询逐行解码，避免同时保留完整的 JSON 行列表和完整�
 Session 单记录查询只解码当前头；当前 Harness 查询和应用层阶段快照使用成对查询，
 每次只读取一次所需检查点；显式版本查询按指定版本读取。
 提交准备按效果读取：新消息或 Harness 变化读取当前完整检查点，验证消息前版本锚点；
-撤销读取所选边界的恢复版本；仅变更请求、Run、事件、输入状态等记录时保留 Session 头的版本和 controls，
+撤销读取所选边界的恢复版本；仅变更请求、Run、输入状态等记录时保留 Session 头的版本和 controls，
 不展开无关私有状态。所有提交仍检查调用者观察的版本、history_epoch 和消息头。
 文件决定完成/恢复仍独立读取并验证持久检查点，不能复用提交准备的内存值跳过核验。
 
 `SessionCommit` 在同一 mutation 边界检查 history_epoch、版本、消息头和实际使用的队列/控制前置条件，
-有序提交状态变化、消息、Run/队列效果与事件，不持久化完整返回值，也不计算整提案摘要。
+有序提交状态变化、消息、Run/队列效果与修订号，不持久化完整返回值，也不计算整提案摘要。
 文件后端先保存版本，再持久化 `commit.json` 决定并用现有类型值完成效果；仅恢复路径读取、解码未完成决定。恢复只完成该决定，
 不执行插件或外部工具。SQLite 在一个事务中提交等价效果。提交成功后才通知 Host，派生 Catalog 不进入决定。
 
@@ -468,7 +466,7 @@ RunLifecycle 的预留、完成、失败、暂停及取消使用此提交边界�
 保留当前 Harness 锚点；已先行提交的响应只结算终态。消息位置与 Session 头由提交边界维护，收尾不读取历史正文。
 Files 决定未完成时，普通 Session/Run 查询报告需恢复，显式 mutation 完成决定；SQLite 失败时回滚同批状态与消息。
 
-`SessionCommitResult` 仅为本次写入的内存返回值；Files 原生决定可临时包含它，决定完成即清理。
+`SessionCommitResult` 是本次写入的返回值；其中通知仅在内存保存，序列化时排除。Files 决定只保留恢复提交所需的事实，完成即清理。
 不存在永久 operations 目录、SQLite session_commits 表、历史提交结果查询或完整回执导出。
 Session 的 `last_commit_id` 只保存最近一次提交身份，供拥有同一 mutation 边界的调用方在丢失返回时确认结果。
 它不是 revision/CAS 前置条件，不因无关字段更新而拒绝提案，也不承诺历史操作的任意重试；
@@ -481,7 +479,7 @@ Run continuation 结算后保存 action、选中控制器、reason 和 diagnosti
 已结算记录不得继续携带该方案。进程重启通过这些领域状态判断已接受效果，不重新执行已接受的策略或命令回调。
 
 任意 canonical 消息节点都可作为撤回起点。撤销保留此前消息、恢复目标消息前版本并递增 history_epoch，
-清除 active/last Run 与失效上下文投影。Run、事件、usage、资源审计与已经接受的输入回执仍保留；原文件
+清除 active/last Run 与失效上下文投影。Run、usage、资源审计与已经接受的输入回执仍保留；原文件
 副作用不回滚。文件后端按索引/尾部定位原地裁剪，不能复制保留前缀；SQLite 按索引定位并删除范围。
 
 Delegation 以 root Session 为聚合边界，使用 `(root_session_id, idempotency_key)` 唯一约束、child Session 唯一
@@ -498,7 +496,7 @@ CAS 还保护已接受的冻结定义、权限上限、路径约束、交互模�
 [子智能体权限契约](subagents.md#权限与能力继承)。
 
 运行路径使用 `RuntimeSessionSnapshot`，只包含 Session、当前 epoch 的待处理 Run 和 active/last 指针指向的 Run，
-不包含完整 Run 历史、消息、摘要或事件。按明确身份执行审批、回答、委派恢复时直接点读目标 Run。
+不包含完整 Run 历史、消息或摘要。按明确身份执行审批、回答、委派恢复时直接点读目标 Run。
 
 `load_pending_runs` 选择仍 active、可恢复且批次未发布完成，或 agent continuation 尚未结算的当前代 Run。
 两后端在 Run 行保存查询用的 history_epoch、needs_recovery 列及部分索引，由原生事务同时更新。
@@ -511,13 +509,10 @@ commit.json 协调。运行所有权持有期间复用空闲原生连接，查�
 随后更新旧 Run 审计状态不会重新进入当前执行集合。无索引重建缓存或第二套日志。
 存在未决文件决定时仍需显式恢复；Run 原生行与其正文身份不匹配时明确报错，不静默忽略。
 Session 的 active/last 指针由显式恢复定向核对，失效指针清除。
-`SessionSnapshot` 是包含完整历史的查询与回放视图；`SessionObservationState` 保留显式观察所需的完整消息、
-摘要与高水位，不含活动 Run 的历史事件。Application 的窗口观察只读指定消息范围，并从当前 Call/Draft/请求
-恢复交互与输出；具体契约见[会话观察](session-observation.md#session-snapshot-与事件游标)。
-application 只有在检查、导出、回放或重建活动投影时才能请求完整快照，普通 Run、工具恢复、上下文
-准备和队列消费不得为了 Session 状态或 event sequence 加载完整事件日志。event sequence 由 Store 通过独立
-轻量端口提供。只需要 Run 元数据的检查（如插件 durable generation 引用扫描）使用独立的 Run 记录只读端口，
-不为此加载消息或事件日志。
+`SessionSnapshot` 是包含完整事实历史的查询视图；`SessionHistorySnapshot` 包含历史查询与观察共用的消息、Run 和摘要。
+Application 的窗口观察只读指定消息范围，并从当前 Call、Draft 和请求头恢复交互与输出；具体契约见
+[会话观察](session-observation.md#session-snapshot-与已确认位置)。普通运行、上下文准备和队列消费不加载完整历史。
+只需要 Run 元数据的查询使用独立的 Run 端口；`observation_revision` 只读取当前事实修订号。
 
 消息查询提供 `load_run_messages`、`load_message` 与 `find_queued_input_message`，分别按 Run、message id 和输入
 identity 定位。文件后端按 ID 读取事实、按 Run/input 读取所属成员引用；SQLite 使用对应的 Run 和 Input
@@ -530,12 +525,8 @@ Run 结果查询只读取指定 Run 和其最后一条 assistant 回复。Host �
 插件输入批次通过 InputState 确认消费。
 Files 的完整快照、执行快照与 Run 列表查询使用只读边界；有未决决定时报告局部需恢复，由显式入口完成。
 
-Host 观察使用 `SessionObservationState` 在一个 Session mutation 边界内取得 canonical transcript、active Run
-事件和 event high-water。Local adapter 在稳定路径从 per-Run byte offset 读取 active Run，不扫描 terminal Run；
-`load_events_after` 通过稀疏 sequence checkpoint 将前向扫描限制为 checkpoint 间隔加实际返回前缀。旧会话首次
-缺少 Run offset 时可以扫描一次 canonical journal 并写入派生索引。SQLite 必须以 `(session_id, run_id)` 和
-`(session_id, sequence)` 索引完成等价查询；前者包含 `row_id` 以直接满足稳定顺序，后者可由 canonical sequence
-唯一约束提供，不建立重复索引。
+Host 观察通过统一事实页衔接本地推送、跨进程变化和缓存遗漏。读取当前状态及其位置必须在同一短只读边界内完成；
+不保存历史通知，不引入扫描回退或兼容读取。正文和摘要边界使用原生位置索引定向查询。
 
 ## 锁与并发
 
@@ -558,18 +549,18 @@ Host 观察使用 `SessionObservationState` 在一个 Session mutation 边界内
 - 只有随 durable assistant 工具消息提交的完整 `provider_continuation` 才可恢复；流中未提交的 opaque
   continuation 不从文本事件猜测或重建；
 - 已有 durable assistant/tool message 的模型轮次不能重复投影；
-- 恢复事件只写入一次。
+- 已恢复的状态不重复生成 partial 消息。
 
-恢复的 partial 消息、Run 状态、Call 未知状态、Session 投影与恢复事件属于同一个 Session 提交。
+恢复的 partial 消息、Run 状态、Call 未知状态与 Session 投影属于同一个 Session 提交。
 消息序号、总数与末尾身份由该提交基于当前 Session 头分配；恢复不从完整历史列表重建消息头。
 是否已有正式模型回包按 Session/Run/turn 点查，包含 assistant 工具调用消息。
 只有当前代次、无 live owner 的活动 Run 才读取 Call 状态，已终结 Run 的批次不参与中断解释。
 
 恢复不重放工具调用，不把 partial assistant 输出视为完成答案。
-无未完成 Run 的常规加载不读取 events；只有检测到需要恢复的中断 Run 时，Store 才加载恢复所需的模型流
-事件。该读取属于冷恢复路径，不能污染后续 Run 的正常成本。
+恢复只读取中断请求的当前 Draft，并按请求身份与已提交消息核对。已完成请求不保留 Draft，
+常规加载不读取历史分片或通知。
 
-进程启动不是 Session 恢复边界。LocalApplication 和 RuntimeSupervisor 启动不得枚举 Session、Run、消息、事件或
+进程启动不是 Session 恢复边界。LocalApplication 和 RuntimeSupervisor 启动不得枚举 Session、Run、消息或
 Delegation；历史数量和单个历史记录损坏不能改变服务启动成本或可用性。显式执行或恢复入口针对目标 Session，
 只读观察不运行恢复。若目标属于 Agent aggregate，则恢复范围最多扩展到同一 `agent_root_session_id` 下由 Delegation 明确引用的
 child Session。目标记录错误只使该目标操作 fail-closed，新 Session 和其他 primary Session 仍可运行。
@@ -585,7 +576,7 @@ application 提供：
 
 - catalog 搜索、状态/归档/置顶/工作区/模型/标签筛选与排序；
 - show、rename、archive、pin、tag；
-- messages、events、export 和 replay；
+- messages 与完整事实 export；
 - branch 与 trash。
 
 Catalog 与 Host DTO 均不保存完整 transcript；文本查询只覆盖 title、至多 160 字符的最后消息预览、workspace、

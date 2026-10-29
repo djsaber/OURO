@@ -11,8 +11,7 @@ import ouro.tui.conversation.history_rendering as history_rendering
 import ouro.tui.conversation.reasoning as tui_reasoning
 import ouro.tui.conversation.tools as tui_widgets_tools
 from ouro.core.events import EventRecord
-from ouro.core.messages import MessageRecord
-from ouro.tui.app import OuroTuiApp, _active_stream_tail
+from ouro.tui.app import OuroTuiApp
 from ouro.tui.conversation.history import ConversationHistory
 from ouro.tui.conversation.history_rendering import (
     AssistantTailLines,
@@ -499,71 +498,3 @@ async def test_streaming_tool_row_mounts_after_its_name_and_updates_in_place_on_
         assert row.tool.argument_stream_tail is None
         assert "out.txt" in str(row.render())
         assert '{"path":"out' not in str(row.render())
-
-
-def test_active_stream_tail_waits_for_canonical_message_commit() -> None:
-    session_id = "ses_restore_boundary"
-    run_id = "run_restore_boundary"
-    events = (
-        EventRecord(
-            session_id=session_id,
-            run_id=run_id,
-            turn_id="turn_committed",
-            event_type="model_text_delta",
-            sequence=1,
-            payload={"text": "already stored"},
-        ),
-        EventRecord(
-            session_id=session_id,
-            run_id=run_id,
-            turn_id="turn_committed",
-            event_type="model_message_completed",
-            sequence=2,
-        ),
-        EventRecord(
-            session_id=session_id,
-            run_id=run_id,
-            turn_id="turn_pending",
-            event_type="model_reasoning_delta",
-            sequence=3,
-            payload={"reasoning_content": "still thinking"},
-        ),
-        EventRecord(
-            session_id=session_id,
-            run_id=run_id,
-            turn_id="turn_pending",
-            event_type="model_text_delta",
-            sequence=4,
-            payload={"text": "not committed yet"},
-        ),
-        EventRecord(
-            session_id=session_id,
-            run_id=run_id,
-            turn_id="turn_pending",
-            event_type="model_message_completed",
-            sequence=5,
-        ),
-    )
-    committed = MessageRecord.text(
-        session_id=session_id,
-        run_id=run_id,
-        turn_id="turn_committed",
-        role="assistant",
-        text="already stored",
-        sequence=1,
-    )
-
-    assert _active_stream_tail(events, (committed,)) == (
-        "still thinking",
-        "not committed yet",
-    )
-
-    pending = MessageRecord.text(
-        session_id=session_id,
-        run_id=run_id,
-        turn_id="turn_pending",
-        role="assistant",
-        text="not committed yet",
-        sequence=2,
-    )
-    assert _active_stream_tail(events, (committed, pending)) == ("", "")

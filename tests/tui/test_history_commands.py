@@ -21,7 +21,7 @@ from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.skills import discover_skill_catalog
 from ouro.tools import ToolRegistry
-from ouro.tui.app import OuroTuiApp, _active_stream_tail
+from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.drafts import TuiInputDraftStore
 from ouro.tui.composer.input import Composer
 from ouro.tui.conversation.view import ConversationView
@@ -256,7 +256,7 @@ async def test_tui_message_query_reloads_if_history_changes_during_event_deliver
             event_type="user_message_added",
             payload={"message_id": message.message_id},
         )
-        runtime.store.append_ordered_event(event)
+        await application.supervisor._on_event(event)
         async with asyncio.timeout(8):
             while app._projection.history_epoch != 1:
                 await pilot.pause()
@@ -267,7 +267,7 @@ async def test_tui_message_query_reloads_if_history_changes_during_event_deliver
         # The same missing identity within the current epoch is data loss, not lag.
         failures = []
         monkeypatch.setattr(app, "notify", lambda message, **kwargs: failures.append(message))
-        runtime.store.append_ordered_event(
+        await application.supervisor._on_event(
             EventRecord(
                 session_id=session_id,
                 history_epoch=1,
@@ -320,7 +320,7 @@ async def test_abort_undo_edit_resubmit_and_restart_in_tui(tmp_path, backend, ed
         assert app.query_one(Composer).text == "first question"
         assert app.query_one(ConversationView).user_turn_summaries() == ()
         # A delayed input notification must not reload the withdrawn message.
-        late = application.runtime.store.append_ordered_event(
+        late = EventRecord.model_validate(
             EventRecord(
                 session_id=session_id,
                 run_id=original.run_id,
@@ -476,24 +476,3 @@ async def test_continue_respects_remaining_budget_and_explains_pause(tmp_path, m
         assert "model-round budget" in warnings[-1][0]
         assert warnings[-1][1]["severity"] == "warning"
         assert len(runtime.store.load_runs(original.session.session_id)) == 1
-
-
-def test_resumed_stream_replay_does_not_restore_withdrawn_partial_text():
-    events = [
-        EventRecord(
-            session_id="ses_resume",
-            run_id="run_resume",
-            sequence=index + 1,
-            event_type=kind,
-            payload=payload,
-        )
-        for index, (kind, payload) in enumerate(
-            [
-                ("model_text_delta", {"text": "withdrawn partial"}),
-                ("run_failed", {"error": "interrupted"}),
-                ("run_status_changed", {"to_status": "running", "resumed": True}),
-                ("model_text_delta", {"text": "current attempt"}),
-            ]
-        )
-    ]
-    assert _active_stream_tail(events) == ("", "current attempt")

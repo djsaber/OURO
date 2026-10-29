@@ -9,6 +9,7 @@ import pytest
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
 from ouro.tui.conversation.history import ConversationHistory
+from ouro.tui.conversation.view import ConversationView
 from tests.application.test_session_event_following import append
 from tests.tui.app.support import _application
 from tests.tui.helpers import run_ready_app
@@ -19,12 +20,13 @@ async def test_session_observation_does_not_reserve_sqlite_writer(tmp_path, monk
     application = streaming_application(tmp_path, None, backend="sqlite")
     store = application.runtime.store
     session = application.runtime.sessions.create(title="Observed").session
+    append(store, session.session_id, "Observed message")
     other = application.runtime.sessions.create(title="Independent writer").session
-    original = store.load_compactions
+    original = store.load_compactions_in_range
     written = []
 
-    def read_with_concurrent_write(session_id):
-        snapshot = original(session_id)
+    def read_with_concurrent_write(session_id, **bounds):
+        snapshot = original(session_id, **bounds)
         # A second connection must be able to commit while the Host's read is open.
         with closing(sqlite3.connect(store.database, timeout=0)) as connection:
             with connection:
@@ -38,7 +40,7 @@ async def test_session_observation_does_not_reserve_sqlite_writer(tmp_path, monk
 
     app = OuroTuiApp(application=application)
     async with run_ready_app(app):
-        monkeypatch.setattr(store, "load_compactions", read_with_concurrent_write)
+        monkeypatch.setattr(store, "load_compactions_in_range", read_with_concurrent_write)
         observation = await app._controller.observe_session(session.session_id)
         try:
             assert observation.loaded.detail.session.session_id == session.session_id
@@ -108,36 +110,35 @@ async def test_body_application_acknowledges_pages_after_apply_and_recovers_lag(
     async with run_ready_app(app) as pilot:
         observation = app._observation_subscription
         assert observation is not None
-        original = app._apply_runtime_event_batch
+        original = app._apply_observation_facts
 
-        async def held_apply(events, *, input_messages):
+        async def held_apply(batch):
             if not entered.is_set():
                 entered.set()
                 await release.wait()
-            await original(events, input_messages=input_messages)
-            applied.extend(event.sequence for event in events)
+            await original(batch)
+            applied.extend(message.sequence for message in batch.messages)
 
-        monkeypatch.setattr(app, "_apply_runtime_event_batch", held_apply)
-        before = observation.applied_sequence
-        first = append(application.runtime.store, session.session_id, "first,")
+        monkeypatch.setattr(app, "_apply_observation_facts", held_apply)
+        before = observation.applied_position
+        append(application.runtime.store, session.session_id, "first,")
         try:
             await asyncio.wait_for(entered.wait(), 5)
-            for index in range(400):
-                last = append(application.runtime.store, session.session_id, f"{index},")
-            assert observation.applied_sequence == before
+            for index in range(260):
+                last = await asyncio.to_thread(
+                    append, application.runtime.store, session.session_id, str(index)
+                )
+            assert observation.applied_position == before
             assert len(app._pending_runtime_events) <= 128
-            # The frame worker may be blocked; Composer still owns keyboard input.
             await pilot.press("x")
             assert app.query_one(Composer).text == "x"
         finally:
             release.set()
-        async with asyncio.timeout(15):
-            while observation.applied_sequence < last.sequence:
+        async with asyncio.timeout(30):
+            while observation.applied_position.message_sequence < last.session.message_count:
                 await pilot.pause()
-        assert applied == list(range(first.sequence, last.sequence + 1))
-        assert app._projection.assistant_text == "first," + "".join(
-            f"{index}," for index in range(400)
-        )
+        assert applied == list(range(1, 262))
+        assert len(app.query_one(ConversationView).user_turn_summaries()) == 261
 
 
 async def test_late_prepared_selection_cannot_replace_the_newer_view(tmp_path, monkeypatch):
@@ -197,7 +198,6 @@ async def test_history_render_does_not_hold_the_content_cursor(
         ]
     )
     if streaming_snapshot:
-        from ouro.core.events import EventRecord
         from ouro.core.state import RunRecord
 
         run = RunRecord(session_id=session.session_id, status="running")
@@ -205,14 +205,6 @@ async def test_history_render_does_not_hold_the_content_cursor(
         record = application.runtime.store.load_session_record(session.session_id)
         application.runtime.store.save_session(
             record.model_copy(update={"active_run_id": run.run_id})
-        )
-        application.runtime.store.append_ordered_event(
-            EventRecord(
-                session_id=session.session_id,
-                run_id=run.run_id,
-                event_type="model_text_delta",
-                payload={"text": "Earlier partial paragraph\n\nCurrent tail"},
-            )
         )
     app = OuroTuiApp(application=application)
     entered, release = threading.Event(), threading.Event()
@@ -234,9 +226,9 @@ async def test_history_render_does_not_hold_the_content_cursor(
             observation = app._observation_subscription
             last = append(application.runtime.store, session.session_id, "new tail")
             async with asyncio.timeout(5):
-                while observation.applied_sequence < last.sequence:
+                while observation.applied_position.message_sequence < last.session.message_count:
                     await pilot.pause()
-            assert app._projection.assistant_text.endswith("new tail")
+            assert "new tail" in app.query_one(ConversationView).user_turn_summaries()
             assert app.query_one(ConversationHistory)._rendered_count == 0
             await pilot.press("a")
             assert app.query_one(Composer).text == "a"

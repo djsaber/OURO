@@ -66,13 +66,11 @@ from ouro.cli.session_commands import (
     archive_session,
     branch_session,
     compact_session,
-    list_session_events,
     list_session_messages,
     list_sessions,
     pin_session,
     remove_session,
     rename_session,
-    replay_session,
     set_session_afk_mode,
     set_session_approval_mode,
     set_session_tags,
@@ -305,14 +303,6 @@ def _session_command(args: argparse.Namespace) -> int:
             json_mode=args.json,
             session_backend=session_backend,
         )
-    if command == "replay":
-        return replay_session(
-            args.session_id,
-            home=home,
-            run_id=args.run_id,
-            json_mode=args.json,
-            session_backend=session_backend,
-        )
     if command == "remove":
         return remove_session(
             args.session_id,
@@ -325,16 +315,6 @@ def _session_command(args: argparse.Namespace) -> int:
         return list_session_messages(
             args.session_id,
             home=home,
-            cursor=args.cursor,
-            limit=args.limit,
-            json_mode=args.json,
-            session_backend=session_backend,
-        )
-    if command == "events":
-        return list_session_events(
-            args.session_id,
-            home=home,
-            run_id=args.run_id,
             cursor=args.cursor,
             limit=args.limit,
             json_mode=args.json,

@@ -710,6 +710,7 @@ class ToolCallCoordinator:
                                 "tool_name": result.tool_name,
                                 "status": completed_call.status,
                                 "is_error": result.is_error,
+                                "result_data": result.structured,
                                 "source_index": completed_call.request.source_index,
                                 "outcome_attempt": None
                                 if completed_call.status == "unknown_outcome"

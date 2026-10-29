@@ -256,31 +256,6 @@ def branch_session(
     return 0
 
 
-def replay_session(
-    session_id: str,
-    *,
-    home: str | Path | None = None,
-    run_id: str | None = None,
-    json_mode: bool = False,
-    session_backend: SessionBackend | None = None,
-) -> int:
-    try:
-        result = _sessions(home, session_backend).replay(session_id, run_id=run_id)
-    except (OuroError, FileNotFoundError) as exc:
-        _print_error(exc, json_mode=json_mode)
-        return error_exit_code(exc) if isinstance(exc, OuroError) else 1
-    if json_mode:
-        print(json.dumps({"status": "ok", **result.model_dump(mode="json")}, ensure_ascii=False))
-        return 0
-    if not result.frames:
-        print("No replay events.")
-        return 0
-    for frame in result.frames:
-        event = frame.event
-        print(f"[{frame.sequence}] {event.event_type} run={event.run_id}")
-    return 0
-
-
 def show_session(
     session_id: str,
     *,
@@ -519,58 +494,6 @@ def list_session_messages(
         print(f"[{message.role}] {message.text_content}")
     if page.next_cursor is not None:
         print(f"More messages available; continue with --cursor {page.next_cursor}")
-    return 0
-
-
-def list_session_events(
-    session_id: str,
-    *,
-    home: str | Path | None = None,
-    run_id: str | None = None,
-    cursor: int = 0,
-    limit: int = 100,
-    json_mode: bool = False,
-    session_backend: SessionBackend | None = None,
-) -> int:
-    try:
-        page = _sessions(home, session_backend).event_page(
-            session_id,
-            cursor=cursor,
-            limit=limit,
-            run_id=run_id,
-        )
-    except FileNotFoundError:
-        error_message = f"session not found: {session_id}"
-        _print_error(OuroError(error_message), json_mode=json_mode)
-        return 1
-    except (OuroError, ValueError) as exc:
-        ouro_exc = exc if isinstance(exc, OuroError) else OuroError(str(exc))
-        _print_error(ouro_exc, json_mode=json_mode)
-        return error_exit_code(ouro_exc)
-
-    events = list(page.events)
-
-    if json_mode:
-        print(
-            json.dumps(
-                {
-                    "status": "ok",
-                    "events": [event.model_dump(mode="json") for event in events],
-                    "next_cursor": page.next_cursor,
-                },
-                ensure_ascii=False,
-            )
-        )
-        return 0
-
-    if not events:
-        print("No events.")
-        return 0
-
-    for event in events:
-        print(f"[{event.event_type}] run={event.run_id} seq={event.sequence}")
-    if page.next_cursor is not None:
-        print(f"More events available; continue with --cursor {page.next_cursor}")
     return 0
 
 

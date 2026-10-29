@@ -11,6 +11,7 @@ from ouro.core.input_content import InputAttachment
 from ouro.core.messages import ImageContent, MessageRecord
 from ouro.core.session_commits import SessionCommitConflict
 from tests.application.test_queued_input_modes import TurnGateProvider
+from tests.event_capture import recorded_events
 from tests.tui.test_history_commands import application_at
 
 PNG = base64.b64decode(
@@ -234,7 +235,7 @@ async def test_durable_queue_acceptance_is_reported_before_notification_failure(
             )
         assert len(runtime.pending_user_inputs(session.session_id)) == 1
         assert accepted == [True]
-        events, _ = runtime.store.load_events_after(session.session_id)
+        events = recorded_events(session.session_id)
         assert sum(event.event_type == "follow_up_input_queued" for event in events) == 1
     finally:
         provider.release_first.set()

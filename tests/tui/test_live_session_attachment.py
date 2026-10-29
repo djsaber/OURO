@@ -6,7 +6,11 @@ from datetime import UTC, datetime
 import pytest
 
 from ouro.application.contracts.agents import SpawnAgentRequest
+from ouro.core.base import utc_now
+from ouro.core.messages import MessageRecord
 from ouro.core.provider import ProviderStreamEvent
+from ouro.core.session_commits import SessionCommit, SessionCommitStep
+from ouro.core.state import RunRecord
 from ouro.core.tasks import AgentTaskTarget, TaskConfiguration, TaskSchedule
 from ouro.providers import FauxProvider
 from ouro.tools import Tool, ToolDefinition, ToolResult
@@ -194,7 +198,14 @@ async def test_two_tuis_follow_tools_and_consecutive_runs_without_duplicate_summ
                     ]
                     assert [summary.run_id for summary in summaries] == run_ids
                     assert not app.query_one(ConversationView)._tools
-            assert first._projection.last_sequence == second._projection.last_sequence
+            for app, pilot in ((first, first_pilot), (second, second_pilot)):
+                await wait_until(
+                    lambda app=app: (
+                        app._observation_subscription.applied_position.message_sequence == 6
+                    ),
+                    pilot,
+                    description="all displayed content acknowledged",
+                )
             assert not viewer.supervisor._jobs_by_session
 
 
@@ -305,3 +316,46 @@ async def test_task_owned_by_another_runtime_streams_through_tools_and_session_s
         provider.release.set()
         provider.deltas.put_nowait(ProviderStreamEvent(type="done"))
         await owner.close()
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_withdrawn_run_fact_does_not_append_a_summary_to_current_history(tmp_path, backend):
+    owner = streaming_application(tmp_path, FauxProvider(), backend=backend)
+    viewer = streaming_application(tmp_path, FauxProvider(), backend=backend)
+    session = owner.runtime.sessions.create(title="Withdrawn work").session
+    store = owner.runtime.store
+    old = RunRecord(
+        session_id=session.session_id, history_epoch=0, status="completed", ended_at=utc_now()
+    )
+    retained = RunRecord(session_id=session.session_id, status="completed", ended_at=utc_now())
+    messages = tuple(
+        MessageRecord.text(session_id=session.session_id, run_id=run.run_id, role="user", text=text)
+        for run, text in ((retained, "Keep this work"), (old, "Withdraw this work"))
+    )
+    committed = store.commit_session(
+        SessionCommit(
+            before=store.load_session_record(session.session_id),
+            runs=(retained, old),
+            steps=tuple(SessionCommitStep(message=message) for message in messages),
+        )
+    )
+    withdrawn = store.commit_session(
+        SessionCommit(before=committed.session, before_message_id=messages[-1].message_id)
+    )
+    assert withdrawn.session.history_epoch == 1
+    assert withdrawn.session.last_run_id is None
+    app = OuroTuiApp(application=viewer)
+    async with owner, run_ready_app(app, size=(100, 30)) as pilot:
+        await app._open_session(session.session_id)
+        assert app._projection.activity.status == "idle"
+        before = tuple(app.query_one(ConversationHistory).entries)
+        # A late result/usage update may still settle an old Run as an audit fact.
+        store.save_run(old.model_copy(update={"error": "late settlement"}))
+        revision = store.observation_revision(session.session_id)
+        await wait_until(
+            lambda: app._observation_subscription.applied_position.revision == revision,
+            pilot,
+            description="changed old Run acknowledged",
+        )
+        assert tuple(app.query_one(ConversationHistory).entries) == before
+        assert app._projection.activity.status == "idle"

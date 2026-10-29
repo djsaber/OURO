@@ -20,6 +20,7 @@ from tests.application.helpers import (
     wait_for_parent_delivery,
     wait_for_run_event,
 )
+from tests.event_capture import recorded_events
 
 
 class DelegatingProvider:
@@ -546,7 +547,5 @@ async def test_child_starts_with_current_host_capabilities_and_resumes_sync_pare
         assert child.model_round_count == 3
         assert first.runtime.store.load_session_record(child.session_id).active_run_id is None
         assert relation.result.terminal_status == "completed"
-        events, _ = first.runtime.store.load_events_after(
-            child.session_id, after_sequence=0, limit=100
-        )
+        events = recorded_events(child.session_id)
         assert any(event.event_type == "run_completed" for event in events)

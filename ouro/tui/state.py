@@ -9,7 +9,6 @@ from ouro.application.contracts.tool_activity import InteractionKind as Interact
 from ouro.application.contracts.tool_activity import PendingInteraction as PendingInteraction
 from ouro.application.observations.content import ProjectionUpdate as ProjectionUpdate
 from ouro.application.observations.content import SessionContentProjection
-from ouro.application.observations.content import canonical_event_order as canonical_event_order
 from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, RunStatus
 from ouro.tui.features.providers.model_menus import model_display_label

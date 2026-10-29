@@ -17,7 +17,6 @@ from ouro.core.context_snapshots import (
     validate_request_snapshot,
 )
 from ouro.core.errors import PersistenceError
-from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessVersion
 from ouro.core.inputs import InputRecord, InputState, validate_input_snapshot
 from ouro.core.message_content import materialize_message, validate_tool_message_snapshot
@@ -39,7 +38,6 @@ class SessionArchiveSnapshot(OuroModel):
     messages: list[MessageFact] = Field(default_factory=list)
     runs: list[RunRecord] = Field(default_factory=list)
     compactions: list[CompactionRecord] = Field(default_factory=list)
-    events: list[EventRecord] = Field(default_factory=list)
     extension_states: list[SessionExtensionStateRecord] = Field(default_factory=list)
     harness_versions: list[HarnessVersion] = Field(default_factory=list)
     inputs: list[InputRecord] = Field(default_factory=list)
@@ -132,7 +130,6 @@ class SessionBundle(OuroModel):
             for collection, attribute in (
                 (snapshot.messages, "message_id"),
                 (snapshot.runs, "run_id"),
-                (snapshot.events, "event_id"),
                 (snapshot.compactions, "compaction_id"),
                 (snapshot.harness_versions, "version_id"),
             ):
@@ -160,11 +157,6 @@ class SessionBundle(OuroModel):
                 raise ValueError("Session bundle is missing its agent root")
             if records[session.agent_root_session_id].snapshot.session.session_kind != "primary":
                 raise ValueError("Session agent root must be a primary Session")
-            if any(
-                event.run_id is not None and event.run_id not in run_ids
-                for event in snapshot.events
-            ):
-                raise ValueError("event references a missing Run")
             validate_request_snapshot(identity, snapshot.request_headers, snapshot.latest_manifest)
             validate_media_references(
                 snapshot.messages,
@@ -269,7 +261,6 @@ def populate_sessions(
         )
         for run in snapshot.runs:
             target.save_run(run)
-        target.append_events(snapshot.events)
         actual = target.load_session(snapshot.session.session_id)
         if SessionArchiveSnapshot.from_snapshot(actual) != item.snapshot:
             raise PersistenceError("Session transfer failed snapshot verification")

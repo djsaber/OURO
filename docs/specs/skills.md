@@ -106,8 +106,8 @@
 
 Application 为每个 registration 建立独立有界 FIFO mailbox。生产点只做非阻塞 enqueue，不等待插件；慢、超时、异常或
 满队列只隔离对应 observer/scope，并通过脱敏 `plugin_observer_failed` 诊断暴露。队列项持有精确 Catalog lease，直到
-处理、丢弃或关闭时恰好释放一次。可靠事实仍以 canonical event store 为准，Observer 是 at-most-once 进程内通知。
-Runtime event 在 canonical 持久化和 Host sink 投递后先执行轻量 registration/type/controller 匹配；已知没有匹配
+处理、丢弃或关闭时恰好释放一次。可靠事实仍以会话业务记录为准，Observer 是 at-most-once 进程内通知。
+Runtime event 在业务提交和 Host sink 投递后先执行轻量 registration/type/controller 匹配；已知没有匹配
 Observer 时不得构造脱敏冻结投影、获取额外 Catalog lease 或进入 dispatcher。Catalog 归属无法确定时保守执行完整路径。
 
 `prompt_policies` 是独立的 fail-closed guard，检查 Host 路由后的用户提示并返回 `allow | deny`，不能改写提示。User plugin

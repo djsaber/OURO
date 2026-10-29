@@ -480,11 +480,11 @@ Actions → Settings → `Collapse traces` 提供 `On`（默认）和 `Off`，�
 ### 事件与呈现边界
 
 Host event sink 先注册完整 mailbox 再创建消费任务，任务直接持有所属 mailbox；该顺序兼容 Textual 的 eager
-task factory。超时、失败和有界队列溢出按 sink 独立隔离，不能反向阻塞 durable event 或其他 Session。
-Host 可用无 I/O 的同步 filter 在入队前选择事件，拒绝投递不影响持久化或其他消费者；filter 失败隔离到所属 sink。
+task factory。超时、失败和有界队列溢出按 sink 独立隔离，不能反向阻塞业务提交或其他 Session。
+Host 可用无 I/O 的同步 filter 在入队前选择事件，拒绝投递不影响业务事实或其他消费者；filter 失败隔离到所属 sink。
 TUI sink 只接收子会话控制候选事件；子会话归属在线程中确认，消费时重新校验页面选择。
-子会话控制事件包括 `run_status_changed`。工具预检可能先发布审批/输入请求，再保存批次检查点；根界面必须在
-后续状态事件到达时重新查询权威交互，避免首次查询为空后永久漏显审批。此处不转发子会话高频正文流，也不增加轮询。
+子会话控制事件包括 `run_status_changed`。审批和输入交互以当前 Call 状态为准；根界面通过通用状态订阅
+刷新权威交互，通知遗漏时由同一事实管线补齐。此处不转发子会话高频正文流，也不增加 TUI 自有轮询。
 无关后台文本、reasoning 和工具流不占用 TUI sink mailbox；欢迎页没有控制会话时不接收会话事件。
 ready message 只启动一个呈现 worker，不在 App 消息泵中等待解析、排版或查询，以保持按键分发可用。
 正文观察一次只交付一个待确认批次，帧 worker 从中取走有界前缀，按 sequence 更新投影并合并连续文本增量；

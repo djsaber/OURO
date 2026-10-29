@@ -2230,6 +2230,7 @@ class RuntimeService:
                 update={
                     "ended_at": None,
                     "error": None,
+                    "error_code": None,
                     "abort_requested": False,
                     "pending_approval_id": None,
                     "active_tool_batch": run.active_tool_batch,
@@ -2342,6 +2343,7 @@ class RuntimeService:
                     ),
                     record_settlement=self.context_preparation.record_request_settlement,
                     append_draft=self.store.append_response_draft,
+                    record_retry=self.store.record_request_retry,
                     resolve_model_request=self._resolve_model_request,
                     record_usage=self.run_lifecycle.record_usage,
                     run_usage=self.usage.run_usage if self.usage is not None else None,
@@ -2495,7 +2497,7 @@ class RuntimeService:
         abort_signal = None
         terminal_run = run
         try:
-            sequence = await run_blocking(self.store.latest_event_sequence, session_id)
+            sequence = 0
             abort_signal = await self.run_ownership.activate_signal(session_id, run.run_id)
             snapshot = await run_blocking(self.store.load_runtime_session, session_id)
             if (
@@ -3707,7 +3709,7 @@ class RuntimeService:
             )
             await self.event_recorder.publish_committed(committed_events)
             assert batch is not None
-            sequence = await run_blocking(self.store.latest_event_sequence, session_id)
+            sequence = 0
             if suspension is not None:
                 result = RunResult(session=session, run=run)
             else:
@@ -3776,7 +3778,7 @@ class RuntimeService:
                 run=run,
                 usage_service=self.usage,
             )
-            sequence = await run_blocking(self.store.latest_event_sequence, session_id)
+            sequence = 0
             batch, sequence = await self._tool_calls_for_run(run.run_id).resolve_user_answer(
                 batch,
                 sequence=sequence,
@@ -3975,7 +3977,7 @@ class RuntimeService:
             )
             await self.event_recorder.publish_committed(committed_events)
             assert batch is not None
-            sequence = await run_blocking(self.store.latest_event_sequence, session_id)
+            sequence = 0
             resumed = await self._continue_resolved_batch(
                 snapshot=snapshot,
                 session=session,

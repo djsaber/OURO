@@ -11,6 +11,7 @@ from ouro.core.billing import provider_usage_entry_id
 from ouro.core.context import ContextMetrics, ProviderContext
 from ouro.core.errors import PersistenceError
 from ouro.core.messages import MessageRecord
+from ouro.core.provider import ProviderRetryNotice
 from ouro.core.request_manifest import RequestManifest
 
 
@@ -37,6 +38,7 @@ class ModelRequestHeader(VersionedOuroModel):
     response_message_id: str | None = None
     response_compaction_id: str | None = None
     response_closed_at: datetime | None = None
+    retry: ProviderRetryNotice | None = None
     usage_entry_id: str | None = None
     metrics: ContextMetrics
     context_metadata: Metadata = MetadataField

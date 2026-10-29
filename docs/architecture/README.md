@@ -61,7 +61,7 @@ Host 需要新增能力时先扩展 Application 用例。其他基础设施不�
 3. Run 的 Driver 决定下一步操作。模型请求端口准备上下文，组合有效路由、提示词、压缩、Skills、动态贡献与原子历史帧，记录真实请求快照；`InnerAgentLoop` 是默认算法。
 4. `RuntimeAdapter` 调用 Provider；协议适配器把响应投影为统一流事件，Core 不解释供应商的私有认证或续接内容。
 5. 完整响应边界形成类型化模型工具调用；Driver 也可显式提交程序化调用。两者共用工具预检、权限、交互和 `ToolBatchExecutor`，结果按调用顺序提交；等待与 Driver checkpoint 使用同一原子提交。
-6. 事件持久化后发布；交互预检通知与批次检查点有先后边界，Host 按后续状态事件重新查询权威交互。运行终结、预算、排队输入及 continuation 由各自所属边界裁决。
+6. 业务事实提交后发布在线通知；跨进程观察、重进与通知遗漏通过同一事实管线补齐。当前交互从调用状态恢复，通知不永久保存。运行终结、预算、排队输入及 continuation 由各自所属边界裁决。
 7. 取消先记录请求并通知 owner，等待正在执行的模型 / 工具资源收尾与审计落盘，再发布 Run 终态。
 
 详细状态与边界见[运行时](../specs/runtime.md)、[上下文](../specs/context-and-compaction.md)和[工具交互](../specs/tools-and-interactions.md)。
@@ -87,7 +87,7 @@ Store 负责匹配身份、原生更新与替换清理。该边界避免把请�
 | AgentService | 派遣目录、Delegation、根交互路由与结果交付 | child 是普通 Session / Run，复用同一执行链 |
 | Task 应用服务 | 计划领取、执行归属和重启对账 | Agent 目标提交普通会话输入，插件目标调用声明可调度的服务方法；两者使用原生执行记录 |
 | 插件生命周期与 Catalog lease | 代次资源、契约快照和引用寿命 | 决策及其调用持有目录；等待释放租约，后续决策使用当前目录 |
-| Host | UI 任务、草稿、选择与渲染投影 | 通过快照和事件游标追赶，不成为业务事实来源 |
+| Host | UI 任务、草稿、选择与渲染投影 | 通过快照和已确认事实位置追赶，不成为业务事实来源 |
 
 `run_blocking` 拥有已开始的同步工作及取消收尾。线程重入的配置 mutation 必须在同一工作线程完成，不能持有它跨越 `await`。持久状态、锁、网络授权和 Host 等待各有所有者，不能用额外轮询状态镜像彼此的结果。
 
@@ -113,7 +113,7 @@ Generation 拥有实例、任务、worker、MCP、私有模块和数据占用。
 
 ### 持久化与资源
 
-运行恢复只读取当前执行所需的事实；查询、回放和导出按各自需要加载历史。Files 的顺序消息正文通过原生位置索引定位，Session、Run、调用事实、请求头和事件共享数据库事务。只有实际跨文件的提交需要有限恢复决定；已提交状态与事件不重复重放。Catalog 等派生查询投影由显式维护重建，普通查询不扫描历史自愈。
+运行恢复只读取当前执行所需的事实；查询和导出按各自需要加载历史。Files 的顺序消息正文通过原生位置索引定位，Session、Run、输入状态、调用事实与请求头共享数据库事务。只有实际跨文件的提交需要有限恢复决定。Catalog 等派生查询投影由显式维护重建，普通查询不扫描历史自愈。
 
 资源由会话独立持有，内部 ID、可读文件名与完整性摘要各有职责。导出在复制中校验内容并原子发布；分支、子会话和归档传输保持文件与清单完整。文件输入的来源、内容准备及请求适配见[文件输入架构](file-input.md)。
 
@@ -131,7 +131,7 @@ Provider 实例、产品类型与线协议独立；工厂按协议选择 adapter
 
 ### Host 与观察
 
-`SessionObservation` 在 Application 内衔接一致快照、live 事件和分页追赶；Host 成功应用内容后才确认游标。
+`SessionObservation` 在 Application 内衔接一致快照、在线通知和事实分页补齐；Host 成功应用内容后才确认位置。
 `SessionContentProjection` 复用通用会话语义，TUI 负责 TranscriptEntry、交互布局与 Strip。状态观察合并失效通知，
 消费时查询权威 Agent 树；正文订阅保留顺序并限制批次容量。视图准备结果按目标版本提交，排版独立推进，
 不可见会话关闭正文观察。详见[会话观察](../specs/session-observation.md)和[TUI 渲染](tui-rendering.md)。
@@ -140,6 +140,6 @@ Provider 实例、产品类型与线协议独立；工厂按协议选择 adapter
 
 新增 Host 复用现有服务 / DTO；新的存储、协议或扩展点需要独立业务变化方向。先减少重复扫描、序列化与调用，再考虑缓存；新增缓存须说明 key、失效、容量与所有者。未来条件见[路线图](../plans/roadmap.md)，当前性能边界见[性能规格](../specs/performance.md)。
 
-会话数据与执行管线的方案和验证证据见[设计与验收](../plans/archive/2026-10-26-session-data-implementation.md)。
+会话事实存储与增量观察的方案和验证证据见[设计与验收](../plans/archive/2026-10-30-session-observation-without-event-log.md)。
 
 实现与评审遵循[编码准则](../development/coding-guidelines.zh-CN.md)，验证命令统一见[贡献指南](../../CONTRIBUTING.md)。架构改动需覆盖实际依赖、失败、并发、取消和资源释放；通过测试不替代职责与维护成本审查。

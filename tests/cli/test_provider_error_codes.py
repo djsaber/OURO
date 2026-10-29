@@ -9,6 +9,7 @@ from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.providers.faux import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
+from tests.event_capture import recorded_events
 
 
 async def test_provider_error_code_survives_runtime_persistence_and_cli_json(
@@ -42,7 +43,8 @@ async def test_provider_error_code_survives_runtime_persistence_and_cli_json(
     assert result["error_code"] == "authentication_required"
     assert result["error"] == "Login required."
     persisted = store.load_session(result["session_id"])
-    assert persisted.events[-1].payload == {
+    assert persisted.runs[-1].error_code == result["error_code"]
+    assert recorded_events(persisted.session.session_id)[-1].payload == {
         "error": result["error"],
         "error_code": result["error_code"],
     }

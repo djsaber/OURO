@@ -520,8 +520,8 @@ def test_files_cross_file_decision_recovers_call_facts_without_query_writes(
             reached.append(boundary)
             raise OSError("injected Call transaction interruption")
 
-    def interrupted_state(connection, record):
-        write_state(connection, record)
+    def interrupted_state(connection, record, **kwargs):
+        write_state(connection, record, **kwargs)
         if boundary == "state":
             reached.append(boundary)
             raise OSError("injected Call state interruption")

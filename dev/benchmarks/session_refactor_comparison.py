@@ -289,7 +289,7 @@ def seed_history(root, backend, count, variant):
         summary="Prior evidence retained; continue remaining work.",
         history_boundary_message_id=messages[-1].message_id,
     )
-    if variant == "before":
+    if "covered_message_ids" in CompactionRecord.model_fields:
         from ouro.core.compaction import compaction_source_digest
 
         fields.update(
@@ -308,7 +308,8 @@ def seed_history(root, backend, count, variant):
 
 
 async def stream_io(root, backend, session_id, *, mode="paced", sustained_chunks=8192):
-    from ouro.application.observations.events import SessionEventStream
+    from ouro.application.observations.sessions import observation_event
+    from ouro.application.supervisor import RuntimeSupervisor
     from ouro.core.provider import ProviderStreamEvent
 
     local, remote, starts = [], [], []
@@ -354,16 +355,22 @@ async def stream_io(root, backend, session_id, *, mode="paced", sustained_chunks
 
     runtime, _ = make_runtime(adapter(root, backend), Provider())
     registration = runtime.event_recorder.add_event_sink(lambda event: receive(event, local))
-    reader = adapter(root, backend)
-    observer = SessionEventStream(
-        reader,
-        session_id,
-        after_sequence=reader.latest_event_sequence(session_id),
-        publish=lambda event: receive(event, remote, acknowledge=True),
-        report=diagnostics.append,
-        is_running=lambda: True,
-    )
-    task = asyncio.create_task(observer.follow())
+    reader_runtime, _ = make_runtime(adapter(root, backend), Provider())
+    supervisor = RuntimeSupervisor(reader_runtime)
+    observer = await supervisor.observe_session(session_id, history_limit=200)
+    initial = await observer.get()
+    observer.acknowledge(initial)
+
+    async def consume():
+        async for batch in observer:
+            if batch.diagnostic is not None:
+                diagnostics.append(batch.diagnostic)
+                return
+            for event in batch.events:
+                receive(observation_event(event), remote, acknowledge=True)
+            observer.acknowledge(batch)
+
+    task = asyncio.create_task(consume())
     try:
         run_started = time.perf_counter()
         result = await runtime.run("Stream evidence", session_id=session_id)
@@ -394,7 +401,10 @@ async def stream_io(root, backend, session_id, *, mode="paced", sustained_chunks
         }
     finally:
         observer.close()
-        await task
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await supervisor.shutdown()
+        await reader_runtime.close()
         await registration.close()
         await runtime.close()
 
@@ -433,7 +443,7 @@ def query_reads(root, backend, session_id, *, result_message_id=None):
     return reads
 
 
-async def interaction(root, backend, count, variant):
+async def interaction(root, backend, count, variant, *, navigation_only=False):
     """Measure Host-facing reads and commands, excluding rendering and network time."""
     from dev.benchmarks.harness_lifecycle import process_io
     from ouro.application.inputs.requests import UserInputRequest
@@ -457,7 +467,7 @@ async def interaction(root, backend, count, variant):
         page_sizes[name] = len(value.messages)
         return value
 
-    for _ in range(3):
+    for _ in range(30 if navigation_only else 3):
         service = SessionService(adapter(root, backend))
         snapshot = await read(
             "open_200", service.observation_snapshot, session_id, history_limit=200
@@ -480,6 +490,15 @@ async def interaction(root, backend, count, variant):
             "reopen_200", service.observation_snapshot, session_id, history_limit=200
         )
         assert reopened.messages == snapshot.messages
+
+    if navigation_only:
+        return {
+            "history_messages": count,
+            "storage": initial_storage,
+            "navigation_seconds": {name: distribution(values) for name, values in reads.items()},
+            "navigation_process_io": read_io,
+            "page_message_counts": page_sizes,
+        }
 
     class Provider:
         provider_id = "comparison"
@@ -682,7 +701,7 @@ def request_io(root, backend, size, replacements, variant, *, content):
                 model_id="test",
                 metrics=ContextMetrics(estimated_input_tokens=1, estimated_fixed_tokens=1),
             )
-            if variant == "before":
+            if hasattr(store, "save_latest_context"):
                 from ouro.core.context import ContextBuilder
                 from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_digest
 
@@ -717,7 +736,9 @@ def request_io(root, backend, size, replacements, variant, *, content):
         current = store.load_latest_context(session.session_id)
         assert current.context_id == fields["context_id"]
         retained = (
-            current.system_prompt if variant == "before" else current.provider_context.system_prompt
+            current.system_prompt
+            if hasattr(store, "save_latest_context")
+            else current.provider_context.system_prompt
         )
         assert retained == prompt
     finally:
@@ -753,6 +774,8 @@ def main():
             "stream_io",
             "request_io",
             "interaction",
+            "navigation",
+            "tui",
         ],
         default="all",
     )
@@ -810,8 +833,20 @@ def main():
                     harness_owner_bytes=args.harness_owner_bytes,
                     argument_bytes=args.argument_bytes,
                 )
-            elif args.scenario == "interaction":
-                operation = interaction(Path(home), args.backend, args.size, args.variant)
+            elif args.scenario == "tui":
+                from dev.benchmarks.tui_sessions import sample
+
+                operation = sample(
+                    Path(home), messages=args.size, reasoning_chars=48070, backend=args.backend
+                )
+            elif args.scenario in {"interaction", "navigation"}:
+                operation = interaction(
+                    Path(home),
+                    args.backend,
+                    args.size,
+                    args.variant,
+                    navigation_only=args.scenario == "navigation",
+                )
             elif args.scenario == "stream_io":
                 operation = streaming_history(
                     Path(home), args.backend, args.size, args.variant, chunks=args.stream_chunks
@@ -891,7 +926,7 @@ def main():
                     args.request_bytes
                     if scenario == "request_io"
                     else args.messages
-                    if scenario in {"history", "stream_io", "interaction"}
+                    if scenario in {"history", "stream_io", "interaction", "navigation", "tui"}
                     else args.rounds
                 )
                 for backend in backends:

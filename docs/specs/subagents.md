@@ -567,7 +567,7 @@ root budget。
 解析结果显式携带 resolved_child_run_id，不能随 Delegation.current_child_run_id 的后续变化改指 follow-up。Host 的
 `wait_agents()` 可等待多个 handle，但它不是模型工具，也不进入 ToolCall 的 durable join 协议。
 
-等待以持久化 child Run identity 为准，通过 `RuntimeSupervisor.wait_run` 共享会话事件流。审批或用户输入只结束
+等待以持久化 child Run identity 为准，通过 `RuntimeSupervisor.wait_run` 共享会话观察，并读取目标 Run 的终态事实。审批或用户输入只结束
 一次进程内 job，不结束对 Run 的观察；父等待和子执行可以由不同终端持有。同步 waiter 同时观察父 Run 终止，
 中断或关闭时释放自己的订阅，不影响其他终端。多个 waiter 竞争恢复时以原 ToolCall 的 canonical result 为完成凭据，
 不能因为本地 job 结束或一次 SessionBusy 就丢弃尚未交付的结果。

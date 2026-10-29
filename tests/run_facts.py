@@ -4,20 +4,12 @@ from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
 from ouro.core.tools import ToolResultValue
 from ouro.sessions import SessionRepository
+from tests.event_capture import recorded_events
 
 
 def run_events(store: SessionRepository, result: RunResult) -> list[EventRecord]:
-    """Explicit historical query in assertions, never an execution accumulator."""
-    events = []
-    cursor = 0
-    while True:
-        page, next_cursor = store.load_events_page(
-            result.session.session_id, cursor=cursor, run_id=result.run.run_id
-        )
-        events.extend(page)
-        if next_cursor is None:
-            return events
-        cursor = next_cursor
+    """Inspect this test's online notifications for the completed Run."""
+    return recorded_events(result.session.session_id, run_id=result.run.run_id)
 
 
 def run_tool_results(store: SessionRepository, result: RunResult) -> list[ToolResultValue]:

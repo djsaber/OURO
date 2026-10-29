@@ -23,6 +23,7 @@ from ouro.providers.http_transport import HttpxProviderHTTPTransport
 from ouro.tools import Tool, ToolDefinition, ToolResult
 from tests.application.test_runtime_authentication import login
 from tests.auth import test_driver_contracts as auth_fixtures
+from tests.event_capture import recorded_events
 from tests.providers.responses_fixtures import call, delta, item_event, message, reasoning, terminal
 from tests.run_facts import run_events
 
@@ -421,7 +422,7 @@ async def test_model_switch_after_failure_preserves_completed_tool_frames(
         session_id = failed.session.session_id
         saved = app.runtime.store.load_session(session_id).messages
         source_message = next(m for m in saved if m.tool_calls)
-        event_cursor = app.runtime.store.latest_event_sequence(session_id)
+        event_cursor = len(recorded_events(session_id))
         assert source_message.provider_continuation.protocol == source_protocol
         app.runtime.switch_session_model(session_id, target.key)
 
@@ -459,8 +460,7 @@ async def test_model_switch_after_failure_preserves_completed_tool_frames(
         assert (
             not any(
                 e.event_type == "user_message_added"
-                for e in run_events(app.runtime.store, result)
-                if e.sequence > event_cursor
+                for e in recorded_events(session_id)[event_cursor:]
             )
         ) == (continue_without_input)
     assert not replies

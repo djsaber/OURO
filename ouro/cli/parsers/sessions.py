@@ -162,13 +162,6 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
     _add_session_backend_arg(branch_parser)
     branch_parser.add_argument("--json", action="store_true", help="Print JSON")
 
-    replay_parser = session_subparsers.add_parser("replay", help="Project persisted events")
-    replay_parser.add_argument("session_id", help="Session id")
-    replay_parser.add_argument("--run", dest="run_id", help="Filter by run id")
-    replay_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
-    _add_session_backend_arg(replay_parser)
-    replay_parser.add_argument("--json", action="store_true", help="Print JSON")
-
     remove_parser = session_subparsers.add_parser("remove", help="Remove a session")
     remove_parser.add_argument("session_id", help="Session id")
     remove_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
@@ -183,15 +176,6 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
     messages_parser.add_argument("--cursor", type=int, default=0, help="Opaque page cursor")
     messages_parser.add_argument("--limit", type=int, default=100, help="Page size (1-1000)")
     messages_parser.add_argument("--json", action="store_true", help="Print JSON")
-
-    events_parser = session_subparsers.add_parser("events", help="Show session events")
-    events_parser.add_argument("session_id", help="Session id")
-    events_parser.add_argument("--run", dest="run_id", help="Filter by run id")
-    events_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
-    _add_session_backend_arg(events_parser)
-    events_parser.add_argument("--cursor", type=int, default=0, help="Opaque page cursor")
-    events_parser.add_argument("--limit", type=int, default=100, help="Page size (1-1000)")
-    events_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     compact_parser = session_subparsers.add_parser(
         "compact",

@@ -312,10 +312,7 @@ class ContextPreparationService:
             except CompactionError as exc:
                 if isinstance(exc, CompactionAbortedError):
                     raise
-                sequence = await run_blocking(
-                    self.store.latest_event_sequence,
-                    session.session_id,
-                )
+                sequence = 0
                 if view.metrics.over_budget:
                     raise ContextBlockedError(
                         f"context compaction is required before the run can continue: {exc}"
@@ -388,6 +385,11 @@ class ContextPreparationService:
             adapter=active_adapter,
             view=view,
         )
+
+    def _mark_compaction(self, session_id: str, run_id: str, compaction_id: str | None) -> None:
+        with self.store.session_mutation(session_id):
+            run = self.store.load_run(session_id, run_id)
+            self.store.save_run(run.model_copy(update={"current_compaction_id": compaction_id}))
 
     def record_request_settlement(
         self,
@@ -656,6 +658,7 @@ class ContextPreparationService:
 
         compaction_id = new_id("cmp")
         compaction_started_clock = monotonic()
+        await run_blocking(self._mark_compaction, session.session_id, run.run_id, compaction_id)
         sequence = await self.events.emit(
             sequence,
             session_id=session.session_id,
@@ -792,6 +795,7 @@ class ContextPreparationService:
                     compaction_id=compaction_id,
                     outputs=exc.model_outputs,
                 )
+            await run_blocking(self._mark_compaction, session.session_id, run.run_id, None)
             if isinstance(exc, CompactionAbortedError):
                 raise
             sequence = await self.events.emit(
@@ -1064,6 +1068,11 @@ class ContextPreparationService:
             committed = self.store.commit_session(
                 SessionCommit(
                     before=session,
+                    runs=(
+                        self.store.load_run(record.session_id, run.run_id).model_copy(
+                            update={"current_compaction_id": None}
+                        ),
+                    ),
                     compaction=record,
                     request_header=request_header,
                     events=(

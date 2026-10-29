@@ -7,9 +7,7 @@ from contextlib import closing
 
 import pytest
 
-from ouro.application.observations.activity import queued_runtime_activity, reduce_runtime_activity
 from ouro.core.context import ContextMetrics
-from ouro.core.events import EventRecord
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro_upgrade.engine import upgrade
 from ouro_upgrade.errors import UpgradeError
@@ -37,28 +35,6 @@ def test_budget_records_preserve_measurements_and_request_capacity(
         assert getattr(metrics, key) == value
     assert source == before
     assert convert(kind, result) is result
-
-
-def test_event_and_commit_metrics_remain_replayable_without_touching_opaque_payloads(
-    budget_records,
-):
-    commit = budget_records["commit"]
-    before = copy.deepcopy(commit)
-    result = {**commit, "events": [convert("event", event) for event in commit["events"]]}
-    activity = queued_runtime_activity("ses_fixture")
-    for source, event in zip(before["events"], result["events"], strict=True):
-        assert event == convert("event", source)
-        assert event["metadata"] == source["metadata"]
-        activity = reduce_runtime_activity(activity, EventRecord.model_validate(event))
-        assert activity.effective_context_metrics is not None
-        assert activity.effective_context_metrics.input_budget_tokens == 800
-    assert activity.context_status is not None
-    assert result["output"] == before["output"]
-    assert result["request_digest"] == before["request_digest"]
-    assert commit == before
-    unrelated = copy.deepcopy(before["events"][0])
-    unrelated["event_type"] = "plugin.custom"
-    assert convert("event", unrelated) is unrelated
 
 
 @pytest.mark.parametrize("damage", ["reserve", "unknown"])
@@ -170,6 +146,7 @@ def test_budget_upgrade_reaches_both_stores_and_preserves_restore(historical_hom
 
     if backend == "files":
         assert not offsets.exists()
+        assert not (directory / "events.jsonl").exists()
     upgraded = hashes(home)
     assert upgrade(home, **options)["status"] == "current"
     assert hashes(home) == upgraded

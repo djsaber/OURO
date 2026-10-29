@@ -10,7 +10,7 @@ from pathlib import Path
 from ouro.core.errors import PersistenceError
 from ouro.sessions.sqlite_connections import ExecutionConnections
 from ouro.sessions.sqlite_drafts import DRAFT_SCHEMA
-from ouro.sessions.sqlite_events import EVENT_SCHEMA
+from ouro.sessions.sqlite_observation import OBSERVATION_SCHEMA
 from ouro.sessions.sqlite_resources import RESOURCE_SCHEMA
 
 _SCHEMA = """
@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS runs (
     model_round_count INTEGER NOT NULL,
     summary_request_count INTEGER NOT NULL,
     payload TEXT NOT NULL,
+    modified_revision INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(session_id, run_id),
     FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
 );
@@ -103,6 +104,7 @@ CREATE TABLE IF NOT EXISTS tool_call_states (
     batch_id TEXT NOT NULL,
     tool_call_id TEXT NOT NULL,
     payload TEXT NOT NULL,
+    modified_revision INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(session_id, run_id, batch_id, tool_call_id),
     FOREIGN KEY(session_id, run_id, batch_id, tool_call_id)
         REFERENCES tool_calls(session_id, run_id, batch_id, tool_call_id)
@@ -115,6 +117,7 @@ CREATE TABLE IF NOT EXISTS compactions (
     previous_compaction_id TEXT,
     covered_end_message_id TEXT NOT NULL,
     history_boundary_message_id TEXT NOT NULL,
+    modified_revision INTEGER NOT NULL DEFAULT 0,
     payload TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS compaction_references
@@ -126,6 +129,14 @@ CREATE TABLE IF NOT EXISTS request_headers (
     context_id TEXT NOT NULL,
     payload TEXT NOT NULL,
     PRIMARY KEY(session_id, context_id)
+);
+CREATE TABLE IF NOT EXISTS input_states (
+    session_id TEXT NOT NULL,
+    input_id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    modified_revision INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(session_id, input_id),
+    FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS latest_contexts (
     session_id TEXT PRIMARY KEY,
@@ -172,7 +183,12 @@ def initialize_index(connection: sqlite3.Connection) -> None:
     # Schema creation is independent of publishing a Session. Keep the empty
     # schema if building a reserved snapshot fails, so the same input can retry.
     connection.executescript(
-        "BEGIN;\n" + _SCHEMA + DRAFT_SCHEMA + EVENT_SCHEMA + RESOURCE_SCHEMA + "COMMIT;\nBEGIN;"
+        "BEGIN;\n"
+        + _SCHEMA
+        + OBSERVATION_SCHEMA
+        + DRAFT_SCHEMA
+        + RESOURCE_SCHEMA
+        + "COMMIT;\nBEGIN;"
     )
     for table in (
         "sessions",

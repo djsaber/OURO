@@ -43,9 +43,6 @@ def test_export_and_resource_catalog_do_not_enter_mutation(services, monkeypatch
 
     monkeypatch.setattr(store, "session_mutation", forbidden)
     assert store.load_harness(session.session_id).session_id == session.session_id
-    assert store.latest_event_sequence(session.session_id) == 0
-    assert store.load_events_after(session.session_id) == ([], False)
-    assert store.load_events_page(session.session_id) == ([], None)
     assert (
         resources.list_resources(session.session_id).resources[0].resource_id
         == resource.resource_id
@@ -106,9 +103,6 @@ def test_files_resource_list_reports_pending_decision_without_recovery(tmp_path,
     for query in (
         store.load_resource_references,
         store.load_harness,
-        store.latest_event_sequence,
-        store.load_events_page,
-        store.load_events_after,
     ):
         with pytest.raises(SessionRecoveryRequiredError):
             query(selected.session_id)

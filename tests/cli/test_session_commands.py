@@ -298,7 +298,7 @@ def test_session_list_maps_shell_friendly_status_and_sort_values() -> None:
     assert args.sort == "created_desc"
 
 
-def test_session_branch_and_replay_commands_use_application_facade(tmp_path, capsys) -> None:
+def test_session_branch_command_uses_application_facade(tmp_path, capsys) -> None:
     run_code = main(["run", "--json", "--home", str(tmp_path), "branch me"])
     run_payload = json.loads(capsys.readouterr().out)
     assert run_code == 0
@@ -324,44 +324,8 @@ def test_session_branch_and_replay_commands_use_application_facade(tmp_path, cap
     assert branch_code == 0
     assert branch_payload["session"]["parent_session_id"] == session_id
 
-    replay_code = main(["session", "replay", session_id, "--home", str(tmp_path), "--json"])
-    replay_payload = json.loads(capsys.readouterr().out)
-    assert replay_code == 0
-    assert replay_payload["frames"]
-    assert replay_payload["frames"][0]["event"]["event_type"] == "run_started"
 
-
-@pytest.mark.parametrize("json_mode", [False, True])
-def test_session_data_export_to_archive(tmp_path, capsys, json_mode) -> None:
-    assert main(["run", "--json", "--home", str(tmp_path), "hello"]) == 0
-    run_payload = json.loads(capsys.readouterr().out)
-    output = tmp_path / "export.zip"
-    args = [
-        "data",
-        "export",
-        "--kind",
-        "sessions",
-        "--id",
-        run_payload["session_id"],
-        "--home",
-        str(tmp_path),
-        "--path",
-        str(output),
-    ]
-    if json_mode:
-        args.append("--json")
-    assert main(args) == 0
-    captured = capsys.readouterr()
-    if json_mode:
-        assert json.loads(captured.out)["status"] == "ok"
-    else:
-        assert "Exported sessions" in captured.out
-    payload = read_archive(output, "sessions").manifest.data["bundle"]["sessions"][0]["snapshot"]
-    assert payload["session"]["session_id"] == run_payload["session_id"]
-    assert any(event["event_type"] == "run_completed" for event in payload["events"])
-
-
-def test_session_messages_and_events(tmp_path, capsys) -> None:
+def test_session_messages(tmp_path, capsys) -> None:
     run_code = main(["run", "--json", "--home", str(tmp_path), "hello"])
     run_payload = json.loads(capsys.readouterr().out)
     assert run_code == 0
@@ -372,13 +336,6 @@ def test_session_messages_and_events(tmp_path, capsys) -> None:
     messages_payload = json.loads(capsys.readouterr().out)
     assert messages_code == 0
     assert any(message["role"] == "user" for message in messages_payload["messages"])
-
-    events_code = main(
-        ["session", "events", run_payload["session_id"], "--home", str(tmp_path), "--json"]
-    )
-    events_payload = json.loads(capsys.readouterr().out)
-    assert events_code == 0
-    assert any(event["event_type"] == "run_completed" for event in events_payload["events"])
 
 
 def test_session_message_command_exposes_page_cursor(tmp_path, capsys) -> None:

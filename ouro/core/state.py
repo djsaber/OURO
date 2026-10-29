@@ -312,9 +312,11 @@ class RunRecord(VersionedOuroModel):
     active_tool_batch: ToolBatchHead | None = None
     abort_requested: bool = False
     error: str | None = None
+    error_code: str | None = None
     model_round_count: int = Field(default=0, ge=0)
     summary_request_count: int = Field(default=0, ge=0)
     current_request_id: str | None = None
+    current_compaction_id: str | None = None
     continuation: RunContinuationCheckpoint | None = None
     driver: RunDriverBinding = Field(default_factory=RunDriverBinding)
     driver_checkpoint: DriverCheckpoint | None = None

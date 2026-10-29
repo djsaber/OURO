@@ -10,6 +10,7 @@ from ouro.core.compaction import CompactionModelOutput
 from ouro.core.events import EventRecord
 from ouro.core.redaction import redact_data
 from ouro.core.response_drafts import ResponseStreamPosition
+from ouro.core.session_observation import SessionObservationPosition
 
 RuntimeEventCategory = Literal[
     "text",
@@ -35,6 +36,9 @@ class RuntimeEventView(ApplicationDTO):
     created_at: datetime
     sequence: int
     stream: ResponseStreamPosition | None = None
+    position: SessionObservationPosition | None = None
+    commit_revision: int | None = None
+    message_after: int | None = None
     text: str | None = None
     tool_call_id: str | None = None
     tool_name: str | None = None
@@ -74,6 +78,9 @@ def project_runtime_event(event: EventRecord) -> RuntimeEventView:
         created_at=event.created_at,
         sequence=event.sequence,
         stream=event.stream,
+        position=event.position,
+        commit_revision=event.commit_revision,
+        message_after=event.message_after,
         text=text,
         tool_call_id=_string(payload.get("tool_call_id")),
         tool_name=_string(payload.get("tool_name")),

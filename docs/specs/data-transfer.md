@@ -86,7 +86,7 @@ Files 存在未决原生决定时明确要求先恢复，不在导出内安装�
 不占用数据库写事务；运行所有权继续保护所选树及资源闭包。释放读取边界前取得实际资源字节，
 返回的归档不依赖随后可能删除的源路径。
 
-完整传输包括 Session、消息事实、Input/状态、Call/started/Outcome/状态、events、runs、compactions、
+完整传输包括 Session、消息事实、Input/状态、Call/started/Outcome/状态、runs、compactions、
 extension states、Harness versions、请求小头、最近 Manifest、Delegation 及关联附件；不包含已退出的完整提交回执。
 未知插件和工具名称不参与导入可行性判定：
 

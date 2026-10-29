@@ -7,9 +7,7 @@ import pytest
 
 from ouro.application.agents.tree import AgentTreeProjector
 from ouro.application.contracts.agents import SpawnAgentRequest
-from ouro.application.observations.events import SessionEventStream
 from ouro.core.errors import PersistenceError, SessionNotFoundError
-from ouro.core.events import EventRecord
 from ouro.core.state import SessionRecord
 from ouro.sessions import SQLiteSessionStore
 from tests.application.test_agents import _services
@@ -213,14 +211,14 @@ async def test_text_burst_is_filtered_before_state_buffer_and_tree_query(
     loop = asyncio.get_running_loop()
     reading, published = asyncio.Event(), asyncio.Event()
     release = threading.Event()
-    read = SessionEventStream._read_page
+    read = supervisor.runtime.sessions.observation_changes
     queries = []
     project = service._tree_projector.snapshot
 
-    def paused_read(stream):
+    def paused_read(*args, **kwargs):
         loop.call_soon_threadsafe(reading.set)
         assert release.wait(10)
-        return read(stream)
+        return read(*args, **kwargs)
 
     def counted_project(*args):
         queries.append(threading.get_ident())
@@ -228,39 +226,30 @@ async def test_text_burst_is_filtered_before_state_buffer_and_tree_query(
 
     # Pause before the page owns a read scope, so subscription setup and the
     # burst writer can finish before the follower takes its snapshot.
-    monkeypatch.setattr(SessionEventStream, "_read_page", paused_read)
+    monkeypatch.setattr(supervisor.runtime.sessions, "observation_changes", paused_read)
     monkeypatch.setattr(service._tree_projector, "snapshot", counted_project)
     subscription = await service.subscribe_agent_tree("ses_root")
     source = supervisor._event_streams["ses_root"]
-    publish = source._publish
+    publish = source._publish_facts
 
-    def record_publication(event):
-        publish(event)
-        if event.event_type == "agent_closed":
-            published.set()
+    def record_publication(batch):
+        publish(batch)
+        published.set()
 
-    source._publish = record_publication
+    source._publish_facts = record_publication
     try:
         await asyncio.wait_for(reading.wait(), 5)
+        run = store.load_run("ses_root", "run_parent")
         for index in range(count):
-            store.append_ordered_event(
-                EventRecord(
-                    session_id="ses_root",
-                    run_id="run_parent",
-                    event_type="model_text_delta",
-                    payload={"text": str(index)},
-                )
-            )
-        marker = store.append_ordered_event(
-            EventRecord(session_id="ses_root", run_id="run_parent", event_type="agent_closed")
-        )
+            store.save_run(run.model_copy(update={"model_round_count": index + 1}))
+        marker = store.observation_revision("ses_root")
         release.set()
         await asyncio.wait_for(published.wait(), 5)
         # Delivery never computes a tree; even a burst larger than a page is one invalidation.
         assert len(queries) == 1
         notification = await asyncio.wait_for(subscription.get(), 5)
         assert notification.kind == "snapshot", notification
-        assert notification.snapshot.revision >= marker.sequence
+        assert notification.snapshot.revision >= marker
         assert len(queries) == 2
         assert set(queries).isdisjoint({threading.get_ident()})
     finally:
@@ -332,7 +321,10 @@ async def test_tree_read_keeps_changes_that_arrive_while_query_is_in_flight(tmp_
         )
         reading = asyncio.create_task(subscription.get())
         await asyncio.wait_for(captured.wait(), 5)
-        marker = await supervisor.runtime.event_recorder.publish(
+        store = supervisor.runtime.store
+        store.save_run(store.load_run("ses_root", "run_parent"))
+        marker = store.observation_revision("ses_root")
+        await supervisor.runtime.event_recorder.publish(
             session_id="ses_root",
             run_id="run_parent",
             event_type="agent_closed",
@@ -343,7 +335,7 @@ async def test_tree_read_keeps_changes_that_arrive_while_query_is_in_flight(tmp_
         previous = await asyncio.wait_for(reading, 5)
         current = await asyncio.wait_for(subscription.get(), 5)
         assert previous.snapshot.revision < current.snapshot.revision
-        assert current.snapshot.revision >= marker.sequence
+        assert current.snapshot.revision >= marker
         assert calls == 2
     finally:
         release.set()
@@ -361,7 +353,7 @@ async def test_tree_preserves_source_failure_and_stops_observation(tmp_path, mon
     def fail(*args, **kwargs):
         raise OSError("synthetic read failure")
 
-    monkeypatch.setattr(supervisor.store, "load_events_after", fail)
+    monkeypatch.setattr(supervisor.runtime.sessions, "observation_changes", fail)
     try:
         notification = await asyncio.wait_for(subscription.get(), 5)
         assert notification.diagnostic.code == "runtime_subscription_read_failed"
@@ -394,7 +386,10 @@ async def test_initial_tree_snapshot_retains_changes_during_read(tmp_path, monke
     opening = asyncio.create_task(service.subscribe_agent_tree("ses_root"))
     try:
         await asyncio.wait_for(captured.wait(), 5)
-        marker = await supervisor.runtime.event_recorder.publish(
+        store = supervisor.runtime.store
+        store.save_run(store.load_run("ses_root", "run_parent"))
+        marker = store.observation_revision("ses_root")
+        await supervisor.runtime.event_recorder.publish(
             session_id="ses_root",
             run_id="run_parent",
             event_type="agent_closed",
@@ -403,9 +398,9 @@ async def test_initial_tree_snapshot_retains_changes_during_read(tmp_path, monke
         await supervisor.runtime.drain_events()
         release.set()
         subscription = await opening
-        assert subscription.initial_snapshot.revision < marker.sequence
+        assert subscription.initial_snapshot.revision < marker
         notification = await asyncio.wait_for(subscription.get(), 5)
-        assert notification.snapshot.revision >= marker.sequence
+        assert notification.snapshot.revision >= marker
         subscription.close()
     finally:
         release.set()

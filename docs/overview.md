@@ -14,7 +14,7 @@ OURO 是本地优先的个人智能体运行时。会话历史、运行状态、
 | 领域 | 已实现范围 | 精确契约 |
 |---|---|---|
 | 运行 | 默认与可替换 Run Driver、共享模型 / 工具 / Agent 执行端口、顺序或并行批次、取消、预算、恢复、follow-up / steer 排队输入 | [运行时](specs/runtime.md) |
-| 会话 | 创建、继续、重命名、归档、置顶、搜索、分支、事件回放、回收站、游标查询和消息撤销 | [持久化](specs/session-persistence.md)、[撤销](specs/session-undo.md) |
+| 会话 | 创建、继续、重命名、归档、置顶、搜索、分支、实时观察、回收站、游标查询和消息撤销 | [持久化](specs/session-persistence.md)、[撤销](specs/session-undo.md) |
 | 存储 | 文件与 SQLite 会话后端，共用契约；显式校验导入、原子提交和恢复 | [会话持久化](specs/session-persistence.md) |
 | 模型 | Faux、OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 及具名插件协议；Provider / Endpoint、模板与自定义连接、推理能力配置 | [Provider 配置](specs/provider-configuration.md)、[协议](specs/provider-protocols.md) |
 | 认证 | 静态引用、受管理凭据、浏览器订阅授权、刷新、注销、请求认证与跨进程协调 | [认证架构](architecture/authentication.md) |

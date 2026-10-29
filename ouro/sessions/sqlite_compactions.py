@@ -21,10 +21,13 @@ def read_references(connection: sqlite3.Connection, session_id: str) -> list[Com
     ]
 
 
-def insert_compaction(connection: sqlite3.Connection, record: CompactionRecord) -> None:
+def insert_compaction(
+    connection: sqlite3.Connection, record: CompactionRecord, *, revision: int = 0
+) -> None:
     connection.execute(
         "INSERT INTO compactions(session_id, compaction_id, previous_compaction_id, "
-        "covered_end_message_id, history_boundary_message_id, payload) VALUES(?, ?, ?, ?, ?, ?)",
+        "covered_end_message_id, history_boundary_message_id, payload, modified_revision) "
+        "VALUES(?, ?, ?, ?, ?, ?, ?)",
         (
             record.session_id,
             record.compaction_id,
@@ -32,6 +35,7 @@ def insert_compaction(connection: sqlite3.Connection, record: CompactionRecord) 
             record.covered_end_message_id,
             record.history_boundary_message_id,
             record.model_dump_json(),
+            revision,
         ),
     )
 

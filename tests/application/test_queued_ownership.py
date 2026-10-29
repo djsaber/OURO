@@ -17,6 +17,7 @@ from ouro.core.state import RunRecord
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
 from tests.application.test_driver_inputs import SteeringProvider
+from tests.event_capture import recorded_events
 
 
 def runtime_for(store, provider):
@@ -98,8 +99,7 @@ async def test_queued_owner_is_visible_to_every_native_entry(store, entry):
         assert store.load_run(run.session_id, run.run_id).status == "queued"
         assert supervisor.status(handle).status == "queued"
         assert not any(
-            event.event_type == "run_recovered"
-            for event in store.load_session(run.session_id).events
+            event.event_type == "run_recovered" for event in recorded_events(run.session_id)
         )
         provider.release.set()
         assert (await asyncio.wait_for(supervisor.wait(occupying), 10)).status == "completed"
@@ -152,15 +152,15 @@ async def test_cancelled_admission_releases_the_unpublished_reservation(store, m
     supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
     entered, release = threading.Event(), threading.Event()
     run, session_input = prepare(runtime)
-    original = store.latest_event_sequence
+    original = store.load_session_record
 
     def read_boundary(session_id):
-        if session_id == run.session_id:
+        if session_id == run.session_id and store.is_session_locked(session_id):
             entered.set()
             assert release.wait(10)
         return original(session_id)
 
-    monkeypatch.setattr(store, "latest_event_sequence", read_boundary)
+    monkeypatch.setattr(store, "load_session_record", read_boundary)
     admission = asyncio.create_task(supervisor.submit_prepared(run, session_input))
     try:
         assert await asyncio.to_thread(entered.wait, 5)

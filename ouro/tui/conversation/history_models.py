@@ -38,6 +38,7 @@ class CompactionPresentation:
     covered_message_count: int
     tokens_reduced: int | None
     duration_seconds: float | None
+    compaction_id: str | None = None
 
 
 @dataclass(frozen=True)

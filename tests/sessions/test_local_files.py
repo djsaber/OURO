@@ -3,13 +3,11 @@ from pathlib import Path
 
 import pytest
 
-import ouro.sessions.sqlite_events as native_events
 from ouro.application.runs.tool_batches import load_tool_batch
 from ouro.application.sessions.recovery import SessionRecoveryService
 from ouro.core.approvals import ApprovalRecord
 from ouro.core.base import utc_now
 from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
-from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ToolResultReference
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
@@ -17,7 +15,7 @@ from ouro.core.tools import ToolCallRequest, ToolInvocation
 from ouro.sessions import DATA_LAYOUT_VERSION, LocalSessionStore
 from tests.resource_fixtures import resource_record
 from tests.response_drafts import persist_response_draft
-from tests.session_storage import session_connection, write_session_payload
+from tests.session_storage import write_session_payload
 from tests.tool_batches import persist_tool_batch, seed_tool_messages
 
 
@@ -33,23 +31,15 @@ def test_local_file_store_round_trip(tmp_path) -> None:
         text="hello",
         sequence=1,
     )
-    event = EventRecord(
-        session_id=session.session_id,
-        run_id=run.run_id,
-        event_type="run_started",
-        sequence=1,
-    )
-
     store.create_session(session)
     store.save_run(run)
     store.append_message(message)
-    store.append_event(event)
 
     snapshot = store.load_session(session.session_id)
 
     assert snapshot.session.title == "Local test"
     assert snapshot.messages[0].text_content == "hello"
-    assert snapshot.events[0].event_type == "run_started"
+    assert "events" not in snapshot.model_dump()
     assert snapshot.runs[0].status == "completed"
     assert store.list_sessions()[0].session_id == session.session_id
 
@@ -62,7 +52,6 @@ def test_runtime_snapshot_never_reads_content_journals(monkeypatch, tmp_path) ->
     store.append_message(
         MessageRecord.text(session_id=session.session_id, role="user", text="hello")
     )
-    store.append_ordered_event(EventRecord(session_id=session.session_id, event_type="run_started"))
     read_paths: list[str] = []
     original = store._iter_jsonl
 
@@ -103,229 +92,21 @@ def test_runtime_recovery_reads_current_draft_without_events(monkeypatch, tmp_pa
     store.create_session(session)
     store.save_run(completed)
     store.save_run(interrupted)
-    store.append_ordered_event(
-        EventRecord(
-            session_id=session.session_id,
-            run_id=completed.run_id,
-            event_type="run_completed",
-        )
-    )
     persist_response_draft(store, interrupted, turn_id="turn_interrupted", text="partial")
-    queried_run_ids: list[str | None] = []
-    original_load_events_page = store.load_events_page
-
-    def load_events_page(*args, **kwargs):
-        queried_run_ids.append(kwargs.get("run_id"))
-        return original_load_events_page(*args, **kwargs)
 
     def reject_full_session_load(_session_id: str):
-        raise AssertionError("runtime recovery must not load the complete event journal")
+        raise AssertionError("runtime recovery must not load the complete session")
 
-    monkeypatch.setattr(store, "load_events_page", load_events_page)
     monkeypatch.setattr(store, "load_session", reject_full_session_load)
 
     recovered = SessionRecoveryService(store).recover_runtime(session.session_id)
 
-    assert queried_run_ids == []
     assert recovered.runs[-1].status == "recoverable"
     partial = store.find_assistant_message(
         session.session_id, interrupted.run_id, "turn_interrupted"
     )
     assert partial is not None and partial.text_content == "partial"
     assert partial.metadata["recovered_from_draft"] is True
-
-
-def test_latest_event_sequence_does_not_read_content_journals(monkeypatch, tmp_path) -> None:
-    store = LocalSessionStore(tmp_path)
-    store.initialize()
-    session = SessionRecord(title="Event tail")
-    store.create_session(session)
-    store.append_ordered_event(EventRecord(session_id=session.session_id, event_type="run_started"))
-    store.append_ordered_event(
-        EventRecord(session_id=session.session_id, event_type="model_request_started")
-    )
-    reopened = LocalSessionStore(tmp_path)
-
-    def reject_full_journal_read(path):
-        raise AssertionError(f"unexpected full journal read: {path}")
-
-    monkeypatch.setattr(reopened, "_iter_jsonl", reject_full_journal_read)
-
-    assert reopened.latest_event_sequence(session.session_id) == 2
-
-
-@pytest.mark.parametrize(
-    "text", ["4,16 @@ patch " * 1000, "中文🙂\u2028\u2029" * 12000], ids=["patch", "unicode"]
-)
-def test_peer_reads_complete_large_event_tail_and_can_append_after_it(tmp_path, text) -> None:
-    writer = LocalSessionStore(tmp_path)
-    writer.initialize()
-    session = SessionRecord(title="Large event tail")
-    writer.create_session(session)
-    first = writer.append_ordered_event(
-        EventRecord(session_id=session.session_id, event_type="run_started")
-    )
-    peer = LocalSessionStore(tmp_path)
-    assert peer.latest_event_sequence(session.session_id) == first.sequence
-    large = writer.append_ordered_event(
-        EventRecord(
-            session_id=session.session_id,
-            event_type="model_text_delta",
-            payload={"text": text},
-        )
-    )
-
-    assert len(large.model_dump_json().encode("utf-8")) > 8192
-    assert writer.latest_event_sequence(session.session_id) == large.sequence
-    assert peer.latest_event_sequence(session.session_id) == large.sequence
-    events, truncated = peer.load_events_after(session.session_id, after_sequence=first.sequence)
-    assert events == [large]
-    assert not truncated
-    final = peer.append_ordered_event(
-        EventRecord(session_id=session.session_id, event_type="run_completed")
-    )
-    assert final.sequence == large.sequence + 1
-    assert writer.latest_event_sequence(session.session_id) == final.sequence
-
-
-def test_event_reader_reports_corrupt_canonical_payload(tmp_path) -> None:
-    store = LocalSessionStore(tmp_path)
-    store.initialize()
-    session = SessionRecord(title="Invalid event")
-    store.create_session(session)
-    store.append_ordered_event(EventRecord(session_id=session.session_id, event_type="run_started"))
-    with session_connection(store, session.session_id) as connection:
-        connection.execute(
-            "UPDATE events SET payload = json_set(payload, '$.created_at', 'invalid')"
-        )
-    with pytest.raises(PersistenceError):
-        LocalSessionStore(tmp_path).load_events_page(session.session_id)
-
-
-def test_observation_reads_high_water_without_decoding_any_run_events(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    store = LocalSessionStore(tmp_path)
-    store.initialize()
-    session = SessionRecord(title="Indexed observation")
-    store.create_session(session)
-    completed = RunRecord(
-        run_id="run_completed",
-        session_id=session.session_id,
-        status="completed",
-    )
-    active = RunRecord(
-        run_id="run_active",
-        session_id=session.session_id,
-        status="running",
-    )
-    store.save_run(completed)
-    for index in range(600):
-        store.append_ordered_event(
-            EventRecord(
-                session_id=session.session_id,
-                run_id=completed.run_id,
-                event_type="model_text_delta",
-                payload={"text": str(index)},
-            )
-        )
-    store.save_run(active)
-    store.save_session(
-        session.model_copy(
-            update={
-                "status": "running",
-                "active_run_id": active.run_id,
-                "last_run_id": active.run_id,
-            }
-        )
-    )
-    expected = [
-        store.append_ordered_event(
-            EventRecord(
-                session_id=session.session_id,
-                run_id=active.run_id,
-                event_type="model_text_delta",
-                payload={"text": text},
-            )
-        )
-        for text in ("live-1", "live-2")
-    ]
-    reopened = LocalSessionStore(tmp_path)
-    decoded_event_count = 0
-    original_decode = native_events.decode_versioned_record_json
-
-    def count_event_decodes(model_type, *args, **kwargs):
-        nonlocal decoded_event_count
-        if model_type is EventRecord:
-            decoded_event_count += 1
-        return original_decode(model_type, *args, **kwargs)
-
-    monkeypatch.setattr(
-        native_events,
-        "decode_versioned_record_json",
-        count_event_decodes,
-    )
-
-    snapshot = reopened.load_session_observation(session.session_id)
-
-    assert snapshot.event_high_water == expected[-1].sequence
-    assert decoded_event_count == 0
-
-
-def test_events_after_decodes_only_the_requested_suffix(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    store = LocalSessionStore(tmp_path)
-    store.initialize()
-    session = SessionRecord(title="Indexed replay")
-    store.create_session(session)
-    for index in range(600):
-        store.append_ordered_event(
-            EventRecord(
-                session_id=session.session_id,
-                run_id="run_old",
-                event_type="model_text_delta",
-                payload={"text": str(index)},
-            )
-        )
-    high_water = store.latest_event_sequence(session.session_id)
-    expected = [
-        store.append_ordered_event(
-            EventRecord(
-                session_id=session.session_id,
-                run_id="run_live",
-                event_type="model_text_delta",
-                payload={"text": text},
-            )
-        )
-        for text in ("a", "b", "c")
-    ]
-    decoded_event_count = 0
-    original_decode = native_events.decode_versioned_record_json
-
-    def count_event_decodes(model_type, *args, **kwargs):
-        nonlocal decoded_event_count
-        if model_type is EventRecord:
-            decoded_event_count += 1
-        return original_decode(model_type, *args, **kwargs)
-
-    monkeypatch.setattr(
-        native_events,
-        "decode_versioned_record_json",
-        count_event_decodes,
-    )
-
-    events, truncated = store.load_events_after(
-        session.session_id,
-        after_sequence=high_water,
-        limit=100,
-    )
-
-    assert events == expected
-    assert truncated is False
-    assert decoded_event_count == 3
 
 
 def test_jsonl_pages_use_stable_byte_cursors_across_appends(tmp_path) -> None:
@@ -370,38 +151,6 @@ def test_jsonl_pages_use_stable_byte_cursors_across_appends(tmp_path) -> None:
         "message 5",
         "message 6",
     ]
-
-
-def test_event_page_uses_run_keyset_cursor(tmp_path) -> None:
-    store = LocalSessionStore(tmp_path)
-    store.initialize()
-    session = SessionRecord(title="Event pages")
-    store.create_session(session)
-    for sequence, run_id in enumerate(["run_a", "run_b", "run_a", "run_b"], start=1):
-        store.append_event(
-            EventRecord(
-                session_id=session.session_id,
-                run_id=run_id,
-                event_type="diagnostic",
-                sequence=sequence,
-            )
-        )
-
-    first, cursor = store.load_events_page(
-        session.session_id,
-        run_id="run_a",
-        limit=1,
-    )
-    assert [event.sequence for event in first] == [1]
-    assert cursor is not None
-    second, cursor = store.load_events_page(
-        session.session_id,
-        run_id="run_a",
-        cursor=cursor,
-        limit=1,
-    )
-    assert [event.sequence for event in second] == [3]
-    assert cursor is None
 
 
 def test_page_rejects_cursor_inside_json_record(tmp_path) -> None:
@@ -532,14 +281,8 @@ def test_local_file_store_recovers_interrupted_run(tmp_path) -> None:
     assert recovered.session.metadata["recovered_incomplete_runs"] is True
     assert recovered.runs[0].status == "recoverable"
     assert recovered.runs[0].metadata["recovered_from_status"] == "running"
-    assert recovered.events[-1].event_type == "run_status_changed"
-    assert recovered.events[-1].payload["to_status"] == "recoverable"
 
-    reloaded = LocalSessionStore(tmp_path).load_session(session.session_id)
-    recovery_events = [
-        event for event in reloaded.events if event.payload.get("to_status") == "recoverable"
-    ]
-    assert len(recovery_events) == 1
+    assert LocalSessionStore(tmp_path).load_session(session.session_id) == recovered
 
 
 def test_recovery_aligns_session_with_durable_waiting_run(tmp_path) -> None:
@@ -607,7 +350,7 @@ def test_recovery_turns_invalid_waiting_state_into_recoverable_run(tmp_path) -> 
     assert recovered.session.status == "idle"
     assert recovered.session.active_run_id is None
     assert recovered.runs[0].status == "recoverable"
-    assert recovered.events[-1].payload["reason"] == "invalid_interaction_state"
+    assert recovered.runs[-1].status == "recoverable"
 
 
 def test_recovery_clears_terminal_run_from_active_session_projection(tmp_path) -> None:
@@ -752,28 +495,6 @@ def test_recovery_uses_current_draft_after_latest_durable_tool_round(tmp_path) -
         sequence=1,
     )
     store.append_message(user)
-    store.append_event(
-        EventRecord(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            turn_id="turn_1",
-            event_type="model_request_started",
-            sequence=1,
-            created_at=collided_at,
-            payload={"turn_id": "turn_1"},
-        )
-    )
-    store.append_event(
-        EventRecord(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            turn_id="turn_1",
-            event_type="model_text_delta",
-            sequence=2,
-            created_at=collided_at,
-            payload={"text": "already durable", "turn_id": "turn_1"},
-        )
-    )
     assistant = MessageRecord.text(
         session_id=session.session_id,
         run_id=run.run_id,
@@ -803,17 +524,6 @@ def test_recovery_uses_current_draft_after_latest_durable_tool_round(tmp_path) -
     seed_tool_messages(store, assistant, [result], run=run)
     store.append_message(assistant)
     store.append_message(result)
-    store.append_event(
-        EventRecord(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            turn_id="turn_1",
-            event_type="tool_call_completed",
-            sequence=3,
-            created_at=collided_at,
-            payload={"turn_id": "turn_1"},
-        )
-    )
     persist_response_draft(store, run, turn_id="turn_2", text="new partial")
 
     recovered = SessionRecoveryService(store).recover(session.session_id)
@@ -851,36 +561,8 @@ def test_recovery_does_not_duplicate_a_committed_current_tool_round(tmp_path) ->
         sequence=2,
     ).model_copy(update={"tool_calls": [ToolCallRequest(id="call_1", name="Read")]})
     store.append_message(user)
-    store.append_event(
-        EventRecord(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            turn_id="turn_1",
-            event_type="model_request_started",
-            sequence=1,
-        )
-    )
-    store.append_event(
-        EventRecord(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            turn_id="turn_1",
-            event_type="model_text_delta",
-            sequence=2,
-            payload={"text": "calling"},
-        )
-    )
     seed_tool_messages(store, assistant, [], run=run)
     store.append_message(assistant)
-    store.append_event(
-        EventRecord(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            turn_id="turn_1",
-            event_type="tool_call_requested",
-            sequence=3,
-        )
-    )
 
     recovered = SessionRecoveryService(store).recover(session.session_id)
 
@@ -907,7 +589,7 @@ def test_local_file_store_lock_prevents_active_run_recovery(tmp_path) -> None:
 
     assert snapshot.session.status == "running"
     assert snapshot.runs[0].status == "running"
-    assert not any(event.event_type == "run_status_changed" for event in snapshot.events)
+    assert store.load_run(session.session_id, run.run_id).status == "running"
     assert not store.is_session_locked(session.session_id)
 
 

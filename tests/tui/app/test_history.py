@@ -337,9 +337,9 @@ async def test_history_restores_compaction_boundaries_in_chronological_order(
         history = conversation.query_one(ConversationHistory)
         assert [(entry.kind, entry.compaction) for entry in history.entries] == [
             ("user", None),
-            ("compaction", CompactionPresentation(1, 500, 3_425.4)),
+            ("compaction", CompactionPresentation(1, 500, 3_425.4, compactions[0].compaction_id)),
             ("assistant", None),
-            ("compaction", CompactionPresentation(2, 1_000, 5.4)),
+            ("compaction", CompactionPresentation(2, 1_000, 5.4, compactions[1].compaction_id)),
             ("user", None),
         ]
         assert (
@@ -389,6 +389,7 @@ async def test_compaction_completion_updates_context_and_transcript_without_next
         history = app.query_one(ConversationHistory)
         assert history.entries[-1].kind == "compaction"
         assert history.entries[-1].compaction == CompactionPresentation(
+            compaction_id="cmp_live",
             covered_message_count=4,
             tokens_reduced=550,
             duration_seconds=65.4,

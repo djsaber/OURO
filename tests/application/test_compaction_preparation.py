@@ -19,6 +19,7 @@ from ouro.core.messages import ImageContent, MessageRecord
 from ouro.core.state import RunRecord, SessionRecord
 from tests.application.test_compaction import RecordingProvider, RecordingStrategy, _runtime
 from tests.application.test_resources import _services
+from tests.event_capture import recorded_events
 from tests.session_summaries import commit_summary
 
 
@@ -254,7 +255,7 @@ async def test_skipped_compaction_keeps_the_already_prepared_request(
         assert store.load_active_compaction(session.session_id) is None
         assert any(
             event.event_type == "compaction_skipped"
-            for event in store.load_events_page(session.session_id)[0]
+            for event in recorded_events(session.session_id)
         )
     finally:
         await runtime.close()

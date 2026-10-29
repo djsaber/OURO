@@ -38,6 +38,7 @@ from ouro.tools import (
 )
 from ouro.tools.builtin.shell import detect_command_shell
 from tests.concurrency import wait_until
+from tests.event_capture import recorded_events
 from tests.run_facts import run_tool_results
 
 
@@ -157,7 +158,9 @@ async def test_inprocess_plugin_tool_policy_can_restrict_builtin_tool(tmp_path) 
     assert not (workspace / "should-not-exist.txt").exists()
     persisted = store.load_session(result.session.session_id)
     policy_event = next(
-        event for event in persisted.events if event.event_type == "tool_policy_evaluated"
+        event
+        for event in recorded_events(persisted.session.session_id)
+        if event.event_type == "tool_policy_evaluated"
     )
     assert policy_event.payload["mode"] == "deny"
     assert policy_event.payload["policy_ids"] == ["dev.ouro.guard/tool_policies/safe_shell"]
@@ -605,7 +608,7 @@ async def test_tool_controlled_tool_bypasses_host_permission_but_not_tool_policy
     assert run_tool_results(store, result)[0].structured["error_type"] == "ToolPermissionDenied"
     assert run_tool_results(store, result)[0].is_error is True
     assert evaluated == ["ControlHarness"]
-    events = store.load_session(result.session.session_id).events
+    events = recorded_events(result.session.session_id)
     assert any(event.event_type == "tool_policy_evaluated" for event in events)
     await runtime.close()
 
@@ -692,7 +695,7 @@ async def test_tool_policy_is_rechecked_at_the_execution_boundary(tmp_path) -> N
     assert run_tool_results(store, result)[0].structured["error_type"] == "ToolPermissionDenied"
     policy_event = next(
         event
-        for event in store.load_session(result.session.session_id).events
+        for event in recorded_events(result.session.session_id)
         if event.event_type == "tool_policy_evaluated"
     )
     assert policy_event.payload["phase"] == "execution_boundary"
@@ -1185,7 +1188,9 @@ async def test_waiting_approval_closes_missing_tool_and_continues(
     )
     persisted = second_store.load_session(waiting.session.session_id)
     approval_resolved = next(
-        event for event in persisted.events if event.event_type == "approval_resolved"
+        event
+        for event in recorded_events(persisted.session.session_id)
+        if event.event_type == "approval_resolved"
     )
 
     assert result.run.status == "completed"
@@ -1285,7 +1290,9 @@ async def test_waiting_approval_survives_unrelated_builtin_change(
     )
     persisted = second_store.load_session(waiting.session.session_id)
     approval_resolved = next(
-        event for event in persisted.events if event.event_type == "approval_resolved"
+        event
+        for event in recorded_events(persisted.session.session_id)
+        if event.event_type == "approval_resolved"
     )
 
     assert result.run.status == "completed"
@@ -1440,7 +1447,7 @@ async def test_tool_policy_rechecks_user_modified_approval_arguments(tmp_path) -
     snapshot = store.load_session(waiting.session.session_id)
     tool_message = next(message for message in snapshot.messages if message.role == "tool_result")
     assert "protected path cannot be written" in tool_message.text_content
-    events = store.load_session(waiting.session.session_id).events
+    events = recorded_events(waiting.session.session_id)
     reevaluation = next(
         event
         for event in events

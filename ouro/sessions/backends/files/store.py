@@ -35,7 +35,6 @@ from ouro.core.errors import (
     SessionRecoveryRequiredError,
     UnsupportedDataVersionError,
 )
-from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessState, HarnessVersion
 from ouro.core.inputs import InputRecord, InputState, validate_input_snapshot
 from ouro.core.message_content import validate_tool_message_snapshot
@@ -43,6 +42,7 @@ from ouro.core.message_frames import MessageTruncation
 from ouro.core.message_statistics import RunMessageCounts, RunResultReferences
 from ouro.core.messages import MessageFact, MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
+from ouro.core.provider import ProviderRetryNotice
 from ouro.core.resources import ResourceRecord, SessionResourceReference
 from ouro.core.response_drafts import ResponseDraftChunk, ResponseDraftPage
 from ouro.core.session_commits import (
@@ -108,7 +108,7 @@ from ouro.sessions.backends.files.delegations import (
     record_path as delegation_path,
 )
 from ouro.sessions.backends.files.index import LocalSessionIndex
-from ouro.sessions.backends.files.inputs import input_path, read_input, read_state
+from ouro.sessions.backends.files.inputs import input_path, read_input
 from ouro.sessions.backends.files.journal import reverse_jsonl
 from ouro.sessions.backends.files.messages import (
     FileMessageRecords,
@@ -116,23 +116,22 @@ from ouro.sessions.backends.files.messages import (
 from ouro.sessions.base import (
     RuntimeSessionSnapshot,
     SessionHistorySnapshot,
-    SessionObservationState,
     SessionSnapshot,
 )
 from ouro.sessions.index import SessionIndex
 from ouro.sessions.layout import DATA_LAYOUT_VERSION, DataLayoutManifest
 from ouro.sessions.locks import SessionMutationLock, SessionRunLock
+from ouro.sessions.observation import FactCursor, SessionFactPage
 from ouro.sessions.portable import SessionBundle, populate_sessions
 from ouro.sessions.sqlite_compactions import insert_compaction
 from ouro.sessions.sqlite_connections import ExecutionConnections, NativeSessionRunLock
 from ouro.sessions.sqlite_drafts import append_chunk as append_draft_chunk
 from ouro.sessions.sqlite_drafts import publish_draft
 from ouro.sessions.sqlite_drafts import read_page as read_draft_page
-from ouro.sessions.sqlite_events import insert_events, latest_sequence, read_events
-from ouro.sessions.sqlite_events import read_after as read_events_after
-from ouro.sessions.sqlite_events import read_page as read_events_page
 from ouro.sessions.sqlite_facts import load_snapshot as load_tool_facts
 from ouro.sessions.sqlite_facts import load_states, read_call_state, write_call_state, write_facts
+from ouro.sessions.sqlite_inputs import read_state, write_state
+from ouro.sessions.sqlite_observation import advance_revision, read_changes, read_revision
 from ouro.sessions.sqlite_requests import (
     read_headers,
     read_latest_header,
@@ -266,8 +265,8 @@ class LocalSessionStore:
             return read_input(self._require_session_dir(session_id), session_id, input_id)
 
     def load_input_state(self, session_id: str, input_id: str) -> InputState | None:
-        with self.session_read(session_id):
-            return read_state(self._require_session_dir(session_id), session_id, input_id)
+        with self.session_read(session_id) as reader:
+            return read_state(reader.connection(), session_id, input_id)
 
     def import_bundle(
         self,
@@ -599,8 +598,6 @@ class LocalSessionStore:
             staged = FileSessionCommits(lambda _session_id: staging_dir)
             for record in inputs:
                 write_model_atomic(input_path(staging_dir, record.item.queue_id), record)
-            for state in states:
-                write_model_atomic(input_path(staging_dir, state.input_id, state=True), state)
             for version in versions:
                 if version.session_id != session.session_id:
                     raise PersistenceError("Harness checkpoint belongs to another Session")
@@ -637,6 +634,8 @@ class LocalSessionStore:
                 initialize_index(connection)
                 self._messages.create(connection, staging_dir, messages)
                 write_session(connection, session)
+                for state in states:
+                    write_state(connection, state)
                 for reference in resource_references or ():
                     sqlite_resources.insert_reference(connection, session.session_id, reference)
                 write_facts(connection, tool_facts.records if tool_facts is not None else ())
@@ -896,34 +895,6 @@ class LocalSessionStore:
             except OSError as exc:
                 raise PersistenceError(f"could not save tool Outcome: {exc}") from exc
 
-    def append_event(self, event: EventRecord) -> None:
-        self.append_events([event])
-
-    def append_events(self, events: list[EventRecord]) -> None:
-        if not events:
-            return
-        session_id = events[0].session_id
-        if any(event.session_id != session_id for event in events):
-            raise PersistenceError("event batch must belong to one Session")
-        with self.session_mutation(session_id):
-            self._require_session_dir(session_id)
-            with self._commits.connect(session_id, mode="rw") as connection:
-                insert_events(connection, events)
-
-    def append_ordered_event(self, event: EventRecord) -> EventRecord:
-        with self.session_mutation(event.session_id):
-            self._require_session_dir(event.session_id)
-            with self._commits.connect(event.session_id, mode="rw") as connection:
-                ordered = event.model_copy(
-                    update={
-                        "sequence": max(
-                            event.sequence, latest_sequence(connection, event.session_id) + 1
-                        )
-                    }
-                )
-                insert_events(connection, (ordered,))
-                return ordered
-
     def save_run(self, run: RunRecord) -> None:
         with self.session_mutation(run.session_id):
             self._commits.commit_run(run, session=self.load_session_record(run.session_id))
@@ -974,6 +945,17 @@ class LocalSessionStore:
                 return None
             return ResponseDraftPage(context_id=context_id)
 
+    def record_request_retry(
+        self, session_id: str, context_id: str, retry: ProviderRetryNotice
+    ) -> None:
+        with self.session_mutation(session_id):
+            with connect_data(self._require_session_dir(session_id), mode="rw") as connection:
+                header = read_request_header(connection, session_id, context_id)
+                if header is None:
+                    raise PersistenceError(f"request not found: {context_id}")
+                write_header(connection, header.model_copy(update={"retry": retry}))
+                advance_revision(connection, session_id)
+
     def settle_request_header(
         self,
         session_id: str,
@@ -998,6 +980,7 @@ class LocalSessionStore:
             if completed != header:
                 with connect_data(directory, mode="rw") as connection:
                     write_header(connection, completed)
+                    advance_revision(connection, session_id)
             return completed
 
     def load_request_header(self, session_id: str, context_id: str) -> ModelRequestHeader | None:
@@ -1046,7 +1029,6 @@ class LocalSessionStore:
         with self.session_read(session_id) as reader:
             history = self._load_session_history(session_id)
             session_dir = self._session_dir(session_id)
-            events = read_events(reader.connection(), session_id)
             latest_request = read_request(reader.connection(), session_dir)
             # Records are decoded at their storage boundary; assembling a typed
             # container must not validate the entire history a second time.
@@ -1057,7 +1039,6 @@ class LocalSessionStore:
                 messages=history.messages,
                 runs=history.runs,
                 compactions=history.compactions,
-                events=events,
                 tool_facts=load_tool_facts(reader.connection(), session_id),
                 call_states=load_states(reader.connection(), session_id),
                 inputs=sorted(
@@ -1069,15 +1050,13 @@ class LocalSessionStore:
                     ),
                     key=lambda record: record.item.queue_id,
                 ),
-                input_states=sorted(
-                    (
-                        decode_versioned_record_json(
-                            InputState, read_text_atomic(path), label="input state"
-                        )
-                        for path in (session_dir / "inputs" / "states").glob("*.json")
-                    ),
-                    key=lambda state: state.input_id,
-                ),
+                input_states=[
+                    decode_versioned_record_json(InputState, row[0], label="input state")
+                    for row in reader.connection().execute(
+                        "SELECT payload FROM input_states WHERE session_id = ? ORDER BY input_id",
+                        (session_id,),
+                    )
+                ],
                 extension_states=self.load_session_extension_states(session_id),
                 harness_versions=[
                     self._commits.load_harness(session_id, path.stem)
@@ -1114,17 +1093,9 @@ class LocalSessionStore:
             session = self.load_session_record(session_id)
             return read_pending_runs(reader.connection(), session_id, session.history_epoch)
 
-    def load_session_observation(self, session_id: str) -> SessionObservationState:
-        with self.session_read(session_id) as reader:
-            history = self._load_session_history(session_id)
-            event_high_water = latest_sequence(reader.connection(), session_id)
-            return SessionObservationState.model_construct(
-                session=history.session,
-                messages=history.messages,
-                runs=history.runs,
-                compactions=history.compactions,
-                event_high_water=event_high_water,
-            )
+    def load_session_observation(self, session_id: str) -> SessionHistorySnapshot:
+        with self.session_read(session_id):
+            return self._load_session_history(session_id)
 
     def load_run_request_counts(self, session_id: str) -> tuple[RunRequestCounts, ...]:
         with self.session_read(session_id) as reader:
@@ -1174,26 +1145,62 @@ class LocalSessionStore:
         return snapshot
 
     def load_active_compaction(self, session_id: str) -> CompactionRecord | None:
+        with self.session_read(session_id):
+            identity = self.load_session_record(session_id).context_selection.compaction_id
+            return self.load_compaction(session_id, identity) if identity is not None else None
+
+    def load_compaction(self, session_id: str, compaction_id: str) -> CompactionRecord:
         with self.session_read(session_id) as reader:
-            session = self.load_session_record(session_id)
-            active_id = session.context_selection.compaction_id
-            if active_id is None:
-                return None
-            session_dir = self._require_session_dir(session_id)
             try:
-                return read_compaction(reader.connection(), session_dir, active_id)
+                return read_compaction(
+                    reader.connection(), self._session_dir(session_id), compaction_id
+                )
             except FileNotFoundError as exc:
                 raise PersistenceError(
-                    f"session {session_id} references missing compaction {active_id}"
+                    f"session {session_id} references missing compaction {compaction_id}"
                 ) from exc
 
     def load_compactions(self, session_id: str) -> list[CompactionRecord]:
         with self.session_read(session_id) as reader:
             return read_compactions(reader.connection(), self._session_dir(session_id))
 
-    def latest_event_sequence(self, session_id: str) -> int:
+    def load_compactions_in_range(
+        self, session_id: str, *, first_sequence: int, last_sequence: int
+    ) -> list[CompactionRecord]:
         with self.session_read(session_id) as reader:
-            return latest_sequence(reader.connection(), session_id)
+            rows = reader.connection().execute(
+                "SELECT c.payload FROM locations AS m CROSS JOIN compactions AS c "
+                "ON c.session_id = ? AND c.history_boundary_message_id = m.message_id "
+                "WHERE m.position BETWEEN ? AND ? ORDER BY c.row_id",
+                (session_id, first_sequence, last_sequence),
+            )
+            return [
+                decode_versioned_record_json(CompactionRecord, row[0], label="compaction")
+                for row in rows
+            ]
+
+    def load_observation_changes(
+        self,
+        session_id: str,
+        *,
+        after_revision: int,
+        through_revision: int,
+        limit: int,
+        cursor: FactCursor | None = None,
+    ) -> SessionFactPage:
+        with self.session_read(session_id) as reader:
+            return read_changes(
+                reader.connection(),
+                session_id,
+                after_revision=after_revision,
+                through_revision=through_revision,
+                limit=limit,
+                cursor=cursor,
+            )
+
+    def observation_revision(self, session_id: str) -> int:
+        with self.session_read(session_id) as reader:
+            return read_revision(reader.connection(), session_id)
 
     def load_session_record(self, session_id: str) -> SessionRecord:
         with self.session_read(session_id) as reader:
@@ -1204,6 +1211,33 @@ class LocalSessionStore:
             session = read_session(reader.connection(), session_id)
             harness = self._commits.load_harness(session_id, session.harness_version)
             return session, harness
+
+    def load_messages_after(
+        self,
+        session_id: str,
+        *,
+        after_sequence: int,
+        limit: int,
+    ) -> tuple[list[MessageRecord], bool]:
+        with self.session_read(session_id) as reader:
+            row = (
+                reader.connection()
+                .execute(
+                    "SELECT offset FROM locations WHERE position > ? ORDER BY position LIMIT 1",
+                    (after_sequence,),
+                )
+                .fetchone()
+            )
+            if row is None:
+                return [], False
+            messages, cursor = self._messages.page(
+                reader.connection(),
+                self._session_dir(session_id),
+                session_id=session_id,
+                cursor=row[0],
+                limit=limit,
+            )
+            return messages, cursor is not None
 
     def load_messages_page(
         self,
@@ -1257,6 +1291,19 @@ class LocalSessionStore:
         with self.session_read(session_id) as reader:
             directory = self._require_session_dir(session_id)
             return self._messages.run(reader.connection(), directory, run_id, session_id=session_id)
+
+    def run_message_end(self, session_id: str, run_id: str) -> int:
+        with self.session_read(session_id) as reader:
+            row = (
+                reader.connection()
+                .execute(
+                    "SELECT position FROM locations WHERE run_id = ? "
+                    "ORDER BY position DESC LIMIT 1",
+                    (run_id,),
+                )
+                .fetchone()
+            )
+            return row[0] if row is not None else 0
 
     def has_run_messages(self, session_id: str, run_id: str) -> bool:
         with self.session_read(session_id) as reader:
@@ -1323,33 +1370,6 @@ class LocalSessionStore:
             directory = self._require_session_dir(session_id)
             return self._messages.queued(
                 reader.connection(), directory, queue_id, session_id=session_id
-            )
-
-    def load_events_page(
-        self,
-        session_id: str,
-        *,
-        cursor: int = 0,
-        limit: int = 100,
-        run_id: str | None = None,
-    ) -> tuple[list[EventRecord], int | None]:
-        cursor, limit = _validated_page_args(cursor, limit)
-        with self.session_read(session_id) as reader:
-            return read_events_page(
-                reader.connection(), session_id, cursor=cursor, limit=limit, run_id=run_id
-            )
-
-    def load_events_after(
-        self,
-        session_id: str,
-        *,
-        after_sequence: int = 0,
-        limit: int = 100,
-    ) -> tuple[list[EventRecord], bool]:
-        after_sequence, limit = _validated_page_args(after_sequence, limit)
-        with self.session_read(session_id) as reader:
-            return read_events_after(
-                reader.connection(), session_id, after_sequence=after_sequence, limit=limit
             )
 
     def load_run(self, session_id: str, run_id: str) -> RunRecord:

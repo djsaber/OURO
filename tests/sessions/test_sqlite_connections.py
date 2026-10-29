@@ -4,7 +4,6 @@ from threading import Barrier
 
 import pytest
 
-from ouro.core.events import EventRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.sqlite_connections import ExecutionConnections
@@ -70,9 +69,8 @@ def test_last_observer_closes_wal_after_execution_owner_releases(tmp_path, backe
         else tmp_path / "ouro.db-wal"
     )
     try:
-        store.append_ordered_event(
-            EventRecord(session_id=session.session_id, event_type="agent_closed")
-        )
+        store.save_session(session)
+        session = store.load_session_record(session.session_id)
         with reader.session_read(session.session_id):
             assert reader.load_session_record(session.session_id) == session
             owner.release()

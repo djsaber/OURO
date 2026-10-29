@@ -222,16 +222,13 @@ async def test_retained_window_survives_resume_but_not_a_history_rewrite(stores)
         observation.retain_history_from(
             SessionHistoryAnchor(history_epoch=0, first_sequence=messages[4].sequence)
         )
-        writer.append_ordered_event(
-            EventRecord(
-                session_id=session_id,
-                event_type="run_status_changed",
-                payload={"resumed": True, "status": "running"},
-            )
+        writer.save_session(
+            writer.load_session_record(session_id).model_copy(update={"title": "resumed"})
         )
-        reset = await asyncio.wait_for(observation.get(), 5)
-        assert reset.snapshot.messages == tuple(messages[4:])
-        observation.acknowledge(reset)
+        update = await asyncio.wait_for(observation.get(), 5)
+        assert update.snapshot is None
+        assert update.facts.session.title == "resumed"
+        observation.acknowledge(update)
         writer.commit_session(
             SessionCommit(
                 before=writer.load_session_record(session_id),

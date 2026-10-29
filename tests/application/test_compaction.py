@@ -37,6 +37,7 @@ from ouro.core.state import SessionRecord
 from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
+from tests.event_capture import recorded_events
 from tests.run_facts import run_events
 
 
@@ -988,7 +989,9 @@ async def test_runtime_persists_compaction_endpoint_and_route_metadata(tmp_path,
     assert header.response_closed_at is not None
     assert snapshot.latest_manifest is None
     output_events = [
-        event for event in snapshot.events if event.event_type == "compaction_model_output"
+        event
+        for event in recorded_events(snapshot.session.session_id)
+        if event.event_type == "compaction_model_output"
     ]
     assert len(output_events) == 1
     assert output_events[0].payload["compaction_id"] == restored.compaction_id
@@ -1024,9 +1027,15 @@ async def test_runtime_persists_raw_compaction_output_when_validation_fails(tmp_
 
     snapshot = store.load_session(session.session_id)
     output_events = [
-        event for event in snapshot.events if event.event_type == "compaction_model_output"
+        event
+        for event in recorded_events(snapshot.session.session_id)
+        if event.event_type == "compaction_model_output"
     ]
-    failure = next(event for event in snapshot.events if event.event_type == "compaction_failed")
+    failure = next(
+        event
+        for event in recorded_events(snapshot.session.session_id)
+        if event.event_type == "compaction_failed"
+    )
     assert len(output_events) == 1
     output = output_events[0]
     assert output.sequence < failure.sequence
@@ -1227,7 +1236,7 @@ async def test_manual_compaction_abort_returns_aborted_result_without_activating
 
     compact_result, abort_result = await asyncio.gather(compact_task, abort_task)
     snapshot = store.load_session(session.session_id)
-    event_types = [event.event_type for event in store.load_session(session.session_id).events]
+    event_types = [event.event_type for event in recorded_events(session.session_id)]
 
     assert compact_result.run.status == "aborted"
     assert abort_result.run.status == "aborted"
@@ -1263,7 +1272,7 @@ async def test_auto_compaction_abort_terminates_agent_run_before_model_request(t
 
     run_result, abort_result = await asyncio.gather(run_task, abort_task)
     snapshot = store.load_session(session.session_id)
-    event_types = [event.event_type for event in store.load_session(session.session_id).events]
+    event_types = [event.event_type for event in recorded_events(session.session_id)]
 
     assert run_result.run.status == "aborted"
     assert abort_result.run.status == "aborted"
@@ -1345,7 +1354,7 @@ async def test_compaction_strategy_cannot_forge_host_cancellation(tmp_path) -> N
         await runtime.compact(session_id=session.session_id)
 
     run = store.load_runs(session.session_id)[-1]
-    event_types = [event.event_type for event in store.load_session(session.session_id).events]
+    event_types = [event.event_type for event in recorded_events(session.session_id)]
     assert run.status == "failed"
     assert "run_failed" in event_types
     assert "run_aborted" not in event_types
@@ -1399,7 +1408,10 @@ async def test_compaction_failure_is_visible_and_never_truncates_history(tmp_pat
     assert snapshot.session.context_selection.compaction_id is None
     assert snapshot.compactions == []
     assert len(snapshot.messages) == 11
-    assert any(event.event_type == "compaction_failed" for event in snapshot.events)
+    assert any(
+        event.event_type == "compaction_failed"
+        for event in recorded_events(snapshot.session.session_id)
+    )
     assert result.run.error is None
     assert result.run.metadata["pause"]["reason"] == "context_blocked"
 
@@ -1420,7 +1432,10 @@ async def test_auto_compaction_failure_defers_while_context_still_fits(tmp_path)
     assert result.run.status == "completed"
     assert len(provider.calls) == 1
     assert snapshot.compactions == []
-    assert any(event.event_type == "compaction_failed" for event in snapshot.events)
+    assert any(
+        event.event_type == "compaction_failed"
+        for event in recorded_events(snapshot.session.session_id)
+    )
 
 
 @pytest.mark.asyncio
@@ -1446,4 +1461,7 @@ async def test_manual_compaction_failure_leaves_session_usable(tmp_path) -> None
     assert snapshot.compactions == []
     assert snapshot.runs[-1].kind == "compaction"
     assert snapshot.runs[-1].status == "failed"
-    assert any(event.event_type == "compaction_failed" for event in snapshot.events)
+    assert any(
+        event.event_type == "compaction_failed"
+        for event in recorded_events(snapshot.session.session_id)
+    )

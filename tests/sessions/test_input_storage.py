@@ -11,7 +11,7 @@ import pytest
 import ouro.local_io as local_io
 import ouro.sessions.backends.files.commits as file_commits
 import ouro.sessions.backends.files.inputs as file_inputs
-import ouro.sessions.backends.sqlite.inputs as sqlite_inputs
+import ouro.sessions.sqlite_inputs as sqlite_inputs
 from ouro.application.sessions.editing import undo_user_input
 from ouro.core.base import utc_now
 from ouro.core.errors import PersistenceError, SessionRecoveryRequiredError
@@ -182,11 +182,17 @@ def test_file_input_acceptance_recovers_native_decision(tmp_path, monkeypatch, b
     target = {
         "decision": directory / "commit.json",
         "body": input_path(directory, record.item.queue_id),
-        "state": input_path(directory, record.item.queue_id, state=True),
     }.get(boundary)
     replace, unlink = local_io.replace_path_with_retry, Path.unlink
     reached = []
     write_head = file_commits.write_session
+    write_state = file_commits.write_state
+
+    def fail_state(connection, state, **kwargs):
+        write_state(connection, state, **kwargs)
+        if boundary == "state":
+            reached.append(boundary)
+            raise OSError("injected input acceptance interruption")
 
     def fail_head(connection, session):
         write_head(connection, session)
@@ -207,6 +213,7 @@ def test_file_input_acceptance_recovers_native_decision(tmp_path, monkeypatch, b
         return unlink(path, *args, **kwargs)
 
     with monkeypatch.context() as patch:
+        patch.setattr(file_commits, "write_state", fail_state)
         patch.setattr(file_commits, "write_session", fail_head)
         patch.setattr(local_io, "replace_path_with_retry", fail_replace)
         patch.setattr(Path, "unlink", fail_unlink)
@@ -308,7 +315,7 @@ def test_sqlite_undo_cannot_confirm_a_head_from_a_failed_transaction(tmp_path):
     before = store.commit_session(SessionCommit(before=session, inputs=(record,))).session
     with closing(sqlite3.connect(store.database)) as connection, connection:
         connection.execute(
-            "CREATE TRIGGER reject_undo AFTER INSERT ON events "
+            "CREATE TRIGGER reject_undo AFTER UPDATE ON sessions "
             "BEGIN SELECT RAISE(ABORT, 'injected undo fault'); END"
         )
     with pytest.raises(PersistenceError):
@@ -350,8 +357,16 @@ def test_cancel_and_consume_have_one_atomic_winner(store):
     assert store.load_input(session.session_id, record.item.queue_id) == record
 
 
-@pytest.mark.parametrize("action", ["consume", "cancel"])
-@pytest.mark.parametrize("boundary", ["state", "head", "cleanup"])
+@pytest.mark.parametrize(
+    ("action", "boundary"),
+    [
+        ("consume", "state"),
+        ("consume", "head"),
+        ("consume", "cleanup"),
+        ("cancel", "state"),
+        ("cancel", "head"),
+    ],
+)
 def test_file_terminal_input_recovery_preserves_original_body(
     tmp_path, monkeypatch, action, boundary
 ):
@@ -372,21 +387,19 @@ def test_file_terminal_input_recovery_preserves_original_body(
     directory = store.sessions_dir / session.session_id
     body = input_path(directory, record.item.queue_id)
     original = body.read_bytes()
-    target = {
-        "state": input_path(directory, record.item.queue_id, state=True),
-    }.get(boundary)
-    replace, unlink = local_io.replace_path_with_retry, Path.unlink
+    unlink = Path.unlink
 
     write_head = file_commits.write_session
+    write_state = file_commits.write_state
 
     def interrupt_head(connection, session):
         write_head(connection, session)
         if boundary == "head":
             raise OSError("injected terminal input interruption")
 
-    def interrupt_replace(source, destination):
-        replace(source, destination)
-        if destination == target:
+    def interrupt_state(connection, state, **kwargs):
+        write_state(connection, state, **kwargs)
+        if boundary == "state":
             raise OSError("injected terminal input interruption")
 
     def interrupt_cleanup(path, *args, **kwargs):
@@ -396,17 +409,22 @@ def test_file_terminal_input_recovery_preserves_original_body(
 
     with monkeypatch.context() as patch:
         patch.setattr(file_commits, "write_session", interrupt_head)
-        patch.setattr(local_io, "replace_path_with_retry", interrupt_replace)
+        patch.setattr(file_commits, "write_state", interrupt_state)
         patch.setattr(Path, "unlink", interrupt_cleanup)
         with pytest.raises(PersistenceError, match="injected"):
             store.commit_session(request)
     assert body.read_bytes() == original
     reader = LocalSessionStore(tmp_path)
     reader.initialize()
-    with pytest.raises(SessionRecoveryRequiredError):
-        reader.load_input_state(session.session_id, record.item.queue_id)
-    with reader.session_mutation(session.session_id):
-        pass
+    if action == "consume":
+        with pytest.raises(SessionRecoveryRequiredError):
+            reader.load_input_state(session.session_id, record.item.queue_id)
+        with reader.session_mutation(session.session_id):
+            pass
+    else:
+        assert not (directory / "commit.json").exists()
+        assert reader.load_input_state(session.session_id, record.item.queue_id).status == "pending"
+        reader.commit_session(request)
     state = reader.load_input_state(session.session_id, record.item.queue_id)
     assert state is not None and state.status == (
         "consumed" if action == "consume" else "cancelled"

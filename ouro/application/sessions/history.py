@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from ouro.application.contracts.sessions import ReplayFrame
 from ouro.core.attachment_input import is_editable_user_input
 from ouro.core.base import new_id
 from ouro.core.compaction import (
@@ -10,7 +9,6 @@ from ouro.core.compaction import (
 )
 from ouro.core.context import estimate_message_tokens
 from ouro.core.errors import CompactionStateError, SessionBranchError
-from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessState, HarnessVersion
 from ouro.core.input_content import InputAttachment
 from ouro.core.messages import MessageRecord
@@ -361,14 +359,6 @@ def apply_extension_branch_policies(
         for version in versions
     ]
     return retained, copied, identities
-
-
-def project_replay_frames(events: list[EventRecord]) -> tuple[ReplayFrame, ...]:
-    ordered = sorted(
-        events,
-        key=lambda event: (event.sequence, event.created_at, event.event_id),
-    )
-    return tuple(ReplayFrame(sequence=event.sequence, event=event) for event in ordered)
 
 
 def _tool_exchange_ranges(messages: list[MessageRecord]) -> list[tuple[int, int, bool]]:

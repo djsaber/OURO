@@ -17,7 +17,6 @@ class SQLiteImportReport(OuroModel):
 
     session_ids: list[str] = Field(default_factory=list)
     message_count: int = 0
-    event_count: int = 0
     run_count: int = 0
     compaction_count: int = 0
     resource_reference_count: int = 0
@@ -67,7 +66,6 @@ def import_sessions_to_sqlite(
                     update={
                         "session_ids": [*report.session_ids, session.session_id],
                         "message_count": report.message_count + len(snapshot.messages),
-                        "event_count": report.event_count + len(snapshot.events),
                         "run_count": report.run_count + len(snapshot.runs),
                         "compaction_count": report.compaction_count + len(snapshot.compactions),
                         "resource_reference_count": report.resource_reference_count
@@ -129,8 +127,6 @@ def _copy_snapshot(
     )
     for run in snapshot.runs:
         target.save_run(run)
-    for event in snapshot.events:
-        target.append_event(event)
 
 
 def _verify_snapshot(

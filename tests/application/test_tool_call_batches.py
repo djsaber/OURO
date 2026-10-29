@@ -20,6 +20,7 @@ from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 from ouro.tools.builtin.todolist import builtin_todolist_tool
 from tests.application.helpers import running_runtime_task
+from tests.event_capture import recorded_events
 from tests.run_facts import run_tool_results
 
 
@@ -214,23 +215,16 @@ async def test_modified_approval_starts_from_call_facts_without_embedding_bodies
         # A different reader reconstructs content from committed identities even if
         # every live notification was lost. Neither large body is stored in events.
         sid = pending.session.session_id
-        durable = store.load_session(sid).events
-        for event in durable:
-            if event.event_type == "tool_call_requested":
-                assert "arguments" not in event.payload
-            if event.event_type == "tool_call_completed":
-                assert "result_data" not in event.payload
-                assert event.payload["outcome_attempt"] == 1
-        observed_page, more = runtime.sessions.observation_events(sid, after_sequence=0, limit=100)
-        assert not more
-        requested = next(
-            event for event in observed_page.events if event.event_type == "tool_call_requested"
-        )
-        finished = next(
-            event for event in observed_page.events if event.event_type == "tool_call_completed"
-        )
-        assert requested.data["arguments"] == original
-        assert finished.data["result_data"] == outcome.value.structured
+        live = recorded_events(sid)
+        if not drop_notifications:
+            requested = next(event for event in live if event.event_type == "tool_call_requested")
+            finished = next(event for event in live if event.event_type == "tool_call_completed")
+            assert requested.payload["arguments"] == original
+            assert finished.payload["result_data"] == outcome.value.structured
+        snapshot = store.load_session(sid)
+        assert "events" not in snapshot.model_dump()
+        assert snapshot.tool_facts.calls[0].request.arguments == original
+        assert snapshot.tool_facts.outcomes[0].value.structured == outcome.value.structured
         for kind, expected in (
             ("tool_call_requested", "planned"),
             ("tool_call_started", "running"),
@@ -595,7 +589,7 @@ async def test_parallel_batch_preserves_one_assistant_message_and_source_order(
     assert all(
         timing.ended_at >= timing.started_at for timing in tool_timings if timing is not None
     )
-    event_types = [event.event_type for event in snapshot.events]
+    event_types = [event.event_type for event in recorded_events(snapshot.session.session_id)]
     committing_index = event_types.index("tool_batch_results_committing")
     assert committing_index > max(
         index for index, event_type in enumerate(event_types) if event_type == "tool_call_completed"
@@ -656,7 +650,10 @@ async def test_exclusive_tool_rejects_mixed_batch_before_any_handler_runs(tmp_pa
         "Call each separately" in item.text_content
         for item in run_tool_results(runtime.store, result)
     )
-    assert any(event.event_type == "tool_batch_rejected" for event in snapshot.events)
+    assert any(
+        event.event_type == "tool_batch_rejected"
+        for event in recorded_events(snapshot.session.session_id)
+    )
 
 
 @pytest.mark.asyncio
@@ -715,7 +712,9 @@ async def test_sdk_tool_structured_input_round_trips_through_wait_and_resume(tmp
     snapshot = runtime.store.load_session(pending.session.session_id)
     result_message = next(message for message in snapshot.messages if message.role == "tool_result")
     resolved_event = next(
-        event for event in snapshot.events if event.event_type == "ask_user_resolved"
+        event
+        for event in recorded_events(snapshot.session.session_id)
+        if event.event_type == "ask_user_resolved"
     )
     assert resumed.run.status == "completed"
     assert run_tool_results(runtime.store, resumed)[0].structured == {"answer": answer}
@@ -792,10 +791,14 @@ async def test_unattended_session_resumes_capable_tool_without_waiting(
     )
     snapshot = runtime.store.load_session(result.session.session_id)
     resolved_event = next(
-        event for event in snapshot.events if event.event_type == "ask_user_resolved"
+        event
+        for event in recorded_events(snapshot.session.session_id)
+        if event.event_type == "ask_user_resolved"
     )
     requested_event = next(
-        event for event in snapshot.events if event.event_type == "ask_user_requested"
+        event
+        for event in recorded_events(snapshot.session.session_id)
+        if event.event_type == "ask_user_requested"
     )
 
     assert result.run.status == "completed"
@@ -808,7 +811,10 @@ async def test_unattended_session_resumes_capable_tool_without_waiting(
     assert requested_event.payload["will_suspend"] is False
     assert resolved_event.payload["resolution"]["kind"] == "unattended"
     assert resolved_event.payload["resolved_by"] == "host_policy"
-    assert all(event.event_type != "run_status_changed" for event in snapshot.events)
+    assert all(
+        event.event_type != "run_status_changed"
+        for event in recorded_events(snapshot.session.session_id)
+    )
 
 
 @pytest.mark.asyncio
@@ -1062,7 +1068,9 @@ async def test_unattended_session_resolves_remaining_approval_with_policy_proven
     )
     snapshot = runtime.store.load_session(result.session.session_id)
     resolved_event = next(
-        event for event in snapshot.events if event.event_type == "approval_resolved"
+        event
+        for event in recorded_events(snapshot.session.session_id)
+        if event.event_type == "approval_resolved"
     )
 
     assert result.run.status == "completed"
@@ -1233,7 +1241,9 @@ async def test_parallel_batch_marks_only_handlers_that_actually_started(tmp_path
                 "ready",
             ]
             started_events = [
-                event for event in snapshot.events if event.event_type == "tool_call_started"
+                event
+                for event in recorded_events(snapshot.session.session_id)
+                if event.event_type == "tool_call_started"
             ]
             assert [event.payload["tool_call_id"] for event in started_events] == started
         finally:

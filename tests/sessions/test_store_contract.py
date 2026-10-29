@@ -17,7 +17,6 @@ from ouro.core.context import ContextBuilder, ContextMetrics, ProviderContext
 from ouro.core.context_budget import ContextBudget
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.errors import PersistenceError, ResourceNotFoundError, UnsupportedDataVersionError
-from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.session_extensions import SessionExtensionStateRecord
@@ -136,55 +135,23 @@ def test_session_store_round_trip_and_pages(session_store: SessionStore) -> None
         resource_contents=((reference, b"fixture"),),
     )
     session_store.save_run(run)
-    first = session_store.append_ordered_event(
-        EventRecord(session_id=session.session_id, run_id=run.run_id, event_type="run_started")
-    )
-    second = session_store.append_ordered_event(
-        EventRecord(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            event_type="run_completed",
-        )
-    )
-
     snapshot = session_store.load_session(session.session_id)
     assert snapshot.session.reasoning_request == session.reasoning_request
     assert snapshot.messages == [message]
     assert snapshot.runs == [run]
     assert snapshot.compactions == [compaction]
     assert session_store.load_compactions(session.session_id) == [compaction]
-    assert [event.sequence for event in snapshot.events] == [1, 2]
-    assert (first.sequence, second.sequence) == (1, 2)
-    assert session_store.latest_event_sequence(session.session_id) == 2
     assert session_store.load_resource_references(session.session_id) == [reference]
     assert session_store.load_message(session.session_id, message.message_id) == message
     with pytest.raises(PersistenceError, match="message not found"):
         session_store.load_message(session.session_id, "msg_missing")
 
-    first_page, cursor = session_store.load_events_page(session.session_id, limit=1)
-    assert [event.event_type for event in first_page] == ["run_started"]
-    assert cursor is not None
-    second_page, final_cursor = session_store.load_events_page(
-        session.session_id,
-        cursor=cursor,
-        limit=1,
+    assert session_store.observation_revision(session.session_id) == 1
+    page = session_store.load_observation_changes(
+        session.session_id, after_revision=0, through_revision=1, limit=1
     )
-    assert [event.event_type for event in second_page] == ["run_completed"]
-    assert final_cursor is None
-    after_first, has_more = session_store.load_events_after(
-        session.session_id,
-        after_sequence=1,
-        limit=1,
-    )
-    assert [event.event_type for event in after_first] == ["run_completed"]
-    assert has_more is False
-    first_after_zero, has_more = session_store.load_events_after(
-        session.session_id,
-        after_sequence=0,
-        limit=1,
-    )
-    assert [event.event_type for event in first_after_zero] == ["run_started"]
-    assert has_more is True
+    assert page.runs == (run,)
+    assert page.next_cursor is None
 
 
 def test_session_store_ignores_unknown_record_fields(session_store: SessionStore) -> None:
@@ -221,48 +188,6 @@ def test_session_store_ignores_unknown_record_fields(session_store: SessionStore
     assert [item.text_content for item in messages] == ["legacy"]
     assert "synthetic" not in messages[0].model_dump()
     assert next_cursor is None
-
-
-def test_event_pages_filter_by_run_before_materializing_records(
-    session_store: SessionStore,
-) -> None:
-    session = SessionRecord(title="Filtered events")
-    session_store.create_session(session)
-    selected = [
-        EventRecord(
-            session_id=session.session_id,
-            run_id="run_selected",
-            event_type="model_text_delta",
-            payload={"text": str(index)},
-        )
-        for index in range(2)
-    ]
-    unrelated = EventRecord(
-        session_id=session.session_id,
-        run_id="run_unrelated",
-        event_type="run_started",
-        payload={"run_id": "run_selected"},
-    )
-    session_store.append_ordered_event(selected[0])
-    session_store.append_ordered_event(unrelated)
-    session_store.append_ordered_event(selected[1])
-
-    first, cursor = session_store.load_events_page(
-        session.session_id,
-        run_id="run_selected",
-        limit=1,
-    )
-    assert [event.event_id for event in first] == [selected[0].event_id]
-    assert cursor is not None
-
-    second, final_cursor = session_store.load_events_page(
-        session.session_id,
-        cursor=cursor,
-        run_id="run_selected",
-        limit=1,
-    )
-    assert [event.event_id for event in second] == [selected[1].event_id]
-    assert final_cursor is None
 
 
 def test_session_store_rejects_record_without_explicit_schema_version(
@@ -578,30 +503,6 @@ def test_session_store_owns_extension_state_lifecycle(session_store: SessionStor
     assert session_store.load_session_extension_states(session.session_id) == []
 
 
-def test_session_store_allocates_event_sequences_atomically(
-    session_store: SessionStore,
-) -> None:
-    session = SessionRecord(title="Concurrent events")
-    session_store.create_session(session)
-
-    def append(index: int) -> int:
-        event = session_store.append_ordered_event(
-            EventRecord(
-                session_id=session.session_id,
-                event_type="concurrency_probe",
-                payload={"index": index},
-            )
-        )
-        return event.sequence
-
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        allocated = list(executor.map(append, range(24)))
-
-    assert sorted(allocated) == list(range(1, 25))
-    persisted = session_store.load_session(session.session_id).events
-    assert [event.sequence for event in persisted] == list(range(1, 25))
-
-
 def test_session_store_read_is_pure_and_recovery_is_explicit(
     session_store: SessionStore,
 ) -> None:
@@ -705,25 +606,6 @@ def test_session_store_catalog_and_trash(session_store: SessionStore) -> None:
     assert session_store.list_sessions() == []
     with pytest.raises(FileNotFoundError):
         session_store.load_session(session.session_id)
-
-
-def test_sparse_event_storage_preserves_explicit_nested_values(session_store):
-    session = SessionRecord()
-    session_store.create_session(session)
-    event = EventRecord(
-        session_id=session.session_id,
-        run_id="external/run",
-        turn_id="turn",
-        history_epoch=2,
-        sequence=7,
-        event_type="diagnostic",
-        payload={"nested": {"none": None, "empty": [], "zero": 0}},
-        metadata={"none": None, "empty": {}},
-    )
-    session_store.append_event(event)
-    assert session_store.load_events_page(session.session_id) == ([event], None)
-    assert session_store.load_events_after(session.session_id, after_sequence=6) == ([event], False)
-    assert session_store.latest_event_sequence(session.session_id) == 7
 
 
 def test_nested_native_reads_share_one_scoped_connection(session_store, monkeypatch):

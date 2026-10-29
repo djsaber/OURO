@@ -167,6 +167,7 @@ async def test_failed_lifecycle_discards_all_nested_owner_changes(store, action)
             controllers=registry(activate, deactivate),
         )
     before = store.load_harness(session.session_id)
+    revision = store.observation_revision(session.session_id)
     selected = transition(
         action,
         **(
@@ -185,8 +186,7 @@ async def test_failed_lifecycle_discards_all_nested_owner_changes(store, action)
             ),
         )
     assert store.load_harness(session.session_id) == before
-    events = store.load_session(session.session_id).events
-    assert events[-1].payload["phase"] == "failed"
+    assert store.observation_revision(session.session_id) == revision
 
 
 async def test_competing_controller_calls_cannot_overwrite_an_accepted_state(store):

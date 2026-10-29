@@ -10,7 +10,6 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessVersion
 from ouro.core.resources import SessionResourceReference
 from ouro.local_io import filesystem_path
@@ -23,7 +22,6 @@ from ouro.sessions.catalog import SessionCatalogProjection, catalog_entry_from_p
 from ouro.sessions.index import SessionIndex, SessionIndexEntry, invalid_session_index_entry
 from ouro.sessions.layout import DATA_LAYOUT_VERSION
 from ouro.sessions.sqlite_compactions import insert_compaction
-from ouro.sessions.sqlite_events import insert_events
 from ouro.sessions.sqlite_facts import write_call_state, write_facts
 from ouro.sessions.sqlite_requests import write_header
 from ouro.sessions.sqlite_resources import insert_reference
@@ -117,9 +115,6 @@ def _write(
         insert_reference(connection, session.session_id, record)
     for record in compactions:
         insert_compaction(connection, record)
-    insert_events(
-        connection, (validate(EventRecord, convert("event", raw)) for raw in data["event"])
-    )
     if header is not None:
         write_header(connection, header)
         if directory is None:
@@ -165,7 +160,6 @@ def file_session(work: Workspace, directory: Path) -> SessionIndexEntry:
             "run",
             "message",
             "compaction",
-            "event",
             "context",
             "resource",
             "harness",
@@ -189,7 +183,6 @@ def file_session(work: Workspace, directory: Path) -> SessionIndexEntry:
             old_paths.append(name)
     for name, kind in (
         ("messages.jsonl", "message"),
-        ("events.jsonl", "event"),
         ("compactions.jsonl", "compaction"),
     ):
         path = f"{relative}/{name}"
@@ -224,7 +217,10 @@ def file_session(work: Workspace, directory: Path) -> SessionIndexEntry:
     for output_path in temporary.rglob("*"):
         if output_path.is_file():
             work.stage(f"{relative}/{output_path.relative_to(temporary).as_posix()}", output_path)
-    # Receipts are not replayable in the native write contract. Preserve them in the backup.
+    # Obsolete notifications and receipts remain in the maintenance backup only.
+    old_events = f"{relative}/events.jsonl"
+    if work.path(old_events).exists():
+        work.stage(old_events, None)
     for folder in ("operations", "event-index"):
         for obsolete_path in children(directory / folder, "**/*"):
             if obsolete_path.is_file():
@@ -292,9 +288,9 @@ def sqlite(connection: sqlite3.Connection, units: UpgradeUnits) -> bool | Path:
         "SELECT value FROM metadata WHERE key='sqlite_schema_version'"
     ).fetchone()
     require(
-        version is not None and version[0] in ("7", "26"), "sessions", "unsupported SQLite schema"
+        version is not None and version[0] in ("7", "27"), "sessions", "unsupported SQLite schema"
     )
-    if version[0] == "26":
+    if version[0] == "27":
         return False
     work = units.work
     target = work.temporary()
@@ -306,7 +302,6 @@ def sqlite(connection: sqlite3.Connection, units: UpgradeUnits) -> bool | Path:
         "session": "sessions",
         "run": "runs",
         "message": "messages",
-        "event": "events",
         "context": "latest_contexts",
         "compaction": "compactions",
         "harness": "harness_versions",
@@ -324,7 +319,7 @@ def sqlite(connection: sqlite3.Connection, units: UpgradeUnits) -> bool | Path:
                     loads(row[0])
                     for row in connection.execute(
                         f"SELECT payload FROM {table} WHERE session_id=?"
-                        + (" ORDER BY sequence" if kind in ("message", "event") else ""),
+                        + (" ORDER BY sequence" if kind == "message" else ""),
                         (identity,),
                     )
                 ]
@@ -347,4 +342,4 @@ def current_sqlite(connection: sqlite3.Connection) -> bool:
     row = connection.execute(
         "SELECT value FROM metadata WHERE key='sqlite_schema_version'"
     ).fetchone()
-    return row is not None and row[0] == "26"
+    return row is not None and row[0] == "27"

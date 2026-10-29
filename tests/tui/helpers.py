@@ -45,7 +45,7 @@ def surface_state(app: App) -> str:
         f"session={getattr(projection, 'session_id', None)!r}, "
         f"status={getattr(activity, 'status', None)!r}, "
         f"activity={getattr(activity, 'activity', None)!r}, "
-        f"applied={getattr(observation, 'applied_sequence', None)!r}, "
+        f"applied={getattr(observation, 'applied_position', None)!r}, "
         f"projected={getattr(projection, 'last_sequence', None)!r}, "
         f"bound={getattr(bound, 'tool_call_id', None)!r}, "
         f"disabled={getattr(focused, 'disabled', None)!r}, workers={workers!r}"
@@ -172,7 +172,7 @@ async def wait_for_observed_status(pilot, *, status: str) -> None:
             and projection.session_id == subscription.session_id
             and app._observation_subscription is subscription
             and projection.activity.status == status
-            and subscription.applied_sequence >= projection.last_sequence
+            and app._observation_delivery is None
         )
 
     await wait_until(

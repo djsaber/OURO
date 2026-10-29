@@ -8,7 +8,7 @@ from ouro.application.contracts.execution import (
 from ouro.application.observations.activity import (
     overlay_run_activity,
     project_batch_activity,
-    project_runtime_activity,
+    project_runtime_activity_state,
     queued_runtime_activity,
     reduce_runtime_activity,
     runtime_activity_changed,
@@ -19,7 +19,6 @@ from ouro.core.events import EventRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest
-from ouro.sessions.base import SessionSnapshot
 
 
 @pytest.mark.parametrize("status", ["failed", "aborted", "recoverable"])
@@ -370,13 +369,7 @@ def test_runtime_activity_projection_overlays_authoritative_durable_tool_state()
         phase="tool_execution",
         active_tool_batch=batch.head(),
     )
-    snapshot = SessionSnapshot(
-        session=session,
-        runs=[run],
-        events=[_event(1, "run_started")],
-    )
-
-    activity = project_runtime_activity(snapshot, batch=batch)
+    activity = project_runtime_activity_state(session, run, sequence=0, batch=batch)
 
     assert activity.activity == "executing_tools"
     assert activity.run_phase == "tool_execution"

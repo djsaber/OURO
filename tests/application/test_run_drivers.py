@@ -19,6 +19,7 @@ from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
+from tests.event_capture import recorded_events
 
 PLUGIN = "dev.ouro.examples.review_driver"
 DRIVER = f"{PLUGIN}/run_drivers/review"
@@ -795,7 +796,7 @@ async def test_driver_abort_waits_for_native_tool_cancellation_receipts(tmp_path
             result = await running
         assert result.run.status == "aborted"
         assert finalized.is_set()
-        events = store.load_session(session.session_id).events
+        events = recorded_events(session.session_id)
         completed = next(event for event in events if event.event_type == "tool_call_completed")
         assert completed.payload["status"] == "unknown_outcome"
         kinds = [event.event_type for event in events]

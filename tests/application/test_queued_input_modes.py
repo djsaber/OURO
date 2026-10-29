@@ -17,6 +17,7 @@ from ouro.core.session_controls import (
 from ouro.sessions import LocalSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 from tests.application.helpers import running_runtime_task
+from tests.event_capture import recorded_events
 
 
 class TurnGateProvider:
@@ -227,7 +228,7 @@ async def test_host_follow_up_preserves_scaffold_role_and_attribution(tmp_path, 
             session_id=session.session_id,
         )
 
-        queued_event = store.load_session(session.session_id).events[-1]
+        queued_event = recorded_events(session.session_id)[-1]
         assert receipt.session_id == session.session_id
         assert queued_event.payload["queue_id"] == receipt.queue_id
         assert queued_event.payload["source"] == "host"

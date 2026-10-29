@@ -79,6 +79,7 @@ def requests(runtime, budget=None):
             commit_model_request=runtime._commit_model_request,
             publish_committed=runtime.event_recorder.publish_committed,
             append_draft=runtime.store.append_response_draft,
+            record_retry=runtime.store.record_request_retry,
             emit=runtime.event_recorder.emit,
             run_usage=runtime.usage.run_usage if runtime.usage is not None else None,
         ),

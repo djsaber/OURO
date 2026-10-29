@@ -8,7 +8,6 @@ from time import monotonic
 from typing import TYPE_CHECKING, Protocol
 
 from ouro.application.contracts.base import Diagnostic
-from ouro.application.contracts.events import project_runtime_event
 from ouro.application.contracts.sessions import (
     SessionBranchResult,
     SessionCatalogEntry,
@@ -17,7 +16,6 @@ from ouro.application.contracts.sessions import (
     SessionContextSnapshot,
     SessionContextStatus,
     SessionDetail,
-    SessionEventPage,
     SessionExport,
     SessionHistoryAnchor,
     SessionHistoryWindow,
@@ -25,7 +23,6 @@ from ouro.application.contracts.sessions import (
     SessionMutationResult,
     SessionObservationBatch,
     SessionObservationSnapshot,
-    SessionReplay,
     SessionSummary,
     SessionTrashResult,
     SessionUndoResult,
@@ -36,7 +33,8 @@ from ouro.application.observations.activity import (
     project_batch_activity,
     project_batch_interactions,
 )
-from ouro.application.observations.drafts import read_draft_events, resolve_fact_event
+from ouro.application.observations.drafts import read_draft_events
+from ouro.application.observations.facts import read_observation_page
 from ouro.application.runs.lifecycle import abort_run_state
 from ouro.application.runs.tool_batches import load_tool_batch
 from ouro.application.sessions.editing import undo_user_input
@@ -45,7 +43,6 @@ from ouro.application.sessions.history import (
     branch_input_boundary,
     copy_branch_compactions,
     copy_branch_messages,
-    project_replay_frames,
     select_branch_messages,
     select_history_suffix,
 )
@@ -64,13 +61,12 @@ from ouro.core.errors import (
     SessionBusyError,
     SessionNotFoundError,
 )
-from ouro.core.events import EventRecord
 from ouro.core.interactions import SESSION_INTERACTION_MODES, SessionInteractionMode
 from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import ReasoningRequest
-from ouro.core.response_drafts import ResponseStreamPosition
 from ouro.core.results import RunResult
 from ouro.core.session_commits import SessionCommitConflict
+from ouro.core.session_observation import SessionObservationPosition
 from ouro.core.session_titles import normalize_session_title, with_session_title
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord, SessionTitleSource
 from ouro.core.tool_facts import ToolCallFacts
@@ -181,7 +177,7 @@ class SessionService:
             )
 
     def run_record(self, session_id: str, run_id: str) -> RunRecord:
-        """Read exact durable Run facts without loading message or event history."""
+        """Read exact durable Run facts without loading message history."""
 
         try:
             return self._store.load_run(session_id, run_id)
@@ -189,7 +185,7 @@ class SessionService:
             raise PersistenceError(f"Run not found: {run_id} in Session {session_id}") from exc
 
     def run_history(self, session_id: str) -> tuple[RunRecord, ...]:
-        """Read lightweight durable Run facts without replaying the event journal."""
+        """Read lightweight durable Run facts without loading message history."""
 
         self._require_session(session_id)
         return tuple(self._store.load_runs(session_id))
@@ -197,9 +193,9 @@ class SessionService:
     def context_status(self, session_id: str) -> SessionContextStatus | None:
         self._require_session(session_id)
         record = self._store.load_latest_context_header(session_id)
-        return self._context_status(record) if record is not None else None
+        return self.project_context_status(record) if record is not None else None
 
-    def _context_status(self, record: ModelRequestHeader) -> SessionContextStatus:
+    def project_context_status(self, record: ModelRequestHeader) -> SessionContextStatus:
         usage = (
             self._usage.request_usage(record)
             if self._usage is not None and record.usage_entry_id is not None
@@ -227,7 +223,7 @@ class SessionService:
         return latest.metrics if latest is not None else None
 
     def compactions(self, session_id: str) -> tuple[CompactionRecord, ...]:
-        """Read durable compaction boundaries without loading message or event history."""
+        """Read durable compaction boundaries without loading message history."""
 
         self._require_session(session_id)
         return tuple(self._store.load_compactions(session_id))
@@ -236,7 +232,7 @@ class SessionService:
         """Read all retained summaries in persistence order, without running recovery.
 
         Summary text and the active pointer share one snapshot boundary. Querying
-        history requires neither a model nor loading messages and runtime events.
+        history requires neither a model nor loading message bodies.
         """
 
         with self._store.session_read(session_id):
@@ -267,7 +263,7 @@ class SessionService:
         if record is None:
             return None
         return SessionContextSnapshot(
-            status=self._context_status(record),
+            status=self.project_context_status(record),
             provider_context=record.provider_context,
         )
 
@@ -282,7 +278,6 @@ class SessionService:
         return SessionExport(
             session=snapshot.session,
             messages=tuple(snapshot.messages),
-            events=tuple(snapshot.events),
             runs=tuple(snapshot.runs),
             compactions=tuple(snapshot.compactions),
             extension_states=tuple(snapshot.extension_states),
@@ -322,17 +317,20 @@ class SessionService:
             with closing(self._store.iter_messages_before(session_id, before=before)) as records:
                 messages, cursor = select_history_suffix(records, limit=limit)
             run_ids = dict.fromkeys(message.run_id for message in messages if message.run_id)
-            message_ids = {message.message_id for message in messages}
             return SessionHistoryWindow(
                 session_id=session_id,
                 history_epoch=session.history_epoch,
                 messages=messages,
                 runs=tuple(self._store.load_run(session_id, run_id) for run_id in run_ids),
                 compactions=tuple(
-                    item
-                    for item in self._store.load_compactions(session_id)
-                    if item.history_boundary_message_id in message_ids
-                ),
+                    self._store.load_compactions_in_range(
+                        session_id,
+                        first_sequence=messages[0].sequence,
+                        last_sequence=messages[-1].sequence,
+                    )
+                )
+                if messages
+                else (),
                 before_cursor=cursor,
             )
 
@@ -343,7 +341,7 @@ class SessionService:
         history_limit: int | None = None,
         history_anchor: SessionHistoryAnchor | None = None,
     ) -> SessionObservationSnapshot:
-        """Read a canonical snapshot and event cursor under one store boundary.
+        """Read a canonical snapshot and observation position under one store boundary.
 
         Messages own published output. Current Draft, Call states and request
         headers restore live content and interactions without replaying Run history.
@@ -357,7 +355,6 @@ class SessionService:
                     messages = tuple(snapshot.messages)
                     runs = tuple(snapshot.runs)
                     compactions = tuple(snapshot.compactions)
-                    high_water = snapshot.event_high_water
                     active = snapshot.active_compaction
                     before_cursor = None
                 else:
@@ -369,14 +366,18 @@ class SessionService:
                     recent_run_id = session.active_run_id or session.last_run_id
                     if recent_run_id and not any(run.run_id == recent_run_id for run in runs):
                         runs = (*runs, self._store.load_run(session_id, recent_run_id))
-                    high_water = self._store.latest_event_sequence(session_id)
-                    active = self._store.load_active_compaction(session_id)
+                    active_id = session.context_selection.compaction_id
+                    active = (
+                        self._store.load_compaction(session_id, active_id) if active_id else None
+                    )
                     before_cursor = window.before_cursor
+                position_revision = self._store.observation_revision(session_id)
                 context = self._store.load_latest_context_header(session_id)
                 events = read_draft_events(
                     self._store,
                     session_id,
-                    sequence=high_water,
+                    sequence=0,
+                    header=context,
                     history_epoch=session.history_epoch,
                 )
                 queued_inputs = project_pending_user_inputs(
@@ -411,8 +412,12 @@ class SessionService:
             events=events,
             runs=runs,
             compactions=compactions,
-            event_high_water=high_water,
-            context_status=self._context_status(context) if context else None,
+            position=SessionObservationPosition(
+                revision=position_revision,
+                message_sequence=session.message_count,
+                draft=events[-1].stream if events else None,
+            ),
+            context_status=self.project_context_status(context) if context else None,
             effective_context_metrics=metrics,
             history_before_cursor=before_cursor,
             active_tool_calls=active_tool_calls,
@@ -440,56 +445,22 @@ class SessionService:
                 next_cursor=next_cursor,
             )
 
-    def observation_events(
+    def observation_changes(
         self,
         session_id: str,
         *,
-        after_sequence: int,
+        after: SessionObservationPosition,
+        history_epoch: int,
         limit: int,
-        draft_position: ResponseStreamPosition | None = None,
     ) -> tuple[SessionObservationBatch, bool]:
-        """Read a bounded durable suffix and its input messages in one history boundary."""
-        with self._store.session_read(session_id):
-            session = self._store.load_session_record(session_id)
-            events, more = self._store.load_events_after(
-                session_id, after_sequence=after_sequence, limit=limit
-            )
-            events = [
-                resolve_fact_event(self._store, event, history_epoch=session.history_epoch)
-                for event in events
-            ]
-            if not more:
-                draft = read_draft_events(
-                    self._store,
-                    session_id,
-                    sequence=events[-1].sequence if events else after_sequence,
-                    history_epoch=session.history_epoch,
-                    after=draft_position,
-                    limit=limit,
-                )
-                events.extend(draft)
-                more = len(draft) == limit
-            ids = dict.fromkeys(
-                identity
-                for event in events
-                if event.history_epoch == session.history_epoch
-                and event.event_type
-                in {
-                    "user_message_added",
-                    "host_message_added",
-                    "plugin_message_added",
-                    "queued_input_consumed",
-                }
-                if isinstance((identity := event.payload.get("message_id")), str)
-            )
-            messages = tuple(self._store.load_message(session_id, identity) for identity in ids)
-        return SessionObservationBatch(
-            session_id=session_id,
-            history_epoch=session.history_epoch,
-            event_high_water=events[-1].sequence if events else after_sequence,
-            events=tuple(project_runtime_event(event) for event in events),
-            messages=messages,
-        ), more
+        return read_observation_page(
+            self._store,
+            session_id,
+            after=after,
+            history_epoch=history_epoch,
+            limit=limit,
+            context_status=self.project_context_status,
+        )
 
     def message(self, session_id: str, message_id: str) -> MessageRecord:
         """Read one canonical message by its stable event-facing identity."""
@@ -513,26 +484,6 @@ class SessionService:
                     else ()
                 ),
             )
-
-    def event_page(
-        self,
-        session_id: str,
-        *,
-        cursor: int = 0,
-        limit: int = 100,
-        run_id: str | None = None,
-    ) -> SessionEventPage:
-        events, next_cursor = self._store.load_events_page(
-            session_id,
-            cursor=cursor,
-            limit=limit,
-            run_id=run_id,
-        )
-        return SessionEventPage(
-            session_id=session_id,
-            events=tuple(events),
-            next_cursor=next_cursor,
-        )
 
     def catalog(self, query: SessionCatalogQuery | None = None) -> SessionCatalogResult:
         index = self._store.read_catalog()
@@ -1188,14 +1139,6 @@ class SessionService:
             diagnostics=self._refresh_index_diagnostics(branch.session_id),
         )
 
-    def replay(self, session_id: str, *, run_id: str | None = None) -> SessionReplay:
-        events = self._load_events(session_id, run_id=run_id)
-        return SessionReplay(
-            session_id=session_id,
-            run_id=run_id,
-            frames=project_replay_frames(events),
-        )
-
     def _update_session(
         self,
         session_id: str,
@@ -1271,29 +1214,6 @@ class SessionService:
                 messages.extend(page)
                 if next_cursor is None:
                     return messages
-                cursor = next_cursor
-        except FileNotFoundError as exc:
-            raise SessionNotFoundError(f"session not found: {session_id}") from exc
-
-    def _load_events(
-        self,
-        session_id: str,
-        *,
-        run_id: str | None,
-    ) -> list[EventRecord]:
-        events: list[EventRecord] = []
-        cursor = 0
-        try:
-            while True:
-                page, next_cursor = self._store.load_events_page(
-                    session_id,
-                    cursor=cursor,
-                    limit=1000,
-                    run_id=run_id,
-                )
-                events.extend(page)
-                if next_cursor is None:
-                    return events
                 cursor = next_cursor
         except FileNotFoundError as exc:
             raise SessionNotFoundError(f"session not found: {session_id}") from exc

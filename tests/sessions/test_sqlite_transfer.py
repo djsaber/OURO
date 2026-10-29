@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 
 from ouro.core.agents import AgentDefinition, DelegationRecord
-from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
@@ -43,13 +42,6 @@ def test_import_sessions_to_sqlite_is_exact_and_verified(tmp_path) -> None:
         ),
     )
     source.save_run(run)
-    source.append_ordered_event(
-        EventRecord(
-            session_id=first.session_id,
-            run_id=run.run_id,
-            event_type="run_completed",
-        )
-    )
     source.create_session(second)
     delegation = DelegationRecord(
         idempotency_key="transfer/delegation",
@@ -72,7 +64,7 @@ def test_import_sessions_to_sqlite_is_exact_and_verified(tmp_path) -> None:
 
     assert report.session_ids == sorted([first.session_id, second.session_id])
     assert report.message_count == 1
-    assert report.event_count == 1
+    assert "event_count" not in report.model_dump()
     assert report.run_count == 1
     assert report.resource_reference_count == 1
     assert report.extension_state_count == 1

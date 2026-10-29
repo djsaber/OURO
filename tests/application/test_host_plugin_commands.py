@@ -38,6 +38,7 @@ from ouro.plugins.registry import (
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
+from tests.event_capture import recorded_events
 
 
 @pytest.fixture(params=["files", "sqlite"])
@@ -187,7 +188,7 @@ async def test_stop_command_commits_abort_intent_and_settles_execution(system, m
         result = await task
         assert submitted.execution.stop_requested_run_id == result.run.run_id
         assert result.run.status == "aborted"
-        events, _ = system.store.load_events_page(session.session_id, limit=100)
+        events = recorded_events(session.session_id)
         abort_events = [
             event.event_type for event in events if event.event_type.startswith("run_abort")
         ]
@@ -219,7 +220,7 @@ async def test_failed_stop_command_does_not_publish_abort_intent(system, monkeyp
     with pytest.raises(PersistenceError, match="injected failure"):
         await service.execute_command("dev.example:example", session_id=session.session_id)
     assert not system.store.load_run(session.session_id, run.run_id).abort_requested
-    events, _ = system.store.load_events_page(session.session_id, limit=100)
+    events = recorded_events(session.session_id)
     assert not any(event.event_type == "run_abort_requested" for event in events)
 
 

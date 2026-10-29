@@ -7,6 +7,7 @@ from pydantic import Field
 
 from ouro.core.base import Metadata, MetadataField, VersionedOuroModel, new_id, utc_now
 from ouro.core.response_drafts import ResponseStreamPosition
+from ouro.core.session_observation import SessionObservationPosition
 
 EventType = Literal[
     "session_loaded",
@@ -90,18 +91,6 @@ class EventRecord(VersionedOuroModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     metadata: Metadata = MetadataField
     stream: ResponseStreamPosition | None = None
-
-    def storage_json(self) -> str:
-        """Encode the complete fact without absent optional fields or empty defaults."""
-        return self.model_dump_json(
-            exclude_none=True,
-            exclude={
-                name
-                for name, empty in (
-                    ("history_epoch", self.history_epoch == 0),
-                    ("payload", not self.payload),
-                    ("metadata", not self.metadata),
-                )
-                if empty
-            },
-        )
+    position: SessionObservationPosition | None = None
+    commit_revision: int | None = None
+    message_after: int | None = None

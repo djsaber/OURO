@@ -31,7 +31,7 @@ Desktop 只拥有界面状态和交互，不复制运行规则或解析 canonica
 ## 里程碑 B：会话工作区
 
 - [ ] Catalog、搜索、筛选、归档、置顶和标签。
-- [ ] Session detail、消息增量加载、events/replay 和 lineage。
+- [ ] Session detail、消息增量加载、当前状态与事实增量观察 和 lineage。
 - [ ] Rename、branch、export 和 trash 确认。
 - [ ] Corrupt/dirty/recoverable diagnostic 可见。
 
@@ -79,8 +79,8 @@ Desktop 只拥有界面状态和交互，不复制运行规则或解析 canonica
 ## 风险与控制
 
 - UI 直接读文件：架构测试禁止 Desktop import `ouro.sessions.backends` 和 config manager。
-- 高频事件卡顿：仅 delta projection 可合并，durable event 不丢失。
-- 状态重复：UI projection 以 application snapshot/event sequence 为准。
+- 高频事件卡顿：仅合并显示增量；遗漏通知由统一事实管线补齐。
+- 状态重复：UI projection 以 Application 快照和已应用事实位置为准。
 - 首版范围膨胀：先完成会话与运行闭环，再接资源和扩展管理。
 
 ## 退出条件

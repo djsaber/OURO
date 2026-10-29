@@ -30,7 +30,6 @@ from ouro.core.errors import (
     PersistenceError,
     UnsupportedDataVersionError,
 )
-from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessState, HarnessVersion
 from ouro.core.inputs import InputRecord, InputState, resolve_input_content, validate_input_snapshot
 from ouro.core.message_content import (
@@ -42,6 +41,7 @@ from ouro.core.message_frames import MessageTruncation
 from ouro.core.message_statistics import RunMessageCounts, RunResultReferences
 from ouro.core.messages import MessageFact, MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
+from ouro.core.provider import ProviderRetryNotice
 from ouro.core.resources import ResourceRecord, SessionResourceReference
 from ouro.core.response_drafts import ResponseDraftChunk, ResponseDraftPage
 from ouro.core.session_commits import (
@@ -78,12 +78,11 @@ from ouro.resources.media import (
 from ouro.resources.prepared import validate_prepared_resources
 from ouro.sessions import sqlite_resources
 from ouro.sessions.backends.sqlite.commits import SQLiteSessionCommits
-from ouro.sessions.backends.sqlite.inputs import read_input, read_state, write_input, write_state
 from ouro.sessions.backends.sqlite.messages import read_counts as read_message_counts
 from ouro.sessions.backends.sqlite.messages import read_result_references, write_messages
 from ouro.sessions.base import (
     RuntimeSessionSnapshot,
-    SessionObservationState,
+    SessionHistorySnapshot,
     SessionSnapshot,
 )
 from ouro.sessions.catalog import (
@@ -95,15 +94,13 @@ from ouro.sessions.catalog import (
 from ouro.sessions.index import SessionIndex, SessionIndexEntry, invalid_session_index_entry
 from ouro.sessions.locks import SessionRunLock
 from ouro.sessions.message_reads import resolve_messages
+from ouro.sessions.observation import FactCursor, SessionFactPage
 from ouro.sessions.portable import SessionBundle, populate_sessions
 from ouro.sessions.sqlite_compactions import insert_compaction
 from ouro.sessions.sqlite_connections import ExecutionConnections, NativeSessionRunLock
 from ouro.sessions.sqlite_drafts import append_chunk as append_draft_chunk
 from ouro.sessions.sqlite_drafts import publish_draft
 from ouro.sessions.sqlite_drafts import read_page as read_draft_page
-from ouro.sessions.sqlite_events import EVENT_SCHEMA, insert_events, latest_sequence
-from ouro.sessions.sqlite_events import read_after as read_events_after
-from ouro.sessions.sqlite_events import read_page as read_events_page
 from ouro.sessions.sqlite_facts import load_snapshot as load_tool_facts
 from ouro.sessions.sqlite_facts import (
     load_states,
@@ -111,6 +108,13 @@ from ouro.sessions.sqlite_facts import (
     read_fact,
     write_call_state,
     write_fact,
+)
+from ouro.sessions.sqlite_inputs import read_input, read_state, write_input, write_state
+from ouro.sessions.sqlite_observation import (
+    OBSERVATION_SCHEMA,
+    advance_revision,
+    read_changes,
+    read_revision,
 )
 from ouro.sessions.sqlite_requests import read_latest_header, read_request_header, write_header
 from ouro.sessions.sqlite_runs import (
@@ -122,7 +126,7 @@ from ouro.sessions.sqlite_runs import (
 from ouro.sessions.sqlite_sessions import read_session
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
-SQLITE_SCHEMA_VERSION = 26
+SQLITE_SCHEMA_VERSION = 27
 
 
 class SQLiteSessionStore:
@@ -299,6 +303,7 @@ class SQLiteSessionStore:
                         batch_id TEXT NOT NULL,
                         tool_call_id TEXT NOT NULL,
                         payload TEXT NOT NULL,
+                        modified_revision INTEGER NOT NULL DEFAULT 0,
                         PRIMARY KEY(session_id, run_id, batch_id, tool_call_id),
                         FOREIGN KEY(session_id, run_id, batch_id, tool_call_id)
                             REFERENCES tool_calls(session_id, run_id, batch_id, tool_call_id)
@@ -308,6 +313,7 @@ class SQLiteSessionStore:
                         session_id TEXT NOT NULL,
                         input_id TEXT NOT NULL,
                         payload TEXT NOT NULL,
+                        modified_revision INTEGER NOT NULL DEFAULT 0,
                         PRIMARY KEY(session_id, input_id),
                         FOREIGN KEY(session_id, input_id) REFERENCES inputs(session_id, input_id)
                             ON DELETE CASCADE
@@ -315,6 +321,7 @@ class SQLiteSessionStore:
                     CREATE INDEX IF NOT EXISTS messages_run_result_references
                         ON messages(session_id, run_id, row_id, message_id, role,
                                     delegation_input_id, resource_refs);
+                    CREATE INDEX IF NOT EXISTS messages_sequence ON messages(session_id, sequence);
                     CREATE INDEX IF NOT EXISTS messages_session_order
                         ON messages(session_id, row_id);
                     CREATE INDEX IF NOT EXISTS messages_session_run
@@ -331,6 +338,7 @@ class SQLiteSessionStore:
                         model_round_count INTEGER NOT NULL,
                         summary_request_count INTEGER NOT NULL,
                         payload TEXT NOT NULL,
+                        modified_revision INTEGER NOT NULL DEFAULT 0,
                         PRIMARY KEY(session_id, run_id),
                         FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
                     );
@@ -346,6 +354,7 @@ class SQLiteSessionStore:
                         previous_compaction_id TEXT,
                         covered_end_message_id TEXT NOT NULL,
                         history_boundary_message_id TEXT NOT NULL,
+                        modified_revision INTEGER NOT NULL DEFAULT 0,
                         payload TEXT NOT NULL,
                         FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
                     );
@@ -436,7 +445,7 @@ class SQLiteSessionStore:
                         ON messages(session_id, row_id)
                         WHERE json_extract(payload, '$.role') IN ('user', 'system');
                 """
-                + EVENT_SCHEMA
+                + OBSERVATION_SCHEMA
                 + sqlite_resources.RESOURCE_SCHEMA
             )
             if existing is None:
@@ -576,6 +585,7 @@ class SQLiteSessionStore:
                 raise PersistenceError(
                     f"delegation already exists or is inconsistent: {delegation.delegation_id}"
                 ) from exc
+            advance_revision(connection, delegation.root_session_id)
         return delegation
 
     def load_delegation(
@@ -649,6 +659,7 @@ class SQLiteSessionStore:
                 raise DelegationRevisionConflictError(
                     f"delegation revision conflict: expected {expected_revision}"
                 )
+            advance_revision(connection, delegation.root_session_id)
         return updated
 
     def list_delegations(
@@ -907,7 +918,6 @@ class SQLiteSessionStore:
                             for table in (
                                 "sessions",
                                 "messages",
-                                "events",
                                 "runs",
                                 "compactions",
                                 "latest_contexts",
@@ -1051,45 +1061,14 @@ class SQLiteSessionStore:
             except sqlite3.Error as exc:
                 raise PersistenceError(f"could not save tool Outcome: {exc}") from exc
 
-    def append_event(self, event: EventRecord) -> None:
-        with self.session_mutation(event.session_id):
-            try:
-                self._require_session(self._transaction_connection(), event.session_id)
-                insert_events(self._transaction_connection(), (event,))
-            except sqlite3.IntegrityError as exc:
-                raise PersistenceError(f"could not append event {event.event_id}: {exc}") from exc
-
-    def append_events(self, events: list[EventRecord]) -> None:
-        if not events:
-            return
-        session_id = events[0].session_id
-        if any(event.session_id != session_id for event in events):
-            raise PersistenceError("event batch must belong to one Session")
-        with self.session_mutation(session_id):
-            connection = self._transaction_connection()
-            self._require_session(connection, session_id)
-            try:
-                insert_events(connection, events)
-            except sqlite3.IntegrityError as exc:
-                raise PersistenceError(f"could not append event batch: {session_id}") from exc
-
-    def append_ordered_event(self, event: EventRecord) -> EventRecord:
-        _validated_record_id(event.session_id, kind="session")
-        with self.session_mutation(event.session_id):
-            connection = self._transaction_connection()
-            self._require_session(connection, event.session_id)
-            ordered = event.model_copy(
-                update={"sequence": latest_sequence(connection, event.session_id) + 1}
-            )
-            insert_events(connection, (ordered,))
-            return ordered
-
     def save_run(self, run: RunRecord) -> None:
         with self.session_mutation(run.session_id):
+            revision = advance_revision(self._transaction_connection(), run.session_id)
             added = write_run(
                 self._transaction_connection(),
                 run,
                 history_epoch=self.load_session_record(run.session_id).history_epoch,
+                revision=revision,
             )
             if added:
                 self._transaction_connection().execute(
@@ -1124,6 +1103,17 @@ class SQLiteSessionStore:
                 return None
             return ResponseDraftPage(context_id=context_id, cursor=after_cursor)
 
+    def record_request_retry(
+        self, session_id: str, context_id: str, retry: ProviderRetryNotice
+    ) -> None:
+        with self.session_mutation(session_id):
+            header = self.load_request_header(session_id, context_id)
+            if header is None:
+                raise PersistenceError(f"request not found: {context_id}")
+            connection = self._transaction_connection()
+            write_header(connection, header.model_copy(update={"retry": retry}))
+            advance_revision(connection, session_id)
+
     def settle_request_header(
         self,
         session_id: str,
@@ -1145,6 +1135,7 @@ class SQLiteSessionStore:
             )
             if completed != header:
                 write_header(self._transaction_connection(), completed)
+                advance_revision(self._transaction_connection(), session_id)
             return completed
 
     def load_latest_context(self, session_id: str) -> ContextSnapshotRecord | None:
@@ -1239,12 +1230,6 @@ class SQLiteSessionStore:
                     (session_id,),
                     MessageRecord,
                 ),
-                events=self._load_models(
-                    connection,
-                    "SELECT payload FROM events WHERE session_id = ? ORDER BY row_id",
-                    (session_id,),
-                    EventRecord,
-                ),
                 runs=self._load_runs(connection, session_id),
                 compactions=self._load_models(
                     connection,
@@ -1294,11 +1279,10 @@ class SQLiteSessionStore:
             session = read_session(connection, session_id)
             return read_pending_runs(connection, session_id, session.history_epoch)
 
-    def load_session_observation(self, session_id: str) -> SessionObservationState:
+    def load_session_observation(self, session_id: str) -> SessionHistorySnapshot:
         with self._read_connection() as connection:
             session = read_session(connection, session_id)
-            event_high_water = latest_sequence(connection, session_id)
-            snapshot = SessionObservationState.model_construct(
+            snapshot = SessionHistorySnapshot.model_construct(
                 session=session,
                 messages=self._load_models(
                     connection,
@@ -1313,7 +1297,6 @@ class SQLiteSessionStore:
                     (session_id,),
                     CompactionRecord,
                 ),
-                event_high_water=event_high_water,
             )
             if (
                 session.context_selection.compaction_id is not None
@@ -1334,24 +1317,21 @@ class SQLiteSessionStore:
             return SQLiteSessionCommits(connection).load_session_harness(session_id)
 
     def load_active_compaction(self, session_id: str) -> CompactionRecord | None:
-        with self._read_connection() as connection:
-            session = read_session(connection, session_id)
-            if session.context_selection.compaction_id is None:
-                return None
+        with self.session_read(session_id):
+            identity = self.load_session_record(session_id).context_selection.compaction_id
+            return self.load_compaction(session_id, identity) if identity is not None else None
+
+    def load_compaction(self, session_id: str, compaction_id: str) -> CompactionRecord:
+        with self.session_read(session_id) as connection:
             row = connection.execute(
                 "SELECT payload FROM compactions WHERE session_id = ? AND compaction_id = ?",
-                (session_id, session.context_selection.compaction_id),
+                (session_id, compaction_id),
             ).fetchone()
             if row is None:
                 raise PersistenceError(
-                    f"session {session_id} references missing compaction "
-                    f"{session.context_selection.compaction_id}"
+                    f"session {session_id} references missing compaction {compaction_id}"
                 )
-            return self._validate_model(
-                CompactionRecord,
-                row[0],
-                f"compaction {session.context_selection.compaction_id}",
-            )
+            return self._validate_model(CompactionRecord, row[0], f"compaction {compaction_id}")
 
     def load_compactions(self, session_id: str) -> list[CompactionRecord]:
         with self._read_connection() as connection:
@@ -1363,10 +1343,60 @@ class SQLiteSessionStore:
                 CompactionRecord,
             )
 
-    def latest_event_sequence(self, session_id: str) -> int:
+    def load_compactions_in_range(
+        self, session_id: str, *, first_sequence: int, last_sequence: int
+    ) -> list[CompactionRecord]:
+        with self.session_read(session_id) as connection:
+            rows = connection.execute(
+                "SELECT c.payload FROM messages AS m CROSS JOIN compactions AS c "
+                "ON c.session_id = m.session_id AND c.history_boundary_message_id = m.message_id "
+                "WHERE m.session_id = ? AND m.sequence BETWEEN ? AND ? ORDER BY c.row_id",
+                (session_id, first_sequence, last_sequence),
+            )
+            return [
+                decode_versioned_record_json(CompactionRecord, row[0], label="compaction")
+                for row in rows
+            ]
+
+    def load_observation_changes(
+        self,
+        session_id: str,
+        *,
+        after_revision: int,
+        through_revision: int,
+        limit: int,
+        cursor: FactCursor | None = None,
+    ) -> SessionFactPage:
         with self._read_connection() as connection:
-            self._require_session(connection, session_id)
-            return latest_sequence(connection, session_id)
+            return read_changes(
+                connection,
+                session_id,
+                after_revision=after_revision,
+                through_revision=through_revision,
+                limit=limit,
+                cursor=cursor,
+            )
+
+    def observation_revision(self, session_id: str) -> int:
+        with self._read_connection() as connection:
+            return read_revision(connection, session_id)
+
+    def load_messages_after(
+        self,
+        session_id: str,
+        *,
+        after_sequence: int,
+        limit: int,
+    ) -> tuple[list[MessageRecord], bool]:
+        with self.session_read(session_id) as connection:
+            rows = connection.execute(
+                "SELECT payload FROM messages WHERE session_id = ? "
+                "AND sequence > ? ORDER BY sequence LIMIT ?",
+                (session_id, after_sequence, limit + 1),
+            ).fetchall()
+            return self._materialize_messages(
+                connection, (row[0] for row in rows[:limit]), "observed messages"
+            ), len(rows) > limit
 
     def load_messages_page(
         self,
@@ -1436,6 +1466,15 @@ class SQLiteSessionStore:
                 (session_id, run_id),
                 MessageRecord,
             )
+
+    def run_message_end(self, session_id: str, run_id: str) -> int:
+        with self.session_read(session_id) as connection:
+            row = connection.execute(
+                "SELECT sequence FROM messages WHERE session_id = ? AND run_id = ? "
+                "ORDER BY row_id DESC LIMIT 1",
+                (session_id, run_id),
+            ).fetchone()
+            return row[0] if row is not None else 0
 
     def has_run_messages(self, session_id: str, run_id: str) -> bool:
         with self._read_connection() as connection:
@@ -1523,35 +1562,6 @@ class SQLiteSessionStore:
                 self._materialize_message(connection, row[0], f"queued input {queue_id}")
                 if row
                 else None
-            )
-
-    def load_events_page(
-        self,
-        session_id: str,
-        *,
-        cursor: int = 0,
-        limit: int = 100,
-        run_id: str | None = None,
-    ) -> tuple[list[EventRecord], int | None]:
-        cursor, limit = _validated_page_args(cursor, limit)
-        with self._read_connection() as connection:
-            self._require_session(connection, session_id)
-            return read_events_page(
-                connection, session_id, cursor=cursor, limit=limit, run_id=run_id
-            )
-
-    def load_events_after(
-        self,
-        session_id: str,
-        *,
-        after_sequence: int = 0,
-        limit: int = 100,
-    ) -> tuple[list[EventRecord], bool]:
-        after_sequence, limit = _validated_page_args(after_sequence, limit)
-        with self._read_connection() as connection:
-            self._require_session(connection, session_id)
-            return read_events_after(
-                connection, session_id, after_sequence=after_sequence, limit=limit
             )
 
     def load_run(self, session_id: str, run_id: str) -> RunRecord:
@@ -1999,8 +2009,8 @@ class SQLiteSessionStore:
             # A shared connection alone is not a snapshot boundary in SQLite:
             # without an explicit transaction each SELECT may observe a newer
             # commit. Observation snapshots issue several SELECTs and publish a
-            # high-water cursor, so they must all read one database version or a
-            # concurrent event can be covered by neither the snapshot nor replay.
+            # fact position, so they must all read one database version or a
+            # concurrent change can be missed by both snapshot and catch-up.
             connection.execute("BEGIN")
             try:
                 yield connection

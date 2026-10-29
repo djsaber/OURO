@@ -15,7 +15,6 @@ from ouro.core.base import VersionedOuroModel
 from ouro.core.billing import ProviderUsageEntry, UsageLedgerEvent
 from ouro.core.context import ContextMetrics
 from ouro.core.context_snapshots import ContextSnapshotRecord
-from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessVersion
 from ouro.core.messages import MessageRecord
 from ouro.core.resources import SessionResourceReference
@@ -27,7 +26,6 @@ MODELS: dict[str, type[BaseModel]] = {
     "session": SessionRecord,
     "run": RunRecord,
     "message": MessageRecord,
-    "event": EventRecord,
     "context": ContextSnapshotRecord,
     "harness": HarnessVersion,
     "delegation": DelegationRecord,
@@ -335,35 +333,17 @@ def _nested(kind: str, value: dict[str, Any]) -> Iterator[tuple[str, dict[str, A
         yield "usage", value["entry"]
 
 
-def _legacy_event_metrics(kind: str, value: dict[str, Any]) -> Iterator[dict[str, Any]]:
-    # Only these Host-owned payload fields carry unversioned context metrics.
-    if kind != "event":
-        return
-    field = {
-        "model_request_started": "context_metrics",
-        "compaction_completed": "context_metrics_after",
-    }.get(value.get("event_type", ""))
-    if field is not None:
-        metrics = value.get("payload", {}).get(field)
-        if isinstance(metrics, dict) and any(key in metrics for key in _LEGACY_BUDGET_FIELDS):
-            yield metrics
-
-
 def _needs_upgrade(kind: str, value: dict[str, Any]) -> bool:
     version = value.get("schema_version")
     if type(version) is not int or version != MODELS[kind].model_fields["schema_version"].default:
         # The transition executor rejects unsupported versions before transforming.
         return True
-    return any(_needs_upgrade(child, raw) for child, raw in _nested(kind, value)) or any(
-        True for _ in _legacy_event_metrics(kind, value)
-    )
+    return any(_needs_upgrade(child, raw) for child, raw in _nested(kind, value))
 
 
 def _convert_nested(kind: str, value: dict[str, Any]) -> None:
     for child, raw in _nested(kind, value):
         _convert_owned(child, raw)
-    for metrics in _legacy_event_metrics(kind, value):
-        _context_metrics(metrics)
 
 
 def _convert_owned(kind: str, value: dict[str, Any]) -> None:

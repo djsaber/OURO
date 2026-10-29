@@ -9,7 +9,6 @@ import pytest
 from ouro.application.transfer.service import DataTransferRequest
 from ouro.core.agents import AgentDefinition, DelegationRecord
 from ouro.core.errors import PersistenceError, SessionBusyError
-from ouro.core.events import EventRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.local_application import build_local_data_transfer_service, build_local_session_services
 from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
@@ -22,18 +21,8 @@ def _tree(home, backend, title, child_id, *, sequence=1):
     store.create_session(root)
     run = RunRecord(session_id=root.session_id, run_id="run_root", status="completed")
     store.save_run(run)
-    store.append_event(
-        EventRecord(session_id=root.session_id, event_type="session_loaded", sequence=sequence)
-    )
-    store.append_event(
-        EventRecord(
-            session_id=root.session_id,
-            run_id=run.run_id,
-            event_type="run_completed",
-            sequence=sequence + 1,
-            payload={"text": title},
-        )
-    )
+    pass
+    pass
     definition = AgentDefinition(
         agent_id="review", name="Review", description="Review", system_prompt="Review"
     )
@@ -84,8 +73,8 @@ def test_skip_and_replace_operate_on_complete_trees(tmp_path, backend):
     original = existing.load_session("ses_root")
     unrelated = existing.load_session("ses_unrelated")
     # Prime a separate reader's cursors before replacing its on-disk history.
-    existing.latest_event_sequence("ses_root")
-    existing.load_events_page("ses_root", run_id="run_root")
+    existing.observation_revision("ses_root")
+    existing.load_run("ses_root", "run_root")
     archive = tmp_path / "sessions.zip"
     _export(source, archive, backend)
     skipped = _import(target, archive, backend)
@@ -104,10 +93,6 @@ def test_skip_and_replace_operate_on_complete_trees(tmp_path, backend):
         assert existing.load_session(identity) == incoming.load_session(identity)
     assert existing.load_session("ses_unrelated") == unrelated
     assert existing.list_delegations("ses_root") == incoming.list_delegations("ses_root")
-    assert existing.latest_event_sequence("ses_root") == 11
-    assert existing.load_events_page("ses_root", run_id="run_root") == incoming.load_events_page(
-        "ses_root", run_id="run_root"
-    )
     assert "ses_old_child" not in {r.session_id for r in existing.read_catalog().sessions}
     assert "ses_old_child" not in {r.session_id for r in existing.list_sessions()}
 

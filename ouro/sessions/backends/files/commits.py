@@ -59,7 +59,6 @@ from ouro.sessions.backends.files.delegations import (
     write_decision as write_delegation,
 )
 from ouro.sessions.backends.files.inputs import input_path as accepted_input_path
-from ouro.sessions.backends.files.inputs import read_state
 from ouro.sessions.backends.files.message_locations import FileMessageReference
 from ouro.sessions.backends.files.messages import FileMessageRecords
 from ouro.sessions.sqlite_compactions import (
@@ -69,8 +68,9 @@ from ouro.sessions.sqlite_compactions import (
 )
 from ouro.sessions.sqlite_connections import ExecutionConnections
 from ouro.sessions.sqlite_drafts import publish_draft, retire_draft
-from ouro.sessions.sqlite_events import insert_events, latest_sequence
 from ouro.sessions.sqlite_facts import load_required, write_call_state, write_facts
+from ouro.sessions.sqlite_inputs import read_state, write_state
+from ouro.sessions.sqlite_observation import advance_revision, read_revision
 from ouro.sessions.sqlite_requests import read_latest_header, read_request_header, write_header
 from ouro.sessions.sqlite_resources import attach_reference, insert_reference
 from ouro.sessions.sqlite_runs import read_pending_runs, read_run, write_run
@@ -112,7 +112,8 @@ class FileSessionCommits:
 
     def commit_run(self, run: RunRecord, *, session: SessionRecord) -> None:
         with self.connect(run.session_id, mode="rw") as connection:
-            if write_run(connection, run, history_epoch=session.history_epoch):
+            revision = advance_revision(connection, run.session_id)
+            if write_run(connection, run, history_epoch=session.history_epoch, revision=revision):
                 session.run_count += 1
                 write_session(connection, session)
 
@@ -131,7 +132,10 @@ class FileSessionCommits:
                 existing = find_delegation(directory, record.root_session_id, kind, key)
                 if existing is not None and existing.delegation_id != record.delegation_id:
                     raise PersistenceError(f"Delegation {kind} identity already exists")
+        with self.connect(record.root_session_id) as connection:
+            revision = read_revision(connection, record.root_session_id) + 1
         decision = FileDelegationDecision(
+            observation_revision=revision,
             record=record,
             old_parent_run_id=previous.parent_run_id if previous is not None else None,
             old_child_session_id=previous.child_session_id if previous is not None else None,
@@ -179,7 +183,6 @@ class FileSessionCommits:
             decision.result.messages
             or decision.result.truncation is not None
             or decision.inputs
-            or decision.input_states
             or decision.versions
             or decision.published_context_id is not None
             or decision.obsolete_context_id is not None
@@ -277,7 +280,7 @@ class FileSessionCommits:
         input_states = tuple(
             state
             for identity in input_ids
-            if (state := read_state(directory, session_id, identity)) is not None
+            if (state := read_state(connection, session_id, identity)) is not None
         )
         latest_context = (
             read_latest_header(connection, session_id)
@@ -302,7 +305,6 @@ class FileSessionCommits:
             else None
         )
         tool_facts, message_resources = self._prepare_tool_facts(connection, request, current)
-        event_sequence = latest_sequence(connection, session_id)
         pending_runs = (
             tuple(read_pending_runs(connection, session_id, current.history_epoch))
             if truncation is not None
@@ -320,7 +322,6 @@ class FileSessionCommits:
             request,
             current,
             harness,
-            event_sequence=event_sequence,
             truncation=truncation,
             restore=restore,
             retained_compaction_ids=(
@@ -411,8 +412,8 @@ class FileSessionCommits:
             and self.load_session_record(session_id).last_commit_id
             == decision.result.session.last_commit_id
         ):
-            # The head, facts and events committed together. Only cross-file
-            # retirement can remain after that transaction; do not replay events.
+            # The head and facts committed together. Only cross-file retirement
+            # can remain after that transaction.
             if decision.obsolete_context_id is not None:
                 input_path(directory, decision.obsolete_context_id).unlink(missing_ok=True)
             path.unlink()
@@ -426,6 +427,12 @@ class FileSessionCommits:
             if decision.record.root_session_id != session_id:
                 raise PersistenceError("Delegation decision has a foreign root identity")
             write_delegation(directory, decision)
+            with self.connect(session_id, mode="rw") as connection:
+                connection.execute(
+                    "INSERT INTO session_revisions VALUES (?, ?) "
+                    "ON CONFLICT(session_id) DO UPDATE SET revision = excluded.revision",
+                    (session_id, decision.observation_revision),
+                )
             path.unlink()
             return
         result = decision.result
@@ -438,8 +445,6 @@ class FileSessionCommits:
         self.load_harness(session_id, result.session.harness_version)
         for record in decision.inputs:
             write_model_atomic(accepted_input_path(directory, record.item.queue_id), record)
-        for state in decision.input_states:
-            write_model_atomic(accepted_input_path(directory, state.input_id, state=True), state)
         if result.messages or result.truncation is not None:
             self._write_suffix(
                 directory / "messages.jsonl",
@@ -455,6 +460,9 @@ class FileSessionCommits:
     def _apply_native(self, connection: sqlite3.Connection, decision: FileCommitDecision) -> None:
         result = decision.result
         session_id = result.session.session_id
+        revision = advance_revision(connection, session_id)
+        for state in decision.input_states:
+            write_state(connection, state, revision=revision)
         self.messages.index.apply(
             connection,
             decision.message_references,
@@ -463,7 +471,7 @@ class FileSessionCommits:
         )
         write_facts(connection, decision.tool_facts.records)
         for call_state in decision.call_states:
-            write_call_state(connection, call_state)
+            write_call_state(connection, call_state, revision=revision)
         for identity in decision.removed_compaction_ids:
             connection.execute(
                 "DELETE FROM compactions WHERE session_id = ? AND compaction_id = ?",
@@ -472,7 +480,7 @@ class FileSessionCommits:
         for item in decision.updated_compactions:
             update_compaction_boundary(connection, item)
         if decision.compaction is not None:
-            insert_compaction(connection, decision.compaction)
+            insert_compaction(connection, decision.compaction, revision=revision)
         if decision.obsolete_context_id is not None:
             retire_draft(connection, session_id, decision.obsolete_context_id)
         if decision.request_header is not None:
@@ -489,7 +497,9 @@ class FileSessionCommits:
         for run in decision.runs:
             if run.session_id != session_id:
                 raise PersistenceError("Session decision contains a foreign Run")
-            write_run(connection, run, history_epoch=result.session.history_epoch)
+            write_run(
+                connection, run, history_epoch=result.session.history_epoch, revision=revision
+            )
         if result.truncation is not None:
             connection.execute(
                 "UPDATE runs SET needs_recovery = 0 WHERE session_id = ? "
@@ -499,7 +509,7 @@ class FileSessionCommits:
         write_session(connection, result.session)
         for reference in decision.resources:
             insert_reference(connection, session_id, reference)
-        insert_events(connection, result.events)
+        result.published_at(revision)
 
     def commit_outcome(
         self, outcome: ToolOutcomeRecord, resources: tuple[SessionResourceReference, ...] = ()
@@ -514,6 +524,8 @@ class FileSessionCommits:
                 existing=load_required(connection, outcome.session_id, proposed),
             )
             write_facts(connection, prepared.outcomes)
+            if prepared.outcomes:
+                advance_revision(connection, outcome.session_id)
             for reference in resources:
                 attach_reference(connection, outcome.session_id, reference)
         return outcome

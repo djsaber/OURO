@@ -490,22 +490,23 @@ async def test_two_owned_sessions_keep_streaming_across_welcome_and_reentry(
         assert app._projection.session_id == alpha
         assert app._projection.activity.status == "running"
         entered, release = asyncio.Event(), asyncio.Event()
-        run_record = app._controller.run_record
+        conversation = app.query_one(ConversationView)
+        add_summary = conversation.add_run_summary
 
-        async def held_run_record(*args, **kwargs):
+        async def held_summary(*args, **kwargs):
             entered.set()
             await release.wait()
-            return await run_record(*args, **kwargs)
+            return await add_summary(*args, **kwargs)
 
-        monkeypatch.setattr(app._controller, "run_record", held_run_record)
+        monkeypatch.setattr(conversation, "add_run_summary", held_summary)
         try:
             provider.finish("Alpha")
             await asyncio.wait_for(alpha_worker.wait(), 60)
-            await wait_for_events(entered, pilot=pilot, description="terminal summary read")
-            # Execution and the terminal projection precede the summary read
+            await wait_for_events(entered, pilot=pilot, description="terminal summary application")
+            # Execution and the terminal projection precede the summary application
             # and transcript freeze. Neither is the content-application receipt.
             assert app._projection.activity.status == "completed"
-            assert app._observation_subscription.applied_sequence < app._projection.last_sequence
+            assert app._observation_delivery is not None
         finally:
             release.set()
         await wait_for_observed_status(pilot, status="completed")

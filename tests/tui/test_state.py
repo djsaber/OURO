@@ -9,7 +9,6 @@ from ouro.core.events import EventRecord
 from ouro.core.state import RunRecord
 from ouro.tui.state import (
     TuiSessionProjection,
-    canonical_event_order,
     format_duration,
     format_reasoning_label,
     project_run_presentation,
@@ -367,24 +366,16 @@ def test_projection_rejects_other_session_events() -> None:
     assert projection.assistant_text == ""
 
 
-def test_projection_restore_advances_to_snapshot_high_water() -> None:
+def test_projection_restore_keeps_online_delivery_sequence() -> None:
     projection = TuiSessionProjection("ses_test")
 
     projection.restore(
         (_event(2, "model_text_delta", text="loaded"),),
-        event_high_water=5,
     )
 
-    assert projection.last_sequence == 5
-    assert projection.apply(_event(4, "model_text_delta", text="duplicate")) is None
+    assert projection.last_sequence == 2
+    assert projection.apply(_event(2, "model_text_delta", text="duplicate")) is None
     assert projection.assistant_text == "loaded"
-
-
-def test_canonical_event_order_reuses_ordered_tuple_and_repairs_inversions() -> None:
-    ordered = (_event(1, "model_text_delta", text="first"), _event(2, "run_completed"))
-
-    assert canonical_event_order(ordered) is ordered
-    assert canonical_event_order(reversed(ordered)) == ordered
 
 
 def test_projection_exposes_live_event_delivery_failure() -> None:

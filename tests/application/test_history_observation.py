@@ -37,46 +37,19 @@ def store(tmp_path, request):
     return result
 
 
-@pytest.mark.parametrize("old_events", [4, 256])
-def test_current_snapshot_restores_draft_and_interactions_without_event_history(
-    store, monkeypatch, old_events
-):
+def test_current_snapshot_restores_draft_and_interactions_without_event_history(store, monkeypatch):
     session = SessionRecord(status="running")
     run = RunRecord(session_id=session.session_id, status="running", model="current-model")
     session.active_run_id = run.run_id
     store.create_session(session)
     store.save_run(run)
-    for index in range(old_events):
-        store.append_ordered_event(
-            EventRecord(
-                session_id=session.session_id,
-                run_id=run.run_id,
-                event_type="diagnostic",
-                payload={"message": f"old event {index}"},
-            )
-        )
     persist_response_draft(store, run, turn_id="turn_current", text="current", reasoning="think")
 
-    def no_event_history(*args, **kwargs):
-        raise AssertionError("snapshot read historical event bodies")
-
-    monkeypatch.setattr(store, "load_events_page", no_event_history)
-    monkeypatch.setattr(store, "load_events_after", no_event_history)
-    if isinstance(store, LocalSessionStore):
-        monkeypatch.setattr(store, "_read_events_for_run", no_event_history)
-    else:
-        load = store._load_models
-
-        def no_decode(connection, query, parameters, model_type):
-            assert model_type is not EventRecord
-            return load(connection, query, parameters, model_type)
-
-        monkeypatch.setattr(store, "_load_models", no_decode)
     service = SessionService(store)
     for limit in (None, 3):
         snapshot = service.observation_snapshot(session.session_id, history_limit=limit)
         assert all(event.stream is not None for event in snapshot.events)
-        assert snapshot.event_high_water == old_events
+        assert snapshot.position.revision == store.observation_revision(session.session_id)
         projection = restore_session_content(snapshot)
         assert projection.assistant_text == "current"
         assert projection.reasoning_text == "think"
@@ -195,7 +168,6 @@ async def test_late_run_event_keeps_its_original_epoch_after_undo(store):
         )
         assert withdrawn.events[0].history_epoch == 1
         assert late.history_epoch == 0
-        assert late.sequence > withdrawn.events[0].sequence
         activity = project_runtime_activity_state(withdrawn.session, None, sequence=0)
         assert reduce_runtime_activity(activity, late).activity == "idle"
         projection = SessionContentProjection(session.session_id, history_epoch=1)
@@ -284,8 +256,8 @@ def test_failed_read_releases_boundary_for_another_writer(store):
     # Use another thread so a leaked thread-reentrant file lock cannot mask the failure.
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(
-            store.append_ordered_event,
-            EventRecord(session_id=session.session_id, event_type="session_created"),
+            store.save_session,
+            session.model_copy(update={"title": "changed"}),
         )
-        assert future.result(timeout=5).sequence == 1
-    assert SessionService(store).observation_snapshot(session.session_id).event_high_water == 1
+        future.result(timeout=5)
+    assert SessionService(store).observation_snapshot(session.session_id).session.title == "changed"

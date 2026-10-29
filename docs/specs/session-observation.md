@@ -9,9 +9,9 @@
 
 - **控制会话（controlled Session）**：Host 当前允许写入或执行控制动作的 Session。
 - **可见会话（visible Session）**：Host 当前渲染的 Session。它可以不同于控制会话。
-- **观察状态（observation state）**：某 Session 的 canonical snapshot、事件游标和派生投影。
+- **观察状态（observation state）**：某 Session 的事实快照、已确认位置和派生投影。
 - **关系事件（agent relation event）**：描述 Delegation/Agent 生命周期而非 child 内容的 `agent_*` 事件。
-- **高水位（high-water mark）**：某 snapshot 已包含的最大 Session event sequence；无事件时使用 `0`。
+- **已确认位置**：消费者已经应用的事实修订号、消息位置和当前请求的草稿偏移。
 
 ## 强制架构不变量
 
@@ -22,11 +22,10 @@
 4. child 导航身份必须至少包含 `parent_session_id`、`parent_run_id`、`parent_batch_id`、`parent_tool_call_id`、`delegation_id` 和
    `child_session_id`；缺失或不一致时 fail closed。
 5. ToolCall 身份必须在所属 parent Session/Run/batch 内解释，不能假设 `tool_call_id` 跨批次唯一。
-6. 每个 Session 的 event sequence 独立单调；Host 不得跨 Session 比较 sequence 或构造虚假的全局事件顺序。
-7. canonical EventRecord 必须先持久化再进入实时 fan-out；实时队列有界且 overflow/lag 必须可检测。
-8. snapshot/history 必须暴露一致的 event high-water；live 观察必须支持 `after_sequence`，语义为只交付 sequence
-   大于该值的事件。
-9. Host 必须按 `(session_id, sequence)` 去重；重连和 snapshot/live 交接不得重复渲染或遗漏 canonical 事件。
+6. 在线 event sequence 只在当前进程的交付来源内排序，不是持久游标，也不得跨 Session 或进程比较。
+7. 状态与成果先提交，再发布在线通知；不永久保存 EventRecord。实时队列有界，遗漏可以检测。
+8. 快照的事实、修订号和草稿在同一只读边界内取得；后续观察按已确认位置读取新增正文和变化后的状态。
+9. 本地通知与补齐重叠时，按提交位置、消息身份和请求偏移去重；一个提交的最后一项通知才确认完整提交。
 10. 观察订阅关闭或切换可见会话不得关闭 child Session 或改变 child Run；共享 Application 中关闭单个 Host adapter
     也不得关闭 Runtime。拥有整个 Application/进程的 composition root 仍按明确的 Host shutdown policy 释放 Runtime。
 11. `session_kind`、root/parent identity 是 Application 事实；“subagent 在某 Host 中只读”是 Host 策略。
@@ -35,15 +34,12 @@
 13. 不可见 Session 可以暂停 UI 渲染，但再次打开时必须从最后确认游标或 canonical snapshot 收敛后再宣称同步。
 14. 任一会话的 lag、重连或渲染错误不得污染其他 Session 的投影和游标。
 15. Session 观察不依赖执行所在的 Runtime 或进程。共用 home 和会话后端的 Host 必须能够持续观察另一进程
-    写入的事件；Run 完成后，订阅仍能接收同一 Session 的后续 Run。
+    写入的事实与当前草稿；Run 完成后，订阅仍能接收同一 Session 的后续 Run。
 
-工具业务事件与其原生状态提交共享 sequence。持久事件中的 Call/Outcome 引用由 Application 的事件读取和
-实时通知边界解析；Host 仍获得 arguments/result_data 展示值，无需直接查询存储。固定 Outcome attempt 保证
-事件追赶不会采用后来一次执行的结果；相关提交语义见[工具与交互](tools-and-interactions.md#observer-与事件)。
-
-输入、Run 启停、continuation 结算、controller 引起的取消/停止、turn-policy 反馈和摘要激活的小事件
-同相应业务状态提交。Runtime 通知不再次写事件；丢失进程内通知时，通过持久 sequence 追赶。
-具体状态边界分别见[运行时](runtime.md)与[上下文及压缩](context-and-compaction.md)。
+每次事实提交推进一次会话修订号。Run、Input 状态、Call 状态和摘要各保存自己的最新修改号，
+补齐查询只读取发生变化的当前记录，不保存历史变更清单。消息使用已有顺序索引，草稿使用已有请求偏移。
+本地通知直接携带执行者已有的内容，不为每条通知重新查询存储。工具结果、授权、失败原因与执行恢复依据
+分别由原生事实负责，不依赖通知是否成功送达。
 
 ## Application 关系投影
 
@@ -88,136 +84,74 @@ text, reasoning, tool, interaction, run, compaction, lifecycle, agent, unknown
 其他 `agent_*` 事件必须至少包含 `delegation_id`，并在关系已绑定时包含 child identity。Application 投影必须对要求
 字段做类型验证。
 
-## Session snapshot 与事件游标
+## Session snapshot 与已确认位置
 
-Host 可观察的 Session snapshot 至少包含：
+`SessionObservationSnapshot` 包含 Session、选定消息窗口、相关 Run 与摘要、待处理输入、当前工具与交互、
+当前请求小头、有效上下文指标和当前 Draft。`events` 只承载当前 Draft 的显示分片，不包含历史通知。
+`position` 包含事实修订号、消息位置和草稿偏移；分页时附带仅在内存使用的事实页位置。
 
-- `SessionView`；
-- canonical messages；
-- 与展示相关的 Run/compaction 投影；
-- 待处理直接用户输入及其等待的活动 Run；
-- 当前 Call 的审批/提问投影、活动工具状态、当前请求小头与 Draft 前缀；
-- snapshot 已覆盖的 `event_high_water`；
-- 必要的 diagnostics。
+快照与后续事实页都在 `SessionRepository.session_read` 内取得一致数据。SQLite 使用短读事务，Files 使用短会话锁；
+嵌套查询共享资源寿命。存储边界在通知脱敏、界面排版及异步等待前释放。观察不启动执行、申请 Run 所有权或恢复任务。
 
-snapshot 的 Session、message/event/context、待处理输入与高水位在 Application 管理的一致性只读边界内读取。
-`SessionRepository.session_read` 组合必要的同步查询：SQLite 复用同一读事务，不预留写锁；文件后端持有短会话锁。
-同一会话的嵌套查询共享外层资源寿命；事件追赶页的事实解析不逐条重建资源锁或 Files 读取边界。
-边界在投影、模型配置解析、排版和异步等待之前释放，Host 不直接管理存储事务。待处理输入从已经读取的 Session
-投影，不额外加载历史，也不清理或改写队列；`waiting_on_run_id` 为空表示输入可参与新 Run 调度，不代表已取得执行容量。
-插件显示名和控制标签等附加展示信息独立查询，不扩大正文快照的事务范围。必须保证：
+`observe_session(history_limit=...)` 可选择近期窗口，省略时读取完整历史。`history_window` 按消息顺序返回消息、
+所属 Run 和锚定在该页的摘要。摘要通过消息顺序范围关联已有索引，查询参数不随页内消息数量增长。条数是软限制，完整模型轮次、工具帧和同批输入不能被初始历史窗口拆开。
+`before_cursor` 仅对所属 Session 和 `history_epoch` 有效；Files 按正文偏移、SQLite 按消息索引定位，不读取无关前缀。
+`SessionHistoryAnchor(history_epoch, first_sequence)` 保留已加载窗口起点，向前加载历史不推进实时确认位置。
+完整导出不受显示窗口影响。只有撤销等历史代次改变才替换快照；普通继续运行保留已呈现历史。
 
-- 在边界之前持久化的事件包含在 snapshot 或 replay 中；
-- 在边界之后持久化的事件由 replay/live 交付；
-- 边界事件最多渲染一次；
-- active Run 的 partial text/reasoning 来自当前 Draft；工具状态与待处理审批/提问来自当前 Call。
-- 输入队列与正文使用同一消费边界，Host 加载快照时不以之后的队列状态替换快照中的事实。
+## 统一增量观察
 
-上下文状态和有效 token metrics 使用轻量 `ModelRequestHeader` 查询，与 Session/Run 共享只读边界；
-稳定查询路径不物化完整 provider context。当前请求可以是摘要请求，其小头独立于最近普通输入。
-完整参数与媒体内容由显式 Manifest 查询物化，规则见[会话持久化](session-persistence.md)。
+`RuntimeSupervisor.observe_session` 返回 `SessionObservation`。订阅先登记，再读取一致快照；共享跟踪器的初始
+活动与起始位置也在同一读取边界内取得，避免旧状态配上新位置而漏掉变化。
 
-`observe_session(history_limit=...)` 可只读取近期消息；不指定时保留完整历史快照语义。
-`SessionService.history_window` 提供 tail 与 exclusive before 窗口，按 canonical 顺序返回消息、所属 Run 和
-锚定于页内消息的 compaction。条数是软限制：model turn、工具 request/result 和同批输入不得被窗口边界拆开。
-compaction 保留自身 coverage 与 lineage，不要求把已压缩的全部正文带入窗口。
+`get()` 返回一页 `SessionObservationBatch`：初次包含 snapshot；后续包含当前事实、新消息或在线通知。
+消费者应用后调用 `acknowledge(batch)`，才推进 `applied_position`；未确认时重复 get 返回同一页。
+每个消费者独立确认，慢消费者不能阻塞执行者或其他观察者。
 
-`before_cursor` 是后端不透明位置，仅对所属 Session 和 `history_epoch` 有效。向前读取必须携带代次；
-代次改变时返回新代次与空页，由正文观察提供替换快照，不能将新旧页混合。文件后端倒读完整 JSONL 记录，
-SQLite 按索引逆序读取；读取足够完整帧后关闭迭代器并释放事务，不物化未请求的前缀。
+跨进程观察、重进会话和缓存遗漏统一调用 `SessionService.observation_changes`：
 
-Host 可用 `SessionHistoryAnchor(history_epoch, first_sequence)` 保留已加载窗口的起点；这是消息顺序锚点，
-不是事件确认游标或存储 before 游标。`retain_history_from` 使同代次的观察重置保留该起点；历史代次改变时
-锚点失效，恢复初始窗口策略。较早历史加载不会推进事件确认水位。完整导出与 replay 独立于显示窗口。
+1. 读取会话修订号与当前请求小头。事实未变化时只续读当前草稿。
+2. 事实变化时按索引分页读取修改过的当前记录，按消息位置读取缺少的正文。
+3. 正文和状态追齐后继续读取草稿，避免新输出越过缺少的旧正文。
+4. 应用并确认实际消费的位置。未收到通知不影响下次发现变化，不重建过去的生命周期通知。
 
-交互式观察 attach 不读取活动或已结束 Run 的旧事件。`SessionObservationSnapshot.events` 只携带当前 Draft
-的 text/reasoning 投影，`current_request` 和 Run 提供当前阶段，`active_tool_calls` 与 `pending_interactions`
-来自当前 Call。取消请求、终态 Run 和不同 history epoch 的旧交互不会恢复为可操作项。
-`restore_session_content` 使用这些固定快照值，订阅从高水位继续追赶。永久事件仍可通过显式 replay 查询。
-稳定路径成本由选定历史窗口、当前批次、Draft 与边界后新增事件决定，不随活动 Run 的旧事件数量增长。
-两个后端的 `after_sequence` replay 均使用原生 sequence 索引，只解码所选后缀。
-最新事件水位只读取索引中的最大 sequence，不读取事件正文；Run 分页使用 Session/Run 行游标索引。
-查询列由单份事件 JSON 生成并建立原生索引，不保存另一份事件身份正文；观察作用域内的嵌套查询共享读事务。
-事件与 Session、Run 及调用事实在同一事务发布，读者不会看到缺少对应执行状态的事件。
-不存在独立事件日志、可丢弃事件索引或损坏后扫描回退。当前 Draft 使用自己的原生页，不逐 token fsync。
+每个被观察 Session 在同一 Supervisor 内共享一个跟踪器，后台事实页最多 128 条；消费者遗漏后的补齐页大小由
+观察参数控制。运行或排队时最多每 100 ms 检查外部写入，空闲时每 500 ms；本地缺口立即唤醒。
+所有磁盘读取在受管理线程执行，正文与状态观察全部关闭后停止读取。
+历史代次改变时，共享跟踪器同时重置消息位置、事实分页位置和草稿偏移；消费者只重建失效的快照。
+旧代次的 Run 仍可保留审计事实，但不能恢复为当前活动或待处理交互。
 
-订阅通知必须包含 Session identity、event sequence 和可区分的 event/lag/closed 状态。发生 lag 时，通知必须给出恢复
-所需的最后安全游标或明确要求 Host 重新加载 snapshot。Host 完成恢复后方可恢复 synced 状态。
+本地连续通知直接交付，不等待轮询。提交通知携带提交修订号及其之前的消息位置，最后一项携带完整确认位置。
+若缺少早先正文，则交给同一事实读取管线补齐，避免晚到的旧正文排在新输出之后。纯在线进度不确认事实提交。
+状态订阅只保留一个合并通知；Draft 增长不推进事实修订号，也不逐字刷新任务树。
 
-## 通用正文观察
+当前响应使用 `ResponseStreamPosition(context_id, after_cursor, cursor)`。草稿保存可恢复前缀后即交付本地通知；
+工具参数片段仅在线预览。正式 assistant 消息提交后关闭 Draft，遗漏的正文由消息补齐，已显示前缀不重复追加。
+新请求重置草稿偏移。跨进程读取不会永久保存或恢复每一个 token 的原始切分。
 
-`RuntimeSupervisor.observe_session` 返回 `SessionObservation`，在一致快照后接入同一共享事件来源。
-该入口只读取显示事实，不启动 Supervisor worker、不申请执行锁，也不调用执行恢复。关闭观察只释放本观察资源。
+`SessionContentProjection` 负责通用正文、活动、工具与交互投影。`assistant_text`、`reasoning_text` 只保留当前请求，
+提交后释放原分片对象，下次请求清空。它不依赖 Rich、Textual、布局、滚动或执行控制。历史 Run 结束与摘要展示按
+消息边界排列；Host 只把缺少的内容追加到已有视图，不重新排版整段历史。
 
-`get()` 交付 `SessionObservationBatch`：初始批次携带 snapshot；后续批次携带有序、脱敏的 `RuntimeEventView`
-和相关 canonical 输入消息。每个观察者只保留一页待确认内容。消费者成功应用内容投影后调用 `acknowledge(batch)`；
-仅取出、入队或交给 renderer 不推进 `applied_sequence`。未确认时再次读取仍得到同一批次；不能确认其他观察者的批次。
-快照也须在恢复其内容后确认，历史排版与终端绘制可以随后进行。
+## 历史代次与失败
 
-实时缓存容量和补读页大小分别配置。缓存 lag 后，观察从本消费者已应用的游标通过 `load_events_after` 分页追赶，
-追赶跨度不受缓存容量限制；永久页与实时缓存重叠按 sequence 丢弃，持续写入仍通过同一来源衔接。
-持久化页证明序号区间的完整性，允许导入历史中的序号间隔，不构造缺失事件。临时缓冲受页大小与缓存容量约束。
-整页永久事件、当前历史代次、正文引用和后续 Draft 在同一 Session 读边界内获取；一页共享一次历史代次读取。
-是否还有永久事件由该边界内的分页结果决定，不在另一个读取时点重新查询尾部水位。
-实时投递和持久化追赶使用相同的快照失效规则：历史代次改变或当前代次的 Run 恢复检查点时交付新快照，
-确认前不推进应用游标；旧代次的恢复事件不能重置当前投影。输入消息点查与事件批次核对相同历史代次。
+Session、消息页和活动投影携带 `history_epoch`；Run 通知保留其所属代次。撤销递增代次，保留业务审计事实，
+不存在永久通知历史。旧代次通知在解析消息引用前过滤。新代次通过标准快照入口重新同步。
 
-当前响应另带 `ResponseStreamPosition(context_id, after_cursor, cursor)`；其 sequence 是最近永久事实的水位，
-同一 sequence 下可以有多个 Draft 片段，不能仅按永久序号去重。确认批次同时推进当前请求偏移。
-同一读取边界取得当前头与 Draft 内容，物化后交给观察者；新请求重置偏移。工具参数 cursor 为 None，只作实时通知。
-请求结束后 `model_response_committed` 的消息引用补齐可能漏收的正文前缀，已显示部分不重复追加，
-永久事件不保存完整响应或原 token 切分。快照恢复当前 Draft，不扫描永久分片日志。
-
-`SessionContentProjection` 及 `restore_session_content` 负责活动、工具、交互和 text/reasoning 的通用恢复；
-`assistant_text` 和 `reasoning_text` 只保存当前请求的输出，新请求开始或首次接到新请求片段时清空旧值。
-响应提交后合并并释放该请求的原分片对象，保留当前完整值至下一请求/Run；不累计整 Run transcript。
-`ProjectionUpdate` 仍只交付需要追加的增量，已呈现历史由 Host 的历史视图承担，显式历史查询读取消息事实。
-`active_stream_tail` 根据同一快照中的 canonical assistant 消息判定已覆盖的 model turn。
-`model_message_completed` 只说明模型流结束，不能证明对应消息已提交；未被消息覆盖的尾部必须保留。
-这些投影不依赖 Rich、Textual、布局、滚动或任何执行控制。
-
-共享来源失败向所有依赖它的观察者交付原 diagnostic，并停止这些失败订阅；另一观察者的新订阅不复活旧订阅。
-单个观察者的分页读取失败只关闭该观察，保留已应用游标和错误类别。重新打开是明确的重试入口，不自动无限重载。
-
-## 历史代次
-
-Session snapshot、消息点查和活动投影携带 history_epoch；Run 事件携带其不可变归属代次，提交事件携带
-原生决定的代次。sequence 继续单调，撤销不删除审计事件。
-
-Host 在解析消息身份之前过滤旧代次事件。点查 `messages_at_history` 在同一读取边界返回当前代次：若历史
-已变化则重载标准 snapshot/live 交接；若代次一致而消息缺失则保留真实持久化错误。新代次活动从当前
-Session/Run 构建，旧 job 和旧 Run 事件不能覆盖它。增量投影与终态快照使用同一代次规则。
-
-## 持续事件跟踪
-
-`RuntimeSupervisor.subscribe` 提供统一的 Session 事件流，用户、自动任务和子智能体使用同一契约。
-`SessionEventStream` 在应用层合并进程内推送和持久化事件，不依赖调度器、任务状态、TUI 或具体存储后端。
-
-- 订阅先登记，再读取 replay；持久化跟踪的起始水位必须在读取 replay **之前**取得，使读取期间的新增事件
-  仍被后续增量覆盖。每个订阅开始读取 replay 前，共享跟踪器必须已经建立；并发订阅不得各自在读取完成后
-  推进共享起点。replay 与实时通知按 Session sequence 去重。
-- 本地连续事件直接推送，不引入逐 token 查询或等待；发现序号缺口时先读取持久化区间，再交付较新的本地事件。
-  持久化页提供完整顺序，可以跨过规范历史中不存在事件的序号，不能因此无限重读。
-- 每个被观察 Session 在同一 Supervisor 内共享一个跟踪器。使用 `SessionStore.load_events_after` 每页最多
-  256 条增量读取；不轮询完整 transcript，不扫描未订阅 Session，不为不同后端增加另一套观察路径。
-- 运行或排队时最多每 100ms 检查一次外部写入，空闲或已结束时每 500ms 检查；本地序号缺口立即唤醒。
-  长工具没有 token 输出时仍持续观察。磁盘读取在受管理线程边界执行，不阻塞 Host event loop。
-- 正文订阅保留独立、有界缓冲；慢订阅的 lag 不暂停执行者或其他订阅。状态订阅只保留一个合并通知，活动改变
-  和选定关系事件在入队前筛选；消费者按需查询最新状态。正文与状态观察全部关闭后停止该 Session 的增量读取，
-  Supervisor 关闭时等待在途读取完成。
-- 持久化读取失败通过 `runtime_subscription_read_failed` 报告，并停止该跟踪器。Host 显示错误并关闭失效订阅，
-  用户重新打开会话可重试；不得静默停留，也不得无休止地自动重载历史。
+共享读取失败向依赖该来源的订阅交付 `runtime_subscription_read_failed` 并停止来源；单消费者补齐失败只关闭
+该观察并返回 `session_observation_read_failed`。缓存溢出报告 `runtime_subscription_lagged`，从已确认位置补齐。
+错误不会被静默当成同步完成，也不会触发无限历史重载；重新打开是明确的重试入口。
 
 ## TUI adapter 行为
 
 ### 多 Host 状态与时序
 
-- Supervisor job/handle 描述单个进程的一次执行尝试；已绑定 Run 的 Session 活动由持久化 Run 与有序事件决定。
+- Supervisor job/handle 描述单个进程的一次执行尝试；已绑定 Run 的 Session 活动由 Run 等当前事实和在线通知共同投影。
   排队接管、竞争失败或旧 job 延迟返回不得覆盖较新的会话状态。调度器仅在尚未绑定 Run 时投影临时排队/启动状态。
 - 持续观察时，活动查询复用共享跟踪器维护的投影，不逐次读取磁盘。未持续观察的缓存不可用于新订阅或按需查询，
   因为其他 Host 可能已更新同一个 Run。
 - 按需状态查询读取 Session 引用的 active/last Run，不枚举全部 Run。活动快照在同一 Session 只读边界内读取
-  Run 和事件水位，避免“旧状态配新游标”吞掉终态事件；该读取仍遵循受管理线程与有界查询的既有约束。
+  Run 和事实位置，避免“旧状态配新游标”漏掉终态变化；该读取仍遵循受管理线程与有界查询的既有约束。
 - 失败、中断或可恢复 Run 保留的 ToolBatch 属于恢复检查点。实时投影与重新打开时均将未结算工具投影为对应终止
   状态，保留已提交结果并停止动画；耗时优先使用持久化结束时间，不修改恢复检查点本身。
 
@@ -232,7 +166,7 @@ TUI 必须实现：
 5. 从 root Agent tree 投影同一主会话下全部已知 child（包括嵌套派发），按 `parent_run_id` 保留 Run 分组，并提供
    root/child 与 child/child 直接切换路径。
 6. 主会话和每个 child 使用独立 projection/cursor；交错事件不能串流、覆盖或错误去重。
-7. 切换期间新到事件必须被缓存、投影或在 durable replay 中恢复，不能因 widget 重建而丢失。
+7. 切换期间新到事件必须被缓存、投影或在 事实补齐中恢复，不能因 widget 重建而丢失。
 8. active root 或 active child 不得成为只读视图切换的阻止条件。
 9. 视图切换不应阻塞 Textual event loop 的持续刷新；大历史装载必须分块/yield。
 10. 关闭 TUI 必须释放所有观察任务/订阅；复用共享 Application 时不得终止后台 Session。若 TUI 是 Application 的
@@ -249,7 +183,7 @@ TUI 必须实现：
     或 child 节点都通过与键盘相同的单飞切换入口打开目标 Session；child 选中时展示 Agent 名称和任务描述。
 15. 安装 Session surface 时先重建 snapshot 内的未完成响应，再接入同一有界事件队列，继续使用原有按帧批量渲染。
     切换后旧订阅不得继续向新 surface 投递事件；安装被取消时必须关闭尚未接管的订阅。
-16. Run 结束标签由公共终态事件渲染链路生成，执行端的 `RunResult` 回调不单独追加标签。Host 通过 Application
+16. Run 结束标签由终态通知或补齐事实驱动的同一呈现逻辑生成，执行端的 `RunResult` 回调不单独追加标签。Host 通过 Application
     按 `(session_id, run_id)` 读取精确 Run 记录，用持久化起止时间计算耗时，并使用该 Run 的模型请求端点名称。
     标签按 Run 去重，在本次内容之后、下次 Run 内容之前插入；不得为结束标签重载整个 Session 历史。
 
@@ -279,8 +213,8 @@ Run 的 `model_endpoint_id` 记录最近一次已提交模型请求的端点身�
 
 - 关系 DTO 与 `agent_spawned` 完整 identity/schema 测试；
 - `agent_* -> category=agent` 及 child 内容分类测试；
-- snapshot high-water + `after_sequence` 无缝交接测试；
-- bounded lag 后 durable replay、去重和顺序测试；
+- 快照位置与本地通知、事实页无缝交接测试；
+- 有界缓存遗漏后的事实补齐、去重和顺序测试；
 - 历史/实时 SpawnAgent 工具点击测试；
 - child 只读且 root 控制目标不变测试；
 - root 与至少两个 child 交错流、多次切换、切换窗口新事件测试；
@@ -292,18 +226,17 @@ Run 的 `model_endpoint_id` 记录最近一次已提交模型请求的端点身�
   `tests/tui/test_run_summaries.py`。
 - TUI 退出资源释放且 child 继续运行测试；
 - Local 与 SQLite 后端相关契约测试，以及全局质量门。
-- 独立 Runtime 持续写入、snapshot 读取期间新增事件、本地/外部事件交错、持久化序号缺口、共享有界跟踪与
+- 独立 Runtime 持续写入、snapshot 读取期间新增事件、本地/外部事件交错、通知遗漏、共享有界跟踪与
   退出后停止 I/O、读取故障诊断：`tests/application/test_session_event_following.py`。
 - 另一 Runtime 自动运行任务，TUI 在工具执行时进入、完成前继续渲染文本、切换离开与返回后补齐并继续流式：
   `tests/tui/test_live_session_attachment.py`；取消安装释放订阅：`tests/tui/test_async_observation.py`。
 - 双 Host 交替审批、竞争同一审批、旧 job 延迟结算、子会话初始化失败后同步唤醒父会话：
   `tests/application/test_agent_multi_host.py`；跨 Host 等待态锁交接、超时和取消：`tests/application/test_run_ownership.py`。
 - 两个 TUI 同时订阅工具执行与连续 Run、结束标签去重，以及失败工具在实时与重开后的动画停止：
-  `tests/tui/test_live_session_attachment.py`；未订阅缓存失效、精确 Run 查询和快照水位一致性：
+  `tests/tui/test_live_session_attachment.py`；未订阅缓存失效、精确 Run 查询和快照位置一致性：
   `tests/application/test_session_event_following.py`。
-- 大型 Local event journal 下 active Run 定位和 `after_sequence` replay 的有界反序列化测试；派生索引缺失/损坏
-  回退及 delta group-commit 不回归测试。
-- 超过 8KB 的事件尾部、跨块 UTF-8、真实尾部损坏与独立进程逐次跟踪大事件：
-  `tests/sessions/test_local_files.py`、`tests/sessions/test_event_tail_process.py`。
+- 当前事实索引分页、同次提交多记录与并发修改：`tests/sessions/test_observation_positions.py`。
+- 独立进程持续追加大正文、双后端后缀读取：`tests/sessions/test_event_tail_process.py`。
+- 慢消费者独立确认、遗漏前缀与本地输出衔接：`tests/application/test_session_observation.py`。
 
 TUI 呈现、导航和只读交互见 [TUI 规格](tui.md)。

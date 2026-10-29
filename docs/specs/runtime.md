@@ -163,8 +163,8 @@ history epoch 内将 `aborted`、`failed`、`paused`、`recoverable` Run 重新�
 application 用例负责取得 mutation lock 并准备业务字段。预留与启动、正常完成、失败、暂停、取消请求和取消终态
 通过同一 `SessionCommit` 保存 Run 与 Session 投影；完成或失败产生的最终 assistant 消息也在该提交中。
 消息头和数量由提交边界从当前 Session 推进，不接受 Driver 的历史列表重算。已提交的模型响应不重复追加。
-已终结或正在取消的 Run 不接受新的完成输出。对应的业务事件与状态在同一 Session 提交中保存，
-持久化成功后才通知订阅者；恢复只补齐原提交允许的存储效果。
+已终结或正在取消的 Run 不接受新的完成输出。业务状态与事实修订号在同一 Session 提交中保存，
+成功后才发送在线通知；恢复只补齐原提交允许的存储效果。
 账本记账、continuation、tool batch 审计和消息游标等不改变 Run status 的写入不属于状态迁移。
 
 ### Message 与 model turn
@@ -198,7 +198,7 @@ application 用例负责取得 mutation lock 并准备业务字段。预留与�
 4. `RunLifecycle.start` 持久化 active Session/Run。
 5. 输入消息按提供方给出的 role、scaffold、semantic tag 和 provenance 原样持久化并产生事件。
 6. `InnerAgentLoop` 通过 `RunModelRequests` 请求模型。宿主复用已加载的 canonical messages 准备上下文，
-   检查预算、提交请求计数并调用 request-local `RuntimeAdapter`；正常模型轮次不得重新加载完整 Session 事件历史。
+   检查预算、提交请求计数并调用 request-local `RuntimeAdapter`；正常模型轮次不得重新加载完整 Session 历史。
 7. 模型文本和 reasoning 先追加当前 Draft，再通知观察者；工具参数片段只作实时观察。
    `done` 后完整工具调用交给 `ToolCallCoordinator`，正式消息与请求响应关闭和 Draft 清理同提交。
 8. waiting 状态通过 approve/reject/AskUser 或 child 结果恢复同一 Run。
@@ -207,23 +207,13 @@ application 用例负责取得 mutation lock 并准备业务字段。预留与�
 
 `RunResult` 仅包含 Session/Run、最终文本、原始用量摘要、错误码与 `had_tool_error`。它描述本次调用，
 不持有整 Run 的 events、tool_results 或 usage IDs，也没有隐式加载这些历史的属性。
-Driver 只拥有当前响应/批次及错误标志，已完成批次的正文从执行链释放；需要历史时显式查询消息、事件和 Outcome。
-CLI print 使用有界事件订阅呈现实时输出，JSON 返回上述摘要；显式事件查询仍可取得永久事实，不能回放已结束请求的 token 切分。
+Driver 只拥有当前响应/批次及错误标志，已完成批次的正文从执行链释放；需要历史时显式查询消息和 Outcome。
+CLI print 使用有界事件订阅呈现实时输出，JSON 返回上述摘要；显式消息查询取得历史成果，不提供历史通知回放。
 
-Run 启动、恢复、完成、失败、暂停、取消意图及取消终态的小事件与相应 Run/Session 状态同提交；提交后的通知可以丢失，
-订阅以已有 sequence 追赶，不通过重新执行业务补通知。
-
-普通队列入队、Host 输入接受和 plugin 原子输入批次的入队事件随 Input/队列状态提交；重复接受同一身份不追加通知。
-直接用户输入取消的事件与取消状态同提交，不能在已经消费后再生成取消通知。输入启动新 Run 时，Run、消费状态、
-消息及来源事件同提交；活动 Run 消费 steering 时，消息、消费状态与 `queued_input_consumed` 同提交。
-事件保存消息和输入身份及来源元数据，输入正文仍由 Input 拥有。
-
-terminal continuation 的 resolved checkpoint、自动续跑输入及 `run_continuation_resolved` 由同一次 Session 提交
-发布。无继续决策、冲突、策略失败和旧历史撤回也在各自结算提交中记录结果；重复结算不追加输入或事件。
-取消发生在提交之后时，从已接受 checkpoint 返回结算状态，通知缺口由持久 sequence 追赶，不重新调用策略。
-controller 释放引起的待处理交互终止、所属队列取消，以及命令停止意图，同相关状态和小事件一起提交；
-force release 也记录已应用的控制变更。controller 开始/失败事件仅为诊断，不能代替提交决定。
-turn-policy 的反馈消息与 `turn_policy_continued` 同提交；策略计算仍在存储锁外进行。
+Run 的启动、恢复、完成、失败、暂停、取消意图及终态由 Run/Session 同一提交保存，提交后在线通知。
+输入受理与消费、continuation 结算、controller 释放和 turn-policy 反馈沿用各自事实提交边界；
+通知不进入永久存储。取消发生在提交之后时，从已接受的 checkpoint 返回状态，不重新调用策略。
+遗漏通知通过统一事实位置补齐，不通过重新执行业务补通知。输入正文由 Input 拥有，失败原因由 Run 保存。
 
 ## Run 进程内资源
 
@@ -420,8 +410,8 @@ terminal continuation、Agent settlement、Observer/catalog lease 清理由明�
 单独注入。裸 Runtime 不绑定扩展，明确表示无插件/Agent Host。
 
 `RuntimeActivitySnapshot` 是 Host-facing 投影：Run、ToolBatch 和 ToolCall 提供 durable 权威状态，模型增量
-及 compaction 事件补足响应中的瞬时阶段。投影必须能从 SessionSnapshot 重建；`Session.status` 继续保持粗粒度，
-不得扩张为 UI 状态枚举。活动订阅是可选能力，已有 durable event 订阅语义不因 UI 投影而改变。
+及 compaction 事件补足响应中的瞬时阶段。投影必须能从当前 Run、请求头、Call 和 Draft 重建；`Session.status` 继续保持粗粒度，
+不得扩张为 UI 状态枚举。活动订阅是可选能力，正文与状态观察共用事实补齐管线。
 
 `RuntimeToolCallActivity.status` 表达调用的生命周期阶段，Host 据此派生活动展示。`argument_stream_tail` 只保存 `streaming`
 阶段的有界参数预览；正式调用接管或流式调用取消、失败时清除，预检、审批、执行和终态使用 `arguments`。

@@ -20,8 +20,8 @@
 
 | 数据 | 源格式 | 当前处理 |
 |---|---|---|
-| 文件 Session | layout 9、41 | 41；每会话原生数据库、消息正文和请求 Manifest |
-| SQLite Session | schema 7、26 | 26；按会话读取历史行，直接生成当前表及查询索引 |
+| 文件 Session | layout 9、42 | 42；每会话原生数据库、消息正文和请求 Manifest |
+| SQLite Session | schema 7、27 | 27；按会话读取历史行，直接生成当前表及查询索引 |
 | Session | 2 | 5；摘要指针转入 context_selection，controls 来自 Harness，计数来自实际成员 |
 | Run | 2、5 | 10；源 2 绑定默认 Driver，工具批次拆分为小头和独立事实、状态 |
 | Message | 3、4 | 8；保留原文，工具参数归入 Call，已发布结果引用 Call |
@@ -69,8 +69,7 @@ completed_at 对应 provider_done_at，缺少完成事实时保持未结算。
 
 预算转换保留估算值与 estimator，将窗口和输出上限归入 budget；当前 budget 优先，缺失窗口时使用无预算默认值。
 旧剩余量、利用率等派生计数直接丢弃，读取时由当前模型计算。
-只转换框架拥有的 model_request_started.context_metrics 与 compaction_completed.context_metrics_after；
-其他事件载荷、工具参数、提供方原生片段及开放字典不递归转换。
+历史会话事件不进入当前格式；保留在原始备份中。工具参数、提供方原生片段及开放字典不递归转换。
 
 ## 用量、任务与配置
 

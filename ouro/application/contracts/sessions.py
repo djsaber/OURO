@@ -16,17 +16,20 @@ from ouro.core.context_snapshots import ModelRequestHeader
 from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessVersion
 from ouro.core.input_content import InputFile, InputSkillReference
+from ouro.core.inputs import InputState
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.session_controls import SessionInputMode
 from ouro.core.session_extensions import SessionExtensionStateRecord
+from ouro.core.session_observation import SessionObservationPosition
 from ouro.core.state import (
     RunRecord,
     SessionRecord,
     SessionStatus,
     SessionTitleSource,
 )
+from ouro.core.tool_facts import ToolCallIdentity
 from ouro.sessions.index import (
     UNREADABLE_SESSION_HEALTHS,
     PendingInteraction,
@@ -265,7 +268,6 @@ class SessionExport(ApplicationDTO):
 
     session: SessionRecord
     messages: tuple[MessageRecord, ...] = ()
-    events: tuple[EventRecord, ...] = ()
     runs: tuple[RunRecord, ...] = ()
     compactions: tuple[CompactionRecord, ...] = ()
     extension_states: tuple[SessionExtensionStateRecord, ...] = ()
@@ -276,12 +278,6 @@ class SessionMessagePage(ApplicationDTO):
     session_id: str
     history_epoch: int = 0
     messages: tuple[MessageRecord, ...] = ()
-    next_cursor: int | None = None
-
-
-class SessionEventPage(ApplicationDTO):
-    session_id: str
-    events: tuple[EventRecord, ...] = ()
     next_cursor: int | None = None
 
 
@@ -332,10 +328,28 @@ class SessionObservationSnapshot(ApplicationDTO):
     current_request: ModelRequestHeader | None = None
     compactions: tuple[CompactionRecord, ...] = ()
     queued_inputs: tuple[QueuedUserInputView, ...] = ()
-    event_high_water: int = Field(default=0, ge=0)
+    position: SessionObservationPosition = Field(default_factory=SessionObservationPosition)
     context_status: SessionContextStatus | None = None
     effective_context_metrics: ContextMetrics | None = None
     history_before_cursor: int | None = None
+
+
+class SessionObservationFacts(ApplicationDTO):
+    """Current changed records; messages and drafts travel with the same page."""
+
+    session: SessionView
+    runs: tuple[RunRecord, ...] = ()
+    run_ends: dict[str, int] = Field(default_factory=dict)
+    changed_calls: tuple[ToolCallIdentity, ...] = ()
+    tool_calls: tuple[RuntimeToolCallActivity, ...] = ()
+    pending_interactions: tuple[RuntimePendingInteraction, ...] = ()
+    inputs: tuple[InputState, ...] = ()
+    queued_inputs: tuple[QueuedUserInputView, ...] = ()
+    compactions: tuple[CompactionRecord, ...] = ()
+    compaction_ends: dict[str, int] = Field(default_factory=dict)
+    current_request: ModelRequestHeader | None = None
+    context_status: SessionContextStatus | None = None
+    effective_context_metrics: ContextMetrics | None = None
 
 
 class SessionObservationBatch(ApplicationDTO):
@@ -343,10 +357,12 @@ class SessionObservationBatch(ApplicationDTO):
 
     session_id: str
     history_epoch: int
-    event_high_water: int
     snapshot: SessionObservationSnapshot | None = None
     events: tuple[RuntimeEventView, ...] = ()
     messages: tuple[MessageRecord, ...] = ()
+    facts: SessionObservationFacts | None = None
+    after: SessionObservationPosition = Field(default_factory=SessionObservationPosition)
+    position: SessionObservationPosition = Field(default_factory=SessionObservationPosition)
     diagnostic: Diagnostic | None = None
 
 
@@ -360,18 +376,6 @@ class SessionBranchResult(ApplicationDTO):
     source_session_id: str
     source_message_id: str | None = None
     message_id_map: dict[str, str] = Field(default_factory=dict)
-    diagnostics: tuple[Diagnostic, ...] = ()
-
-
-class ReplayFrame(ApplicationDTO):
-    sequence: int
-    event: EventRecord
-
-
-class SessionReplay(ApplicationDTO):
-    session_id: str
-    run_id: str | None = None
-    frames: tuple[ReplayFrame, ...] = ()
     diagnostics: tuple[Diagnostic, ...] = ()
 
 

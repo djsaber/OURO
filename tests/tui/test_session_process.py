@@ -9,6 +9,7 @@ import pytest
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
 from ouro.tui.conversation.history import ConversationHistory
+from tests.event_capture import recorded_events
 from tests.tui.helpers import run_ready_app, wait_until
 from tests.tui.test_background_navigation import NavigationProvider, submit
 from tests.tui.test_tasks import streaming_application
@@ -36,15 +37,25 @@ async def observe(home, backend, session_id, connection):
     app = OuroTuiApp(application=application, close_application=False)
     held, release = asyncio.Event(), asyncio.Event()
     release.set()
-    original = app._apply_runtime_event_batch
+    original = app._apply_observation_facts
 
-    async def hold_body(events, *, input_messages):
+    async def hold_body(batch):
         if not release.is_set():
             held.set()
             await release.wait()
-        await original(events, input_messages=input_messages)
+        await original(batch)
 
-    app._apply_runtime_event_batch = hold_body
+    app._apply_observation_facts = hold_body
+    original_events = app._apply_runtime_event_batch
+
+    async def hold_events(events, *, input_messages):
+        if not release.is_set():
+            held.set()
+            await release.wait()
+        await original_events(events, input_messages=input_messages)
+
+    app._apply_runtime_event_batch = hold_events
+
     try:
         async with run_ready_app(app, size=(100, 32)) as pilot:
             await app._open_session(session_id)
@@ -55,13 +66,13 @@ async def observe(home, backend, session_id, connection):
                     break
                 if command == "hold":
                     release.clear()
-                    connection.send(app._observation_subscription.applied_sequence)
+                    connection.send(app._observation_subscription.applied_position.revision)
                 elif command == "held":
                     await asyncio.wait_for(held.wait(), 10)
                     await pilot.press("v")
                     connection.send(
                         (
-                            app._observation_subscription.applied_sequence,
+                            app._observation_subscription.applied_position.revision,
                             len(app._pending_runtime_events),
                             app.query_one(Composer).text,
                         )
@@ -70,7 +81,7 @@ async def observe(home, backend, session_id, connection):
                     release.set()
                     await wait_until(
                         lambda sequence=command[1], text=command[2]: (
-                            app._observation_subscription.applied_sequence >= sequence
+                            app._observation_subscription.applied_position.revision >= sequence
                             and app._projection.assistant_text == text
                         ),
                         pilot,
@@ -141,11 +152,17 @@ async def test_two_process_tuis_keep_execution_and_slow_observation_independent(
                         while True:
                             notification = await committed.get()
                             assert notification.diagnostic is None, notification.diagnostic
-                            event = notification.event
-                            if (
-                                event is not None
-                                and event.event_type == "model_text_delta"
+                            events = (
+                                (notification.event,)
+                                if notification.event is not None
+                                else notification.facts.events
+                                if notification.facts is not None
+                                else ()
+                            )
+                            if any(
+                                event.event_type == "model_text_delta"
                                 and marker in (event.text or "")
+                                for event in events
                             ):
                                 break
                         if index in (32, 64, 96):
@@ -158,7 +175,7 @@ async def test_two_process_tuis_keep_execution_and_slow_observation_independent(
                 pilot,
                 description="owner continues while remote observer is held",
             )
-            events = application.runtime.store.load_session(sessions[0]).events
+            events = recorded_events(sessions[0])
             assert not any(event.event_type == "model_text_delta" for event in events)
             latest = application.runtime.store.load_latest_request(sessions[0])
             assert latest is not None
@@ -170,7 +187,12 @@ async def test_two_process_tuis_keep_execution_and_slow_observation_independent(
             applied, pending, draft = await request(reader, "held")
             assert applied == before and pending <= 128 and draft == "vv"
             text, summaries = await request(
-                reader, ("catch_up", events[-1].sequence, app._projection.assistant_text)
+                reader,
+                (
+                    "catch_up",
+                    application.runtime.store.observation_revision(sessions[0]),
+                    app._projection.assistant_text,
+                ),
             )
             assert text == app._projection.assistant_text
             assert summaries == []
@@ -187,7 +209,11 @@ async def test_two_process_tuis_keep_execution_and_slow_observation_independent(
                 run_ids.append(snapshot.runs[-1].run_id)
                 text, summaries = await request(
                     reader,
-                    ("catch_up", snapshot.events[-1].sequence, snapshot.messages[-1].text_content),
+                    (
+                        "catch_up",
+                        application.runtime.store.observation_revision(sessions[0]),
+                        snapshot.messages[-1].text_content,
+                    ),
                 )
                 assert text == snapshot.messages[-1].text_content
                 assert summaries == run_ids

@@ -19,6 +19,7 @@ LookupKind = Literal["requests", "children", "parents"]
 class FileDelegationDecision(VersionedOuroModel):
     kind: Literal["delegation"] = "delegation"
     record: DelegationRecord
+    observation_revision: int
     old_parent_run_id: str | None = None
     old_child_session_id: str | None = None
     old_idempotency_key: str | None = None

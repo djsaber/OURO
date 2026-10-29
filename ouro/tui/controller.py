@@ -2204,7 +2204,6 @@ class TuiController:
             compactions=snapshot.compactions,
             queued_inputs=snapshot.queued_inputs,
             session_controls=self._session_control_statuses(session_id),
-            event_high_water=snapshot.event_high_water,
             history_before_cursor=snapshot.history_before_cursor,
             approval_preset=_approval_preset(
                 snapshot.session.approval_mode, snapshot.session.interaction_mode

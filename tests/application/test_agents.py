@@ -53,6 +53,7 @@ from tests.application.helpers import (
     wait_for_parent_delivery,
     wait_for_run_event,
 )
+from tests.event_capture import recorded_events
 from tests.tool_batches import seed_spawn_request
 
 
@@ -1193,11 +1194,8 @@ async def test_child_task_is_visible_only_in_child_canonical_context(tmp_path) -
             handle.model_dump_json(),
             service.agent_tree_snapshot("ses_root").model_dump_json(),
             relation.model_dump_json(),
-            *(event.model_dump_json() for event in root.events),
-            *(
-                event.model_dump_json()
-                for event in store.load_session(handle.child_session_id).events
-            ),
+            *(event.model_dump_json() for event in recorded_events(root.session.session_id)),
+            *(event.model_dump_json() for event in recorded_events(handle.child_session_id)),
         )
     )
     assert sensitive_task not in public_projection
@@ -1805,7 +1803,7 @@ async def test_interrupt_racing_natural_completion_commits_one_result(
     assert waited.completed is True
     result_events = [
         event
-        for event in store.load_session(root.session_id).events
+        for event in recorded_events(root.session_id)
         if event.event_type == "agent_result_ready"
         and event.payload.get("delegation_id") == child.delegation_id
     ]
@@ -1850,7 +1848,7 @@ async def test_close_rejects_active_child_and_is_idempotent_after_interrupt(
     assert store.load_delegation(root.session_id, child.delegation_id).control_state == "closed"
     close_events = [
         event
-        for event in store.load_session(root.session_id).events
+        for event in recorded_events(root.session_id)
         if event.event_type == "agent_closed"
         and event.payload.get("delegation_id") == child.delegation_id
     ]
@@ -1993,7 +1991,7 @@ async def test_bound_cascade_timeout_emits_diagnostic_and_keeps_unknown_child(
 
     diagnostic = next(
         event
-        for event in store.load_session(root.session_id).events
+        for event in recorded_events(root.session_id)
         if event.event_type == "diagnostic" and event.payload.get("code") == "cascade_timeout"
     )
     assert diagnostic.payload["delegation_id"] == child.delegation_id
@@ -2457,7 +2455,7 @@ async def test_unattended_child_input_fails_deterministically_without_parking(tm
     assert child_snapshot.session.interaction_mode == "unattended"
     input_error = next(
         event
-        for event in store.load_session(child.child_session_id).events
+        for event in recorded_events(child.child_session_id)
         if event.event_type == "tool_call_completed" and event.payload.get("tool_name") == "AskUser"
     )
     assert input_error.payload["is_error"] is True
@@ -2991,7 +2989,7 @@ async def test_root_tree_subscription_adds_children_and_reconnects_from_store(tm
     subscription.close()
     await service.wait_agents((child.delegation_id,))
     assert child.child_session_id is not None
-    child_stream = await supervisor.subscribe(child.child_session_id, after_sequence=0)
+    child_stream = await supervisor.subscribe(child.child_session_id)
     async with asyncio.timeout(3):
         while True:
             child_notification = await child_stream.get()
@@ -3165,7 +3163,7 @@ async def test_sync_spawn_releases_parent_worker_and_resumes_original_tool_call(
                 "description": "Read bounded evidence.",
             },
         ]
-        events = store.load_session(root_session_id).events
+        events = recorded_events(root_session_id)
         assert [event.event_type for event in events].count("agent_wait_requested") == 1
         assert [event.event_type for event in events].count("agent_wait_resolved") == 1
         assert [
@@ -3289,7 +3287,7 @@ async def test_sync_delivery_commits_while_parent_model_is_still_running(
         assert not release.is_set()
         assert any(not receipt.done() for receipt in service._execution._receipts)
         checks_before_tokens = len(receipt_checks)
-        subscription = await supervisor.subscribe(handle.session_id, after_sequence=0)
+        subscription = await supervisor.subscribe(handle.session_id)
         try:
             emit_tokens.set()
             async with asyncio.timeout(30):
@@ -3500,7 +3498,7 @@ async def test_parallel_sync_spawns_serialize_parent_resumption(
         if late_check is not None:
             assert sorted(resumption_ids) == ["parallel_spawn_0", "parallel_spawn_1"]
 
-        events = store.load_session(parent_handle.session_id).events
+        events = recorded_events(parent_handle.session_id)
         assert not any(
             event.event_type == "diagnostic"
             and event.payload.get("code") == "agent_result_delivery_incomplete"
@@ -3881,8 +3879,7 @@ async def test_async_result_delivery_is_exact_once(tmp_path) -> None:
     assert relation.child_session_id not in async_content
     assert relation.current_child_run_id not in async_content
     assert not any(
-        event.event_type == "agent_wait_requested"
-        for event in store.load_session(root_session_id).events
+        event.event_type == "agent_wait_requested" for event in recorded_events(root_session_id)
     )
 
     assert relation.result is not None

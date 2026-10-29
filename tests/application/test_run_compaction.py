@@ -23,6 +23,7 @@ from ouro.providers.openai_responses.codec import responses_input
 from ouro.sessions import LocalSessionStore
 from ouro.skills import SkillLoader
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
+from tests.event_capture import recorded_events
 
 
 class ToolLoopProvider:
@@ -217,7 +218,9 @@ async def test_long_run_compacts_between_tool_rounds_and_continues(tmp_path, ski
                     if instructions in message.text_content
                 )
         requests = [
-            event for event in snapshot.events if event.event_type == "model_request_started"
+            event
+            for event in recorded_events(snapshot.session.session_id)
+            if event.event_type == "model_request_started"
         ]
         assert [event.payload["round"] for event in requests] == list(range(1, 12))
         assert all(

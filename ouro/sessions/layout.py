@@ -6,7 +6,7 @@ from pydantic import Field
 
 from ouro.core.base import OuroModel, utc_now
 
-DATA_LAYOUT_VERSION = 41
+DATA_LAYOUT_VERSION = 42
 
 
 class DataLayoutManifest(OuroModel):

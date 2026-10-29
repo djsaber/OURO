@@ -2,8 +2,7 @@ import sqlite3
 
 import pytest
 
-import ouro.sessions.backends.sqlite.store as sqlite_store
-from ouro.core.events import EventRecord
+from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import SQLiteSessionStore
 
@@ -54,85 +53,51 @@ def test_sqlite_current_draft_is_visible_and_never_downgrades_an_outer_commit(
         assert modes and set(modes) == {2}
 
 
-def test_sqlite_observation_and_replay_queries_use_session_scoped_indexes(tmp_path) -> None:
+def test_sqlite_fact_suffix_queries_use_session_scoped_indexes(tmp_path) -> None:
     store = SQLiteSessionStore(tmp_path / "ouro.db")
     store.initialize()
 
     connection = sqlite3.connect(store.database)
     try:
         observation_plan = connection.execute(
-            "EXPLAIN QUERY PLAN SELECT payload FROM events "
-            "WHERE session_id = ? AND run_id = ? ORDER BY row_id",
-            ("session_1", "run_1"),
+            "EXPLAIN QUERY PLAN SELECT payload FROM runs "
+            "WHERE session_id = ? AND modified_revision > ? "
+            "ORDER BY modified_revision, run_id LIMIT 128",
+            ("session_1", 100_000),
         ).fetchall()
-        replay_plan = connection.execute(
-            "EXPLAIN QUERY PLAN SELECT payload FROM events "
+        message_plan = connection.execute(
+            "EXPLAIN QUERY PLAN SELECT payload FROM messages "
             "WHERE session_id = ? AND sequence > ? ORDER BY sequence LIMIT ?",
             ("session_1", 100_000, 101),
         ).fetchall()
     finally:
         connection.close()
 
-    assert any("USING INDEX events_session_run_order" in str(row[3]) for row in observation_plan)
+    assert any("USING INDEX runs_modified" in str(row[3]) for row in observation_plan)
     assert any(
         "USING INDEX" in str(row[3]) and "session_id=? AND sequence>?" in str(row[3])
-        for row in replay_plan
+        for row in message_plan
     )
 
 
-def test_sqlite_observation_high_water_shares_the_snapshot_read_boundary(
-    tmp_path,
-    monkeypatch,
-) -> None:
+def test_sqlite_fact_position_shares_snapshot_boundary(tmp_path, monkeypatch):
+    from ouro.application.sessions.service import SessionService
+
     store = SQLiteSessionStore(tmp_path / "ouro.db")
     store.initialize()
-    session = SessionRecord(title="Atomic observation")
+    session = SessionRecord()
     store.create_session(session)
-    run = RunRecord(run_id="run_active", session_id=session.session_id, status="running")
-    store.save_run(run)
-    store.save_session(
-        session.model_copy(
-            update={"status": "running", "active_run_id": run.run_id, "last_run_id": run.run_id}
-        )
+    store.append_message(
+        MessageRecord.text(session_id=session.session_id, role="user", text="first")
     )
-    first = store.append_ordered_event(
-        EventRecord(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            event_type="model_text_delta",
-            payload={"text": "snapshot"},
-        )
+    snapshot = SessionService(store).observation_snapshot(session.session_id)
+    store.append_message(
+        MessageRecord.text(session_id=session.session_id, role="user", text="second")
     )
-    load_session = sqlite_store.read_session
-    appended: list[EventRecord] = []
-    injected = False
-
-    def append_after_session_read(connection, session_id):
-        nonlocal injected
-        session = load_session(connection, session_id)
-        if not injected:
-            injected = True
-            appended.append(
-                store.append_ordered_event(
-                    EventRecord(
-                        session_id=session_id,
-                        run_id=run.run_id,
-                        event_type="diagnostic",
-                        payload={"message": "concurrent event"},
-                    )
-                )
-            )
-        return session
-
-    monkeypatch.setattr(sqlite_store, "read_session", append_after_session_read)
-
-    snapshot = store.load_session_observation(session.session_id)
-    replay, truncated = store.load_events_after(
-        session.session_id,
-        after_sequence=snapshot.event_high_water,
+    batch, more = SessionService(store).observation_changes(
+        session.session_id, after=snapshot.position, history_epoch=0, limit=10
     )
-
-    assert snapshot.event_high_water == first.sequence
-    assert len(appended) == 1
-    assert replay == appended
-    assert truncated is False
+    assert snapshot.position.message_sequence == 1
+    assert not more
+    assert [message.text_content for message in batch.messages] == ["second"]
+    assert batch.position.message_sequence == 2

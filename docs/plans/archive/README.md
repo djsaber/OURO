@@ -5,6 +5,7 @@
 
 | 日期 | 记录 |
 |---|---|
+| 2026-10-30 | [会话事实存储与增量观察改进计划](2026-10-30-session-observation-without-event-log.md) |
 | 2026-10-29 | [TUI 性能改进计划](2026-10-29-tui-performance.md) |
 | 2026-10-26 | [会话数据与执行管线：设计与验收](2026-10-26-session-data-implementation.md) |
 | 2026-10-23 | [文档体系审查与整理](2026-10-23-documentation-review.md) |

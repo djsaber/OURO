@@ -33,7 +33,7 @@ from textual.worker import Worker
 
 from ouro.application.agents.tree import AgentTreeSubscription
 from ouro.application.contracts.agents import AgentTreeNode
-from ouro.application.contracts.execution import RuntimeActivitySnapshot
+from ouro.application.contracts.execution import RuntimeActivitySnapshot, RuntimeToolCallActivity
 from ouro.application.contracts.models import AvailableModel, ModelReasoningState
 from ouro.application.contracts.sessions import (
     SessionCatalogEntry,
@@ -45,7 +45,6 @@ from ouro.application.contracts.sessions import (
 )
 from ouro.application.inputs.queue import QueuedInputMode, QueuedUserInputView
 from ouro.application.inputs.skills import SkillInvocationRequest
-from ouro.application.observations.content import active_stream_tail as _active_stream_tail
 from ouro.application.observations.content import restore_session_content
 from ouro.application.observations.sessions import SessionObservation, observation_event
 from ouro.core.approvals import SessionApprovalMode
@@ -58,7 +57,7 @@ from ouro.core.input_content import InputContent, InputFile, InputSkillReference
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import REASONING_EFFORTS, ReasoningRequest
-from ouro.core.state import DEFAULT_SESSION_TITLE
+from ouro.core.state import DEFAULT_SESSION_TITLE, RunRecord
 from ouro.deployment import SessionBackend, TaskBackend
 from ouro.local_application import LocalApplication
 from ouro.tui.clipboard import ClipboardWriteError, write_system_clipboard
@@ -132,7 +131,6 @@ from ouro.tui.preferences import (
 from ouro.tui.state import (
     PendingInteraction,
     TuiSessionProjection,
-    canonical_event_order,
     describe_run_pause,
     project_agent_interaction,
     project_run_presentation,
@@ -1397,6 +1395,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     continue
                 delivery = ObservationDelivery(subscription, batch)
                 self._observation_delivery = delivery
+                if batch.facts is not None:
+                    async with self._runtime_event_apply_lock:
+                        await self._apply_observation_facts(batch)
                 for event in batch.events:
                     self._queue_runtime_event(observation_event(event))
                 if not batch.events:
@@ -1408,6 +1409,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     self.notify(str(delivery.error), severity="error", markup=False)
                     return
                 subscription.acknowledge(batch)
+                if self._projection is not None:
+                    self._projection.confirm_messages(batch.position.message_sequence)
                 self._observation_delivery = None
         except Exception as exc:  # noqa: BLE001 - observation failure is local to this view.
             if self._observation_subscription is subscription and not self._host_closing:
@@ -1641,6 +1644,116 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self._post_runtime_events_ready,
             )
 
+    async def _apply_observation_facts(self, batch: SessionObservationBatch) -> None:
+        """Apply missing work and changed state without replacing the conversation surface."""
+        projection = self._projection
+        facts = batch.facts
+        if projection is None or facts is None or not self._surface_available():
+            return
+        conversation = self.query_one(ConversationView)
+        self._history_run_ids.update(message.run_id for message in batch.messages if message.run_id)
+        boundaries = sorted(
+            [
+                (end, run.ended_at, run)
+                for run in facts.runs
+                if run.kind == "agent"
+                and run.ended_at is not None
+                and (
+                    run.run_id in self._history_run_ids
+                    or (
+                        run.run_id == facts.session.last_run_id
+                        and run.history_epoch == batch.history_epoch
+                    )
+                )
+                and (end := facts.run_ends[run.run_id]) <= batch.position.message_sequence
+            ]
+            + [
+                (facts.compaction_ends[item.compaction_id], item.created_at, item)
+                for item in facts.compactions
+            ],
+            key=lambda item: (item[0], item[1]),
+        )
+        boundary_index = 0
+
+        async def finish_through(sequence: int) -> None:
+            nonlocal boundary_index
+            while boundary_index < len(boundaries) and boundaries[boundary_index][0] <= sequence:
+                record = boundaries[boundary_index][2]
+                boundary_index += 1
+                if isinstance(record, RunRecord):
+                    await conversation.add_run_summary(
+                        project_run_presentation(record, models=self._models)
+                    )
+                else:
+                    await conversation.add_compaction(
+                        compaction_id=record.compaction_id,
+                        covered_message_count=record.covered_message_count,
+                        tokens_before=record.estimated_tokens_before,
+                        tokens_after=record.estimated_tokens_after,
+                        duration_seconds=record.duration_seconds,
+                    )
+
+        for message in batch.messages:
+            await finish_through(message.sequence - 1)
+            if projection.has_message(message.message_id, message.sequence):
+                continue
+            if message.role == "assistant":
+                if not projection.is_current_response(message):
+                    await conversation.finish_assistant()
+                conversation.begin_model_request(run_id=message.run_id)
+                answer, reasoning, duration = projection.apply_response(message)
+                if reasoning:
+                    await conversation.append_reasoning(reasoning)
+                if duration is not None:
+                    conversation.finish_reasoning(duration)
+                if answer:
+                    await conversation.append_assistant(answer)
+                if message.tool_calls:
+                    batches = {ref.tool_call_id: ref.batch_id for ref in message.call_refs}
+                    await conversation.sync_tools(
+                        tuple(
+                            RuntimeToolCallActivity(
+                                run_id=message.run_id,
+                                batch_id=batches.get(call.id),
+                                tool_call_id=call.id,
+                                tool_name=call.name,
+                                status="planned",
+                                source_index=call.source_index,
+                                arguments=call.arguments,
+                                requested_at=message.created_at,
+                            )
+                            for call in message.tool_calls
+                        )
+                    )
+            elif message.role == "tool_result":
+                conversation.begin_model_request(run_id=message.run_id)
+                await conversation.apply_tool_result(message)
+            else:
+                await conversation.finish_assistant()
+                await conversation.add_user_message(message)
+            projection.remember_message(message.message_id, message.sequence)
+        if projection.apply_facts(facts):
+            await conversation.finish_assistant()
+            conversation.begin_model_request(run_id=projection.activity.run_id)
+        await conversation.sync_tools(projection.activity.tool_calls)
+        await finish_through(batch.position.message_sequence)
+        if not self._visible_read_only:
+            panel = self.query_one(QueuedInputPanel)
+            changed = {state.input_id for state in facts.inputs}
+            queue = {item.queue_id: item for item in panel.inputs if item.queue_id not in changed}
+            queue.update((item.queue_id, item) for item in facts.queued_inputs)
+            panel.set_inputs(
+                tuple(
+                    item.model_copy(update={"waiting_on_run_id": facts.session.active_run_id})
+                    for item in queue.values()
+                )
+            )
+        self._history_last_sequence = max(
+            self._history_last_sequence, batch.position.message_sequence
+        )
+        self._sync_activity(projection.activity)
+        await self._refresh_interaction()
+
     async def _apply_runtime_events(
         self,
         events: Sequence[EventRecord],
@@ -1751,7 +1864,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 message_id = event.payload.get("message_id")
                 if isinstance(message_id, str):
                     input_message = input_messages[message_id]
-                    await conversation.add_user_message(input_message)
+                    if not projection.has_message(input_message.message_id, input_message.sequence):
+                        await conversation.add_user_message(input_message)
+                        projection.remember_message(
+                            input_message.message_id, input_message.sequence
+                        )
             if event.event_type == "compaction_completed":
                 await flush_stream()
                 covered = event.payload.get("covered_message_count")
@@ -1760,6 +1877,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     tokens_after = event.payload.get("tokens_after")
                     duration_seconds = event.payload.get("duration_seconds")
                     await conversation.add_compaction(
+                        compaction_id=event.payload.get("compaction_id"),
                         covered_message_count=covered,
                         tokens_before=(
                             tokens_before
@@ -4762,19 +4880,17 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     ]:
         """Build persisted projections without occupying Textual's event loop."""
 
-        ordered_events = canonical_event_order(loaded.events)
         projection = restore_session_content(
             SessionObservationSnapshot(
                 session=loaded.detail.session,
                 messages=loaded.messages,
-                events=ordered_events,
+                events=loaded.events,
                 runs=loaded.runs,
                 active_tool_calls=loaded.active_tool_calls,
                 pending_interactions=loaded.pending_interactions,
                 current_request=loaded.current_request,
                 compactions=loaded.compactions,
                 queued_inputs=loaded.queued_inputs,
-                event_high_water=loaded.event_high_water,
                 context_status=loaded.context_status,
                 effective_context_metrics=loaded.effective_context_metrics,
             )
@@ -4816,7 +4932,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
         # A snapshot installs complete state; it does not replay streaming handoffs.
         # Prepare stable blocks together with history, leaving only the open tail live.
-        reasoning, answer = _active_stream_tail(ordered_events, loaded.messages)
+        reasoning, answer = projection.reasoning_text, projection.assistant_text
         stream = AssistantMarkdownStream()
         blocks, _ = stream.append(answer)
         if tools and not terminal_tools:

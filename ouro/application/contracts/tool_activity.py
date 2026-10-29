@@ -44,6 +44,7 @@ class RuntimeToolCallActivity(ApplicationDTO):
     ``arguments`` instead.
     """
 
+    run_id: str | None = None
     batch_id: str | None = None
     tool_call_id: str
     tool_name: str

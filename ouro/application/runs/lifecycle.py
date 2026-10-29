@@ -902,6 +902,7 @@ class RunLifecycle:
                     "tool_call_requested",
                     tool_call_id=call.request.id,
                     tool_name=call.request.name,
+                    arguments=call.request.arguments,
                     producer=call.producer.model_dump(mode="json"),
                     source_index=call.request.source_index,
                 )
@@ -1215,6 +1216,7 @@ class RunLifecycle:
                     "status": "failed",
                     "ended_at": now,
                     "error": error,
+                    "error_code": error_code,
                     "pending_approval_id": None,
                     # Failure must retain committed outcomes until recovery
                     # publishes their canonical tool-result messages.

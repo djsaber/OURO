@@ -194,7 +194,7 @@ def test_native_failure_never_exposes_half_a_run_transition(store, monkeypatch, 
             assert cold.load_run(session.session_id, run.run_id) == run
             assert cold.load_session_record(session.session_id) == session
             assert len(cold.load_messages_tail(session.session_id)) == 1
-            assert cold.load_events_after(session.session_id) == ([], False)
+            assert "events" not in cold.load_session(session.session_id).model_dump()
             finish(cold, session, run, operation)
     else:
         with closing(sqlite3.connect(store.database)) as connection, connection:
@@ -222,11 +222,7 @@ def test_native_failure_never_exposes_half_a_run_transition(store, monkeypatch, 
         "request_abort": "running",
     }[operation]
     assert saved_run.status == expected_status
-    events, more = cold.load_events_after(session.session_id)
-    assert not more
-    assert [event.event_type for event in events] == [
-        "run_abort_requested" if operation == "request_abort" else f"run_{expected_status}"
-    ]
+    assert "events" not in cold.load_session(session.session_id).model_dump()
     assert saved.status == (
         "failed" if operation == "fail" else "running" if operation == "request_abort" else "idle"
     )

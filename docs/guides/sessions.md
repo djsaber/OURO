@@ -9,7 +9,7 @@
 关闭单个观察端不取消其他进程持有的运行；显式停止和执行者进程退出仍遵循运行关闭策略。
 
 长历史先显示近期完整消息帧。向上滚动到顶部会自动加载更早内容，并保持当前阅读位置；全局编号导航和分支候选按需
-补齐历史后解析编号。已加载的范围可在缓存内复用，撤销或历史替换会重新建立当前历史。完整导出和 replay 不受显示窗口限制。
+补齐历史后解析编号。已加载的范围可在缓存内复用，撤销或历史替换会重新建立当前历史。完整导出 不受显示窗口限制。
 
 ## 撤销与继续
 
@@ -19,7 +19,7 @@ TUI 的 `/undo` 撤回最近一条直接用户输入；有待消费的排队输�
 
 撤销 canonical 消息前需先中断活跃运行并完成取消结算。撤销取得执行所有权后，原子发布消息切口、状态指针
 和新的历史代次，再结清受影响的输入租约与子会话关系。工具已经造成的文件与
-外部系统变化、真实用量账本不回滚。旧运行及事件保留用于审计，不能重新写入撤销后的当前历史。
+外部系统变化、真实用量账本不回滚。旧运行与工具事实保留用于审计，不能重新写入撤销后的当前历史。
 
 `/continue` 在当前历史代次恢复合法的中断、失败或暂停检查点，保留原 Run 身份、已提交工具结果与累计用量。
 撤销后则基于保留消息和恢复后的 Harness 创建新 Run，不重复追加保留输入，也不复用旧代次的审批或工具执行。
@@ -39,9 +39,7 @@ uv run --frozen ouro session tags <session_id> auth review --home ./.ouro-dev
 uv run --frozen ouro session approval-mode <session_id> auto --home ./.ouro-dev
 uv run --frozen ouro session afk <session_id> on --home ./.ouro-dev
 uv run --frozen ouro session branch <session_id> <message_id> --home ./.ouro-dev
-uv run --frozen ouro session replay <session_id> --home ./.ouro-dev --json
 uv run --frozen ouro session messages <session_id> --home ./.ouro-dev --cursor 0 --limit 100 --json
-uv run --frozen ouro session events <session_id> --home ./.ouro-dev --run <run_id> --cursor 0 --limit 100 --json
 uv run --frozen ouro session compact <session_id> --home ./.ouro-dev
 uv run --frozen ouro session archive <session_id> --home ./.ouro-dev
 uv run --frozen ouro session remove <session_id> --home ./.ouro-dev --force

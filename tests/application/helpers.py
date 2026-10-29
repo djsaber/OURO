@@ -115,8 +115,6 @@ async def wait_for_parent_delivery(
 
     subscription = None
     relations = ()
-    delivered = set()
-    sequence = 0
     try:
         async with asyncio.timeout(30):
             subscription = await supervisor.subscribe_state(
@@ -130,22 +128,11 @@ async def wait_for_parent_delivery(
                     )
                     if relation.parent_run_id == run_id and relation.execution_mode == "sync"
                 )
-                events, more = await asyncio.to_thread(
-                    supervisor.store.load_events_after, session_id, after_sequence=sequence
-                )
-                for event in events:
-                    sequence = event.sequence
-                    if event.run_id == run_id and event.event_type == "agent_result_delivered":
-                        delivered.add(event.payload["delegation_id"])
                 if relations and all(
-                    relation.result is not None
-                    and relation.result.delivery.status == "delivered"
-                    and relation.delegation_id in delivered
+                    relation.result is not None and relation.result.delivery.status == "delivered"
                     for relation in relations
                 ):
                     return
-                if more:
-                    continue
                 notification = await subscription.get()
                 assert notification.diagnostic is None, notification.diagnostic
     except TimeoutError:
@@ -155,7 +142,7 @@ async def wait_for_parent_delivery(
         ]
         raise AssertionError(
             f"Parent delivery did not settle: session={session_id}, run={run_id}, "
-            f"deliveries={deliveries}, published={delivered}"
+            f"deliveries={deliveries}"
         ) from None
     finally:
         if subscription is not None:

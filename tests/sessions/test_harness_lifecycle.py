@@ -166,8 +166,6 @@ def test_transfer_preserves_undo_anchors_and_withdrawn_input_receipts(
         )
         for run in snapshot.runs:
             target.save_run(run)
-        for event in snapshot.events:
-            target.append_event(event)
     assert target.load_session(session.session_id) == snapshot
     with pytest.raises(ValueError, match="already accepted"):
         QueuedInputQueue(target).accept_host(session.session_id, request)

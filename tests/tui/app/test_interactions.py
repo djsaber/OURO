@@ -16,6 +16,7 @@ from ouro.tui.interactions.questions import AskUserPanel
 from ouro.tui.state import PendingInteraction
 from ouro.tui.widgets.activity import ActivityIndicator
 from ouro.tui.widgets.brand import BrandHeader
+from tests.event_capture import recorded_events
 from tests.tui.app.support import (
     _application,
     _approval_application,
@@ -267,11 +268,7 @@ async def test_builtin_ask_user_renders_form_and_submits_structured_answer(
         assert app._projection.pending_interaction is None
         assert app._projection.assistant_text == "Answer received."
         assert panel.display is False
-        events = application.runtime.sessions.event_page(
-            app._projection.session_id,
-            cursor=0,
-            limit=200,
-        ).events
+        events = recorded_events(app._projection.session_id)
         resolved = next(event for event in events if event.event_type == "ask_user_resolved")
         assert resolved.payload["answer"] == {"answers": {"file": ["README.md"]}}
 
@@ -309,11 +306,7 @@ async def test_ask_user_other_accepts_freeform_even_when_answer_starts_with_slas
 
         assert app._projection is not None
         assert app._projection.pending_interaction is None
-        events = application.runtime.sessions.event_page(
-            app._projection.session_id,
-            cursor=0,
-            limit=200,
-        ).events
+        events = recorded_events(app._projection.session_id)
         resolved = next(event for event in events if event.event_type == "ask_user_resolved")
         assert resolved.payload["answer"] == {"answers": {"file": ["/tmp"]}}
 
@@ -349,11 +342,7 @@ async def test_plugin_question_uses_common_form_and_returns_scalar_answer(
 
         assert app._projection is not None
         assert app._projection.pending_interaction is None
-        events = application.runtime.sessions.event_page(
-            app._projection.session_id,
-            cursor=0,
-            limit=200,
-        ).events
+        events = recorded_events(app._projection.session_id)
         resolved = next(event for event in events if event.event_type == "ask_user_resolved")
         assert resolved.payload["answer"] == "Safely"
 
@@ -505,11 +494,7 @@ async def test_plan_confirmation_renders_only_plan_and_collects_revision_feedbac
         assert app._projection is not None
         assert app._projection.pending_interaction is None
         assert panel.display is False
-        events = application.runtime.sessions.event_page(
-            app._projection.session_id,
-            cursor=0,
-            limit=200,
-        ).events
+        events = recorded_events(app._projection.session_id)
         requested = next(event for event in events if event.event_type == "ask_user_requested")
         resolved = next(event for event in events if event.event_type == "ask_user_resolved")
         assert requested.payload["canonical_tool_id"] == "dev.ouro.plan/tools/exit"
@@ -580,11 +565,7 @@ async def test_plan_confirmation_accepts_a_keyboard_selected_implementation_opti
             pilot,
             description="released plan-mode status",
         )
-        events = application.runtime.sessions.event_page(
-            app._projection.session_id,
-            cursor=0,
-            limit=200,
-        ).events
+        events = recorded_events(app._projection.session_id)
         resolved = next(event for event in events if event.event_type == "ask_user_resolved")
         assert resolved.payload["answer"] == {
             "action": "accept",

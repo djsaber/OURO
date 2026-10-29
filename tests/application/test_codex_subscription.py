@@ -17,6 +17,7 @@ from ouro.core.tasks import AgentTaskTarget, TaskConfiguration, TaskSchedule
 from ouro.local_application import LocalApplication, open_local_provider_auth
 from ouro.tools import Tool, ToolDefinition, ToolResult
 from tests.auth.openai_fixtures import tokens
+from tests.event_capture import recorded_events
 from tests.providers.responses_fixtures import call, item_event, message, reasoning, terminal
 from tests.run_facts import run_events
 
@@ -140,7 +141,7 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
         assert snapshot.session.interaction_mode == "unattended"
         assert any(
             event.payload.get("error_code") == "authentication_required"
-            for event in snapshot.events
+            for event in recorded_events(snapshot.session.session_id)
         )
         assert not model_requests and not token_requests
 

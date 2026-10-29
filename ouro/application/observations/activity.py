@@ -14,13 +14,13 @@ from ouro.application.contracts.execution import (
     RuntimeToolCallStatus,
     SupervisorRunStatus,
 )
-from ouro.application.contracts.sessions import SessionContextStatus
+from ouro.application.contracts.sessions import SessionContextStatus, SessionObservationFacts
 from ouro.application.contracts.tool_activity import PendingInteraction
 from ouro.core.context import ContextMetrics
+from ouro.core.context_snapshots import ModelRequestHeader
 from ouro.core.events import EventRecord
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord, ToolCallStatus
-from ouro.sessions.base import SessionSnapshot
 
 _MODEL_ACTIVITIES = {
     "preparing_model",
@@ -66,58 +66,6 @@ def queued_runtime_activity(
     )
 
 
-def project_runtime_activity(
-    snapshot: SessionSnapshot,
-    *,
-    run_id: str | None = None,
-    status_override: SupervisorRunStatus | None = None,
-    context_status: SessionContextStatus | None = None,
-    effective_context_metrics: ContextMetrics | None = None,
-    batch: ToolCallBatchRecord | None = None,
-) -> RuntimeActivitySnapshot:
-    effective_metrics = effective_context_metrics or (
-        context_status.metrics if context_status is not None else None
-    )
-    run = _selected_run(snapshot, run_id=run_id)
-    if run is None:
-        status = status_override or "idle"
-        return RuntimeActivitySnapshot(
-            session_id=snapshot.session.session_id,
-            history_epoch=snapshot.session.history_epoch,
-            status=status,
-            activity=runtime_activity_for_status(status),
-            context_status=context_status,
-            effective_context_metrics=effective_metrics,
-            sequence=_latest_sequence(snapshot.events),
-        )
-
-    activity = RuntimeActivitySnapshot(
-        session_id=snapshot.session.session_id,
-        history_epoch=snapshot.session.history_epoch,
-        run_id=run.run_id,
-        status="queued",
-        activity="queued",
-        context_status=context_status,
-        effective_context_metrics=effective_metrics,
-        sequence=0,
-        updated_at=run.started_at,
-    )
-    for event in sorted(snapshot.events, key=lambda item: (item.sequence, item.event_id)):
-        if event.run_id == run.run_id:
-            activity = reduce_runtime_activity(activity, event)
-    activity = overlay_run_activity(
-        activity, run, tool_calls=project_batch_activity(batch) if batch is not None else None
-    )
-    if status_override is not None and status_override != activity.status:
-        activity = activity.model_copy(
-            update={
-                "status": status_override,
-                "activity": runtime_activity_for_status(status_override),
-            }
-        )
-    return activity
-
-
 def project_runtime_activity_state(
     session: SessionRecord,
     run: RunRecord | None,
@@ -127,6 +75,7 @@ def project_runtime_activity_state(
     context_status: SessionContextStatus | None = None,
     effective_context_metrics: ContextMetrics | None = None,
     batch: ToolCallBatchRecord | None = None,
+    current_request: ModelRequestHeader | None = None,
 ) -> RuntimeActivitySnapshot:
     """Project bounded current activity without replaying historical events."""
 
@@ -159,6 +108,7 @@ def project_runtime_activity_state(
         updated_at=run.ended_at or run.started_at,
     )
     activity = overlay_run_activity(activity, run, tool_calls=project_batch_activity(batch))
+    activity = overlay_request_activity(activity, run, current_request)
     if status_override is not None and status_override != activity.status:
         activity = activity.model_copy(
             update={
@@ -453,27 +403,13 @@ def runtime_activity_changed(
     )
 
 
-def _selected_run(snapshot: SessionSnapshot, *, run_id: str | None) -> RunRecord | None:
-    runs = [run for run in snapshot.runs if run.history_epoch == snapshot.session.history_epoch]
-    if run_id is not None:
-        return next((run for run in runs if run.run_id == run_id), None)
-    active = [run for run in runs if run.status in ACTIVE_RUN_STATUSES]
-    if active:
-        return active[-1]
-    if snapshot.session.last_run_id is not None:
-        for run in reversed(runs):
-            if run.run_id == snapshot.session.last_run_id:
-                return run
-    return runs[-1] if runs else None
-
-
 def overlay_run_activity(
     current: RuntimeActivitySnapshot,
     run: RunRecord,
     *,
     tool_calls: tuple[RuntimeToolCallActivity, ...] | None = None,
 ) -> RuntimeActivitySnapshot:
-    """Reconcile replayed activity with the canonical Run at the same read boundary."""
+    """Reconcile delivered activity with the canonical Run at the same read boundary."""
 
     if current.session_id != run.session_id:
         raise ValueError("Run and activity belong to different Sessions")
@@ -502,6 +438,11 @@ def overlay_run_activity(
         if batch
         else (),
     }
+    if run.current_compaction_id is not None and run.status == "running":
+        updates["compaction_id"] = run.current_compaction_id
+        updates["activity"] = "compacting"
+    elif run.current_compaction_id is None:
+        updates["compaction_id"] = None
     if run.abort_requested and run.status in ACTIVE_RUN_STATUSES:
         updates["status"] = "cancelling"
         updates["activity"] = "cancelling"
@@ -538,6 +479,8 @@ def overlay_run_activity(
         )
     elif run.phase == "result_commit":
         updates["activity"] = "committing_results"
+    elif run.current_compaction_id is not None:
+        updates["activity"] = "compacting"
     elif current.activity not in _MODEL_ACTIVITIES:
         updates["activity"] = "preparing_model"
     return current.model_copy(update=updates)
@@ -549,6 +492,86 @@ def project_batch_activity(
     """Project the explicitly selected calls; observed result content stays out of the view."""
     return (
         _overlay_tool_calls((), batch.calls, batch_id=batch.batch_id) if batch is not None else ()
+    )
+
+
+def apply_observed_activity(
+    current: RuntimeActivitySnapshot,
+    facts: SessionObservationFacts,
+) -> RuntimeActivitySnapshot:
+    """Merge current records by identity; no historical lifecycle is replayed."""
+    session = facts.session
+    run_id = session.active_run_id or session.last_run_id
+    run = next(
+        (
+            item
+            for item in facts.runs
+            if item.run_id == run_id and item.history_epoch == session.history_epoch
+        ),
+        None,
+    )
+    if run is None:
+        run_id = None
+    if current.history_epoch != session.history_epoch or current.run_id != run_id:
+        current = RuntimeActivitySnapshot(
+            session_id=session.session_id,
+            history_epoch=session.history_epoch,
+            status="idle",
+            activity="idle",
+            sequence=current.sequence,
+        )
+    if run is not None:
+        head = run.active_tool_batch
+        tools = {
+            tool.tool_call_id: tool
+            for tool in current.tool_calls
+            if head is not None and tool.batch_id == head.batch_id
+        }
+        for tool in facts.tool_calls:
+            if tool.run_id == run_id and head is not None and tool.batch_id == head.batch_id:
+                tools[tool.tool_call_id] = tool
+        selected = tuple(
+            sorted(
+                (tool for identity, tool in tools.items() if head and identity in head.call_ids),
+                key=lambda tool: (tool.source_index, tool.tool_call_id),
+            )
+        )
+        current = overlay_run_activity(current, run, tool_calls=selected)
+        current = overlay_request_activity(current, run, facts.current_request)
+    return current.model_copy(
+        update={
+            "context_status": facts.context_status,
+            "effective_context_metrics": facts.effective_context_metrics,
+        }
+    )
+
+
+def overlay_request_activity(
+    current: RuntimeActivitySnapshot,
+    run: RunRecord,
+    request: ModelRequestHeader | None,
+) -> RuntimeActivitySnapshot:
+    if (
+        request is None
+        or request.run_id != run.run_id
+        or run.status != "running"
+        or request.response_closed_at is not None
+    ):
+        return current
+    activity = current.activity
+    if request.purpose == "compaction":
+        activity = "compacting"
+    elif request.provider_done_at is not None:
+        activity = "finalizing_response"
+    elif request.turn_id != current.turn_id or activity not in _MODEL_ACTIVITIES:
+        activity = "waiting_model" if request.started_at is not None else "preparing_model"
+    return current.model_copy(
+        update={
+            "turn_id": request.turn_id,
+            "activity": activity,
+            "model_attempt": request.retry.attempt if request.retry else None,
+            "model_max_attempts": request.retry.max_attempts if request.retry else None,
+        }
     )
 
 
@@ -888,10 +911,6 @@ def _tool_call_status(value: object) -> ToolCallStatus | None:
     }:
         return cast(ToolCallStatus, value)
     return None
-
-
-def _latest_sequence(events: Iterable[EventRecord]) -> int:
-    return max((event.sequence for event in events), default=0)
 
 
 def _string_or_none(value: object) -> str | None:

@@ -7,7 +7,7 @@ from pydantic import Field, model_validator
 
 from ouro.application.contracts.base import ApplicationDTO, Diagnostic
 from ouro.application.contracts.events import RuntimeEventView
-from ouro.application.contracts.sessions import SessionContextStatus
+from ouro.application.contracts.sessions import SessionContextStatus, SessionObservationBatch
 from ouro.application.contracts.tool_activity import (
     RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS as RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS,
 )
@@ -113,10 +113,11 @@ class ShutdownPolicy(ApplicationDTO):
 
 
 class RuntimeNotification(ApplicationDTO):
-    kind: Literal["event", "activity", "diagnostic"]
+    kind: Literal["event", "activity", "facts", "diagnostic"]
     event: RuntimeEventView | None = None
     activity: RuntimeActivitySnapshot | None = None
     diagnostic: Diagnostic | None = None
+    facts: SessionObservationBatch | None = None
 
     @model_validator(mode="after")
     def _validate_payload(self) -> RuntimeNotification:
@@ -124,6 +125,7 @@ class RuntimeNotification(ApplicationDTO):
             "event": self.event,
             "activity": self.activity,
             "diagnostic": self.diagnostic,
+            "facts": self.facts,
         }
         if payloads[self.kind] is None:
             raise ValueError(f"runtime notification {self.kind!r} is missing its payload")

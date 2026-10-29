@@ -92,43 +92,25 @@ class SessionControlCoordinator:
             capture_session_harness, self.store, session_id, usage_service=self.usage_service
         )
         operation_id = new_id("op")
-        await run_blocking(
-            self.store.append_ordered_event,
-            self._event(
-                session_id,
-                operation_id,
-                transition.action,
-                "started",
-            ),
+        draft, result = await self.stage(
+            transition,
+            session=before,
+            draft=draft,
+            controllers=controllers,
+            workspace=workspace,
         )
-        try:
-            draft, result = await self.stage(
-                transition,
-                session=before,
-                draft=draft,
-                controllers=controllers,
-                workspace=workspace,
-            )
-            request = SessionCommit(
-                operation_id=operation_id,
-                before=before,
-                steps=(SessionCommitStep(harness=draft.state),),
-                events=(self._event(session_id, operation_id, transition.action, "applied"),),
-            )
-            committed = await self.commit_async(
-                request,
-                released_activation_ids=tuple(result.released_activation_ids),
-                resolving_tool_call_id=resolving_tool_call_id,
-            )
-            return self.with_cancellations(result, committed)
-        except BaseException as exc:
-            await run_blocking(
-                self.store.append_ordered_event,
-                self._event(
-                    session_id, operation_id, transition.action, "failed", type(exc).__name__
-                ),
-            )
-            raise
+        request = SessionCommit(
+            operation_id=operation_id,
+            before=before,
+            steps=(SessionCommitStep(harness=draft.state),),
+            events=(self._event(session_id, operation_id, transition.action),),
+        )
+        committed = await self.commit_async(
+            request,
+            released_activation_ids=tuple(result.released_activation_ids),
+            resolving_tool_call_id=resolving_tool_call_id,
+        )
+        return self.with_cancellations(result, committed)
 
     async def stage(
         self,
@@ -401,19 +383,9 @@ class SessionControlCoordinator:
                     recovered = self.store.load_session_record(request.before.session_id)
                     if recovered.last_commit_id != request.operation_id:
                         raise
-                    # The mutation boundary still owns this commit's final sequence.
-                    # Recover only its small notification range after Files roll-forward.
+                    # The shared fact follower discovers this committed revision even
+                    # when the caller did not receive the transient notification result.
                     committed_events = ()
-                    if prepared.events:
-                        events, _ = self.store.load_events_after(
-                            request.before.session_id,
-                            after_sequence=self.store.latest_event_sequence(
-                                request.before.session_id
-                            )
-                            - len(prepared.events),
-                            limit=len(prepared.events),
-                        )
-                        committed_events = tuple(events)
         self.store.refresh_catalog(request.before.session_id)
         return SessionControlCommitOutcome(tuple(cancellations), stopped_run_id, committed_events)
 
@@ -497,7 +469,7 @@ class SessionControlCoordinator:
                     steps=(
                         SessionCommitStep(harness=state.model_copy(update={"controls": controls})),
                     ),
-                    events=(self._event(session_id, operation_id, "release", "applied"),),
+                    events=(self._event(session_id, operation_id, "release"),),
                 ),
                 released_activation_ids=(activation_id,),
             )
@@ -505,17 +477,15 @@ class SessionControlCoordinator:
         return result
 
     @staticmethod
-    def _event(
-        session_id: str, operation_id: str, action: str, phase: str, error: str | None = None
-    ) -> EventRecord:
+    def _event(session_id: str, operation_id: str, action: str) -> EventRecord:
         return EventRecord(
             session_id=session_id,
             event_type="session_control_transition",
             payload={
                 "operation_id": operation_id,
                 "action": action,
-                "phase": phase,
-                "error_type": error,
+                "phase": "applied",
+                "error_type": None,
             },
         )
 
