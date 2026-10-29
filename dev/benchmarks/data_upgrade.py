@@ -30,31 +30,6 @@ def synthetic_home(home: Path, backend: str, operations: int) -> None:
         with closing(sqlite3.connect(source.with_suffix(".sqlite3"))) as connection:
             connection.executescript(source.read_text("utf-8"))
         source.unlink()
-    # Compose a closed history with consistent Call/result identities.
-    if backend == "files":
-        path = home / "sessions/ses_fixture/runs/run_fixture.json"
-        run = json.loads(path.read_text("utf-8"))
-        run["active_tool_batch"] = None
-        path.write_text(json.dumps(run), "utf-8")
-        path = home / "sessions/ses_fixture/messages.jsonl"
-        messages = [json.loads(line) for line in path.read_text("utf-8").splitlines()]
-        messages[-1]["tool_result"]["tool_call_id"] = messages[1]["tool_calls"][0]["id"]
-        path.write_text("\n".join(map(json.dumps, messages)) + "\n", "utf-8")
-    else:
-        with closing(sqlite3.connect(home / "sessions.sqlite3")) as connection:
-            run = json.loads(connection.execute("SELECT payload FROM runs").fetchone()[0])
-            run["active_tool_batch"] = None
-            connection.execute("UPDATE runs SET payload=?", (json.dumps(run),))
-            messages = [
-                json.loads(row[0])
-                for row in connection.execute("SELECT payload FROM messages ORDER BY sequence")
-            ]
-            messages[-1]["tool_result"]["tool_call_id"] = messages[1]["tool_calls"][0]["id"]
-            connection.execute(
-                "UPDATE messages SET payload=? WHERE message_id=?",
-                (json.dumps(messages[-1]), messages[-1]["message_id"]),
-            )
-            connection.commit()
     raw = json.loads(
         (FIXTURES / "files/sessions/ses_fixture/operations/op_fixture.json").read_text("utf-8")
     )

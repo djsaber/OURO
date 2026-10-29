@@ -159,29 +159,20 @@ def _context_v3_to_v4(value: dict[str, Any]) -> None:
 
 
 def _context_metrics(value: dict[str, Any]) -> None:
-    """Preserve request facts and verify redundant historical budget indicators."""
-    previous = {key: value.pop(key) for key in _LEGACY_BUDGET_FIELDS}
-    window = previous["context_window_tokens"]
-    reserve = previous["reserved_output_tokens"]
-    if type(reserve) is not int or reserve < 0:
-        raise UpgradeDataError("invalid historical output reserve")
-    _add(
-        value,
-        "budget",
-        {"context_window": window, "max_output_tokens": reserve or None}
-        if window is not None
-        else None,
-    )
-    metrics = validate(ContextMetrics, value)
-    for key, original in previous.items():
-        expected = getattr(metrics, key)
-        matches = type(original) is type(expected) and (
-            math.isclose(original, expected)
-            if isinstance(expected, float)
-            else original == expected
+    """Keep capacity and estimates; discard obsolete derived budget counters."""
+    window = value.pop("context_window_tokens", None)
+    reserve = value.pop("reserved_output_tokens", 0)
+    for key in _LEGACY_BUDGET_FIELDS[2:]:
+        value.pop(key, None)
+    if "budget" not in value:
+        if window is not None and (type(reserve) is not int or reserve < 0):
+            raise UpgradeDataError("invalid historical output reserve")
+        value["budget"] = (
+            {"context_window": window, "max_output_tokens": reserve or None}
+            if window is not None
+            else None
         )
-        if not matches:
-            raise UpgradeDataError(f"inconsistent historical context metric: {key}")
+    validate(ContextMetrics, value)
 
 
 def _context_v4_to_v5(value: dict[str, Any]) -> None:
@@ -242,14 +233,14 @@ def _execution_v1_to_v3(value: dict[str, Any]) -> None:
 
 
 def _session_v2_to_v5(value: dict[str, Any]) -> None:
-    _add(value, "context_selection", {"compaction_id": value.pop("active_compaction_id")})
+    _add(value, "context_selection", {"compaction_id": value.pop("active_compaction_id", None)})
 
 
 def _run_v5_to_v10(value: dict[str, Any]) -> None:
     if value.get("active_tool_batch") is not None:
         raise UpgradeDataError("historical tool batch requires Session conversion")
-    value.pop("usage")
-    value.pop("usage_entry_ids")
+    value.pop("usage", None)
+    value.pop("usage_entry_ids", None)
 
 
 def _message_v4_to_v8(value: dict[str, Any]) -> None:

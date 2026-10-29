@@ -10,14 +10,12 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from ouro.core.agents import DelegationRecord
 from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessVersion
 from ouro.core.resources import SessionResourceReference
 from ouro.local_io import filesystem_path
 from ouro.sessions import SQLiteSessionStore
 from ouro.sessions.backends.files.database import initialize_index
-from ouro.sessions.backends.files.delegations import LookupKind, lookup_path, record_path
 from ouro.sessions.backends.files.message_locations import FileMessageIndex, FileMessageReference
 from ouro.sessions.backends.sqlite.commits import SQLiteSessionCommits
 from ouro.sessions.backends.sqlite.messages import write_messages
@@ -32,6 +30,7 @@ from ouro.sessions.sqlite_resources import insert_reference
 from ouro.sessions.sqlite_runs import write_run
 from ouro.sessions.sqlite_sessions import write_session
 from ouro_upgrade import session_records
+from ouro_upgrade.delegations import resolve_file_parents, save_delegation
 from ouro_upgrade.errors import UpgradeBlockedError, UpgradeDataError, require
 from ouro_upgrade.files import children, decode, read_json
 from ouro_upgrade.records import convert, loads, validate
@@ -58,7 +57,7 @@ def _write(
     directory: Path | None = None,
 ) -> SessionIndexEntry:
     messages, runs, calls, states = session_records.messages_and_runs(
-        data["message"], data["run"], data["session"][0]["history_epoch"]
+        data["message"], data["run"], data["session"][0].get("history_epoch", 0)
     )
     resources = [
         validate(SessionResourceReference, convert("resource", raw)) for raw in data["resource"]
@@ -69,11 +68,6 @@ def _write(
         "session",
         "foreign message or Run",
     )
-    require(
-        all(message.sequence == index for index, message in enumerate(messages, 1)),
-        "session",
-        "non-contiguous message sequence",
-    )
     compactions = session_records.compactions(data["compaction"], messages)
     require(
         all(item.session_id == session.session_id for item in compactions),
@@ -83,7 +77,14 @@ def _write(
     header, body = session_records.context(next(iter(data["context"]), None))
     harness = [validate(HarnessVersion, convert("harness", raw)) for raw in data["harness"]]
     versions = {item.version_id: item for item in harness}
-    require(session.harness_version in versions, "session", "missing Harness")
+    missing_versions = {
+        session.harness_version,
+        *(item.before_harness_version for item in messages if item.before_harness_version),
+    } - versions.keys()
+    for identity in sorted(missing_versions):
+        version = HarnessVersion(session_id=session.session_id, version_id=identity)
+        harness.append(version)
+        versions[identity] = version
     session.controls = versions[session.harness_version].state.controls
     write_session(connection, session)
     write_facts(connection, calls)
@@ -201,6 +202,7 @@ def file_session(work: Workspace, directory: Path) -> SessionIndexEntry:
         require(set(resource_index) == {"resources"}, path, "unknown resource index structure")
         data["resource"] = resource_index["resources"]
         old_paths.append(path)
+    resolve_file_parents(work, directory.name, data["delegation"])
     temporary = filesystem_path(work.temporary())
     temporary.mkdir()
     target = temporary / "session-data.sqlite3"
@@ -346,56 +348,3 @@ def current_sqlite(connection: sqlite3.Connection) -> bool:
         "SELECT value FROM metadata WHERE key='sqlite_schema_version'"
     ).fetchone()
     return row is not None and row[0] == "26"
-
-
-def save_delegation(
-    connection: sqlite3.Connection, raw: dict[str, Any], *, directory: Path | None = None
-) -> None:
-    require(raw.get("schema_version") in (1, 2), "delegation", "unsupported version")
-    value = dict(raw)
-    if value["schema_version"] == 1:
-        batch_id = None
-        if value.get("parent_tool_call_id") is not None:
-            rows = connection.execute(
-                "SELECT batch_id FROM tool_calls "
-                "WHERE session_id=? AND run_id=? AND tool_call_id=?",
-                (value["parent_session_id"], value["parent_run_id"], value["parent_tool_call_id"]),
-            ).fetchall()
-            require(len(rows) == 1, "delegation", "parent Call has no unambiguous batch identity")
-            batch_id = rows[0][0]
-        value.update(schema_version=2, parent_batch_id=batch_id)
-    record = validate(DelegationRecord, value)
-    if directory is not None:
-        path = record_path(directory, record.delegation_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(record.model_dump_json(), "utf-8")
-        lookups: tuple[tuple[LookupKind, str | None], ...] = (
-            ("requests", record.idempotency_key),
-            ("children", record.child_session_id),
-            ("parents", record.parent_run_id),
-        )
-        for kind, key in lookups:
-            if key is None:
-                continue
-            path = lookup_path(directory, kind, key)
-            if kind == "parents":
-                path /= record.delegation_id
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("" if kind == "parents" else record.delegation_id, "utf-8")
-    else:
-        connection.execute(
-            "INSERT INTO delegations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                record.delegation_id,
-                record.root_session_id,
-                record.parent_session_id,
-                record.parent_run_id,
-                record.child_session_id,
-                record.idempotency_key,
-                record.spawn_state,
-                record.result.delivery.status if record.result else None,
-                record.revision,
-                record.created_at.isoformat(),
-                record.model_dump_json(),
-            ),
-        )

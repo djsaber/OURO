@@ -51,9 +51,10 @@ application/user version pragmas and preserve sequence values.
 
 The Session has three messages and a completed Run with a model tool batch.
 The frozen writer accepted inconsistent tool request, invocation and result IDs.
-The test loader composes a consistent scenario by aligning the invocation and result
-with the saved request and batch turn. The original bytes remain frozen; a separate
-regression verifies that conflicting execution identity prevents publication.
+Tests and benchmarks consume these writer outputs directly. Execution bindings use
+the owning Call identity; unmatched published feedback retains its result identity
+with an empty-argument Call. Regressions cover missing bindings and timestamps,
+in-flight outcomes, discarded queue markers and cross-session delegation links.
 The context and commit receipt retain copies of the messages. The disabled task
 has one completed execution and its original occurrence marker. The ledger
 records 99 tokens, resets them, then records 100 input / 7 output tokens and

@@ -61,18 +61,12 @@ def test_event_and_commit_metrics_remain_replayable_without_touching_opaque_payl
     assert convert("event", unrelated) is unrelated
 
 
-@pytest.mark.parametrize("damage", ["missing_window", "mixed", "reserve", "derived", "unknown"])
+@pytest.mark.parametrize("damage", ["reserve", "unknown"])
 def test_budget_upgrade_rejects_incomplete_or_conflicting_facts(budget_records, damage):
     source = budget_records["context"]
     metrics = source["metrics"]
-    if damage == "missing_window":
-        del metrics["context_window_tokens"]
-    elif damage == "mixed":
-        metrics["budget"] = {"context_window": 1000, "max_output_tokens": 200}
-    elif damage == "reserve":
+    if damage == "reserve":
         metrics["reserved_output_tokens"] = True
-    elif damage == "derived":
-        metrics["estimated_remaining_tokens"] = 999
     else:
         metrics["unknown"] = "private-value-must-not-be-logged"
     before = copy.deepcopy(source)
@@ -179,3 +173,25 @@ def test_budget_upgrade_reaches_both_stores_and_preserves_restore(historical_hom
     upgraded = hashes(home)
     assert upgrade(home, **options)["status"] == "current"
     assert hashes(home) == upgraded
+
+
+@pytest.mark.parametrize("change", ["missing_window", "mixed", "derived"])
+def test_obsolete_budget_counters_do_not_block_upgrade(budget_records, change):
+    source = budget_records["context"]
+    metrics = source["metrics"]
+    if change == "missing_window":
+        del metrics["context_window_tokens"]
+    elif change == "mixed":
+        metrics["budget"] = {"context_window": 2000, "max_output_tokens": 400}
+        metrics["reserved_output_tokens"] = "obsolete"
+    else:
+        metrics["estimated_remaining_tokens"] = 999
+        del metrics["estimated_utilization_ratio"]
+    result = ContextMetrics.model_validate(convert("context", source)["metrics"])
+    assert result.estimated_input_tokens == metrics["estimated_input_tokens"]
+    if change == "missing_window":
+        assert result.budget is None
+    elif change == "mixed":
+        assert result.budget.context_window == 2000
+    else:
+        assert result.estimated_remaining_tokens != 999

@@ -9,7 +9,6 @@ import pytest
 from ouro.billing.local import LocalUsageLedger
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro_upgrade.engine import upgrade
-from ouro_upgrade.errors import UpgradeError
 from tests.upgrade.test_upgrade import hashes
 
 
@@ -74,15 +73,17 @@ def test_native_session_and_usage_readers(valid_home):
     assert hashes(home) == after
 
 
-def test_inconsistent_execution_facts_are_not_published(historical_home):
+def test_execution_binding_uses_owning_call_identity(historical_home):
     path = historical_home / "sessions/ses_fixture/runs/run_fixture.json"
     raw = json.loads(path.read_text())
     raw["active_tool_batch"]["calls"][0]["invocation"]["tool_call_id"] = "mismatch"
     path.write_text(json.dumps(raw))
-    before = hashes(historical_home)
-    with pytest.raises(UpgradeError):
-        upgrade(historical_home)
-    assert hashes(historical_home) == before
+    upgrade(historical_home)
+    snapshot = LocalSessionStore(historical_home).load_session("ses_fixture")
+    assert (
+        snapshot.call_states[0].prepared_binding.tool_call_id
+        == raw["active_tool_batch"]["calls"][0]["request"]["id"]
+    )
 
 
 def test_saved_execution_preserves_start_and_structured_outcome(historical_home):
@@ -188,12 +189,16 @@ def test_usage_schema_two_preserves_original_and_effective_totals(historical_hom
     assert ledger.run_usage("ses_fixture", "run_fixture").input_tokens == 199
 
 
-def test_queue_reference_without_acceptance_facts_is_not_invented(historical_home):
+def test_consumed_queue_marker_is_discarded(historical_home):
     path = historical_home / "sessions/ses_fixture/messages.jsonl"
     rows = [json.loads(line) for line in path.read_text().splitlines()]
     rows[0]["metadata"]["queued_input_id"] = "unknown-acceptance"
     path.write_text("\n".join(map(json.dumps, rows)))
-    before = hashes(historical_home)
-    with pytest.raises(UpgradeError):
-        upgrade(historical_home)
-    assert hashes(historical_home) == before
+    upgrade(historical_home)
+    store = LocalSessionStore(historical_home)
+    snapshot = store.load_session("ses_fixture")
+    assert snapshot.messages[0].text_content == "fixture question"
+    assert snapshot.messages[0].input_id is None
+    assert "queued_input_id" not in snapshot.messages[0].metadata
+    assert not snapshot.inputs
+    assert not snapshot.input_states

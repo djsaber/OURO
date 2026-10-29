@@ -109,12 +109,13 @@ def test_current_catalog_input_errors_do_not_expose_record_values(historical_hom
 
 
 @pytest.mark.parametrize("field", ["created_at", "updated_at", "last_activity_at"])
-def test_catalog_rebuild_does_not_fabricate_current_record_timestamps(historical_home, field):
+def test_missing_session_timestamp_uses_saved_history(historical_home, field):
     path = historical_home / "sessions/ses_fixture/session.json"
     raw = loads(path.read_text("utf-8"))
     del raw[field]
     path.write_text(json.dumps(raw), encoding="utf-8")
-    before = hashes(historical_home)
-    with pytest.raises(UpgradeError, match="missing persisted SessionRecord"):
-        upgrade(historical_home)
-    assert hashes(historical_home) == before
+    upgrade(historical_home)
+    from ouro.sessions import LocalSessionStore
+
+    session = LocalSessionStore(historical_home).load_session("ses_fixture").session
+    assert getattr(session, field).isoformat() == "2026-09-01T00:00:00+00:00"
