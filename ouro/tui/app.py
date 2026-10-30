@@ -1103,6 +1103,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         await super().on_event(event)
 
     def on_mount(self) -> None:
+        self.screen_change_signal.subscribe(self, self._resume_runtime_event_frame, immediate=True)
         self.query_one(StatusLine).set_activity("starting")
         composer = self.query_one(Composer)
         popup = self.query_one(CommandPopup)
@@ -1520,6 +1521,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         finally:
             subscription.close()
+
+    def _resume_runtime_event_frame(self, _screen: Screen) -> None:
+        # Refresh callbacks belong to the screen that accepted them. Navigation
+        # may remove that screen before its callback releases the frame gate.
+        if self._runtime_events_frame_scheduled:
+            self._post_runtime_events_ready()
 
     def _post_runtime_events_ready(self) -> None:
         self._runtime_events_frame_scheduled = False

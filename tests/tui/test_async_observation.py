@@ -5,6 +5,7 @@ from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
+from textual.screen import ModalScreen
 
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
@@ -12,8 +13,63 @@ from ouro.tui.conversation.history import ConversationHistory
 from ouro.tui.conversation.view import ConversationView
 from tests.application.test_session_event_following import append
 from tests.tui.app.support import _application
-from tests.tui.helpers import run_ready_app
-from tests.tui.test_tasks import streaming_application
+from tests.tui.helpers import release_on_exit, run_ready_app, wait_until
+from tests.tui.test_tasks import StreamingTaskProvider, streaming_application
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_closing_overlay_does_not_strand_pending_stream_frame(tmp_path, monkeypatch, backend):
+    finish = asyncio.Event()
+
+    class HeldStreamProvider(StreamingTaskProvider):
+        async def stream(self, **kwargs):
+            async for event in super().stream(**kwargs):
+                if event.type == "done":
+                    await finish.wait()
+                yield event
+
+    provider = HeldStreamProvider()
+    application = streaming_application(tmp_path, provider, backend=backend)
+    session = application.runtime.sessions.create(title="Stream across navigation").session
+    app = OuroTuiApp(application=application)
+    async with application, release_on_exit(provider.release, finish):
+        handle = await application.supervisor.submit("Stream", session_id=session.session_id)
+        await asyncio.wait_for(provider.started.wait(), 5)
+        async with run_ready_app(app) as pilot, release_on_exit(provider.release, finish):
+            overlay = ModalScreen()
+            await app.push_screen(overlay)
+            await app._open_session(session.session_id)
+            assert app._projection.assistant_text == "Before attachment. "
+            observation = app._observation_subscription
+            before = observation.applied_position
+            scheduled = asyncio.Event()
+            invoke_later = overlay._invoke_later
+
+            def hold_stream_frame(callback, sender):
+                if getattr(callback, "func", None) == app._post_runtime_events_ready:
+                    scheduled.set()
+                    return
+                invoke_later(callback, sender)
+
+            # Hold the frame at the screen boundary, then unmount that screen.
+            monkeypatch.setattr(overlay, "_invoke_later", hold_stream_frame)
+            provider.release.set()
+            await asyncio.wait_for(scheduled.wait(), 5)
+            assert observation.applied_position == before
+            await app.pop_screen()
+            await wait_until(
+                lambda: (
+                    app._projection.assistant_text == "Before attachment. After attachment."
+                    and observation.applied_position != before
+                ),
+                pilot,
+                description="stream and acknowledged cursor after its overlay is removed",
+                timeout=5,
+            )
+            assert app._projection.activity.status == "running"
+            assert not observation.closed
+            finish.set()
+            await asyncio.wait_for(application.supervisor.wait(handle), 5)
 
 
 async def test_session_observation_does_not_reserve_sqlite_writer(tmp_path, monkeypatch):

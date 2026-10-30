@@ -58,6 +58,7 @@ class ToolBatchCall(OuroModel):
     request: ToolCallRequest
     status: ToolCallStatus = "planned"
     invocation: ToolInvocation | None = None
+    started_at: datetime | None = None
     approval: ApprovalRecord | None = None
     input_request: ToolInputRequest | None = None
     input_resolution: ToolInputResolution | None = None

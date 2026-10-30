@@ -164,6 +164,7 @@ async def test_two_tuis_follow_tools_and_consecutive_runs_without_duplicate_summ
             for app in (first, second):
                 await app._open_session(session.session_id)
                 assert app._projection.activity.activity == "executing_tools"
+                assert app._projection.activity.tool_calls[0].started_at is not None
             provider.release.set()
             run_ids = []
             for index, text in enumerate(("First shared answer.", "Second shared answer.")):
@@ -198,6 +199,19 @@ async def test_two_tuis_follow_tools_and_consecutive_runs_without_duplicate_summ
                     ]
                     assert [summary.run_id for summary in summaries] == run_ids
                     assert not app.query_one(ConversationView)._tools
+                    tool_entries = [
+                        entry.tool
+                        for entry in app.query_one(ConversationHistory).entries
+                        if entry.tool is not None
+                    ]
+                    result_message = next(
+                        message
+                        for message in owner.runtime.store.load_session(session.session_id).messages
+                        if message.role == "tool_result"
+                    )
+                    assert len(tool_entries) == 1
+                    assert tool_entries[0].started_at == result_message.tool_execution.started_at
+                    assert tool_entries[0].ended_at == result_message.tool_execution.ended_at
             for app, pilot in ((first, first_pilot), (second, second_pilot)):
                 await wait_until(
                     lambda app=app: (

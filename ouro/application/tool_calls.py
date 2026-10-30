@@ -710,6 +710,12 @@ class ToolCallCoordinator:
                                 "tool_name": result.tool_name,
                                 "status": completed_call.status,
                                 "is_error": result.is_error,
+                                "started_at": result.started_at.isoformat()
+                                if result.started_at is not None
+                                else None,
+                                "ended_at": result.ended_at.isoformat()
+                                if result.ended_at is not None
+                                else None,
                                 "result_data": result.structured,
                                 "source_index": completed_call.request.source_index,
                                 "outcome_attempt": None

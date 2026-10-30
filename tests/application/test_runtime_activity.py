@@ -1,3 +1,5 @@
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from ouro.application.contracts.execution import (
@@ -18,7 +20,64 @@ from ouro.core.context_budget import ContextBudget
 from ouro.core.events import EventRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
-from ouro.core.tools import ToolCallRequest
+from ouro.core.tools import ToolCallRequest, ToolResult
+
+
+@pytest.mark.parametrize("observed_start", [False, True])
+def test_tool_completion_uses_execution_timing_instead_of_delivery_time(observed_start):
+    started = datetime(2026, 10, 30, tzinfo=UTC)
+    ended = started + timedelta(seconds=3)
+    activity = queued_runtime_activity("ses_1")
+    if observed_start:
+        activity = reduce_runtime_activity(
+            activity,
+            _event(1, "tool_call_started", {"tool_call_id": "call", "tool_name": "Read"}),
+        )
+    activity = reduce_runtime_activity(
+        activity,
+        _event(
+            2,
+            "tool_call_completed",
+            {
+                "tool_call_id": "call",
+                "tool_name": "Read",
+                "started_at": started.isoformat(),
+                "ended_at": ended.isoformat(),
+            },
+        ),
+    )
+    assert activity.tool_calls[0].started_at == started
+    assert activity.tool_calls[0].ended_at == ended
+
+
+@pytest.mark.parametrize("completed", [False, True])
+def test_batch_activity_projects_durable_execution_timing(completed):
+    admitted = datetime(2026, 10, 30, tzinfo=UTC)
+    started = admitted + timedelta(milliseconds=10)
+    ended = started + timedelta(seconds=3)
+    batch = ToolCallBatchRecord(
+        turn_id="turn",
+        assistant_message_id="msg",
+        calls=[
+            ToolBatchCall(
+                request=ToolCallRequest(id="call", name="Read"),
+                status="completed" if completed else "running",
+                started_at=admitted,
+                result=ToolResult(
+                    tool_call_id="call",
+                    tool_name="Read",
+                    content="done",
+                    started_at=started,
+                    ended_at=ended,
+                )
+                if completed
+                else None,
+            )
+        ],
+    )
+    activity = project_batch_activity(batch)[0]
+    assert activity.started_at == (started if completed else admitted)
+    assert activity.ended_at == (ended if completed else None)
 
 
 @pytest.mark.parametrize("status", ["failed", "aborted", "recoverable"])

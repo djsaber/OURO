@@ -150,6 +150,7 @@ def load_batch_call(
         request=call.request,
         status=state.status,
         invocation=invocation,
+        started_at=start.started_at if start is not None else None,
         approval=approval,
         input_request=state.input_request,
         input_resolution=state.input_resolution,

@@ -642,6 +642,13 @@ def _upsert_tool_call(
     normalized_index = source_index if isinstance(source_index, int) and source_index >= 0 else 0
     arguments = _json_object(payload.get("arguments"))
     result_data = _json_object(payload.get("result_data"))
+    timing = {f"{transition}_at": occurred_at}
+    if transition == "ended":
+        timing.update(
+            (name, datetime.fromisoformat(value))
+            for name in ("started_at", "ended_at")
+            if isinstance((value := payload.get(name)), str)
+        )
     updated: list[RuntimeToolCallActivity] = []
     matched = False
     for item in calls:
@@ -659,7 +666,7 @@ def _upsert_tool_call(
                 changes["arguments"] = arguments
             if result_data is not None:
                 changes["result_data"] = result_data
-            changes[f"{transition}_at"] = occurred_at
+            changes.update(timing)
             updated.append(item.model_copy(update=changes))
             matched = True
         else:
@@ -674,9 +681,9 @@ def _upsert_tool_call(
                 source_index=normalized_index,
                 arguments=arguments or {},
                 result_data=result_data or {},
-                requested_at=occurred_at if transition == "requested" else None,
-                started_at=occurred_at if transition == "started" else None,
-                ended_at=occurred_at if transition == "ended" else None,
+                requested_at=timing.get("requested_at"),
+                started_at=timing.get("started_at"),
+                ended_at=timing.get("ended_at"),
             )
         )
     return tuple(sorted(updated, key=lambda item: (item.source_index, item.tool_call_id)))
@@ -852,7 +859,9 @@ def _overlay_tool_calls(
                     else {}
                 ),
                 requested_at=requested_at,
-                started_at=previous.started_at if previous is not None else None,
+                started_at=(result.started_at if result is not None else None)
+                or call.started_at
+                or (previous.started_at if previous is not None else None),
                 ended_at=ended_at,
             )
         )
