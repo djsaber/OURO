@@ -52,9 +52,7 @@ def application_at(tmp_path, provider=None, *, backend="files", skills=None):
             if skills is None
             else None
         ),
-        environment=RuntimeEnvironment.local(
-            tmp_path, store.sessions_dir if backend == "files" else None
-        ),
+        environment=RuntimeEnvironment.local(tmp_path),
     )
     return LocalApplication.from_runtime(runtime)
 

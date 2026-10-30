@@ -355,6 +355,6 @@ def two_route_application(
         ),
         tools=ToolRegistry(),
         default_workspace=tmp_path,
-        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+        environment=RuntimeEnvironment.local(tmp_path),
     )
     return LocalApplication.from_runtime(runtime)

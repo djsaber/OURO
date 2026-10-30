@@ -91,8 +91,6 @@ class SessionCatalogEntry(ApplicationDTO):
     status: SessionCatalogStatus
     active_run_id: str | None = None
     pending_interaction: PendingInteraction | None = None
-    current_provider: str | None = None
-    current_endpoint: str | None = None
     current_model: str | None = None
     approval_mode: SessionApprovalMode = "inherit"
     interaction_mode: SessionInteractionMode = "interactive"

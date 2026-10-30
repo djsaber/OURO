@@ -79,9 +79,6 @@ async def test_live_run_summary_matches_reloaded_history(tmp_path, backend, exec
             assert live[0].status == outcome
             assert live[0].model == "Friendly model"
             assert live[0].duration_seconds is not None
-            rendered = app.query_one(ConversationHistory).rendered_text
-            assert "Friendly model" in rendered
-            assert "named-endpoint" not in rendered
             assert (
                 owner.runtime.sessions.run_record(
                     session.session_id, live[0].run_id

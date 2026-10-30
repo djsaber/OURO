@@ -915,11 +915,14 @@ application 提供 root subtree subscription：
 至少包含：
 
 - root_session_id 和 projection revision；
-- nodes、delegation edges；
+- nodes：每个节点以 delegation_id、session_id 和 parent_session_id 表达委派身份与父子关系；
 - active/queued/waiting/terminal 汇总；
 - pending interaction 摘要；
 - root/child usage 与 budget；
 - 每 node 当前 RuntimeActivitySnapshot。
+
+节点的 delivery_status 为 null 表示结果尚未产生；result_ready 是其是否非空的只读派生值。
+结果是否已投递由 delivery_status 的具体状态表达，与结果是否就绪分别判断。
 
 Host 默认显示任务、状态、当前工具、elapsed 和控制入口；用户可打开 child Session 渲染完整 text/reasoning/tool
 流。根 transcript 不自动混入 child 中间日志。

@@ -124,10 +124,6 @@ class BuiltinPluginRegistry:
         return frozenset(self._definitions)
 
     @property
-    def exposed_tool_names(self) -> frozenset[str]:
-        return self._exposed_tools
-
-    @property
     def contracts(self) -> dict[str, BuiltinPluginContract]:
         return {
             definition.plugin_id: definition.dependency_contract()

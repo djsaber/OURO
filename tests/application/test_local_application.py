@@ -125,7 +125,6 @@ async def test_local_application_composes_and_closes_sqlite_runtime(tmp_path) ->
         result = await application.runtime.run("hello")
         assert isinstance(application.runtime.store, SQLiteSessionStore)
         assert application.runtime.environment.home == tmp_path.resolve()
-        assert application.runtime.environment.session_data_dir is None
         assert application.runtime.environment.artifact_root == tmp_path.resolve() / "artifacts"
         assert application.agents is not None
         assert application.agent_definitions is not None

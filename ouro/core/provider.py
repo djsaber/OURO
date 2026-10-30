@@ -30,13 +30,6 @@ ProviderFinishReason = Literal[
 ]
 
 
-class ModelCost(OuroModel):
-    input: float = 0.0
-    output: float = 0.0
-    cache_read: float = 0.0
-    cache_write: float = 0.0
-
-
 class ModelMetadata(OuroModel):
     model_id: str
     provider_id: str
@@ -53,7 +46,6 @@ class ModelMetadata(OuroModel):
     supports_structured_output: bool = False
     reasoning: ReasoningCapability = Field(default_factory=ReasoningCapability)
     reasoning_request: ReasoningRequest = Field(default_factory=ReasoningRequest)
-    cost: ModelCost | None = None
     billing_mode: BillingMode = "unknown"
     metadata: Metadata = MetadataField
 

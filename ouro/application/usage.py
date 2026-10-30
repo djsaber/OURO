@@ -328,7 +328,6 @@ class UsageService:
         )
         return UsageMutationResult(
             action="replace",
-            affected_count=1,
             affected_totals=_entry_totals(replaced),
             entry=replaced,
         )
@@ -345,7 +344,6 @@ class UsageService:
         removed = self.ledger.reset(usage_filter or UsageFilter(), note=normalized_note)
         return UsageMutationResult(
             action="reset",
-            affected_count=removed.request_count,
             affected_totals=removed,
         )
 
@@ -358,11 +356,9 @@ def _entry_totals(entry: ProviderUsageEntry) -> UsageTotals:
         request_count=1,
         input_tokens=entry.input_tokens,
         output_tokens=entry.output_tokens,
-        total_tokens=entry.total_tokens,
         cache_read_tokens=entry.cache_read_tokens,
         cache_write_tokens=entry.cache_write_tokens,
         estimated_cost=entry.estimated_cost or 0.0,
         priced_request_count=int(entry.estimated_cost is not None),
-        unpriced_request_count=int(entry.estimated_cost is None),
         billing_modes=(entry.billing_mode,),
     )

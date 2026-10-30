@@ -25,9 +25,6 @@ class PermissionConfigSnapshot:
     plugins: dict[str, PermissionMode]
     config_path: Path
 
-    def mode_for(self, tool_name: str, default: PermissionMode = "auto") -> PermissionMode:
-        return self.tools.get(tool_name, default)
-
 
 class PermissionConfigManager:
     """Manage persisted tool permission overrides."""

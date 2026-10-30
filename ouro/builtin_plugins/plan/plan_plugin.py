@@ -75,12 +75,6 @@ must be self-contained rather than assuming the user has read the plan file.
 
 Plan file: {plan_path}"""
 
-_ENTERED = """Plan mode is active. Investigate with read-only tools, then write the implementation
-plan using Write or Edit at the exact path below. Do not change other files or run shell commands.
-Call ExitPlanMode when ready for review. Wait for a successful exit before implementation.
-
-Plan file: {plan_path}"""
-
 
 class PlanPlugin:
     def __init__(self, context: PluginContext) -> None:

@@ -5,7 +5,7 @@ import json
 import pytest
 
 from ouro.application.configuration.facade import ConfigurationFacade
-from ouro.application.contracts.configuration import CompactionConfigInput
+from ouro.application.contracts.configuration import CompactionConfigInput, CredentialStatus
 from ouro.config import openai_chat_completions_effort_reasoning
 from ouro.config.prompts import PromptDraft
 from ouro.core.errors import ConfigError
@@ -14,13 +14,31 @@ from ouro.local_application import LocalApplication
 from ouro.mcp import MCPServerConfigUpdate
 
 
+@pytest.mark.parametrize(
+    "state,configured,available",
+    [
+        ("managed", True, None),
+        ("not_required", False, True),
+        ("configured", True, True),
+        ("missing", False, False),
+        ("missing", True, False),
+    ],
+)
+def test_credential_availability_is_derived_from_state(state, configured, available):
+    status = CredentialStatus(reference="fixture", state=state, configured=configured)
+
+    assert status.available is available
+    assert status.model_dump(mode="json")["available"] is available
+    assert status.model_copy(update={"state": "managed"}).available is None
+
+
 def test_configuration_overview_exposes_typed_defaults(tmp_path) -> None:
     overview = ConfigurationFacade(tmp_path).overview()
 
     assert overview.config_path.endswith("config.json")
     assert overview.providers.default_provider_id is None
     assert overview.providers.providers == []
-    assert overview.prompt.configured is False
+    assert overview.prompt.config.system_prompt is None
     assert overview.permissions.tools == {}
     assert overview.tool_execution.mode == "sequential"
     assert overview.queued_inputs.consumption_mode == "one_by_one"
@@ -163,7 +181,7 @@ def test_configuration_section_commands_preserve_other_sections(tmp_path) -> Non
     assert compaction.model.max_output_tokens == 2048
 
     overview = ConfigurationFacade(tmp_path).overview()
-    assert overview.prompt.system_prompt == "Custom prompt"
+    assert overview.prompt.config.system_prompt == "Custom prompt"
     assert overview.permissions.tools == {"Bash": "approval"}
     assert overview.permissions.plugins == {"dev.ouro.deploy": "deny"}
     assert overview.tool_execution.max_concurrency == 3
@@ -434,7 +452,7 @@ def test_provider_templates_are_typed_and_apply_provider_endpoint_atomically(
     assert provider.default_endpoint is not None
     assert facade.endpoint(provider_id, provider.default_endpoint).model_id == "gemini-3.8-flash"
     assert provider.credential.reference == "none"
-    assert ConfigurationFacade(tmp_path).system_prompt().system_prompt == "Keep this section"
+    assert ConfigurationFacade(tmp_path).system_prompt().config.system_prompt == "Keep this section"
 
 
 def test_provider_template_reapply_preserves_other_endpoints_and_credential(tmp_path) -> None:

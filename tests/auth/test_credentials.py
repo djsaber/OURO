@@ -459,14 +459,11 @@ async def test_binding_guard_encloses_save_and_is_entered_after_credential_lock(
 @pytest.mark.parametrize("conflict", [False, True])
 async def test_binding_guard_conflict_or_timeout_preserves_existing_credential(tmp_path, conflict):
     original, record = await initialized(tmp_path)
-    service = CredentialService(FileCredentialStore(tmp_path), lock_timeout=0.04)
+    service = CredentialService(FileCredentialStore(tmp_path))
 
     @contextmanager
     def guard(*, timeout, cancel_event):
-        if conflict:
-            raise AuthError("credential_conflict")
-        cancel_event.wait(timeout)
-        raise AuthError("credential_lock_timeout")
+        raise AuthError("credential_conflict" if conflict else "credential_lock_timeout")
         yield
 
     with pytest.raises(AuthError) as failure:

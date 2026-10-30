@@ -278,13 +278,6 @@ class MCPManager:
         if server_ids:
             await asyncio.gather(*(self.stop(server_id) for server_id in server_ids))
 
-    def mark_failed(self, server_id: str, error: str) -> MCPServerRecord:
-        runtime = self._runtimes.get(server_id)
-        if runtime is not None and runtime.task is not None and not runtime.task.done():
-            runtime.recycle_error = error
-            runtime.recycle.set()
-        return self._update(server_id, status="failed", error=error)
-
     def register_tools(
         self,
         *,

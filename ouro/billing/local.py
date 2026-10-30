@@ -253,12 +253,10 @@ class LocalUsageLedger:
             compaction_request_count=row["compaction_request_count"],
             input_tokens=row["input_tokens"],
             output_tokens=row["output_tokens"],
-            total_tokens=row["input_tokens"] + row["output_tokens"],
             cache_read_tokens=row["cache_read_tokens"],
             cache_write_tokens=row["cache_write_tokens"],
             estimated_cost=row["estimated_cost"],
             priced_request_count=row["priced_request_count"],
-            unpriced_request_count=row["request_count"] - row["priced_request_count"],
             billing_modes=tuple(
                 mode for mode in ("subscription", "unknown", "usage_based") if row[f"has_{mode}"]
             ),
@@ -306,7 +304,6 @@ class LocalUsageLedger:
             usage_filter=usage_filter,
             entries=entries,
             total_matching=count,
-            truncated=truncated,
             next_cursor=(
                 UsageEntryCursor(occurred_at=entries[-1].occurred_at, entry_id=entries[-1].entry_id)
                 if truncated
@@ -398,7 +395,6 @@ class LocalUsageLedger:
                 for row in rows[:limit]
             ),
             total_events=count,
-            truncated=len(rows) > limit,
             next_cursor=rows[limit - 1]["sequence"] if len(rows) > limit else None,
         )
 

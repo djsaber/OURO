@@ -307,7 +307,7 @@ async def test_default_builtin_injects_instructions_then_runtime_facts_without_p
         ),
         tools=ToolRegistry(),
         default_workspace=workspace,
-        environment=RuntimeEnvironment.local(home, store.sessions_dir),
+        environment=RuntimeEnvironment.local(home),
     )
     application = LocalApplication.from_runtime(runtime, home=home)
 

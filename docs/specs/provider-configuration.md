@@ -420,6 +420,10 @@ API Key/API Key 环境变量覆盖并用；无产品绑定的 ad-hoc managed 请
 `configured=true`、`available=null`，只说明已有引用，不能据此推断已经登录、已过期或可调用。实际认证状态由后续
 ProviderAuthService 提供，配置视图不读取 store 或触发刷新。
 
+CredentialStatus 的 available 由 state 只读派生：managed 为 null，not_required/configured 为 true，
+missing 为 false。configured 独立表示是否配置凭据引用；missing 可以表示未配置或已配置但不可用。
+读取派生值不再次解析凭据。
+
 内建 openai-codex 产品声明 Responses + 同名浏览器驱动，服务策略由组合根解析；其他既有产品保持 static。
 Provider/Template DTO 携带连接声明的只读 notice，用于 Host 披露服务限制，不写入用户配置。
 factory 要求组合根注入 managed RequestAuthenticator，构造时不读取秘密；未注入时明确失败，不尝试解析为 API Key。现有协议接线见[请求认证规格](request-authentication.md)，生产装配和 Host 启动验收见

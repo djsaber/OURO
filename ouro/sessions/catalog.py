@@ -54,7 +54,6 @@ def catalog_entry_from_session(
     last_activity_at: datetime | None = None,
     error_detail: str | None = None,
 ) -> SessionIndexEntry:
-    provider, endpoint = _split_model_route(session.current_model)
     pending_interaction: PendingInteraction | None = None
     if session.status == "waiting_approval":
         pending_interaction = "approval"
@@ -75,8 +74,6 @@ def catalog_entry_from_session(
         status=status or _catalog_status(session, None),
         active_run_id=active_run_id or session.active_run_id,
         pending_interaction=pending_interaction,
-        current_provider=provider,
-        current_endpoint=endpoint,
         current_model=session.current_model,
         approval_mode=session.approval_mode,
         interaction_mode=session.interaction_mode,
@@ -131,15 +128,6 @@ def _active_run_id(latest_run: RunRecord | None) -> str | None:
     if latest_run is not None and latest_run.status in ACTIVE_RUN_STATUSES:
         return latest_run.run_id
     return None
-
-
-def _split_model_route(value: str | None) -> tuple[str | None, str | None]:
-    if value is None:
-        return None, None
-    provider, separator, endpoint = value.partition("/")
-    if not separator:
-        return None, None
-    return provider or None, endpoint or None
 
 
 def message_preview(message: MessageRecord | None, *, limit: int = 160) -> str:

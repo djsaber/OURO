@@ -750,9 +750,6 @@ class ConfigurationFacade:
         return SystemPromptConfigView(
             config_path=str(snapshot.config_path),
             config=config,
-            configured=config.system_prompt is not None,
-            system_prompt=config.system_prompt,
-            additional_system_prompt=additional,
             effective_system_prompt=compose_system_prompt(base, additional),
             change=change,
         )

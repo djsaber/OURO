@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, computed_field
 
 from ouro.application.contracts.base import ApplicationDTO, Diagnostic
 from ouro.config.prompts import PromptConfig
@@ -57,7 +57,13 @@ class CredentialStatus(ApplicationDTO):
     reference: str
     state: CredentialState
     configured: bool
-    available: bool | None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def available(self) -> bool | None:
+        if self.state == "managed":
+            return None
+        return self.state in {"not_required", "configured"}
 
 
 class ProviderEndpointView(ApplicationDTO):
@@ -171,9 +177,6 @@ class ProviderTemplateCatalogView(ApplicationDTO):
 class SystemPromptConfigView(ApplicationDTO):
     config_path: str
     config: PromptConfig
-    configured: bool
-    system_prompt: str | None = None
-    additional_system_prompt: str
     effective_system_prompt: str
     change: ConfigurationChange | None = None
 

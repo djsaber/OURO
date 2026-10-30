@@ -557,9 +557,7 @@ def streaming_application(tmp_path, provider, *, backend="files", model=None):
         adapter=RuntimeAdapter(
             provider, model or ModelMetadata(model_id="faux", provider_id="faux")
         ),
-        environment=RuntimeEnvironment.local(
-            tmp_path, store.sessions_dir if backend == "files" else None
-        ),
+        environment=RuntimeEnvironment.local(tmp_path),
     )
     return LocalApplication.from_runtime(runtime)
 

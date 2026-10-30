@@ -255,8 +255,8 @@ def files(work: Workspace, units: UpgradeUnits) -> None:
     current_entries = (
         {
             item.session_id: item
-            for item in validate(
-                SessionIndex, {**previous, "data_layout_version": DATA_LAYOUT_VERSION}
+            for item in SessionIndex.model_validate(
+                {**previous, "data_layout_version": DATA_LAYOUT_VERSION}
             ).sessions
         }
         if version != 9

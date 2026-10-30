@@ -34,12 +34,10 @@ AGGREGATES = """
     COUNT(*) AS request_count,
     COALESCE(SUM(input_tokens), 0) AS input_tokens,
     COALESCE(SUM(output_tokens), 0) AS output_tokens,
-    COALESCE(SUM(input_tokens + output_tokens), 0) AS total_tokens,
     COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
     COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
     COALESCE(SUM(estimated_cost), 0) AS estimated_cost,
     COUNT(estimated_cost) AS priced_request_count,
-    COUNT(*) - COUNT(estimated_cost) AS unpriced_request_count,
     GROUP_CONCAT(DISTINCT billing_mode) AS billing_modes
 """
 

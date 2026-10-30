@@ -35,7 +35,6 @@ async def test_welcome_shows_usage_without_cost_or_billing_information(
     totals = UsageTotals(
         request_count=count,
         priced_request_count=priced,
-        unpriced_request_count=count - priced,
         estimated_cost=cost,
         billing_modes=modes,
         input_tokens=30,
@@ -66,16 +65,13 @@ async def test_hovered_day_shows_request_count_without_cost_or_billing_informati
         totals=UsageTotals(
             request_count=2,
             priced_request_count=1,
-            unpriced_request_count=1,
             estimated_cost=0.1,
             billing_modes=("subscription", "usage_based"),
         ),
         groups=(
             UsageSummaryGroup(
                 key=("2026-09-16",),
-                totals=UsageTotals(
-                    request_count=1, unpriced_request_count=1, billing_modes=("subscription",)
-                ),
+                totals=UsageTotals(request_count=1, billing_modes=("subscription",)),
             ),
             UsageSummaryGroup(
                 key=("2026-09-17",),

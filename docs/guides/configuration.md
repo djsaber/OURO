@@ -62,6 +62,9 @@ uv run --frozen ouro config prompt list --home ./.ouro-dev --json
 无描述时用正文摘要展示条目。读取持久化配置不会补建缺失的 ID，以免身份在读取时变化。
 配置 revision 用于拒绝并发覆盖；CLI 可传 `--expected-revision`，TUI 自动使用打开时的版本。
 
+`--json` 输出以 `config` 提供条目、启停状态、顺序和 revision；`effective_system_prompt` 提供按配置组合的
+完整基础与追加提示词。未启用替换项时，基础部分采用默认系统提示词。
+
 CLI 支持 `list`、`add`、`edit`、`remove`、`enable`、`disable`、`move`。新增只需指定
 `<replacement|addition>`；管理已有条目使用列表中从 1 开始的序号，`move` 再接受目标位置。
 序号在命令读取的配置快照中解析为内部 ID，写入时检查 revision，防止并发修改期间操作错位。

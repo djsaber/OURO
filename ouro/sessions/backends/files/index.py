@@ -89,13 +89,6 @@ class LocalSessionIndex:
         finally:
             lock.release()
 
-    def try_rebuild(self) -> str | None:
-        try:
-            self.rebuild()
-        except (OSError, PersistenceError, ValueError) as exc:
-            return str(exc)
-        return None
-
     def try_update(
         self,
         session_id: str,

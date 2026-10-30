@@ -886,9 +886,14 @@ async def test_spawn_runs_child_as_independent_session_with_frozen_tools(tmp_pat
     tree = service.agent_tree_snapshot("ses_root")
     assert tree.terminal_count == 1
     assert tree.pending_interaction_count == 0
-    assert tree.edges[0].delegation_id == handle.delegation_id
+    assert tree.nodes[0].delegation_id == handle.delegation_id
+    assert tree.nodes[0].parent_session_id == handle.parent_session_id
     assert tree.nodes[0].result_ready is True
     assert tree.nodes[0].delivery_status == "skipped"
+    assert tree.model_dump(mode="json")["nodes"][0]["result_ready"] is True
+    pending = tree.nodes[0].model_copy(update={"delivery_status": None})
+    assert pending.result_ready is False
+    assert pending.model_dump(mode="json")["result_ready"] is False
     serialized_tree = tree.model_dump_json()
     assert "Inspect the repository architecture." not in serialized_tree
     assert "CHILD READER INSTRUCTIONS" not in serialized_tree
@@ -2980,10 +2985,11 @@ async def test_root_tree_subscription_adds_children_and_reconnects_from_store(tm
                 )
             ):
                 observed = notification.snapshot
-    assert len(observed.edges) == 1
-    assert observed.edges[0].delegation_id == child.delegation_id
-    assert observed.edges[0].parent_session_id == "ses_root"
-    assert observed.edges[0].child_session_id == child.child_session_id
+    assert len(observed.nodes) == 1
+    assert observed.nodes[0].delegation_id == child.delegation_id
+    assert observed.nodes[0].parent_session_id == "ses_root"
+    assert observed.nodes[0].session_id == child.child_session_id
+    assert "edges" not in observed.model_dump(mode="json")
     assert observed.revision > subscription.initial_snapshot.revision
 
     subscription.close()

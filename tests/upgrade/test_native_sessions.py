@@ -75,6 +75,10 @@ def test_native_upgrade_preserves_payloads_and_only_reads_input_states(native_ho
     store = repository(home, backend)
     store.initialize()
     snapshot = store.load_session("ses_fixture")
+    entry = store.read_catalog().sessions[0].model_dump(mode="json")
+    assert entry["current_model"] == snapshot.session.current_model
+    assert "current_provider" not in entry
+    assert "current_endpoint" not in entry
     assert snapshot.messages[-1].text_content == "Accepted input input_consumed"
     assert store.load_input_state("ses_fixture", "input_consumed").message_ids == ("msg_input",)
     assert store.load_input_state("ses_fixture", "input_pending").status == "pending"
@@ -98,6 +102,22 @@ def test_native_upgrade_preserves_payloads_and_only_reads_input_states(native_ho
         databases.shutil, "copyfile", lambda *args: pytest.fail("copied current DB")
     )
     assert upgrade(home, session_backend=backend)["status"] == "current"
+
+
+@pytest.mark.parametrize("native_home", ["files"], indirect=True)
+def test_native_catalog_rejects_invalid_fields_without_exposing_values(native_home):
+    home, backend = native_home
+    path = home / "sessions/index.json"
+    raw = json.loads(path.read_text("utf-8"))
+    raw["sessions"][0]["status"] = "private-value-must-not-be-logged"
+    path.write_text(json.dumps(raw), "utf-8")
+    before = hashes(home)
+
+    with pytest.raises(UpgradeError, match="invalid record used for catalog projection") as error:
+        upgrade(home, session_backend=backend)
+
+    assert "private-value" not in str(error.value)
+    assert hashes(home) == before
 
 
 def test_native_check_does_not_publish(native_home):

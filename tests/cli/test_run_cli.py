@@ -75,7 +75,7 @@ def _runtime(tmp_path, event_batches) -> RuntimeService:
         ),
         tools=registry,
         default_workspace=tmp_path,
-        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+        environment=RuntimeEnvironment.local(tmp_path),
     )
 
 
@@ -548,8 +548,7 @@ def test_config_prompt_command_persists_system_prompt(tmp_path, capsys) -> None:
     set_payload = json.loads(capsys.readouterr().out)
 
     assert set_code == 0
-    assert set_payload["configured"] is True
-    assert set_payload["system_prompt"] == "Custom prompt."
+    assert set_payload["effective_system_prompt"] == "Custom prompt."
     assert build_default_runtime(tmp_path).system_prompt == "Custom prompt."
 
     show_code = main(["config", "prompt", "--home", str(tmp_path), "--json"])
@@ -564,7 +563,7 @@ def test_config_prompt_command_persists_system_prompt(tmp_path, capsys) -> None:
     clear_payload = json.loads(capsys.readouterr().out)
 
     assert clear_code == 0
-    assert clear_payload["configured"] is False
+    assert clear_payload["effective_system_prompt"] == DEFAULT_SYSTEM_PROMPT
     assert build_default_runtime(tmp_path).system_prompt == DEFAULT_SYSTEM_PROMPT
 
 

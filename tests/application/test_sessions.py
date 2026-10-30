@@ -531,6 +531,29 @@ def test_catalog_filters_rebuildable_typed_entries(tmp_path) -> None:
     assert store.read_catalog().data_layout_version == DATA_LAYOUT_VERSION
 
 
+@pytest.mark.parametrize("backend", ("files", "sqlite"))
+def test_catalog_filters_by_complete_model_route(tmp_path, backend) -> None:
+    store = (
+        LocalSessionStore(tmp_path)
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "ouro.db")
+    )
+    store.initialize()
+    sessions = SessionService(store)
+    selected = sessions.create(current_model="alpha/fast").session
+    sessions.create(current_model="beta/fast")
+    sessions.create(current_model="alpha/slow")
+    sessions.create()
+
+    result = sessions.catalog(SessionCatalogQuery(model="alpha/fast"))
+
+    assert [entry.session_id for entry in result.entries] == [selected.session_id]
+    payload = result.entries[0].model_dump(mode="json")
+    assert payload["current_model"] == "alpha/fast"
+    assert "current_provider" not in payload
+    assert "current_endpoint" not in payload
+
+
 def test_unfiltered_catalog_reuses_the_store_projection_order(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

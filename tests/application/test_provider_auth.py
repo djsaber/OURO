@@ -57,7 +57,7 @@ class ControlledDriver(BrowserFixtureDriver):
 
 
 @pytest.fixture
-async def auth_home(tmp_path, monkeypatch):
+async def auth_home(tmp_path, monkeypatch, request):
     spec = ProviderTypeSpec(
         "custom",
         ProviderConnectionSpec("openai-chat-completions"),
@@ -69,7 +69,7 @@ async def auth_home(tmp_path, monkeypatch):
     monkeypatch.setitem(provider_models._PROVIDER_TYPE_SPECS, spec.provider_type, spec)
     config = ProviderConfigManager(tmp_path)
     store = FileCredentialStore(tmp_path)
-    credentials = CredentialService(store, lock_timeout=0.25)
+    credentials = CredentialService(store, **getattr(request, "param", {}))
     services = []
 
     def create(driver=None, **options):
@@ -303,12 +303,21 @@ def held_config(config):
         assert not thread.is_alive()
 
 
-@pytest.mark.parametrize("action", ["cancel", "timeout", "close"])
+@pytest.mark.parametrize(
+    "action,auth_home",
+    [("cancel", {}), ("timeout", {"lock_timeout": 0.25}), ("close", {})],
+    indirect=["auth_home"],
+    ids=["cancel", "timeout", "close"],
+)
 async def test_config_lock_wait_is_bounded_and_never_commits_late(auth_home, monkeypatch, action):
     config, store, credentials, service, driver = auth_home()
     provider = config.get_provider(_provider_id(config))
     assert provider is not None
     credential_id = provider.credential_ref.name
+    if action == "timeout":
+        # Spend the short budget on the contended configuration lock, not worker scheduling.
+        monkeypatch.setattr("ouro.auth.credentials.monotonic", lambda: 100.0)
+        monkeypatch.setattr("ouro.auth.commit.monotonic", lambda: 100.0)
     started = await begin(service, driver)
     entered = threading.Event()
     mutation = config.mutation
@@ -551,6 +560,7 @@ async def test_close_reports_cleanup_failure_after_closing_other_operations(auth
     assert service.operation(second.operation_id).state == "failed"
 
 
+@pytest.mark.parametrize("auth_home", [{"lock_timeout": 0.25}], indirect=True)
 async def test_configuration_lock_receives_remaining_credential_wait_budget(auth_home, monkeypatch):
     config, store, _, service, driver = auth_home()
     provider = config.get_provider(_provider_id(config))

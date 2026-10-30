@@ -170,15 +170,12 @@ def provider_template_view(
 def credential_status(provider: ProviderConfig) -> CredentialStatus:
     reference = provider.credential_ref.display()
     if provider.credential_ref.type == "managed":
-        return CredentialStatus(
-            reference=reference, state="managed", configured=True, available=None
-        )
+        return CredentialStatus(reference=reference, state="managed", configured=True)
     if provider.protocol == "faux":
         return CredentialStatus(
             reference=reference,
             state="not_required",
             configured=False,
-            available=True,
         )
     configured = provider.credential_ref.type != "none"
     available = False
@@ -191,7 +188,6 @@ def credential_status(provider: ProviderConfig) -> CredentialStatus:
         reference=reference,
         state="configured" if available else "missing",
         configured=configured,
-        available=available,
     )
 
 

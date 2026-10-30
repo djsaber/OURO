@@ -154,7 +154,7 @@ def _application(
         tools=ToolRegistry(),
         skills=skills,
         default_workspace=tmp_path,
-        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+        environment=RuntimeEnvironment.local(tmp_path),
     )
     return LocalApplication.from_runtime(runtime)
 
@@ -238,7 +238,7 @@ def _application_with_tool_sources(tmp_path: Path) -> LocalApplication:
         ),
         tools=registry,
         default_workspace=tmp_path,
-        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+        environment=RuntimeEnvironment.local(tmp_path),
     )
     return LocalApplication.from_runtime(runtime)
 
@@ -259,7 +259,7 @@ def _endpoint_named_application(tmp_path: Path) -> LocalApplication:
         ),
         tools=ToolRegistry(),
         default_workspace=tmp_path,
-        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+        environment=RuntimeEnvironment.local(tmp_path),
     )
     return LocalApplication.from_runtime(runtime)
 
@@ -283,7 +283,7 @@ def _thinking_application(tmp_path: Path) -> LocalApplication:
         ),
         tools=ToolRegistry(),
         default_workspace=tmp_path,
-        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+        environment=RuntimeEnvironment.local(tmp_path),
     )
     return LocalApplication.from_runtime(runtime)
 
@@ -320,7 +320,7 @@ def _approval_application(tmp_path: Path, target: Path) -> LocalApplication:
         ),
         tools=tools,
         default_workspace=tmp_path,
-        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+        environment=RuntimeEnvironment.local(tmp_path),
     )
     return LocalApplication.from_runtime(runtime)
 
@@ -366,7 +366,7 @@ def _multi_approval_application(tmp_path: Path, targets: tuple[Path, Path]) -> L
         ),
         tools=tools,
         default_workspace=tmp_path,
-        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+        environment=RuntimeEnvironment.local(tmp_path),
     )
     return LocalApplication.from_runtime(runtime)
 
@@ -390,7 +390,7 @@ def _blocking_application(
         ),
         tools=ToolRegistry(),
         default_workspace=tmp_path,
-        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+        environment=RuntimeEnvironment.local(tmp_path),
     )
     return LocalApplication.from_runtime(runtime)
 
@@ -425,7 +425,7 @@ def _queued_subagent_approval_application(
         ),
         tools=tools,
         default_workspace=tmp_path,
-        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+        environment=RuntimeEnvironment.local(tmp_path),
     )
     return LocalApplication.from_runtime(runtime)
 
@@ -444,7 +444,7 @@ def _multi_child_streaming_application(
         ),
         tools=ToolRegistry(),
         default_workspace=tmp_path,
-        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+        environment=RuntimeEnvironment.local(tmp_path),
     )
     return LocalApplication.from_runtime(runtime)
 
@@ -613,7 +613,7 @@ def _question_application(
         ),
         tools=tools,
         default_workspace=tmp_path,
-        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+        environment=RuntimeEnvironment.local(tmp_path),
     )
     return LocalApplication.from_runtime(runtime)
 
@@ -637,6 +637,6 @@ def _plan_confirmation_application(
         ),
         tools=tools,
         default_workspace=tmp_path,
-        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+        environment=RuntimeEnvironment.local(tmp_path),
     )
     return LocalApplication.from_runtime(runtime)

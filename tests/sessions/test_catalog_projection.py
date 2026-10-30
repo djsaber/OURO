@@ -17,6 +17,29 @@ from tests.sessions.test_tool_fact_storage import commit, facts
 
 
 @pytest.mark.parametrize("backend", ("files", "sqlite"))
+@pytest.mark.parametrize("model", (None, "unavailable-provider/unavailable-endpoint"))
+def test_catalog_preserves_selected_model_route(backend, model, tmp_path):
+    store = (
+        LocalSessionStore(tmp_path)
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sessions.db")
+    )
+    store.initialize()
+    session = SessionRecord(current_model=model)
+    store.create_session(session)
+    assert store.refresh_catalog(session.session_id) is None
+
+    for catalog in (store.read_catalog(), store.rebuild_catalog(), store.read_catalog()):
+        entry = catalog.sessions[0]
+        assert entry.session_id == session.session_id
+        assert entry.current_model == model
+        payload = entry.model_dump(mode="json")
+        assert payload["current_model"] == model
+        assert "current_provider" not in payload
+        assert "current_endpoint" not in payload
+
+
+@pytest.mark.parametrize("backend", ("files", "sqlite"))
 def test_catalog_preview_does_not_materialize_call_arguments(backend, tmp_path, monkeypatch):
     store = (
         LocalSessionStore(tmp_path)

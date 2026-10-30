@@ -19,7 +19,7 @@ Session、Run、Message、Event 等可独立持久化的核心记录继承同一
 Session 是长期会话容器。关键字段包括：
 
 - `session_id`：稳定身份；
-- `current_model`：完整 `provider_id/endpoint_id` 路由；
+- `current_model`：会话选择的完整 `provider_id/endpoint_id` 路由，`null` 表示未指定；底层 `model_id` 由端点配置确定；
 - `status`：`idle`、`running`、`waiting_user`、`waiting_approval` 或 `failed`；
 - `active_run_id`：唯一 active Run；
 - `last_message_id`、`message_count`：canonical message 游标；

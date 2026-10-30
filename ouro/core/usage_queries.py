@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import ConfigDict, field_validator
+from pydantic import ConfigDict, computed_field, field_validator
 
 from ouro.core.base import OuroModel
 from ouro.core.billing import BillingMode, ProviderUsageEntry, UsageFilter, UsageLedgerEvent
@@ -32,13 +32,21 @@ class UsageTotals(UsageQueryResult):
     request_count: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
-    total_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     estimated_cost: float = 0.0
     priced_request_count: int = 0
-    unpriced_request_count: int = 0
     billing_modes: tuple[BillingMode, ...] = ()
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def unpriced_request_count(self) -> int:
+        return self.request_count - self.priced_request_count
 
 
 class RunUsageTotals(UsageTotals):
@@ -77,18 +85,30 @@ class UsageEntryList(UsageQueryResult):
     entries: tuple[ProviderUsageEntry, ...] = ()
     next_cursor: UsageEntryCursor | None = None
     total_matching: int = 0
-    truncated: bool = False
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def truncated(self) -> bool:
+        return self.next_cursor is not None
 
 
 class UsageMutationResult(UsageQueryResult):
     action: Literal["replace", "reset"]
-    affected_count: int
     affected_totals: UsageTotals
     entry: ProviderUsageEntry | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def affected_count(self) -> int:
+        return self.affected_totals.request_count
 
 
 class UsageAuditLog(UsageQueryResult):
     events: tuple[UsageLedgerEvent, ...] = ()
     next_cursor: int | None = None
     total_events: int = 0
-    truncated: bool = False
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def truncated(self) -> bool:
+        return self.next_cursor is not None

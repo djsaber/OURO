@@ -95,7 +95,7 @@ async def test_status_line_default_reflects_endpoint_default(tmp_path: Path) -> 
         ),
         tools=ToolRegistry(),
         default_workspace=tmp_path,
-        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+        environment=RuntimeEnvironment.local(tmp_path),
     )
     app = OuroTuiApp(application=LocalApplication.from_runtime(runtime))
 

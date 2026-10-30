@@ -579,6 +579,9 @@ application 提供：
 - messages 与完整事实 export；
 - branch 与 trash。
 
+Session、Catalog 与 Host DTO 统一以 `current_model` 表达完整 `provider_id/endpoint_id` 路由或未指定的 `null`。
+Catalog 直接投影 Session 保存的路由，读取、展示和筛选不依赖 Provider 配置是否可用。
+
 Catalog 与 Host DTO 均不保存完整 transcript；文本查询只覆盖 title、至多 160 字符的最后消息预览、workspace、
 model 和 tags。最后消息预览只选择消息提供方明确声明为 `scaffold=false` 的 user/assistant 消息；不得从 role、
 semantic tag 或 producer provenance 猜测脚手架属性。全文搜索是独立未来能力，不能借 disposable Catalog 复制

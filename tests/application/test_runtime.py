@@ -1663,7 +1663,7 @@ async def test_runtime_context_provider_appends_system_prompt_without_creating_m
         tools=_tools(),
         context_providers=context_providers,
         default_workspace=tmp_path / "workspace",
-        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+        environment=RuntimeEnvironment.local(tmp_path),
     )
 
     result = await runtime.run("Use runtime facts")

@@ -97,7 +97,7 @@ server 配置交给 Manager，并把发现工具投影到 RuntimeService 正在�
 - Host 退出后动态 MCP 工具从 registry 移除，不留下失效 handler。
 
 只调用同步的 `build_default_runtime()` 会构建 RuntimeService 本体；执行型 Host 还必须通过
-`build_default_mcp_runtime(runtime)` 或等价的 MCPRuntimeResource/Supervisor 装配管理异步资源。
+`MCPRuntimeResource` 与 Supervisor 装配管理异步资源。
 
 ## 调用、取消与错误
 

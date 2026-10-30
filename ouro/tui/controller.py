@@ -1895,13 +1895,6 @@ class TuiController:
             )
         return tuple(statuses)
 
-    async def usage_totals(self) -> UsageTotals:
-        return await asyncio.to_thread(self._usage_totals)
-
-    def _usage_totals(self) -> UsageTotals:
-        usage = self._runtime().usage
-        return usage.summarize().totals if usage is not None else UsageTotals()
-
     async def usage_summary(self) -> UsageSummary:
         return await asyncio.to_thread(self._usage_summary)
 
@@ -1956,17 +1949,6 @@ class TuiController:
         else:
             await self._unarchive_current_session_after_update()
         return model
-
-    async def session_approval_mode(self) -> SessionApprovalMode:
-        """Return the draft or persisted approval policy for the visible Session."""
-
-        session_id = self._session_id
-        if session_id is None:
-            return self._approval_mode
-        sessions = self._runtime().sessions
-        return await asyncio.to_thread(
-            lambda: sessions.open(session_id, recover=False).session.approval_mode
-        )
 
     async def set_session_approval_mode(
         self,

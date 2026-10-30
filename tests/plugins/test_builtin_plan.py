@@ -268,7 +268,7 @@ def _runtime(
         ),
         tools=tools,
         default_workspace=workspace,
-        environment=RuntimeEnvironment.local(home, store.sessions_dir),
+        environment=RuntimeEnvironment.local(home),
     )
     return runtime, store
 

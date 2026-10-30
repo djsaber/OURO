@@ -91,7 +91,3 @@ class MCPRuntimeResource:
             for record in self.manager.list()
             if record.config.enabled and record.config.auto_start
         )
-
-    @property
-    def startup_failures(self) -> tuple[MCPServerRecord, ...]:
-        return tuple(record for record in self.startup_records if record.status == "failed")

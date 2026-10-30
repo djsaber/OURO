@@ -116,7 +116,7 @@ def _reasoning_application(tmp_path: Path) -> LocalApplication:
         ),
         tools=tools,
         default_workspace=tmp_path,
-        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+        environment=RuntimeEnvironment.local(tmp_path),
     )
     return LocalApplication.from_runtime(runtime)
 
@@ -644,7 +644,7 @@ def _skill_prompt_application(
         tools=ToolRegistry(),
         skills=tuple(discover_skill_catalog(home=tmp_path).skills),
         default_workspace=tmp_path,
-        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+        environment=RuntimeEnvironment.local(tmp_path),
     )
     return LocalApplication.from_runtime(runtime)
 

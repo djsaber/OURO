@@ -451,7 +451,7 @@ async def test_goal_runs_end_to_end_and_retains_final_usage(tmp_path) -> None:
             ModelMetadata(model_id="goal-e2e", provider_id=provider.provider_id),
         ),
         tools=ToolRegistry(),
-        environment=RuntimeEnvironment.local(home, store.sessions_dir),
+        environment=RuntimeEnvironment.local(home),
     )
     application = LocalApplication.from_runtime(runtime, home=home)
     await application.start()
@@ -541,7 +541,7 @@ async def test_cold_abort_restores_goal_snapshot_and_pauses_goal(tmp_path) -> No
             ModelMetadata(model_id="goal-abort", provider_id=provider.provider_id),
         ),
         tools=tools,
-        environment=RuntimeEnvironment.local(home, store.sessions_dir),
+        environment=RuntimeEnvironment.local(home),
     )
     application = LocalApplication.from_runtime(runtime, home=home)
     await application.start()

@@ -95,6 +95,13 @@ def test_session_list_json(tmp_path, capsys) -> None:
     assert payload["status"] == "ok"
     session_ids = [session["session_id"] for session in payload["sessions"]]
     assert run_payload["session_id"] in session_ids
+    session = next(
+        entry for entry in payload["sessions"] if entry["session_id"] == run_payload["session_id"]
+    )
+    saved = LocalSessionStore(tmp_path).load_session_record(run_payload["session_id"])
+    assert session["current_model"] == saved.current_model
+    assert "current_provider" not in session
+    assert "current_endpoint" not in session
 
 
 def test_session_show(tmp_path, capsys) -> None:

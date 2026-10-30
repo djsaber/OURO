@@ -18,10 +18,8 @@ from ouro.core.results import RunResult
 from ouro.deployment import SessionBackend, TaskBackend
 from ouro.local_application import (
     LocalApplication,
-    build_local_mcp_runtime,
     build_local_runtime,
 )
-from ouro.mcp import MCPRuntimeResource
 
 _DIM_ITALIC = "\x1b[2;3m"
 _RESET = "\x1b[0m"
@@ -42,16 +40,6 @@ def build_default_runtime(
         event_sink=event_sink,
         session_backend=session_backend,
     )
-
-
-def build_default_mcp_runtime(
-    runtime: RuntimeService,
-    *,
-    home: str | Path | None = None,
-) -> MCPRuntimeResource:
-    """Load configured MCP servers into the registry used by this runtime."""
-
-    return build_local_mcp_runtime(runtime, home=home)
 
 
 async def run_print(

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal, Self
 
-from pydantic import Field, JsonValue, field_validator, model_validator
+from pydantic import Field, JsonValue, computed_field, field_validator, model_validator
 
 from ouro.application.contracts.base import ApplicationDTO, Diagnostic
 from ouro.application.contracts.execution import RuntimeActivitySnapshot
@@ -107,12 +107,6 @@ class AgentInteractionSummary(ApplicationDTO):
     requested_at: datetime
 
 
-class AgentTreeEdge(ApplicationDTO):
-    delegation_id: str
-    parent_session_id: str
-    child_session_id: str
-
-
 class AgentTreeNode(ApplicationDTO):
     revision: int = Field(ge=0)
     delegation_id: str
@@ -134,16 +128,19 @@ class AgentTreeNode(ApplicationDTO):
     usage: dict[str, int | float] = Field(default_factory=dict)
     budget: RunBudgetPolicy = Field(default_factory=RunBudgetPolicy)
     pending_interactions: tuple[AgentInteractionSummary, ...] = ()
-    result_ready: bool = False
     delivery_status: DeliveryStatus | None = None
     activity: RuntimeActivitySnapshot | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def result_ready(self) -> bool:
+        return self.delivery_status is not None
 
 
 class AgentTreeSnapshot(ApplicationDTO):
     root_session_id: str
     revision: int = Field(ge=0)
     nodes: tuple[AgentTreeNode, ...] = ()
-    edges: tuple[AgentTreeEdge, ...] = ()
     root_usage: dict[str, int | float] = Field(default_factory=dict)
     root_budget: RunBudgetPolicy | None = None
     root_activity: RuntimeActivitySnapshot | None = None
@@ -211,7 +208,6 @@ __all__ = [
     "AgentInteractionSummary",
     "AgentInteractionView",
     "AgentReadView",
-    "AgentTreeEdge",
     "AgentTreeNode",
     "AgentTreeNotification",
     "AgentTreeSnapshot",

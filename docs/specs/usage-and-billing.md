@@ -96,6 +96,10 @@ estimated_cost 是可选的 USD 估算值，已知的 0.0 属于 priced 请求�
 
 UsageTotals 的 estimated_cost 仅累计已知金额，priced_request_count / unpriced_request_count 表示覆盖范围；billing_modes 是参与统计的模式去重排序结果。总量中的 0.0 必须结合覆盖范围解释。当前金额采用浮点估算语义，不代表供应商最终结算账单。
 
+查询结果以基础计数作为唯一事实：total_tokens 由 input_tokens + output_tokens 得到，unpriced_request_count
+由 request_count - priced_request_count 得到。分页的 truncated 由 next_cursor 是否存在决定；操作结果的
+affected_count 读取 affected_totals.request_count。这些只读派生值参与 JSON 输出，不接受独立赋值，也不触发额外查询。
+
 供应商归一化、用量事实、金额修订与查询执行各有独立边界。新增计价能力应消费稳定的请求事实，明确金额来源和计价依据，经审计事务发布有效结果；不得改写原始供应商响应、把网络查询放入统计读取路径，或将未知金额补成零。当前不包含价格同步、远端额度查询、多币种结算或订阅分摊服务。
 
 ## CLI 与 TUI

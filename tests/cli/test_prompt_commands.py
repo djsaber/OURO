@@ -13,7 +13,8 @@ def test_cli_prompt_management_preserves_content_and_uses_only_enabled_entries(t
         return result, json.loads(capsys.readouterr().out)
 
     code, payload = command("add", "replacement", "--text", "Base", "--enabled")
-    assert code == 0 and payload["system_prompt"] == "Base"
+    assert code == 0 and payload["config"]["replacements"][0]["text"] == "Base"
+    assert not {"system_prompt", "additional_system_prompt", "configured"} & payload.keys()
     assert payload["change"]["effective_from"] == "next_request"
     assert command("add", "addition", "--file", str(source), "--enabled")[0] == 0
     assert command("add", "addition", "--text", "Last", "--enabled")[0] == 0
@@ -22,7 +23,7 @@ def test_cli_prompt_management_preserves_content_and_uses_only_enabled_entries(t
     assert payload["effective_system_prompt"] == "Base\n\nLine one\nLine two\n\nLast"
     assert "UI only" not in payload["effective_system_prompt"]
     code, payload = command("move", "addition", "2", "1")
-    assert code == 0 and payload["additional_system_prompt"] == "Last\n\nLine one\nLine two"
+    assert code == 0 and payload["effective_system_prompt"] == "Base\n\nLast\n\nLine one\nLine two"
     assert command("disable", "addition", "1")[0] == 0
     assert command("remove", "addition", "1")[0] == 0
     code, payload = command("list")
@@ -30,7 +31,7 @@ def test_cli_prompt_management_preserves_content_and_uses_only_enabled_entries(t
     assert PromptConfigManager(tmp_path).snapshot().config.additions[0].description == "UI only"
     assert command("disable", "replacement", "1")[0] == 0
     code, payload = command("enable", "replacement", "1")
-    assert code == 0 and payload["configured"]
+    assert code == 0 and payload["config"]["replacements"][0]["enabled"]
 
 
 def test_cli_invalid_or_stale_prompt_edits_do_not_write(tmp_path, capsys):

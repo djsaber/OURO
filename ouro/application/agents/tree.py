@@ -8,7 +8,6 @@ from typing import Protocol
 from ouro.application.contracts.agents import (
     AgentInteractionSummary,
     AgentInteractionView,
-    AgentTreeEdge,
     AgentTreeNode,
     AgentTreeNotification,
     AgentTreeSnapshot,
@@ -85,7 +84,6 @@ class AgentTreeProjector:
             revision = self.store.observation_revision(root_session_id)
         root_budget = self._run_budget(root_run)
         nodes: list[AgentTreeNode] = []
-        edges: list[AgentTreeEdge] = []
         active_count = 0
         waiting_count = 0
         terminal_count = 0
@@ -143,18 +141,10 @@ class AgentTreeProjector:
                     usage=usage,
                     budget=relation.budget,
                     pending_interactions=interactions,
-                    result_ready=relation.result is not None,
                     delivery_status=(
                         relation.result.delivery.status if relation.result is not None else None
                     ),
                     activity=activity,
-                )
-            )
-            edges.append(
-                AgentTreeEdge(
-                    delegation_id=relation.delegation_id,
-                    parent_session_id=relation.parent_session_id,
-                    child_session_id=relation.child_session_id,
                 )
             )
 
@@ -162,7 +152,6 @@ class AgentTreeProjector:
             root_session_id=root_session_id,
             revision=revision,
             nodes=tuple(nodes),
-            edges=tuple(edges),
             root_usage=root_usage,
             root_budget=root_budget,
             root_activity=root_activity,

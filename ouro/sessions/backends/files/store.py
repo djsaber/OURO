@@ -1419,9 +1419,6 @@ class LocalSessionStore:
     def rebuild_catalog(self) -> SessionIndex:
         return self._catalog.rebuild()
 
-    def try_rebuild_catalog(self) -> str | None:
-        return self._catalog.try_rebuild()
-
     def refresh_catalog(
         self,
         session_id: str,

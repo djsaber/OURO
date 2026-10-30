@@ -167,9 +167,7 @@ def application(tmp_path, backend, executable, *, kind="powershell", spawn=False
             DelegatingProvider(spawn=spawn, fail_child=fail_child),
             ModelMetadata(model_id="test", provider_id="test"),
         ),
-        environment=RuntimeEnvironment.local(
-            tmp_path, store.sessions_dir if backend == "files" else None
-        ),
+        environment=RuntimeEnvironment.local(tmp_path),
     )
     return LocalApplication.from_runtime(runtime)
 
