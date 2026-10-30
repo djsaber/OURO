@@ -188,11 +188,9 @@ async def test_stop_command_commits_abort_intent_and_settles_execution(system, m
         result = await task
         assert submitted.execution.stop_requested_run_id == result.run.run_id
         assert result.run.status == "aborted"
-        events = recorded_events(session.session_id)
-        abort_events = [
-            event.event_type for event in events if event.event_type.startswith("run_abort")
-        ]
-        assert abort_events == ["run_abort_requested", "run_aborted"]
+        saved = system.store.load_run(session.session_id, result.run.run_id)
+        assert saved.abort_requested
+        assert saved.metadata["abort_reason"].startswith("Stopped by /")
         assert system.store.load_session(session.session_id).messages == before
         assert [item async for item in consume_plugin_command(system.runtime, submitted)] == []
     finally:

@@ -41,9 +41,9 @@ def test_dot_matrix_is_independent_of_welcome_contracts_and_style_packages(modul
 def test_core_and_theme_distribution_declare_compatible_releases():
     core = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     extension = tomllib.loads((EXTENSION / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    assert core["optional-dependencies"]["themes"] == [
-        f"{extension['name']}=={extension['version']}"
-    ]
+    (theme_requirement,) = map(Requirement, core["optional-dependencies"]["themes"])
+    assert theme_requirement.name == extension["name"]
+    assert extension["version"] in theme_requirement.specifier
     core_requirement = next(
         Requirement(value)
         for value in extension["dependencies"]

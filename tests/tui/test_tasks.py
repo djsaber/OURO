@@ -642,6 +642,7 @@ async def test_background_run_stays_silent_and_attaching_restores_live_stream(
         await wait_until(
             lambda: (
                 app._projection.activity.status == "completed"
+                and "Follow up from the task session" in provider.prompts
                 and all(
                     text in transcript() for text in ("Before attachment.", "After attachment.")
                 )

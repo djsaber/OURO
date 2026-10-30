@@ -24,7 +24,14 @@ from ouro.tui.interactions.bar import InteractionBar
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.widgets.activity import ActivityIndicator
 from tests.tui.app.support import _application, _approval_application, _persist_direct_child_session
-from tests.tui.helpers import run_ready_app, wait_for_events, wait_for_observed_status, wait_until
+from tests.tui.helpers import (
+    run_ready_app,
+    wait_for_events,
+    wait_for_menu_action,
+    wait_for_observed_status,
+    wait_for_worker_group,
+    wait_until,
+)
 from tests.tui.helpers import wait_for_screen as _wait_for_screen
 from tests.tui.test_live_session_attachment import visible
 from tests.tui.test_tasks import choose, streaming_application
@@ -661,14 +668,16 @@ async def test_leaving_child_restores_destination_draft_and_editable_surface(tmp
         assert app.query_one(Composer).disabled
         if destination == "welcome":
             await pilot.press("ctrl+n")
-            async with asyncio.timeout(5):
-                while not app.query_one(ConversationView).showing_welcome:
-                    await pilot.pause()
+            await wait_for_worker_group(app, pilot, group="navigation")
+            assert app.query_one(ConversationView).showing_welcome
             expected_draft = "Welcome draft"
         else:
             await pilot.press("ctrl+o")
             await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
+            session_menu = app.screen
             await choose(pilot, app, "Other session")
+            await wait_for_menu_action(pilot, session_menu)
+            assert app._controller.session_id == other.session_id
             expected_draft = "Other draft"
         composer = app.query_one(Composer)
         assert not app._visible_read_only

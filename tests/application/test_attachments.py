@@ -236,7 +236,7 @@ async def test_durable_queue_acceptance_is_reported_before_notification_failure(
         assert len(runtime.pending_user_inputs(session.session_id)) == 1
         assert accepted == [True]
         events = recorded_events(session.session_id)
-        assert sum(event.event_type == "follow_up_input_queued" for event in events) == 1
+        assert not any(event.event_type == "follow_up_input_queued" for event in events)
     finally:
         provider.release_first.set()
         await asyncio.wait_for(running, 10)

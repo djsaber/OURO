@@ -15,7 +15,6 @@ from ouro.providers.reasoning import ReasoningPayloadEncoder
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
 from ouro.tui.conversation.transcript import project_transcript_entries
-from tests.event_capture import recorded_events
 
 
 @pytest.mark.parametrize("store_type", [LocalSessionStore, SQLiteSessionStore])
@@ -85,14 +84,10 @@ async def test_max_effort_response_reaches_persisted_conversation_history(
             assistant = snapshot.messages[-1]
             assert assistant.reasoning_content == "Checking the evidence."
             assert assistant.provider_continuation is not None
-            assert not any(
-                e.event_type == "model_reasoning_delta"
-                for e in recorded_events(snapshot.session.session_id)
-            )
-            assert any(
-                e.event_type == "model_response_committed"
-                for e in recorded_events(snapshot.session.session_id)
-            )
+            header = runtime.observation_snapshot(snapshot.session.session_id).current_request
+            assert header is not None
+            assert header.response_message_id == assistant.message_id
+            assert header.response_closed_at is not None
             entries, _ = project_transcript_entries(
                 snapshot.messages,
                 (),

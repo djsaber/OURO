@@ -22,8 +22,9 @@ from ouro.core.errors import (
     PersistenceError,
     SessionRecoveryRequiredError,
 )
+from ouro.core.messages import MessageRecord
 from ouro.core.run_budget import RunBudgetPolicy
-from ouro.core.session_commits import SessionCommit
+from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore, SessionStore, SQLiteSessionStore
 
@@ -96,7 +97,17 @@ def test_file_delegation_queries_leave_pending_decision_for_explicit_recovery(
         with pytest.raises(PersistenceError, match="count installation interrupted"):
             store.commit_session(
                 SessionCommit(
-                    before=root, runs=(RunRecord(session_id=root.session_id, model_round_count=1),)
+                    before=root,
+                    runs=(RunRecord(session_id=root.session_id, model_round_count=1),),
+                    steps=(
+                        SessionCommitStep(
+                            message=MessageRecord.text(
+                                session_id=root.session_id,
+                                role="user",
+                                text="external message fact",
+                            )
+                        ),
+                    ),
                 )
             )
     pending = store.sessions_dir / root.session_id / "commit.json"

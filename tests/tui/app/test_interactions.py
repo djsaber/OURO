@@ -14,7 +14,6 @@ from ouro.tui.interactions.bar import InteractionBar
 from ouro.tui.interactions.plan import PlanConfirmationPanel
 from ouro.tui.interactions.questions import AskUserPanel
 from ouro.tui.state import PendingInteraction
-from ouro.tui.widgets.activity import ActivityIndicator
 from ouro.tui.widgets.brand import BrandHeader
 from tests.event_capture import recorded_events
 from tests.tui.app.support import (
@@ -364,8 +363,11 @@ async def test_plan_mode_write_approval_keeps_focus_on_approval_panel(tmp_path: 
             pilot,
             description="plan session ready for input",
         )
-        await pilot.click("#composer")
-        await pilot.press("p", "l", "a", "n", "enter")
+        # Enter the business input once the command has established its Session.
+        composer = app.query_one(Composer)
+        composer.focus()
+        composer.load_text("plan")
+        await pilot.press("enter")
 
         panel = app.query_one(InteractionBar)
         await _wait_until(
@@ -450,8 +452,11 @@ async def test_plan_confirmation_renders_only_plan_and_collects_revision_feedbac
             pilot,
             description="plan session ready for input",
         )
-        await pilot.click("#composer")
-        await pilot.press("p", "l", "a", "n", "enter")
+        # Enter the business input once the command has established its Session.
+        composer = app.query_one(Composer)
+        composer.focus()
+        composer.load_text("plan")
+        await pilot.press("enter")
 
         panel = app.query_one(PlanConfirmationPanel)
         await _wait_until(
@@ -529,8 +534,11 @@ async def test_plan_confirmation_accepts_a_keyboard_selected_implementation_opti
             pilot,
             description="plan session ready for input",
         )
-        await pilot.click("#composer")
-        await pilot.press("p", "l", "a", "n", "enter")
+        # Enter the business input once the command has established its Session.
+        composer = app.query_one(Composer)
+        composer.focus()
+        composer.load_text("plan")
+        await pilot.press("enter")
 
         panel = app.query_one(PlanConfirmationPanel)
         await _wait_until(
@@ -560,11 +568,8 @@ async def test_plan_confirmation_accepts_a_keyboard_selected_implementation_opti
         await _wait_for_worker_group(app, pilot, group="interaction")
 
         assert app._projection is not None
-        await _wait_until(
-            lambda: "Plan" not in app.query_one(ActivityIndicator).render().plain,
-            pilot,
-            description="released plan-mode status",
-        )
+        session = application.runtime.store.load_session_record(app._projection.session_id)
+        assert not session.controls.activations
         events = recorded_events(app._projection.session_id)
         resolved = next(event for event in events if event.event_type == "ask_user_resolved")
         assert resolved.payload["answer"] == {

@@ -13,7 +13,6 @@ from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest, ToolInvocation
 from ouro.sessions import DATA_LAYOUT_VERSION, LocalSessionStore
-from tests.resource_fixtures import resource_record
 from tests.response_drafts import persist_response_draft
 from tests.session_storage import write_session_payload
 from tests.tool_batches import persist_tool_batch, seed_tool_messages
@@ -662,17 +661,15 @@ def test_create_session_cleans_staging_when_publish_preparation_fails(
     store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Atomic create")
-    original = store._write_model_atomic
+    import ouro.sessions.backends.files.store as file_store
 
-    def fail_resource_record(path, value) -> None:
-        if path.parent.name == "records":
-            raise PersistenceError("injected resource record failure")
-        original(path, value)
+    def fail_session_record(connection, value) -> None:
+        raise PersistenceError("injected session record failure")
 
-    monkeypatch.setattr(store, "_write_model_atomic", fail_resource_record)
+    monkeypatch.setattr(file_store, "write_session", fail_session_record)
 
     with pytest.raises(PersistenceError, match="injected"):
-        store.create_session_snapshot(session, [], [resource_record()])
+        store.create_session_snapshot(session, [])
 
     assert not (store.sessions_dir / session.session_id).exists()
     assert list(store.sessions_dir.glob(".stage_*")) == []

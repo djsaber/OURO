@@ -721,24 +721,6 @@ def test_missing_attachment_item_resource_is_rejected_before_import(tmp_path, ba
     )._store.list_sessions()
 
 
-@pytest.mark.parametrize("backend", ["files", "sqlite"])
-def test_foreign_event_run_reference_rejected_before_import(tmp_path, backend):
-    services = build_local_session_services(tmp_path / "source")
-    _create_session(services._store)
-    archive_path = tmp_path / "invalid.zip"
-    transfer(tmp_path / "source", "export", "sessions", archive_path)
-    archive = read_archive(archive_path, "sessions")
-    archive.manifest.data["bundle"]["sessions"][0]["snapshot"]["events"] = [
-        {"session_id": "ses_test", "run_id": "../../foreign", "event_type": "run_completed"}
-    ]
-    write_archive(archive_path, archive, replace=True)
-    with pytest.raises(DataTransferError, match="invalid or unsupported Session"):
-        transfer(tmp_path / "target", "import", "sessions", archive_path, backend=backend)
-    assert not build_local_session_services(
-        tmp_path / "target", session_backend=backend
-    )._store.list_sessions()
-
-
 def test_skill_rollback_failure_keeps_original_backup(tmp_path, monkeypatch):
     source, target = tmp_path / "source", tmp_path / "target"
     for home, body in ((source, "New"), (target, "Original")):

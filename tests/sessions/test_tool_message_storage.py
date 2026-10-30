@@ -21,7 +21,6 @@ from ouro.core.tool_facts import ToolCallRecord, ToolOutcomeRecord
 from ouro.core.tools import ToolResult, ToolResultFeedback, ToolResultValue
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.portable import PortableSession, SessionBundle, populate_sessions
-from tests.event_capture import recorded_events
 from tests.tool_batches import persist_tool_batch, resolved_tool_batch
 
 
@@ -483,8 +482,8 @@ def test_native_frame_failure_never_exposes_partial_history_or_driver_ready(stor
 
         write_state = file_commits.write_call_state
 
-        def interrupt(connection, state):
-            write_state(connection, state)
+        def interrupt(connection, state, *, revision):
+            write_state(connection, state, revision=revision)
             if state.identity == identity:
                 reached.append(True)
                 raise OSError("interrupted after one published Call state")
@@ -518,16 +517,16 @@ def test_native_frame_failure_never_exposes_partial_history_or_driver_ready(stor
         assert store.load_run(session.session_id, run.run_id).driver_checkpoint.state == "pending"
         with closing(sqlite3.connect(store.database)) as connection, connection:
             connection.execute("DROP TRIGGER fail_frame")
-    _, saved, completed, messages, _ = lifecycle.publish_tool_batch(
+    _, saved, completed, messages, events = lifecycle.publish_tool_batch(
         session=session, run=run, batch=batch
     )
-    events = [
-        event
-        for event in recorded_events(session.session_id)
-        if event.event_type == "tool_batch_completed"
-    ]
-    assert len(events) == 1
-    assert events[0].payload["batch_id"] == batch.batch_id
+    events = [event for event in events if event.event_type == "tool_batch_completed"]
+    if isinstance(store, LocalSessionStore):
+        # Recovery already committed the frame; retries do not replay notifications.
+        assert events == []
+    else:
+        assert len(events) == 1
+        assert events[0].payload["batch_id"] == batch.batch_id
     assert saved.driver_checkpoint.state == "ready"
     assert completed.phase == "completed"
     assert [call.result_message_id for call in completed.calls] == [

@@ -12,7 +12,7 @@ from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextBuilder
 from ouro.core.context_selection import MessageBoundary
 from ouro.core.context_snapshots import ContextSnapshotRecord
-from ouro.core.errors import PersistenceError, SessionRecoveryRequiredError
+from ouro.core.errors import PersistenceError
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata
 from ouro.core.session_commits import SessionCommitConflict
@@ -272,10 +272,12 @@ def test_selection_native_failure_preserves_backend_commit_semantics(store, monk
                 select_through(store, session, messages[1])
         cold = LocalSessionStore(store.root)
         cold.initialize()
-        with pytest.raises(SessionRecoveryRequiredError):
-            cold.load_session_record(session.session_id)
-        with cold.session_mutation(session.session_id):
-            pass
+        # A selection-only decision is wholly native and rolls back atomically.
+        assert (
+            cold.load_session_record(session.session_id).context_selection
+            == session.context_selection
+        )
+        select_through(cold, session, messages[1])
     else:
         with closing(sqlite3.connect(store.database)) as connection, connection:
             connection.execute(

@@ -94,15 +94,17 @@ async def test_cold_recovery_and_runtime_never_read_covered_message_bodies(
 
         monkeypatch.setattr(FileMessageRecords, "entry", staticmethod(read_entry))
     else:
-        materialize = SQLiteSessionStore._resolve_message
+        import ouro.sessions.backends.sqlite.store as sqlite_store
 
-        def read_message(connection, payload, label):
-            message = materialize(connection, payload, label)
+        decode = sqlite_store.decode_message_content
+
+        def read_message(payload, *, label):
+            message = decode(payload, label=label)
             assert message.message_id not in covered_ids
             reads.append(message.message_id)
             return message
 
-        monkeypatch.setattr(SQLiteSessionStore, "_resolve_message", staticmethod(read_message))
+        monkeypatch.setattr(sqlite_store, "decode_message_content", read_message)
 
     # A fresh adapter must not populate a historical body cache before executing.
     cold = open_store()

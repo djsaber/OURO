@@ -2989,22 +2989,11 @@ async def test_root_tree_subscription_adds_children_and_reconnects_from_store(tm
     subscription.close()
     await service.wait_agents((child.delegation_id,))
     assert child.child_session_id is not None
-    child_stream = await supervisor.subscribe(child.child_session_id)
-    async with asyncio.timeout(3):
-        while True:
-            child_notification = await child_stream.get()
-            if (
-                child_notification.kind == "event"
-                and child_notification.event is not None
-                and child_notification.event.event_type == "model_response_committed"
-            ):
-                assert child_notification.event.session_id == child.child_session_id
-                message = store.load_message(
-                    child.child_session_id, child_notification.event.data["message_id"]
-                )
-                assert message.role == "assistant" and message.text_content
-                break
-    child_stream.close()
+    # Reconnection reads durable content; transient events are not replayed.
+    recovered = supervisor.runtime.observation_snapshot(child.child_session_id)
+    assert any(
+        message.role == "assistant" and message.text_content for message in recovered.messages
+    )
     reconnected = await service.subscribe_agent_tree("ses_root")
     assert reconnected.initial_snapshot == service.agent_tree_snapshot("ses_root")
     assert reconnected.initial_snapshot.terminal_count == 1
@@ -3287,20 +3276,21 @@ async def test_sync_delivery_commits_while_parent_model_is_still_running(
         assert not release.is_set()
         assert any(not receipt.done() for receipt in service._execution._receipts)
         checks_before_tokens = len(receipt_checks)
-        subscription = await supervisor.subscribe(handle.session_id)
+        burst_seen = asyncio.Event()
+
+        async def observe_burst(event):
+            if event.session_id == handle.session_id and "burst finished" in event.payload.get(
+                "text", ""
+            ):
+                burst_seen.set()
+
+        sink = runtime.add_event_sink(observe_burst)
         try:
             emit_tokens.set()
-            async with asyncio.timeout(30):
-                while True:
-                    notification = await subscription.get()
-                    if (
-                        notification.event is not None
-                        and notification.event.event_type == "model_text_delta"
-                        and "burst finished" in (notification.event.text or "")
-                    ):
-                        break
+            await asyncio.wait_for(burst_seen.wait(), 30)
+            await runtime.drain_events()
         finally:
-            subscription.close()
+            await sink.close()
         assert len(receipt_checks) == checks_before_tokens
 
         # A committed join takes the receipt-only fast path, without creating a

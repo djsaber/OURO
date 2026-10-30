@@ -690,9 +690,6 @@ async def test_plan_off_cancels_activation_bound_pending_approval(tmp_path) -> N
     assert snapshot.session.status == "idle"
     assert snapshot.session.active_run_id is None
     assert released.data["session_controls"][0]["data"]["cancelled_run_id"] == cancelled.run_id
-    events = recorded_events(waiting.session.session_id, run_id=cancelled.run_id)
-    aborted = [event for event in events if event.event_type == "run_aborted"]
-    assert len(aborted) == 1 and aborted[0].payload["reason"] == "session_control_released"
     with pytest.raises(ValueError, match="not waiting for user input"):
         await runtime.answer_user(
             session_id=waiting.session.session_id,

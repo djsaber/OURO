@@ -203,9 +203,7 @@ def test_root_tree_facts_share_one_sqlite_read_connection(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize("count", [65, 256])
-async def test_text_burst_is_filtered_before_state_buffer_and_tree_query(
-    tmp_path, monkeypatch, count
-):
+async def test_fact_burst_coalesces_before_tree_query(tmp_path, monkeypatch, count):
     service, supervisor, _, _ = await _services(tmp_path)
     store = supervisor.store
     loop = asyncio.get_running_loop()
@@ -217,7 +215,7 @@ async def test_text_burst_is_filtered_before_state_buffer_and_tree_query(
 
     def paused_read(*args, **kwargs):
         loop.call_soon_threadsafe(reading.set)
-        assert release.wait(10)
+        release.wait()
         return read(*args, **kwargs)
 
     def counted_project(*args):
@@ -239,10 +237,14 @@ async def test_text_burst_is_filtered_before_state_buffer_and_tree_query(
     source._publish_facts = record_publication
     try:
         await asyncio.wait_for(reading.wait(), 5)
-        run = store.load_run("ses_root", "run_parent")
-        for index in range(count):
-            store.save_run(run.model_copy(update={"model_round_count": index + 1}))
-        marker = store.observation_revision("ses_root")
+
+        def update_facts():
+            run = store.load_run("ses_root", "run_parent")
+            for index in range(count):
+                store.save_run(run.model_copy(update={"model_round_count": index + 1}))
+            return store.observation_revision("ses_root")
+
+        marker = await asyncio.to_thread(update_facts)
         release.set()
         await asyncio.wait_for(published.wait(), 5)
         # Delivery never computes a tree; even a burst larger than a page is one invalidation.

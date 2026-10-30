@@ -5,8 +5,9 @@ import threading
 
 import pytest
 
+from ouro.application.observations.content import restore_session_content
 from ouro.tui.controller import TuiController
-from ouro.tui.state import TuiSessionProjection
+from tests.event_capture import recorded_events
 from tests.tui.app.support import _approval_application
 
 
@@ -39,15 +40,14 @@ async def test_preflight_interaction_appears_with_its_durable_checkpoint(
         assert await asyncio.to_thread(reached.wait, 15), "preflight did not reach its checkpoint"
         session_id = controller.session_id
         assert session_id is not None
-        snapshot = await asyncio.to_thread(application.runtime.store.load_session, session_id)
-        projection = TuiSessionProjection(session_id)
-        projection.restore(tuple(snapshot.events))
+        snapshot = await asyncio.to_thread(application.runtime.observation_snapshot, session_id)
+        projection = restore_session_content(snapshot)
         assert projection.pending_interaction is None
         assert not target.exists()
         release.set()
         await asyncio.wait_for(submission, 15)
-        snapshot = await asyncio.to_thread(application.runtime.store.load_session, session_id)
-        projection.restore(tuple(snapshot.events))
+        snapshot = await asyncio.to_thread(application.runtime.observation_snapshot, session_id)
+        projection = restore_session_content(snapshot)
         interaction = projection.pending_interaction
         assert interaction is not None and interaction.kind == "approval"
         assert (
@@ -64,8 +64,11 @@ async def test_preflight_interaction_appears_with_its_durable_checkpoint(
             assert target.read_text(encoding="utf-8") == "written"
         else:
             assert not target.exists()
-        saved = await asyncio.to_thread(application.runtime.store.load_session, session_id)
-        resolved = [event for event in saved.events if event.event_type == "approval_resolved"]
+        resolved = [
+            event
+            for event in recorded_events(session_id)
+            if event.event_type == "approval_resolved"
+        ]
         assert len(resolved) == 1
         assert resolved[0].payload["approved"] is approved
     finally:

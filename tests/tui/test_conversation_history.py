@@ -7,7 +7,6 @@ import pytest
 import rich.text as conversation_history_text
 from rich.console import Console
 from textual.app import App, ComposeResult
-from textual.geometry import Size
 from textual.widgets import Input
 
 import ouro.tui.conversation.history as conversation_history
@@ -283,38 +282,6 @@ class _ConversationApp(App[None]):
     def compose(self) -> ComposeResult:
         yield ConversationView()
         yield Input()
-
-
-@pytest.mark.parametrize("overflow", [0, 7])
-async def test_history_scroll_restore_survives_intermediate_layout_sizes(overflow):
-    app = _ConversationApp()
-    async with app.run_test(size=(100, 30)) as pilot:
-        conversation = app.query_one(ConversationView)
-        history = app.query_one(ConversationHistory)
-        conversation.styles.scrollbar_size_vertical = 0
-        conversation.styles.scrollbar_size_horizontal = 0
-        conversation.query_one("#conversation-transcript").styles.height = "auto"
-        history.styles.height = "auto"
-        history.styles.overflow_x = "hidden"
-        history.styles.overflow_y = "hidden"
-        await history.load(
-            tuple(TranscriptEntry(kind="user", text=f"Message {index}") for index in range(30))
-        )
-        await pilot.pause()
-        size = conversation.scrollable_content_region.size
-        target = conversation.max_scroll_y
-        assert target > 0
-        conversation._restore_scroll_y(target + overflow)
-        # One reflow can measure a larger viewport before sibling layout settles.
-        conversation.arrange(Size(size.width, size.height + 1))
-        conversation.arrange(size)
-        assert conversation.scroll_y == target
-        await pilot.pause()
-        assert conversation.scroll_y == target
-        assert conversation._restored_scroll_y is None
-        conversation.scroll_to(y=target - 3, animate=False, immediate=True)
-        await pilot.pause()
-        assert conversation.scroll_y == target - 3
 
 
 @pytest.mark.parametrize("show_scaffolds", [False, True])

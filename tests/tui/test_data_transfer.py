@@ -25,7 +25,7 @@ from ouro.tui.features.transfer.workflows import DataTransferScreen
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.multiple import MultiChoiceScreen
 from tests.tool_batches import seed_tool_messages
-from tests.tui.helpers import wait_for_screen, wait_until
+from tests.tui.helpers import run_ready_app, wait_for_menu_action, wait_for_screen, wait_until
 
 
 def test_transfer_command_only_exports_current_session_without_arguments():
@@ -160,11 +160,20 @@ async def test_imported_history_opens_with_missing_dependencies_in_live_sqlite_h
 
 
 async def _choose_menu_row(app, pilot, identity):
-    # A background scan can leave the previous menu visible until the picker
-    # is prepared. Wait for the requested row on the currently active screen.
+    # A background scan may leave the old page visible, and push_screen makes
+    # the destination current before its children mount. Neither boundary
+    # means its controls are ready for input.
     async with asyncio.timeout(10):
         while True:
             menu = app.screen
+            if (
+                not isinstance(menu, ChoiceScreen)
+                or not menu.is_mounted
+                or not menu.query("#choice-filter")
+                or not menu.query("#choice-list")
+            ):
+                await pilot.pause()
+                continue
             menu.query_one("#choice-filter", Input).value = ""
             await pilot.pause()
             if app.screen is not menu:
@@ -317,11 +326,7 @@ async def test_export_picker_uses_default_filename_and_cancel_keeps_settings(tmp
     monkeypatch.chdir(tmp_path)
     (tmp_path / "backups").mkdir()
     app = OuroTuiApp(home=tmp_path / "home")
-    async with app.run_test(size=(100, 35)) as pilot:
-        async with asyncio.timeout(10):
-            while app._controller._application is None:
-                await pilot.pause()
-        await app.workers.wait_for_complete()
+    async with run_ready_app(app, size=(100, 35)) as pilot:
         await _open_data_menu(app, pilot, "export", "providers")
         await pilot.pause()
         form = app.screen
@@ -329,12 +334,17 @@ async def test_export_picker_uses_default_filename_and_cancel_keeps_settings(tmp
         original = form._path
         await _choose_menu_row(app, pilot, "path")
         await _choose_menu_row(app, pilot, "directory:backups")
+        await wait_for_menu_action(pilot, app.screen)
         await pilot.press("escape")
-        await pilot.pause()
+        await wait_for_menu_action(pilot, form)
+        assert app.screen is form
         assert form._path == original
         await _choose_menu_row(app, pilot, "path")
         await _choose_menu_row(app, pilot, "directory:backups")
+        await wait_for_menu_action(pilot, app.screen)
         await _choose_menu_row(app, pilot, "save")
+        await wait_for_menu_action(pilot, form)
+        assert app.screen is form
         assert form._path == tmp_path / "backups" / original.name
         await _choose_menu_row(app, pilot, "submit")
         await app.workers.wait_for_complete()

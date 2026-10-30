@@ -28,10 +28,14 @@ from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.state import TuiSessionProjection, project_run_presentation
 from ouro.tui.theme import DEFAULT_TUI_THEME
 from ouro.tui.widgets.activity import ActivityIndicator
-from ouro.tui.widgets.brand import BrandHeader
 from ouro.tui.widgets.status import StatusLine
 from tests.tui.app.support import _application, _wait_for_active_session
-from tests.tui.helpers import run_ready_app, wait_for_history_render
+from tests.tui.helpers import (
+    run_ready_app,
+    wait_for_events,
+    wait_for_history_render,
+    wait_for_menu_action,
+)
 from tests.tui.helpers import wait_for_screen as _wait_for_screen
 from tests.tui.helpers import wait_for_worker_group as _wait_for_worker_group
 from tests.tui.helpers import wait_until as _wait_until
@@ -525,6 +529,7 @@ async def test_run_result_replays_events_when_live_sink_is_delayed(tmp_path: Pat
 @pytest.mark.asyncio
 async def test_session_picker_closes_modal_before_rendering_selected_history(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     application = _application(tmp_path)
     session = application.runtime.sessions.create(title="Readable session").session
@@ -544,10 +549,26 @@ async def test_session_picker_closes_modal_before_rendering_selected_history(
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         session_menu = app.screen
 
-        await asyncio.wait_for(pilot.press("enter"), timeout=2)
-        await pilot.pause()
+        loading, release = asyncio.Event(), asyncio.Event()
+        prepare = app._controller.prepare_session_selection
 
-        assert session_menu not in app.screen_stack
+        async def held_selection(session_id, **kwargs):
+            loading.set()
+            await release.wait()
+            return await prepare(session_id, **kwargs)
+
+        monkeypatch.setattr(app._controller, "prepare_session_selection", held_selection)
+        try:
+            await pilot.press("enter")
+            await wait_for_events(loading, pilot=pilot, description="selected Session loading")
+            # Closing the picker must not depend on storage or history loading.
+            assert session_menu not in app.screen_stack
+            assert app._controller.session_id is None
+            assert app.query_one(ConversationHistory).user_turns == ()
+        finally:
+            release.set()
+            await wait_for_menu_action(pilot, session_menu)
+
         assert app._controller.session_id == session.session_id
         assert app.query_one(ConversationHistory).user_turns == ("Persisted user message",)
 
@@ -573,7 +594,7 @@ async def test_session_picker_restores_history_after_returning_to_welcome(
     )
     app = OuroTuiApp(application=application)
 
-    async with run_ready_app(app, size=(len(str(workspace)) + 40, 32)) as pilot:
+    async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.press("ctrl+o")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
@@ -581,7 +602,7 @@ async def test_session_picker_restores_history_after_returning_to_welcome(
         await _wait_for_active_session(app, pilot, session.session_id)
         await pilot.pause()
         assert app.query_one(ConversationHistory).user_turns == ("Persisted user message",)
-        assert app.query_one(BrandHeader).render_line(0).text.rstrip().endswith(str(workspace))
+        assert app._active_workspace == str(workspace.resolve())
 
         await pilot.press("ctrl+n")
         await _wait_until(
@@ -600,7 +621,7 @@ async def test_session_picker_restores_history_after_returning_to_welcome(
         history = app.query_one(ConversationHistory)
         assert history.user_turns == ("Persisted user message",)
         assert "Persisted user message" in history.rendered_text
-        assert app.query_one(BrandHeader).render_line(0).text.rstrip().endswith(str(workspace))
+        assert app._active_workspace == str(workspace.resolve())
 
 
 @pytest.mark.asyncio

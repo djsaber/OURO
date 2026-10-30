@@ -2069,10 +2069,8 @@ async def test_turn_policy_continues_inside_same_run_before_completion(
     ]
     assert snapshot.messages[1].text_content == "candidate"
     assert snapshot.messages[2].metadata["session_input_source"] == "turn_policy"
-    assert any(
-        event.event_type == "turn_policy_continued"
-        for event in recorded_events(snapshot.session.session_id)
-    )
+    # Notifications were deliberately dropped; continuation is proven by the
+    # persisted feedback and the two responses in this same Run above.
 
 
 @pytest.mark.asyncio
@@ -2274,10 +2272,7 @@ async def test_runtime_drains_queued_follow_up_after_active_run_completes(tmp_pa
         snapshot = store.load_session(session.session_id)
 
         assert queued.run.run_id == session.last_run_id
-        assert (
-            recorded_events(queued_snapshot.session.session_id)[-1].event_type
-            == "follow_up_input_queued"
-        )
+        assert len(queued_snapshot.session.pending_input_ids) == 1
         assert first.final_text == "first"
         assert provider.calls == 2
         assert not snapshot.session.pending_input_ids

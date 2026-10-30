@@ -85,13 +85,16 @@ def test_config_commands_preserve_concurrent_section_updates(tmp_path, monkeypat
     release_first_update = threading.Event()
     second_update_finished = threading.Event()
     contended = threading.Event()
-    wait_for_lock = local_locks._wait_for_mutation_lock
+    acquire = local_locks.FileMutationLock.acquire
 
-    def observed_wait(*args):
-        contended.set()
-        return wait_for_lock(*args)
+    def observed_acquire(lock, **kwargs):
+        if not lock._local_lock.acquire(blocking=False):
+            contended.set()
+        else:
+            lock._local_lock.release()
+        return acquire(lock, **kwargs)
 
-    monkeypatch.setattr(local_locks, "_wait_for_mutation_lock", observed_wait)
+    monkeypatch.setattr(local_locks.FileMutationLock, "acquire", observed_acquire)
     original_read = queued_inputs.file.read
     read_count = 0
 
