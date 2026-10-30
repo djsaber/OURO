@@ -180,12 +180,12 @@ async def test_terminal_snapshot_completes_added_item_without_done_event():
     assert observation.output == [message("OURO_OK")]
 
 
-async def test_snapshot_can_add_fields_without_duplicating_complete_item():
+async def test_snapshot_preserves_the_selected_complete_item():
     item = message("OURO_OK")
     events = [item_done(0, item), completed([{**item, "status": "completed"}])]
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: sse(events))) as client:
         observation = await request(client, grant(), model="test", input_items=[])
-    assert observation.output == [{**item, "status": "completed"}]
+    assert observation.output == [item]
     assert observation.report()["text_characters"] == 7
 
 
@@ -205,12 +205,12 @@ async def test_output_item_after_terminal_is_not_accepted():
             "response_not_completed",
         ),
         (
-            [item_done(0, message("OURO_OK")), completed([message("different-secret")])],
-            "conflicting_output_item",
-        ),
-        (
             [
-                item_done(0, message("OURO_OK")),
+                {
+                    "type": "response.output_item.added",
+                    "output_index": 0,
+                    "item": message("OURO_OK"),
+                },
                 item_done(0, {**message("OURO_OK"), "id": "other-secret"}),
                 completed([]),
             ],

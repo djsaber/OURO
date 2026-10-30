@@ -37,9 +37,9 @@ echo 仅返回内存中的固定 JSON，不访问文件或执行模型指定的�
 远端会话或 `previous_response_id`。四次请求会使用当前账户的订阅额度。
 
 Responses 内容由 `response.output_item.done` 的完整 item 收集，按 `output_index` 恢复原始顺序。
-`response.completed` 确认成功终态和 usage；其 output 可以为空或省略。有终态 output 快照时按
-相同位置核对并补充缺失字段，不重复拼接文本或工具；同位置身份/内容冲突、跨位置重复 item id、
-索引缺口、已添加却未完成的 item、终态后的 item 均失败。文本 delta 不再另外拼入重放上下文，
+`response.completed` 确认成功终态和 usage；其 output 可以为空或省略。每个位置保存首次完整 item，
+终态 output 快照只补充尚未定稿的位置；重复完整副本不参与字段合并或内容比较。参与收集的观察
+出现身份冲突、跨位置重复 item id、索引缺口、未完成 item 或终态后的 item 时失败。文本 delta 不拼入重放上下文，
 加密 reasoning 和工具 item 保留完整结构。只有完整 item、没有成功终态仍不能通过验证。
 
 stdout 只输出一次 JSON 摘要；退出码 0 表示本次全部通过，1 表示失败，2 表示命令参数错误，

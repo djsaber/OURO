@@ -27,6 +27,7 @@ OpenAIResponsesErrorCode = Literal[
 class OpenAIResponsesError(ValueError):
     """Fixed protocol facts; raw payloads, arguments and ciphertext never enter diagnostics."""
 
-    def __init__(self, code: OpenAIResponsesErrorCode) -> None:
+    def __init__(self, code: OpenAIResponsesErrorCode, *, detail: str | None = None) -> None:
+        # Detail contains only local check names and numeric coordinates, never wire values.
         self.code = code
-        super().__init__("Responses protocol error: " + code)
+        super().__init__("Responses protocol error: " + code + (f" ({detail})" if detail else ""))

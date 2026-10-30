@@ -174,7 +174,7 @@ def test_function_call_optional_item_id_does_not_replace_required_call_id(mode, 
 
 
 @pytest.mark.parametrize("rich_event", [False, True])
-def test_completed_snapshots_fill_nested_metadata_without_duplicating_text(rich_event):
+def test_complete_item_keeps_its_own_metadata_without_duplicating_text(rich_event):
     basic = message()
     del basic["content"][0]["annotations"]
     enriched = message(phase="final_answer", vendor_metadata={"trace": "fixture"})
@@ -186,7 +186,7 @@ def test_completed_snapshots_fill_nested_metadata_without_duplicating_text(rich_
     assert pair == before
     assert "".join(event.text or "" for event in decoded) == "hello"
     continuation = next(event.continuation for event in decoded if event.type == "continuation")
-    assert continuation.blocks[0]["items"] == [enriched]
+    assert continuation.blocks[0]["items"] == [pair[0]]
 
 
 @pytest.mark.parametrize(
@@ -198,9 +198,99 @@ def test_completed_snapshots_fill_nested_metadata_without_duplicating_text(rich_
         message(id="different"),
     ],
 )
-def test_completed_snapshot_differences_cannot_change_content_or_identity(changed):
-    with pytest.raises(OpenAIResponsesError, match="conflicting_output_item"):
-        decode([item_event(0, message()), terminal([changed])])
+def test_repeated_complete_copies_do_not_change_the_selected_item(changed):
+    decoded = decode([item_event(0, message()), item_event(0, changed), terminal([changed])])
+    assert "".join(event.text or "" for event in decoded) == "hello"
+    continuation = next(event.continuation for event in decoded if event.type == "continuation")
+    assert continuation.blocks[0]["items"] == [message()]
+    assert decoded[-1].completion.finish_reason == "stop"
+
+
+@pytest.mark.parametrize(
+    "item,copy",
+    [
+        (reasoning(content=None), reasoning(content=[])),
+        (reasoning(), reasoning(encrypted_content="different-ciphertext")),
+        (call(id=None), call()),
+        (call(vendor_metadata={"trace": "first"}), call(vendor_metadata={"trace": "last"})),
+        (call(), call(arguments='{"round":2}')),
+    ],
+)
+def test_duplicate_items_are_not_projected_again(item, copy):
+    parser = decoder()
+    first = parser.feed(item_event(0, item))
+    assert first
+    assert parser.feed(item_event(0, copy)) == []
+    assert parser.feed(terminal([copy])) == []
+    final = parser.finish()
+    assert [event.type for event in final] == ["continuation", "done"]
+    assert final[0].continuation.blocks[0]["items"] == [item]
+
+
+def test_terminal_supplies_missing_items_in_output_order_without_reprojecting_completed_items():
+    parser = decoder()
+    event = item_event(1, message())
+    assert parser.feed(event)[0].text == "hello"
+    event["item"]["content"][0]["text"] = "mutated"
+    parser.feed(terminal([reasoning(), message("different"), call()]))
+    final = parser.finish()
+    assert not any(event.type == "text_delta" for event in final)
+    assert "".join(event.reasoning_content or "" for event in final) == "checking"
+    assert len([event for event in final if event.type == "tool_call_delta"]) == 2
+    continuation = next(event.continuation for event in final if event.type == "continuation")
+    assert continuation.blocks[0]["items"] == [reasoning(), message(), call()]
+
+
+def test_first_complete_item_must_match_streamed_tool_arguments():
+    parser = decoder()
+    parser.feed(item_event(0, call(arguments=""), complete=False))
+    parser.feed(delta("response.function_call_arguments.delta", 0, "item-1", '{"round":1}'))
+    with pytest.raises(OpenAIResponsesError, match="conflicting_delta"):
+        parser.feed(item_event(0, call(arguments='{"round":2}')))
+
+
+@pytest.mark.parametrize(
+    "item,event",
+    [
+        (message(), delta("response.output_text.delta", 0, "msg", "extra", content_index=1)),
+        (reasoning(), delta("response.reasoning_text.delta", 0, "rs", "extra", content_index=0)),
+        (call(), delta("response.function_call_arguments.delta", 0, "item-1", "extra")),
+    ],
+)
+def test_new_deltas_cannot_extend_a_completed_item(item, event):
+    parser = decoder()
+    parser.feed(item_event(0, item))
+    with pytest.raises(OpenAIResponsesError, match="conflicting_delta.*item_completed"):
+        parser.feed(event)
+
+
+def test_part_completion_after_item_completion_does_not_add_another_text_part():
+    parser = decoder()
+    parser.feed(item_event(0, message()))
+    assert (
+        parser.feed(
+            {
+                "type": "response.output_text.done",
+                "output_index": 0,
+                "item_id": "msg",
+                "content_index": 1,
+                "text": "redundant copy",
+            }
+        )
+        == []
+    )
+    parser.feed(terminal([]))
+    assert [event.type for event in parser.finish()] == ["continuation", "done"]
+
+
+def test_item_identity_diagnostics_identify_the_check_without_exposing_wire_values():
+    parser = decoder()
+    parser.feed(item_event(0, message(id="first-secret"), complete=False))
+    with pytest.raises(OpenAIResponsesError) as failure:
+        parser.feed(item_event(0, message(id="second-secret")))
+    assert failure.value.code == "conflicting_output_item"
+    assert "item_identity, output_index=0" in str(failure.value)
+    assert "secret" not in str(failure.value)
 
 
 @pytest.mark.parametrize(
@@ -252,17 +342,12 @@ def test_empty_reasoning_only_and_refusal_responses_preserve_terminal_facts(outp
         ([terminal([call(call_id=None)])], "invalid_output_item"),
         ([terminal([call(name="")])], "invalid_output_item"),
         ([terminal([message(id=None)])], "invalid_output_item"),
-        (
-            [item_event(0, call()), terminal([call(arguments='{"round":2}')])],
-            "conflicting_output_item",
-        ),
         ([terminal([call(), call(2, call_id="call-1")])], "duplicate_tool_call"),
         ([item_event(1, message()), terminal([])], "unfinished_output_item"),
         (
             [item_event(0, message(status="in_progress"), complete=False), terminal([])],
             "unfinished_output_item",
         ),
-        ([item_event(0, message()), terminal([message("different")])], "conflicting_output_item"),
         ([terminal([{"type": "web_search_call", "id": "search"}])], "unsupported_output_item"),
         (
             [

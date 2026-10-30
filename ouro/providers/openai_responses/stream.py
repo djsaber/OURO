@@ -92,7 +92,8 @@ class OpenAIResponsesStreamDecoder:
             index = _index(event, "output_index")
             item = event.get("item")
             complete = kind == "response.output_item.done"
-            self._items.observe(index, item, complete=complete)
+            if not self._items.observe(index, item, complete=complete):
+                return []
             if not isinstance(item, dict):
                 raise OpenAIResponsesError("invalid_output_item")
             if complete:
@@ -117,9 +118,11 @@ class OpenAIResponsesStreamDecoder:
         if stem in lanes and suffix in {"delta", "done"}:
             self._require_open(kind)
             item_kind, lane, coordinate, field_name = lanes[stem]
-            index = self._event_item(event, item_kind)
+            item_index = self._event_item(event, item_kind)
+            if item_index is None:
+                return []
             part = _index(event, coordinate)
-            progress = self._text.setdefault((index, lane, part), _Text())
+            progress = self._text.setdefault((item_index, lane, part), _Text())
             text = (
                 progress.delta(event.get("delta"))
                 if suffix == "delta"
@@ -128,8 +131,10 @@ class OpenAIResponsesStreamDecoder:
             return _display(lane, text)
         if stem == "response.function_call_arguments" and suffix in {"delta", "done"}:
             self._require_open(kind)
-            index = self._event_item(event, "function_call")
-            tool = self._tool(index)
+            item_index = self._event_item(event, "function_call")
+            if item_index is None:
+                return []
+            tool = self._tool(item_index)
             text = (
                 tool.arguments.delta(event.get("delta"))
                 if suffix == "delta"
@@ -166,14 +171,16 @@ class OpenAIResponsesStreamDecoder:
         if self._terminal is None:
             raise OpenAIResponsesError("missing_terminal")
         self._finished = True
+        completed = self._items.completed_indices
         items = self._items.finish(self._terminal.get("output", []))
         events: list[ProviderStreamEvent] = []
         for index, item in enumerate(items):
-            events.extend(self._complete_item(index, output_item(item)))
+            if index not in completed:
+                events.extend(self._complete_item(index, output_item(item)))
         if [self._tools[index].ordinal for index in sorted(self._tools)] != list(
             range(len(self._tools))
         ):
-            raise OpenAIResponsesError("conflicting_output_item")
+            raise OpenAIResponsesError("conflicting_output_item", detail="tool_order")
         usage = responses_usage(self._terminal.get("usage"))
         if items:
             events.append(
@@ -206,12 +213,17 @@ class OpenAIResponsesStreamDecoder:
         )
         return events
 
-    def _event_item(self, event: dict[str, Any], kind: str) -> int:
+    def _event_item(self, event: dict[str, Any], kind: str) -> int | None:
         index = _index(event, "output_index")
         item_id = event.get("item_id")
         if not isinstance(item_id, str) or not item_id:
             raise OpenAIResponsesError("invalid_event")
-        self._items.observe(index, {"type": kind, "id": item_id}, complete=False)
+        if not self._items.observe(index, {"type": kind, "id": item_id}, complete=False):
+            if event["type"].endswith(".delta"):
+                raise OpenAIResponsesError(
+                    "conflicting_delta", detail=f"item_completed, output_index={index}"
+                )
+            return None
         return index
 
     def _tool(self, index: int) -> _Tool:
@@ -225,7 +237,9 @@ class OpenAIResponsesStreamDecoder:
         if not isinstance(call_id, str) or not call_id or not isinstance(name, str) or not name:
             raise OpenAIResponsesError("invalid_output_item")
         if (tool.call_id and tool.call_id != call_id) or (tool.name and tool.name != name):
-            raise OpenAIResponsesError("conflicting_output_item")
+            raise OpenAIResponsesError(
+                "conflicting_output_item", detail=f"tool_identity, output_index={index}"
+            )
         if self._call_ids.get(call_id, index) != index:
             raise OpenAIResponsesError("duplicate_tool_call")
         self._call_ids[call_id] = index
@@ -262,7 +276,9 @@ class OpenAIResponsesStreamDecoder:
         if item["type"] == "message" and any(
             key[0] == index and key not in keys for key in self._text
         ):
-            raise OpenAIResponsesError("conflicting_output_item")
+            raise OpenAIResponsesError(
+                "conflicting_output_item", detail=f"message_content, output_index={index}"
+            )
         return events
 
 

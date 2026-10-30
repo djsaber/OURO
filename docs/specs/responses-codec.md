@@ -3,7 +3,7 @@
 > 文档类型：现行规格
 > 范围：Responses adapter、配置/工厂注册、请求认证、内容编码、SSE 事件投影与完整续接封装。浏览器订阅产品已内建注册；Windows/browser/gpt-5.5 真实持久凭据 CLI 闭环已验收。
 
-产品接入契约与待验证能力见[订阅认证规格](subscription-authentication.md#s7-responses-与-continuation)和[验证计划](../plans/subscription-validation.md)。模块位于 `ouro/providers/openai_responses/codec.py`、`openai_responses_items.py`、`openai_responses_stream.py` 与 `openai_responses_errors.py`。它们只依赖 canonical 消息/事件和纯协议数据，不依赖 OAuth、配置、HTTP 客户端或实验目录。
+产品接入契约与待验证能力见[订阅认证规格](subscription-authentication.md#s7-responses-与-continuation)和[验证计划](../plans/subscription-validation.md)。模块位于 `ouro/providers/openai_responses/` 下的 `codec.py`、`items.py`、`stream.py` 与 `errors.py`。它们只依赖 canonical 消息/事件和纯协议数据，不依赖 OAuth、配置、HTTP 客户端或实验目录。
 
 ## 请求内容
 
@@ -45,13 +45,15 @@ managed scope 使用稳定服务/账户身份，刷新 revision 不改变 scope�
 ## 完整续接
 
 可见思考支持 `response.reasoning_summary_text.delta/done` 与 `response.reasoning_text.delta/done`，
-分别按 summary_index 和 content_index 跟踪，并从终态 reasoning item 的 summary/content 补齐未展示的文本。
-两条流均投影为 canonical reasoning，不混入回答正文；重复完成通知不重复展示，已返回的文本发生冲突时拒绝。
+分别按 summary_index 和 content_index 跟踪，并从选定的完整 reasoning item 的 summary/content 补齐未展示的文本。
+两条流均投影为 canonical reasoning，不混入回答正文；首次定稿文本须与已输出增量一致，重复完整项不重复展示。
 reasoning 的 summary/content 可缺省、为 null 或为空，终态无需重复流式思考文本；完整原生 item 仍原样续接，
-不将仅用于展示的 delta 拼造为续接数据。消息正文、工具参数、关联身份与成功终态继续接受既有校验。
+不将仅用于展示的 delta 拼造为续接数据。消息正文和工具参数须与流式输出一致，关联身份与成功终态须有效。
 事件与字段定义见 [OpenAI 流式事件规范](https://developers.openai.com/api/reference/resources/responses/streaming-events)。
 
-完整输出只从 output_item.done 与可选的终态 output 快照收集，不由 delta 重建。ResponseItems 按 output_index 保存顺序，验证同位置 type/id 一致、已提供的 item id 不跨位置重复、索引连续、已观察 item 均完成。重复完整快照可递归补齐缺失字段，包括 content/summary 内的 annotations 等附加信息；数组位置与长度必须一致，已有值冲突不能覆盖，不能改写文本、工具参数或加密续接。返回数据使用独立副本。隔离探针复用此收集器。
+完整输出由 `OpenAIResponsesItemAccumulator` 按 output_index 收集。每个位置的首次 output_item.done 定稿一个完整原生对象；终态 output 快照只补充尚未定稿的位置。只有终态快照的响应使用其中的完整对象。delta 仅用于展示，不构造续接材料。
+
+每个完整项只投影一次，文本、工具调用与续接均使用同一个选定对象。已定稿位置的重复完整副本直接跳过，不合并或比较其正文、可选字段、附加元数据和密文。终态副本独有的字段不拼入已定稿对象。已定稿位置的 added 和部分 done 通知不改变输出；该位置的新 delta 明确失败，保证已展示内容与续接对象一致。收集器保存和返回独立副本，按原始位置排序；参与收集的观察须保持 type/id 一致、item id 不跨位置重复、索引连续且已观察项均完成。隔离探针复用此收集器。取值规则仅依赖协议事件与位置，不依赖厂商、模型或认证方式。
 
 接收字段以官方 schema 的含义为准，校验限于 OURO 消费及重放所需的语义，不要求服务复刻全部响应元数据。function_call.id/status 可省略，id 可为 null；call_id、name 和合法 arguments 仍必需，不以 item id 替代 call_id，也不伪造 id。message/reasoning 的 id、消息 role/type 与内容类型维持明确校验。省略 annotations/usage 或提供未知附加字段不会单独导致失败；提供的实际 usage 则须合法。未知元数据事件可忽略，未知内容/可执行类型明确拒绝，避免把未支持能力误报为成功。
 
@@ -91,7 +93,8 @@ ResponsesStreamDecoder 处理一个响应，responses_events 将已有 HTTP/SSE 
 | output_text/refusal delta | text_delta |
 | reasoning_summary_text delta | reasoning_delta；不展示加密 reasoning |
 | function_call item 与 arguments delta | tool_call_delta；工具序号从零连续，不泄漏 output_index |
-| text/arguments done、完整 item、最终快照 | 校验已输出前缀，仅补尚未输出的后缀；重复快照不重复文本、名称、ID 或参数 |
+| text/arguments done、首次选定的完整 item | 校验已输出前缀，仅补尚未输出的后缀 |
+| 重复完整 item、终态 output 快照 | 已定稿位置直接跳过；缺失位置定稿并投影，不重复文本、名称、ID 或参数 |
 | completed 且流正常结束 | 完整验证后发一个 continuation（有 output 时），再发一次 done/usage；Core 独立判断 Agent 是否可继续 |
 | incomplete、failed、error、提前 EOF | 固定协议错误，不发成功 done 或 continuation |
 
@@ -100,14 +103,14 @@ ResponsesStreamDecoder 处理一个响应，responses_events 将已有 HTTP/SSE 
 摘要也不归为完全空响应。Core 对只有思考、空输出和拒绝响应分别报告失败，保留可见内容和此 `done` 携带的
 usage，不将失败响应的 continuation 提交为可重放状态。
 
-message、reasoning 和 function_call 是当前支持的完整输出类型。未知元数据事件可忽略，未知 output item 不可忽略。完整工具 arguments 必须为 JSON 对象，拒绝重复键、非有限数字、数组和残缺 JSON；同响应 call_id 不得重复。交错工具通过各自 item identity 聚合。
+message、reasoning 和 function_call 是当前支持的完整输出类型。未知元数据事件可忽略，选定的完整项包含未知输出类型时明确失败。完整工具 arguments 必须为 JSON 对象，拒绝重复键、非有限数字、数组和残缺 JSON；同响应 call_id 不得重复。交错工具通过各自 item identity 聚合。
 
-按事件语义应用终态约束：终态后再次收到已识别的输出、生命周期事件或重复终态明确失败；未知事件类型在终态前后均忽略，不按供应商或具体扩展名称设置特例，不从扩展事件推断完成或用量。事件仍须带字符串 type，已知 output item 内的未知类型仍失败。完成事实延迟到输入流正常结束后提交，避免已经发出成功/usage 后又发现矛盾。解码器 finish 后不再接受事件。网络等待由公共 transport 计时，重试预算由共享请求策略拥有。消费者提前退出时必须显式关闭外层异步生成器。
+按事件语义应用终态约束：终态后再次收到已识别的输出、生命周期事件或重复终态明确失败；未知事件类型在终态前后均忽略，不按供应商或具体扩展名称设置特例，不从扩展事件推断完成或用量。事件仍须带字符串 type，选定的完整 output item 内的未知类型仍失败。完成事实延迟到输入流正常结束后提交，避免已经发出成功/usage 后又发现矛盾。解码器 finish 后不再接受事件。网络等待由公共 transport 计时，重试预算由共享请求策略拥有。消费者提前退出时必须显式关闭外层异步生成器。
 
 缺少有效 completed 终态的响应按协议失败结束，即使此前已展示了工具参数，也不能触发 Core 的 done 边界执行。
 这类协议失败不发 usage；只有经过验证的完成事件才能进入当前用量账本。
 
-usage 只采用供应商实际值，缺失时为 None；input_tokens 包含 cached tokens，reasoning tokens 已包含于 output_tokens，不重复累加。金额保持未知。错误只带固定本地错误码/说明，不附原始 SSE、工具参数或密文。
+usage 只采用供应商实际值，缺失时为 None；input_tokens 包含 cached tokens，reasoning tokens 已包含于 output_tokens，不重复累加。金额保持未知。错误携带固定本地错误码；输出项冲突说明包含本地校验名称和适用的 output_index，不附原始 SSE、item id、工具参数或密文。
 
 ## 验收与证据边界
 
@@ -124,4 +127,4 @@ usage 只采用供应商实际值，缺失时为 None；input_tokens 包含 cach
 
 协议依据：[官方 Responses 流事件](https://developers.openai.com/api/reference/resources/responses/streaming-events)、[请求格式](https://developers.openai.com/api/reference/typescript/resources/responses/methods/create)、[reasoning 续接](https://developers.openai.com/api/docs/guides/reasoning?api-mode=responses)。官方要求以完成 item 作为续接材料；OURO 的状态收敛与 scope 校验是本地契约。Codex 终态可省略完整 output 的实测边界见[探针说明](../../dev/probes/README.md#验证边界)。
 
-字段核对：[官方 FunctionToolCall schema](https://developers.openai.com/api/reference/python/__sdk_schema?declaration=%28resource%29+responses+%3E+%28model%29+response_function_tool_call+%3E+%28schema%29&selected=%28resource%29+responses) 区分可选 id/status 与必需 call_id/name/arguments；[OutputMessage schema](https://developers.openai.com/api/reference/python/__sdk_schema?declaration=%28resource%29+responses+%3E+%28model%29+response_output_message+%3E+%28schema%29&selected=%28resource%29+responses) 定义 message/content/output_text 及 phase。嵌套缺失字段补齐是 OURO 的兼容接收规则，不改变这些字段的协议含义。
+字段核对：[官方 FunctionToolCall schema](https://developers.openai.com/api/reference/python/__sdk_schema?declaration=%28resource%29+responses+%3E+%28model%29+response_function_tool_call+%3E+%28schema%29&selected=%28resource%29+responses) 区分可选 id/status 与必需 call_id/name/arguments；[OutputMessage schema](https://developers.openai.com/api/reference/python/__sdk_schema?declaration=%28resource%29+responses+%3E+%28model%29+response_output_message+%3E+%28schema%29&selected=%28resource%29+responses) 定义 message/content/output_text 及 phase。完整项按协议事件定稿并原样续接。

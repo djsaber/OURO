@@ -212,6 +212,40 @@ async def test_long_tool_arguments_execute_only_after_successful_completion(
             )
 
 
+@pytest.mark.parametrize("responses_runtime", [("files", True), ("sqlite", True)], indirect=True)
+async def test_duplicate_complete_copies_execute_and_replay_the_selected_tool_once(
+    responses_runtime,
+):
+    build, replies, requests, executions = responses_runtime
+    selected = [reasoning(), call()]
+    copies = [reasoning(content=[], encrypted_content="different"), call(arguments='{"round":2}')]
+    events = [item_event(i, item) for i, item in enumerate(selected)]
+    events.extend(item_event(i, item) for i, item in enumerate(copies))
+    events.append(terminal(copies))
+    replies.extend(
+        [
+            httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                text="".join(f"data: {json.dumps(event)}\n\n" for event in events),
+            ),
+            terminal([message("finished")]),
+        ]
+    )
+    async with build() as app:
+        await login(app.provider_auth)
+        result = await app.runtime.run("Call echo once.")
+        assert result.run.status == "completed", result.run.error
+        assert result.final_text == "finished"
+        assert executions == [1] and len(requests) == 2
+        assert output_items(requests[1][0]) == selected
+        results = [
+            item for item in requests[1][0]["input"] if item.get("type") == "function_call_output"
+        ]
+        assert len(results) == 1 and results[0]["call_id"] == selected[1]["call_id"]
+        assert results[0]["output"] == "result-1"
+
+
 async def tool_run(app, replies):
     replies.extend(
         [
