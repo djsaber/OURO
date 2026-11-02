@@ -111,7 +111,7 @@ class ToolExecutionConfigurationScreen(EditableChoiceScreen):
             Choice(
                 "tool-workspace-only",
                 "Restrict paths to workspace",
-                trailing=_enabled_label(self._workspace_only),
+                trailing_badge=_enabled_label(self._workspace_only),
                 group="PATH ACCESS",
             ),
             Choice(

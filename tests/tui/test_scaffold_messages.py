@@ -174,15 +174,12 @@ async def test_settings_toggle_refreshes_visible_session_and_survives_navigation
             await pilot.pause()
             assert {choice.label for choice in app.screen._choices} == {
                 "Theme",
-                "Thinking display",
-                "Scaffold messages",
-                "Collapse traces",
+                "Display",
             }
-        await choose_menu(pilot, "Scaffold messages", title="SCAFFOLD MESSAGES")
+        await choose_menu(pilot, "Display", title="DISPLAY")
         menu = app.screen
-        assert [choice.label for choice in menu._choices] == ["Off", "On"]
-        assert menu._choices[0].marker
-        await choose_menu(pilot, "On")
+        assert menu._choices[1].trailing_badge == "Hidden"
+        await choose_menu(pilot, "Scaffold messages")
         await wait_until(
             lambda: any(entry.scaffold for entry in history.entries),
             pilot,
@@ -270,10 +267,10 @@ async def test_closing_menu_does_not_interrupt_scaffold_preference_commit(tmp_pa
     async with run_ready_app(app) as pilot:
         await pilot.press("ctrl+p")
         await wait_for_screen(app, ChoiceScreen, title="ACTIONS")
-        await choose_menu(pilot, "Scaffold messages", title="SCAFFOLD MESSAGES")
+        await choose_menu(pilot, "Display", title="DISPLAY")
         monkeypatch.setattr(app._preferences_store, "save", held_save)
         try:
-            await choose_menu(pilot, "On")
+            await choose_menu(pilot, "Scaffold messages")
             await wait_until(entered.is_set, pilot, description="preference write started")
             await pilot.press("escape", "escape")
             assert not isinstance(app.screen, ChoiceScreen)

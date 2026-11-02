@@ -297,19 +297,19 @@ class MCPConfigurationScreen(EditableChoiceScreen):
             Choice(
                 "mcp-enabled",
                 "Enabled",
-                trailing=_enabled_label(self._toggles["mcp-enabled"]),
+                trailing_badge=_enabled_label(self._toggles["mcp-enabled"]),
                 group="CONNECTION SETTINGS",
             ),
             Choice(
                 "mcp-auto-start",
                 "Auto start",
-                trailing=_enabled_label(self._toggles["mcp-auto-start"]),
+                trailing_badge=_enabled_label(self._toggles["mcp-auto-start"]),
                 group="CONNECTION SETTINGS",
             ),
             Choice(
                 "mcp-auto-reconnect",
                 "Auto reconnect",
-                trailing=_enabled_label(self._toggles["mcp-auto-reconnect"]),
+                trailing_badge=_enabled_label(self._toggles["mcp-auto-reconnect"]),
                 group="CONNECTION SETTINGS",
             ),
             Choice(

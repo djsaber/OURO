@@ -244,9 +244,7 @@ _AGENT_INTERACTION_EVENTS = {
 }
 _SESSION_GROUPING_ACTION = "__ouro_session_grouping__"
 _THEME_ACTION = "__ouro_theme__"
-_THOUGHT_DISPLAY_ACTION = "__ouro_thought_display__"
-_COLLAPSE_TRACES_ACTION = "__ouro_collapse_traces__"
-_SCAFFOLD_MESSAGES_ACTION = "__ouro_scaffold_messages__"
+_DISPLAY_ACTION = "__ouro_display__"
 _WELCOME_STYLE_PREFIX = "welcome:"
 _INPUT_DRAFT_MEMORY_ACTION = "__ouro_input_draft_memory__"
 _RENAME_SESSION_ACTION = "__ouro_rename_session__"
@@ -288,15 +286,7 @@ _ACTION_GROUP_RANK = {
     )
 }
 _THOUGHT_DISPLAY_OPTIONS: dict[str, bool] = {"expand": True, "collapse": False}
-_THOUGHT_DISPLAY_LABELS = {
-    "expand": "Show thinking",
-    "collapse": "Hide thinking",
-}
 _INPUT_DRAFT_MEMORY_OPTIONS: dict[str, bool] = {"enable": True, "disable": False}
-_INPUT_DRAFT_MEMORY_LABELS = {
-    "enable": "Remember drafts",
-    "disable": "Do not save drafts",
-}
 _CLEAR_WORKSPACE_HISTORY_ARGUMENT = "clear"
 
 
@@ -1656,6 +1646,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         facts = batch.facts
         if projection is None or facts is None or not self._surface_available():
             return
+        if not self._visible_read_only and self._active_title != facts.session.title:
+            self._active_title = facts.session.title
+            self.query_one(BrandHeader).set_context(session_title=self._active_title)
         conversation = self.query_one(ConversationView)
         self._history_run_ids.update(message.run_id for message in batch.messages if message.run_id)
         boundaries = sorted(
@@ -5225,18 +5218,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if action_id == _THEME_ACTION:
                 await self._choose_theme(menu=action_screen)
                 return None
-            if action_id == _THOUGHT_DISPLAY_ACTION:
-                await self._choose_thought_display(menu=action_screen)
-                return None
-            if action_id == _COLLAPSE_TRACES_ACTION:
-                await self._choose_collapse_traces(menu=action_screen)
-                return None
-            if action_id == _SCAFFOLD_MESSAGES_ACTION:
-                await self._choose_scaffold_messages(menu=action_screen)
+            if action_id == _DISPLAY_ACTION:
+                await self._choose_display(menu=action_screen)
                 return None
             if action_id == _INPUT_DRAFT_MEMORY_ACTION:
-                await self._choose_input_draft_memory(menu=action_screen)
-                return None
+                worker: Worker[bool] = self.run_worker(
+                    partial(
+                        self._set_input_draft_memory,
+                        "disable" if self._preferences.input_draft_memory_enabled else "enable",
+                    ),
+                    group="input-draft-memory",
+                )
+                await asyncio.shield(worker.wait())
+                return self._action_choices()
             if action_id == "/sessions":
                 await self._choose_session(menu=action_screen)
                 return None
@@ -5311,24 +5305,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                         trailing_swatch=self._tui_theme.accent,
                         group="Settings",
                     ),
-                    Choice(
-                        _THOUGHT_DISPLAY_ACTION,
-                        "Thinking display",
-                        group="Settings",
-                    ),
-                    Choice(
-                        _SCAFFOLD_MESSAGES_ACTION,
-                        "Scaffold messages",
-                        group="Settings",
-                    ),
-                    Choice(
-                        _COLLAPSE_TRACES_ACTION,
-                        "Collapse traces",
-                        group="Settings",
-                    ),
+                    Choice(_DISPLAY_ACTION, "Display", group="Settings"),
                     Choice(
                         _INPUT_DRAFT_MEMORY_ACTION,
                         "Remember drafts",
+                        trailing_badge=(
+                            "Enabled"
+                            if self._preferences.input_draft_memory_enabled
+                            else "Disabled"
+                        ),
                         group="Settings",
                     ),
                     Choice(
@@ -5356,9 +5341,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 if action.value
                 in {
                     _THEME_ACTION,
-                    _THOUGHT_DISPLAY_ACTION,
-                    _COLLAPSE_TRACES_ACTION,
-                    _SCAFFOLD_MESSAGES_ACTION,
+                    _DISPLAY_ACTION,
                 }
             )
         return (*self._recent_action_choices(actions), *actions)
@@ -5600,73 +5583,40 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self.query_one(WelcomePanel).set_welcome_style(self._welcome_style)
         return True
 
-    async def _choose_thought_display(self, *, menu: ChoiceScreen | None = None) -> None:
-        def display_choices(expanded: bool) -> tuple[Choice, ...]:
-            return tuple(
-                Choice(
-                    value,
-                    label,
-                    marker=(
-                        self._tui_theme.selected_choice_marker
-                        if _THOUGHT_DISPLAY_OPTIONS[value] == expanded
-                        else ""
-                    ),
-                )
-                for value, label in _THOUGHT_DISPLAY_LABELS.items()
-            )
-
-        async def select_display(value: str) -> tuple[Choice, ...] | None:
-            if not await self._set_reasoning_expanded(value):
-                return None
-            return display_choices(self._preferences.reasoning_expanded)
-
-        if menu is not None:
-            menu.push_page(
-                title="THINKING DISPLAY",
-                placeholder="Choose how thinking is displayed…",
-                choices=display_choices(self._preferences.reasoning_expanded),
-                initial_value=("expand" if self._preferences.reasoning_expanded else "collapse"),
-                on_select=select_display,
-            )
-            return
-        await self.push_screen_wait(
-            ChoiceScreen(
-                title="THINKING DISPLAY",
-                placeholder="Choose how thinking is displayed…",
-                choices=display_choices(self._preferences.reasoning_expanded),
-                initial_value=("expand" if self._preferences.reasoning_expanded else "collapse"),
-                on_select=select_display,
-            )
-        )
-
-    async def _choose_collapse_traces(self, *, menu: ChoiceScreen) -> None:
+    async def _choose_display(self, *, menu: ChoiceScreen) -> None:
         def choices() -> tuple[Choice, ...]:
             return tuple(
-                Choice(
-                    value,
-                    label,
-                    marker=(
-                        self._tui_theme.selected_choice_marker
-                        if enabled == self._preferences.collapse_traces
-                        else ""
-                    ),
+                Choice(value, label, trailing_badge="Shown" if shown else "Hidden")
+                for value, label, shown in (
+                    ("thinking", "Thinking", self._preferences.reasoning_expanded),
+                    ("scaffold", "Scaffold messages", self._preferences.show_scaffold_messages),
+                    ("traces", "Execution traces", not self._preferences.collapse_traces),
                 )
-                for value, label, enabled in (("on", "On", True), ("off", "Off", False))
             )
 
         async def select(value: str) -> tuple[Choice, ...] | None:
-            worker: Worker[bool] = self.run_worker(
-                partial(self._set_collapse_traces, value == "on"), group="collapse-traces"
-            )
+            if value == "thinking":
+                apply = partial(
+                    self._set_reasoning_expanded,
+                    "collapse" if self._preferences.reasoning_expanded else "expand",
+                )
+            elif value == "scaffold":
+                apply = partial(
+                    self._set_scaffold_messages, not self._preferences.show_scaffold_messages
+                )
+            elif value == "traces":
+                apply = partial(self._set_collapse_traces, not self._preferences.collapse_traces)
+            else:
+                return None
+            worker: Worker[bool] = self.run_worker(apply, group="display-preference")
             if not await asyncio.shield(worker.wait()):
                 return None
             return choices()
 
         menu.push_page(
-            title="COLLAPSE TRACES",
-            placeholder="Collapse execution traces after the final reply…",
+            title="DISPLAY",
+            placeholder="Select an item to show or hide…",
             choices=choices(),
-            initial_value="on" if self._preferences.collapse_traces else "off",
             on_select=select,
         )
 
@@ -5683,37 +5633,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._preferences = preferences
         await self.query_one(ConversationView).set_collapse_traces(collapsed)
         return True
-
-    async def _choose_scaffold_messages(self, *, menu: ChoiceScreen) -> None:
-        def choices() -> tuple[Choice, ...]:
-            return tuple(
-                Choice(
-                    value,
-                    label,
-                    marker=(
-                        self._tui_theme.selected_choice_marker
-                        if enabled == self._preferences.show_scaffold_messages
-                        else ""
-                    ),
-                )
-                for value, label, enabled in (("off", "Off", False), ("on", "On", True))
-            )
-
-        async def select(value: str) -> tuple[Choice, ...] | None:
-            worker: Worker[bool] = self.run_worker(
-                partial(self._set_scaffold_messages, value == "on"), group="scaffold-messages"
-            )
-            if not await asyncio.shield(worker.wait()):
-                return None
-            return choices()
-
-        menu.push_page(
-            title="SCAFFOLD MESSAGES",
-            placeholder="Choose whether to show scaffold messages…",
-            choices=choices(),
-            initial_value="on" if self._preferences.show_scaffold_messages else "off",
-            on_select=select,
-        )
 
     async def _set_scaffold_messages(self, enabled: bool) -> bool:
         async with self._preferences_save_lock:
@@ -5769,51 +5688,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             choices=grouping_choices(),
             initial_value=self._preferences.session_grouping,
             on_select=select_grouping,
-        )
-
-    async def _choose_input_draft_memory(
-        self,
-        *,
-        menu: ChoiceScreen | None = None,
-    ) -> None:
-        def memory_choices(enabled: bool) -> tuple[Choice, ...]:
-            return tuple(
-                Choice(
-                    value,
-                    label,
-                    marker=(
-                        self._tui_theme.selected_choice_marker
-                        if _INPUT_DRAFT_MEMORY_OPTIONS[value] == enabled
-                        else ""
-                    ),
-                )
-                for value, label in _INPUT_DRAFT_MEMORY_LABELS.items()
-            )
-
-        async def select_memory(value: str) -> tuple[Choice, ...] | None:
-            if not await self._set_input_draft_memory(value):
-                return None
-            return memory_choices(self._preferences.input_draft_memory_enabled)
-
-        enabled = self._preferences.input_draft_memory_enabled
-        initial_value = "enable" if enabled else "disable"
-        if menu is not None:
-            menu.push_page(
-                title="REMEMBER DRAFTS",
-                placeholder="Choose whether to save drafts…",
-                choices=memory_choices(enabled),
-                initial_value=initial_value,
-                on_select=select_memory,
-            )
-            return
-        await self.push_screen_wait(
-            ChoiceScreen(
-                title="REMEMBER DRAFTS",
-                placeholder="Choose whether to save drafts…",
-                choices=memory_choices(enabled),
-                initial_value=initial_value,
-                on_select=select_memory,
-            )
         )
 
     def _theme_choices(

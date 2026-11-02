@@ -105,7 +105,8 @@ class PromptEntryScreen(MultilineEditableChoiceScreen):
             ),
             Choice(
                 "enabled",
-                "Disable" if self._enabled else "Enable",
+                "Status",
+                trailing_badge="Enabled" if self._enabled else "Disabled",
                 description="Enabling overrides OURO's default system prompt."
                 if self._kind == "replacement" and self._enabled
                 else "",

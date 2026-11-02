@@ -78,93 +78,6 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         )
         self.push_screen(plugin_menu)
 
-    async def _choose_plugin_action(
-        self,
-        action: str,
-        *,
-        menu: ChoiceScreen | None = None,
-    ) -> None:
-        if action not in {"toggle", "check", "remove"}:
-            await self.query_one(ConversationView).add_notice(
-                f"Unknown plugin action: {action}",
-                error=True,
-            )
-            return
-        try:
-            plugins = await self._controller.plugins()
-        except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
-            return
-        candidates = tuple(
-            plugin for plugin in plugins if action != "remove" or plugin.plugin_class == "user"
-        )
-        if not candidates:
-            return
-        plugin_catalog = {plugin.plugin_id: plugin for plugin in candidates}
-
-        async def refresh_candidates() -> tuple[Choice, ...] | None:
-            try:
-                refreshed = await self._controller.plugins()
-            except Exception as exc:  # noqa: BLE001
-                await self.query_one(ConversationView).add_notice(str(exc), error=True)
-                return None
-            refreshed_candidates = tuple(
-                plugin
-                for plugin in refreshed
-                if action != "remove" or plugin.plugin_class == "user"
-            )
-            plugin_catalog.clear()
-            plugin_catalog.update({plugin.plugin_id: plugin for plugin in refreshed_candidates})
-            return _plugin_choices(refreshed_candidates, theme=theme_for(self))
-
-        async def select_plugin(plugin_id: str) -> tuple[Choice, ...] | None:
-            plugin = plugin_catalog[plugin_id]
-            if action == "toggle":
-                if not await self._set_plugin_enabled(
-                    plugin_id,
-                    enabled=not plugin.desired_enabled,
-                ):
-                    return None
-                refreshed = await self._controller.plugins()
-                plugin_catalog.clear()
-                plugin_catalog.update({item.plugin_id: item for item in refreshed})
-                return _plugin_choices(refreshed, theme=theme_for(self))
-            if action == "check":
-                await self._check_plugin(plugin_id)
-            else:
-                await self._remove_plugin(
-                    plugin_id,
-                    menu=menu,
-                    return_to_catalog=False,
-                )
-            return None
-
-        title = {
-            "toggle": "PLUGIN AVAILABILITY",
-            "check": "CHECK PLUGIN",
-            "remove": "DELETE PLUGIN",
-        }[action]
-        choices = _plugin_choices(candidates, theme=theme_for(self))
-        if menu is not None:
-            menu.push_page(
-                title=title,
-                placeholder="Filter plugins…",
-                choices=choices,
-                on_select=select_plugin,
-                on_refresh=refresh_candidates,
-                retain_focus_position_on_select=action == "toggle",
-            )
-            return
-        menu = ChoiceScreen(
-            title=title,
-            placeholder="Filter plugins…",
-            choices=choices,
-            on_select=select_plugin,
-            on_refresh=refresh_candidates,
-            retain_focus_position_on_select=action == "toggle",
-        )
-        await self.push_screen_wait(menu)
-
     async def _manage_plugin(
         self,
         plugin_id: str,
@@ -193,7 +106,6 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 await self._remove_plugin(
                     plugin_id,
                     menu=menu,
-                    return_to_catalog=True,
                 )
                 return None
             if menu is not None:
@@ -417,7 +329,6 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         plugin_id: str,
         *,
         menu: ChoiceScreen | None,
-        return_to_catalog: bool,
     ) -> None:
         revision = menu.page_revision if menu is not None else None
         plugin = await self._controller.plugin(plugin_id)
@@ -456,16 +367,12 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         await self._refresh_plugin_system_status()
         await self._refresh_session_controls()
         if menu is not None:
-            choices = (
-                _plugin_choices(await self._controller.plugins(), theme=theme_for(self))
-                if return_to_catalog
-                else None
-            )
+            choices = _plugin_choices(await self._controller.plugins(), theme=theme_for(self))
             if not menu.is_attached or menu.page_revision != revision:
                 return
             if not menu.pop_page(
                 choices=choices,
-                initial_value=plugin_id if return_to_catalog else None,
+                initial_value=plugin_id,
             ):
                 menu.dismiss(None)
 

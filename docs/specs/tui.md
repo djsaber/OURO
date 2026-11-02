@@ -45,6 +45,8 @@ TUI 不得：
 - composer、排队输入提示和交互面板；
 - command popup、选择器、配置页和帮助页等临时 surface。
 
+主会话标题随 observation 中的 Session 元数据更新，仅标题变化时刷新头部；子会话头部显示子代理名称。
+
 会话页按命令候选及交互面板、输入框、排队输入提示、底部状态栏排列；排队输入提示位于输入框下方。
 输入框聚焦时仅高亮左边框；右边框始终与命令菜单、排队输入提示保持相同的线型、颜色和水平位置，连续衔接。
 底部会话状态的 `brand_mark` 在就绪时使用主题 `accent`，失败时使用 `failure`，其他静态状态使用 `text_primary`；
@@ -353,12 +355,16 @@ Windows 输出适配器在 Textual 的 flush 边界合并画面片段，复用�
 `/compact` 调用现有 compaction 用例；TUI 不自行选取消息或生成摘要。上下文详情读取最近一次真实 Provider
 请求快照，不重新运行 Context Provider，也不从消息历史猜测请求内容。
 
-Actions/设置界面当前覆盖主题、reasoning 展开、输入草稿、排队输入、压缩、工具执行、Agent definition 与派遣
+Actions/设置界面覆盖主题、显示偏好、输入草稿、排队输入、压缩、工具执行、Agent definition 与派遣
 策略、Provider/Endpoint、MCP、插件、Skills 及来源。编辑使用 Configuration/Application 命令的 revision 与
 校验规则；UI 不直接合并共享配置。
 
-插件 **Edit settings** 从 Application 取得完整 Schema、凭据槽和固定编辑基线。字符串与数值使用行内输入，
-布尔、枚举与常量复用选择菜单，复杂结构使用带 Schema 示例占位符的 JSON 输入；整份 JSON 编辑保留原生
+Actions 的 Plugins 分组提供 `Manage plugins` 和 `+ plugin`；删除操作位于具体插件的管理页。
+二元配置使用状态标签，Enter 原地切换。
+
+插件 **Settings** 从 Application 取得完整 Schema、凭据槽和固定编辑基线。字符串与数值使用行内输入，
+非空布尔字段通过状态标签直接切换，Unset 恢复默认值；可空布尔、枚举与常量使用选择菜单。
+复杂结构使用带 Schema 示例占位符的 JSON 输入；整份 JSON 编辑保留原生
 表单未呈现的字段。凭据单独编辑引用。校验失败或冲突保留草稿，刷新须确认丢弃；只有显式 Apply 才提交。
 控件能力不限制配置表达能力，完整约束和生效语义见[插件配置规格](plugin-configuration.md)。
 
@@ -464,8 +470,10 @@ Session 操作。root interaction inbox 中的 child 审批与 AskUser 仍由 co
 后续切换复用已渲染内容。每次原子提交可见行与高度，在用户未主动滚动时保持点击条目的视口位置。
 思考正文使用同样的准备／发布边界，流式输出转历史、再次展开及标签悬停复用兼容的正文布局；只在内容、宽度或主题改变时重排。
 正文行几何与终端对象分离：仅视口内的纯文本行创建 Strip，选择复制读取全部已展开文本，首次展开使用完整内容和准确高度。
-Actions → Settings → `Collapse traces` 提供 `On`（默认）和 `Off`，持久化为 `config/tui.json` 中的
-`collapse_traces`。设置应用于尚未手动选择的已结束运行和后续运行；手动选择随会话历史缓存保存，
+Actions → Settings → `Display` 列出 Thinking、Scaffold messages、Execution traces，
+各项以 `Shown / Hidden` 标签显示状态，Enter 原地切换。Execution traces 默认 Hidden，持久化为 `config/tui.json` 中的
+`collapse_traces`（Hidden 对应 true）。
+执行链显示设置应用于尚未手动选择的已结束运行和后续运行；手动选择随会话历史缓存保存，
 不写入 canonical 会话。实时、重载、分页及缓存恢复共用同一规则，覆盖主会话、子会话与任务会话。
 
 强制约束：
@@ -508,7 +516,7 @@ ready message 只启动一个呈现 worker，不在 App 消息泵中等待解析
 实时和重载使用 canonical MessageRecord 的 `role/scaffold` 决定可见性；事件类型表达来源，不能替代这些字段。
 默认隐藏 `scaffold=true` 消息，保留附件输入的文件展示。子智能体首次任务、后续指令和回传结果均遵循同一
 可见性规则，不因委派来源或所在会话而单独放行。Actions → Settings →
-`Scaffold messages` 提供 `Off`（默认）和 `On`，持久化为 `config/tui.json` 中的
+`Display` → `Scaffold messages` 提供 `Hidden`（默认）和 `Shown`，持久化为 `config/tui.json` 中的
 `show_scaffold_messages`。开启后，脚手架正文复用用户消息的布局、时间戳、悬停与复制交互，正文和左边栏均使用
 主题 `text_lowlight`，悬停时正文仍保持低亮；真实用户消息使用 `text_emphasis` 正文和 `accent` 左边栏。
 composer 编辑文字和排队输入预览正文同样使用 `text_emphasis`，保持常规字重；时间戳、占位提示和分隔符使用低亮色。
@@ -516,8 +524,8 @@ composer 编辑文字和排队输入预览正文同样使用 `text_emphasis`，�
 与工具消息、思考和脚手架的低亮层级区分；Markdown 内的链接、引用和代码仍使用各自语义色。
 内部消息的显示不改变 `/fork`、`/navigate`
 的用户消息编号。该偏好统一应用于主会话、子会话和任务会话的快照、实时事件、分页及缓存恢复；切换立即刷新当前
-视图并保留已加载的历史范围，不改变后台 Run。只读子会话可打开 Actions 中的 Theme、Thinking display、
-Collapse traces 和 Scaffold messages，其他会话与运行配置操作仍不可用。semantic tag 只影响模型包络。
+视图并保留已加载的历史范围，不改变后台 Run。只读子会话可打开 Actions 中的 Theme 和 Display，
+其他会话与运行配置操作仍不可用。semantic tag 只影响模型包络。
 `SendAgentMessage` 使用工具消息详情行显示发送正文，空白折叠为单个空格，按当前可用宽度单行省略；
 流式参数沿用工具的有界尾部预览。通信按所在会话的时间顺序呈现，不回填历史工具行或复制子会话流。
 流式回归须在 Provider 仍被阻塞时验证可见源流，
@@ -530,7 +538,8 @@ Host 不重复解释归档、health 或持久化目录。
 ## 本地偏好与草稿
 
 TUI preference 与 canonical Session 数据分离。主题、reasoning 展开方式、草稿记忆等纯呈现偏好可由
-`TuiPreferencesStore` 保存；保存失败可诊断但不得损坏 Session。关闭草稿记忆时必须清理已保存草稿。
+`TuiPreferencesStore` 保存；保存失败可诊断但不得损坏 Session。
+Remember drafts 在 Actions 页以 `Enabled / Disabled` 标签直接切换；关闭时清理已保存草稿。
 
 偏好只接受当前主题标识和配置结构；未知主题明确报错，不自动映射为其他主题。主题选择通过单一
 Textual worker 合并为最新请求，revision 保护异步保存与渲染结果，避免过时结果覆盖当前选择。

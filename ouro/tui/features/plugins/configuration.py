@@ -119,6 +119,12 @@ class PluginConfigurationScreen(CredentialEditableChoiceScreen):
                 await self._check()
                 self._refresh(selected)
             return
+        if field is not None and field.is_toggle:
+            current = self._draft.values.get(field.key, field.schema.get("default", False))
+            self._draft.values[field.key] = not current
+            await self._check()
+            self._refresh(selected)
+            return
         if field is not None and field.kind == "select":
             choice = await self.open_child(
                 ChoiceScreen(
@@ -241,12 +247,20 @@ class PluginConfigurationScreen(CredentialEditableChoiceScreen):
             if field.kind == "json":
                 placeholder = f"Example: {placeholder}"
             placeholder = theme.inline_separator.join(filter(None, (placeholder, description)))
+            trailing = json_text(value) if present else ""
+            badge = "required" if field.required and not present else ""
+            if field.is_toggle:
+                if isinstance(value, bool):
+                    trailing = ""
+                    badge = "Enabled" if value else "Disabled"
+                elif not present and not field.required:
+                    badge = "Default"
             choices.append(
                 Choice(
                     field_id,
                     field.title,
-                    trailing=json_text(value) if present else "",
-                    trailing_badge="required" if field.required and not present else "",
+                    trailing=trailing,
+                    trailing_badge=badge,
                     group="SETTINGS",
                     edit_value=None
                     if field.kind == "select"
@@ -276,6 +290,14 @@ class PluginConfigurationScreen(CredentialEditableChoiceScreen):
             field_id = f"credential:{slot.slot}"
             edit = self._credential_value(field_id)
             assert edit is not None
+            trailing = json_text(value) if present else ""
+            badge = "required" if field.required and not present else ""
+            if field.is_toggle:
+                if isinstance(value, bool):
+                    trailing = ""
+                    badge = "Enabled" if value else "Disabled"
+                elif not present and not field.required:
+                    badge = "Default"
             choices.append(
                 Choice(
                     field_id,

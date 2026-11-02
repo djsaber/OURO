@@ -265,7 +265,7 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
             Choice(
                 "compaction-auto",
                 "Automatic compaction",
-                trailing=_enabled_label(self._auto_enabled),
+                trailing_badge=_enabled_label(self._auto_enabled),
                 group="STRATEGY",
             ),
             Choice(

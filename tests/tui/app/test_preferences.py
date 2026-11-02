@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 from rich.console import Console
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import OptionList
 
 import ouro.tui.conversation.history as conversation_history
 from ouro.core.errors import PersistenceError
@@ -386,7 +386,7 @@ async def test_theme_persistence_failure_keeps_current_theme_and_clears_loading(
 
 
 @pytest.mark.asyncio
-async def test_action_menu_updates_thought_display_without_closing_picker(
+async def test_display_menu_toggles_thinking_in_place(
     tmp_path: Path,
 ) -> None:
     preferences = TuiPreferencesStore(tmp_path)
@@ -395,35 +395,29 @@ async def test_action_menu_updates_thought_display_without_closing_picker(
     async with run_ready_app(app, size=(100, 32), notifications=True) as pilot:
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
-        await choose_menu(pilot, "Thinking display", title="THINKING DISPLAY")
-
-        thought_screen = app.screen
-        assert isinstance(thought_screen, ChoiceScreen)
-        assert thought_screen.query_one("#choice-title", Static).render().plain == (
-            "THINKING DISPLAY"
-        )
-        choices = {choice.value: choice for choice in thought_screen._choices}
-        assert choices["collapse"].marker == DEFAULT_TUI_THEME.selected_choice_marker
-        assert choices["expand"].marker == ""
-
-        await choose_menu(pilot, "Expand")
-        await _wait_until(
-            lambda: any(
-                choice.value == "expand"
-                and choice.marker == DEFAULT_TUI_THEME.selected_choice_marker
-                for choice in thought_screen._choices
-            ),
-            pilot,
-            description="thinking display saved and selected row refreshed",
-        )
-        assert app.screen is thought_screen
-        choices = {choice.value: choice for choice in thought_screen._choices}
-        assert choices["expand"].marker == DEFAULT_TUI_THEME.selected_choice_marker
-        assert choices["collapse"].marker == ""
-        assert preferences.load().reasoning_expanded is True
-        assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
-
+        await choose_menu(pilot, "Display", title="DISPLAY")
+        menu = app.screen
+        assert isinstance(menu, ChoiceScreen)
+        assert [(choice.label, choice.trailing_badge) for choice in menu._choices] == [
+            ("Thinking", "Hidden"),
+            ("Scaffold messages", "Hidden"),
+            ("Execution traces", "Hidden"),
+        ]
+        for shown in (True, False):
+            await choose_menu(pilot, "Thinking")
+            await _wait_until(
+                lambda expected=shown: (
+                    menu._choices[0].trailing_badge == ("Shown" if expected else "Hidden")
+                ),
+                pilot,
+                description="thinking display saved and badge refreshed",
+            )
+            assert app.screen is menu
+            assert menu.page_title == "DISPLAY"
+            assert preferences.load().reasoning_expanded is shown
+        assert not list(menu.query_one("#textual-toastrack").query("Toast"))
         await pilot.press("escape")
+        assert menu.page_title == "ACTIONS"
 
 
 @pytest.mark.asyncio
@@ -442,41 +436,39 @@ async def test_action_menu_toggles_input_draft_memory_and_clears_disabled_state(
 
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
-        await choose_menu(pilot, "Remember drafts", title="REMEMBER DRAFTS")
+        menu = app.screen
+        assert isinstance(menu, ChoiceScreen)
 
-        memory_screen = app.screen
-        assert isinstance(memory_screen, ChoiceScreen)
-        assert memory_screen.query_one("#choice-title", Static).render().plain == (
-            "REMEMBER DRAFTS"
-        )
-        choices = {choice.value: choice for choice in memory_screen._choices}
-        assert choices["enable"].marker == DEFAULT_TUI_THEME.selected_choice_marker
-        assert choices["disable"].marker == ""
+        def draft_badge():
+            return next(
+                choice.trailing_badge
+                for choice in menu._choices
+                if choice.label == "Remember drafts"
+            )
 
-        memory_screen.query_one("#choice-filter", Input).value = "Do not save drafts"
-        await pilot.pause()
-        await pilot.press("enter")
+        assert draft_badge() == "Enabled"
+        await choose_menu(pilot, "Remember drafts")
         await _wait_until(
-            lambda: drafts.load() == TuiInputDrafts(),
+            lambda: drafts.load() == TuiInputDrafts() and draft_badge() == "Disabled",
             pilot,
-            description="disabled draft memory to clear durable drafts",
+            description="disabled draft memory and refreshed badge",
         )
-        assert app.screen is memory_screen
+        assert app.screen is menu
+        assert menu.page_title == "ACTIONS"
         assert preferences.load().input_draft_memory_enabled is False
         assert composer.text == "remember this draft"
 
-        memory_screen.query_one("#choice-filter", Input).value = "Remember drafts"
-        await pilot.pause()
-        await pilot.press("enter")
+        await choose_menu(pilot, "Remember drafts")
         await _wait_until(
-            lambda: drafts.load().draft_for(None) == "remember this draft",
+            lambda: (
+                drafts.load().draft_for(None) == "remember this draft"
+                and draft_badge() == "Enabled"
+            ),
             pilot,
-            description="re-enabled draft memory to remember the visible draft",
+            description="re-enabled draft memory",
         )
-        choices = {choice.value: choice for choice in memory_screen._choices}
-        assert choices["enable"].marker == DEFAULT_TUI_THEME.selected_choice_marker
-        assert choices["disable"].marker == ""
         assert preferences.load().input_draft_memory_enabled is True
+        assert menu.page_title == "ACTIONS"
 
 
 @pytest.mark.asyncio

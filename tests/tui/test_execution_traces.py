@@ -383,11 +383,11 @@ async def test_actions_trace_setting_persists_and_is_available_to_child_observer
         assert TuiPreferences().collapse_traces is True
         await pilot.press("ctrl+p")
         await wait_for_screen(app, ChoiceScreen, title="ACTIONS")
-        await choose_menu(pilot, "Collapse traces", title="COLLAPSE TRACES")
+        await choose_menu(pilot, "Display", title="DISPLAY")
         menu = app.screen
         assert isinstance(menu, ChoiceScreen)
-        assert menu.query_one("#choice-title", Static).render().plain == "COLLAPSE TRACES"
-        await choose_menu(pilot, "Off")
+        assert menu.query_one("#choice-title", Static).render().plain == "DISPLAY"
+        await choose_menu(pilot, "Execution traces")
         await wait_until(
             lambda: not app._preferences.collapse_traces,
             pilot,
@@ -396,7 +396,7 @@ async def test_actions_trace_setting_persists_and_is_available_to_child_observer
         assert TuiPreferencesStore(tmp_path).load().collapse_traces is False
         assert app.screen is menu
         app._visible_read_only = True
-        assert any(choice.label == "Collapse traces" for choice in app._action_choices())
+        assert any(choice.label == "Display" for choice in app._action_choices())
 
 
 class TraceProvider:

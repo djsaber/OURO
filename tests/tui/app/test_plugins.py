@@ -77,7 +77,7 @@ async def test_plugin_install_failure_uses_error_toast_without_changing_conversa
 
         await pilot.press("ctrl+p")
         await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Install plugin"
+        app.screen.query_one("#choice-filter", Input).value = "+ plugin"
         await pilot.pause()
         await pilot.press("enter")
         await _wait_for_screen(app, PluginInstallScreen, title="INSTALL PLUGIN")

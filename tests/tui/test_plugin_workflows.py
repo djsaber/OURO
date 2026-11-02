@@ -127,31 +127,3 @@ async def test_plugin_delete_animates_and_does_not_navigate_after_leaving(
             assert app.screen is menu and menu._title == expected_title
             assert menu.query_one(Input).value == ("Example" if leave == "back" else "")
             assert menu._spinner_timer is None
-
-
-async def test_standalone_plugin_delete_closes_the_removed_catalog(tmp_path, monkeypatch):
-    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
-
-    async def plugin(_plugin_id):
-        return _detail()
-
-    async def plugins():
-        return (_detail(),)
-
-    async def remove(_plugin_id):
-        return None
-
-    async with run_ready_app(app) as pilot:
-        monkeypatch.setattr(app._controller, "plugin", plugin)
-        monkeypatch.setattr(app._controller, "plugins", plugins)
-        monkeypatch.setattr(app._controller, "remove_plugin", remove)
-        worker = app.run_worker(app._choose_plugin_action("remove"))
-        await _wait_for_screen(app, ChoiceScreen, title="DELETE PLUGIN")
-        menu = app.screen
-        await pilot.press("enter")
-        await _wait_for_screen(app, ConfirmationScreen, title="CONFIRM DELETE PLUGIN")
-        await pilot.press("down", "enter")
-        async with asyncio.timeout(2):
-            while app.screen is menu:
-                await pilot.pause(0.01)
-        await worker.wait()

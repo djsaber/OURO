@@ -104,7 +104,7 @@ class SkillInstallScreen(EditableChoiceScreen):
             Choice(
                 "skill-install-all",
                 "Install all",
-                trailing=_enabled_label(self._toggles["skill-install-all"]),
+                trailing_badge=_enabled_label(self._toggles["skill-install-all"]),
                 group="SELECTION",
             ),
             Choice(
@@ -117,7 +117,7 @@ class SkillInstallScreen(EditableChoiceScreen):
             Choice(
                 "skill-force",
                 "Replace existing",
-                trailing=_enabled_label(self._toggles["skill-force"]),
+                trailing_badge=_enabled_label(self._toggles["skill-force"]),
                 group="OPTIONS",
             ),
             Choice(

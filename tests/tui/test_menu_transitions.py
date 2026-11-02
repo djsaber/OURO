@@ -262,7 +262,7 @@ async def test_plugin_catalog_wait_has_feedback_and_respects_menu_close(
         ("Rename session", "RENAME SESSION • USER"),
         ("Delete session", "DELETE SESSIONS • ARCHIVED"),
         ("+ task", "CREATE TASK"),
-        ("Install plugin", "INSTALL PLUGIN"),
+        ("+ plugin", "INSTALL PLUGIN"),
         ("Tool limits & file access", "TOOL LIMITS & FILE ACCESS"),
         ("Subagent permissions", "SUBAGENT PERMISSIONS"),
         ("+ subagent", "CREATE SUBAGENT"),

@@ -71,8 +71,7 @@ SYSTEM_SETTING_ACTIONS = (
     SystemSettingAction("providers.add", "+ provider", "Providers"),
     SystemSettingAction("providers.endpoints.add", "+ endpoint", "Providers"),
     SystemSettingAction("plugins.list", "Manage plugins", "Plugins"),
-    SystemSettingAction("plugins.install", "Install plugin", "Plugins"),
-    SystemSettingAction("plugins.remove", "Delete plugin", "Plugins"),
+    SystemSettingAction("plugins.install", "+ plugin", "Plugins"),
     SystemSettingAction("tools.permissions", "Tool permissions", "Tools"),
     SystemSettingAction("tools.execution", "Tool limits & file access", "Tools"),
     SystemSettingAction("agents.policy", "Subagent permissions", "Subagents"),
@@ -164,11 +163,6 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             await self._choose_plugins(menu=menu)
         elif action_id == "plugins.install":
             await self._install_plugin(menu=menu)
-        elif action_id.startswith("plugins."):
-            await self._choose_plugin_action(
-                action_id.removeprefix("plugins."),
-                menu=menu,
-            )
         elif action_id == "mcp.list":
             await self._choose_mcp(menu=menu)
         elif action_id == "mcp.add":

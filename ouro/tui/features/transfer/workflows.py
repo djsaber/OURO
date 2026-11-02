@@ -255,7 +255,7 @@ class DataTransferScreen(ChoiceScreen):
                 Choice(
                     "replace",
                     "Existing sessions" if session_import else "Replace existing data",
-                    trailing=("Replace" if self._replace else "Skip")
+                    trailing_badge=("Replace" if self._replace else "Skip")
                     if session_import
                     else ("Yes" if self._replace else "No"),
                     description="Applies to complete session trees" if session_import else "",

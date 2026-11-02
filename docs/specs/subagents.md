@@ -786,7 +786,7 @@ TUI 持续订阅 root AgentTree，通过 interaction inbox 呈现子会话审批
 root 的交互面板处理；文本、思考和工具流通过子会话 observation 查看，不复制业务状态或读取 Store 文件。
 
 主、子会话通过各自的 canonical history 展示通信。首次任务、后续指令和异步回传结果保留
-`scaffold=true` 及真实来源，统一受 TUI 的 `Scaffold messages` 设置控制：Off 隐藏，On 显示完整正文。
+`scaffold=true` 及真实来源，统一受 TUI 的 `Display` → `Scaffold messages` 设置控制：Hidden 隐藏，Shown 显示完整正文。
 子智能体的普通 assistant 回复沿用正常消息展示。主会话的 `SendAgentMessage` 工具详情以单行展示发送内容，
 随可用宽度省略。TUI 不为通信另建消息副本、聚合容器或跨会话流式同步管线。
 

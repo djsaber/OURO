@@ -312,7 +312,7 @@ async def test_session_import_selection_uses_archive_titles_and_file_browser(
             await pilot.press("escape")
             await pilot.pause()
         assert app.screen is form
-        assert next(row for row in form._choices if row.value == "replace").trailing == "Skip"
+        assert next(row for row in form._choices if row.value == "replace").trailing_badge == "Skip"
         await _choose_menu_row(app, pilot, "submit")
         await app.workers.wait_for_complete()
         assert {
@@ -703,11 +703,12 @@ async def test_import_form_applies_existing_session_policy(tmp_path, monkeypatch
         await _choose_menu_row(app, pilot, "path")
         await _choose_menu_row(app, pilot, "file:sessions.zip")
         await app.workers.wait_for_complete()
-        assert next(row for row in form._choices if row.value == "replace").trailing == "Skip"
+        assert next(row for row in form._choices if row.value == "replace").trailing_badge == "Skip"
         if replace:
             await _choose_menu_row(app, pilot, "replace")
             assert (
-                next(row for row in form._choices if row.value == "replace").trailing == "Replace"
+                next(row for row in form._choices if row.value == "replace").trailing_badge
+                == "Replace"
             )
         await _choose_menu_row(app, pilot, "submit")
         await app.workers.wait_for_complete()

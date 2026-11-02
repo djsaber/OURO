@@ -182,13 +182,13 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
             Choice(
                 "agent-policy-sync",
                 "Wait for results",
-                trailing=state("agent-policy-sync"),
+                trailing_badge=state("agent-policy-sync"),
                 group="EXECUTION",
             ),
             Choice(
                 "agent-policy-async",
                 "Run in background",
-                trailing=state("agent-policy-async"),
+                trailing_badge=state("agent-policy-async"),
                 group="EXECUTION",
             ),
             Choice(
@@ -208,25 +208,25 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
             Choice(
                 "agent-policy-write",
                 "Write tools",
-                trailing=state("agent-policy-write"),
+                trailing_badge=state("agent-policy-write"),
                 group="CAPABILITIES",
             ),
             Choice(
                 "agent-policy-network",
                 "Network tools",
-                trailing=state("agent-policy-network"),
+                trailing_badge=state("agent-policy-network"),
                 group="CAPABILITIES",
             ),
             Choice(
                 "agent-policy-mcp",
                 "MCP tools",
-                trailing=state("agent-policy-mcp"),
+                trailing_badge=state("agent-policy-mcp"),
                 group="CAPABILITIES",
             ),
             Choice(
                 "agent-policy-external-paths",
                 "Files outside workspace",
-                trailing=state("agent-policy-external-paths"),
+                trailing_badge=state("agent-policy-external-paths"),
                 group="CAPABILITIES",
             ),
             Choice(

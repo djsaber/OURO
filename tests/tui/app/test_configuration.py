@@ -38,9 +38,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         assert "/compact" not in action_values
         assert [choice.label for choice in action_choices] == [
             "Theme",
-            "Thinking display",
-            "Scaffold messages",
-            "Collapse traces",
+            "Display",
             "Remember drafts",
             "Session grouping",
             "Queued messages",
@@ -61,8 +59,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "+ provider",
             "+ endpoint",
             "Manage plugins",
-            "Install plugin",
-            "Delete plugin",
+            "+ plugin",
             "Tool permissions",
             "Tool limits & file access",
             "Subagent permissions",
@@ -77,11 +74,11 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Keyboard help",
         ]
         assert [choice.group for choice in action_choices] == [
-            *("Settings",) * 10,
+            *("Settings",) * 8,
             *("Sessions",) * 5,
             *("Tasks",) * 3,
             *("Providers",) * 5,
-            *("Plugins",) * 3,
+            *("Plugins",) * 2,
             *("Tools",) * 2,
             *("Subagents",) * 3,
             *("MCPs",) * 2,

@@ -132,10 +132,12 @@ async def test_prompt_creation_and_stale_editor_do_not_overwrite_other_changes(t
         assert all(choice.value != "id" for choice in app.screen._choices)
         await choose("Content")
         await pilot.press("h", "i", "enter")
-        await choose("Enable")
+        await choose("Status")
         assert (
-            next(choice for choice in app.screen._choices if choice.value == "enabled").label
-            == "Disable"
+            next(
+                choice for choice in app.screen._choices if choice.value == "enabled"
+            ).trailing_badge
+            == "Enabled"
         )
         await choose("Save", title="PERSONAL PROMPTS")
         await wait_for_menu_action(pilot, menu)

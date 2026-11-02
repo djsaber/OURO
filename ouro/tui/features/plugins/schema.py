@@ -18,6 +18,14 @@ class ConfigurationField:
     options: tuple[JsonValue, ...] = ()
 
     @property
+    def is_toggle(self) -> bool:
+        return (
+            len(self.options) == 2
+            and all(type(value) is bool for value in self.options)
+            and self.options[0] is not self.options[1]
+        )
+
+    @property
     def nullable(self) -> bool:
         types = self.schema.get("type")
         return isinstance(types, list) and "null" in types

@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+from unittest.mock import Mock
+
 import pytest
 
 from ouro.core.base import new_id
+from ouro.tui.app import OuroTuiApp
 from ouro.tui.controller import TuiController
+from ouro.tui.widgets.brand import BrandHeader
 from tests.application.test_attachments import PNG
+from tests.tui.app.providers import BlockingStreamProvider
+from tests.tui.helpers import release_on_exit, run_ready_app, wait_for_events, wait_until
 from tests.tui.test_history_commands import application_at
+from tests.tui.test_tasks import streaming_application
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
@@ -44,6 +51,55 @@ async def test_first_text_titles_prepared_and_new_sessions(tmp_path, backend, so
     finally:
         await controller.close()
         await application.close()
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_visible_title_tracks_commits_while_model_is_running(tmp_path, backend, monkeypatch):
+    provider = BlockingStreamProvider()
+    application = streaming_application(tmp_path, provider, backend=backend)
+    app = OuroTuiApp(application=application)
+    async with run_ready_app(app) as pilot, release_on_exit(provider.release):
+        session = application.runtime.sessions.create().session
+        await app._open_session(session.session_id)
+        header = app.query_one(BrandHeader)
+        assert header._session_title == "New conversation"
+        update_header = Mock(wraps=header.set_context)
+        monkeypatch.setattr(header, "set_context", update_header)
+        projection = app._projection
+        subscription = app._observation_subscription
+        handle = await application.supervisor.submit(
+            "First meaningful input", session_id=session.session_id
+        )
+        try:
+            await wait_for_events(
+                provider.first_chunk_sent, pilot=pilot, description="model stream blocked"
+            )
+            await wait_until(
+                lambda: header._session_title == app._active_title == "First meaningful input",
+                pilot,
+                description="live session title",
+            )
+            assert not provider.release.is_set()
+            assert app._projection is projection
+            assert app._observation_subscription is subscription
+        finally:
+            provider.release.set()
+            await application.supervisor.wait(handle)
+        await wait_until(
+            lambda: app._projection.activity.status == "completed",
+            pilot,
+            description="completed model stream",
+        )
+        assert update_header.call_count == 1
+        application.runtime.sessions.rename(session.session_id, "Renamed after completion")
+        await wait_until(
+            lambda: header._session_title == app._active_title == "Renamed after completion",
+            pilot,
+            description="metadata-only title update",
+        )
+        assert app._projection is projection
+        assert app._observation_subscription is subscription
+        assert update_header.call_count == 2
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
