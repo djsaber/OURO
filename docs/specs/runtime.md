@@ -287,6 +287,17 @@ Session 继续的整体前提。持久 ToolInvocation、控制 activation 和 De
 - `RunModelRequests` 按到达顺序发布 `model_tool_call_delta`。Core 执行器按工具 index 追加分片，
   完成时一次拼接并解析 arguments JSON，校验身份和批次唯一性；不逐分片复制累积参数。
 - 完成事件的用量记录先于输出可用性判断。输出长度受限、过滤或不完整时，不执行工具片段，不保留可重放 continuation。
+- 响应正常结束但工具参数不是合法 JSON 对象时，Core 返回 `model_tool_arguments_invalid` 与错误位置、
+  工具名和原始参数；整批调用不执行，原生 continuation 不进入上下文。身份错误、传输错误和输出截断不属于参数纠错。
+- Native Driver 的模型请求边界最多自动纠正两次连续参数错误，普通会话、子智能体和插件 Driver 共用此路径。
+  每次尝试重新经过正常请求准备、预算、计费和取消边界，具有独立 turn/request 身份；不在 Provider 内重试生成。
+- 纠错通过一次 SessionCommit 关闭失败请求、清理 Draft，并追加 `role=user`、`scaffold=true`、
+  `semantic_tag=model-output-correction` 的消息。消息明确整批未执行，包含首个错误及最多 1024 字符的参数片段，
+  要求重新生成完整调用。错误参数不被修复，也不伪装成 assistant 调用或 tool 结果。
+- 纠错消息持久保留，成功后不删除；既有历史消息不修改。失败正文、推理和首个非法调用的诊断保存在该消息 metadata，
+  不参与 Provider 投影。请求消息前缀在上下文配置稳定且未触发正常压缩时保持一致；纠错不引入专用历史重写。
+- Run metadata 中的纠错轮次与次数随消息原子提交，暂停或进程重启不重置连续计数；中间一次成功请求会结束连续错误链。
+  第三次连续参数错误仍提交诊断与纠错消息，但 Run 以原错误码失败。显式续跑使用保留的上下文，不重放非法响应。
 - Provider 可在普通回答或工具调用响应中产生一个 `continuation` 事件；执行器只接受一个类型化 artifact，
   与对应 assistant 消息原子提交。可见思考文本与原生续接状态分别保存。
 - `done` 只携带完成边界和 usage，不重复携带工具调用，避免增量流和最终快照成为两个互相竞争的真相来源。

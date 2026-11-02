@@ -7,6 +7,7 @@ from typing import Any
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.harness import capture_harness
 from ouro.application.inputs.queue import consumption_changes
+from ouro.application.models.corrections import commit_model_correction
 from ouro.application.runs.tool_batches import load_tool_batch, prepare_batch_changes
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.application.usage import SummaryRequestRecorder, UsageService
@@ -30,6 +31,7 @@ from ouro.core.messages import (
     ToolMessageReference,
     ToolResultReference,
 )
+from ouro.core.model_execution import ModelExecutionResult
 from ouro.core.provider import ModelMetadata, Usage
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunPauseReason
@@ -298,6 +300,15 @@ class RunLifecycle:
         if metadata:
             message = message.model_copy(update={"metadata": dict(metadata)})
         return message
+
+    async def correct_model_output(
+        self, run: RunRecord, turn_id: str, response: ModelExecutionResult
+    ) -> tuple[SessionRecord, RunRecord, tuple[EventRecord, ...]]:
+        session, latest, events = await run_blocking(
+            commit_model_correction, self.store, run, turn_id, response
+        )
+        await self.events.publish_committed(events)
+        return session, latest, events
 
     def append_assistant_message(
         self,

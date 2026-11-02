@@ -457,24 +457,30 @@ class AnthropicMessagesProvider:
                     for (index, field), fragments in content_fragments.items():
                         initial = str(continuation_blocks[index].get(field) or "")
                         continuation_blocks[index][field] = initial + "".join(fragments)
-                    for index, fragments in tool_inputs.items():
-                        continuation_blocks[index]["input"] = json.loads("".join(fragments))
-                    yield ProviderStreamEvent(
-                        type="continuation",
-                        continuation=ProviderContinuationArtifact(
-                            provider_id=self.provider_id,
-                            protocol="anthropic-messages",
-                            model_id=model.model_id,
-                            blocks=continuation_blocks_from_response(
-                                {
-                                    "content": [
-                                        continuation_blocks[index]
-                                        for index in sorted(continuation_blocks)
-                                    ]
-                                }
+                    try:
+                        for index, fragments in tool_inputs.items():
+                            continuation_blocks[index]["input"] = json.loads("".join(fragments))
+                    except json.JSONDecodeError:
+                        # Core diagnoses the already emitted argument deltas. Still
+                        # deliver completion/usage, without replaying invalid input.
+                        pass
+                    else:
+                        yield ProviderStreamEvent(
+                            type="continuation",
+                            continuation=ProviderContinuationArtifact(
+                                provider_id=self.provider_id,
+                                protocol="anthropic-messages",
+                                model_id=model.model_id,
+                                blocks=continuation_blocks_from_response(
+                                    {
+                                        "content": [
+                                            continuation_blocks[index]
+                                            for index in sorted(continuation_blocks)
+                                        ]
+                                    }
+                                ),
                             ),
-                        ),
-                    )
+                        )
                 yield ProviderStreamEvent(
                     type="done",
                     usage=usage,

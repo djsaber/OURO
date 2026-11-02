@@ -319,6 +319,35 @@ async def test_usage_observation_precedes_output_validation(finish_reason) -> No
         assert output.continuation is None
     else:
         assert "not valid JSON" in output.error
+        assert output.error_code == "model_tool_arguments_invalid"
+        assert output.continuation is None
+        assert output.tool_call_failure is not None
+        assert output.tool_call_failure.arguments == "{}{"
+
+
+@pytest.mark.parametrize("arguments", ['{"value":"line\nbreak"}', "[]"])
+async def test_invalid_arguments_preserve_diagnostic_without_executable_calls(arguments):
+    output = await _execute(
+        FauxProvider(
+            [
+                ProviderStreamEvent(
+                    type="tool_call_delta",
+                    tool_call_delta=ToolCallDelta(
+                        index=0,
+                        id_delta="bad",
+                        name_delta="Write",
+                        arguments_delta=arguments,
+                    ),
+                ),
+                ProviderStreamEvent(type="done"),
+            ]
+        )
+    )
+    assert output.tool_calls == ()
+    assert output.tool_call_failure is not None
+    assert output.tool_call_failure.arguments == arguments
+    assert output.tool_call_failure.name == "Write"
+    assert output.error_code == "model_tool_arguments_invalid"
 
 
 @pytest.mark.parametrize("mode", ["abort", "cancel", "observer_failure", "transport_failure"])

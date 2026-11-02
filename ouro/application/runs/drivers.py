@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import Never
 
 from pydantic import JsonValue
 
+from ouro.application.models.corrections import MAX_TOOL_ARGUMENT_RETRIES
 from ouro.application.runs.lifecycle import RunLifecycle
 from ouro.core.base import new_id
 from ouro.core.callbacks import run_blocking
@@ -132,6 +134,37 @@ class NativeRunDriverContext:
                 raise ValueError(
                     "resolve the pending model tool response before requesting another model"
                 )
+            response = await self._generate_response(prompt=prompt, tools=tools)
+            turn_id = self.turn_id
+            assert turn_id is not None
+            response_id = new_id("response")
+            self._response = (response_id, response)
+            if response.tool_calls:
+                self._pending = (response_id, turn_id, response)
+            else:
+                await run_blocking(
+                    self._runs.append_assistant_message,
+                    session=self.session,
+                    run=self.run,
+                    text=response.text,
+                    reasoning_content=response.reasoning,
+                    model_response=response.model_response,
+                    provider_continuation=response.continuation,
+                    turn_id=turn_id,
+                )
+            return DriverModelResponse(
+                response_id,
+                response.text,
+                response.reasoning,
+                tuple(item.model_copy(deep=True) for item in response.tool_calls),
+            )
+
+    async def _generate_response(
+        self, *, prompt: str, tools: tuple[str, ...] | None
+    ) -> ModelExecutionResult:
+        while True:
+            if self.is_aborted:
+                raise asyncio.CancelledError
             await self._deliver_inputs()
             turn_id = new_id("turn")
             self.turn_id = turn_id
@@ -160,29 +193,34 @@ class NativeRunDriverContext:
             self._inputs_checked = False
             if response.aborted or self.is_aborted:
                 raise asyncio.CancelledError
+            if response.tool_call_failure is not None:
+                self.session, self.run, events = await self._runs.correct_model_output(
+                    self.run, turn_id, response
+                )
+                self.final_text = ""
+                if events:
+                    self.sequence = events[-1].sequence
+                if self.is_aborted or self.run.abort_requested:
+                    raise asyncio.CancelledError
+                if (
+                    int(self.run.metadata.get("model_correction_attempt", 0))
+                    <= MAX_TOOL_ARGUMENT_RETRIES
+                ):
+                    continue
+                # The rejected response is already recorded on the scaffold. Never
+                # append it as assistant history, even when recovery is exhausted.
+                await self.fail(
+                    response.error or "invalid tool arguments",
+                    response=replace(
+                        response,
+                        text="",
+                        reasoning="",
+                        continuation=None,
+                    ),
+                )
             if response.error:
                 await self.fail(response.error, response=response)
-            response_id = new_id("response")
-            self._response = (response_id, response)
-            if response.tool_calls:
-                self._pending = (response_id, turn_id, response)
-            else:
-                await run_blocking(
-                    self._runs.append_assistant_message,
-                    session=self.session,
-                    run=self.run,
-                    text=response.text,
-                    reasoning_content=response.reasoning,
-                    model_response=response.model_response,
-                    provider_continuation=response.continuation,
-                    turn_id=turn_id,
-                )
-            return DriverModelResponse(
-                response_id,
-                response.text,
-                response.reasoning,
-                tuple(item.model_copy(deep=True) for item in response.tool_calls),
-            )
+            return response
 
     async def consume_inputs(self) -> tuple[MessageRecord, ...]:
         async with self._operation():

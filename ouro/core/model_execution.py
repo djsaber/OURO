@@ -26,6 +26,23 @@ class ModelExecutionEvent:
 
 
 @dataclass(frozen=True)
+class ToolCallFailure:
+    """Rejected arguments are diagnostic text, never an executable tool call."""
+
+    index: int
+    name: str
+    arguments: str
+    error: str
+    position: int = 0
+
+
+class _InvalidToolArguments(ValueError):
+    def __init__(self, failure: ToolCallFailure) -> None:
+        super().__init__(failure.error)
+        self.failure = failure
+
+
+@dataclass(frozen=True)
 class ModelExecutionResult:
     """One request's output, including partial output on failure or cancellation."""
 
@@ -39,6 +56,7 @@ class ModelExecutionResult:
     error: str | None
     error_code: str | None
     aborted: bool
+    tool_call_failure: ToolCallFailure | None = None
 
 
 @dataclass
@@ -69,6 +87,7 @@ class _Response:
     ended_at: datetime | None = None
     error: str | None = None
     error_code: str | None = None
+    tool_call_failure: ToolCallFailure | None = None
 
     def consume(self, event: ProviderStreamEvent, clock: Callable[[], datetime]) -> None:
         if event.type == "reasoning_delta" and event.reasoning_content:
@@ -122,7 +141,13 @@ class _Response:
             # Rejected output must not become replayable provider continuation.
             self.continuation = None
             return
-        self.tool_calls = _complete_tool_calls(self.tool_parts)
+        try:
+            self.tool_calls = _complete_tool_calls(self.tool_parts)
+        except _InvalidToolArguments as exc:
+            self.tool_call_failure = exc.failure
+            self.error = str(exc)
+            self.error_code = "model_tool_arguments_invalid"
+            self.continuation = None
 
 
 async def execute_model_request(
@@ -205,6 +230,7 @@ async def execute_model_request(
         error=response.error,
         error_code=response.error_code,
         aborted=signal.is_aborted(),
+        tool_call_failure=response.tool_call_failure,
     )
 
 
@@ -226,13 +252,24 @@ def _complete_tool_calls(parts_by_index: dict[int, _ToolCallParts]) -> tuple[Too
         try:
             arguments = json.loads(raw_arguments) if raw_arguments.strip() else {}
         except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"provider tool call arguments are not valid JSON at stream index {index}: "
-                f"{exc.msg}"
+            raise _InvalidToolArguments(
+                ToolCallFailure(
+                    index,
+                    name,
+                    raw_arguments,
+                    f"provider tool call arguments are not valid JSON at stream index {index}: "
+                    f"{exc}",
+                    exc.pos,
+                )
             ) from exc
         if not isinstance(arguments, dict):
-            raise ValueError(
-                f"provider tool call arguments must be a JSON object at stream index {index}"
+            raise _InvalidToolArguments(
+                ToolCallFailure(
+                    index,
+                    name,
+                    raw_arguments,
+                    f"provider tool call arguments must be a JSON object at stream index {index}",
+                )
             )
         calls.append(
             ToolCallRequest(id=call_id, name=name, arguments=arguments, source_index=source_index)

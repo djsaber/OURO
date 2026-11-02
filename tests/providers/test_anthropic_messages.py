@@ -85,6 +85,53 @@ async def test_messages_requires_output_limit_before_transport() -> None:
     assert transport.requests == []
 
 
+async def test_invalid_tool_json_reaches_core_with_completion_and_usage() -> None:
+    transport = FakeStreamingTransport(
+        [
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "bad",
+                    "name": "Write",
+                    "input": {},
+                },
+            },
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": '{"text":"line\nbreak"}',
+                },
+            },
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "tool_use"},
+                "usage": {"output_tokens": 7},
+            },
+            {"type": "message_stop"},
+        ]
+    )
+    provider = AnthropicMessagesProvider(base_url="https://example.test", transport=transport)
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(model_id="test", provider_id="test", max_output_tokens=100),
+            messages=[],
+        )
+    ]
+    assert not any(event.type in {"error", "continuation"} for event in events)
+    assert events[-1].type == "done"
+    assert events[-1].usage.output_tokens == 7
+    assert events[-1].completion.finish_reason == "tool_call"
+    assert (
+        "".join(event.tool_call_delta.arguments_delta for event in events if event.tool_call_delta)
+        == '{"text":"line\nbreak"}'
+    )
+
+
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize(
     ("reason", "normalized_reason", "thinking"),
