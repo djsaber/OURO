@@ -713,7 +713,6 @@ _OURO_TUI_CSS = """
 
     #composer:focus {
         border-left: solid $ouro-theme;
-        border-right: solid $ouro-border-focus;
     }
 
     #composer.read-only-session:disabled {
