@@ -12,6 +12,7 @@ from textual.document._edit import Edit
 from textual.widgets import TextArea
 
 from ouro.core.input_content import InputContent, InputFile, InputSkillReference
+from ouro.tui.input_presentation import reference_label
 from ouro.tui.text_inputs import TuiTextArea
 from ouro.tui.theme import theme_for
 
@@ -28,11 +29,17 @@ class AttachmentEdit(Edit):
 
     before: tuple[AttachmentSpan, ...] = ()
     after_spans: tuple[AttachmentSpan, ...] = ()
+    cursor_offset: int | None = None
+    replaced_selection: str | None = None
 
     def do(self, text_area: TextArea, record_selection: bool = True) -> EditResult:
         editor = cast(AttachmentTextArea, text_area)
         result = super().do(editor, record_selection)
         editor.attachment_spans = self.after_spans
+        if self.cursor_offset is not None:
+            self._updated_selection = Selection.cursor(
+                editor.plain_document.get_location_from_index(self.cursor_offset)
+            )
         return result
 
     def undo(self, text_area: TextArea) -> EditResult:
@@ -43,7 +50,7 @@ class AttachmentEdit(Edit):
 
 
 class AttachmentTextArea(TuiTextArea):
-    """Render names as text spans while keeping attachment identity out of the prompt."""
+    """Keep editable prose above an atomic reference row, outside the submitted text."""
 
     attachment_spans: tuple[AttachmentSpan, ...] = ()
 
@@ -52,86 +59,52 @@ class AttachmentTextArea(TuiTextArea):
         return cast(Document, self.document)
 
     @property
-    def input_content(self) -> InputContent:
-        return self._input_content(self.text, self.attachment_spans)
+    def input_text(self) -> str:
+        # The newline before the reference row belongs to the projection, not the prompt.
+        text = self.text
+        return text[: max(0, self.attachment_spans[0].start - 1)] if self.attachment_spans else text
 
-    @staticmethod
-    def _input_content(text: str, spans: tuple[AttachmentSpan, ...]) -> InputContent:
-        parts: list[str] = []
-        elements: list[InputFile | InputSkillReference] = []
-        cursor = offset = 0
-        for span in spans:
-            part = text[cursor : span.start]
-            parts.append(part)
-            offset += len(part)
-            elements.append(span.attachment.model_copy(update={"text_offset": offset}))
-            cursor = span.end
-        parts.append(text[cursor:])
-        return InputContent.from_elements("".join(parts), tuple(elements))
+    @property
+    def input_content(self) -> InputContent:
+        return _input_with_elements(
+            self.input_text, tuple(span.attachment for span in self.attachment_spans)
+        )
 
     def prepare_attachment_insertion(
         self,
     ) -> Callable[[tuple[InputFile, ...]], InputContent]:
         """Capture a selection before an asynchronous import or Session navigation."""
+        content = self.input_content
+        spans = self.attachment_spans
         start, end = sorted(
             self.plain_document.get_index_from_location(location) for location in self.selection
         )
-        before = self._input_content(
-            self.text[:start], tuple(span for span in self.attachment_spans if span.end <= start)
-        )
-        after = self._input_content(
-            self.text[end:],
-            tuple(
-                AttachmentSpan(span.start - end, span.end - end, span.attachment)
-                for span in self.attachment_spans
-                if span.start >= end
-            ),
+        text = content.text[:start] + content.text[end:]
+        retained = tuple(
+            span.attachment for span in spans if not (span.start < end and span.end > start)
         )
 
         def insert(items: tuple[InputFile, ...]) -> InputContent:
-            return InputContent.from_elements(
-                before.text + after.text,
-                (
-                    *before.elements,
-                    *(item.model_copy(update={"text_offset": len(before.text)}) for item in items),
-                    *(
-                        item.model_copy(update={"text_offset": len(before.text) + item.text_offset})
-                        for item in after.elements
-                    ),
-                ),
-            )
+            return _input_with_elements(text, (*retained, *items)) if items else content
 
         return insert
 
     def load_input(self, content: InputContent) -> None:
-        parts: list[str] = []
-        spans: list[AttachmentSpan] = []
-        cursor = rendered = 0
-        for item in content.elements:
-            text = content.text[cursor : item.text_offset]
-            label = _element_text(item)
-            parts.extend((text, label))
-            rendered += len(text)
-            spans.append(AttachmentSpan(rendered, rendered + len(label), item))
-            rendered += len(label)
-            cursor = item.text_offset
-        parts.append(content.text[cursor:])
+        body = _normalize_newlines(content.text)
+        text, spans = _input_document(body, content.elements)
         self.attachment_spans = ()
-        super().load_text("".join(parts))
-        self.attachment_spans = tuple(spans)
-        self.move_cursor(self.document.end)
+        super().load_text(text)
+        self.attachment_spans = spans
+        self.move_cursor(self.plain_document.get_location_from_index(len(body)))
 
     def load_text(self, text: str) -> None:
         self.attachment_spans = ()
-        super().load_text(text)
+        super().load_text(_normalize_newlines(text))
 
     def get_line(self, line_index: int) -> Text:
         line = super().get_line(line_index)
-        start = self.plain_document.get_index_from_location((line_index, 0))
-        end = start + len(line.plain)
-        for span in self.attachment_spans:
-            if span.start < end and span.end > start:
-                line.stylize(theme_for(self).accent, max(0, span.start - start), span.end - start)
+        if self.attachment_spans and line_index == self.document.line_count - 1:
+            line.stylize(theme_for(self).accent)
         return line
 
     def _validate_selection(self, selection: Selection) -> Selection:
@@ -152,48 +125,85 @@ class AttachmentTextArea(TuiTextArea):
                 *(self.plain_document.get_location_from_index(index) for index in positions)
             )
         index = self.plain_document.get_index_from_location(selection.end)
-        previous = self.plain_document.get_index_from_location(self.selection.end)
         for span in self.attachment_spans:
             if span.start < index < span.end:
-                edge = span.start if index < previous else span.end
+                edge = span.start if selection.end < self.selection.end else span.end
                 return Selection.cursor(self.plain_document.get_location_from_index(edge))
         return selection
 
     def edit(self, edit: Edit) -> EditResult:
-        if isinstance(edit, AttachmentEdit):
-            return super().edit(edit)
-        return super().edit(self._attachment_edit(edit))
+        attachment_edit = edit if isinstance(edit, AttachmentEdit) else self._attachment_edit(edit)
+        result = super().edit(attachment_edit)
+        # Native rewrap/undo use the real changed range; callers see only their selection.
+        return EditResult(
+            self.plain_document.get_location_from_index(attachment_edit.cursor_offset)
+            if attachment_edit.cursor_offset is not None
+            else result.end_location,
+            attachment_edit.replaced_selection
+            if attachment_edit.replaced_selection is not None
+            else result.replaced_text,
+        )
 
     def _attachment_edit(
         self, edit: Edit, inserted: tuple[InputFile | InputSkillReference, ...] = ()
     ) -> AttachmentEdit:
+        edit.text = _normalize_newlines(edit.text)
+        if not self.attachment_spans and not inserted:
+            return AttachmentEdit(
+                edit.text, edit.from_location, edit.to_location, edit.maintain_selection_offset
+            )
         start = self.plain_document.get_index_from_location(edit.top)
         end = self.plain_document.get_index_from_location(edit.bottom)
-        for span in self.attachment_spans:
-            if start == end and span.start < start < span.end:
-                start = end = span.end
-            elif start < span.end and end > span.start:
-                start, end = min(start, span.start), max(end, span.end)
-        delta = len(edit.text) - (end - start)
-        spans: list[AttachmentSpan] = []
-        for span in self.attachment_spans:
-            if span.end <= start:
-                spans.append(span)
-            elif span.start >= end:
-                spans.append(AttachmentSpan(span.start + delta, span.end + delta, span.attachment))
-        offset = start
-        for item in inserted:
-            length = len(_element_text(item))
-            spans.append(AttachmentSpan(offset, offset + length, item))
-            offset += length
+        body_length = (
+            max(0, self.attachment_spans[0].start - 1)
+            if self.attachment_spans
+            else len(self.text)
+        )
+        body_start, body_end = min(start, body_length), min(end, body_length)
+        retained = tuple(
+            span for span in self.attachment_spans if not (span.start < end and span.end > start)
+        )
+        delta = len(edit.text) - (body_end - body_start)
+        if (
+            not inserted
+            and len(retained) == len(self.attachment_spans)
+            and body_length > 0
+            and body_length + delta > 0
+        ):
+            # Ordinary typing stays a native range edit: only reference offsets move.
+            result = AttachmentEdit(
+                edit.text,
+                self.plain_document.get_location_from_index(body_start),
+                self.plain_document.get_location_from_index(body_end),
+                edit.maintain_selection_offset,
+            )
+            result.before = self.attachment_spans
+            result.after_spans = tuple(
+                AttachmentSpan(span.start + delta, span.end + delta, span.attachment)
+                for span in retained
+            )
+            return result
+
+        # Rebuild the suffix only when references or their separating newline change.
+        body = self.text[:body_start] + edit.text + self.text[body_end:body_length]
+        projected, spans = _input_document(
+            body, (*tuple(span.attachment for span in retained), *inserted)
+        )
         result = AttachmentEdit(
-            edit.text,
-            self.plain_document.get_location_from_index(start),
-            self.plain_document.get_location_from_index(end),
+            projected[body_start:],
+            self.plain_document.get_location_from_index(body_start),
+            self.document.end,
             edit.maintain_selection_offset,
         )
         result.before = self.attachment_spans
-        result.after_spans = tuple(sorted(spans, key=lambda span: span.start))
+        result.after_spans = spans
+        result.replaced_selection = self.get_text_range(edit.top, edit.bottom)
+        if inserted or not edit.maintain_selection_offset:
+            result.cursor_offset = (
+                body_start + len(edit.text)
+                if inserted or edit.text or start <= body_length
+                else min(start, len(projected))
+            )
         return result
 
     def insert_attachments(self, attachments: tuple[InputFile, ...]) -> None:
@@ -211,15 +221,42 @@ class AttachmentTextArea(TuiTextArea):
         if not attachments or self.read_only:
             return
         self.history.checkpoint()
-        edit = Edit("".join(_element_text(item) for item in attachments), *self.selection, False)
+        edit = Edit("", *self.selection, False)
         result = self.edit(self._attachment_edit(edit, attachments))
         self.history.checkpoint()
         self.move_cursor(result.end_location)
 
 
-def _element_text(item: InputFile | InputSkillReference) -> str:
-    """Keep the editor projection and its atomic span length in sync."""
-    return f"@{item.name} "
+def _normalize_newlines(text: str) -> str:
+    """Keep span offsets in the editor's LF coordinate system, including Windows pastes."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _input_with_elements(
+    text: str, elements: tuple[InputFile | InputSkillReference, ...]
+) -> InputContent:
+    """References follow the prose; their projected separator is never submitted."""
+    return InputContent.from_elements(
+        text, tuple(item.model_copy(update={"text_offset": len(text)}) for item in elements)
+    )
+
+
+def _input_document(
+    text: str, elements: tuple[InputFile | InputSkillReference, ...]
+) -> tuple[str, tuple[AttachmentSpan, ...]]:
+    parts = [text]
+    if not elements:
+        return text, ()
+    if text:
+        parts.append("\n")
+    offset = len(text) + bool(text)
+    spans = []
+    for item in elements:
+        label = reference_label(item.name) + " "
+        spans.append(AttachmentSpan(offset, offset + len(label), item))
+        parts.append(label)
+        offset += len(label)
+    return "".join(parts), tuple(spans)
 
 
 def file_count_label(items: tuple[InputFile, ...], resource_refs: tuple[str, ...] = ()) -> str:

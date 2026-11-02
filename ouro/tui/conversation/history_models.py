@@ -59,6 +59,8 @@ class TranscriptEntry:
     scaffold: bool = False
     # Source coordinates merge canonical windows; they do not change visual identity.
     source_sequence: int | None = field(default=None, compare=False)
+    # Character offset of the semantic reference suffix in the complete copy text.
+    reference_start: int | None = None
 
 
 _PieceTag = Literal["body", "user", "reasoning"]

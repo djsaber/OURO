@@ -101,6 +101,7 @@ class _MessageContent:
     entry_index: int = -1
     highlighted: bool = False
     lowlight: bool = False
+    reference_start: int | None = None
 
     def __rich_console__(
         self,
@@ -121,9 +122,11 @@ class _MessageContent:
             meta=interaction_meta,
         )
         content = ProseText(
-            self.text,
+            self.text if self.reference_start is None else self.text[: self.reference_start],
             style=self.theme.text_lowlight if self.lowlight else self.theme.text_emphasis,
         )
+        if self.reference_start is not None:
+            content.append(self.text[self.reference_start :], style=self.theme.accent)
         lines = console.render_lines(content, content_options, pad=False)
         if self.created_at is not None:
             timestamp = Text(
@@ -600,6 +603,7 @@ def _entry_renderables(
                         entry_index=request.entry_index,
                         highlighted=request.message_highlighted,
                         lowlight=entry.scaffold or entry.kind in {"scaffold", "command"},
+                        reference_start=entry.reference_start,
                     ),
                     (1, 0, 2, 0),
                 ),

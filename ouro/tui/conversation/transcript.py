@@ -10,6 +10,7 @@ from ouro.core.compaction import CompactionRecord
 from ouro.core.messages import MessageRecord, ModelMessage, SkillActivationContent
 from ouro.tui.conversation.history_models import CompactionPresentation, TranscriptEntry
 from ouro.tui.conversation.markdown_stream import split_markdown_blocks
+from ouro.tui.input_presentation import reference_labels
 from ouro.tui.state import RunPresentation
 
 
@@ -130,7 +131,7 @@ def _input_transcript_entry(
         return None
     if message.role != "user" and not (message.scaffold and show_scaffold_messages):
         return None
-    text = user_message_text(
+    text, reference_start = _user_message_presentation(
         message, include_scaffold_content=message.scaffold and show_scaffold_messages
     )
     if not text:
@@ -141,6 +142,7 @@ def _input_transcript_entry(
         text=text,
         created_at=message.created_at,
         scaffold=message.scaffold,
+        reference_start=reference_start,
     )
 
 
@@ -267,18 +269,26 @@ def project_transcript_entries(
 def user_message_text(
     message: MessageRecord | ModelMessage, *, include_scaffold_content: bool = False
 ) -> str:
-    if isinstance(message, MessageRecord) and message.input_attachments:
-        names = " · ".join(item.label for item in message.input_attachments)
-        text = (
-            ""
-            if message.semantic_tag == "attachments" and not include_scaffold_content
-            else user_message_text(ModelMessage.from_record(message))
-        )
-        return f"{text}\n{names}".lstrip("\n")
+    return _user_message_presentation(
+        message, include_scaffold_content=include_scaffold_content
+    )[0]
+
+
+def _user_message_presentation(
+    message: MessageRecord | ModelMessage, *, include_scaffold_content: bool = False
+) -> tuple[str, int | None]:
+    """Keep copy text intact while identifying its semantic reference suffix."""
+    attachments = message.input_attachments if isinstance(message, MessageRecord) else ()
     activations = tuple(
         block for block in message.content if isinstance(block, SkillActivationContent)
     )
-    if not activations:
-        return message.text_content
-    task = message.text_content.strip()
-    return " ".join(f"@{skill.name}" for skill in activations) + (f" {task}" if task else "")
+    elements = sorted(
+        (*attachments, *activations), key=lambda item: (item.text_offset, item.order)
+    )
+    text = message.text_content
+    if attachments and message.semantic_tag == "attachments" and not include_scaffold_content:
+        text = ""
+    if not elements:
+        return text, None
+    prefix = f"{text}\n" if text.strip() else ""
+    return prefix + reference_labels(item.name for item in elements), len(prefix)

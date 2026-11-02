@@ -125,7 +125,8 @@ def _choice_option(
         # Let Rich shrink the wider content column first; the Text cells keep
         # both columns on one line. Only the gap expands into unused space.
         row.add_column(overflow="ellipsis")
-        row.add_column(ratio=1)
+        # Preserve the flex gap's allocated minimum when Rich remeasures after shrinking.
+        row.add_column(ratio=1, min_width=1)
         row.add_column(width=2)
         row.add_column(justify="right", overflow="ellipsis")
         trailing = Text(overflow="ellipsis", no_wrap=True)

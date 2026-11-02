@@ -112,7 +112,14 @@ class Composer(AttachmentTextArea):
             show_line_numbers=False,
             compact=True,
         )
-        self.register_theme(TextAreaTheme("ouro-composer", selection_style=RichStyle(reverse=True)))
+        self.register_theme(
+            TextAreaTheme(
+                "ouro-composer",
+                selection_style=RichStyle(reverse=True),
+                # Cursor-line foreground must not override semantic reference colors.
+                cursor_line_style=RichStyle(),
+            )
+        )
         self.theme = "ouro-composer"
         self._history: list[InputContent] = []
         self._history_index = 0
@@ -282,31 +289,40 @@ class Composer(AttachmentTextArea):
         value = self.text
         previous = self._observed_text
         draft = self._command_draft
-        if draft is None and previous and value.endswith(previous):
-            inserted = value[: len(value) - len(previous)]
-            if inserted.startswith("/") and "\n" not in inserted:
+        if draft is None and previous:
+            inserted = self._prefix_before_draft(previous)
+            if inserted is not None and inserted.startswith("/") and "\n" not in inserted:
                 draft = previous
                 self._command_draft = draft
         self._observed_text = value
         return self.command_context()
+
+    def _prefix_before_draft(self, draft: str) -> str | None:
+        if not self.text.endswith(draft):
+            return None
+        prefix = self.text[: len(self.text) - len(draft)]
+        if self.attachment_spans and self.attachment_spans[0].start == len(prefix):
+            # A reference-only draft gains a visual newline when a command precedes it.
+            prefix = prefix.removesuffix("\n")
+        return prefix
 
     def command_context(self) -> tuple[str, str] | None:
         """Return command text separately from any pre-existing draft."""
 
         draft = self._command_draft
         if draft is not None:
-            if self.text.endswith(draft):
-                command_text = self.text[: len(self.text) - len(draft)]
-                if (
-                    command_text.startswith("/")
-                    or (self.attachment_menu_open and command_text.startswith("@"))
-                ) and "\n" not in command_text:
-                    return command_text, draft
+            command_text = self._prefix_before_draft(draft)
+            if command_text is not None and (
+                command_text.startswith("/")
+                or (self.attachment_menu_open and command_text.startswith("@"))
+            ) and "\n" not in command_text:
+                return command_text, draft
             self._command_draft = None
-        if self.text.startswith("/") and "\n" not in self.text:
-            return self.input_content.text, ""
-        if self.attachment_menu_open and self.text.startswith("@") and "\n" not in self.text:
-            return self.input_content.text, ""
+        text = self.input_text
+        if text.startswith("/") and "\n" not in text:
+            return text, ""
+        if self.attachment_menu_open and text.startswith("@") and "\n" not in text:
+            return text, ""
         return None
 
     @property
@@ -382,9 +398,7 @@ class Composer(AttachmentTextArea):
         content = (
             self.draft_content if draft and self.text.endswith(draft) else InputContent(text=draft)
         )
-        value = f"{command_text}{draft}"
         self._command_draft = draft or None
-        self._observed_text = value
         self.load_input(
             InputContent(
                 text=command_text + content.text,
@@ -398,6 +412,7 @@ class Composer(AttachmentTextArea):
                 ),
             )
         )
+        self._observed_text = self.text
         self.move_cursor((0, len(command_text)))
 
     def restore_command_draft(self, draft: str) -> None:
@@ -407,9 +422,8 @@ class Composer(AttachmentTextArea):
             self.draft_content if draft and self.text.endswith(draft) else InputContent(text=draft)
         )
         self._command_draft = None
-        self._observed_text = draft
         self.load_input(content)
-        self.move_cursor((self.document.line_count - 1, len(self.document.lines[-1])))
+        self._observed_text = self.text
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
         if self.import_pending:
@@ -569,19 +583,18 @@ class Composer(AttachmentTextArea):
         if self.command_context() is not None:
             self.post_message(self.CommandNavigated(-1))
             return
-        if "\n" in self.text or not self._can_browse_history():
+        if "\n" in self.input_text or not self._can_browse_history():
             self.action_cursor_up()
             return
         if self._history_index > 0:
             self._history_index -= 1
             self.load_input(self._history[self._history_index])
-            self.move_cursor((self.document.line_count - 1, len(self.document.lines[-1])))
 
     def action_history_next(self) -> None:
         if self.command_context() is not None:
             self.post_message(self.CommandNavigated(1))
             return
-        if "\n" in self.text or not self._can_browse_history():
+        if "\n" in self.input_text or not self._can_browse_history():
             self.action_cursor_down()
             return
         if self._history_index < len(self._history) - 1:

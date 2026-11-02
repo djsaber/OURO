@@ -11,6 +11,7 @@ from textual.widgets import Static
 from ouro.application.inputs.queue import QueuedUserInputView
 from ouro.tui.composer.attachment_editor import file_count_label
 from ouro.tui.composer.popup import _trailing_badge
+from ouro.tui.input_presentation import reference_labels
 from ouro.tui.theme import theme_for
 
 
@@ -50,8 +51,6 @@ class QueuedInputPanel(VerticalScroll):
                 label = "Follow-up" if item.mode == "follow_up" else "Guide"
                 tone = theme.accent if item.mode == "follow_up" else theme.accent_bright
                 prompt = " ↵ ".join(line.strip() for line in item.prompt.splitlines())
-                if item.skills:
-                    prompt = " ".join(skill.label for skill in item.skills) + f" {prompt}"
                 row = Text(f"{index}. {label}", style=tone)
                 row.append(
                     theme.inline_separator,
@@ -64,6 +63,15 @@ class QueuedInputPanel(VerticalScroll):
                         row, badge, self.scrollable_content_region.width, theme.accent
                     )
                 content.append_text(row)
+                elements = sorted(
+                    (*item.attachments, *item.skills),
+                    key=lambda element: (element.text_offset, element.order),
+                )
+                if elements:
+                    content.append("\n")
+                    content.append(
+                        reference_labels(element.name for element in elements), theme.accent
+                    )
                 if index < len(inputs):
                     content.append("\n")
             self._content.update(content)
