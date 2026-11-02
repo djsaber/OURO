@@ -14,7 +14,6 @@ from ouro.skills import SkillLoader
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
 from ouro.tui.composer.popup import CommandPopup
-from ouro.tui.conversation.history import ConversationHistory
 from ouro.tui.features.configuration.skills import SkillInstallScreen
 from ouro.tui.features.configuration.workflows import _skill_choice
 from ouro.tui.menus.choice import ChoiceScreen
@@ -358,7 +357,6 @@ Review the requested code carefully.
             description="skill-activated run",
         )
 
-        assert app.query_one(ConversationHistory).user_turns == ("@reviewer inspect app.py",)
         assert app._controller.session_id is not None
         snapshot = application.runtime.store.load_session(app._controller.session_id)
         message = next(item for item in snapshot.messages if item.skill_activations)

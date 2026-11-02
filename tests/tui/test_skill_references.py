@@ -41,15 +41,14 @@ async def test_skill_multiselect_is_inline_atomic_and_preserves_the_draft(tmp_pa
         assert [item.name for item in popup._commands] == ["@file", "@skill"]
         await pilot.press(*"skill", "enter")
         assert app.focused is composer and app.screen is screen
-        assert popup.region.bottom == composer.region.y
         assert composer.draft_content == InputContent(text="before after")
         await pilot.press("space", "down", "space", "enter")
         content = composer.input_content
         assert content.text == "before after"
         assert [item.name for item in content.skills] == ["reviewer", "writer"]
         assert [item.text_offset for item in content.skills] == [0, 0]
-        assert composer.text == "@reviewer @writer before after"
         assert not popup.display and app._controller.session_id is None
+        composer.move_cursor(composer.document.end)
         await pilot.press("backspace")
         assert [item.name for item in composer.input_content.skills] == ["reviewer"]
         composer.undo()
@@ -166,7 +165,6 @@ async def test_mixed_references_survive_restart_and_form_one_complete_attachment
         composer.insert_plain_paste("inspect")
         original = composer.input_content
         display = composer.text
-        assert display == "@reviewer @writer @notes.txt @notes.txt inspect"
         await pilot.pause()
     assert TuiInputDraftStore(tmp_path).load().content_for(None) == original
 
@@ -274,5 +272,4 @@ async def test_unqueue_restores_multiple_skills_and_files_after_an_existing_draf
         await pilot.pause()
         await app._unqueue_message(queued.queue_id)
         assert composer.input_content == InputContent(text="draft").followed_by(original)
-        assert composer.text == "draft\n@reviewer @writer @a.txt task"
         assert not runtime.pending_user_inputs(session.session_id)

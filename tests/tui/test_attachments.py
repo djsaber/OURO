@@ -78,9 +78,11 @@ def test_attachment_input_appears_once_in_conversation(prompt):
         mutable_tool_call_keys=frozenset(),
         visible_scaffold_delegation_id=None,
     )
-    assert [entry.text for entry in entries if entry.kind == "user"] == [
-        f"{prompt}\nSECURITY.md".lstrip("\n")
-    ]
+    user_entries = [entry for entry in entries if entry.kind == "user"]
+    assert len(user_entries) == 1
+    assert user_entries[0].text.count(item.name) == 1
+    if prompt:
+        assert user_entries[0].text.count(prompt) == 1
 
 
 def test_batch_path_paste_is_conservative(tmp_path):

@@ -79,19 +79,38 @@ class AttachmentTextArea(TuiTextArea):
         start, end = sorted(
             self.plain_document.get_index_from_location(location) for location in self.selection
         )
-        text = content.text[:start] + content.text[end:]
+        body_start, body_end = min(start, len(content.text)), min(end, len(content.text))
+        text = content.text[:body_start] + content.text[body_end:]
         retained = tuple(
-            span.attachment for span in spans if not (span.start < end and span.end > start)
+            _move_element(span.attachment, body_start, body_end, 0)
+            for span in spans
+            if not (span.start < end and span.end > start)
         )
 
         def insert(items: tuple[InputFile, ...]) -> InputContent:
-            return _input_with_elements(text, (*retained, *items)) if items else content
+            return (
+                _input_with_elements(
+                    text,
+                    (
+                        *retained,
+                        *(item.model_copy(update={"text_offset": body_start}) for item in items),
+                    ),
+                )
+                if items
+                else content
+            )
 
         return insert
 
     def load_input(self, content: InputContent) -> None:
         body = _normalize_newlines(content.text)
-        text, spans = _input_document(body, content.elements)
+        elements = tuple(
+            item.model_copy(
+                update={"text_offset": len(_normalize_newlines(content.text[: item.text_offset]))}
+            )
+            for item in content.elements
+        )
+        text, spans = _input_document(body, elements)
         self.attachment_spans = ()
         super().load_text(text)
         self.attachment_spans = spans
@@ -155,9 +174,7 @@ class AttachmentTextArea(TuiTextArea):
         start = self.plain_document.get_index_from_location(edit.top)
         end = self.plain_document.get_index_from_location(edit.bottom)
         body_length = (
-            max(0, self.attachment_spans[0].start - 1)
-            if self.attachment_spans
-            else len(self.text)
+            max(0, self.attachment_spans[0].start - 1) if self.attachment_spans else len(self.text)
         )
         body_start, body_end = min(start, body_length), min(end, body_length)
         retained = tuple(
@@ -179,16 +196,28 @@ class AttachmentTextArea(TuiTextArea):
             )
             result.before = self.attachment_spans
             result.after_spans = tuple(
-                AttachmentSpan(span.start + delta, span.end + delta, span.attachment)
+                AttachmentSpan(
+                    span.start + delta,
+                    span.end + delta,
+                    _move_element(span.attachment, body_start, body_end, len(edit.text)),
+                )
                 for span in retained
             )
             return result
 
         # Rebuild the suffix only when references or their separating newline change.
         body = self.text[:body_start] + edit.text + self.text[body_end:body_length]
-        projected, spans = _input_document(
-            body, (*tuple(span.attachment for span in retained), *inserted)
+        content = _input_with_elements(
+            body,
+            (
+                *(
+                    _move_element(span.attachment, body_start, body_end, len(edit.text))
+                    for span in retained
+                ),
+                *(item.model_copy(update={"text_offset": body_start}) for item in inserted),
+            ),
         )
+        projected, spans = _input_document(body, content.elements)
         result = AttachmentEdit(
             projected[body_start:],
             self.plain_document.get_location_from_index(body_start),
@@ -235,10 +264,20 @@ def _normalize_newlines(text: str) -> str:
 def _input_with_elements(
     text: str, elements: tuple[InputFile | InputSkillReference, ...]
 ) -> InputContent:
-    """References follow the prose; their projected separator is never submitted."""
+    """Keep logical anchors independent of the reference row's display coordinates."""
     return InputContent.from_elements(
-        text, tuple(item.model_copy(update={"text_offset": len(text)}) for item in elements)
+        text, tuple(sorted(elements, key=lambda item: item.text_offset))
     )
+
+
+def _move_element(
+    item: InputFile | InputSkillReference, start: int, end: int, inserted_length: int
+) -> InputFile | InputSkillReference:
+    """Rebase anchors across prose edits, keeping insertions at an anchor after it."""
+    offset = item.text_offset
+    if offset > start:
+        offset = max(start, offset - (end - start)) + inserted_length
+    return item.model_copy(update={"text_offset": offset})
 
 
 def _input_document(

@@ -138,7 +138,10 @@ async def command(app, pilot, value, *, attachments=(), skills=()):
     composer.load_input(
         InputContent(
             text=value,
-            skills=skills,
+            skills=tuple(
+                item.model_copy(update={"text_offset": min(item.text_offset, len(value))})
+                for item in skills
+            ),
             attachments=tuple(
                 item.model_copy(update={"text_offset": len(value)}) for item in attachments
             ),
