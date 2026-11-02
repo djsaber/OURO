@@ -674,13 +674,14 @@ async def _services(
     provider = CapturingChildProvider()
     tools = _tools()
     definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
-    definitions.create(
-        agent_id="reader",
-        name="Reader",
-        description="Read bounded evidence.",
-        system_prompt="CHILD READER INSTRUCTIONS",
-        tool_selection=ToolSelection(mode="selected", names=("Read",)),
-        tools=tools,
+    definitions.config.create(
+        AgentDefinition(
+            agent_id="reader",
+            name="Reader",
+            description="Read bounded evidence.",
+            system_prompt="CHILD READER INSTRUCTIONS",
+            tool_selection=ToolSelection(mode="selected", names=("Read",)),
+        ),
         expected_revision=0,
     )
     runtime = RuntimeService(
@@ -780,13 +781,14 @@ async def _active_subagent_services(
     provider = SteeredChildProvider()
     tools = _tools()
     definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
-    definitions.create(
-        agent_id="reader",
-        name="Reader",
-        description="Read while active.",
-        system_prompt="READ ONLY",
-        tool_selection=ToolSelection(mode="selected", names=("Read",)),
-        tools=tools,
+    definitions.config.create(
+        AgentDefinition(
+            agent_id="reader",
+            name="Reader",
+            description="Read while active.",
+            system_prompt="READ ONLY",
+            tool_selection=ToolSelection(mode="selected", names=("Read",)),
+        ),
         expected_revision=0,
     )
     runtime = RuntimeService(
@@ -3079,13 +3081,14 @@ async def test_sync_spawn_releases_parent_worker_and_resumes_original_tool_call(
     store.initialize()
     tools = _tools()
     definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
-    definitions.create(
-        agent_id="reader",
-        name="Reader",
-        description="Read bounded evidence.",
-        system_prompt="CHILD ONLY",
-        tool_selection=ToolSelection(mode="selected", names=("Read",)),
-        tools=tools,
+    definitions.config.create(
+        AgentDefinition(
+            agent_id="reader",
+            name="Reader",
+            description="Read bounded evidence.",
+            system_prompt="CHILD ONLY",
+            tool_selection=ToolSelection(mode="selected", names=("Read",)),
+        ),
         expected_revision=0,
     )
     provider = SyncAgentProvider()
@@ -3191,13 +3194,14 @@ async def test_sync_delivery_commits_while_parent_model_is_still_running(
     store.initialize()
     tools = _tools()
     definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
-    definitions.create(
-        agent_id="reader",
-        name="Reader",
-        description="Read bounded evidence.",
-        system_prompt="CHILD ONLY",
-        tool_selection=ToolSelection(mode="selected", names=("Read",)),
-        tools=tools,
+    definitions.config.create(
+        AgentDefinition(
+            agent_id="reader",
+            name="Reader",
+            description="Read bounded evidence.",
+            system_prompt="CHILD ONLY",
+            tool_selection=ToolSelection(mode="selected", names=("Read",)),
+        ),
         expected_revision=0,
     )
     provider = ParallelSyncAgentProvider() if parallel else SyncAgentProvider()
@@ -3355,13 +3359,14 @@ async def test_parallel_sync_spawns_serialize_parent_resumption(
     store.initialize()
     tools = _tools()
     definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
-    definitions.create(
-        agent_id="reader",
-        name="Reader",
-        description="Read bounded evidence.",
-        system_prompt="CHILD ONLY",
-        tool_selection=ToolSelection(mode="selected", names=("Read",)),
-        tools=tools,
+    definitions.config.create(
+        AgentDefinition(
+            agent_id="reader",
+            name="Reader",
+            description="Read bounded evidence.",
+            system_prompt="CHILD ONLY",
+            tool_selection=ToolSelection(mode="selected", names=("Read",)),
+        ),
         expected_revision=0,
     )
     provider = ParallelSyncAgentProvider()
@@ -3706,13 +3711,14 @@ async def test_next_boundary_delivery_racing_parent_round_is_committed_once(tmp_
     store.initialize()
     tools = _tools()
     definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
-    definitions.create(
-        agent_id="reader",
-        name="Reader",
-        description="Read bounded evidence.",
-        system_prompt="",
-        tool_selection=ToolSelection(mode="selected", names=("Read",)),
-        tools=tools,
+    definitions.config.create(
+        AgentDefinition(
+            agent_id="reader",
+            name="Reader",
+            description="Read bounded evidence.",
+            system_prompt="",
+            tool_selection=ToolSelection(mode="selected", names=("Read",)),
+        ),
         expected_revision=0,
     )
     provider = NextBoundaryRaceProvider()
@@ -3784,13 +3790,14 @@ async def test_async_result_delivery_is_exact_once(tmp_path) -> None:
     store.initialize()
     tools = _tools()
     definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
-    definitions.create(
-        agent_id="reader",
-        name="Reader",
-        description="Read bounded evidence.",
-        system_prompt="",
-        tool_selection=ToolSelection(mode="selected", names=("Read",)),
-        tools=tools,
+    definitions.config.create(
+        AgentDefinition(
+            agent_id="reader",
+            name="Reader",
+            description="Read bounded evidence.",
+            system_prompt="",
+            tool_selection=ToolSelection(mode="selected", names=("Read",)),
+        ),
         expected_revision=0,
     )
     provider = AsyncFollowUpProvider()
@@ -3912,13 +3919,14 @@ async def test_delivery_run_can_message_the_same_subagent_without_deadlock(tmp_p
     store.initialize()
     tools = _tools()
     definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
-    definitions.create(
-        agent_id="reader",
-        name="Reader",
-        description="Read bounded evidence.",
-        system_prompt="",
-        tool_selection=ToolSelection(mode="selected", names=("Read",)),
-        tools=tools,
+    definitions.config.create(
+        AgentDefinition(
+            agent_id="reader",
+            name="Reader",
+            description="Read bounded evidence.",
+            system_prompt="",
+            tool_selection=ToolSelection(mode="selected", names=("Read",)),
+        ),
         expected_revision=0,
     )
     provider = AsyncSendAfterDeliveryProvider()

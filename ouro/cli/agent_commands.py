@@ -53,7 +53,6 @@ async def _definition_command(args: argparse.Namespace) -> tuple[dict[str, Any],
             return ({"tools": dumped_options}, _tool_options_text(dumped_options))
         if command == "create":
             catalog = definitions.create(
-                agent_id=args.agent_id,
                 name=args.name,
                 description=args.description,
                 system_prompt=args.system_prompt,
@@ -89,7 +88,6 @@ async def _definition_command(args: argparse.Namespace) -> tuple[dict[str, Any],
         elif command == "copy":
             catalog = definitions.copy_builtin(
                 args.agent_id,
-                new_agent_id=args.new_agent_id,
                 name=args.name,
                 tools=tools,
                 expected_revision=args.expected_revision,

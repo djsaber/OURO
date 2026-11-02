@@ -34,6 +34,7 @@ class AgentRuntimeConfig(OuroModel):
 class AgentDefinitionsConfig(OuroModel):
     revision: int = Field(default=0, ge=0)
     runtime: AgentRuntimeConfig = Field(default_factory=AgentRuntimeConfig)
+    disabled_agent_ids: tuple[str, ...] = ()
     definitions: tuple[AgentDefinition, ...] = Field(
         default=(),
         max_length=MAX_USER_AGENT_DEFINITIONS,
@@ -47,6 +48,9 @@ class AgentDefinitionsConfig(OuroModel):
         reserved = sorted(RESERVED_AGENT_IDS.intersection(ids))
         if reserved:
             raise ValueError("reserved agent ids cannot be user-defined: " + ", ".join(reserved))
+        unknown = set(self.disabled_agent_ids) - set(ids) - RESERVED_AGENT_IDS
+        if unknown:
+            raise ValueError("unknown disabled agent ids: " + ", ".join(sorted(unknown)))
         return self
 
 
@@ -111,6 +115,7 @@ class AgentDefinitionsConfigManager:
             AgentDefinitionsConfig(
                 revision=current.revision + 1,
                 runtime=current.runtime,
+                disabled_agent_ids=current.disabled_agent_ids,
                 definitions=tuple(
                     definition if item.agent_id == definition.agent_id else item
                     for item in current.definitions
@@ -129,9 +134,35 @@ class AgentDefinitionsConfigManager:
             AgentDefinitionsConfig(
                 revision=current.revision + 1,
                 runtime=current.runtime,
+                disabled_agent_ids=tuple(
+                    item for item in current.disabled_agent_ids if item != agent_id
+                ),
                 definitions=tuple(
                     item for item in current.definitions if item.agent_id != agent_id
                 ),
+            )
+        )
+
+    @atomic_config_update
+    def set_enabled(
+        self, agent_id: str, *, enabled: bool, expected_revision: int
+    ) -> AgentDefinitionsConfig:
+        current = self._require_revision(expected_revision)
+        if agent_id not in RESERVED_AGENT_IDS and not any(
+            item.agent_id == agent_id for item in current.definitions
+        ):
+            raise ConfigError(f"agent definition not found: {agent_id}")
+        disabled = set(current.disabled_agent_ids)
+        if enabled:
+            disabled.discard(agent_id)
+        else:
+            disabled.add(agent_id)
+        return self._save(
+            current.model_copy(
+                update={
+                    "revision": current.revision + 1,
+                    "disabled_agent_ids": tuple(sorted(disabled)),
+                }
             )
         )
 
@@ -151,6 +182,7 @@ class AgentDefinitionsConfigManager:
             AgentDefinitionsConfig(
                 revision=current.revision + 1,
                 runtime=validated,
+                disabled_agent_ids=current.disabled_agent_ids,
                 definitions=current.definitions,
             )
         )

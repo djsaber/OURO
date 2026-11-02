@@ -65,13 +65,18 @@ class ToolSelection(OuroModel):
         return self
 
 
-class AgentDefinition(VersionedOuroModel):
-    agent_id: str
+class AgentDefinitionContent(OuroModel):
+    """Editable definition content, independent of its durable identity."""
+
     name: str = Field(min_length=1, max_length=80)
     description: str = Field(min_length=1, max_length=500)
     system_prompt: str = Field(default="", max_length=20_000)
     tool_selection: ToolSelection = Field(default_factory=ToolSelection)
     model: str | None = None
+
+
+class AgentDefinition(AgentDefinitionContent, VersionedOuroModel):
+    agent_id: str
     can_spawn: bool = False
     default_budget: RunBudgetPolicy = Field(default_factory=RunBudgetPolicy)
     contract_hash: str = ""

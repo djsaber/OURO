@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 
 from ouro.application.contracts.agents import (
@@ -8,13 +9,14 @@ from ouro.application.contracts.agents import (
     AgentDefinitionView,
     AgentToolOptionView,
 )
-from ouro.config.agents import AgentDefinitionsConfigManager
+from ouro.config.agents import AgentDefinitionsConfig, AgentDefinitionsConfigManager
 from ouro.config.providers.manager import ProviderConfigManager
 from ouro.core.agents import (
     AGENT_CONTROL_TOOL_NAMES,
     AgentCatalogEntry,
     AgentCatalogSnapshot,
     AgentDefinition,
+    AgentSpawnPolicy,
     EffectiveToolRef,
     ToolSelection,
 )
@@ -24,6 +26,7 @@ from ouro.core.approvals import (
     configured_tool_permission,
     resolve_tool_permission,
 )
+from ouro.core.base import new_id
 from ouro.core.errors import ConfigError
 from ouro.core.tools import tool_definition_contract_hash
 from ouro.tools import ToolDefinition, ToolRegistry
@@ -44,8 +47,11 @@ GENERAL_AGENT_DEFINITION = AgentDefinition(
 class AgentDefinitionService:
     """Resolve definitions and current tool capabilities for one decision."""
 
-    def __init__(self, config: AgentDefinitionsConfigManager) -> None:
+    def __init__(
+        self, config: AgentDefinitionsConfigManager, *, spawn_policy: AgentSpawnPolicy | None = None
+    ) -> None:
         self.config = config
+        self._spawn_policy = spawn_policy
         self.providers = ProviderConfigManager(config.file.root)
 
     def default_model_route(self) -> str:
@@ -53,12 +59,16 @@ class AgentDefinitionService:
 
     def list(self, *, tools: ToolRegistry) -> AgentDefinitionCatalogView:
         config = self.config.snapshot()
-        entries = self._entries(tools)
+        entries = self._entries(tools, config=config)
+        policy = self._spawn_policy or config.runtime.spawn_policy
         return AgentDefinitionCatalogView(
             revision=config.revision,
+            policy_restart_required=policy != config.runtime.spawn_policy,
             definitions=tuple(
                 self._view(
                     entry,
+                    enabled=entry.definition.agent_id not in config.disabled_agent_ids,
+                    allowed_by_policy=policy.allows_agent(entry.definition.agent_id),
                     source=(
                         "builtin"
                         if entry.definition.agent_id == GENERAL_AGENT_DEFINITION.agent_id
@@ -70,14 +80,26 @@ class AgentDefinitionService:
         )
 
     def get(self, agent_id: str, *, tools: ToolRegistry) -> AgentDefinitionDetail:
+        config = self.config.snapshot()
         entry = next(
-            (item for item in self._entries(tools) if item.definition.agent_id == agent_id),
+            (
+                item
+                for item in self._entries(tools, config=config)
+                if item.definition.agent_id == agent_id
+            ),
             None,
         )
         if entry is None:
             raise ConfigError(f"agent definition not found: {agent_id}")
         source = "builtin" if agent_id == GENERAL_AGENT_DEFINITION.agent_id else "user"
-        view = self._view(entry, source=source)
+        view = self._view(
+            entry,
+            source=source,
+            enabled=agent_id not in config.disabled_agent_ids,
+            allowed_by_policy=(self._spawn_policy or config.runtime.spawn_policy).allows_agent(
+                agent_id
+            ),
+        )
         return AgentDefinitionDetail(
             **view.model_dump(), system_prompt=entry.definition.system_prompt
         )
@@ -85,7 +107,6 @@ class AgentDefinitionService:
     def create(
         self,
         *,
-        agent_id: str,
         name: str,
         description: str,
         system_prompt: str,
@@ -96,7 +117,7 @@ class AgentDefinitionService:
     ) -> AgentDefinitionCatalogView:
         self._require_known_selected_tools(tool_selection, tools)
         definition = AgentDefinition(
-            agent_id=agent_id,
+            agent_id=self._new_agent_id(name),
             name=name,
             description=description,
             system_prompt=system_prompt,
@@ -152,11 +173,16 @@ class AgentDefinitionService:
         self.config.delete(agent_id, expected_revision=expected_revision)
         return self.list(tools=tools or ToolRegistry())
 
+    def set_enabled(
+        self, agent_id: str, *, enabled: bool, expected_revision: int, tools: ToolRegistry
+    ) -> AgentDefinitionCatalogView:
+        self.config.set_enabled(agent_id, enabled=enabled, expected_revision=expected_revision)
+        return self.list(tools=tools)
+
     def copy_builtin(
         self,
         agent_id: str,
         *,
-        new_agent_id: str,
         name: str,
         tools: ToolRegistry,
         expected_revision: int,
@@ -166,12 +192,19 @@ class AgentDefinitionService:
         copied = AgentDefinition(
             **{
                 **GENERAL_AGENT_DEFINITION.model_dump(exclude={"contract_hash"}),
-                "agent_id": new_agent_id,
+                "agent_id": self._new_agent_id(name),
                 "name": name,
             }
         )
         self.config.create(copied, expected_revision=expected_revision)
         return self.list(tools=tools)
+
+    @staticmethod
+    def _new_agent_id(name: str) -> str:
+        prefix = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:31].rstrip("-")
+        if not prefix or not prefix[0].isalpha():
+            prefix = "agent"
+        return new_id(prefix)
 
     def tool_options(self, tools: ToolRegistry) -> tuple[AgentToolOptionView, ...]:
         return tuple(
@@ -198,11 +231,16 @@ class AgentDefinitionService:
         config = self.config.snapshot()
         return AgentCatalogSnapshot(
             revision=config.revision,
-            entries=self._entries(
-                tools,
-                permission_overrides=permission_overrides,
-                plugin_permission_overrides=plugin_permission_overrides,
-                approval_mode=approval_mode,
+            entries=tuple(
+                entry
+                for entry in self._entries(
+                    tools,
+                    config=config,
+                    permission_overrides=permission_overrides,
+                    plugin_permission_overrides=plugin_permission_overrides,
+                    approval_mode=approval_mode,
+                )
+                if entry.definition.agent_id not in config.disabled_agent_ids
             ),
         )
 
@@ -210,11 +248,11 @@ class AgentDefinitionService:
         self,
         tools: ToolRegistry,
         *,
+        config: AgentDefinitionsConfig,
         permission_overrides: Mapping[str, PermissionMode] | None = None,
         plugin_permission_overrides: Mapping[str, PermissionMode] | None = None,
         approval_mode: SessionApprovalMode = "inherit",
     ) -> tuple[AgentCatalogEntry, ...]:
-        config = self.config.snapshot()
         overrides = permission_overrides or {}
         plugin_overrides = plugin_permission_overrides or {}
         definitions = (GENERAL_AGENT_DEFINITION, *config.definitions)
@@ -338,6 +376,8 @@ class AgentDefinitionService:
         entry: AgentCatalogEntry,
         *,
         source: str,
+        enabled: bool,
+        allowed_by_policy: bool,
     ) -> AgentDefinitionView:
         return AgentDefinitionView(
             agent_id=entry.definition.agent_id,
@@ -347,6 +387,8 @@ class AgentDefinitionService:
             model=entry.definition.model,
             source="builtin" if source == "builtin" else "user",
             editable=source == "user",
+            enabled=enabled,
+            allowed_by_policy=allowed_by_policy,
             compatibility="available" if entry.available else "unavailable",
             missing_tool_names=entry.missing_tool_names,
             contract_hash=entry.definition.contract_hash,

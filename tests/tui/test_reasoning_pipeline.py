@@ -93,7 +93,6 @@ async def test_max_effort_response_reaches_persisted_conversation_history(
                 (),
                 (),
                 mutable_tool_call_keys=frozenset(),
-                visible_scaffold_delegation_id=None,
             )
             assert [entry.reasoning for entry in entries if entry.reasoning] == [
                 "Checking the evidence."

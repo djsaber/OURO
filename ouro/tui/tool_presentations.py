@@ -59,9 +59,20 @@ def present_tool(
         return _present_command(tool.arguments)
     if name == "todolist":
         return _present_todos(tool.arguments, theme=theme)
+    if name == "sendagentmessage":
+        return _present_agent_message(tool.arguments)
     if name == "spawnagent":
         return _present_spawn_agent(tool.arguments, tool.result_data)
     return ToolPresentation()
+
+
+def _present_agent_message(arguments: dict[str, JsonValue]) -> ToolPresentation:
+    message = _non_blank_text(arguments.get("message"))
+    if message is None:
+        return ToolPresentation()
+    return ToolPresentation(
+        lines=(ToolPresentationLine("└", (ToolPresentationPart(" ".join(message.split())),)),)
+    )
 
 
 def _present_spawn_agent(

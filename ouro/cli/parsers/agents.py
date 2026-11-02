@@ -32,7 +32,8 @@ def _add_agent_parser(subparsers: argparse._SubParsersAction) -> None:
 
     for name in ("create", "update"):
         command = definition_commands.add_parser(name, help=f"{name.title()} an Agent definition")
-        command.add_argument("agent_id")
+        if name == "update":
+            command.add_argument("agent_id")
         command.add_argument("--name", required=True)
         command.add_argument("--description", required=True)
         command.add_argument("--system-prompt", required=True)
@@ -55,7 +56,6 @@ def _add_agent_parser(subparsers: argparse._SubParsersAction) -> None:
 
     copy = definition_commands.add_parser("copy", help="Copy a builtin Agent definition")
     copy.add_argument("agent_id")
-    copy.add_argument("new_agent_id")
     copy.add_argument("--name", required=True)
     copy.add_argument("--expected-revision", type=int, required=True)
     _add_agent_output_args(copy)

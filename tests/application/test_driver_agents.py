@@ -15,7 +15,7 @@ from ouro.application.supervisor import RuntimeSupervisor
 from ouro.config.agents import AgentDefinitionsConfigManager
 from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.adapter import RuntimeAdapter
-from ouro.core.agents import ToolSelection
+from ouro.core.agents import AgentDefinition, ToolSelection
 from ouro.core.observers import ObserverRegistry
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
 from ouro.plugins.contributions.preparation import ContributionCoordinator
@@ -91,13 +91,14 @@ def assemble(tmp_path, store, provider, calls):
     )
     definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path / "home"))
     if definitions.list(tools=tools).revision == 0:
-        definitions.create(
-            agent_id="reader",
-            name="Reader",
-            description="Read bounded evidence",
-            system_prompt="CHILD ONLY",
-            tool_selection=ToolSelection(mode="selected", names=()),
-            tools=tools,
+        definitions.config.create(
+            AgentDefinition(
+                agent_id="reader",
+                name="Reader",
+                description="Read bounded evidence",
+                system_prompt="CHILD ONLY",
+                tool_selection=ToolSelection(mode="selected", names=()),
+            ),
             expected_revision=0,
         )
     plugins = PluginRuntimeResource(

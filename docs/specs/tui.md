@@ -506,7 +506,8 @@ ready message 只启动一个呈现 worker，不在 App 消息泵中等待解析
 中处理不可变快照，UI loop 只提交捕获宽度对应的 strips，后台线程不得修改 Widget。
 
 实时和重载使用 canonical MessageRecord 的 `role/scaffold` 决定可见性；事件类型表达来源，不能替代这些字段。
-默认隐藏内部 `scaffold=true` 消息，保留附件输入和当前子会话自身的委派输入。Actions → Settings →
+默认隐藏 `scaffold=true` 消息，保留附件输入的文件展示。子智能体首次任务、后续指令和回传结果均遵循同一
+可见性规则，不因委派来源或所在会话而单独放行。Actions → Settings →
 `Scaffold messages` 提供 `Off`（默认）和 `On`，持久化为 `config/tui.json` 中的
 `show_scaffold_messages`。开启后，脚手架正文复用用户消息的布局、时间戳、悬停与复制交互，正文和左边栏均使用
 主题 `text_lowlight`，悬停时正文仍保持低亮；真实用户消息使用 `text_emphasis` 正文和 `accent` 左边栏。
@@ -517,6 +518,8 @@ composer 编辑文字和排队输入预览正文同样使用 `text_emphasis`，�
 的用户消息编号。该偏好统一应用于主会话、子会话和任务会话的快照、实时事件、分页及缓存恢复；切换立即刷新当前
 视图并保留已加载的历史范围，不改变后台 Run。只读子会话可打开 Actions 中的 Theme、Thinking display、
 Collapse traces 和 Scaffold messages，其他会话与运行配置操作仍不可用。semantic tag 只影响模型包络。
+`SendAgentMessage` 使用工具消息详情行显示发送正文，空白折叠为单个空格，按当前可用宽度单行省略；
+流式参数沿用工具的有界尾部预览。通信按所在会话的时间顺序呈现，不回填历史工具行或复制子会话流。
 流式回归须在 Provider 仍被阻塞时验证可见源流，
 不能仅检查最终 RunResult。
 

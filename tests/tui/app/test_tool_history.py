@@ -331,7 +331,6 @@ def test_history_keeps_reused_provider_call_ids_in_their_native_scope(
         (),
         (),
         mutable_tool_call_keys=frozenset(),
-        visible_scaffold_delegation_id=None,
     )
     tools = [entry.tool for entry in entries if entry.tool is not None]
     assert [(tool.batch_id, tool.arguments, tool.status) for tool in tools] == [
@@ -343,7 +342,6 @@ def test_history_keeps_reused_provider_call_ids_in_their_native_scope(
         (),
         (),
         mutable_tool_call_keys=frozenset({(second_run, second_batch, "reused")}),
-        visible_scaffold_delegation_id=None,
     )
     assert [entry.tool for entry in selected if entry.tool is not None] == [tools[0]]
 

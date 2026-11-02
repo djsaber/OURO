@@ -248,7 +248,9 @@ class LocalApplication:
         )
         agent_config = AgentDefinitionsConfigManager(configured_home)
         configured_agents = agent_config.snapshot()
-        agent_definitions = AgentDefinitionService(agent_config)
+        agent_definitions = AgentDefinitionService(
+            agent_config, spawn_policy=configured_agents.runtime.spawn_policy
+        )
         supervisor = RuntimeSupervisor(runtime)
         agents = AgentService(
             store=runtime.store,

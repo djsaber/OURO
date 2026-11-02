@@ -63,7 +63,6 @@ def test_revealing_attachment_scaffolds_preserves_file_labels_and_user_targets(p
             (),
             (),
             mutable_tool_call_keys=frozenset(),
-            visible_scaffold_delegation_id=None,
             show_scaffold_messages=enabled,
         )
         assert len([entry for entry in entries if entry.kind == "user"]) == 1
@@ -96,6 +95,23 @@ async def test_live_inputs_and_loaded_history_share_scaffold_projection(tmp_path
             start=1,
         )
     )
+    messages += (
+        MessageRecord.text(
+            session_id="ses_inputs",
+            role="user",
+            text="Subagent completed the task",
+            scaffold=True,
+            semantic_tag="subagent-result",
+            sequence=len(messages) + 1,
+        ).model_copy(
+            update={
+                "metadata": {
+                    "session_input_source": "host",
+                    "host_source_id": "ouro.subagents/results/delivery_child",
+                }
+            }
+        ),
+    )
     async with run_ready_app(app):
         await app._set_scaffold_messages(enabled)
         app._projection = TuiSessionProjection("ses_inputs")
@@ -117,7 +133,6 @@ async def test_live_inputs_and_loaded_history_share_scaffold_projection(tmp_path
             (),
             (),
             mutable_tool_call_keys=frozenset(),
-            visible_scaffold_delegation_id=None,
             show_scaffold_messages=enabled,
         )
         assert history.entries == expected

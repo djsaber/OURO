@@ -29,7 +29,7 @@ from ouro.tui.state import TuiSessionProjection, project_run_presentation
 from ouro.tui.theme import DEFAULT_TUI_THEME
 from ouro.tui.widgets.activity import ActivityIndicator
 from ouro.tui.widgets.status import StatusLine
-from tests.tui.app.support import _application, _wait_for_active_session
+from tests.tui.app.support import _application
 from tests.tui.helpers import (
     run_ready_app,
     wait_for_events,
@@ -598,24 +598,25 @@ async def test_session_picker_restores_history_after_returning_to_welcome(
         await pilot.pause()
         await pilot.press("ctrl+o")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
+        session_menu = app.screen
         await pilot.press("enter")
-        await _wait_for_active_session(app, pilot, session.session_id)
-        await pilot.pause()
+        # Projection identity is published before the complete Session surface is installed.
+        await wait_for_menu_action(pilot, session_menu)
+        assert app._controller.session_id == session.session_id
         assert app.query_one(ConversationHistory).user_turns == ("Persisted user message",)
         assert app._active_workspace == str(workspace.resolve())
 
         await pilot.press("ctrl+n")
-        await _wait_until(
-            lambda: app.query_one(ConversationView).showing_welcome,
-            pilot,
-            description="new-session welcome page",
-        )
+        await _wait_for_worker_group(app, pilot, group="navigation")
+        assert app.query_one(ConversationView).showing_welcome
         assert app._controller.draft_workspace == str(workspace.resolve())
         assert app._active_workspace == str(workspace.resolve())
         await pilot.press("ctrl+o")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
+        session_menu = app.screen
         await pilot.press("enter")
-        await _wait_for_active_session(app, pilot, session.session_id)
+        await wait_for_menu_action(pilot, session_menu)
+        assert app._controller.session_id == session.session_id
         await wait_for_history_render(pilot)
 
         history = app.query_one(ConversationHistory)

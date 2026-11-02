@@ -163,7 +163,7 @@ AgentTreeSnapshot。
 
 用户可以创建、读取、更新和删除自定义 definition。管理 DTO 投影 `source=builtin|user` 和派生字段 editable；builtin
 的 editable=false，user 的 editable=true。delete 与 update 对 editable=false 返回类型化错误。若用户希望修改 builtin，
-Host 提供“复制为自定义”操作并生成新的 agent_id。
+Host 提供“复制为自定义”操作，由应用服务生成新的 agent_id。
 
 source/editable 不进入 AgentDefinition contract hash、capability 计算或 child prompt；它们只保护配置 mutation 和帮助 Host
 渲染。内容相同的 builtin/user definition 必须得到相同的运行语义。
@@ -220,7 +220,11 @@ AgentDefinitionService 与 AgentService 是两个真实变化轴：前者只管�
 快照，后者只管理 Delegation/Session/Run 生命周期；它们共享 AgentDefinition validator/catalog resolver，不互相转发
 全部 API，也不合并成大一统 facade。
 
-create 返回稳定 agent_id；name 后续可自由修改而不改变已有引用。builtin id 和 reserved namespace 不能被 user
+创建与复制由 `AgentDefinitionService` 生成稳定 agent_id，不接受调用方指定的新 ID。
+ID 使用名称归一化后的有界 ASCII 语义前缀和框架 `new_id` 的唯一后缀；名称无法提供合法前缀时使用 `agent`。
+名称相同的 definition 仍拥有不同 ID。TUI 表单及 CLI 创建、复制参数不提供 ID 配置入口；查询、编辑、删除和派遣
+仍以已有 ID 定位目标。TUI 使用不含身份的 `AgentDefinitionContent` 校验可编辑内容，身份由工作流单独传递。
+已有持久化 ID 保持不变，name 后续可自由修改而不改变引用。builtin id 和 reserved namespace 不能被 user
 占用。name/description/system_prompt 长度和 definition 总数使用配置模型中的集中、可测试产品上限，并在原子写入
 前验证完整的新配置。selected tool 不设置固定数量上限；用户自行决定 Agent 的工具范围，框架只校验名称非空、
 唯一、保存时可解析，并继续执行权限和能力求交。
@@ -781,6 +785,12 @@ TUI 持续订阅 root AgentTree，通过 interaction inbox 呈现子会话审批
 同一 pending interaction 只有一个有效提交；过时通知不改变 canonical 状态。child surface 只读，HITL 在 controlled
 root 的交互面板处理；文本、思考和工具流通过子会话 observation 查看，不复制业务状态或读取 Store 文件。
 
+主、子会话通过各自的 canonical history 展示通信。首次任务、后续指令和异步回传结果保留
+`scaffold=true` 及真实来源，统一受 TUI 的 `Scaffold messages` 设置控制：Off 隐藏，On 显示完整正文。
+子智能体的普通 assistant 回复沿用正常消息展示。主会话的 `SendAgentMessage` 工具详情以单行展示发送内容，
+随可用宽度省略。TUI 不为通信另建消息副本、聚合容器或跨会话流式同步管线。
+
+
 无可交互 Host 时：
 
 - interaction_mode=unattended 使用现有 UnattendedResolution 或 AgentDefinition 的 fail/skip/default 策略；
@@ -1013,6 +1023,7 @@ AgentDefinitionService 与管理 DTO 至少提供：
 - list_agent_definitions / get_agent_definition；
 - create_agent_definition / update_agent_definition / delete_agent_definition；
 - copy_builtin_agent_definition；
+- set_enabled（启用或禁用 builtin/user definition）；
 - list_agent_definition_tool_options；
 - agent_definition_catalog_snapshot / compatibility diagnostics。
 
@@ -1021,12 +1032,37 @@ Actions 至少提供完整 definition 目录列表、派遣策略配置，以及
 上述 service、live tool catalog 和 expected revision，不直接读取或修改 config JSON。编辑表单的未完成状态只能显示
 简短字段提示，不得把底层结构化校验堆栈直接渲染到菜单行。
 
-TUI Actions 的 Subagents 分组按 Dispatch policy、List subagents、Create、Edit、Delete 排列。List 是可继续导航的目录页：
-builtin 与 user 同时展示，builtin 采用既有 disabled 样式，user 进入复用 Edit/Delete 的管理页；独立 Edit/Delete 入口也
-展示同一 builtin disabled 分组。Definition 的 model 从当前 model catalog 单选，首项为继承 Session model；selected tools
-和派遣策略 agent/model allowlist 都以 Choice marker 表达选择状态，不重复显示 selected/not selected 文案，也不要求用户
-输入 agent_id 或 model route key。Application policy 仍保留 pattern 能力；TUI 保存的是当前目录中被勾选项的精确值。
-Subagents 分组的正常导航、取消和成功保存保持静默，只有 warning/error 才进入 notice/notification 通道。
+TUI Actions 的 Subagents 分组包含 Subagent permissions、Manage subagents 和 `+ subagent`。
+Manage subagents 以名称展示 definition，不显示 ID，并将 Enabled/Disabled 固定在最右侧。
+工具兼容时不显示额外状态；工具不兼容时在启用状态前补充 Tools unavailable，避免将兼容性误认为启用状态。
+每个 definition 可进入管理页，提供 Edit、Delete 和随当前状态切换的 Enable 或 Disable。
+builtin 支持启用和禁用，但 Edit、Delete 不可用。
+
+启用状态由框架的 `AgentDefinitionsConfigManager` 管理，以 `agents.disabled_agent_ids` 保存于
+`agents.json`，复用同一 expected revision 契约。Definition 默认启用；应用服务
+`AgentDefinitionService.set_enabled` 更新状态，list/detail DTO 的 `enabled` 独立于工具兼容性和可编辑性。
+TUI controller 调用应用服务并展示返回的目录，不拥有运行时策略，也不直接写配置文件。
+修改成功后静默刷新管理列表；失败通过既有错误通道呈现。
+
+运行时决策快照只包含已启用的 definition。每次模型决策读取单份当前配置快照，因此切换从下一次决策生效，
+无需重启 TUI。进行中的决策和已接受的 Delegation 保留冻结契约；禁用不会中断已有 child 或改变其恢复契约。
+启用状态不参与 definition contract hash。编辑 definition 或派遣策略保留启用状态；删除 user definition
+同时移除其禁用记录。
+
+框架的 `allowed_agent_id_patterns` 是派遣权限上限，API 和 CLI 保留 pattern 配置能力。
+默认值为 `("*",)`，自动放行新建 definition；TUI 不提供子智能体白名单编辑入口，保存其他权限时不传递或改写该字段。
+已有显式白名单原样保留，启用开关不能越过白名单。工具兼容性、启用状态和白名单许可分别表达不同约束。
+
+应用服务的管理投影通过 `allowed_by_policy` 表达子智能体 ID 是否被白名单允许。长期运行 Host 在组合入口将
+同一份启动时派遣策略交给 AgentDefinitionService 和 AgentService，管理状态与实际执行保持一致；独立 CLI
+管理服务按当前配置展示许可。已启用但不被允许的 definition 在列表显示 Restricted by policy，管理页说明可通过
+框架配置或 CLI 调整；Disabled 状态仍保留在最右侧，禁止将受限状态当作另一种启用开关。
+`policy_restart_required` 表示已保存策略与当前运行策略不同；管理列表提示重启后生效，权限表单的 Save 项也说明
+其生效时间。受限判断不使用尚未生效的配置，启用/禁用仍从下一次模型决策生效。
+
+Definition 的 model 从当前 model catalog 单选，支持继承 Session model。工具选择与模型 allowlist
+通过 Choice marker 表示；TUI 保存当前选中的精确 model key。
+正常导航、取消和成功保存保持静默，只有 warning/error 才进入 notice/notification 通道。
 
 AgentService 与 application DTO 至少提供：
 

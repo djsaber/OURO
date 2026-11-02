@@ -24,7 +24,6 @@ def test_agent_definition_cli_default_model_requires_system_route(tmp_path, caps
         "agent",
         "definition",
         "create",
-        "reader",
         "--name",
         "Reader",
         "--description",
@@ -78,7 +77,6 @@ def test_agent_definition_cli_crud_and_tool_compatibility_without_provider(
             "agent",
             "definition",
             "create",
-            "reader",
             "--name",
             "Reader",
             "--description",
@@ -99,8 +97,10 @@ def test_agent_definition_cli_crud_and_tool_compatibility_without_provider(
     assert created["catalog"]["revision"] == 1  # type: ignore[index]
     assert created["catalog"]["effective_from"] == "next_decision"  # type: ignore[index]
 
+    reader_id = created["catalog"]["definitions"][1]["agent_id"]
+
     code, shown = _json_command(
-        ["agent", "definition", "show", "reader", "--home", home, "--json"],
+        ["agent", "definition", "show", reader_id, "--home", home, "--json"],
         capsys,
     )
     assert code == 0
@@ -112,7 +112,7 @@ def test_agent_definition_cli_crud_and_tool_compatibility_without_provider(
             "agent",
             "definition",
             "update",
-            "reader",
+            reader_id,
             "--name",
             "Researcher",
             "--description",
@@ -137,7 +137,6 @@ def test_agent_definition_cli_crud_and_tool_compatibility_without_provider(
             "definition",
             "copy",
             "general",
-            "general_copy",
             "--name",
             "General Copy",
             "--expected-revision",
@@ -156,7 +155,7 @@ def test_agent_definition_cli_crud_and_tool_compatibility_without_provider(
             "agent",
             "definition",
             "delete",
-            "reader",
+            reader_id,
             "--expected-revision",
             "3",
             "--home",

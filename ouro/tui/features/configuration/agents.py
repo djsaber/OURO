@@ -14,7 +14,7 @@ from ouro.application.contracts.agents import (
 )
 from ouro.application.contracts.configuration import AgentRuntimeConfigView
 from ouro.application.contracts.models import AvailableModel
-from ouro.core.agents import AgentDefinition, ExecutionMode, ToolSelection
+from ouro.core.agents import AgentDefinitionContent, ExecutionMode, ToolSelection
 from ouro.core.model_selection import DEFAULT_MODEL
 from ouro.tui.features.configuration.values import _RUNTIME_MODEL, _enabled_label, _toggle_member
 from ouro.tui.features.providers.model_menus import (
@@ -25,9 +25,18 @@ from ouro.tui.features.providers.model_menus import (
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.editable import EditableChoiceScreen
 from ouro.tui.menus.models import Choice
-from ouro.tui.menus.sorting import sorted_agent_definitions
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 from ouro.tui.view_models import TuiAgentDefinitionConfiguration, TuiAgentRuntimeConfiguration
+
+
+def agent_definition_status(definition: AgentDefinitionView, *, theme: TuiTheme) -> str:
+    status = "Enabled" if definition.enabled else "Disabled"
+    labels = []
+    if definition.enabled and not definition.allowed_by_policy:
+        labels.append("Restricted by policy")
+    if definition.compatibility == "unavailable":
+        labels.append("Tools unavailable")
+    return theme.inline_separator.join((*labels, status))
 
 
 class AgentDispatchPolicyScreen(EditableChoiceScreen):
@@ -48,20 +57,13 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
         self,
         config: AgentRuntimeConfigView,
         *,
-        definitions: tuple[AgentDefinitionView, ...],
         models: tuple[AvailableModel, ...],
         theme: TuiTheme = DEFAULT_TUI_THEME,
     ) -> None:
         self._initial_tui_theme = theme
         policy = config.spawn_policy
         self._revision = config.revision
-        self._definitions = definitions
         self._models = models
-        self._allowed_agent_ids = {
-            definition.agent_id
-            for definition in definitions
-            if policy.allows_agent(definition.agent_id)
-        }
         self._allowed_model_keys = {model.key for model in models if policy.allows_model(model.key)}
         self._toggles = {
             "agent-policy-sync": "sync" in policy.allowed_execution_modes,
@@ -82,9 +84,6 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
         if self._editing_value is not None:
             await super()._select_choice(selected)
             return
-        if selected == "agent-policy-agents":
-            await self._choose_allowed_agents()
-            return
         if selected == "agent-policy-models":
             await self._choose_allowed_models()
             return
@@ -96,21 +95,6 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
             self._submit()
             return
         await super()._select_choice(selected)
-
-    async def _choose_allowed_agents(self) -> None:
-        async def toggle(agent_id: str) -> tuple[Choice, ...] | None:
-            _toggle_member(self._allowed_agent_ids, agent_id)
-            return self._agent_choices()
-
-        await self.open_child(
-            ChoiceScreen(
-                title="ALLOWED SUBAGENTS",
-                placeholder="Filter subagents…",
-                choices=self._agent_choices(),
-                on_select=toggle,
-            )
-        )
-        self._refresh("agent-policy-agents")
 
     async def _choose_allowed_models(self) -> None:
         async def toggle(model_key: str) -> tuple[Choice, ...] | None:
@@ -141,8 +125,6 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
         self.dismiss(draft)  # type: ignore[arg-type]
 
     def _draft(self) -> TuiAgentRuntimeConfiguration:
-        if not self._allowed_agent_ids:
-            raise ValueError("At least one allowed subagent is required")
         if not self._allowed_model_keys:
             raise ValueError("At least one allowed model is required")
         execution_modes = tuple(
@@ -157,7 +139,6 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
             raise ValueError("At least one execution mode is required")
         return TuiAgentRuntimeConfiguration(
             expected_revision=self._revision,
-            allowed_agent_id_patterns=tuple(sorted(self._allowed_agent_ids)),
             allowed_model_patterns=tuple(sorted(self._allowed_model_keys)),
             allowed_execution_modes=cast(tuple[ExecutionMode, ...], execution_modes),
             allow_write=self._toggles["agent-policy-write"],
@@ -172,25 +153,6 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
         except ValueError as exc:
             return str(exc)
         return ""
-
-    def _agent_choices(self) -> tuple[Choice, ...]:
-        theme = theme_for(self)
-        return tuple(
-            Choice(
-                definition.agent_id,
-                definition.name,
-                trailing=theme.inline_separator.join(
-                    (definition.agent_id, definition.compatibility)
-                ),
-                group="BUILT-IN" if definition.source == "builtin" else "USER",
-                marker=(
-                    theme.selected_choice_marker
-                    if definition.agent_id in self._allowed_agent_ids
-                    else ""
-                ),
-            )
-            for definition in sorted_agent_definitions(self._definitions)
-        )
 
     def _model_choices(self) -> tuple[Choice, ...]:
         theme = theme_for(self)
@@ -211,12 +173,6 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
             return _enabled_label(self._toggles[field])
 
         return (
-            Choice(
-                "agent-policy-agents",
-                "Allowed subagents",
-                trailing=f"{len(self._allowed_agent_ids)} of {len(self._definitions)}",
-                group="ALLOWED",
-            ),
             Choice(
                 "agent-policy-models",
                 "Allowed models",
@@ -274,7 +230,11 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
                 group="CAPABILITIES",
             ),
             Choice(
-                "agent-policy-save", "Save", trailing=error, group="ACTIONS", disabled=bool(error)
+                "agent-policy-save",
+                "Save",
+                trailing=error or "Applies after restart",
+                group="ACTIONS",
+                disabled=bool(error),
             ),
         )
 
@@ -294,7 +254,6 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
         system_default_model: AvailableModel | None = None,
     ) -> None:
         self._initial_tui_theme = theme
-        self._existing = existing
         self._tools = {tool.name: tool for tool in tools}
         self._models = models
         self._system_default_model = system_default_model
@@ -313,7 +272,6 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
         if configured_model not in self._model_labels:
             self._model_labels[configured_model] = UNAVAILABLE_MODEL_LABEL
         self._values = {
-            "agent-definition-id": existing.agent_id if existing is not None else "",
             "agent-definition-name": existing.name if existing is not None else "",
             "agent-definition-description": (existing.description if existing is not None else ""),
             "agent-definition-prompt": existing.system_prompt if existing is not None else "",
@@ -378,7 +336,6 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
         ):
             raise ValueError("System default endpoint is not configured")
         required = (
-            ("agent-definition-id", "Agent ID"),
             ("agent-definition-name", "Name"),
             ("agent-definition-description", "Description"),
         )
@@ -390,8 +347,7 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
             names=(tuple(sorted(self._selected_tools)) if self._tool_mode == "selected" else ()),
         )
         try:
-            definition = AgentDefinition(
-                agent_id=self._values["agent-definition-id"],
+            definition = AgentDefinitionContent(
                 name=self._values["agent-definition-name"],
                 description=self._values["agent-definition-description"],
                 system_prompt=self._values["agent-definition-prompt"],
@@ -406,7 +362,6 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
             error = exc.errors(include_url=False)[0]
             field_name = str(error["loc"][-1])
             field = {
-                "agent_id": "Agent ID",
                 "name": "Name",
                 "description": "Description",
                 "system_prompt": "Instructions",
@@ -415,7 +370,6 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
             message = message.removeprefix(f"{field_name} ")
             raise ValueError(f"{field}: {message}") from exc
         return TuiAgentDefinitionConfiguration(
-            agent_id=definition.agent_id,
             name=definition.name,
             description=definition.description,
             system_prompt=definition.system_prompt,
@@ -434,15 +388,6 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
         theme = theme_for(self)
         error = self._validation_error()
         choices = [
-            Choice(
-                "agent-definition-id",
-                "Agent ID",
-                trailing=self._values["agent-definition-id"] or "Required",
-                group="IDENTITY",
-                disabled=self._existing is not None,
-                edit_value=self._values["agent-definition-id"],
-                edit_placeholder="Enter a unique lowercase ID",
-            ),
             Choice(
                 "agent-definition-name",
                 "Name",

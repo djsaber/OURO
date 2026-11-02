@@ -26,6 +26,8 @@ class AgentDefinitionView(ApplicationDTO):
     model: str | None = None
     source: Literal["builtin", "user"]
     editable: bool
+    enabled: bool = True
+    allowed_by_policy: bool = True
     compatibility: Literal["available", "unavailable"]
     missing_tool_names: tuple[str, ...] = ()
     contract_hash: str
@@ -36,6 +38,7 @@ class AgentDefinitionDetail(AgentDefinitionView):
 
 
 class AgentDefinitionCatalogView(ApplicationDTO):
+    policy_restart_required: bool = False
     revision: int
     definitions: tuple[AgentDefinitionView, ...] = ()
     effective_from: Literal["next_decision"] = "next_decision"

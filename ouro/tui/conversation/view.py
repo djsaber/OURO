@@ -108,7 +108,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         self._current_run_id: str | None = None
         self._presented_run_ids: set[str] = set()
         self._presented_compaction_ids: set[str] = set()
-        self._visible_scaffold_delegation_id: str | None = None
 
     def compose(self) -> ComposeResult:
         yield self._transcript
@@ -331,7 +330,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         runs: Iterable[RunPresentation] = (),
         *,
         mutable_tool_calls: Iterable[tuple[str | None, str | None, str]] = (),
-        visible_scaffold_delegation_id: str | None = None,
         held_scroll_y: float | None = None,
         reusable_history: ConversationHistoryState | None = None,
     ) -> None:
@@ -352,7 +350,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                 compaction_records,
                 run_presentations,
                 mutable_tool_call_keys=mutable_tool_call_keys,
-                visible_scaffold_delegation_id=visible_scaffold_delegation_id,
                 show_scaffold_messages=self.show_scaffold_messages,
             )
         else:
@@ -361,12 +358,10 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                 compaction_records,
                 run_presentations,
                 mutable_tool_call_keys=mutable_tool_call_keys,
-                visible_scaffold_delegation_id=visible_scaffold_delegation_id,
                 show_scaffold_messages=self.show_scaffold_messages,
             )
         await self.load_transcript(
             (transcript, presented_run_ids),
-            visible_scaffold_delegation_id=visible_scaffold_delegation_id,
             held_scroll_y=held_scroll_y,
             reusable_history=reusable_history,
         )
@@ -375,7 +370,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         self,
         prepared: PreparedTranscript,
         *,
-        visible_scaffold_delegation_id: str | None = None,
         held_scroll_y: float | None = None,
         reusable_history: ConversationHistoryState | None = None,
     ) -> None:
@@ -387,7 +381,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         self._current_run_id = None
         self._presented_run_ids.clear()
         self._presented_compaction_ids.clear()
-        self._visible_scaffold_delegation_id = visible_scaffold_delegation_id
 
         transcript, presented_run_ids = prepared
         self._presented_run_ids.update(presented_run_ids)
@@ -475,7 +468,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         """Append user or scaffold input using the persisted-history projection."""
         entry = _input_transcript_entry(
             message,
-            visible_scaffold_delegation_id=self._visible_scaffold_delegation_id,
             show_scaffold_messages=self.show_scaffold_messages,
         )
         if entry is not None:

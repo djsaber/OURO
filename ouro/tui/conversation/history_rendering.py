@@ -605,7 +605,7 @@ def _entry_renderables(
                         lowlight=entry.scaffold or entry.kind in {"scaffold", "command"},
                         reference_start=entry.reference_start,
                     ),
-                    (1, 0, 2, 0),
+                    (1, 0, 1, 0),
                 ),
                 "user" if entry.kind == "user" else "body",
             )

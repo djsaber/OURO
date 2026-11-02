@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Mapping
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 
 from pydantic import JsonValue
@@ -1250,7 +1251,6 @@ class TuiController:
         return await asyncio.to_thread(
             configuration.update_agent_runtime,
             expected_revision=draft.expected_revision,
-            allowed_agent_id_patterns=draft.allowed_agent_id_patterns,
             allowed_model_patterns=draft.allowed_model_patterns,
             allowed_execution_modes=draft.allowed_execution_modes,
             allow_write=draft.allow_write,
@@ -1299,11 +1299,12 @@ class TuiController:
             self._save_agent_definition,
             draft,
             expected_revision,
-            True,
+            None,
         )
 
     async def update_agent_definition(
         self,
+        agent_id: str,
         draft: TuiAgentDefinitionConfiguration,
         *,
         expected_revision: int,
@@ -1312,21 +1313,24 @@ class TuiController:
             self._save_agent_definition,
             draft,
             expected_revision,
-            False,
+            agent_id,
         )
 
     def _save_agent_definition(
         self,
         draft: TuiAgentDefinitionConfiguration,
         expected_revision: int,
-        create: bool,
+        agent_id: str | None,
     ) -> AgentDefinitionCatalogView:
         self._runtime()
         assert self._application is not None
         with self._application.agent_definition_services() as services:
-            operation = services.definitions.create if create else services.definitions.update
+            operation = (
+                services.definitions.create
+                if agent_id is None
+                else partial(services.definitions.update, agent_id=agent_id)
+            )
             return operation(
-                agent_id=draft.agent_id,
                 name=draft.name,
                 description=draft.description,
                 system_prompt=draft.system_prompt,
@@ -1334,6 +1338,23 @@ class TuiController:
                 model=draft.model,
                 tools=services.tools,
                 expected_revision=expected_revision,
+            )
+
+    async def set_agent_definition_enabled(
+        self, agent_id: str, *, enabled: bool, expected_revision: int
+    ) -> AgentDefinitionCatalogView:
+        return await asyncio.to_thread(
+            self._set_agent_definition_enabled, agent_id, enabled, expected_revision
+        )
+
+    def _set_agent_definition_enabled(
+        self, agent_id: str, enabled: bool, expected_revision: int
+    ) -> AgentDefinitionCatalogView:
+        self._runtime()
+        assert self._application is not None
+        with self._application.agent_definition_services() as services:
+            return services.definitions.set_enabled(
+                agent_id, enabled=enabled, expected_revision=expected_revision, tools=services.tools
             )
 
     async def delete_agent_definition(

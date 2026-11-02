@@ -265,7 +265,7 @@ async def test_plugin_catalog_wait_has_feedback_and_respects_menu_close(
         ("Install plugin", "INSTALL PLUGIN"),
         ("Tool limits & file access", "TOOL LIMITS & FILE ACCESS"),
         ("Subagent permissions", "SUBAGENT PERMISSIONS"),
-        ("Create subagent", "CREATE SUBAGENT"),
+        ("+ subagent", "CREATE SUBAGENT"),
         ("+ mcp", "ADD MCP"),
         ("Install skill", "INSTALL SKILL"),
     ],

@@ -4480,9 +4480,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                         self._set_welcome_mode(not has_conversation)
                     await conversation.load_transcript(
                         transcript,
-                        visible_scaffold_delegation_id=(
-                            session.delegation_id if session.session_kind == "subagent" else None
-                        ),
                         held_scroll_y=self._held_session_scroll_y.get(session.session_id),
                         reusable_history=reusable_history.state if reusable_history else None,
                     )
@@ -4670,7 +4667,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             window,
             frozenset(self._history_run_ids) | self.query_one(ConversationView).presented_run_ids,
             self._models,
-            self._visible_agent.delegation_id if self._visible_agent is not None else None,
             show_scaffold_messages=self._preferences.show_scaffold_messages,
         )
         async with self._runtime_event_apply_lock:
@@ -4696,7 +4692,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         window: SessionHistoryWindow,
         newer_run_ids: frozenset[str],
         models: tuple[AvailableModel, ...],
-        delegation_id: str | None,
         *,
         show_scaffold_messages: bool = False,
     ) -> PreparedTranscript:
@@ -4708,7 +4703,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             window.compactions,
             presentations,
             mutable_tool_call_keys=frozenset(),
-            visible_scaffold_delegation_id=delegation_id,
             show_scaffold_messages=show_scaffold_messages,
         )
         return (
@@ -4904,7 +4898,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         presentations = project_run_presentations(
             (run for run in loaded.runs if run.kind == "agent"), loaded.messages, models=models
         )
-        session = loaded.detail.session
         tools = tuple(tool for tool in projection.activity.tool_calls if tool.tool_name)
         terminal_tools = all(is_terminal_tool(tool) for tool in tools)
         transcript = project_transcript_entries(
@@ -4915,9 +4908,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 (projection.activity.run_id, tool.batch_id, tool.tool_call_id)
                 for tool in tools
                 if not terminal_tools
-            ),
-            visible_scaffold_delegation_id=(
-                session.delegation_id if session.session_kind == "subagent" else None
             ),
             show_scaffold_messages=show_scaffold_messages,
         )

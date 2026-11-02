@@ -956,14 +956,20 @@ async def test_controller_manages_tool_permissions_and_path_scope_via_facade(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("allowed_agents", [("*",), ("review-*",)])
 async def test_controller_manages_subagent_policy_and_definitions(
     tmp_path: Path,
+    allowed_agents: tuple[str, ...],
 ) -> None:
     configuration = ConfigurationFacade(tmp_path)
+    configuration.update_agent_runtime(
+        expected_revision=0, allowed_agent_id_patterns=allowed_agents
+    )
+    application = _reasoning_application(tmp_path)
     controller = TuiController(
         lambda _event: None,
         lambda _status: None,
-        application=_reasoning_application(tmp_path),
+        application=application,
         configuration=configuration,
     )
     await controller.start()
@@ -973,7 +979,6 @@ async def test_controller_manages_subagent_policy_and_definitions(
         updated_runtime = await controller.update_agent_runtime(
             TuiAgentRuntimeConfiguration(
                 expected_revision=runtime.revision,
-                allowed_agent_id_patterns=("review-*",),
                 allowed_model_patterns=("faux",),
                 allowed_execution_modes=("sync",),
                 allow_write=False,
@@ -982,14 +987,13 @@ async def test_controller_manages_subagent_policy_and_definitions(
                 allow_external_paths=False,
             )
         )
-        assert updated_runtime.spawn_policy.allowed_agent_id_patterns == ("review-*",)
+        assert updated_runtime.spawn_policy.allowed_agent_id_patterns == allowed_agents
         assert updated_runtime.spawn_policy.allowed_execution_modes == ("sync",)
         assert updated_runtime.spawn_policy.allow_write is False
 
         catalog = await controller.agent_definition_catalog()
         created = await controller.create_agent_definition(
             TuiAgentDefinitionConfiguration(
-                agent_id="review-code",
                 name="Code reviewer",
                 description="Review a bounded code change.",
                 system_prompt="Review the change and report concrete findings.",
@@ -998,14 +1002,24 @@ async def test_controller_manages_subagent_policy_and_definitions(
             ),
             expected_revision=catalog.revision,
         )
-        assert any(item.agent_id == "review-code" for item in created.definitions)
+        agent_id = created.definitions[-1].agent_id
+        assert created.definitions[-1].allowed_by_policy is (allowed_agents == ("*",))
+        assert created.policy_restart_required
+        assert application.agents is not None
+        assert application.agent_definitions is not None
+        dispatch_catalog = application.agents.constrain_catalog(
+            application.agent_definitions.catalog_snapshot(application.runtime.tools)
+        )
+        assert (agent_id in {entry.definition.agent_id for entry in dispatch_catalog.entries}) is (
+            allowed_agents == ("*",)
+        )
 
-        detail = await controller.agent_definition("review-code")
+        detail = await controller.agent_definition(agent_id)
         assert detail.system_prompt.startswith("Review the change")
         assert detail.model == "faux"
         updated = await controller.update_agent_definition(
+            detail.agent_id,
             TuiAgentDefinitionConfiguration(
-                agent_id=detail.agent_id,
                 name=detail.name,
                 description="Review code and tests.",
                 system_prompt=detail.system_prompt,
@@ -1015,19 +1029,24 @@ async def test_controller_manages_subagent_policy_and_definitions(
             expected_revision=created.revision,
         )
         assert (
-            next(item for item in updated.definitions if item.agent_id == "review-code").description
+            next(item for item in updated.definitions if item.agent_id == agent_id).description
             == "Review code and tests."
         )
-        assert (
-            next(item for item in updated.definitions if item.agent_id == "review-code").model
-            is None
-        )
+        assert next(item for item in updated.definitions if item.agent_id == agent_id).model is None
+
+        for enabled in (False, True):
+            updated = await controller.set_agent_definition_enabled(
+                agent_id, enabled=enabled, expected_revision=updated.revision
+            )
+            refreshed = await controller.agent_definition_catalog()
+            assert refreshed == updated
+            assert (await controller.agent_definition(agent_id)).enabled is enabled
 
         deleted = await controller.delete_agent_definition(
-            "review-code",
+            agent_id,
             expected_revision=updated.revision,
         )
-        assert all(item.agent_id != "review-code" for item in deleted.definitions)
+        assert all(item.agent_id != agent_id for item in deleted.definitions)
     finally:
         await controller.close()
 

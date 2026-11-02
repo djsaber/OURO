@@ -175,7 +175,6 @@ class TuiToolExecutionConfiguration:
 @dataclass(frozen=True)
 class TuiAgentRuntimeConfiguration:
     expected_revision: int
-    allowed_agent_id_patterns: tuple[str, ...]
     allowed_model_patterns: tuple[str, ...]
     allowed_execution_modes: tuple[ExecutionMode, ...]
     allow_write: bool
@@ -186,7 +185,6 @@ class TuiAgentRuntimeConfiguration:
 
 @dataclass(frozen=True)
 class TuiAgentDefinitionConfiguration:
-    agent_id: str
     name: str
     description: str
     system_prompt: str

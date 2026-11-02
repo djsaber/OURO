@@ -16,6 +16,7 @@ from ouro.tui.conversation.view import ConversationView
 from ouro.tui.features.configuration.agents import (
     AgentDefinitionConfigurationScreen,
     AgentDispatchPolicyScreen,
+    agent_definition_status,
 )
 from ouro.tui.features.configuration.compaction import CompactionConfigurationScreen
 from ouro.tui.features.configuration.mcp import MCPConfigurationScreen
@@ -76,9 +77,7 @@ SYSTEM_SETTING_ACTIONS = (
     SystemSettingAction("tools.execution", "Tool limits & file access", "Tools"),
     SystemSettingAction("agents.policy", "Subagent permissions", "Subagents"),
     SystemSettingAction("agents.list", "Manage subagents", "Subagents"),
-    SystemSettingAction("agents.create", "Create subagent", "Subagents"),
-    SystemSettingAction("agents.edit", "Edit subagent", "Subagents"),
-    SystemSettingAction("agents.delete", "Delete subagent", "Subagents"),
+    SystemSettingAction("agents.create", "+ subagent", "Subagents"),
     SystemSettingAction("mcp.list", "Manage MCPs", "MCPs"),
     SystemSettingAction("mcp.add", "+ mcp", "MCPs"),
     SystemSettingAction("skills.sources", "Skill sources", "Skills"),
@@ -152,11 +151,6 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             await self._configure_agent_policy(menu=menu)
         elif action_id == "agents.create":
             await self._create_agent_definition(menu=menu)
-        elif action_id in {"agents.edit", "agents.delete"}:
-            await self._choose_agent_definition_action(
-                action_id.removeprefix("agents."),
-                menu=menu,
-            )
         elif action_id == "providers.list":
             await self._choose_providers(menu=menu)
         elif action_id == "providers.add":
@@ -410,14 +404,12 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
     async def _configure_agent_policy(self, *, menu: ChoiceScreen | None = None) -> None:
         try:
             current = await self._controller.agent_runtime_configuration()
-            catalog = await self._controller.agent_definition_catalog()
             models = await self._controller.models()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         screen = AgentDispatchPolicyScreen(
             current,
-            definitions=catalog.definitions,
             models=models,
             theme=theme_for(self),
         )
@@ -462,7 +454,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 (item for item in current.definitions if item.agent_id == agent_id),
                 None,
             )
-            if definition is None or not definition.editable:
+            if definition is None:
                 return None
             await self._manage_agent_definition(
                 definition,
@@ -475,6 +467,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             screen = menu
             screen.push_page(
                 title="SUBAGENTS",
+                description=_agent_catalog_notice(catalog),
                 placeholder="Filter subagents…",
                 choices=_agent_definition_choices(catalog.definitions, theme=theme_for(self)),
                 on_select=select_definition,
@@ -483,6 +476,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             return
         screen = ChoiceScreen(
             title="SUBAGENTS",
+            description=_agent_catalog_notice(catalog),
             placeholder="Filter subagents…",
             choices=_agent_definition_choices(catalog.definitions, theme=theme_for(self)),
             on_select=select_definition,
@@ -504,12 +498,24 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                     expected_revision=expected_revision,
                     menu=menu,
                 )
-            else:
+            elif action == "delete":
                 saved = await self._delete_agent_definition(
                     definition.agent_id,
                     expected_revision=expected_revision,
                     menu=menu,
                 )
+            elif action == "toggle":
+                try:
+                    saved = await self._controller.set_agent_definition_enabled(
+                        definition.agent_id,
+                        enabled=not definition.enabled,
+                        expected_revision=expected_revision,
+                    )
+                except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
+                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    return None
+            else:
+                return None
             if saved is not None:
                 menu.pop_page(
                     choices=_agent_definition_choices(saved.definitions, theme=theme_for(self)),
@@ -519,10 +525,23 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
 
         menu.push_page(
             title=f"SUBAGENT{theme_for(self).inline_separator}{definition.name}",
+            description=(
+                "Current dispatch policy does not allow this subagent. "
+                "Enabling it does not override policy; adjust framework configuration or CLI."
+                if not definition.allowed_by_policy
+                else ""
+            ),
             placeholder="Choose an action…",
             choices=(
-                Choice("edit", "Edit subagent"),
-                Choice("delete", "Delete subagent"),
+                Choice("edit", "Edit", disabled=not definition.editable),
+                Choice("toggle", "Disable" if definition.enabled else "Enable"),
+                Choice(
+                    "delete",
+                    "Delete",
+                    disabled=not definition.editable,
+                    accent=theme_for(self).danger if definition.editable else None,
+                    destructive=definition.editable,
+                ),
             ),
             on_select=select_action,
         )
@@ -556,59 +575,6 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
 
-    async def _choose_agent_definition_action(
-        self,
-        action: str,
-        *,
-        menu: ChoiceScreen | None = None,
-    ) -> None:
-        try:
-            catalog = await self._controller.agent_definition_catalog()
-        except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
-            return
-        choices = _agent_definition_choices(catalog.definitions, theme=theme_for(self))
-
-        async def select_agent(agent_id: str) -> tuple[Choice, ...] | None:
-            nonlocal catalog
-            if action == "edit":
-                saved = await self._edit_agent_definition(
-                    agent_id,
-                    expected_revision=catalog.revision,
-                    menu=menu,
-                )
-            else:
-                saved = await self._delete_agent_definition(
-                    agent_id,
-                    expected_revision=catalog.revision,
-                    menu=menu,
-                )
-            if saved is None:
-                return None
-            catalog = saved
-            if menu is not None:
-                menu.pop_page()
-                return None
-            return _agent_definition_choices(saved.definitions, theme=theme_for(self))
-
-        title = "EDIT SUBAGENT" if action == "edit" else "DELETE SUBAGENT"
-        if menu is not None:
-            menu.push_page(
-                title=title,
-                placeholder="Filter subagents…",
-                choices=choices,
-                on_select=select_agent,
-            )
-            return
-        await self.push_screen_wait(
-            ChoiceScreen(
-                title=title,
-                placeholder="Filter subagents…",
-                choices=choices,
-                on_select=select_agent,
-            )
-        )
-
     async def _edit_agent_definition(
         self,
         agent_id: str,
@@ -638,6 +604,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         definition = cast(TuiAgentDefinitionConfiguration, draft)
         try:
             saved = await self._controller.update_agent_definition(
+                agent_id,
                 definition,
                 expected_revision=expected_revision,
             )
@@ -1443,6 +1410,14 @@ def _tool_choices(
     return tuple(choices)
 
 
+def _agent_catalog_notice(catalog: AgentDefinitionCatalogView) -> str:
+    return (
+        "Saved dispatch policy changes require restarting OURO. Status shows the active policy."
+        if catalog.policy_restart_required
+        else ""
+    )
+
+
 def _agent_definition_choices(
     definitions: tuple[AgentDefinitionView, ...],
     *,
@@ -1453,8 +1428,7 @@ def _agent_definition_choices(
             definition.agent_id,
             definition.name,
             group="BUILT-IN" if definition.source == "builtin" else "USER",
-            trailing=theme.inline_separator.join((definition.agent_id, definition.compatibility)),
-            disabled=not definition.editable,
+            trailing=agent_definition_status(definition, theme=theme),
         )
         for definition in sorted_agent_definitions(definitions)
     )

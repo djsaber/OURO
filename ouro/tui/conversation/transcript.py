@@ -99,7 +99,6 @@ def _compaction_presentation(
 def _presents_message(
     message: MessageRecord,
     *,
-    visible_scaffold_delegation_id: str | None,
     show_scaffold_messages: bool = False,
 ) -> bool:
     if show_scaffold_messages:
@@ -109,24 +108,16 @@ def _presents_message(
     if message.semantic_tag == "attachments" and message.input_attachments:
         # A text-bearing input presents its file chips on the user body instead.
         return message.metadata.get("session_input_batch_size") == 1
-    return (
-        visible_scaffold_delegation_id is not None
-        and message.role == "user"
-        and message.metadata.get("session_input_source") == "delegation"
-        and message.metadata.get("delegation_id") == visible_scaffold_delegation_id
-    )
+    return False
 
 
 def _input_transcript_entry(
     message: MessageRecord,
     *,
-    visible_scaffold_delegation_id: str | None,
     show_scaffold_messages: bool,
 ) -> TranscriptEntry | None:
     """Share input presentation between snapshots, history pages and live events."""
-    normally_visible = _presents_message(
-        message, visible_scaffold_delegation_id=visible_scaffold_delegation_id
-    )
+    normally_visible = _presents_message(message)
     if not normally_visible and not (message.scaffold and show_scaffold_messages):
         return None
     if message.role != "user" and not (message.scaffold and show_scaffold_messages):
@@ -152,7 +143,6 @@ def project_transcript_entries(
     runs: tuple[RunPresentation, ...],
     *,
     mutable_tool_call_keys: frozenset[tuple[str | None, str | None, str]],
-    visible_scaffold_delegation_id: str | None,
     show_scaffold_messages: bool = False,
 ) -> tuple[tuple[TranscriptEntry, ...], frozenset[str]]:
     """Build immutable history away from Textual's event loop.
@@ -167,7 +157,6 @@ def project_transcript_entries(
         for message in messages
         if _presents_message(
             message,
-            visible_scaffold_delegation_id=visible_scaffold_delegation_id,
             show_scaffold_messages=show_scaffold_messages,
         )
     )
@@ -185,7 +174,6 @@ def project_transcript_entries(
         if message.role == "user" or message.scaffold:
             entry = _input_transcript_entry(
                 message,
-                visible_scaffold_delegation_id=visible_scaffold_delegation_id,
                 show_scaffold_messages=show_scaffold_messages,
             )
             if entry is not None:
@@ -269,9 +257,7 @@ def project_transcript_entries(
 def user_message_text(
     message: MessageRecord | ModelMessage, *, include_scaffold_content: bool = False
 ) -> str:
-    return _user_message_presentation(
-        message, include_scaffold_content=include_scaffold_content
-    )[0]
+    return _user_message_presentation(message, include_scaffold_content=include_scaffold_content)[0]
 
 
 def _user_message_presentation(
@@ -282,9 +268,7 @@ def _user_message_presentation(
     activations = tuple(
         block for block in message.content if isinstance(block, SkillActivationContent)
     )
-    elements = sorted(
-        (*attachments, *activations), key=lambda item: (item.text_offset, item.order)
-    )
+    elements = sorted((*attachments, *activations), key=lambda item: (item.text_offset, item.order))
     text = message.text_content
     if attachments and message.semantic_tag == "attachments" and not include_scaffold_content:
         text = ""

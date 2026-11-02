@@ -76,7 +76,6 @@ def test_attachment_input_appears_once_in_conversation(prompt):
         (),
         (),
         mutable_tool_call_keys=frozenset(),
-        visible_scaffold_delegation_id=None,
     )
     user_entries = [entry for entry in entries if entry.kind == "user"]
     assert len(user_entries) == 1
