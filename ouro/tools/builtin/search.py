@@ -34,38 +34,46 @@ def iter_files(
     """Yield regular files under ``root`` in a deterministic, pruned walk."""
 
     rules = IgnoreRules(root, enabled=not include_ignored)
-    for dirpath, dirnames, filenames in os.walk(root):
+    pending = [root]
+    while pending:
+        base = pending.pop()
         if check_cancelled is not None:
             check_cancelled()
-        base = Path(dirpath)
-        kept: list[str] = []
-        for name in sorted(dirnames):
-            candidate = base / name
-            if is_vcs_directory(name) or candidate.is_symlink():
-                continue
-            if rules.ignores(candidate, is_dir=True):
-                continue
-            kept.append(name)
-        dirnames[:] = kept
-        for index, name in enumerate(sorted(filenames)):
+        try:
+            # Keep DirEntry's cached type/stat information, and close the directory
+            # before yielding so cancellation or a partial consumer cannot leak it.
+            with os.scandir(base) as directory:
+                entries = sorted(directory, key=lambda entry: entry.name)
+        except OSError:
+            continue
+        directories: list[Path] = []
+        for index, entry in enumerate(entries):
             if check_cancelled is not None and index % 128 == 0:
                 check_cancelled()
-            candidate = base / name
-            if is_sensitive_file(name) or candidate.is_symlink():
-                continue
             try:
-                stat = candidate.stat()
+                if entry.is_symlink():
+                    continue
+                candidate = base / entry.name
+                if entry.is_dir(follow_symlinks=False):
+                    if not is_vcs_directory(entry.name) and not rules.ignores(
+                        candidate, is_dir=True
+                    ):
+                        directories.append(candidate)
+                    continue
+                if is_sensitive_file(entry.name) or not entry.is_file(follow_symlinks=False):
+                    continue
+                if rules.ignores(candidate, is_dir=False):
+                    continue
+                stat = entry.stat(follow_symlinks=False)
             except OSError:
-                continue
-            if not candidate.is_file():
-                continue
-            if rules.ignores(candidate, is_dir=False):
                 continue
             yield FileEntry(
                 path=candidate,
                 relative=candidate.relative_to(root).as_posix(),
                 mtime=stat.st_mtime,
             )
+        # Match os.walk's files-first, lexicographic depth-first ordering.
+        pending.extend(reversed(directories))
 
 
 def _translate(pattern: str) -> tuple[re.Pattern[str], ...]:

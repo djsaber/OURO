@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from heapq import nsmallest
 from pathlib import Path
 
 from pydantic import Field
@@ -141,17 +142,25 @@ def search_glob(
     check_cancelled: Callable[[], None] | None = None,
 ) -> GlobResult:
     matchers = compile_path_glob(pattern)
-    found = [
-        entry
+    total = 0
+
+    def matching_files() -> Iterator[FileEntry]:
+        nonlocal total
         for entry in iter_files(
             root,
             include_ignored=include_ignored,
             check_cancelled=check_cancelled,
-        )
-        if _matches_any(matchers, entry.relative)
-    ]
-    found.sort(key=lambda entry: (-entry.mtime, entry.relative))
-    return GlobResult(matches=tuple(found[:limit]), total=len(found))
+        ):
+            if _matches_any(matchers, entry.relative):
+                total += 1
+                yield entry
+
+    # Count every match, but retain/sort only the requested newest files.
+    # A zero-sized page still consumes the iterator to compute the exact total.
+    found = nsmallest(
+        max(1, limit), matching_files(), key=lambda entry: (-entry.mtime, entry.relative)
+    )
+    return GlobResult(matches=tuple(found[:limit]), total=total)
 
 
 __all__ = ["GLOB_DESCRIPTION", "builtin_glob_tool"]

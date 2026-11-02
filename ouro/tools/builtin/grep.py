@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from bisect import bisect_right
 from collections.abc import Callable, Iterable, Iterator
@@ -509,6 +510,7 @@ def _search_entries(
     matches: list[MatchedLine] = []
     file_counts: list[FileMatchCount] = []
     total = 0
+    literal = _literal_pattern(regex) if not multiline else None
     for entry in entries:
         if check_cancelled is not None:
             check_cancelled()
@@ -516,6 +518,8 @@ def _search_entries(
         if check_cancelled is not None:
             check_cancelled()
         if text is None:
+            continue
+        if literal is not None and literal not in text:
             continue
         lines = text.splitlines()
         count = 0
@@ -595,18 +599,31 @@ def _matched_line_numbers(
     multiline: bool,
 ) -> Iterator[int]:
     if not multiline:
-        yield from (index + 1 for index, line in enumerate(lines) if regex.search(line) is not None)
+        literal = _literal_pattern(regex)
+        if literal is not None:
+            yield from (index + 1 for index, line in enumerate(lines) if literal in line)
+        else:
+            search = regex.search
+            yield from (index + 1 for index, line in enumerate(lines) if search(line) is not None)
         return
     if not lines:
         return
     offsets = _line_start_offsets(lines)
-    matched: set[int] = set()
+    emitted = 0
     text = "\n".join(lines)
     for hit in regex.finditer(text):
         first = bisect_right(offsets, hit.start())
         last = bisect_right(offsets, max(hit.start(), hit.end() - 1))
-        matched.update(range(first, last + 1))
-    yield from sorted(matched)
+        # finditer visits non-overlapping spans in order. Emit their line union
+        # incrementally, without a potentially file-sized set and final sort.
+        yield from range(max(first, emitted + 1), last + 1)
+        emitted = max(emitted, last)
+
+
+def _literal_pattern(regex: re.Pattern[str]) -> str | None:
+    if regex.flags & re.IGNORECASE or any(char in r".\^$*+?{}[]|()" for char in regex.pattern):
+        return None
+    return regex.pattern
 
 
 def _line_start_offsets(lines: list[str]) -> list[int]:
@@ -635,8 +652,10 @@ def _read_searchable_text(path: Path) -> str | None:
 
     try:
         with path.open("rb") as stream:
+            if os.fstat(stream.fileno()).st_size > _MAX_SEARCHABLE_FILE_BYTES:
+                return None
             head = stream.read(_BINARY_SNIFF_BYTES)
-            if b"\x00" in head:
+            if len(head) > _MAX_SEARCHABLE_FILE_BYTES or b"\x00" in head:
                 return None
             content = bytearray(head)
             while chunk := stream.read(64 * 1024):

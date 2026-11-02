@@ -7,7 +7,6 @@ dependency stays isolated at the infrastructure edge.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from pathlib import Path
 
 from pathspec import GitIgnoreSpec
@@ -41,34 +40,38 @@ class IgnoreRules:
     def __init__(self, root: Path, *, enabled: bool = True) -> None:
         self._root = root
         self._enabled = enabled
-        self._specs: dict[Path, GitIgnoreSpec | None] = {}
+        self._chains: dict[Path, tuple[tuple[Path, GitIgnoreSpec], ...]] = {}
 
     def ignores(self, path: Path, *, is_dir: bool) -> bool:
         if is_dir and is_vcs_directory(path.name):
             return True
         if not self._enabled:
             return False
-        for base in self._ancestors_of(path):
-            spec = self._spec_for(base)
-            if spec is None:
-                continue
+        for base, spec in self._chain(path.parent):
             relative = path.relative_to(base).as_posix()
             result = spec.check_file(f"{relative}/" if is_dir else relative)
             if result.include is not None:
                 return result.include
         return False
 
-    def _ancestors_of(self, path: Path) -> Iterator[Path]:
-        """Yield the directories whose rules govern ``path``, deepest first."""
-
-        current = path.parent
-        while True:
-            yield current
+    def _chain(self, directory: Path) -> tuple[tuple[Path, GitIgnoreSpec], ...]:
+        """Cache only applicable rule sets per directory for this search invocation."""
+        missing: list[Path] = []
+        current = directory
+        while current not in self._chains:
+            missing.append(current)
             if current == self._root:
-                return
+                break
             current = current.parent
+        chain = self._chains.get(current, ())
+        for base in reversed(missing):
+            spec = self._read_spec(base)
+            if spec is not None:
+                chain = ((base, spec), *chain)
+            self._chains[base] = chain
+        return chain
 
-    def _spec_for(self, directory: Path) -> GitIgnoreSpec | None:
+    def _read_spec(self, directory: Path) -> GitIgnoreSpec | None:
         """Combined spec for one directory, or ``None`` when it has no ignore file.
 
         Merging the directory's ignore files into a single spec is sound
@@ -76,19 +79,17 @@ class IgnoreRules:
         appended in ascending precedence order.
         """
 
-        if directory not in self._specs:
-            lines: list[str] = []
-            for filename in _IGNORE_FILENAMES:
-                candidate = directory / filename
-                if not candidate.is_file():
-                    continue
-                try:
-                    text = candidate.read_text(encoding="utf-8", errors="replace")
-                except OSError:
-                    continue
-                lines.extend(text.splitlines())
-            self._specs[directory] = GitIgnoreSpec.from_lines(lines) if lines else None
-        return self._specs[directory]
+        lines: list[str] = []
+        for filename in _IGNORE_FILENAMES:
+            candidate = directory / filename
+            if not candidate.is_file():
+                continue
+            try:
+                text = candidate.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            lines.extend(text.splitlines())
+        return GitIgnoreSpec.from_lines(lines) if lines else None
 
 
 __all__ = ["IgnoreRules", "is_sensitive_file", "is_vcs_directory"]
