@@ -130,7 +130,9 @@ async def test_custom_page_tracks_initial_palette_saturation_and_hidden_updates(
 
 
 @pytest.mark.parametrize(
-    "style", [style for key, style in WELCOME_STYLES.items() if key != "basic"]
+    "style",
+    # Matrix is not a DotMatrix particle page; it owns its own caption test.
+    [style for key, style in WELCOME_STYLES.items() if key not in {"basic", "matrix"}],
 )
 async def test_particle_page_owns_caption_independently_of_catalog_label(style):
     class PackageApp(App):
@@ -438,10 +440,9 @@ async def test_theme_menu_groups_inline_styles_and_keeps_color_settings_independ
         assert [choice.label for choice in style_choices] == [
             "Still",
             "Horizon",
-            "Bloom",
             "Tide",
             "Iris",
-            "Prism",
+            "Matrix",
             "Ember",
         ]
         options = menu.query_one(OptionList)
@@ -611,7 +612,7 @@ async def test_failed_style_save_keeps_current_package_and_preference(tmp_path, 
             raise PersistenceError("style storage unavailable")
 
         monkeypatch.setattr(app._preferences_store, "save", fail_save)
-        await select_menu(app, pilot, "Bloom")
+        await select_menu(app, pilot, "Iris")
         assert app.query_one(WelcomePanel).page is original
         assert app._preferences.welcome_style == "basic"
         assert app._preferences_store.load().welcome_style == "basic"
@@ -619,7 +620,7 @@ async def test_failed_style_save_keeps_current_package_and_preference(tmp_path, 
 
 @pytest.mark.parametrize(
     ("next_choice", "style_id", "theme_id"),
-    [("Tide", "interference", "original"), ("Coral", "electron-bloom", "coral")],
+    [("Tide", "interference", "original"), ("Coral", "clifford-torus", "coral")],
 )
 async def test_style_transaction_survives_reselection_and_picker_close(
     tmp_path, monkeypatch, next_choice, style_id, theme_id
@@ -631,14 +632,14 @@ async def test_style_transaction_survives_reselection_and_picker_close(
         save = app._preferences_store.save
 
         def slow_save(preferences):
-            if preferences.welcome_style == "electron-bloom":
+            if preferences.welcome_style == "clifford-torus":
                 entered.set()
                 assert release.wait(5)
             save(preferences)
 
         monkeypatch.setattr(app._preferences_store, "save", slow_save)
         try:
-            app.screen.query_one("#choice-filter", Input).value = "Bloom"
+            app.screen.query_one("#choice-filter", Input).value = "Iris"
             await pilot.pause()
             await pilot.press("enter")
             assert await asyncio.to_thread(entered.wait, 2)

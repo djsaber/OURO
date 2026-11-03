@@ -127,14 +127,35 @@ async def test_inflight_frame_cannot_publish_after_pause_or_unmount(monkeypatch,
 
 
 def test_raster_reuses_unchanged_rows_and_bounds_damage_to_changed_cells():
-    artwork = WELCOME_STYLES["electron-bloom"].create().artwork
-    raster = PhosphorRaster(artwork, 80, 20)
+    columns, rows = 8, 4
+    channel = array("d", [0.0]) * (columns * 2 * rows * 4)
+
+    class Engine:
+        def __init__(self, grid, prepare):
+            pass
+
+        def frame(self, seconds, elapsed):
+            return channel, channel, channel
+
+    def set_cell(x, y, light):
+        for dy in range(4):
+            for dx in range(2):
+                channel[(y * 4 + dy) * columns * 2 + x * 2 + dx] = light
+
+    # Control the numerical input instead of relying on a theme's visual density.
+    artwork = DotArtwork(lambda grid: None, span=(4.0, 2.0), engine_factory=Engine)
+    raster = PhosphorRaster(artwork, columns, rows)
+    set_cell(2, 1, 0.3)
+    set_cell(0, 3, 0.7)
     first = raster.frame(0, 0)
     same = raster.frame(0, 0)
-    assert all(before is after for before, after in zip(first, same, strict=True))
+    assert same is first
     assert not raster.damage
-    changed = raster.frame(7.5, 1 / 30)
-    assert raster.damage
+
+    set_cell(2, 1, 0.7)  # Color changes without changing the glyph.
+    set_cell(5, 1, 0.7)  # A previously blank cell appears.
+    set_cell(0, 3, 0.0)  # An old cell must be erased.
+    changed = raster.frame(1 / 30, 1 / 30)
 
     def cells(row):
         return [(char, segment.style) for segment in row for char in segment.text]
@@ -148,8 +169,14 @@ def test_raster_reuses_unchanged_rows_and_bounds_damage_to_changed_cells():
         for x, (left, right) in enumerate(zip(cells(before), cells(after), strict=True))
         if left != right
     }
-    assert different and different <= covered
-    assert len(covered) < 80 * 20 // 2
+    assert different == {(2, 1), (5, 1), (0, 3)}
+    assert different <= covered
+    # Damage spans the first through last changed cell of each affected row;
+    # the gap between changed cells is intentionally included in that span.
+    assert raster.damage == (Region(2, 1, 4, 1), Region(0, 3, 1, 1))
+    assert changed[0] is same[0] and changed[2] is same[2]
+    assert raster.frame(1 / 30, 0) is changed
+    assert not raster.damage
 
 
 def test_compositor_rows_release_without_waiting_for_cyclic_gc():
@@ -247,7 +274,7 @@ async def test_replacement_engine_uses_same_widget_pipeline_and_one_lifetime_wor
 def test_unchanged_frame_does_not_construct_terminal_segments(monkeypatch):
     import ouro_tui_themes.dot_matrix.raster as raster_module
 
-    raster = PhosphorRaster(WELCOME_STYLES["electron-bloom"].create().artwork, 38, 8)
+    raster = PhosphorRaster(WELCOME_STYLES["interference"].create().artwork, 38, 8)
     previous = raster.frame(0, 0)
 
     def unexpected(*args, **kwargs):

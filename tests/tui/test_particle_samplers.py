@@ -1,7 +1,7 @@
 """Scalar equations guard the vectorized spatial/time separation and projection."""
 
 from importlib import import_module
-from math import atan2, cos, exp, hypot, pi, sin, tanh
+from math import atan2, cos, exp, hypot, sin
 
 import pytest
 
@@ -16,15 +16,6 @@ def band(distance, width):
 
 
 def scalar(name, x, y, seconds, depths=()):
-    if name == "electron_bloom":
-        radius, angle, phase = hypot(x, y), atan2(y, x), seconds * 0.24
-        envelope = exp(-((radius / 1.02) ** 4))
-        amplitude = cos(angle * 3 + phase) * sin(radius * 3.6 - 0.4)
-        amplitude += sin(angle * 2 - phase * 0.7) * sin(radius * 5.3) * 0.32
-        light = amplitude**2 * envelope * 1.65
-        light += band(abs(amplitude) - 0.65, 0.06) * envelope * 0.25
-        light += band(radius, 0.105) * 0.65
-        return tanh(amplitude * 2.4) * 0.5 + 0.5, light
     if name == "interference":
         left, right, lower = hypot(x + 0.83, y), hypot(x - 0.83, y), hypot(x, y - 1.2)
         phase = seconds * 0.55
@@ -35,18 +26,6 @@ def scalar(name, x, y, seconds, depths=()):
             -((x / 2.1) ** 6 + (y / 0.9) ** 6)
         )
         return position, light
-    if name == "crystal":
-        wave = quadrature = 0.0
-        for index in range(5):
-            angle = index * pi / 5
-            projection = (x * cos(angle) + y * sin(angle)) * 15
-            phase = sin(seconds * 0.17 + index * 2.4) * 1.6
-            wave += cos(projection + phase)
-            quadrature += sin(projection - phase)
-        wave = abs(wave)
-        light = min(1, max(0, (wave - 0.6) / 4.4)) ** 1.35 * 1.7
-        light += band(quadrature, 0.35) * 0.3
-        return wave * 0.12 + 0.4, light * exp(-((hypot(x, y) / 1.05) ** 8)) * 1.8
     if name == "clifford":
         x, y = x * 2.5, y * 2.5
         radial, angle = x * x + y * y, atan2(y, x)
@@ -77,9 +56,7 @@ def scalar(name, x, y, seconds, depths=()):
     return light * 1.15, light * 1.65
 
 
-@pytest.mark.parametrize(
-    "name", ["event_horizon", "electron_bloom", "interference", "clifford", "crystal"]
-)
+@pytest.mark.parametrize("name", ["event_horizon", "interference", "clifford"])
 def test_sampler_matches_scalar_equations_at_arbitrary_times(name):
     module = import_module(f"ouro_tui_themes.styles.{name}")
     grid = ParticleGrid.create(11, 9, span=(5.8, 2.7))

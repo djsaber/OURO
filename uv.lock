@@ -651,7 +651,7 @@ dev = [
 
 [[package]]
 name = "ouro-tui-themes"
-version = "0.3.6.post2"
+version = "0.4.0"
 source = { editable = "packages/tui-themes" }
 dependencies = [
     { name = "numpy" },

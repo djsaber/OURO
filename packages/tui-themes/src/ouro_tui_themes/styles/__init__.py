@@ -24,18 +24,23 @@ def _particle_style(module: str, style_id: str, label: str, description: str) ->
     )
 
 
+def _matrix_style() -> WelcomeStyle:
+    # Matrix rain is self-contained: no optional dependencies, no engine import.
+    return WelcomeStyle(
+        "matrix",
+        "Matrix",
+        "Glyph rain falling through layered phosphor green.",
+        partial(_create_page, "matrix"),
+    )
+
+
 STYLES = (
     _particle_style(
         "event_horizon", "event-horizon", "Horizon", "An ember disk folded around a dark sun."
     ),
     _particle_style(
-        "electron_bloom", "electron-bloom", "Bloom", "Ice and copper petals exchanging light."
-    ),
-    _particle_style(
         "interference", "interference", "Tide", "Jade light woven into a breathing caustic."
     ),
     _particle_style("clifford", "clifford-torus", "Iris", "An iris of folded ultraviolet light."),
-    _particle_style(
-        "crystal", "quasicrystal", "Prism", "An aperiodic rose cut from copper and light."
-    ),
+    _matrix_style(),
 )

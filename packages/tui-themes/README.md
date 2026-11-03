@@ -11,6 +11,22 @@ the official `ouro_tui_themes.styles` collection. The engine owns numerical fiel
 terminal rasterization and widget scheduling; styles own artwork and page composition.
 The engine does not depend on style implementations or welcome-page contracts.
 
+## Styles
+
+| Label | ID | Description |
+|---|---|---|
+| Horizon | `event-horizon` | An ember disk folded around a dark sun. |
+| Tide | `interference` | Jade light woven into a breathing caustic. |
+| Iris | `clifford-torus` | An iris of folded ultraviolet light. |
+| Matrix | `matrix` | Glyph rain falling through layered phosphor green. |
+
+Horizon, Tide and Iris share the `ouro_tui_themes.dot_matrix` engine
+and require `numpy>=2.3.3,<3`: `field.py` owns numerical fields, sampling and light
+fields, `raster.py` maps numerical frames to Braille and terminal colors, and
+`widget.py` owns frame scheduling and widget lifecycle; themes provide samplers via
+`prepare` and select a numerical engine through `DotArtwork.engine_factory`. The
+`matrix` style is fully self-contained and runs without NumPy.
+
 OURO's core provides the welcome API, persistent input surface, shared information
 components and the `basic` fallback page. It runs without this distribution or NumPy.
 The application loads style metadata from the installed compatible release and imports

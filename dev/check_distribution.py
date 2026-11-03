@@ -37,10 +37,9 @@ async def check_tui(*, themes: bool) -> None:
                 {
                     "basic",
                     "event-horizon",
-                    "electron-bloom",
                     "interference",
                     "clifford-torus",
-                    "quasicrystal",
+                    "matrix",
                 }
                 if themes
                 else {"basic"}

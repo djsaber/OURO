@@ -61,7 +61,7 @@ def main() -> None:
     )
     for columns, rows in sizes:
         for identity, style in WELCOME_STYLES.items():
-            if identity == "basic":
+            if identity in {"basic", "matrix"}:
                 continue
             started = perf_counter()
             artwork = getattr(style.create(), "artwork", None)

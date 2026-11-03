@@ -163,7 +163,11 @@ async def measure(motion: bool, *, style: str, keys: int, pattern: str) -> dict:
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--style", choices=tuple(WELCOME_STYLES)[1:], default="clifford-torus")
+    parser.add_argument(
+        "--style",
+        choices=tuple(key for key in WELCOME_STYLES if key not in {"basic", "matrix"}),
+        default="clifford-torus",
+    )
     parser.add_argument("--keys", type=int, default=240)
     parser.add_argument("--pattern", choices=("alternate", "grow-delete"), default="grow-delete")
     args = parser.parse_args()

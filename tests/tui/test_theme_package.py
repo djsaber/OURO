@@ -28,7 +28,7 @@ def test_style_metadata_does_not_load_numpy_or_renderers():
             import sys
             from ouro_tui_themes.styles import STYLES
 
-            assert len(STYLES) == 5
+            assert len(STYLES) == 4
             assert "numpy" not in sys.modules
             assert "ouro_tui_themes.dot_matrix.widget" not in sys.modules
             assert not any(name.startswith("ouro_tui_themes.styles.") for name in sys.modules)
@@ -100,7 +100,7 @@ async def test_missing_builtin_dependency_keeps_tui_usable_and_preferences_intac
         assert app.query_one(WelcomePanel).style_package.style_id == "basic"
         assert [
             choice.value for choice in app._theme_choices() if choice.value.startswith("welcome:")
-        ] == ["welcome:basic"]
+        ] == ["welcome:basic", "welcome:matrix"]
         if selected != "basic":
             assert any("Horizon is unavailable" in notice for notice in notices)
         else:

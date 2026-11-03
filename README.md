@@ -12,7 +12,7 @@ OURO 让你在终端中与模型协作，处理文件、调用工具、管理会
 
 ![OURO v0.2.0 的终端交互界面](https://raw.githubusercontent.com/djsaber/OURO/v0.2.0/docs/assets/tui-welcome.png)
 
-*OURO TUI · 可选 Horizon 欢迎页主题 · 尚未配置模型的状态*
+*OURO TUI · 可选欢迎页主题 · 尚未配置模型的状态*
 
 [使用文档](https://github.com/djsaber/OURO/blob/main/docs/README.md) · [版本记录](https://github.com/djsaber/OURO/blob/main/CHANGELOG.md) · [源码](https://github.com/djsaber/OURO) · [问题反馈](https://github.com/djsaber/OURO/issues)
 
