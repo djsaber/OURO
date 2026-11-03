@@ -1454,7 +1454,7 @@ class LocalSessionStore:
             ) from exc
 
     @contextmanager
-    def session_read(self, session_id: str) -> Iterator[_SessionRead]:
+    def session_read(self, session_id: str) -> Generator[_SessionRead]:
         # Nested consumers share the whole read boundary, including its lock and
         # directory identity, rather than constructing another boundary per read.
         current = getattr(self._read_state, "scopes", {}).get(session_id)

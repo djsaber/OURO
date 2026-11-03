@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field
 from functools import partial
@@ -303,7 +303,7 @@ class LocalApplication:
         return self
 
     @contextmanager
-    def agent_definition_services(self) -> Iterator[LocalAgentDefinitionServices]:
+    def agent_definition_services(self) -> Generator[LocalAgentDefinitionServices]:
         """Lease the live tool catalog used by AgentDefinition management."""
 
         if self.agent_definitions is None:

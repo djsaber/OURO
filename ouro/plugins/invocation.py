@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -43,7 +43,7 @@ def plugin_invocation(
     workspace_only: bool = False,
     native_run: RunDriverContext | None = None,
     inherit_run_ports: bool = True,
-) -> Iterator[PluginInvocation]:
+) -> Generator[PluginInvocation]:
     parent = current_invocation.get()
     # A Host-accepted Driver starts a new Run scope; a child may outlive the
     # callback which accepted it. Ordinary nested calls inherit their caller.

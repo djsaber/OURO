@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -16,7 +16,7 @@ PASTED_TEXT_ATTACHMENT_THRESHOLD = 4000
 
 
 @contextmanager
-def pasted_text_file(text: str) -> Iterator[Path]:
+def pasted_text_file(text: str) -> Generator[Path]:
     """Keep one UTF-8 source alive for the ordinary attachment import operation."""
     with TemporaryDirectory(prefix="ouro-paste-") as directory:
         # System temporary roots may be aliases, such as /var on macOS. This

@@ -4,7 +4,7 @@ import json
 import re
 import sqlite3
 import threading
-from collections.abc import Generator, Iterable, Iterator, Mapping
+from collections.abc import Generator, Iterable, Mapping
 from contextlib import AbstractContextManager, ExitStack, closing, contextmanager, nullcontext
 from datetime import datetime
 from functools import partial
@@ -1684,7 +1684,7 @@ class SQLiteSessionStore:
             ) from exc
 
     @contextmanager
-    def session_read(self, session_id: str) -> Iterator[sqlite3.Connection]:
+    def session_read(self, session_id: str) -> Generator[sqlite3.Connection]:
         # SQLite snapshots protect records, while the existing resource namespace
         # lock keeps their external files alive until selected bytes are owned.
         previous_session = getattr(self._read_state, "session_id", None)
@@ -1990,7 +1990,7 @@ class SQLiteSessionStore:
         return self._connections.borrow()
 
     @contextmanager
-    def _read_connection(self) -> Iterator[sqlite3.Connection]:
+    def _read_connection(self) -> Generator[sqlite3.Connection]:
         state = getattr(self._transaction_state, "value", None)
         if state is not None:
             if state.failed:

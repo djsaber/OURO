@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal, cast
@@ -37,7 +37,7 @@ def ensure_home_available(home: str | Path | None = None) -> Path:
 
 
 @contextmanager
-def access_home(home: str | Path | None = None) -> Iterator[Path]:
+def access_home(home: str | Path | None = None) -> Generator[Path]:
     """Keep a standard Host's lifetime mutually exclusive with offline maintenance."""
     root = resolve_home(home)
     lock = FileAccessLock(root / ".upgrade" / "lock")

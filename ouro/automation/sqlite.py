@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,7 +22,7 @@ class SQLiteTaskRepository:
         self._owns_scheduler = False
 
     @contextmanager
-    def _connection(self) -> Iterator[sqlite3.Connection]:
+    def _connection(self) -> Generator[sqlite3.Connection]:
         connection = None
         try:
             connection = sqlite3.connect(self.path, timeout=5)

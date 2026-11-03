@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from functools import partial
@@ -801,7 +801,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._render_hint()
 
     @contextmanager
-    def loading_choice(self, value: str | None = None) -> Iterator[None]:
+    def loading_choice(self, value: str | None = None) -> Generator[None]:
         """Explicitly project business work; navigation and callbacks do not opt in."""
 
         request = object()

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import threading
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -152,7 +152,7 @@ class PluginRuntimeResource:
         )
 
     @contextmanager
-    def _admit_lifecycle_callbacks(self) -> Iterator[None]:
+    def _admit_lifecycle_callbacks(self) -> Generator[None]:
         """Nested operations use the directory already committed by this lifecycle."""
         admission = _LifecycleAdmission(self.catalog())
         token = self._lifecycle_admission.set(admission)
@@ -634,7 +634,7 @@ class PluginRuntimeResource:
     @asynccontextmanager
     async def bind_driver(
         self, expected: RunDriverBinding
-    ) -> AsyncIterator[ContributionBinding[RunDriverRegistration]]:
+    ) -> AsyncGenerator[ContributionBinding[RunDriverRegistration]]:
         """Own the exact Driver implementation only while it executes accepted work."""
 
         await self.synchronize()

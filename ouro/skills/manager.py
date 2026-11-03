@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-from collections.abc import Iterator, Sequence
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -324,7 +324,7 @@ class SkillManager:
                 shutil.rmtree(item.backup)
 
     @contextmanager
-    def _resolve_source(self, source: str, *, ref: str | None) -> Iterator[_ResolvedSource]:
+    def _resolve_source(self, source: str, *, ref: str | None) -> Generator[_ResolvedSource]:
         local = Path(source).expanduser()
         if local.exists():
             yield _ResolvedSource(root=local.resolve(), source=str(local.resolve()))

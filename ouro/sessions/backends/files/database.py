@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -148,7 +148,7 @@ CREATE TABLE IF NOT EXISTS latest_contexts (
 @contextmanager
 def connect_data(
     directory: Path, *, mode: str = "ro", connections: ExecutionConnections | None = None
-) -> Iterator[sqlite3.Connection]:
+) -> Generator[sqlite3.Connection]:
     # Read scopes also need an ordinary handle: if the Run writer exits first,
     # the last observer must be able to checkpoint and remove the native WAL.
     access = "rw" if mode == "ro" else mode

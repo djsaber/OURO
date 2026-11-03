@@ -86,3 +86,14 @@ TUI 每次启动检测扩展版本及依赖，只列出可用主题；安装后�
 主题选择立即保存，独立于界面配色。动画由各主题自行实现，TUI 菜单不提供主题内部设置。
 所选作品立即显示在菜单后方，菜单打开期间暂停动画。自定义主题接入见
 [欢迎页样式包开发](../development/welcome-styles.md)。
+
+### 终端颜色
+
+TUI 在 WSL、Windows Terminal 和 VS Code 的直接 xterm 环境中补齐缺失的真彩色声明，
+避免 RGB 配色与渐变被量化为 256 色。已有 `COLORTERM` 声明及显式的 `TEXTUAL_COLOR_SYSTEM`
+设置优先；补齐仅在本次 TUI 运行期间生效，不修改 shell 配置。
+
+VS Code 默认还会提高低对比度文字的亮度，可能将暗色渐变提亮、降低饱和度。需要按应用原色显示时，
+在 VS Code 的 `settings.json` 设置 `"terminal.integrated.minimumContrastRatio": 1`。
+这是终端显示策略，独立于应用输出的 RGB 颜色；详见
+[VS Code 终端颜色说明](https://code.visualstudio.com/docs/terminal/appearance#_minimum-contrast-ratio)。

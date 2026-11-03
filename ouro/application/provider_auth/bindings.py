@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from threading import Event
@@ -54,7 +54,7 @@ class ProviderAuthBinding:
 
 def binding_guard(config: ProviderConfigManager, expected: ProviderAuthBinding) -> CommitGuard:
     @contextmanager
-    def guard(*, timeout: float, cancel_event: Event) -> Iterator[None]:
+    def guard(*, timeout: float, cancel_event: Event) -> Generator[None]:
         # Config owns its lock/schema; Application owns the comparison. Auth
         # executes this entire boundary in the same worker as credential save.
         try:

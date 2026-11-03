@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 
@@ -61,7 +61,7 @@ class NativePluginScheduler:
         self.permissions = permissions
 
     @asynccontextmanager
-    async def _scope(self, *, writable: bool) -> AsyncIterator[None]:
+    async def _scope(self, *, writable: bool) -> AsyncGenerator[None]:
         invocation = current_invocation.get()
         if invocation is not None:
             invocation.require_active()

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -91,7 +91,7 @@ class LocalUsageLedger:
         )
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
+    def _connect(self) -> Generator[sqlite3.Connection]:
         connection = None
         try:
             connection = sqlite3.connect(self.path, timeout=5)
@@ -109,7 +109,7 @@ class LocalUsageLedger:
                 connection.close()
 
     @contextmanager
-    def _transaction(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
+    def _transaction(self, *, write: bool = False) -> Generator[sqlite3.Connection]:
         self.initialize()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")

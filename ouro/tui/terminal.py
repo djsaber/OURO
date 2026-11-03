@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from ctypes import wintypes
 from dataclasses import dataclass
@@ -54,7 +55,7 @@ def tui_terminal_guard(
     *,
     input_stream: TextIO | None = None,
     output_stream: TextIO | None = None,
-) -> Iterator[None]:
+) -> Generator[None]:
     """Restore terminal modes if the TUI exits through an exceptional path.
 
     Textual owns the terminal while it is running and remains responsible for its
@@ -66,14 +67,51 @@ def tui_terminal_guard(
     terminal_in = input_stream if input_stream is not None else sys.__stdin__
     terminal_out = output_stream if output_stream is not None else sys.__stdout__
     console_state = _capture_windows_console_state(terminal_in, terminal_out)
+    with _tui_color_environment():
+        try:
+            yield
+        finally:
+            _prepare_windows_console_for_reset(console_state)
+            try:
+                _write_tui_reset(terminal_out)
+            finally:
+                _restore_windows_console_state(console_state)
+
+
+@contextmanager
+def _tui_color_environment() -> Generator[None]:
+    """Fill missing RGB capability hints for known modern xterm hosts.
+
+    WSL can retain TERM=xterm-256color without forwarding COLORTERM, causing
+    Rich's Unix auto detection to quantize RGB colors. Keep explicit capability
+    declarations and Textual overrides authoritative; don't infer RGB support
+    for other terminals or intervening screen/tmux sessions.
+    """
+
+    color_term = os.environ.get("COLORTERM")
+    term = os.environ.get("TERM", "").strip().lower()
+    color_system = os.environ.get("TEXTUAL_COLOR_SYSTEM", "auto")
+    modern_host = (
+        os.environ.get("TERM_PROGRAM") == "vscode"
+        or bool(os.environ.get("WT_SESSION"))
+        or bool(os.environ.get("WSL_DISTRO_NAME"))
+    )
+    if (
+        color_term
+        or color_system != "auto"
+        or term not in {"xterm", "xterm-256color"}
+        or not modern_host
+    ):
+        yield
+        return
+    os.environ["COLORTERM"] = "truecolor"
     try:
         yield
     finally:
-        _prepare_windows_console_for_reset(console_state)
-        try:
-            _write_tui_reset(terminal_out)
-        finally:
-            _restore_windows_console_state(console_state)
+        if color_term is None:
+            os.environ.pop("COLORTERM", None)
+        else:
+            os.environ["COLORTERM"] = color_term
 
 
 def _write_tui_reset(stream: TextIO | None) -> bool:

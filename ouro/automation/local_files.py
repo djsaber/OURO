@@ -5,7 +5,7 @@ import json
 import re
 import shutil
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -71,7 +71,7 @@ class LocalTaskRepository:
         self._owns_scheduler = False
 
     @contextmanager
-    def _io_errors(self) -> Iterator[None]:
+    def _io_errors(self) -> Generator[None]:
         try:
             yield
         except OSError as exc:
@@ -80,7 +80,7 @@ class LocalTaskRepository:
             ) from exc
 
     @contextmanager
-    def _readable(self) -> Iterator[None]:
+    def _readable(self) -> Generator[None]:
         with self._io_errors(), FileMutationLock(self._mutation_path):
             self._recover()
             yield

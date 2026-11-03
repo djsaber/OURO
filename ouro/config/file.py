@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import threading
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from functools import wraps
 from pathlib import Path
@@ -65,7 +65,7 @@ class JsonConfigFile:
     @contextmanager
     def mutation(
         self, *, timeout: float = 10.0, cancel_event: threading.Event | None = None
-    ) -> Iterator[None]:
+    ) -> Generator[None]:
         """Bound acquisition, then finish one synchronous read-modify-write.
 
         Async callers must run the entire transaction in one worker, never hold

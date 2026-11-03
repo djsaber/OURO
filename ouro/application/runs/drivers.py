@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import Never
@@ -109,7 +109,7 @@ class NativeRunDriverContext:
         self._pending = None
 
     @asynccontextmanager
-    async def _operation(self) -> AsyncIterator[None]:
+    async def _operation(self) -> AsyncGenerator[None]:
         if not self._active or self.suspended or self.stopped is not None:
             raise RuntimeError("Driver invocation no longer accepts native operations")
         if self._busy:

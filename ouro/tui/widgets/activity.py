@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 
 from rich.text import Text
@@ -90,7 +90,7 @@ class ActivityIndicator(Static):
         self._render_indicator()
 
     @contextmanager
-    def pending_operation(self) -> Iterator[None]:
+    def pending_operation(self) -> Generator[None]:
         """Show menu work without replacing the session's runtime activity."""
 
         self._pending_operations += 1

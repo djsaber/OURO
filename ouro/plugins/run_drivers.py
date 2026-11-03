@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 
@@ -171,7 +171,7 @@ class SDKRunDriverContext:
 @contextmanager
 def run_driver_invocation(
     owner_id: str, context: core.RunDriverContext
-) -> Iterator[SDKRunDriverContext]:
+) -> Generator[SDKRunDriverContext]:
     """Establish the scope of a Host-accepted Run independently of its initiating callback."""
     native_run = SDKRunDriverContext(context)
     with plugin_invocation(

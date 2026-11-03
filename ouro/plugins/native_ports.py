@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 
@@ -74,7 +74,7 @@ class PluginNativePorts:
         )
 
     @asynccontextmanager
-    async def _invocation(self) -> AsyncIterator[RunDriverContext]:
+    async def _invocation(self) -> AsyncGenerator[RunDriverContext]:
         invocation = current_invocation.get()
         if invocation is None or invocation.native_run is None:
             raise RuntimeError("native Run ports require a live parent Run invocation")
