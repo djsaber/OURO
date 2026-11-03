@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from functools import partial
 from typing import cast
 
 from rich.text import Text
 from textual import events
-from textual.app import ComposeResult
+from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.color import Color
 from textual.containers import Vertical
@@ -124,6 +124,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._page_revision = 0
         self._spinner_frame = 0
         self._spinner_timer: Timer | None = None
+        self._pending_selections: set[tuple[int, str]] = set()
         self._loading_requests: dict[object, tuple[int, str | None]] = {}
         self._loading_values: set[str | None] = set()
         self._hint: str | None = None
@@ -458,8 +459,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             return False
         page = self._page_stack[-1]
         revision = self._page_revision
-        with self.loading_choice():
-            choices = await page.on_refresh() if page.on_refresh is not None else None
+        choices = await page.on_refresh() if page.on_refresh is not None else None
         if self._accepts_choice_updates() and revision == self._page_revision:
             self.pop_page(choices=choices)
         return True
@@ -561,8 +561,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             return False
         revision = self._page_revision
         if isinstance(screen, ChoiceScreen):
-            with self.loading_choice(self._selected_value()):
-                await screen.prepare()
+            await screen.prepare()
         if (
             not self._accepts_choice_updates()
             or self.app.screen is not self
@@ -803,7 +802,7 @@ class ChoiceScreen(ModalScreen[str | None]):
 
     @contextmanager
     def loading_choice(self, value: str | None = None) -> Iterator[None]:
-        """Project waiting work without changing the page's authoritative choices."""
+        """Explicitly project business work; navigation and callbacks do not opt in."""
 
         request = object()
         self._loading_requests[request] = (self._page_revision, value)
@@ -879,7 +878,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             return
         event.stop()
         selected = str(event.option.id)
-        if (self._page_revision, selected) in self._loading_requests.values():
+        if (self._page_revision, selected) in self._pending_selections:
             return
         # Navigation may dismiss this Screen before its destination finishes
         # loading. Keep that work application-owned and the message pump free
@@ -891,11 +890,14 @@ class ChoiceScreen(ModalScreen[str | None]):
         )
 
     async def _run_choice(self, selected: str) -> None:
-        with self.loading_choice(selected):
-            try:
-                await self._select_choice(selected)
-            except WorkerCancelled as exc:
-                raise asyncio.CancelledError from exc
+        request = (self._page_revision, selected)
+        self._pending_selections.add(request)
+        try:
+            await self._select_choice(selected)
+        except WorkerCancelled as exc:
+            raise asyncio.CancelledError from exc
+        finally:
+            self._pending_selections.discard(request)
 
     async def _select_choice(self, selected: str) -> None:
         if not self._accepts_choice_updates():
@@ -966,15 +968,11 @@ class ChoiceScreen(ModalScreen[str | None]):
             return
         if self.pop_page():
             if self._on_refresh is not None:
-                _worker: Worker[None] = self.run_worker(
-                    self._refresh_returned_page, group="choice-return", exclusive=True
+                _worker: Worker[bool] = self.run_worker(
+                    self.refresh_choices, group="choice-return", exclusive=True
                 )
             return
         self.dismiss(None)
-
-    async def _refresh_returned_page(self) -> None:
-        with self.loading_choice():
-            await self.refresh_choices()
 
     def action_previous_choice(self) -> None:
         self._move_choice(-1)
@@ -1093,9 +1091,8 @@ class ChoiceScreen(ModalScreen[str | None]):
             )
 
     async def _switch_domain(self) -> None:
-        with self.loading_choice():
-            if self._on_tab is not None:
-                await self._on_tab()
+        if self._on_tab is not None:
+            await self._on_tab()
 
     @staticmethod
     def _options(
@@ -1155,3 +1152,13 @@ class ChoiceScreen(ModalScreen[str | None]):
             or normalized_needle in choice.trailing.casefold()
             or normalized_needle in choice.trailing_badge.casefold()
         )
+
+
+def loading_menu(app: App, value: str | None = None) -> AbstractContextManager[None]:
+    """Let a workflow explicitly show progress on its current menu surface.
+
+    Capture the owning screen before work starts; no menu means no menu feedback.
+    """
+
+    screen = app.screen
+    return screen.loading_choice(value) if isinstance(screen, ChoiceScreen) else nullcontext()

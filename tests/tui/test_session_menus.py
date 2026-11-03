@@ -248,12 +248,12 @@ async def test_archive_open_and_delete_subagent_uses_existing_navigation(tmp_pat
         await _wait_for_screen(app, ChoiceScreen, title="ARCHIVE SESSIONS • TASK")
         await pilot.press("tab")
         await _wait_for_screen(app, ChoiceScreen, title="ARCHIVE SESSIONS • SUBAGENT")
-        await pilot.press("enter")
+        await pilot.press("enter", "down", "enter")
         await _wait_until(lambda: not app.screen._choices, pilot, description="archived subagent")
         await pilot.press("tab")
         await _wait_for_screen(app, ChoiceScreen, title="UNARCHIVE SESSIONS • ARCHIVED")
         assert [choice.value for choice in app.screen._choices] == [child_id]
-        await pilot.press("ctrl+o")
+        await pilot.press("escape", "ctrl+o")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • ARCHIVED")
         await pilot.press("enter")
         await _wait_until(

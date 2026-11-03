@@ -58,20 +58,20 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
             "Filter endpoint settings…"
         )
         assert [choice.group for choice in screen._choices] == [
-            "DETAILS",
-            "DETAILS",
-            "LIMITS",
-            "LIMITS",
-            "CAPABILITIES",
-            "CAPABILITIES",
-            "CAPABILITIES",
-            "CAPABILITIES",
-            "CAPABILITIES",
-            "CAPABILITIES",
-            "THINKING",
-            "THINKING",
-            "THINKING",
-            "REQUEST",
+            "BASIC",
+            "BASIC",
+            "BASIC",
+            "BASIC",
+            "ADVANCED",
+            "ADVANCED",
+            "ADVANCED",
+            "ADVANCED",
+            "ADVANCED",
+            "ADVANCED",
+            "ADVANCED",
+            "ADVANCED",
+            "ADVANCED",
+            "ADVANCED",
             "ACTIONS",
         ]
         assert screen._capabilities["endpoint-tools"] is True
@@ -386,13 +386,13 @@ async def test_provider_configuration_uses_shared_grouped_inline_menu(
         options = screen.query_one("#choice-list", OptionList)
         assert options.styles.scrollbar_size_vertical == 0
         assert [(choice.value, choice.group) for choice in screen._choices] == [
-            ("provider-credential", "CREDENTIALS"),
-            ("provider-display-name", "DETAILS"),
-            ("provider-base-url", "ADVANCED"),
+            ("provider-credential", "BASIC"),
+            ("provider-base-url", "BASIC"),
+            ("provider-display-name", "BASIC"),
             ("provider-api-path", "ADVANCED"),
             ("provider-timeout", "ADVANCED"),
-            ("provider-headers", "REQUEST"),
-            ("provider-options", "REQUEST"),
+            ("provider-headers", "ADVANCED"),
+            ("provider-options", "ADVANCED"),
             ("provider-save", "ACTIONS"),
         ]
         assert screen._values["provider-api-key-env"] == ""

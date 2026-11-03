@@ -548,6 +548,9 @@ async def test_session_picker_and_archive_menu_switch_and_toggle_archived_domain
         session_id="ses_active",
         title="Active session",
     ).session
+    other = application.runtime.sessions.create(
+        session_id="ses_other", title="Second session"
+    ).session
     archived = application.runtime.sessions.create(
         session_id="ses_archived",
         title="Archived session",
@@ -583,41 +586,71 @@ async def test_session_picker_and_archive_menu_switch_and_toggle_archived_domain
         assert initial[active.session_id].marker == DEFAULT_TUI_THEME.selected_choice_marker
         assert archived.session_id not in initial
 
-        archive_screen.query_one("#choice-filter", Input).value = "Active session"
+        assert isinstance(archive_screen, MultiChoiceScreen)
+        archive_screen.query_one(Input).value = "Active session"
         await pilot.pause()
+        await pilot.press("space", "tab")
+        await _wait_for_screen(app, MultiChoiceScreen, title="ARCHIVE SESSIONS • TASK")
+        assert not archive_screen._selected
+        await pilot.press("tab", "tab", "tab")
+        await _wait_for_screen(app, MultiChoiceScreen, title="ARCHIVE SESSIONS • USER")
+        for name in ("Active session", "Second session"):
+            archive_screen.query_one(Input).value = name
+            await pilot.pause()
+            await pilot.press("space")
         await pilot.press("enter")
-        await pilot.pause()
+        assert set(archive_screen._confirmation_values) == {active.session_id, other.session_id}
+        confirm = archive_screen.query_one(OptionList).get_option("__multi_confirm__").prompt
+        assert "Archive selected (2)" in confirm.plain
+        assert "Permanently delete" not in confirm.plain
+        await pilot.press("tab")
+        assert archive_screen._title == "ARCHIVE SESSIONS • USER"
+        await pilot.press("escape")
+        assert archive_screen.query_one(Input).value == "Second session"
+        assert archive_screen._selected == {active.session_id, other.session_id}
+        assert not application.runtime.sessions.open(active.session_id).session.archived
+        await pilot.press("enter", "down", "enter")
         assert app.screen is archive_screen
         await _wait_until(
             lambda: not archive_screen._choices,
             pilot,
-            description="archived session removed from user domain",
+            description="archived sessions removed from user domain",
         )
         await pilot.press("tab", "tab", "tab")
         await _wait_for_screen(app, ChoiceScreen, title="UNARCHIVE SESSIONS • ARCHIVED")
         choices = {choice.value: choice for choice in archive_screen._choices}
-        assert set(choices) == {active.session_id, archived.session_id}
+        assert set(choices) == {active.session_id, other.session_id, archived.session_id}
         assert {choice.group for choice in choices.values()} == {"Today"}
         assert choices[active.session_id].marker == DEFAULT_TUI_THEME.selected_choice_marker
-        assert "Enter unarchive" in archive_screen.query_one("#choice-hint", Static).render().plain
+        assert "Space toggle" in archive_screen.query_one("#choice-hint", Static).render().plain
 
-        archive_screen.query_one("#choice-filter", Input).value = "Archived session"
-        await pilot.pause()
+        for name in ("Archived session", "Second session"):
+            archive_screen.query_one(Input).value = name
+            await pilot.pause()
+            await pilot.press("space")
         await pilot.press("enter")
+        confirm = archive_screen.query_one(OptionList).get_option("__multi_confirm__").prompt
+        assert "Unarchive selected (2)" in confirm.plain
+        await pilot.press("down", "enter")
         await _wait_until(
-            lambda: archived.session_id not in {choice.value for choice in archive_screen._choices},
+            lambda: {choice.value for choice in archive_screen._choices} == {active.session_id},
             pilot,
             description="restored session removed from archived domain",
         )
         assert app.screen is archive_screen
         await pilot.press("tab")
         await _wait_for_screen(app, ChoiceScreen, title="ARCHIVE SESSIONS • USER")
-        assert [choice.value for choice in archive_screen._choices] == [archived.session_id]
+        assert {choice.value for choice in archive_screen._choices} == {
+            archived.session_id,
+            other.session_id,
+        }
         catalog = {item.session_id: item for item in application.runtime.sessions.catalog().entries}
         assert catalog[active.session_id].archived is True
         assert catalog[archived.session_id].archived is False
+        assert catalog[other.session_id].archived is False
         assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
         await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
 
 
 @pytest.mark.asyncio
@@ -953,8 +986,8 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         plugin_commands = tuple(
             choice for choice in menu._choices if choice.group == "PLUGIN COMMANDS"
         )
-        goal = next(choice for choice in plugin_commands if choice.label.startswith("/goal "))
-        plan = next(choice for choice in plugin_commands if choice.label == "/plan [on|off|status]")
+        goal = next(choice for choice in plugin_commands if choice.label == "/goal")
+        plan = next(choice for choice in plugin_commands if choice.label == "/plan")
         assert goal.trailing == "Create and control the latest Goal for this conversation."
         assert plan.trailing == "Enter plan mode for the current Session."
 

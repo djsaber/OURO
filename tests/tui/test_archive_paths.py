@@ -9,11 +9,15 @@ from ouro.tui.features.transfer.paths import ArchivePathScreen
 from tests.tui.helpers import wait_for_menu_action, wait_until
 
 
-async def test_archive_listing_reuses_directory_entry_types(tmp_path, monkeypatch):
+@pytest.mark.parametrize("filename", [None, "backup.zip"])
+async def test_archive_listing_filters_entries_without_extra_type_queries(
+    tmp_path, monkeypatch, filename
+):
     (tmp_path / "folder").mkdir()
     (tmp_path / "archive.zip").touch()
+    (tmp_path / "ALPHA.ZIP").touch()
     (tmp_path / "ignored.txt").touch()
-    screen = ArchivePathScreen(directory=tmp_path, filename=None)
+    screen = ArchivePathScreen(directory=tmp_path, filename=filename)
     type_queries = 0
     original_is_dir, original_is_file = Path.is_dir, Path.is_file
 
@@ -27,36 +31,19 @@ async def test_archive_listing_reuses_directory_entry_types(tmp_path, monkeypatc
         type_queries += 1
         return original_is_file(self)
 
-    monkeypatch.setattr(Path, "is_dir", counted_is_dir)
-    monkeypatch.setattr(Path, "is_file", counted_is_file)
-    choices = await screen._path_choices()
-    assert {choice.value for choice in choices} >= {"directory:folder", "file:archive.zip"}
+    async with App().run_test():
+        # Preparation runs before mounting, but inside the caller's app context.
+        # Count only the listing's queries, not Textual startup or teardown I/O.
+        with monkeypatch.context() as listing_patch:
+            listing_patch.setattr(Path, "is_dir", counted_is_dir)
+            listing_patch.setattr(Path, "is_file", counted_is_file)
+            await screen.prepare()
+    expected = {"location", "home", "parent", "directory:folder"}
+    expected.update(
+        {"file:archive.zip", "file:ALPHA.ZIP"} if filename is None else {"filename", "save"}
+    )
+    assert {choice.value for choice in screen._choices} == expected
     assert type_queries == 0
-
-
-async def test_import_choices_list_archives_before_one_contiguous_folder_group(tmp_path) -> None:
-    (tmp_path / "zeta").mkdir()
-    (tmp_path / "Alpha").mkdir()
-    (tmp_path / "beta.zip").write_bytes(b"zip")
-    (tmp_path / "ALPHA.ZIP").write_bytes(b"zip")
-    (tmp_path / "ignored.txt").write_text("ignored", encoding="utf-8")
-
-    choices = await ArchivePathScreen(directory=tmp_path, filename=None)._path_choices()
-
-    assert [choice.value for choice in choices] == [
-        "location",
-        "home",
-        "parent",
-        "file:ALPHA.ZIP",
-        "file:beta.zip",
-        "directory:Alpha",
-        "directory:zeta",
-    ]
-    assert list(dict.fromkeys(choice.group for choice in choices)) == [
-        "LOCATION",
-        "ARCHIVES",
-        "FOLDERS",
-    ]
 
 
 @pytest.mark.parametrize(

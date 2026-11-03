@@ -90,7 +90,8 @@ class PluginConfigurationScreen(CredentialEditableChoiceScreen):
             )
             if ConfirmationScreen.confirmed(confirmed):
                 try:
-                    self._view = await self._reload()
+                    with self.loading_choice("reload"):
+                        self._view = await self._reload()
                     self._draft = self._view.candidate()
                     self._issues, self._failure = self._view.issues, ""
                 except Exception as exc:
@@ -194,7 +195,8 @@ class PluginConfigurationScreen(CredentialEditableChoiceScreen):
     async def _check(self) -> PluginConfigurationPreview | None:
         self._failure = ""
         try:
-            result = await self._preview(self._draft)
+            with self.loading_choice(self._selected_value()):
+                result = await self._preview(self._draft)
             self._issues = result.issues
             return result
         except Exception as exc:
@@ -206,7 +208,8 @@ class PluginConfigurationScreen(CredentialEditableChoiceScreen):
         try:
             result = await self._check()
             if result is not None and result.valid:
-                applied = await self._apply(result.candidate)
+                with self.loading_choice("save"):
+                    applied = await self._apply(result.candidate)
                 self.dismiss(applied)  # type: ignore[arg-type]
                 return
         except Exception as exc:

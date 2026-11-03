@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from ouro.tui.menus.choice import loading_menu
 from ouro.tui.menus.editable import EditableChoiceScreen
 from ouro.tui.menus.models import Choice
 
@@ -68,7 +69,8 @@ class ArchivePathScreen(EditableChoiceScreen):
             return tuple(rows)
 
         try:
-            return await asyncio.to_thread(read)
+            with loading_menu(self.app):
+                return await asyncio.to_thread(read)
         except OSError as exc:
             self.notify(str(exc), severity="error", markup=False)
             return (

@@ -24,7 +24,7 @@ from ouro.tui.features.configuration.skills import SkillInstallScreen
 from ouro.tui.features.configuration.tools import ToolExecutionConfigurationScreen
 from ouro.tui.features.prompts.workflows import PromptWorkflows
 from ouro.tui.features.providers.model_menus import model_selection_label
-from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.menus.choice import ChoiceScreen, loading_menu
 from ouro.tui.menus.confirmation import ConfirmationScreen
 from ouro.tui.menus.labels import PERMISSION_LABELS
 from ouro.tui.menus.models import Choice
@@ -847,7 +847,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
 
     async def _check_mcp(self, server_id: str) -> None:
         try:
-            result = await self._controller.check_mcp_server(server_id)
+            with loading_menu(self, "check"):
+                result = await self._controller.check_mcp_server(server_id)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -994,7 +995,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
     ) -> None:
         revision = menu.page_revision if menu is not None else None
         try:
-            catalog = await self._controller.skill_catalog()
+            with loading_menu(self):
+                catalog = await self._controller.skill_catalog()
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -1007,7 +1009,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
 
             async def refresh_skills() -> tuple[Choice, ...] | None:
                 try:
-                    refreshed = await self._controller.skill_catalog()
+                    with loading_menu(self):
+                        refreshed = await self._controller.skill_catalog()
                 except Exception as exc:  # noqa: BLE001
                     await self.query_one(ConversationView).add_notice(str(exc), error=True)
                     return None
@@ -1066,7 +1069,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             )
             return
         try:
-            catalog = await self._controller.skill_catalog()
+            with loading_menu(self):
+                catalog = await self._controller.skill_catalog()
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -1092,7 +1096,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 if not await self._set_skill_enabled(name, enabled=not skill.enabled):
                     return None
                 try:
-                    refreshed = await self._controller.skill_catalog()
+                    with loading_menu(self):
+                        refreshed = await self._controller.skill_catalog()
                 except Exception as exc:  # noqa: BLE001
                     await self.query_one(ConversationView).add_notice(
                         str(exc),
@@ -1127,7 +1132,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
 
             async def refresh_skill_candidates() -> tuple[Choice, ...] | None:
                 try:
-                    refreshed = await self._controller.skill_catalog()
+                    with loading_menu(self):
+                        refreshed = await self._controller.skill_catalog()
                 except Exception as exc:  # noqa: BLE001
                     await self.query_one(ConversationView).add_notice(str(exc), error=True)
                     return None
@@ -1184,7 +1190,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         menu: ChoiceScreen | None = None,
     ) -> None:
         try:
-            catalog = await self._controller.skill_catalog()
+            with loading_menu(self):
+                catalog = await self._controller.skill_catalog()
             skill = next(
                 (item for item in catalog.skills if item.name == name),
                 None,
@@ -1209,7 +1216,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             async def refresh_skill_actions() -> tuple[Choice, ...] | None:
                 nonlocal skill
                 try:
-                    catalog = await self._controller.skill_catalog()
+                    with loading_menu(self):
+                        catalog = await self._controller.skill_catalog()
                 except Exception as exc:  # noqa: BLE001
                     await self.query_one(ConversationView).add_notice(str(exc), error=True)
                     return None
@@ -1230,7 +1238,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                         enabled=selected == "enable",
                     ):
                         return None
-                    catalog = await self._controller.skill_catalog()
+                    with loading_menu(self):
+                        catalog = await self._controller.skill_catalog()
                     refreshed = next(
                         (item for item in catalog.skills if item.name == name),
                         None,
@@ -1290,7 +1299,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             return
         skill_draft = cast(TuiSkillInstallConfiguration, draft)
         try:
-            result = await self._controller.install_skills(skill_draft)
+            with loading_menu(self):
+                result = await self._controller.install_skills(skill_draft)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -1317,7 +1327,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
 
     async def _validate_skill(self, name: str) -> None:
         try:
-            result = await self._controller.validate_skill(name)
+            with loading_menu(self, "validate"):
+                result = await self._controller.validate_skill(name)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -1332,7 +1343,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
 
     async def _update_skill(self, name: str) -> None:
         try:
-            await self._controller.update_skill(name)
+            with loading_menu(self, "update"):
+                await self._controller.update_skill(name)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -1355,7 +1367,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         if not ConfirmationScreen.confirmed(selected):
             return
         try:
-            await self._controller.remove_skill(name)
+            with loading_menu(self, "remove"):
+                await self._controller.remove_skill(name)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return

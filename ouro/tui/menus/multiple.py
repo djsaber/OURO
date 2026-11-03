@@ -8,7 +8,7 @@ from textual.binding import Binding
 from textual.widgets import Input, OptionList, Static
 
 from ouro.tui.menus.choice import ChoiceScreen
-from ouro.tui.menus.models import Choice, MultiChoiceConfirmationHandler
+from ouro.tui.menus.models import Choice, ChoiceTabHandler, MultiChoiceConfirmationHandler
 from ouro.tui.menus.rows import _choice_option
 from ouro.tui.text_inputs import TuiInput
 from ouro.tui.theme import DEFAULT_TUI_THEME, label_text, theme_for
@@ -61,9 +61,14 @@ class MultiChoiceScreen(ChoiceScreen):
         destructive: bool = False,
         selected_values: tuple[str, ...] = (),
         interaction_hint: str | None = None,
+        on_tab: ChoiceTabHandler | None = None,
     ) -> None:
         super().__init__(
-            title=title, placeholder=placeholder, choices=choices, interaction_hint=interaction_hint
+            title=title,
+            placeholder=placeholder,
+            choices=choices,
+            interaction_hint=interaction_hint,
+            on_tab=on_tab,
         )
         self._on_confirm = on_confirm
         self._selected = set(selected_values).intersection(choice.value for choice in choices)
@@ -75,6 +80,34 @@ class MultiChoiceScreen(ChoiceScreen):
         self._catalog_choices: tuple[Choice, ...] = ()
         self._catalog_filter = ""
         self._choices = self._project_markers(self._choices)
+
+    def replace_catalog(
+        self,
+        *,
+        title: str,
+        choices: tuple[Choice, ...],
+        confirm_label: str,
+        interaction_hint: str | None = None,
+    ) -> None:
+        """Switch selectable catalogs without carrying selections across them."""
+
+        self._selected.clear()
+        self._confirmation_values = ()
+        self._catalog_choices = ()
+        self._catalog_filter = ""
+        self._confirm_label = confirm_label
+        self.replace_page(
+            title=title,
+            placeholder=self._placeholder,
+            choices=self._project_markers(choices),
+            on_tab=self._on_tab,
+            interaction_hint=interaction_hint,
+        )
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "switch_domain" and self._confirmation_values:
+            return False
+        return super().check_action(action, parameters)
 
     def _filter_input(self) -> Input:
         return _MultiChoiceFilterInput(

@@ -131,7 +131,9 @@ def _choice_option(
         row.add_column(justify="right", overflow="ellipsis")
         trailing = Text(overflow="ellipsis", no_wrap=True)
         if choice.trailing_badge:
-            trailing.append(choice.trailing_badge, style=theme.accent)
+            trailing.append(
+                choice.trailing_badge, style=choice.trailing_accent or theme.text_lowlight
+            )
             if choice.trailing:
                 trailing.append(theme.inline_separator, style=theme.text_lowlight)
         trailing.append(

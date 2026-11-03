@@ -34,7 +34,8 @@ async def test_pending_inline_save_preserves_new_edits_and_respects_close(action
         await pilot.press("enter", *"saved", "enter")
         await asyncio.wait_for(entered.wait(), timeout=2)
         try:
-            assert form.query_one("#choice-hint", Static).content.startswith(
+            assert form._spinner_timer is None
+            assert not form.query_one("#choice-hint", Static).content.startswith(
                 DEFAULT_TUI_THEME.spinner_frames
             )
             await pilot.press(*" later" if action == "type" else ("escape",))

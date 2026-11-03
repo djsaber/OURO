@@ -114,7 +114,7 @@ from ouro.tui.interactions.forms import project_question_form
 from ouro.tui.interactions.plan import PlanConfirmationPanel
 from ouro.tui.interactions.plan_form import project_plan_confirmation
 from ouro.tui.interactions.questions import AskUserPanel
-from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.menus.choice import ChoiceScreen, loading_menu
 from ouro.tui.menus.editable import EditableChoiceScreen
 from ouro.tui.menus.help import help_choices
 from ouro.tui.menus.labels import MODEL_THINKING_LABEL, THINKING_LABELS, TOOL_APPROVAL_LABEL
@@ -4107,7 +4107,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             action = {
                 "open": "select",
                 "rename": "edit",
-                "archive": "unarchive" if domain == "archived" else "archive",
+                "archive": "confirm",
                 "delete": "confirm",
             }[operation]
             return self._tui_theme.inline_separator.join(
@@ -4115,7 +4115,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     *(("Tab switch sessions",) if operation != "delete" else ()),
                     "↑/↓ move",
                     "←/→ group",
-                    *(("Space toggle",) if operation == "delete" else ()),
+                    *(("Space toggle",) if operation in {"archive", "delete"} else ()),
                     f"Enter {action}",
                     "Esc back",
                 )
@@ -4131,10 +4131,22 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             revision = session_menu.page_revision
             if not await self._refresh_sessions(include_subagents=True):
                 return
-            if not session_menu.is_attached or session_menu.page_revision != revision:
+            if (
+                not session_menu.is_attached
+                or session_menu.page_revision != revision
+                or not session_menu.check_action("switch_domain", ())
+            ):
                 return
             domain = _next_cycle_value(tuple(_SESSION_DOMAIN_LABELS), domain)
             self._session_domain = domain
+            if isinstance(session_menu, MultiChoiceScreen):
+                session_menu.replace_catalog(
+                    title=title(),
+                    choices=choices(),
+                    confirm_label="Unarchive" if domain == "archived" else "Archive",
+                    interaction_hint=hint(),
+                )
+                return
             session_menu.replace_page(
                 navigation_id=_MENU_SESSIONS if operation == "open" else None,
                 title=title(),
@@ -4143,19 +4155,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 on_select=select_session,
                 on_tab=switch_domain,
                 interaction_hint=hint(),
-                retain_focus_position_on_select=operation == "archive",
             )
 
         async def select_session(session_id: str) -> tuple[Choice, ...] | None:
-            if operation == "archive":
-                try:
-                    await self._controller.set_session_archived(
-                        session_id, archived=domain != "archived"
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    self.notify(str(exc), severity="error", markup=False)
-                    return None
-                return await refresh_choices()
             # History rendering needs the destination screen to be visible.
             session_menu.dismiss(None)
             try:
@@ -4175,6 +4177,17 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self.query_one(BrandHeader).set_context(session_title=renamed.title)
             return await refresh_choices()
 
+        async def archive_selected(session_ids: tuple[str, ...]) -> tuple[Choice, ...] | None:
+            archived = domain != "archived"
+            with session_menu.loading_choice("__multi_confirm__"):
+                try:
+                    for session_id in session_ids:
+                        await self._controller.set_session_archived(session_id, archived=archived)
+                except Exception as exc:  # noqa: BLE001
+                    self.notify(str(exc), severity="error", markup=False)
+                # Publish completed changes even if a later item failed.
+                return await refresh_choices()
+
         async def delete_selected(session_ids: tuple[str, ...]) -> tuple[Choice, ...] | None:
             if not await self._refresh_sessions(include_subagents=True):
                 return None
@@ -4184,7 +4197,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 return choices()
             current_session_id = self._controller.session_id
             try:
-                removed = await self._controller.delete_sessions(session_ids)
+                with loading_menu(self, "__multi_confirm__"):
+                    removed = await self._controller.delete_sessions(session_ids)
             except Exception as exc:  # noqa: BLE001
                 self.notify(str(exc), severity="error", markup=False)
                 return None
@@ -4193,17 +4207,24 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 await self._new_session()
             return await refresh_choices()
 
-        if operation == "delete":
+        if operation in {"archive", "delete"}:
             session_menu = MultiChoiceScreen(
                 title=title(),
-                placeholder="Filter archived sessions…",
+                placeholder="Filter archived sessions…"
+                if operation == "delete"
+                else "Filter sessions…",
                 choices=choices(),
-                on_confirm=delete_selected,
+                on_confirm=delete_selected if operation == "delete" else archive_selected,
                 selected_marker=self._tui_theme.selected_choice_marker,
                 unselected_marker=self._tui_theme.unselected_choice_marker,
-                confirm_label="Delete",
-                destructive=True,
+                confirm_label="Delete"
+                if operation == "delete"
+                else "Unarchive"
+                if domain == "archived"
+                else "Archive",
+                destructive=operation == "delete",
                 interaction_hint=hint(),
+                on_tab=switch_domain if operation == "archive" else None,
             )
         elif operation == "rename":
             session_menu = EditableChoiceScreen(
@@ -4217,17 +4238,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         else:
             if menu is not None:
                 session_menu = menu
-                if operation == "archive":
-                    menu.push_page(
-                        title=title(),
-                        placeholder="Filter sessions…",
-                        choices=choices(),
-                        on_select=select_session,
-                        on_tab=switch_domain,
-                        interaction_hint=hint(),
-                        retain_focus_position_on_select=True,
-                    )
-                    return
                 navigate = (
                     menu.replace_page
                     if menu.navigation_id == _MENU_SESSIONS
@@ -4243,7 +4253,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     on_select=select_session,
                     on_tab=switch_domain,
                     interaction_hint=hint(),
-                    retain_focus_position_on_select=operation == "archive",
                 )
                 return
             session_menu = ChoiceScreen(
@@ -5149,14 +5158,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
         async def navigate() -> None:
             active_menu = self._active_navigation_menu()
-            with (
-                active_menu.loading_choice()
-                if active_menu is not None
-                else self.query_one(ActivityIndicator).pending_operation()
-            ):
-                await navigate_from(active_menu)
-
-        async def navigate_from(active_menu: ChoiceScreen | None) -> None:
             if destination == _MENU_ACTIONS:
                 await self._choose_action(
                     menu=active_menu,

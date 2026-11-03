@@ -13,7 +13,7 @@ from ouro.tui.features.tasks.screens import (
     TASK_STATUS_LABELS,
     TaskConfigurationScreen,
 )
-from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.menus.choice import ChoiceScreen, loading_menu
 from ouro.tui.menus.confirmation import ConfirmationScreen
 from ouro.tui.menus.models import Choice
 from ouro.tui.theme import TuiTheme, theme_for
@@ -192,7 +192,8 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
                 elif value == "toggle":
                     await self._controller.set_task_enabled(task, not task.enabled)
                 elif value == "interrupt":
-                    await self._controller.interrupt_task(task)
+                    with loading_menu(self, "interrupt"):
+                        await self._controller.interrupt_task(task)
                 elif value == "history":
                     await self._task_history(task_id, menu=menu)
                     return None

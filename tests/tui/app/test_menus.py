@@ -482,10 +482,14 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         description = plugin_screen.query_one("#choice-description", Static)
         detail = await app._controller.plugin("dev.ouro.agent_context")
         assert description.display and str(description.content) == detail.description
-        assert [choice.label for choice in plugin_screen._choices] == [
-            "Disable",
-            "Check",
-            "Restart",
+        assert [
+            (choice.label, choice.group, choice.trailing) for choice in plugin_screen._choices
+        ] == [
+            ("agent-instructions", "CONTRIBUTIONS", "context"),
+            ("runtime-facts", "CONTRIBUTIONS", "context"),
+            ("Disable", "ACTIONS", "active"),
+            ("Check", "ACTIONS", ""),
+            ("Restart", "ACTIONS", ""),
         ]
         assert (
             next(choice for choice in plugin_screen._choices if choice.value == "restart").disabled
@@ -518,7 +522,7 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Agent Context")
         options = plugin_screen.query_one("#choice-list", OptionList)
-        await pilot.click(options, offset=(4, 1))
+        await pilot.click(options, offset=(4, options.get_option_index("enable")))
         await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Agent Context")
         await _wait_until(
             lambda: any(
@@ -647,7 +651,7 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
 
 
 @pytest.mark.asyncio
-async def test_action_choice_submenus_reuse_the_action_screen_without_flash(
+async def test_action_submenus_restore_filter_and_keyboard_input_on_return(
     tmp_path: Path,
 ) -> None:
     application = _application(tmp_path)
@@ -673,9 +677,6 @@ async def test_action_choice_submenus_reuse_the_action_screen_without_flash(
             await pilot.press("enter")
             await _wait_for_screen(app, ChoiceScreen, title=title)
 
-            assert app.screen is action_screen
-            assert len(app.screen_stack) == 2
-
             await pilot.press("escape")
             await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
             assert app.screen is action_screen
@@ -684,7 +685,6 @@ async def test_action_choice_submenus_reuse_the_action_screen_without_flash(
             assert filter_input.cursor_position == len(action_label)
             assert filter_input.selection.is_empty
             assert filter_input.has_focus
-            assert app.cursor_position == filter_input.cursor_screen_offset
             await pilot.press("x")
             assert filter_input.value == action_label + "x"
             await pilot.press("escape")

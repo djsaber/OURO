@@ -175,9 +175,7 @@ async def test_root_help_groups_runtime_plugin_commands(
         plugins = tuple(
             choice for choice in app.screen._choices if choice.group == "PLUGIN COMMANDS"
         )
-        assert [(choice.label, choice.trailing) for choice in plugins] == [
-            ("/hello <name>", "Say hello")
-        ]
+        assert [(choice.label, choice.trailing) for choice in plugins] == [("/hello", "Say hello")]
 
         help_screen = app.screen
         help_screen.query_one("#choice-filter", Input).value = "@"

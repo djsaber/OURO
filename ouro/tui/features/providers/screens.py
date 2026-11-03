@@ -271,7 +271,7 @@ class ProviderConfigurationScreen(CredentialEditableChoiceScreen):
                         or self._has_saved_key(),
                         theme=theme,
                     ),
-                    group="CREDENTIALS",
+                    group="BASIC",
                     edit_value=edit.value,
                     edit_placeholder="blank keeps current credential",
                 ),
@@ -283,23 +283,32 @@ class ProviderConfigurationScreen(CredentialEditableChoiceScreen):
                     "Managed sign-in",
                     trailing=self._auth_driver,
                     description="Save this provider, then open Authentication to sign in.",
-                    group="CREDENTIALS",
+                    group="BASIC",
                     disabled=True,
                 ),
             )
+        )
+        base_url_choice = Choice(
+            "provider-base-url",
+            "Base URL",
+            trailing=self._values["provider-base-url"] or "Required",
+            group="ADVANCED" if self._profile.preset else "BASIC",
+            edit_value=self._values["provider-base-url"],
         )
         return (
             *credential_choices,
             *_service_notice_choices(
                 self._existing.notice if self._existing is not None else self._profile.notice
             ),
+            *((base_url_choice,) if not self._profile.preset else ()),
             Choice(
                 "provider-display-name",
                 "Display name",
                 trailing=self._values["provider-display-name"] or "Required",
-                group="DETAILS",
+                group="BASIC",
                 edit_value=self._values["provider-display-name"],
             ),
+            *((base_url_choice,) if self._profile.preset else ()),
             *(
                 (
                     Choice(
@@ -312,13 +321,6 @@ class ProviderConfigurationScreen(CredentialEditableChoiceScreen):
                 )
                 if self._existing is not None or self._profile.preset
                 else ()
-            ),
-            Choice(
-                "provider-base-url",
-                "Base URL",
-                trailing=self._values["provider-base-url"] or "Required",
-                group="ADVANCED",
-                edit_value=self._values["provider-base-url"],
             ),
             Choice(
                 "provider-api-path",
@@ -348,7 +350,7 @@ class ProviderConfigurationScreen(CredentialEditableChoiceScreen):
                     "Blank keeps existing headers or uses preset defaults; "
                     "{} clears; a JSON object replaces all."
                 ),
-                group="REQUEST",
+                group="ADVANCED",
                 edit_value=self._values["provider-headers"],
                 edit_placeholder="JSON headers; blank uses existing or preset headers",
             ),
@@ -356,7 +358,7 @@ class ProviderConfigurationScreen(CredentialEditableChoiceScreen):
                 "provider-options",
                 "Request defaults",
                 trailing=_json_summary(self._values["provider-options"]),
-                group="REQUEST",
+                group="ADVANCED",
                 edit_value=self._values["provider-options"],
                 edit_placeholder="Enter a JSON object",
             ),
@@ -670,95 +672,95 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
         return (
             *_service_notice_choices(self._provider.notice),
             Choice(
-                "endpoint-display-name",
-                "Display name",
-                trailing=self._values["endpoint-display-name"] or "Optional",
-                group="DETAILS",
-                edit_value=self._values["endpoint-display-name"],
-            ),
-            Choice(
                 "endpoint-model-id",
                 "Model ID",
                 trailing=self._values["endpoint-model-id"] or "Required",
-                group="DETAILS",
+                group="BASIC",
                 edit_value=self._values["endpoint-model-id"],
             ),
             Choice(
                 "endpoint-context-window",
                 "Context window",
                 trailing=f"{self._values['endpoint-context-window']} tokens",
-                group="LIMITS",
+                group="BASIC",
                 edit_value=self._values["endpoint-context-window"],
             ),
             Choice(
                 "endpoint-max-output",
                 "Max output tokens",
                 trailing=self._values["endpoint-max-output"] or "Optional",
-                group="LIMITS",
+                group="BASIC",
                 edit_value=self._values["endpoint-max-output"],
+            ),
+            Choice(
+                "endpoint-display-name",
+                "Display name",
+                trailing=self._values["endpoint-display-name"] or "Optional",
+                group="BASIC",
+                edit_value=self._values["endpoint-display-name"],
             ),
             Choice(
                 "endpoint-tools",
                 "Tools",
                 trailing_badge=state("endpoint-tools"),
-                group="CAPABILITIES",
+                group="ADVANCED",
             ),
             Choice(
                 "endpoint-image-input",
                 "Image input",
                 trailing_badge=state("endpoint-image-input"),
                 description="Accept images as model input.",
-                group="CAPABILITIES",
+                group="ADVANCED",
             ),
             Choice(
                 "endpoint-audio-input",
                 "Audio input",
                 trailing_badge=state("endpoint-audio-input"),
                 description="Accept audio as model input.",
-                group="CAPABILITIES",
+                group="ADVANCED",
             ),
             Choice(
                 "endpoint-video-input",
                 "Video input",
                 trailing_badge=state("endpoint-video-input"),
                 description="Accept video as model input.",
-                group="CAPABILITIES",
+                group="ADVANCED",
             ),
             Choice(
                 "endpoint-streaming",
                 "Streaming",
                 trailing_badge=state("endpoint-streaming"),
-                group="CAPABILITIES",
+                group="ADVANCED",
             ),
             Choice(
                 "endpoint-structured-output",
                 "Structured output",
                 trailing_badge=state("endpoint-structured-output"),
-                group="CAPABILITIES",
+                group="ADVANCED",
             ),
             Choice(
                 "endpoint-reasoning-effort",
-                "Effort",
+                "Thinking effort",
                 trailing=(
                     _REASONING_EFFORT_PRESET_LABELS.get(
                         self._reasoning_effort_preset_name() or "",
                         "Custom",
                     )
                 ),
-                group="THINKING",
+                group="ADVANCED",
             ),
             Choice(
                 "endpoint-reasoning-summary",
-                "Summary",
+                "Thinking summary",
                 trailing=summary_label,
-                group="THINKING",
+                group="ADVANCED",
                 disabled=summary_label == "Invalid settings",
             ),
             Choice(
                 "endpoint-reasoning-config",
-                "Settings (JSON)",
+                "Thinking settings (JSON)",
                 trailing=self._values["endpoint-reasoning-config"],
-                group="THINKING",
+                group="ADVANCED",
                 edit_value=self._values["endpoint-reasoning-config"],
                 edit_placeholder="Enter a reasoning JSON object",
             ),
@@ -766,7 +768,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
                 "endpoint-request-options",
                 "Request options",
                 trailing=_json_summary(self._values["endpoint-request-options"]),
-                group="REQUEST",
+                group="ADVANCED",
                 edit_value=self._values["endpoint-request-options"],
                 edit_placeholder="Enter a JSON object",
             ),
@@ -896,7 +898,7 @@ def _service_notice_choices(notice: str | None) -> tuple[Choice, ...]:
         return ()
     return (
         Choice(
-            "service-notice", "Service limits", description=notice, group="DETAILS", disabled=True
+            "service-notice", "Service limits", description=notice, group="BASIC", disabled=True
         ),
     )
 

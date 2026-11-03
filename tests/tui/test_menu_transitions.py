@@ -28,8 +28,9 @@ async def test_waiting_choice_animates_without_blocking_filter_navigation_or_clo
 
     async def select(value):
         calls.append(value)
-        entered.set()
-        await release.wait()
+        with screen.loading_choice(value):
+            entered.set()
+            await release.wait()
         return (Choice("slow", "Finished"), Choice("other", "Other"))
 
     screen = ChoiceScreen(
@@ -111,7 +112,8 @@ async def test_page_refresh_wait_keeps_filter_and_close_responsive(operation):
         try:
             assert screen._title == "PARENT"
             assert screen.query_one(OptionList).get_option("row").prompt.plain == "Original"
-            assert screen.query_one("#choice-hint", Static).content.startswith(
+            assert screen._spinner_timer is None
+            assert not screen.query_one("#choice-hint", Static).content.startswith(
                 DEFAULT_TUI_THEME.spinner_frames
             )
             screen.query_one(Input).focus()
@@ -373,6 +375,7 @@ async def test_child_open_and_return_preserve_parent_scroll_and_selection(
             await pilot.pause()
             assert app.screen is parent
             assert options.highlighted == selected and options.scroll_y == scroll_y
+            assert parent._spinner_timer is None
         finally:
             release.set()
         await _wait_for_screen(app, ChoiceScreen, title="CHILD")

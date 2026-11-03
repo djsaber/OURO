@@ -157,9 +157,9 @@ async def test_endpoint_reasoning_presets_sync_settings_and_can_be_saved(
         await pilot.pause()
         await screen._save_field("endpoint-model-id", "custom-model")
         choices = {choice.value: choice for choice in screen._choices}
-        assert choices["endpoint-reasoning-effort"].label == "Effort"
-        assert choices["endpoint-reasoning-summary"].label == "Summary"
-        assert choices["endpoint-reasoning-config"].label == "Settings (JSON)"
+        assert choices["endpoint-reasoning-effort"].label == "Thinking effort"
+        assert choices["endpoint-reasoning-summary"].label == "Thinking summary"
+        assert choices["endpoint-reasoning-config"].label == "Thinking settings (JSON)"
         assert not choices["endpoint-reasoning-summary"].disabled
         await select_choice(app, pilot, "endpoint-reasoning-summary")
         options = app.screen.query_one("#choice-list", OptionList)

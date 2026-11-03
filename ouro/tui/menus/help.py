@@ -42,7 +42,7 @@ def help_choices(
     commands = tuple(
         Choice(
             f"command:{command.name}",
-            command.usage,
+            command.name,
             trailing=command.description,
             group="COMMANDS",
         )
@@ -51,7 +51,7 @@ def help_choices(
     plugins = tuple(
         Choice(
             f"plugin-command:{command.name}",
-            command.usage,
+            command.name,
             trailing=command.title,
             group="PLUGIN COMMANDS",
         )
