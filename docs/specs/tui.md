@@ -217,7 +217,7 @@ composer 支持多行编辑、历史、命令补全和运行中排队：
 - 普通运行中提交按配置形成 follow-up；
 - `/unqueue` 将选中的未消费输入取回 composer；
 - `/undo` 撤销最近直接用户输入，优先选择待消费输入，并恢复完整编辑草稿；
-- `/continue` 继续合法检查点，撤销后从当前历史创建新 Run；
+- `/continue` 继续合法检查点，撤销后从当前历史创建新 Run；没有可恢复 Run 时执行已接受的 pending 输入；
 - `Ctrl+C` 优先复制选区，无选区时请求中止 active Run；`/abort` 始终请求中止；
 - `Ctrl+Q` 或 `/quit` 关闭 TUI。
 
@@ -576,7 +576,8 @@ TUI 右键粘贴统一读取系统文本；Windows 无文本时读取原生文�
 - 来源、点查或投影失败只停止所属观察并报告原因，不自动无限重载，也不改变执行者生命周期；
 - Markdown 或单个呈现组件失败不得篡改 Run 结果；可降级为有界纯文本诊断；
 - 选择控制会话时只对遗留 running Run 请求恢复；queued 尚未取得执行锁，不能据此判为进程中断。
-  Supervisor 已接管的任务保持原状态，任务启动恢复仍由既有协调器负责；
+  同时通过 Application 的会话调度接管已接受输入，包括尚未启动首个 Run 的会话。Supervisor 已接管的任务保持原状态，
+  任务启动恢复仍由既有协调器负责；只读历史和子会话观察不接管执行；
 - 普通提交、继续运行、审批和 AskUser 的执行由 Supervisor 持有；TUI worker 取消只结束本 Host 的等待。
   关闭共享 Application 上 `close_application=False` 的 TUI 释放 Host 资源，已受理运行继续执行；
   显式 abort 提交持久取消意图，Application 关闭按 shutdown policy 处理全部受管工作；

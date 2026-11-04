@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING
@@ -258,6 +258,8 @@ class RuntimeService:
         self.session_controls = SessionControlCoordinator(store, usage_service=usage_service)
         self.queued_inputs = QueuedInputQueue(store)
         self.queued_input_config = queued_input_config or QueuedInputConfig()
+        self._session_scheduler: Callable[[str, int], Awaitable[None]] | None = None
+        self._advancing_sessions: set[str] = set()
         self.adapter = adapter
         self.models = model_catalog or FixedRuntimeAdapterCatalog(adapter)
         self._owned_auxiliary_adapters = owned_auxiliary_adapters
@@ -1548,7 +1550,6 @@ class RuntimeService:
         resource_refs: list[str] | tuple[str, ...] | None = None,
         attachments: tuple[InputFile, ...] = (),
         driver_id: str | None = None,
-        _drain_queued_inputs: bool = True,
         _queued_inputs: list[QueuedInput] | None = None,
         _input_attribution: (
             AttributedSessionInput | HostSessionInput | DelegatedTaskInput | None
@@ -1751,6 +1752,7 @@ class RuntimeService:
                     on_input_accepted=on_input_accepted,
                     input_id=input_id,
                 )
+                await self.advance_session(queued_session.session_id, queued_session.history_epoch)
                 return RunResult(session=queued_session, run=active_run)
         if isinstance(_input_attribution, DelegatedTaskInput) and (
             session.session_kind != "subagent"
@@ -1851,6 +1853,7 @@ class RuntimeService:
                     on_input_accepted=on_input_accepted,
                     input_id=input_id,
                 )
+                await self.advance_session(queued_session.session_id, queued_session.history_epoch)
                 return RunResult(session=queued_session, run=active_run)
             if _queued_inputs is not None:
                 # The competing owner released before publishing, or already completed.
@@ -1902,6 +1905,7 @@ class RuntimeService:
                     on_input_accepted=on_input_accepted,
                     input_id=input_id,
                 )
+                await self.advance_session(queued_session.session_id, queued_session.history_epoch)
                 return RunResult(
                     session=queued_session,
                     run=locked_active_run,
@@ -2067,10 +2071,7 @@ class RuntimeService:
                     self._release_run_resources(run.run_id)
                 await self.run_ownership.release(run.run_id, run_lock)
         assert result is not None
-        return await self._finalize_run_boundary(
-            result,
-            drain_queued_inputs=_drain_queued_inputs,
-        )
+        return await self._finalize_run_boundary(result)
 
     async def undo(
         self, session_id: str, *, message_id: str | None = None, queue_id: str | None = None
@@ -2279,7 +2280,7 @@ class RuntimeService:
                 if result is None:
                     self._release_run_resources(run.run_id)
                 await self.run_ownership.release(run.run_id, lock)
-        return await self._finalize_run_boundary(result, drain_queued_inputs=True)
+        return await self._finalize_run_boundary(result)
 
     async def run_prepared(
         self,
@@ -2587,7 +2588,6 @@ class RuntimeService:
                             session=await run_blocking(self.store.load_session_record, session_id),
                             run=terminal_run,
                         ),
-                        drain_queued_inputs=False,
                     )
             finally:
                 self._release_run_resources(run.run_id)
@@ -2642,7 +2642,7 @@ class RuntimeService:
                 return RunResult(session=session, run=run)
         result = await self._finalize_requested_abort(RunResult(session=session, run=run))
         if result.run.status == "aborted":
-            return await self._finalize_run_boundary(result, drain_queued_inputs=False)
+            return await self._finalize_run_boundary(result)
         return result
 
     def _load_abort_target(
@@ -2685,6 +2685,7 @@ class RuntimeService:
             batch=batch,
         )
         if active is not None:
+            await self.advance_session(queued_session.session_id, queued_session.history_epoch)
             return RunResult(session=queued_session, run=active)
         target_ids = {item.queue_id for item in queued}
         while True:
@@ -2745,7 +2746,6 @@ class RuntimeService:
         receipt: HostInputReceipt,
         *,
         _continuation_request: SessionContinuationRequest | None = None,
-        _on_provider_stream_start: Callable[[], None] | None = None,
     ) -> RunResult:
         """Consume a previously accepted Session input through the ordinary Run path."""
 
@@ -2761,6 +2761,9 @@ class RuntimeService:
                 break
             active = maybe_active_run(snapshot.runs, history_epoch=snapshot.session.history_epoch)
             if active is not None:
+                await self.advance_session(
+                    snapshot.session.session_id, snapshot.session.history_epoch
+                )
                 return RunResult(session=snapshot.session, run=active)
             pending = await run_blocking(self._pending_queued_inputs, snapshot)
             if not pending:
@@ -2772,7 +2775,6 @@ class RuntimeService:
                     title=pending[0].title,
                     _queued_inputs=pending,
                     _continuation_request=_continuation_request,
-                    _on_provider_stream_start=_on_provider_stream_start,
                 )
             except _QueuedInputSelectionChanged:
                 continue
@@ -3007,36 +3009,75 @@ class RuntimeService:
         await self.event_recorder.publish_committed(events)
         return session, queued
 
-    async def _drain_queued_input_queue(self, session_id: str, history_epoch: int) -> None:
+    def bind_session_scheduler(self, schedule: Callable[[str, int], Awaitable[None]]) -> None:
+        """Hand execution-boundary wakeups to the Application scheduling owner."""
+        self._session_scheduler = schedule
+
+    async def advance_session(self, session_id: str, history_epoch: int) -> None:
+        """Advance accepted work without retaining any particular input receipt."""
+        if self._session_scheduler is not None:
+            await self._session_scheduler(session_id, history_epoch)
+            return
+        # Direct Runtime callers own their execution capacity. Reentrant completion
+        # wakeups join this loop; supervised callers hand each attempt to the FIFO.
+        if session_id in self._advancing_sessions:
+            return
+        self._advancing_sessions.add(session_id)
+        try:
+            while (
+                await self.run_pending_inputs(session_id, history_epoch=history_epoch) is not None
+            ):
+                pass
+        except Exception as exc:  # noqa: BLE001 - successor execution isolation boundary.
+            await self.event_recorder.publish(
+                session_id=session_id,
+                event_type="diagnostic",
+                run_id=None,
+                payload={
+                    "code": "session_dispatch_failed",
+                    "severity": "error",
+                    "component": "runtime",
+                    "error_type": type(exc).__name__,
+                    "recoverable": True,
+                },
+            )
+        finally:
+            self._advancing_sessions.remove(session_id)
+
+    async def run_pending_inputs(
+        self,
+        session_id: str,
+        *,
+        history_epoch: int,
+        on_provider_stream_start: Callable[[], None] | None = None,
+    ) -> RunResult | None:
+        """Execute one current input unit, preserving the native consumption boundary."""
         while True:
-            # A successor may already be accepted but not yet executing. This
-            # completion path observes current work; it must not recover it.
             snapshot = await run_blocking(self.store.load_runtime_session, session_id)
             if snapshot.session.history_epoch != history_epoch:
-                return
-            if (
-                maybe_active_run(snapshot.runs, history_epoch=snapshot.session.history_epoch)
-                is not None
-            ):
-                return
+                return None
+            if maybe_active_run(snapshot.runs, history_epoch=history_epoch) is not None:
+                return None
+            if any(self._run_continuation_is_pending(run) for run in snapshot.runs):
+                return None
             pending = await run_blocking(self._pending_queued_inputs, snapshot)
             if not pending:
-                return
+                return None
             try:
-                result = await self.run(
+                return await self.run(
                     pending[0].prompt,
                     session_id=session_id,
                     title=pending[0].title,
-                    _drain_queued_inputs=False,
                     _queued_inputs=pending,
+                    _on_provider_stream_start=on_provider_stream_start,
                 )
             except _QueuedInputSelectionChanged:
                 continue
-            if result.run.status != "completed":
-                return
 
     def _pending_queued_inputs(self, snapshot: RuntimeSessionSnapshot) -> list[QueuedInput]:
-        pending_units = self.queued_inputs.eligible_units(snapshot)
+        pending_units = self.queued_inputs.eligible_units(
+            snapshot, limit=1 if self.queued_input_config.consumption_mode == "one_by_one" else None
+        )
         if not pending_units:
             return []
         if self.queued_input_config.consumption_mode == "one_by_one":
@@ -3086,10 +3127,11 @@ class RuntimeService:
             session.session_id,
         )
         units = await run_blocking(
-            self.queued_inputs.eligible_units_session, latest_session, mode="steer"
+            self.queued_inputs.eligible_units_session,
+            latest_session,
+            mode="steer",
+            limit=1 if self.queued_input_config.consumption_mode == "one_by_one" else None,
         )
-        if self.queued_input_config.consumption_mode == "one_by_one":
-            units = units[:1]
         eligible = [item for unit in units for item in unit]
         if not eligible:
             return DriverInputDelivery(sequence=sequence)
@@ -3405,10 +3447,7 @@ class RuntimeService:
 
         with self.store.session_mutation(session.session_id):
             latest_session = self.store.load_session_record(session.session_id)
-            current = {
-                item.queue_id: item for item in self.queued_inputs.eligible_session(latest_session)
-            }
-            if any(current.get(item.queue_id) != item for item in inputs):
+            if not self.queued_inputs.matches_pending(latest_session, inputs):
                 raise _QueuedInputSelectionChanged
             messages: list[MessageRecord] = []
             for item in inputs:
@@ -3444,8 +3483,7 @@ class RuntimeService:
 
         with self.store.session_mutation(session.session_id):
             latest = self.store.load_session_record(session.session_id)
-            current = {item.queue_id: item for item in self.queued_inputs.eligible_session(latest)}
-            if any(current.get(item.queue_id) != item for item in inputs):
+            if not self.queued_inputs.matches_pending(latest, inputs):
                 return [], ()
             messages: list[MessageRecord] = []
             for item in inputs:
@@ -3722,9 +3760,8 @@ class RuntimeService:
                 )
         finally:
             await self.run_ownership.release(run.run_id, run_lock)
-        # Queue draining starts a new Run and therefore must occur outside the
-        # completed interaction's non-reentrant Session run lock.
-        return await self._finalize_run_boundary(result, drain_queued_inputs=True)
+        # Execution release precedes scheduling the Session's next input unit.
+        return await self._finalize_run_boundary(result)
 
     async def answer_user(
         self,
@@ -3856,7 +3893,7 @@ class RuntimeService:
             await self.run_ownership.release(run.run_id, run_lock)
         # Keep the same post-lock Run boundary as normal runs and approval
         # recovery; a follow-up must acquire a fresh Session run lock.
-        return await self._finalize_run_boundary(result, drain_queued_inputs=True)
+        return await self._finalize_run_boundary(result)
 
     async def resume_agent_wait(
         self,
@@ -3987,7 +4024,7 @@ class RuntimeService:
             )
         finally:
             await self.run_ownership.release(run.run_id, run_lock)
-        return await self._finalize_run_boundary(resumed, drain_queued_inputs=True)
+        return await self._finalize_run_boundary(resumed)
 
     async def _continue_resolved_batch(
         self,
@@ -4126,8 +4163,6 @@ class RuntimeService:
     async def _finalize_run_boundary(
         self,
         result: RunResult,
-        *,
-        drain_queued_inputs: bool,
     ) -> RunResult:
         run = result.run
         usage = await run_blocking(self.run_lifecycle.usage_for_run, run)
@@ -4172,12 +4207,8 @@ class RuntimeService:
                 ),
             }
         )
-        if (
-            drain_queued_inputs
-            and run.status == "completed"
-            and not self._run_continuation_is_pending(run)
-        ):
-            await self._drain_queued_input_queue(run.session_id, run.history_epoch)
+        if run.status not in ACTIVE_RUN_STATUSES and not self._run_continuation_is_pending(run):
+            await self.advance_session(run.session_id, run.history_epoch)
         return updated
 
     async def _settle_run_continuation(

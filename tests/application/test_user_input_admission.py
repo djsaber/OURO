@@ -237,7 +237,7 @@ async def test_execution_failure_releases_private_job_and_reports_original_error
     async def fail(*args, **kwargs):
         raise OSError("execution preparation failed")
 
-    monkeypatch.setattr(app.runtime, "consume_host_input", fail)
+    monkeypatch.setattr(app.runtime, "run_pending_inputs", fail)
     try:
         submission = await app.supervisor.submit_user_input(UserInputRequest(prompt="failed job"))
         with pytest.raises(OSError, match="execution preparation failed"):

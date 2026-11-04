@@ -17,6 +17,7 @@ from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from tests.application.helpers import wait_for_runtime_event
 from tests.application.test_run_drivers import DRIVER, PLUGIN, host, plugin_source, set_driver_body
 from tests.application.test_runtime import GateProvider
+from tests.event_capture import recorded_events
 
 
 class SteeringProvider:
@@ -215,6 +216,12 @@ async def test_undelivered_steering_is_retained_on_policy_rejection_or_cancellat
             result = await running
             assert result.run.status == "failed"
             assert "denied at delivery" in result.run.error
+            assert any(
+                event.event_type == "diagnostic"
+                and event.payload.get("code") == "session_dispatch_failed"
+                and event.payload.get("error_type") == "PromptRejectedError"
+                for event in recorded_events(session.session_id)
+            )
         history = store.load_session(session.session_id)
         assert len(history.runs) == 1
         assert len(provider.requests) == 1

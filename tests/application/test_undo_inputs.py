@@ -127,6 +127,13 @@ async def test_default_undo_cancels_last_queued_input_during_live_execution(runt
 
 
 async def test_consumed_queue_identity_never_cancels_or_selects_another_input(runtime):
+    wakeups = []
+
+    async def schedule(session_id, history_epoch):
+        wakeups.append((session_id, history_epoch))
+
+    # Hold execution capacity while testing the identity-specific history operation.
+    runtime.bind_session_scheduler(schedule)
     session = runtime.create_session(title="Consumed queue")
     consumed = enqueue(runtime, session.session_id, "consumed")
     snapshot = runtime.store.load_runtime_session(session.session_id)
@@ -145,6 +152,7 @@ async def test_consumed_queue_identity_never_cancels_or_selects_another_input(ru
         lock.release()
     assert runtime.store.load_message(session.session_id, messages[0].message_id) is not None
     await runtime.abort_run(session_id=session.session_id, run_id=run.run_id)
+    assert wakeups == [(session.session_id, session.history_epoch)]
     result = await runtime.undo(session.session_id, queue_id=consumed.queue_id)
     assert result.message_id == messages[0].message_id
     assert result.text_content == "consumed"
@@ -254,7 +262,7 @@ async def test_host_retry_cannot_resurrect_a_consumed_withdrawn_input(runtime):
         )
 
 
-async def test_old_finalizer_cannot_drain_preserved_user_input_after_undo(runtime):
+async def test_old_finalizer_cannot_schedule_preserved_user_input_after_undo(runtime):
     first = await runtime.run("withdraw")
     target = next(
         m
@@ -263,7 +271,7 @@ async def test_old_finalizer_cannot_drain_preserved_user_input_after_undo(runtim
     )
     pending = enqueue(runtime, first.session.session_id, "keep pending")
     await runtime.undo(first.session.session_id, message_id=target.message_id)
-    await runtime._finalize_run_boundary(first, drain_queued_inputs=True)
+    await runtime._finalize_run_boundary(first)
     current = runtime.store.load_session(first.session.session_id)
     assert current.messages == []
     assert [i.queue_id for i in runtime.queued_inputs.eligible_session(current.session)] == [

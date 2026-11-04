@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
+from itertools import islice
 
 from ouro.application.contracts.execution import HostInputReceipt
 from ouro.application.contracts.sessions import QueuedUserInputView as QueuedUserInputView
@@ -415,55 +416,68 @@ class QueuedInputQueue:
         mode: QueuedInputMode | None = None,
         limit: int | None = None,
     ) -> list[QueuedInput]:
-        valid = []
         with self.store.session_read(session.session_id):
             session = self.store.load_session_record(session.session_id)
-            for input_id in session.pending_input_ids:
-                state = self._pending_state(session, input_id)
-                if mode is not None and state.mode != mode:
-                    continue
-                item = self._pending_item(session, state)
-                if item is not None:
-                    valid.append(item)
-                    if limit is not None and len(valid) >= limit:
-                        break
-        return valid
+            return list(islice(self._eligible_items(session, mode=mode), limit))
+
+    def _eligible_items(
+        self, session: SessionRecord, *, mode: QueuedInputMode | None
+    ) -> Iterator[QueuedInput]:
+        for input_id in session.pending_input_ids:
+            state = self._pending_state(session, input_id)
+            if mode is not None and state.mode != mode:
+                continue
+            item = self._pending_item(session, state)
+            if item is not None:
+                yield item
 
     def eligible_units(
         self,
         snapshot: RuntimeSessionSnapshot,
         *,
         mode: QueuedInputMode | None = None,
+        limit: int | None = None,
     ) -> list[tuple[QueuedInput, ...]]:
-        return self.eligible_units_session(snapshot.session, mode=mode)
+        return self.eligible_units_session(snapshot.session, mode=mode, limit=limit)
 
     def eligible_units_session(
         self,
         session: SessionRecord,
         *,
         mode: QueuedInputMode | None = None,
+        limit: int | None = None,
     ) -> list[tuple[QueuedInput, ...]]:
-        items = self.eligible_session(session, mode=mode)
-        units: list[tuple[QueuedInput, ...]] = []
-        index = 0
-        while index < len(items):
-            item = items[index]
-            if item.batch_id is None:
-                units.append((item,))
-                index += 1
-                continue
-            assert item.batch_size is not None
-            candidate = tuple(items[index : index + item.batch_size])
-            if (
-                len(candidate) != item.batch_size
-                or any(member.batch_id != item.batch_id for member in candidate)
-                or any(member.driver != item.driver for member in candidate)
-                or [member.batch_index for member in candidate] != list(range(item.batch_size))
-            ):
-                raise PersistenceError("accepted input batch is incomplete")
-            units.append(candidate)
-            index += item.batch_size
-        return units
+        with self.store.session_read(session.session_id):
+            session = self.store.load_session_record(session.session_id)
+            items = self._eligible_items(session, mode=mode)
+            units: list[tuple[QueuedInput, ...]] = []
+            for item in items:
+                candidate: tuple[QueuedInput, ...]
+                if item.batch_id is None:
+                    candidate = (item,)
+                else:
+                    assert item.batch_size is not None
+                    candidate = (item, *islice(items, item.batch_size - 1))
+                    if (
+                        len(candidate) != item.batch_size
+                        or any(member.batch_id != item.batch_id for member in candidate)
+                        or any(member.driver != item.driver for member in candidate)
+                        or [member.batch_index for member in candidate]
+                        != list(range(item.batch_size))
+                    ):
+                        raise PersistenceError("accepted input batch is incomplete")
+                units.append(candidate)
+                if limit is not None and len(units) >= limit:
+                    break
+            return units
+
+    def matches_pending(self, session: SessionRecord, inputs: Sequence[QueuedInput]) -> bool:
+        """Revalidate only the selected identities under the caller's Session mutation."""
+        for item in inputs:
+            state = self._state(session.session_id, item.queue_id)
+            if state.status != "pending" or self._pending_item(session, state) != item:
+                return False
+        return True
 
     def peek(self, snapshot: RuntimeSessionSnapshot) -> QueuedInput | None:
         items = self.eligible(snapshot, limit=1)

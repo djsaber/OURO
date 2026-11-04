@@ -10,6 +10,7 @@ from ouro.core.errors import ResourceNotFoundError
 from ouro.core.input_content import InputAttachment
 from ouro.core.messages import ImageContent, MessageRecord
 from ouro.core.session_commits import SessionCommitConflict
+from tests.application.helpers import wait_for_input_settlement
 from tests.application.test_queued_input_modes import TurnGateProvider
 from tests.event_capture import recorded_events
 from tests.tui.test_history_commands import application_at
@@ -82,6 +83,10 @@ async def test_active_run_can_import_and_consume_one_attachment_unit(tmp_path, m
     finally:
         provider.release_first.set()
     await asyncio.wait_for(task, 10)
+    consumed = await wait_for_input_settlement(
+        app.supervisor, session.session_id, queued[0].queue_id
+    )
+    assert consumed.status == "completed", consumed.error
     messages = runtime.store.load_session(session.session_id).messages
     index = next(
         index for index, message in enumerate(messages) if message.semantic_tag == "attachments"

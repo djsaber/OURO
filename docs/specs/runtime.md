@@ -203,7 +203,7 @@ application 用例负责取得 mutation lock 并准备业务字段。预留与�
    `done` 后完整工具调用交给 `ToolCallCoordinator`，正式消息与请求响应关闭和 Draft 清理同提交。
 8. waiting 状态通过 approve/reject/AskUser 或 child 结果恢复同一 Run。
 9. Run 退出执行时释放执行许可和环境绑定；终态清理 Observer 隔离状态，已投递的观察任务独立完成收尾。
-10. 在 model turn 边界消费 steer 输入；completed Run 先释放 session run lock，再串行启动 follow-up Run。
+10. 在 model turn 边界消费 steer 输入；Run 结清并释放 session run lock 后通知会话调度，后续输入按当前队列事实取得执行机会。
 
 `RunResult` 仅包含 Session/Run、最终文本、原始用量摘要、错误码与 `had_tool_error`。它描述本次调用，
 不持有整 Run 的 events、tool_results 或 usage IDs，也没有隐式加载这些历史的属性。
@@ -338,7 +338,8 @@ role 不改变 producer provenance，也不授予直接用户权限。Host 和�
 
 工具请求及结果共享原子 turn，steer 必须在工具结果提交后插入。`queued_inputs.consumption_mode` 决定每个
 消费边界只取一条（`one_by_one`）或取出当时全部符合交付时机的消息（`all_at_once`）。过滤不同交付模式时，
-符合条件的消息保持原始入队顺序；较早的 follow-up 不阻塞较晚 steer 在 turn 边界生效。
+符合条件的消息保持原始入队顺序；较早的 follow-up 不阻塞较晚 steer 在 turn 边界生效。逐条选择只读取首个完整消费单位，
+提交时只复核本次选中的输入身份与状态，不重复加载队列中其他输入正文。
 
 队列项具备唯一 id。完整消费单位通过 `SessionCommit` 一次提交消息、逐节点 Harness 锚点、队列消费与
 Session 投影；没有独立 acknowledge 阶段。原始接受事实和小生命周期状态在撤销消息后仍保留，重试不能重新接受同一输入。
@@ -388,7 +389,18 @@ SessionStore 定点恢复；Host 的历史展示读取不触发恢复，进程�
 普通交互输入使用 `UserInputRequest` 和 `submit_user_input`：先校验并持久化输入，再复用既有队列调度消费。
 受理不等待 execution permit；活动 Session 的追加输入交由现有执行者按队列策略消费。输入保持 `source=user`、
 `role=user`、`scaffold=False`，模型、推理、workspace、权限/交互模式、附件、资源引用、技能及队列模式保留原有语义。
-`RuntimeService.run` 仍提供直接等待执行的底层接口。
+`RuntimeService.run` 提供直接等待执行的底层接口。独立 Runtime 的调用方持有执行容量；装配 Supervisor 时，
+Runtime 通过窄调度回调交出后续输入的推进责任，后续 Run 重新进入共享 FIFO。
+
+会话调度以 Session 和 history epoch 标识待推进工作，不绑定某一张输入回执。输入受理、执行结算和显式接管都进入
+同一推进入口；取消某条输入或重试已消费身份不影响其他待处理输入。每次执行前按当前持久队列选择一个完整消费单位，
+已有活动 Run 或执行者时保留推进责任。跨 Host 或挂起交互的机会变化复用 Session 状态订阅，不读取流式正文或扫描历史。
+普通 Run、交互恢复和压缩结清后都释放执行权并通知调度；Run 的失败或中止不撤回其他已接受输入，也不自动重试原操作。
+调度先读取 Session 头判断队列与占用，执行准备再加载所需执行状态。未消费输入的执行准备失败保留输入并报告错误，
+不改变前一个 Run 的结算结果；显式继续可重新安排，没有可恢复 Run 时，继续入口可执行已有 pending 输入。
+
+TUI、AgentService 和任务系统共享会话推进保证。Delegation、任务 occurrence、预留 Run 身份、授权及结果结算仍由对应
+领域拥有。调度不重新创建这些身份，不把任务恢复转为指令重放，也不等待整个会话队列清空才返回某次执行的结果。
 
 请求携带稳定的 Session 和 input identity。相同身份与内容的重试按接受记录及生命周期状态返回小回执，消费后仍能定位消息和 Run。
 仍在持久队列中的输入直接返回待消费回执，不搜索历史消息；队列移除与消息写入共享消费提交边界。
@@ -477,6 +489,7 @@ canonical 撤销由 `SessionService.undo` 取得执行所有权，活跃执行�
 - `tests/application/test_run_ownership.py`
 - `tests/application/test_runtime.py`
 - `tests/application/test_tool_call_batches.py`
+- `tests/application/test_session_scheduling.py`
 - `tests/application/test_queued_inputs.py`
 - `tests/application/test_queued_input_modes.py`
 - `tests/application/test_events.py`

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,6 +14,7 @@ from textual.widgets import Input, Static
 
 from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.application.inputs.queue import QueuedUserInputView
+from ouro.application.inputs.requests import UserInputRequest
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
 from ouro.tui.composer.popup import CommandPopup
@@ -42,6 +44,46 @@ from tests.tui.helpers import (
 from tests.tui.helpers import wait_for_screen as _wait_for_screen
 from tests.tui.helpers import wait_for_worker_group as _wait_for_worker_group
 from tests.tui.helpers import wait_until as _wait_until
+
+
+async def test_input_accepted_after_reopening_compacting_session_is_executed(tmp_path, monkeypatch):
+    application = _application(tmp_path)
+    first = await application.supervisor.submit_user_input(UserInputRequest(prompt="initial"))
+    await first.wait()
+    session_id = first.receipt.session_id
+    entered, release = asyncio.Event(), asyncio.Event()
+    compact = application.runtime.context_preparation.compact
+
+    async def held_compact(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await compact(*args, **kwargs)
+
+    monkeypatch.setattr(application.runtime.context_preparation, "compact", held_compact)
+    app = OuroTuiApp(application=application, resume_session_id=session_id)
+    async with run_ready_app(app, size=(100, 36)) as pilot, release_on_exit(release):
+        worker = app._compact_session()
+        await wait_for_events(entered, pilot=pilot, description="compaction execution")
+        await app._new_session()
+        await app._open_session(session_id)
+        composer = app.query_one(Composer)
+        assert not composer.disabled
+        composer.load_text("queued during compaction")
+        composer.focus()
+        await pilot.press("enter")
+        await _wait_until(
+            lambda: bool(application.runtime.pending_user_inputs(session_id)),
+            pilot,
+            description="accepted input during compaction",
+        )
+        release.set()
+        await worker.wait()
+        await _wait_until(
+            lambda: "queued during compaction" in app.query_one(ConversationHistory).user_turns,
+            pilot,
+            description="canonical input after compaction release",
+        )
+        assert not application.runtime.pending_user_inputs(session_id)
 
 
 @pytest.mark.asyncio

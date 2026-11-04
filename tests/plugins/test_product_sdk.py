@@ -8,6 +8,7 @@ from ouro.billing import LocalUsageLedger
 from ouro.builtin_plugins.goal import GOAL_PLUGIN
 from ouro.builtin_plugins.plan import PLAN_PLUGIN
 from ouro.local_application import LocalApplication
+from tests.application.helpers import wait_for_input_settlement
 from tests.plugins.test_builtin_goal import _EndToEndGoalProvider
 from tests.plugins.test_builtin_plan import FinalProvider, PlanBuildProvider, _runtime
 
@@ -130,6 +131,11 @@ async def test_user_goal_uses_native_continuation_controls_and_usage(tmp_path):
             pending[0].prompt, session_id=session.session_id, _queued_inputs=pending
         )
         assert result.run.status == "completed", result.run.error
+        assert result.run.continuation.action == "continue"
+        follow_up = await wait_for_input_settlement(
+            application.supervisor, session.session_id, result.run.continuation.queue_id
+        )
+        assert follow_up.status == "completed", follow_up.error
         status = await application.plugins.execute_command(
             f"{plugin_id}:goal", "status", session_id=session.session_id
         )

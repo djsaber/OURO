@@ -33,6 +33,7 @@ from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 from tests.agent_facts import seed_delegation
+from tests.event_capture import recorded_events
 from tests.run_facts import run_events
 
 
@@ -473,10 +474,29 @@ async def test_accepted_queue_survives_current_policy_rejection(store):
             )
         )
         catalogs.publish([operation], prompt_policies=policies)
+        approved = await runtime.approve_tool(session_id=waiting.session.session_id, approved=True)
+        assert approved.run.run_id == waiting.run.run_id
+        assert approved.run.status == "completed"
+        assert approved.final_text == "finished"
+        diagnostics = [
+            event
+            for event in recorded_events(waiting.session.session_id)
+            if event.event_type == "diagnostic"
+            and event.payload.get("code") == "session_dispatch_failed"
+        ]
+        assert len(diagnostics) == 1
+        assert diagnostics[0].run_id is None
+        assert diagnostics[0].payload["error_type"] == "PromptRejectedError"
+        assert catalogs.current.lease_count == 0
+
         with pytest.raises(PromptRejectedError, match="Current policy"):
-            await runtime.approve_tool(session_id=waiting.session.session_id, approved=True)
+            await runtime.run_pending_inputs(
+                waiting.session.session_id, history_epoch=waiting.session.history_epoch
+            )
         restored = store.load_session(waiting.session.session_id)
+        assert len(restored.runs) == 1
         assert restored.runs[0].status == "completed"
+        assert catalogs.current.lease_count == 0
         assert runtime.queued_inputs.eligible_session(restored.session) == pending
         assert [
             message.text_content for message in restored.messages if message.role == "user"

@@ -116,14 +116,14 @@ async def test_idle_submission_does_not_present_follow_up_queue(
         session_id = application.runtime.sessions.create().session.session_id
     app = OuroTuiApp(application=application)
     entered, release = asyncio.Event(), asyncio.Event()
-    original = application.supervisor._dispatch_host_input
+    original = application.supervisor._dispatch_session
 
     async def held_dispatch(session_id):
         entered.set()
         await release.wait()
         return await original(session_id)
 
-    monkeypatch.setattr(application.supervisor, "_dispatch_host_input", held_dispatch)
+    monkeypatch.setattr(application.supervisor, "_dispatch_session", held_dispatch)
     async with run_ready_app(app) as pilot:
         if destination != "home":
             await app._open_session(session_id)

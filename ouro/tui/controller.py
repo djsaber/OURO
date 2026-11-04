@@ -2127,13 +2127,9 @@ class TuiController:
         """Prepare an explicitly selected control Session, including execution recovery."""
         runtime = self._runtime()
         detail = await asyncio.to_thread(runtime.sessions.open, session_id, recover=False)
-        if (
-            detail.session.session_kind == "primary"
-            and detail.recent_run is not None
-            and detail.recent_run.status == "running"
-        ):
+        if detail.session.session_kind == "primary":
             assert self._application is not None
-            await self._application.supervisor.recover_session(session_id)
+            await self._application.supervisor.schedule_session(session_id)
         return await self.observe_session(session_id, history_anchor=history_anchor)
 
     def activate_observation(self, observation: TuiSessionObservation) -> None:

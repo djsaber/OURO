@@ -85,7 +85,7 @@ class _RunJob:
     continue_existing: bool = False
     history_epoch: int | None = None
     session_input: HostSessionInput | DelegatedTaskInput | None = None
-    host_input_receipt: HostInputReceipt | None = None
+    consume_pending: bool = False
     agent_wait_resolution: AgentWaitResolution | None = None
     agent_wait_identity: ToolCallIdentity | None = None
     interaction_kind: str | None = None
@@ -255,8 +255,8 @@ class RuntimeSupervisor:
         self._event_streams: dict[str, SessionEventStream] = {}
         self._event_stream_tasks: set[asyncio.Task[None]] = set()
         self._parked_session_locks: dict[str, asyncio.Lock] = {}
-        self._pending_host_inputs: dict[str, HostInputReceipt] = {}
-        self._host_dispatch_tasks: set[asyncio.Task[None]] = set()
+        self._pending_sessions: dict[str, int] = {}
+        self._session_dispatch_tasks: dict[str, asyncio.Task[None]] = {}
         self._input_admissions: set[asyncio.Task[UserInputSubmission]] = set()
         self._latest_job_start = asyncio.Event()
         self._latest_job_start.set()
@@ -264,6 +264,7 @@ class RuntimeSupervisor:
         self._started = False
         self._closed = False
         self.runtime.add_event_sink(self._on_event)
+        self.runtime.bind_session_scheduler(self._request_session_progress)
 
     async def start(self) -> SupervisorStartResult:
         if self._started:
@@ -344,8 +345,12 @@ class RuntimeSupervisor:
                 on_input_accepted()
         finally:
             # A Host callback cannot strand a durable accepted input.
-            self._pending_host_inputs[receipt.session_id] = receipt
-            job = await self._dispatch_host_input(receipt.session_id)
+            session = await run_blocking(self.store.load_session_record, receipt.session_id)
+            self._pending_sessions[receipt.session_id] = session.history_epoch
+            try:
+                job = await self._dispatch_session(receipt.session_id)
+            finally:
+                self._ensure_session_dispatch(receipt.session_id)
 
         async def result() -> RunResult:
             if receipt.run_id is not None:
@@ -370,6 +375,9 @@ class RuntimeSupervisor:
 
     def _accepted_input_result(self, receipt: HostInputReceipt) -> RunResult:
         with self.store.session_read(receipt.session_id):
+            state = self.store.load_input_state(receipt.session_id, receipt.queue_id)
+            if state is not None and state.status in {"cancelled", "withdrawn"}:
+                raise asyncio.CancelledError("Accepted input was cancelled before execution")
             message = self.store.find_queued_input_message(receipt.session_id, receipt.queue_id)
             if message is None or message.run_id is None:
                 raise PersistenceError("Accepted input has no execution result")
@@ -428,7 +436,22 @@ class RuntimeSupervisor:
             # local slot and reservation. Resume only after that ownership settles.
             await previous_job.done.wait()
         snapshot = await run_blocking(self.runtime.session_recovery.recover_runtime, session_id)
-        run = await run_blocking(continuable_run, self.store, snapshot)
+        try:
+            run = await run_blocking(continuable_run, self.store, snapshot)
+        except ValueError:
+            if run_id is not None or not snapshot.session.pending_input_ids:
+                raise
+            handle = RunHandle(session_id=session_id)
+            await self._enqueue_job(
+                _RunJob(
+                    handle=handle,
+                    prompt="",
+                    title=None,
+                    history_epoch=snapshot.session.history_epoch,
+                    consume_pending=True,
+                )
+            )
+            return handle
         if run_id is not None and run.run_id != run_id:
             raise SessionBusyError("The requested continuation is no longer the latest run")
         handle = RunHandle(session_id=session_id)
@@ -531,78 +554,117 @@ class RuntimeSupervisor:
 
         await self.start()
         receipt = await self.runtime.submit_host_input(session_input, session_id=session_id)
-        if receipt.message_id is not None:
-            return receipt
-        self._pending_host_inputs[session_id] = receipt
-        await self._dispatch_host_input(session_id)
+        await self.schedule_session(session_id)
         return receipt
 
-    async def _dispatch_host_input(self, session_id: str) -> _RunJob | None:
+    async def schedule_session(self, session_id: str) -> None:
+        """Adopt accepted Session work without replaying or creating an input."""
+        await self.start()
+        session = await run_blocking(self.store.load_session_record, session_id)
+        if session.active_run_id is not None:
+            active = await run_blocking(self.store.load_run, session_id, session.active_run_id)
+            if active.status == "running":
+                await self.recover_session(session_id)
+        await self._request_session_progress(session_id, session.history_epoch)
+
+    async def _request_session_progress(self, session_id: str, history_epoch: int) -> None:
+        if self._closed:
+            return
+        await self.start()
+        previous = self._pending_sessions.get(session_id, history_epoch)
+        self._pending_sessions[session_id] = max(previous, history_epoch)
+        self._ensure_session_dispatch(session_id)
+
+    def _ensure_session_dispatch(self, session_id: str) -> None:
+        if (
+            self._closed
+            or session_id not in self._pending_sessions
+            or session_id in self._session_dispatch_tasks
+        ):
+            return
+        task = asyncio.create_task(
+            self._drive_session(session_id), name=f"ouro-session-{session_id}"
+        )
+        self._session_dispatch_tasks[session_id] = task
+        task.add_done_callback(self._session_dispatch_finished)
+
+    def _session_dispatch_finished(self, task: asyncio.Task[None]) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            _LOGGER.error("Session dispatch reporting failed: %s", type(task.exception()).__name__)
+
+    async def _dispatch_session(self, session_id: str) -> _RunJob | None:
         lock = self._parked_session_locks.setdefault(session_id, asyncio.Lock())
         async with lock:
-            receipt = self._pending_host_inputs.get(session_id)
-            if receipt is None or self._closed:
+            epoch = self._pending_sessions.pop(session_id, None)
+            if epoch is None or self._closed:
                 return None
-            if session_id in self._jobs_by_session:
-                # A job may have passed its last queue drain. Its completion
-                # must reconsider this receipt after releasing the local slot.
-                return self._jobs_by_session[session_id]
-            status = await run_blocking(self.status, session_id)
-            if status.status == "running" and not await run_blocking(
-                self.runtime.run_ownership.is_locked, session_id
-            ):
-                await self.runtime.reconcile_execution_session(session_id)
-                status = await run_blocking(self.status, session_id)
-            job = None
-            if status.status not in ACTIVE_RUN_STATUSES:
+            job = self._jobs_by_session.get(session_id)
+            if job is not None:
+                self._pending_sessions.setdefault(session_id, epoch)
+                return job
+            try:
                 session = await run_blocking(self.store.load_session_record, session_id)
-                if (
-                    await run_blocking(
-                        self.runtime.queued_inputs.find_session, session, receipt.queue_id
-                    )
-                    is not None
-                ):
-                    job = _RunJob(
-                        handle=RunHandle(session_id=session_id),
-                        prompt="",
-                        title=None,
-                        host_input_receipt=receipt,
-                    )
-                    await self._enqueue_job(job)
-            if self._pending_host_inputs.get(session_id) is receipt:
-                self._pending_host_inputs.pop(session_id, None)
+            except BaseException:
+                self._pending_sessions.setdefault(session_id, epoch)
+                raise
+            if session.history_epoch != epoch or not session.pending_input_ids:
+                return None
+            if session.active_run_id is not None:
+                self._pending_sessions.setdefault(session_id, epoch)
+                return None
+            job = _RunJob(
+                handle=RunHandle(session_id=session_id),
+                prompt="",
+                title=None,
+                history_epoch=epoch,
+                consume_pending=True,
+                detached=True,
+            )
+            try:
+                await self._enqueue_job(job)
+            except BaseException:
+                self._pending_sessions.setdefault(session_id, epoch)
+                raise
             return job
 
-    async def _dispatch_after_job(self, session_id: str) -> None:
-        for attempt, delay in enumerate((0, 0.1, 0.5, 2.0)):
-            if delay:
-                await asyncio.sleep(delay)
-            try:
-                await self._dispatch_host_input(session_id)
-                return
-            except Exception as exc:
-                if isinstance(exc, (OSError, PersistenceError, SessionBusyError)) and attempt < 3:
-                    continue
-                await self.runtime.event_recorder.publish(
-                    session_id=session_id,
-                    event_type="diagnostic",
-                    run_id=None,
-                    payload={
-                        "code": "host_input_dispatch_failed",
-                        "severity": "error",
-                        "component": "runtime.supervisor",
-                        "error_type": type(exc).__name__,
-                        "recoverable": True,
-                    },
-                )
-                return
-
-    def _host_dispatch_finished(self, task: asyncio.Task[None]) -> None:
-        self._host_dispatch_tasks.discard(task)
-        if not task.cancelled() and task.exception() is not None:
-            _LOGGER.error(
-                "Host input dispatch reporting failed: %s", type(task.exception()).__name__
+    async def _drive_session(self, session_id: str) -> None:
+        subscription: SessionStateSubscription | None = None
+        try:
+            for attempt in range(4):
+                try:
+                    while session_id in self._pending_sessions and not self._closed:
+                        job = await self._dispatch_session(session_id)
+                        if job is not None:
+                            await job.done.wait()
+                        elif session_id in self._pending_sessions:
+                            # A foreign owner or a parked Run can release this Session.
+                            # Subscribe before rechecking so the handoff cannot miss a change.
+                            if subscription is None:
+                                subscription = await self.subscribe_state(session_id)
+                                continue
+                            await subscription.get()
+                    return
+                except OSError, PersistenceError, SessionBusyError:
+                    if attempt == 3:
+                        raise
+                    await asyncio.sleep((0.1, 0.5, 2.0)[attempt])
+        except Exception as exc:
+            await self.runtime.event_recorder.publish(
+                session_id=session_id,
+                event_type="diagnostic",
+                run_id=None,
+                payload={
+                    "code": "session_dispatch_failed",
+                    "severity": "error",
+                    "component": "runtime.supervisor",
+                    "error_type": type(exc).__name__,
+                    "recoverable": True,
+                },
             )
+        finally:
+            if subscription is not None:
+                subscription.close()
+            self._session_dispatch_tasks.pop(session_id, None)
 
     async def resolve_tool_approval(
         self,
@@ -1098,7 +1160,7 @@ class RuntimeSupervisor:
         snapshot = self._snapshots[job.handle.handle_id]
         if snapshot.status == "queued":
             job.cancelled = True
-            if job.host_input_receipt is not None and snapshot.run_id is None:
+            if job.consume_pending and snapshot.run_id is None:
                 for item in await run_blocking(
                     self.runtime.pending_user_inputs, job.handle.session_id
                 ):
@@ -1175,10 +1237,10 @@ class RuntimeSupervisor:
         # Accepted submissions must reach scheduling before shutdown chooses its jobs.
         await asyncio.gather(*self._input_admissions, return_exceptions=True)
         self._closed = True
-        for task in tuple(self._host_dispatch_tasks):
+        for task in tuple(self._session_dispatch_tasks.values()):
             task.cancel()
-        await asyncio.gather(*self._host_dispatch_tasks, return_exceptions=True)
-        self._pending_host_inputs.clear()
+        await asyncio.gather(*self._session_dispatch_tasks.values(), return_exceptions=True)
+        self._pending_sessions.clear()
         jobs = list(self._jobs_by_session.values())
         if policy.mode == "abort":
             # Stop queued jobs before awaiting active abort settlement. Otherwise
@@ -1324,10 +1386,12 @@ class RuntimeSupervisor:
                             job.session_input,
                             reservation=job.reservation,
                         )
-                    elif job.host_input_receipt is not None:
-                        job.result = await self.runtime.consume_host_input(
-                            job.host_input_receipt,
-                            _on_provider_stream_start=job.provider_stream_started.set,
+                    elif job.consume_pending:
+                        assert job.history_epoch is not None
+                        job.result = await self.runtime.run_pending_inputs(
+                            job.handle.session_id,
+                            history_epoch=job.history_epoch,
+                            on_provider_stream_start=job.provider_stream_started.set,
                         )
                     else:
                         job.result = await self.runtime.run(
@@ -1365,8 +1429,8 @@ class RuntimeSupervisor:
                         RuntimeStatusSnapshot(
                             handle=job.handle,
                             session_id=job.handle.session_id,
-                            run_id=job.result.run.run_id,
-                            status=job.result.run.status,
+                            run_id=job.result.run.run_id if job.result is not None else None,
+                            status=job.result.run.status if job.result is not None else "idle",
                         ),
                     )
             finally:
@@ -1549,17 +1613,11 @@ class RuntimeSupervisor:
         if self._jobs_by_handle.get(job.handle.handle_id) is job:
             self._jobs_by_handle.pop(job.handle.handle_id, None)
         job.done.set()
-        if job.host_input_receipt is not None or job.detached:
+        if job.detached:
             # Host producers receive the durable input receipt, never this
             # private execution handle; do not retain it for process lifetime.
             self.release_handle(job.handle)
-        if not self._closed and job.handle.session_id in self._pending_host_inputs:
-            task = asyncio.create_task(
-                self._dispatch_after_job(job.handle.session_id),
-                name=f"ouro-host-input-{job.handle.session_id}",
-            )
-            self._host_dispatch_tasks.add(task)
-            task.add_done_callback(self._host_dispatch_finished)
+        self._ensure_session_dispatch(job.handle.session_id)
 
     def _publish_activity(self, activity: RuntimeActivitySnapshot) -> None:
         previous = self._activities.get(activity.session_id)

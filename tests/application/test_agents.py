@@ -1508,14 +1508,14 @@ async def test_idle_child_follow_up_reuses_session_and_creates_new_run(tmp_path)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("completion_boundary", ["before_input_drain", "after_run"])
+@pytest.mark.parametrize("completion_boundary", ["before_session_progress", "after_run"])
 async def test_idle_child_follow_up_waits_for_previous_execution_receipt(
     tmp_path, monkeypatch, completion_boundary
 ):
     service, supervisor, store, _ = await _services(tmp_path)
     completed, release = asyncio.Event(), asyncio.Event()
     run_prepared = supervisor.runtime.run_prepared
-    drain_inputs = supervisor.runtime._drain_queued_input_queue
+    advance = supervisor.runtime.advance_session
 
     async def hold_completion():
         if not completed.is_set():
@@ -1527,14 +1527,12 @@ async def test_idle_child_follow_up_waits_for_previous_execution_receipt(
         await hold_completion()
         return result
 
-    async def hold_before_input_drain(session_id, history_epoch):
+    async def hold_before_session_progress(session_id, history_epoch):
         await hold_completion()
-        await drain_inputs(session_id, history_epoch)
+        await advance(session_id, history_epoch)
 
-    if completion_boundary == "before_input_drain":
-        monkeypatch.setattr(
-            supervisor.runtime, "_drain_queued_input_queue", hold_before_input_drain
-        )
+    if completion_boundary == "before_session_progress":
+        monkeypatch.setattr(supervisor.runtime, "advance_session", hold_before_session_progress)
     else:
         monkeypatch.setattr(supervisor.runtime, "run_prepared", hold_completed_run)
     try:

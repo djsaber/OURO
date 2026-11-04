@@ -37,6 +37,7 @@ from ouro.tools import (
     builtin_tools,
 )
 from ouro.tools.builtin.shell import detect_command_shell
+from tests.application.helpers import wait_for_input_settlement
 from tests.concurrency import wait_until
 from tests.event_capture import recorded_events
 from tests.run_facts import run_tool_results
@@ -439,6 +440,10 @@ async def test_queued_inputs_share_current_consumption_environment(tmp_path) -> 
 
     provider.release.set()
     await first_task
+    consumed = await wait_for_input_settlement(
+        application.supervisor, session.session_id, pending_id
+    )
+    assert consumed.status == "completed", consumed.error
     completed = store.load_session(session.session_id)
     assert len(completed.runs) == 2
     queued_run = completed.runs[1]

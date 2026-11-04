@@ -27,7 +27,7 @@ from ouro.local_application import LocalApplication
 from ouro.providers.openai_responses.codec import responses_input
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
-from tests.application.helpers import wait_for_runtime_event
+from tests.application.helpers import wait_for_input_settlement, wait_for_runtime_event
 
 PLUGIN_ID = "dev.ouro.goal"
 
@@ -477,7 +477,12 @@ async def test_automatic_empty_work_pauses_and_user_information_does_not_resume(
     g = goal_app
     g.provider.responses.extend(["Initial analysis.", "Still thinking."])
     await g.command("Investigate the issue")
-    await g.consume()
+    result = await g.consume()
+    assert result.run.continuation.action == "continue"
+    follow_up = await wait_for_input_settlement(
+        g.app.supervisor, g.session.session_id, result.run.continuation.queue_id
+    )
+    assert follow_up.status == "completed", follow_up.error
     goal = await g.goal()
     assert goal["status"] == "paused"
     assert "without a tool call" in goal["report"]

@@ -24,7 +24,9 @@ OURO 的主包与升级包位于仓库根目录下的 `ouro/` 与 `ouro_upgrade/
 | `application/configuration/`、`plugins/`、`provider_auth/`、`transfer/` | 对应能力的应用用例及投影 |
 | `application/supervisor.py`、`tool_calls.py` 等独立模块 | 任务调度、工具批次事务和各自的资源协作单元 |
 
-RunLifecycle 拥有持久转换，Supervisor 拥有任务、队列和执行许可，Runtime 拥有单次运行协作。
+RunLifecycle 拥有持久转换，Supervisor 拥有会话调度、执行队列和执行许可，Runtime 拥有单次运行协作。
+Runtime 通过装配的窄回调报告会话推进机会，不引用具体调度器或 Host。调度按当前队列事实安排执行，
+TUI、AgentService 和任务协调器保留自己的业务身份、授权与结算。
 输入、观察和模型请求协作者不取得完整 Runtime 的控制权。契约放置在独立目录不意味着轻量导入：
 父包显式导出服务，因此导入初始化成本与模块的类型依赖需要分别评估。
 

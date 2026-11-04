@@ -66,6 +66,7 @@ from ouro.plugins.session_controllers import (
 )
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
+from tests.application.helpers import wait_for_session_state
 from tests.event_capture import recorded_events
 from tests.session_storage import session_connection
 from tests.tool_batches import bind_tool_messages, persist_tool_batch, seed_tool_messages
@@ -405,6 +406,22 @@ async def test_plugin_continuation_creates_attributed_scaffold_follow_up(
 
     result = await runtime.run("Solve the task")
 
+    def follow_up_settled():
+        current = store.load_runtime_session(result.session.session_id)
+        return any(
+            run.run_id != result.run.run_id
+            and run.continuation is not None
+            and run.continuation.state == "resolved"
+            and run.continuation.action == "complete"
+            for run in current.runs
+        )
+
+    await wait_for_session_state(
+        application.supervisor,
+        result.session.session_id,
+        follow_up_settled,
+        event_types=frozenset({"run_continuation_resolved"}),
+    )
     snapshot = store.load_session(result.session.session_id)
     assert provider.calls == 2
     assert [run.origin for run in snapshot.runs] == ["user", "plugin"]

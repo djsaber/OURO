@@ -741,7 +741,7 @@ async def test_abort_shutdown_persists_abort_for_running_and_queued_jobs(tmp_pat
 
 
 @pytest.mark.parametrize("transient_failure", [False, True])
-async def test_host_input_accepted_after_final_drain_gets_scheduled(
+async def test_host_input_accepted_during_execution_release_gets_scheduled(
     tmp_path,
     monkeypatch,
     transient_failure,
@@ -764,7 +764,7 @@ async def test_host_input_accepted_after_final_drain_gets_scheduled(
 
     async def dispatch(job, **kwargs):
         nonlocal failed
-        if transient_failure and job.host_input_receipt is not None and not failed:
+        if transient_failure and job.consume_pending and not failed:
             failed = True
             raise PersistenceError("temporary dispatch failure")
         return await enqueue(job, **kwargs)
@@ -774,7 +774,9 @@ async def test_host_input_accepted_after_final_drain_gets_scheduled(
     try:
         first = await supervisor.submit("First")
         completion = asyncio.create_task(supervisor.wait(first))
-        await wait_for_runtime_event(finished, completion, description="first run's final drain")
+        await wait_for_runtime_event(
+            finished, completion, description="first run's execution release"
+        )
         receipt = await supervisor.route_host_input(
             HostSessionInput(
                 prompt="Durable follow-up", host_source_id="test/input", queue_id="stable"

@@ -7,7 +7,7 @@ from ouro.application.contracts.execution import RuntimeStatusSnapshot
 from ouro.application.supervisor import RuntimeSupervisor
 from ouro.core.callbacks import run_blocking
 from ouro.core.results import RunResult
-from ouro.core.state import RunRecord
+from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord
 
 
 async def wait_for_runtime_event(
@@ -81,6 +81,31 @@ async def wait_for_session_state(supervisor, session_id, read, *, event_types=fr
     finally:
         if subscription is not None:
             subscription.close()
+
+
+async def wait_for_input_settlement(supervisor, session_id, input_id):
+    """Wait for this input's Run and continuation settlement, not session quiescence."""
+    message = await wait_for_session_state(
+        supervisor,
+        session_id,
+        lambda: supervisor.store.find_queued_input_message(session_id, input_id),
+        event_types=frozenset({"queued_input_consumed"}),
+    )
+
+    def settled_run():
+        run = supervisor.store.load_run(session_id, message.run_id)
+        if run.status in ACTIVE_RUN_STATUSES:
+            return None
+        if run.continuation is not None and run.continuation.state == "pending":
+            return None
+        return run
+
+    return await wait_for_session_state(
+        supervisor,
+        session_id,
+        settled_run,
+        event_types=frozenset({"run_continuation_resolved"}),
+    )
 
 
 async def wait_for_agent_interactions(service, root_id, *, count=1):

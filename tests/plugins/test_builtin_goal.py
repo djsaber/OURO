@@ -37,6 +37,7 @@ from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.sdk.plugins import v5 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
+from tests.application.helpers import wait_for_input_settlement
 
 PLUGIN_ID = "dev.ouro.goal"
 
@@ -469,7 +470,14 @@ async def test_goal_runs_end_to_end_and_retains_final_usage(tmp_path) -> None:
         pending = runtime.queued_inputs.eligible_session(
             store.load_session_record(session.session_id)
         )
-        await runtime.run(pending[0].prompt, session_id=session.session_id, _queued_inputs=pending)
+        result = await runtime.run(
+            pending[0].prompt, session_id=session.session_id, _queued_inputs=pending
+        )
+        assert result.run.continuation.action == "continue"
+        follow_up = await wait_for_input_settlement(
+            application.supervisor, session.session_id, result.run.continuation.queue_id
+        )
+        assert follow_up.status == "completed", follow_up.error
 
         assert provider.calls == 3
         record = next(

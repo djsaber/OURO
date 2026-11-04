@@ -71,10 +71,13 @@ Files 普通消息提交中的新资源元信息随既有跨文件决定恢复�
 
 ## RuntimeSupervisor 生命周期
 
-Supervisor 管理 `session_id -> active job/handle` 的进程内 registry。单 Session 仍只有一个 active Run，
+Supervisor 拥有 Application 级会话执行调度，管理 `session_id -> active job/handle` 的进程内 registry。
+TUI、子智能体和任务系统共用推进能力；各自保留业务身份、授权与结果结算。单 Session 仍只有一个 active Run，
 durable 状态转换仍由 `RuntimeService`、`RunLifecycle` 和 `SessionStore` 完成。
 
-- submit 进入显式 FIFO 队列，由固定数量 worker 提供全局并发上限。
+- submit 和后续输入执行进入同一 FIFO 队列，由固定数量 worker 提供本 Supervisor 的并发上限。
+- 会话级唤醒合并为一次待推进意图。派发读取当前输入事实，执行结算在释放锁后通知同一调度入口；输入回执仅用于身份与结果定位。
+- `schedule_session` 显式接管已接受输入，不创建输入或重放预留任务；只读订阅不触发调度。
 - status 返回类型化快照；terminal job 从 active Session registry 自动移除。
 - task 边界异常转换为 diagnostic，不终止其他 Session 的 worker。
 - Supervisor 启动只建立进程资源和 worker，不扫描 SessionStore。
