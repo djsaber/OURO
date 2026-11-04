@@ -11,7 +11,8 @@ from textual.strip import Strip
 from textual.widget import Widget
 from textual.worker import Worker
 
-from ouro_tui_themes.dot_matrix.raster import DotArtwork, FrameStrip, PhosphorRaster
+from ouro_tui_themes.dot_matrix.raster import DotArtwork, PhosphorRaster
+from ouro_tui_themes.rendering import FrameStrip, render_frame_lines
 
 
 def _render_frame(
@@ -182,6 +183,6 @@ class DotMatrix(Widget):
         return Strip.blank(self.size.width, self.rich_style)
 
     def render_lines(self, crop: Region) -> list[Strip]:
-        # Preserve Textual CSS, opacity, filters and cropping before transferring
-        # disposable frame rows to the compositor.
+        if (lines := render_frame_lines(self, self._lines, crop)) is not None:
+            return lines
         return [FrameStrip(line, line.cell_length) for line in super().render_lines(crop)]

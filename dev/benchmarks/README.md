@@ -204,16 +204,25 @@ uv run --frozen --extra themes python -m dev.benchmarks.welcome --frames 60
 uv run --frozen --extra themes python -m dev.benchmarks.welcome --frames 300 --size 114 20 --size 200 50 --stages
 uv run --frozen --extra themes python -m dev.benchmarks.welcome_input --style clifford-torus --keys 240
 uv run --frozen --extra themes python -m dev.benchmarks.welcome_input --pattern alternate --keys 240
+uv run --frozen --extra themes python -m dev.benchmarks.welcome_input --style matrix --seconds 300 --motion active --output matrix.json
+uv run --frozen --extra themes python -m dev.benchmarks.welcome_input --style clifford-torus --seconds 300 --motion active --output particles.json
 ```
 
 点阵基准包含采样、公共数值处理与终端行编码，覆盖所有内置粒子主题和两个视口尺寸。
 `--size 列数 行数` 可重复传入；`--stages` 另外独立测量采样器与包含采样的数值引擎，
 各阶段结果不能直接相加。报告包含依赖版本、样本数、中位数、P95 和 P99；不使用固定耗时作为回归断言。
-输入基准使用 114×30 的艺术区域、真实 Textual 合成与 ANSI 序列化，捕获输出而不接管终端。
-默认先连续输入再连续删除；`alternate` 为交替输入/删除。分别测量暂停与播放状态，
-输出按键处理延迟、编辑耗时、5 ms ticker 的 loop lag、帧发布间隔、GC 时长与输出量。
-间隔统计只包含有 damage 的发布；发布不等于终端完成绘制。输出不包含操作系统终端渲染、IME
-及完整 Application 的草稿持久化，因此须结合完整 TUI 回归和真实终端检查。
+输入基准挂载完整欢迎页及 Composer，默认 160×50 真彩色窗口；`--size 列 行` 可改变尺寸，
+同时支持 Matrix 和粒子主题。保留真实 Textual 合成与 ANSI 序列化，捕获输出而不接管终端。
+默认先连续输入再连续删除；`alternate` 为交替输入/删除。`--seconds` 运行完整的 240 键循环，
+每轮输入 120 字符再删除，按 30 键/秒的独立时钟产生事件，实际时长向上取整至 8 秒。
+报告区分事件创建后的处理延迟和预定到达时间后的响应延迟，后者包含生产线程被 GIL/GC 阻塞的时间。
+默认分别测量暂停与播放；长测使用 `--motion active` 或 `paused`，每组在新进程中串行运行。
+输出包含编辑耗时、5 ms ticker 的 loop lag、动画更新完成合成/编码的帧间隔、各代 GC 次数与
+慢回收时间点，并按 30 秒分窗；正常 GC 始终开启，阈值不变。`--output` 保存环境及完整 JSON。
+`--count-caches` 单独统计 FIFO 缓存构造量，不应与无插桩延迟数据混用。
+帧时间止于输出 sink，不等于终端完成绘制。测量不包含操作系统终端渲染、IME 及完整 Application
+的草稿持久化，因此须结合完整 TUI 回归和真实终端检查。
+帧生命周期设计与本次测量记录见[渲染分配优化](../../docs/plans/archive/2026-11-04-tui-frame-lifetimes.md)。
 
 ```powershell
 uv run --frozen python -m dev.benchmarks.file_menu C:\Windows\System32 --keys 60

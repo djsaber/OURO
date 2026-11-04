@@ -8,6 +8,7 @@ from textual.document._document_navigator import DocumentNavigator
 from textual.screen import Screen
 from textual.widgets import Input, TextArea
 
+from ouro.tui.rendering import RenderLineCache
 from ouro.tui.wrapped_document import ProseDocument
 
 
@@ -63,6 +64,13 @@ class TuiInput(_TerminalCursorSync, Input):
 
 class TuiTextArea(_TerminalCursorSync, TextArea, inherit_bindings=False):
     """Multi-line input that reserves Alt-modified keys for TUI commands."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._line_cache = RenderLineCache(self._line_cache.maxsize)
+
+    def on_unmount(self) -> None:
+        self._line_cache.clear()
 
     BINDINGS = [
         *(

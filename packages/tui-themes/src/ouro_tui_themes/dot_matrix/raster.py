@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from functools import lru_cache
 
 import numpy as np
-from rich.color import Color
-from rich.segment import Segment
 from rich.style import Style
 from textual.geometry import Region
 from textual.strip import Strip
@@ -20,11 +16,13 @@ from ouro_tui_themes.dot_matrix.field import (
     PhosphorField,
     Prepare,
 )
+from ouro_tui_themes.rendering import FrameStrip, RunStyle
 
 _BRAILLE_BITS = (1, 8, 2, 16, 4, 32, 64, 128)
 _THRESHOLDS = (0.08, 0.48, 0.68, 0.28, 0.23, 0.63, 0.43, 0.13)
 _COLOR_THRESHOLDS = tuple(value * 0.25 for value in _THRESHOLDS)
 _GLYPHS = (" ",) + tuple(chr(0x2800 + mask) for mask in range(1, 256))
+_PLAIN = Style()
 
 
 @dataclass(frozen=True)
@@ -34,31 +32,6 @@ class DotArtwork:
     prepare: Prepare
     span: tuple[float, float]
     engine_factory: EngineFactory = PhosphorField
-
-
-class FrameStrip(Strip):
-    """Transient rows without self-referential no-op division caches.
-
-    Textual's full-width divide caches [self], retaining dynamic rows until cyclic
-    GC. A no-op needs no cache; real divisions retain Textual's implementation.
-    """
-
-    __slots__ = ("__weakref__",)
-
-    def divide(self, cuts: Iterable[int]) -> Sequence[Strip]:
-        cuts = tuple(cut for cut in cuts if cut <= self.cell_length)
-        if cuts == (self.cell_length,):
-            return (self,)
-        return super().divide(cuts)
-
-
-@lru_cache(maxsize=4096)
-def _led_style(rgb: int | None) -> Style:
-    return (
-        Style()
-        if rgb is None
-        else Style(color=Color.from_rgb(rgb >> 16, (rgb >> 8) & 255, rgb & 255))
-    )
 
 
 class PhosphorRaster:
@@ -149,20 +122,23 @@ class PhosphorRaster:
         for row in changed_rows.tolist():
             changed = np.flatnonzero(self._changed[row])
             first, last = int(changed[0]), int(changed[-1])
-            segments: list[Segment] = []
+            texts: list[str] = []
+            colors: list[RunStyle] = []
             run: list[str] = []
             previous: int | None = None
-            # Cross the Python/Rich boundary only for rows with changed final cells.
+            # Publish owned runs; keep RGB packed until the display boundary.
             for cell in self._packed[row].tolist():
                 key = cell >> 8 if cell else None
                 if run and key != previous:
-                    segments.append(Segment("".join(run), _led_style(previous)))
+                    texts.append("".join(run))
+                    colors.append(_PLAIN if previous is None else previous)
                     run.clear()
                 run.append(_GLYPHS[cell & 255])
                 previous = key
             if run:
-                segments.append(Segment("".join(run), _led_style(previous)))
-            rows[row] = Strip(segments, self.columns)
+                texts.append("".join(run))
+                colors.append(_PLAIN if previous is None else previous)
+            rows[row] = FrameStrip.from_runs(texts, colors, self.columns)
             damage.append(Region(first, row, last - first + 1, 1))
         self._lines = tuple(rows)
         self.damage = tuple(damage)

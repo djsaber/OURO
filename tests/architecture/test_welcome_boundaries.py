@@ -21,7 +21,11 @@ def imported_modules(path):
 
 
 def test_core_welcome_contracts_and_preferences_do_not_import_extensions():
-    paths = [*ROOT.glob("ouro/tui/welcome/**/*.py"), ROOT / "ouro/tui/preferences.py"]
+    paths = [
+        *ROOT.glob("ouro/tui/welcome/**/*.py"),
+        ROOT / "ouro/tui/preferences.py",
+        ROOT / "ouro/tui/rendering.py",
+    ]
     for path in paths:
         for module in imported_modules(path):
             assert module.split(".")[0] not in {"numpy", "ouro_tui_themes"}, (path, module)
@@ -33,7 +37,9 @@ def test_dot_matrix_is_independent_of_welcome_contracts_and_style_packages(modul
     for dependency in imported_modules(path):
         assert not dependency.startswith("ouro."), (path, dependency)
         if dependency.startswith("ouro_tui_themes."):
-            assert dependency.startswith("ouro_tui_themes.dot_matrix."), (path, dependency)
+            assert dependency == "ouro_tui_themes.rendering" or dependency.startswith(
+                "ouro_tui_themes.dot_matrix."
+            ), (path, dependency)
         if module == "field":
             assert dependency.split(".")[0] not in {"rich", "textual"}, (path, dependency)
 
@@ -51,3 +57,9 @@ def test_core_and_theme_distribution_declare_compatible_releases():
     )
     assert core["version"] in core_requirement.specifier
     assert not any(requirement.startswith("numpy") for requirement in core["dependencies"])
+
+
+def test_frame_adapter_is_independent_of_themes_numerics_and_host():
+    path = EXTENSION / "src/ouro_tui_themes/rendering.py"
+    for dependency in imported_modules(path):
+        assert dependency.split(".")[0] not in {"ouro", "ouro_tui_themes", "numpy"}

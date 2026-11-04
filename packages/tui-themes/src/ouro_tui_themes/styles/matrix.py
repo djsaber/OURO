@@ -10,12 +10,11 @@ and only rows whose visible cells changed are repainted.
 from __future__ import annotations
 
 from array import array
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable
 from math import exp, floor, log
 from random import Random
 from time import monotonic
 
-from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
 from textual import events
@@ -30,6 +29,7 @@ from textual.widgets import Static
 from ouro.tui.view_models import TuiSystemStatus
 from ouro.tui.welcome.components import WelcomeSystem, WelcomeTips, WelcomeUsage, WelcomeVersion
 from ouro.tui.welcome.model import WelcomePage
+from ouro_tui_themes.rendering import FrameStrip, RunStyle, render_frame_lines
 
 _FRAME_INTERVAL = 1 / 20
 _MAX_TICK_SECONDS = 0.25
@@ -324,18 +324,6 @@ class _Rainfield:
         self.streams.append(stream)
 
 
-class _FrameStrip(Strip):
-    """Transient rows without self-referential no-op divide caches."""
-
-    __slots__ = ("__weakref__",)
-
-    def divide(self, cuts: Iterable[int]) -> Sequence[Strip]:
-        cuts = tuple(cut for cut in cuts if cut <= self.cell_length)
-        if cuts == (self.cell_length,):
-            return (self,)
-        return super().divide(cuts)
-
-
 class _MatrixLayout(Layout):
     """Place foreground content; unused space belongs to the page's rain field."""
 
@@ -501,7 +489,9 @@ class MatrixPage(WelcomePage):
         self._ensure()
         self._render_style = self.rich_style
         try:
-            return [_FrameStrip(line, line.cell_length) for line in super().render_lines(crop)]
+            if (lines := render_frame_lines(self, self._rows, crop)) is not None:
+                return lines
+            return [FrameStrip(line, line.cell_length) for line in super().render_lines(crop)]
         finally:
             self._render_style = None
 
@@ -570,9 +560,10 @@ class MatrixPage(WelcomePage):
         start = row * width
         end = start + width
         if not any(level[start:end]):
-            return Strip.blank(width)
+            return FrameStrip.blank(width)
         glyph, styles = field.glyph, self._styles
-        segments: list[Segment] = []
+        texts: list[str] = []
+        colors: list[RunStyle] = []
         cells: list[str] = []
         current = level[start]
         for index in range(start, end):
@@ -581,12 +572,14 @@ class MatrixPage(WelcomePage):
             # color run instead of emitting a reset and a new run for every gap.
             # CSS and terminal filters still apply normally to the resulting row.
             if bucket and bucket != current:
-                segments.append(Segment("".join(cells), styles[current]))
+                texts.append("".join(cells))
+                colors.append(styles[current])
                 cells.clear()
                 current = bucket
             cells.append(_GLYPHS[glyph[index]] if bucket else " ")
-        segments.append(Segment("".join(cells), styles[current]))
-        return Strip(segments, width)
+        texts.append("".join(cells))
+        colors.append(styles[current])
+        return FrameStrip.from_runs(texts, colors, width)
 
 
 def create_page() -> MatrixPage:

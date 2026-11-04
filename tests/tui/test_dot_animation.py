@@ -7,8 +7,9 @@ from array import array
 from copy import copy
 
 import pytest
-from ouro_tui_themes.dot_matrix.raster import DotArtwork, FrameStrip, PhosphorRaster
+from ouro_tui_themes.dot_matrix.raster import DotArtwork, PhosphorRaster
 from ouro_tui_themes.dot_matrix.widget import DotMatrix
+from ouro_tui_themes.rendering import FrameStrip
 from ouro_tui_themes.styles import STYLES
 from rich.console import Console
 from rich.segment import Segment
@@ -271,7 +272,7 @@ async def test_replacement_engine_uses_same_widget_pipeline_and_one_lifetime_wor
         assert worker.is_cancelled
 
 
-def test_unchanged_frame_does_not_construct_terminal_segments(monkeypatch):
+def test_unchanged_frame_does_not_construct_terminal_rows(monkeypatch):
     import ouro_tui_themes.dot_matrix.raster as raster_module
 
     raster = PhosphorRaster(WELCOME_STYLES["interference"].create().artwork, 38, 8)
@@ -280,7 +281,7 @@ def test_unchanged_frame_does_not_construct_terminal_segments(monkeypatch):
     def unexpected(*args, **kwargs):
         raise AssertionError("unchanged cells must reuse their published rows")
 
-    monkeypatch.setattr(raster_module, "Segment", unexpected)
+    monkeypatch.setattr(raster_module.FrameStrip, "from_runs", unexpected)
     current = raster.frame(0, 0)
     assert all(before is after for before, after in zip(previous, current, strict=True))
 

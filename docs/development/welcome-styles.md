@@ -174,6 +174,18 @@ Host 在离开欢迎页、打开覆盖菜单或替换页面时调用 `set_active
 按动画需要刷新实际变化的组件，避免每帧 `refresh(layout=True)` 或重建组件树。布局使用内存快照，帧计算不做文件
 或网络 I/O；异步资源的取消与回收由创建它们的包负责。布局、状态投影与动画帧是独立的更新链路。
 
+内置动画在扩展包的 `rendering.py` 共用帧表示与终端适配。生产者发布单 cell 字符段列表，以及
+RGB 整数或共享色板 Style 列表；每行拥有独立快照，发布后不再修改，不借用数值 worker 的可变数组。
+`FrameStrip.from_runs` 接管两份列表的所有权。样式继承、裁剪、合成切分与真彩色 ANSI 编码沿用这份
+紧凑表示，不逐段构造 Segment、Color 或临时 Style，也不把逐帧混色保存在全局 ANSI 缓存中。
+稳定的画布属性和背景最多缓存 32 组。普通 Rich 消费者通过 `_segments` 按需取得等价对象；
+宽字符行和控制段使用原生 Rich 切分，装饰、复杂滤镜和降色保持兼容路径。
+短寿命行仅按需创建 Textual 变换缓存；已是 RGB 且无 dim 的行跳过默认滤镜的重复拷贝。
+无装饰画布直接应用继承样式和当前 Textual 滤镜；边框、padding、outline、透明度、tint、
+hatch 和链接悬停仍使用 Textual 原生 CSS 路径。适配只作用于包自己的动画行，不修改全局 Strip、
+合成器或 GC，也不进入 Host 扩展协议。依赖 Textual 8 的行存储字段集中在该文件；升级依赖时运行
+`test_animation_rendering.py` 的原生合成对照，包括所有主题、颜色模式、窗口尺寸和宽字符。
+
 ## 验证
 
 针对欢迎页的回归入口：
@@ -183,6 +195,7 @@ uv run --frozen pytest tests/architecture/test_welcome_boundaries.py tests/tui/t
 uv run --frozen --extra themes pytest tests/tui/test_theme_package.py tests/tui/test_welcome_styles.py tests/tui/test_welcome_layout.py tests/tui/test_welcome_refresh.py tests/tui/test_preferences.py
 uv run --frozen --extra themes pytest tests/tui/app/ -k 'welcome or theme or composer_growth or session_input_surface or startup'
 uv run --frozen --extra themes pytest tests/tui/test_dot_animation.py tests/tui/test_particle_fields.py tests/tui/test_particle_raster.py tests/tui/test_particle_samplers.py
+uv run --frozen --extra themes pytest tests/tui/test_animation_rendering.py
 ```
 
 自定义包需验证全视口绘制、公共组件组合、输入布局与增长、短终端、命令弹窗方向、局部样式撤销、

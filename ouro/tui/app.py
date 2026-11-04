@@ -128,6 +128,7 @@ from ouro.tui.preferences import (
     TuiPreferences,
     TuiPreferencesStore,
 )
+from ouro.tui.rendering import TuiCompositor
 from ouro.tui.state import (
     PendingInteraction,
     TuiSessionProjection,
@@ -309,6 +310,7 @@ class _OuroHostScreen(Screen):
         clipboard_writer: Callable[[str], None] = write_system_clipboard,
     ) -> None:
         super().__init__(id="_default")
+        self._compositor = TuiCompositor()
         self._on_host_prune = on_prune
         self._on_host_resize = on_resize
         self._clipboard_writer = clipboard_writer
