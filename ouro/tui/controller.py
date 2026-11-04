@@ -125,6 +125,7 @@ from ouro.tui.view_models import (
     TuiApprovalPreset,
     TuiBootstrap,
     TuiCompactionConfiguration,
+    TuiDraftConfiguration,
     TuiEndpointConfiguration,
     TuiLifecycleStatus,
     TuiMCPServerConfiguration,
@@ -218,6 +219,16 @@ class TuiController:
         """Return the workspace staged for the next Session."""
 
         return self._draft_workspace
+
+    @property
+    def draft_configuration(self) -> TuiDraftConfiguration:
+        """Snapshot the next-Session intent without reading Session storage."""
+        return TuiDraftConfiguration(
+            model=self._initial_model,
+            reasoning=self._reasoning_request,
+            approval_mode=self._approval_mode,
+            interaction_mode=self._interaction_mode,
+        )
 
     async def start(self) -> TuiBootstrap:
         if self._started:
@@ -637,23 +648,46 @@ class TuiController:
         self.activate_new_session(prepared)
         return prepared.model
 
-    async def prepare_new_session(self) -> TuiNewSession:
+    async def prepare_new_session(
+        self, configuration: TuiDraftConfiguration | None = None
+    ) -> TuiNewSession:
         """Resolve draft defaults without changing the selected Session."""
         runtime = self._runtime()
         initial_model = self._initial_model
         previous_route, previous_workspace = await self._leaving_session_defaults()
         if previous_route is not None:
             initial_model = previous_route
+        if configuration is not None:
+            initial_model = configuration.model
+        warnings: list[str] = []
         draft: AvailableModel | None = None
         if initial_model is not None:
             try:
                 draft = await asyncio.to_thread(runtime.resolve_model, initial_model)
-            except ConfigError:
+            except ConfigError as exc:
+                if configuration is not None:
+                    warnings.append(f"Draft model unavailable; using the default model: {exc}")
                 draft = None
         if draft is None:
             draft = await asyncio.to_thread(runtime.current_model)
             initial_model = None
-        return TuiNewSession(draft, initial_model, previous_workspace or runtime.default_workspace)
+        if configuration is not None:
+            reasoning = configuration.reasoning if not warnings else ReasoningRequest()
+            try:
+                resolve_reasoning(draft.reasoning, reasoning)
+            except ValueError as exc:
+                warnings.append(f"Draft reasoning unavailable; using endpoint defaults: {exc}")
+                reasoning = ReasoningRequest()
+            configuration = configuration.model_copy(
+                update={"model": initial_model, "reasoning": reasoning}
+            )
+        return TuiNewSession(
+            draft,
+            initial_model,
+            previous_workspace or runtime.default_workspace,
+            configuration,
+            tuple(warnings),
+        )
 
     def activate_new_session(self, prepared: TuiNewSession) -> None:
         self._selection_revision += 1
@@ -665,6 +699,10 @@ class TuiController:
         self._approval_mode = self._default_approval_mode
         self._interaction_mode = self._default_interaction_mode
         self._reasoning_request = ReasoningRequest()
+        if prepared.configuration is not None:
+            self._approval_mode = prepared.configuration.approval_mode
+            self._interaction_mode = prepared.configuration.interaction_mode
+            self._reasoning_request = prepared.configuration.reasoning
 
     async def set_workspace(self, value: str) -> str:
         """Stage one existing directory for the next Session only."""
@@ -2063,6 +2101,7 @@ class TuiController:
                 return runtime.model_reasoning(model, reasoning_request)
 
             state = await asyncio.to_thread(resolve)
+            self._initial_model = state.model.key
             self._reasoning_request = state.requested
             return state
         await asyncio.to_thread(runtime.set_session_reasoning, session_id, reasoning_request)

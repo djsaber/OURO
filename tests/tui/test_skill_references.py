@@ -12,7 +12,7 @@ from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.drafts import TuiInputDraftStore
 from ouro.tui.composer.input import Composer
 from ouro.tui.composer.popup import CommandPopup
-from tests.tui.helpers import run_ready_app
+from tests.tui.helpers import run_ready_app, wait_for_worker_group
 from tests.tui.test_history_commands import application_at
 
 
@@ -40,6 +40,7 @@ async def test_skill_multiselect_is_inline_atomic_and_preserves_the_draft(tmp_pa
         popup = app.query_one(CommandPopup)
         assert [item.name for item in popup._commands] == ["@file", "@skill"]
         await pilot.press(*"skill", "enter")
+        await wait_for_worker_group(app, pilot, group="skill-options")
         assert app.focused is composer and app.screen is screen
         assert composer.draft_content == InputContent(text="before after")
         await pilot.press("space", "down", "space", "enter")
@@ -58,6 +59,7 @@ async def test_skill_multiselect_is_inline_atomic_and_preserves_the_draft(tmp_pa
         composer.undo()
         composer.move_cursor((0, 0))
         await pilot.press("@", *"skill", "enter")
+        await wait_for_worker_group(app, pilot, group="skill-options")
         assert not app._skill_picker.options
         await pilot.press("escape")
         assert composer.input_content == content
@@ -151,8 +153,9 @@ async def test_mixed_references_survive_restart_and_form_one_complete_attachment
     app = OuroTuiApp(application=application_with_skills(tmp_path))
     async with run_ready_app(app) as pilot:
         composer = app.query_one(Composer)
-        await pilot.press("@", *"skill", "space", "space", "down", "space", "enter")
-        assert len(composer.input_content.skills) == 2
+        composer.insert_skills(
+            (InputSkillReference(name="reviewer"), InputSkillReference(name="writer"))
+        )
         files = []
         for directory in ("one", "two"):
             path = tmp_path / directory / "notes.txt"

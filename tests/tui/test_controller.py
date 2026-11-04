@@ -2473,6 +2473,22 @@ async def test_controller_applies_draft_settings_and_persists_existing_session(
             ReasoningRequest(mode="enabled", effort="high")
         )
         assert draft_reasoning.effective.effort == "high"
+        configuration = controller.draft_configuration
+        prepared = await controller.prepare_new_session(configuration)
+        controller.activate_new_session(prepared)
+        assert controller.draft_configuration == configuration
+        assert prepared.warnings == ()
+        unavailable = configuration.model_copy(update={"model": "missing/endpoint"})
+        fallback = await controller.prepare_new_session(unavailable)
+        assert fallback.warnings
+        assert fallback.configuration.reasoning == ReasoningRequest()
+        invalid = configuration.model_copy(
+            update={"reasoning": ReasoningRequest(mode="enabled", effort="max")}
+        )
+        fallback = await controller.prepare_new_session(invalid)
+        assert fallback.warnings
+        assert fallback.configuration.reasoning == ReasoningRequest()
+        assert controller.draft_configuration == configuration
 
         result = await controller.submit("create configured session")
         assert result.session.approval_mode == "auto"

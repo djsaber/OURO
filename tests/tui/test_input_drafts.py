@@ -7,11 +7,19 @@ import pytest
 
 from ouro.core.errors import ConfigError
 from ouro.core.input_content import InputAttachment, InputFileReference, InputSkillReference
+from ouro.core.reasoning import ReasoningRequest
 from ouro.tui.composer.drafts import MAX_SESSION_DRAFTS, TuiInputDrafts, TuiInputDraftStore
+from ouro.tui.view_models import TuiDraftConfiguration
 
 
 def test_input_drafts_round_trip_and_keep_a_bounded_session_mru(tmp_path: Path) -> None:
-    drafts = TuiInputDrafts().remember(None, "welcome draft")
+    configuration = TuiDraftConfiguration(
+        model="provider/endpoint",
+        reasoning=ReasoningRequest(mode="enabled", effort="high", summary="detailed"),
+        approval_mode="auto",
+        interaction_mode="unattended",
+    )
+    drafts = TuiInputDrafts(welcome_configuration=configuration).remember(None, "welcome draft")
     for index in range(MAX_SESSION_DRAFTS + 2):
         drafts = drafts.remember(f"ses_{index}", f"draft {index}")
 
@@ -39,6 +47,8 @@ def test_input_drafts_round_trip_and_keep_a_bounded_session_mru(tmp_path: Path) 
 
     assert store.path == tmp_path / "config" / "tui-input-drafts.json"
     assert store.load() == forgotten
+    assert store.load().welcome_configuration == configuration
+    assert store.load().welcome.is_empty
 
 
 def test_editing_and_reloading_a_draft_preserves_its_attachment_selection(tmp_path):

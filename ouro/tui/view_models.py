@@ -6,6 +6,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal, cast, get_args
 
+from pydantic import Field
+
 from ouro.application.contracts.base import ApplicationStartupReport
 from ouro.application.contracts.configuration import MCPTransportInput, SkillInstallScopeInput
 from ouro.application.contracts.models import AvailableModel, ModelReasoningState
@@ -21,11 +23,13 @@ from ouro.application.inputs.queue import QueuedUserInputView
 from ouro.application.observations.sessions import SessionObservation
 from ouro.config import EndpointReasoningConfig, ProviderProtocol, ProviderType
 from ouro.core.agents import ExecutionMode, ToolSelection
-from ouro.core.approvals import ToolPermissionControl
+from ouro.core.approvals import SessionApprovalMode, ToolPermissionControl
+from ouro.core.base import OuroModel
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextMetrics
 from ouro.core.context_snapshots import ModelRequestHeader
 from ouro.core.events import EventRecord
+from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
@@ -300,8 +304,19 @@ class TuiSessionObservation:
     control_session: SessionView
 
 
+class TuiDraftConfiguration(OuroModel):
+    """Next-Session policy and route-bound model intent."""
+
+    model: str | None = Field(default=None, min_length=1)
+    reasoning: ReasoningRequest = Field(default_factory=ReasoningRequest)
+    approval_mode: SessionApprovalMode = "inherit"
+    interaction_mode: SessionInteractionMode = "interactive"
+
+
 @dataclass(frozen=True)
 class TuiNewSession:
     model: AvailableModel
     initial_model: str | None
     workspace: str | None
+    configuration: TuiDraftConfiguration | None = None
+    warnings: tuple[str, ...] = ()

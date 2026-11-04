@@ -1544,6 +1544,22 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _show_welcome(self, *, refresh_status: bool = True) -> None:
         if not self._surface_available():
             return
+        configuration = self._input_drafts.welcome_configuration
+        if (
+            self._controller.session_id is None
+            and self._preferences.input_draft_memory_enabled
+            and configuration is not None
+            and configuration != self._controller.draft_configuration
+        ):
+            prepared = await self._controller.prepare_new_session(configuration)
+            self._controller.activate_new_session(prepared)
+            self._active_model = _status_model_label(prepared.model)
+            self.query_one(StatusLine).set_model(self._active_model)
+            for warning in prepared.warnings:
+                self.notify(warning, severity="warning", markup=False)
+            await self._refresh_reasoning_indicator()
+            await self._refresh_approval_indicator()
+        self._remember_draft_configuration()
         workspace = self._input_drafts.welcome_workspace
         if (
             self._controller.session_id is None
@@ -3209,6 +3225,16 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
         self._set_input_drafts(drafts)
 
+    def _remember_draft_configuration(self) -> None:
+        if self._controller.session_id is None and self._preferences.input_draft_memory_enabled:
+            self._set_input_drafts(
+                self._input_drafts.model_copy(
+                    update={
+                        "welcome_configuration": self._controller.draft_configuration,
+                    }
+                )
+            )
+
     def _forget_input_drafts(self, session_ids: Sequence[str]) -> None:
         if not self._preferences.input_draft_memory_enabled:
             return
@@ -3710,7 +3736,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._view_revision += 1
         revision = self._view_revision
         try:
-            prepared = await self._controller.prepare_new_session()
+            prepared = await self._controller.prepare_new_session(
+                self._input_drafts.welcome_configuration
+                if self._preferences.input_draft_memory_enabled
+                else None
+            )
         except Exception as exc:  # noqa: BLE001 - keep the current view on failure.
             self.notify(str(exc), severity="error", markup=False)
             return
@@ -3720,6 +3750,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if self._host_closing or revision != self._view_revision:
                 return
             self._controller.activate_new_session(prepared)
+            self._remember_draft_configuration()
+            for warning in prepared.warnings:
+                self.notify(warning, severity="warning", markup=False)
             model = prepared.model
             with self.batch_update():
                 self._remember_visible_session_history()
@@ -4992,6 +5025,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         except Exception as exc:  # noqa: BLE001
             self.notify(str(exc), severity="error", markup=False)
             return
+        self._remember_draft_configuration()
         self._active_model = _status_model_label(model)
         status_line = self.query_one(StatusLine)
         status_line.set_model(self._active_model)
@@ -5058,6 +5092,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
             self.notify(str(exc), severity="error", markup=False)
             return
+        self._remember_draft_configuration()
         self.query_one(StatusLine).set_approval_mode(mode)
         if applies_to_next_approval:
             self.notify(f"Approval: {mode} (next approval)")
@@ -5129,6 +5164,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         except Exception as exc:  # noqa: BLE001 - Runtime owns capability validation.
             self.notify(str(exc), severity="error", markup=False)
             return
+        self._remember_draft_configuration()
         self._apply_reasoning_state(state)
 
     def action_actions(self) -> None:
@@ -5939,6 +5975,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 skills=self.query_one(Composer).input_content.skills,
             )
         self._set_input_drafts(drafts, force_persist=True)
+        self._remember_draft_configuration()
         return True
 
     def _apply_tui_theme(

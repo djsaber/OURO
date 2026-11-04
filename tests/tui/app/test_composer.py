@@ -359,6 +359,11 @@ async def test_input_drafts_restore_per_surface_across_tui_restarts(tmp_path: Pa
         await pilot.pause()
         composer = app.query_one(Composer)
         assert composer.text == "welcome seed"
+        await app._set_approval_mode("afk")
+        model_key = await app._controller.selected_model_key()
+        assert model_key is not None
+        await app._select_model(model_key)
+        configuration = app._controller.draft_configuration
 
         composer.load_text("welcome edited")
         await _wait_until(
@@ -370,6 +375,7 @@ async def test_input_drafts_restore_per_surface_across_tui_restarts(tmp_path: Pa
         await app._open_session(first.session_id)
         await pilot.pause()
         assert composer.text == "first seed"
+        assert await app._controller.session_approval_preset() == "inherit"
         composer.load_text("first edited")
         await _wait_until(
             lambda: draft_store.load().draft_for(first.session_id) == "first edited",
@@ -393,12 +399,14 @@ async def test_input_drafts_restore_per_surface_across_tui_restarts(tmp_path: Pa
         await app._new_session()
         await pilot.pause()
         assert composer.text == "welcome edited"
+        assert app._controller.draft_configuration == configuration
 
     restarted = OuroTuiApp(application=_application(tmp_path))
     async with run_ready_app(restarted, size=(100, 32)) as pilot:
         await pilot.pause()
         composer = restarted.query_one(Composer)
         assert composer.text == "welcome edited"
+        assert restarted._controller.draft_configuration == configuration
 
         await restarted._open_session(first.session_id)
         await pilot.pause()
@@ -431,6 +439,7 @@ async def test_input_drafts_restore_per_surface_across_tui_restarts(tmp_path: Pa
         await resumed._new_session()
         await pilot.pause()
         assert resumed.query_one(Composer).text == "welcome edited"
+        assert resumed._controller.draft_configuration == configuration
 
 
 @pytest.mark.asyncio

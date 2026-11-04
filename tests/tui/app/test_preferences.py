@@ -433,6 +433,7 @@ async def test_action_menu_toggles_input_draft_memory_and_clears_disabled_state(
         await pilot.pause()
         composer = app.query_one(Composer)
         assert composer.text == "remember this draft"
+        await app._set_approval_mode("afk")
 
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -468,6 +469,7 @@ async def test_action_menu_toggles_input_draft_memory_and_clears_disabled_state(
             description="re-enabled draft memory",
         )
         assert preferences.load().input_draft_memory_enabled is True
+        assert drafts.load().welcome_configuration == app._controller.draft_configuration
         assert menu.page_title == "ACTIONS"
 
 

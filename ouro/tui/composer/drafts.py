@@ -13,6 +13,7 @@ from ouro.core.base import VersionedOuroModel
 from ouro.core.errors import ConfigError
 from ouro.core.input_content import InputContent, InputFile, InputSkillReference
 from ouro.local_io import read_text_atomic, write_model_atomic
+from ouro.tui.view_models import TuiDraftConfiguration
 
 MAX_SESSION_DRAFTS = 20
 
@@ -44,6 +45,7 @@ class TuiInputDrafts(VersionedOuroModel):
     sessions: tuple[TuiSessionDraft, ...] = ()
     welcome_resource_id: str | None = Field(default=None, pattern=r"^ses_[0-9a-f]{32}$")
     welcome_workspace: str | None = None
+    welcome_configuration: TuiDraftConfiguration | None = None
     pending: tuple[TuiPendingInput, ...] = ()
 
     @field_validator("sessions")
