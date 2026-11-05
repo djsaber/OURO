@@ -44,14 +44,19 @@ Resume starts a fresh blocker assessment.
 
 ## Context and Controls
 
-At each model request boundary, goal-context appends a persistent user scaffold containing the
-objective, status, total budget, relevant report, and action rules. It also supplies the state after
-compaction. Lifecycle changes leave earlier messages and system instructions intact; the latest
-appended state guides subsequent work. GetGoal reports usage and timestamps; continuation messages
-also report usage. Pending creation, replacement and cancellation batches coalesce. Raw objective
+At model request preparation, goal-context appends a persistent user scaffold when the plugin
+first observes a session's Goal or its record changes. The snapshot contains the objective,
+status, total budget, relevant report, and action rules. Normal tool rounds, usage changes, and
+new conversation turns do not repeat unchanged state. Lifecycle changes leave earlier messages
+and system instructions intact; the latest appended state guides subsequent work.
+
+The plugin remembers the last supplied record and request boundary in memory per session.
+Retries at that boundary return the snapshot for the Host to deduplicate or persist; changed
+state is supplied even within the same model round. Reloading the plugin supplies state again.
+Compaction alone does not produce a notification: the model uses the summary and retained
+history, and GetGoal provides exact state, usage, and timestamps. Continuation messages also
+report usage. Pending creation, replacement and cancellation batches coalesce. Raw objective
 text remains a non-scaffold user message in the initial atomic batch.
-Retrying a blocked request appends changed Goal state even within the same model round; unchanged
-retries are deduplicated by the Context Provider mechanism.
 
 Pause commits goal state with the framework's generic stop intent and cancels the current execution.
 Resume uses the generic continue intent to resume retained work or consume the initial pending input.
@@ -81,7 +86,7 @@ usage. Old requests cannot complete a newly activated objective.
 
 ## Integration
 
-- Default-enabled in-process plugin, namespace goal, version 2.0.0.
+- Default-enabled in-process plugin, namespace goal, version 2.1.0.
 - Controller mode exclusively claims ouro.session.primary_behavior, shared with Plan.
 - Context goal-context; continuation goal-continuation.
 - Permissions: sessions.write and background.run.

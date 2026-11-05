@@ -69,7 +69,7 @@ class _EndToEndGoalProvider:
             assert "Status: active" in messages[-1].text_content
             yield ProviderStreamEvent(type="text_delta", text="Made verified progress.")
         elif call == 1:
-            assert "<goal-continue>" in messages[-2].text_content
+            assert "<goal-continue>" in messages[-1].text_content
             yield ProviderStreamEvent.from_tool_call(
                 ToolCallRequest(
                     id="complete_goal",
@@ -138,7 +138,7 @@ def _plugin(tmp_path: Path) -> GoalPlugin:
     context = sdk.PluginContext(
         identity=sdk.PluginIdentity(
             plugin_id=PLUGIN_ID,
-            version="2.0.0",
+            version="2.1.0",
             plugin_class="builtin",
             release_id="test-release",
             package_digest=None,
@@ -320,7 +320,7 @@ def test_manifest_and_tool_contract_are_minimal_and_generic() -> None:
     manifest = GOAL_PLUGIN.manifest
 
     assert manifest.name == "Goal"
-    assert manifest.version == "2.0.0"
+    assert manifest.version == "2.1.0"
     assert {item.id for item in manifest.contributes.tools} == {
         "get-goal",
         "create-goal",
@@ -953,3 +953,68 @@ async def test_failed_self_replacement_keeps_goal_and_different_controller_relea
         .controller_local_id
         == "alternative"
     )
+
+
+async def test_goal_context_retries_and_plugin_restart(goal_session, tmp_path):
+    g = goal_session
+    await g.tool("CreateGoal", {"objective": "Check the result"})
+    run = g.request()
+
+    async def context(plugin, *, model_round=1):
+        result, change = await invoke_plugin_callback(
+            plugin.goal_context,
+            sdk.ContextCall(
+                session_id=g.session.session_id,
+                run_id=run.run_id,
+                message_count=0,
+                model_round=model_round,
+            ),
+            snapshot=capture_harness(g.store, g.session.session_id, run=run),
+            owner_id=PLUGIN_ID,
+            writable=False,
+        )
+        assert change is None
+        return result.fragments
+
+    first = await context(g.plugin)
+    assert len(first) == 1
+    assert await context(g.plugin) == first
+    assert await context(g.plugin, model_round=2) == ()
+    await g.tool("UpdateGoal", {"status": "blocked", "report": "Missing data."}, run=run)
+    stopped = await context(g.plugin, model_round=2)
+    assert len(stopped) == 1
+    assert "Status: blocked" in stopped[0].text
+    assert await context(g.plugin, model_round=2) == stopped
+    assert await context(g.plugin, model_round=3) == ()
+    assert await context(_plugin(tmp_path / "restarted"), model_round=3) == stopped
+    await g.plugin.stop("shutdown", 0)
+    assert await context(g.plugin, model_round=3) == stopped
+
+
+async def test_paused_goal_resumes_after_releasing_an_outdated_controller(goal_session):
+    g = goal_session
+    await g.command("--token-budget 30 Ship")
+    g.record_usage(g.request(), 12)
+    await g.command("pause")
+    paused = g.goal()
+    activation = g.store.load_session_record(g.session.session_id).controls.activations[0]
+    g.controllers.replace_owner(
+        "instance",
+        tuple(replace(item, release_id="updated-release") for item in g.controllers.list()),
+    )
+    with pytest.raises(SessionControlError, match="cannot be handled"):
+        await g.command("resume")
+    g.coordinator.force_release(
+        session_id=g.session.session_id, activation_id=activation.activation_id
+    )
+    assert g.goal() == paused
+    await g.command("resume")
+    resumed = g.goal()
+    assert resumed.status == "active"
+    assert resumed.goal_id == paused.goal_id
+    assert resumed.objective == paused.objective
+    assert resumed.token_budget == 30
+    assert g.usage.session_scope_tokens(g.session.session_id) == {PLUGIN_ID: {resumed.goal_id: 12}}
+    current = g.store.load_session_record(g.session.session_id).controls.activations[0]
+    assert current.release_id == "updated-release"
+    assert current.activation_id != activation.activation_id

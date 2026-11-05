@@ -172,6 +172,36 @@ async def goal_app(tmp_path, request):
         await app.close()
 
 
+async def test_goal_progress_only_appends_context_at_state_boundaries(goal_app):
+    g = goal_app
+    await g.command("Inspect and update the information")
+    g.provider.responses.extend(
+        [
+            ToolCallRequest(id="read", name="ReadInfo", arguments={}),
+            ToolCallRequest(id="write", name="ChangeInfo", arguments={}),
+            ToolCallRequest(
+                id="complete",
+                name="UpdateGoal",
+                arguments={"status": "complete", "report": "Inspected and updated."},
+            ),
+            "Done.",
+        ]
+    )
+    await g.consume()
+    g.provider.responses.append("You're welcome.")
+    await g.say("Thanks.")
+    snapshots = [
+        message
+        for message in g.runtime.store.load_session(g.session.session_id).messages
+        if message.semantic_tag == "goal-context"
+    ]
+    assert len(snapshots) == 2
+    assert "Status: active" in snapshots[0].text_content
+    assert "Status: complete" in snapshots[1].text_content
+    assert g.executed_tools == ["ReadInfo", "ChangeInfo"]
+    _assert_provider_input_prefix(g.provider)
+
+
 async def test_goal_creation_and_completion_preserve_the_provider_input_prefix(goal_app):
     g = goal_app
     g.provider.responses.append("Existing conversation.")
@@ -540,7 +570,7 @@ async def test_stopped_goal_allows_normal_tools_without_resuming(goal_app, statu
     assert g.pending() == []
 
 
-async def test_compaction_appends_current_goal_state_after_the_summary(goal_app):
+async def test_compaction_does_not_repost_unchanged_goal_and_get_goal_reads_current_state(goal_app):
     g = goal_app
     await g.command("Keep this exact objective")
     await g.command("pause")
@@ -551,16 +581,17 @@ async def test_compaction_appends_current_goal_state_after_the_summary(goal_app)
     compacted = await g.runtime.compact(session_id=g.session.session_id)
     assert compacted.compaction is not None
 
-    g.provider.responses.append("The goal remains paused.")
+    before = g.runtime.store.load_session(g.session.session_id).messages
+    g.provider.responses.extend(
+        [ToolCallRequest(id="goal", name="GetGoal", arguments={}), "The goal remains paused."]
+    )
     await g.say("What is the current objective?")
     messages = g.provider.requests[-1]
-    assert "Keep this exact objective" in messages[-1].text_content
-    assert "Status: paused" in messages[-1].text_content
     assert any("<conversation-summary>" in message.text_content for message in messages)
+    assert "Keep this exact objective" in messages[-1].text_content
+    assert "Goal: paused" in messages[-1].text_content
     canonical = g.runtime.store.load_session(g.session.session_id).messages
-    assert canonical[-2].semantic_tag == "goal-context"
-    assert canonical[-2].role == "user"
-    assert canonical[-2].scaffold is True
+    assert not any(message.semantic_tag == "goal-context" for message in canonical[len(before) :])
 
 
 async def test_pause_during_model_request_discards_uncommitted_tool_calls(goal_app, monkeypatch):

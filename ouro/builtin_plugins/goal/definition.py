@@ -18,7 +18,7 @@ GOAL_PLUGIN = BuiltinPluginDefinition(
             "schema_version": 3,
             "plugin_id": "dev.ouro.goal",
             "name": "Goal",
-            "version": "2.0.0",
+            "version": "2.1.0",
             "description": "Maintains and advances the latest user-owned Goal.",
             "namespace": "goal",
             "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},

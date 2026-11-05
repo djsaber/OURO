@@ -55,6 +55,7 @@ _TERMINAL_RUN_STATUSES = {"completed", "aborted", "failed", "paused", "recoverab
 
 class GoalPlugin:
     def __init__(self, context: PluginContext) -> None:
+        self._context_snapshots: dict[str, tuple[GoalRecord, str, int]] = {}
         required = {"sessions.write", "background.run"}
         missing = required - context.permissions
         if missing:
@@ -195,6 +196,7 @@ class GoalPlugin:
 
     async def stop(self, reason, deadline) -> None:
         del reason, deadline
+        self._context_snapshots.clear()
 
     def goal_command(self, call):
         if call.session_id is None:
@@ -414,7 +416,14 @@ class GoalPlugin:
     def goal_context(self, call: ContextCall) -> ContextOutput:
         goal = GoalStateRepository(call.session_state).load().goal
         if goal is None:
+            self._context_snapshots.pop(call.session_id, None)
             return ContextOutput()
+        snapshot = (goal, call.run_id, call.model_round)
+        previous = self._context_snapshots.get(call.session_id)
+        if previous is not None and previous[0] == goal and previous != snapshot:
+            return ContextOutput()
+        # Retry the same preparation boundary: only the Host can confirm persistence.
+        self._context_snapshots[call.session_id] = snapshot
         return ContextOutput(
             fragments=(
                 ContextFragment(
