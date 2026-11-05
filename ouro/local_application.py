@@ -621,21 +621,15 @@ def build_local_runtime(
         plugin_permission_overrides=resolved.plugin_permission_overrides,
         tool_execution_config=resolved.tool_execution,
         run_budget=resolved.run_budget,
+        settings_resolver=configuration.settings.snapshot,
         compaction_config=resolved.compaction,
         compaction_adapter=compaction_adapter,
         compaction_adapter_error=compaction_adapter_error,
-        compaction_adapter_resolver=(
-            lambda: model_catalog.adapter_for(
-                configuration.default_model_route()
-                if resolved.compaction.model.use_default_model
-                else (
-                    f"{resolved.compaction.model.provider_id}/"
-                    f"{resolved.compaction.model.endpoint_id}"
-                )
-            )
-        )
-        if compaction_adapter is not None
-        else None,
+        compaction_adapter_resolver=lambda model: model_catalog.adapter_for(
+            configuration.default_model_route()
+            if model.use_default_model
+            else f"{model.provider_id}/{model.endpoint_id}"
+        ),
         queued_input_config=resolved.queued_inputs,
         skills=resolved.skills,
         skill_catalog_resolver=configuration.skills,

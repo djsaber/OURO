@@ -315,7 +315,7 @@ async def test_one_by_one_selection_and_commit_read_only_the_selected_input(tmp_
 
         monkeypatch.setattr(app.runtime.store, "load_input", read)
         snapshot = app.runtime.store.load_runtime_session(first.session_id)
-        selected = app.runtime._pending_queued_inputs(snapshot)
+        selected = await app.runtime._pending_queued_inputs(snapshot)
         with app.runtime.store.session_mutation(first.session_id):
             assert app.runtime.queued_inputs.matches_pending(snapshot.session, selected)
         assert reads == [first.queue_id, first.queue_id]

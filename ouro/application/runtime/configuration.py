@@ -7,17 +7,13 @@ from ouro.application.context.prompts import PromptContext
 from ouro.application.models.catalog import AdapterBuilder, ConfiguredModelCatalog
 from ouro.config import (
     CompactionConfig,
-    CompactionConfigManager,
-    PermissionConfigManager,
     PromptConfigManager,
     ProviderConfigManager,
     ProviderRuntimeOptions,
     QueuedInputConfig,
-    QueuedInputConfigManager,
-    RunBudgetConfigManager,
     ToolExecutionConfig,
-    ToolExecutionConfigManager,
 )
+from ouro.config.runtime import RuntimeSettingsResolver
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.context import compose_system_prompt
 from ouro.core.run_budget import RunBudgetPolicy
@@ -48,11 +44,7 @@ class RuntimeConfigurationResolver:
         self.root = ProviderConfigManager(root).root
         self._providers = ProviderConfigManager(self.root)
         self._prompts = PromptConfigManager(self.root)
-        self._permissions = PermissionConfigManager(self.root)
-        self._compaction = CompactionConfigManager(self.root)
-        self._tool_execution = ToolExecutionConfigManager(self.root)
-        self._run_budget = RunBudgetConfigManager(self.root)
-        self._queued_inputs = QueuedInputConfigManager(self.root)
+        self.settings = RuntimeSettingsResolver(self.root)
 
     def snapshot(
         self,
@@ -61,7 +53,8 @@ class RuntimeConfigurationResolver:
         system_prompt: str | None = None,
     ) -> RuntimeConfigurationSnapshot:
         prompts = self._prompts.snapshot().config
-        permissions = self._permissions.snapshot()
+        settings = self.settings.snapshot()
+        permissions = settings.permissions
         return RuntimeConfigurationSnapshot(
             provider_options=self._providers.resolve_runtime_options(
                 provider_options or ProviderRuntimeOptions()
@@ -70,10 +63,10 @@ class RuntimeConfigurationResolver:
             additional_system_prompt=prompts.additional_system_prompt,
             permission_overrides=permissions.tools,
             plugin_permission_overrides=permissions.plugins,
-            compaction=self._compaction.snapshot(),
-            tool_execution=self._tool_execution.snapshot(),
-            run_budget=self._run_budget.snapshot(),
-            queued_inputs=self._queued_inputs.snapshot(),
+            compaction=settings.compaction,
+            tool_execution=settings.tool_execution,
+            run_budget=settings.run_budget,
+            queued_inputs=settings.queued_inputs,
             skills=self.skills(),
         )
 

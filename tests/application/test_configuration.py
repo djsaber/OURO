@@ -213,7 +213,7 @@ def test_complete_compaction_configuration_is_saved_atomically(tmp_path) -> None
     }
     assert saved.model.provider_id == "faux"
     assert saved.model.max_output_tokens == 2048
-    assert saved.change is not None and saved.change.effective_from == "next_runtime"
+    assert saved.change is not None and saved.change.effective_from == "next_request"
 
     with pytest.raises(ConfigError, match="target_ratio"):
         facade.save_compaction(

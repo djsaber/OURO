@@ -79,8 +79,9 @@ from ouro.application.sessions.service import SessionService
 from ouro.application.tool_calls import ToolCallCoordinator
 from ouro.application.usage import UsageService
 from ouro.auth.credentials import CredentialService
-from ouro.config.compaction import CompactionConfig
+from ouro.config.compaction import CompactionConfig, CompactionModelConfig
 from ouro.config.queued_inputs import QueuedInputConfig
+from ouro.config.runtime import RuntimeSettings
 from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import AgentWaitRequest, AgentWaitResolution
@@ -228,7 +229,9 @@ class RuntimeService:
         compaction_strategies: CompactionStrategyRegistry | None = None,
         compaction_adapter: RuntimeAdapter | None = None,
         compaction_adapter_error: str | None = None,
-        compaction_adapter_resolver: Callable[[], RuntimeAdapter] | None = None,
+        compaction_adapter_resolver: Callable[[CompactionModelConfig], RuntimeAdapter]
+        | None = None,
+        settings_resolver: Callable[[], RuntimeSettings] | None = None,
         continuations: RunContinuationRegistry | None = None,
         prompt_policies: PromptPolicyRegistry | None = None,
         tool_policies: ToolPolicyRegistry | None = None,
@@ -258,6 +261,8 @@ class RuntimeService:
         self.session_recovery = SessionRecoveryService(store, usage_service=usage_service)
         self.session_controls = SessionControlCoordinator(store, usage_service=usage_service)
         self.queued_inputs = QueuedInputQueue(store)
+        self.settings_resolver = settings_resolver
+        self._applied_settings: RuntimeSettings | None = None
         self.queued_input_config = queued_input_config or QueuedInputConfig()
         self._session_scheduler: Callable[[str, int], Awaitable[None]] | None = None
         self._advancing_sessions: set[str] = set()
@@ -364,6 +369,22 @@ class RuntimeService:
         self._run_resources: dict[str, RunResources] = {}
         self._agent_definitions: AgentDefinitionService | None = None
         self._agent_controls: AgentControlExecutor | None = None
+
+    async def refresh_configuration(self) -> None:
+        """Publish settings for subsequent operations without mutating their snapshots."""
+        if self.settings_resolver is None:
+            return
+        settings = await run_blocking(self.settings_resolver)
+        if settings is self._applied_settings:
+            return
+        self._permission_overrides = dict(settings.permissions.tools)
+        self._plugin_permission_overrides = dict(settings.permissions.plugins)
+        self._tool_execution_config = settings.tool_execution
+        self.run_budget = settings.run_budget
+        self.queued_input_config = settings.queued_inputs
+        self.compaction_config = settings.compaction
+        self.context_compaction.config = settings.compaction
+        self._applied_settings = settings
 
     def tool_permission_overrides(self) -> dict[str, PermissionMode]:
         """Return the permission policy currently published to tool execution."""
@@ -583,13 +604,23 @@ class RuntimeService:
         if resources is None:
             resources = RunResources()
             self._run_resources[run_id] = resources
-        if resources.tool_calls is not None:
-            return resources.tool_calls
-        tools = self._tools_for_run(run_id)
         delegated = resources.constraints
         execution_config = self._tool_execution_config
-        if delegated is not None and not delegated.allow_external_paths:
+        if (
+            delegated is not None
+            and not delegated.allow_external_paths
+            and not execution_config.workspace_only
+        ):
             execution_config = execution_config.model_copy(update={"workspace_only": True})
+        current = resources.tool_calls
+        if (
+            current is not None
+            and current.execution_config == execution_config
+            and current.executor.permission_overrides == self._permission_overrides
+            and current.executor.plugin_permission_overrides == self._plugin_permission_overrides
+        ):
+            return current
+        tools = self._tools_for_run(run_id)
         coordinator = ToolCallCoordinator(
             executor=ToolExecutor(
                 tools,
@@ -1635,6 +1666,10 @@ class RuntimeService:
                 "resource attachments require an existing Session or a reserved namespace; "
                 "pass session_id or new_session_id"
             )
+        if input_resource_refs or any(
+            item.resource_refs or item.attachments for item in (_queued_inputs or ())
+        ):
+            await self.refresh_configuration()
         if skill_invocations:
             await self.refresh_skills()
         await self._synchronize_extensions()
@@ -2121,7 +2156,7 @@ class RuntimeService:
                 return RunResult(session=snapshot.session, run=active)
             await self.settle_run_abort(session_id=session_id, run_id=active.run_id)
             snapshot = await run_blocking(self.store.load_runtime_session, session_id)
-        pending = await run_blocking(self._pending_queued_inputs, snapshot)
+        pending = await self._pending_queued_inputs(snapshot)
         try:
             if pending:
                 return await self.consume_host_input(
@@ -2356,6 +2391,7 @@ class RuntimeService:
                     record_usage=self.run_lifecycle.record_usage,
                     run_usage=self.usage.run_usage if self.usage is not None else None,
                     begin_model_round=self._bind_run_capabilities,
+                    prepare_configuration=self._prepare_request_configuration,
                     commit_model_request=self._commit_model_request,
                     publish_committed=self.event_recorder.publish_committed,
                     shared_budget_reason=(
@@ -2414,6 +2450,7 @@ class RuntimeService:
     async def _execute_driver_tool_batch(
         self, request: DriverToolBatchRequest
     ) -> ToolBatchHandlingResult:
+        await self.refresh_configuration()
         run = await self._bind_run_capabilities(
             session=request.session, run=request.run, model_round=request.run.model_round_count
         )
@@ -2431,6 +2468,7 @@ class RuntimeService:
     async def _execute_model_tool_batch(
         self, request: ModelToolBatchRequest
     ) -> ToolBatchHandlingResult:
+        await self.refresh_configuration()
         session = await run_blocking(self.store.load_session_record, request.session.session_id)
         response = request.response
         return await self._tool_calls_for_run(request.run.run_id).handle_batch(
@@ -2459,10 +2497,36 @@ class RuntimeService:
         del run, model_round
         return self._resolve_session_adapter(session)
 
+    async def _prepare_request_configuration(self, run: RunRecord) -> RunBudgetPolicy:
+        """Publish request settings and persist a changed root budget before preflight."""
+        await self.refresh_configuration()
+        policy = self._run_budget_for_run(run)
+        if self.settings_resolver is not None and self._run_resources[run.run_id].budget is None:
+            serialized = policy.model_dump(mode="json")
+            if run.metadata.get("run_budget") != serialized:
+                await run_blocking(self._save_run_budget, run, serialized)
+        return policy
+
+    def _save_run_budget(self, run: RunRecord, policy: dict[str, object]) -> None:
+        with self.store.session_mutation(run.session_id):
+            latest = self.store.load_run(run.session_id, run.run_id)
+            if latest.status not in ACTIVE_RUN_STATUSES or latest.abort_requested:
+                return
+            if latest.metadata.get("run_budget") != policy:
+                self.store.save_run(
+                    latest.model_copy(
+                        update={
+                            "metadata": {**latest.metadata, "run_budget": policy},
+                        }
+                    )
+                )
+
     def _run_budget_for_run(self, run: RunRecord) -> RunBudgetPolicy:
         resources = self._run_resources[run.run_id]
         if resources.budget is not None:
             return resources.budget
+        if self.settings_resolver is not None:
+            return self.run_budget
         raw = run.metadata.get("run_budget")
         if raw is None:
             return self.run_budget
@@ -2704,7 +2768,7 @@ class RuntimeService:
                 raise SessionCommitConflict(
                     "Plugin input batch belongs to withdrawn Session history"
                 )
-            pending = await run_blocking(self._pending_queued_inputs, snapshot)
+            pending = await self._pending_queued_inputs(snapshot)
             if not pending:
                 break
             try:
@@ -2772,7 +2836,7 @@ class RuntimeService:
                     snapshot.session.session_id, snapshot.session.history_epoch
                 )
                 return RunResult(session=snapshot.session, run=active)
-            pending = await run_blocking(self._pending_queued_inputs, snapshot)
+            pending = await self._pending_queued_inputs(snapshot)
             if not pending:
                 break
             try:
@@ -3067,7 +3131,7 @@ class RuntimeService:
                 return None
             if any(self._run_continuation_is_pending(run) for run in snapshot.runs):
                 return None
-            pending = await run_blocking(self._pending_queued_inputs, snapshot)
+            pending = await self._pending_queued_inputs(snapshot)
             if not pending:
                 return None
             try:
@@ -3081,13 +3145,25 @@ class RuntimeService:
             except _QueuedInputSelectionChanged:
                 continue
 
-    def _pending_queued_inputs(self, snapshot: RuntimeSessionSnapshot) -> list[QueuedInput]:
-        pending_units = self.queued_inputs.eligible_units(
-            snapshot, limit=1 if self.queued_input_config.consumption_mode == "one_by_one" else None
+    async def _queued_input_units(
+        self, session: SessionRecord, *, mode: QueuedInputMode | None = None
+    ) -> list[tuple[QueuedInput, ...]]:
+        """Bind the consumption policy once for a nonempty queue selection."""
+        if not session.pending_input_ids:
+            return []
+        await self.refresh_configuration()
+        return await run_blocking(
+            self.queued_inputs.eligible_units_session,
+            session,
+            mode=mode,
+            limit=1 if self.queued_input_config.consumption_mode == "one_by_one" else None,
         )
+
+    async def _pending_queued_inputs(self, snapshot: RuntimeSessionSnapshot) -> list[QueuedInput]:
+        pending_units = await self._queued_input_units(snapshot.session)
         if not pending_units:
             return []
-        if self.queued_input_config.consumption_mode == "one_by_one":
+        if len(pending_units) == 1:
             return list(pending_units[0])
         first = pending_units[0][0]
         compatible_units: list[tuple[QueuedInput, ...]] = []
@@ -3133,12 +3209,7 @@ class RuntimeService:
             self.store.load_session_record,
             session.session_id,
         )
-        units = await run_blocking(
-            self.queued_inputs.eligible_units_session,
-            latest_session,
-            mode="steer",
-            limit=1 if self.queued_input_config.consumption_mode == "one_by_one" else None,
-        )
+        units = await self._queued_input_units(latest_session, mode="steer")
         eligible = [item for unit in units for item in unit]
         if not eligible:
             return DriverInputDelivery(sequence=sequence)
@@ -4513,6 +4584,7 @@ class RuntimeService:
         )
 
     async def _attach_extension_snapshot(self, run: RunRecord) -> RunRecord:
+        await self.refresh_configuration()
         await self._synchronize_extensions()
         snapshot = (
             self._extension_catalog.snapshot() if self._extension_catalog is not None else None

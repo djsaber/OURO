@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Sequence
+from copy import copy
 from dataclasses import dataclass
 
 from ouro.application.usage import SummaryRequestRecorder
@@ -74,7 +75,8 @@ class LLMSummaryCompactionStrategy:
         *,
         configured_adapter: RuntimeAdapter | None = None,
         configured_adapter_error: str | None = None,
-        configured_adapter_resolver: Callable[[], RuntimeAdapter] | None = None,
+        configured_adapter_resolver: Callable[[CompactionModelConfig], RuntimeAdapter]
+        | None = None,
         model_config: CompactionModelConfig | None = None,
         runtime_adapter_resolver: Callable[[str], RuntimeAdapter] | None = None,
         prepare_requests: Callable[[str, str], SummaryRequestRecorder] | None = None,
@@ -87,6 +89,21 @@ class LLMSummaryCompactionStrategy:
         self.model_config = model_config or CompactionModelConfig()
         self.prepare_requests = prepare_requests
         self.prompt = prompt
+
+    def with_model_config(self, config: CompactionModelConfig) -> LLMSummaryCompactionStrategy:
+        """Bind one summary operation without changing the shared strategy."""
+        if config == self.model_config:
+            return self
+        strategy = copy(self)
+        strategy.model_config = config
+        if (config.provider_id, config.endpoint_id, config.use_default_model) != (
+            self.model_config.provider_id,
+            self.model_config.endpoint_id,
+            self.model_config.use_default_model,
+        ):
+            strategy.configured_adapter = None
+            strategy.configured_adapter_error = None
+        return strategy
 
     async def compact(
         self,
@@ -162,8 +179,10 @@ class LLMSummaryCompactionStrategy:
         routes: list[_CompactionAdapterRoute] = []
         try:
             configured = (
-                self.configured_adapter_resolver()
+                self.configured_adapter_resolver(self.model_config)
                 if self.configured_adapter_resolver is not None
+                and self.model_config.has_configured_route
+                and self.configured_adapter_error is None
                 else self.configured_adapter
             )
         except ConfigError as exc:

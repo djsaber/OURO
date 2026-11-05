@@ -263,6 +263,15 @@ Session 继续的整体前提。持久 ToolInvocation、控制 activation 和 De
 包含已消费的 harness change 和绑定的交互身份；Driver 上下文直接消费已提交的等待结果。
 上述请求类型是宿主内部契约。Core 不依赖 SessionStore、CLI、插件 Manifest 或 Provider factory。
 
+## 运行配置边界
+
+`RuntimeSettingsResolver` 负责本地运行设置的读取、校验和文件标识缓存，消费方不访问配置文件。
+`RuntimeService.refresh_configuration` 发布完整的有效设置；模型请求通过 `ModelRequestPorts.prepare_configuration`
+在预算检查前准备配置，返回本次有效 Run 预算。预算拒绝的请求不绑定能力、不构建上下文。
+工具批次、非空队列消费和首次运行绑定各自在自己的消费边界获取设置，复用同一读取与发布机制；
+不同操作的生命周期不合并。进行中的压缩保留独立快照，工具执行器在后续使用时按需更新。
+刷新机制不主动执行请求、不遍历活动 Run，也不接管插件或连接生命周期。各配置的生效时机见[配置指南](../guides/configuration.md#配置生效边界)。
+
 ## Provider 流契约
 
 - `RuntimeAdapter` 以每个 provider stream 一个常驻 reader 和一个固定容量 FIFO 解耦网络生产与 Core 消费。

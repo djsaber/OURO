@@ -202,7 +202,7 @@ reserved id 等约束直接属于当前配置模型，并在写入完整新值�
 revision，避免 Host 同时编辑时发生交叉覆盖。max depth 只能为 1，lifecycle 只能为 bound；配置
 detached/nested 在校验期明确失败。runtime policy 由 `LocalApplication` 在 composition start 读取，变更报告
 `effective_from=next_runtime`；definition 内容由每轮 parent 模型决策绑定并报告
-`effective_from=next_decision`。根软预算继续来自现有 `run_budget` 并冻结到 parent Run，每个 definition 的
+`effective_from=next_decision`。根软预算来自 `run_budget`，在 parent Run 的每轮模型请求边界更新并记录到 Run；每个 definition 的
 subagent 默认值继续复用 `RunBudgetPolicy`，不增加第二套 AgentBudget 配置或执行引擎。
 
 `AgentSpawnPolicy` 是所有 definition 共用的平台派遣上限，不是 per-definition 配置。它统一表达允许的 agent/model

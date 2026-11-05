@@ -121,6 +121,8 @@ class ModelRequestPorts:
     record_retry: Callable[[str, str, ProviderRetryNotice], None]
     resolve_model_request: ModelRequestResolver | None = None
     begin_model_round: ModelRoundStarter | None = None
+    # Prepare request settings before preflight and return the effective Run budget.
+    prepare_configuration: Callable[[RunRecord], Awaitable[RunBudgetPolicy]] | None = None
     shared_budget_reason: Callable[[RunRecord, int], Awaitable[RunPauseReason | None]] | None = None
     notify_provider_stream_start: Callable[[], None] | None = None
     run_usage: Callable[[str, str], RunUsageTotals | None] | None = None
@@ -154,11 +156,12 @@ class RunModelRequests:
     async def execute(self, request: RunModelRequest) -> RunModelResult:
         session, run, sequence = request.session, request.run, request.sequence
         model_round = request.model_round
-        if reason := await self._budget_reason(run, model_round):
-            return RunModelResult(session, run, sequence, ModelRequestBlocked(reason))
-
         adapter = self.adapter
         try:
+            if self.ports.prepare_configuration is not None:
+                self.run_budget = await self.ports.prepare_configuration(run)
+            if reason := await self._budget_reason(run, model_round):
+                return RunModelResult(session, run, sequence, ModelRequestBlocked(reason))
             if self.ports.begin_model_round is not None:
                 run = await self.ports.begin_model_round(
                     session=session, run=run, model_round=model_round
@@ -333,6 +336,11 @@ class RunModelRequests:
         return RunModelResult(session, run, sequence, output)
 
     async def _budget_reason(self, run: RunRecord, model_round: int) -> RunPauseReason | None:
+        if self.ports.run_usage is None and (
+            self.run_budget.max_input_tokens is not None
+            or self.run_budget.max_output_tokens is not None
+        ):
+            return "usage_unavailable"
         values = (
             await run_blocking(self.ports.run_usage, run.session_id, run.run_id)
             if self.ports.run_usage is not None

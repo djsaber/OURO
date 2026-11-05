@@ -813,25 +813,25 @@ class ConfigurationFacade:
     def set_tool_permission(self, tool_name: str, mode: PermissionMode) -> PermissionConfigView:
         self.permissions.set_tool_mode(tool_name, mode)
         return self.permission_config(
-            change=configuration_change("permissions", "tool_mode_saved", "next_runtime")
+            change=configuration_change("permissions", "tool_mode_saved", "next_request")
         )
 
     def clear_tool_permission(self, tool_name: str) -> PermissionConfigView:
         self.permissions.clear_tool_mode(tool_name)
         return self.permission_config(
-            change=configuration_change("permissions", "tool_mode_cleared", "next_runtime")
+            change=configuration_change("permissions", "tool_mode_cleared", "next_request")
         )
 
     def set_plugin_permission(self, plugin_id: str, mode: PermissionMode) -> PermissionConfigView:
         self.permissions.set_plugin_mode(plugin_id, mode)
         return self.permission_config(
-            change=configuration_change("permissions", "plugin_mode_saved", "next_runtime")
+            change=configuration_change("permissions", "plugin_mode_saved", "next_request")
         )
 
     def clear_plugin_permission(self, plugin_id: str) -> PermissionConfigView:
         self.permissions.clear_plugin_mode(plugin_id)
         return self.permission_config(
-            change=configuration_change("permissions", "plugin_mode_cleared", "next_runtime")
+            change=configuration_change("permissions", "plugin_mode_cleared", "next_request")
         )
 
     def tool_execution_config(
@@ -864,7 +864,7 @@ class ConfigurationFacade:
             max_output_chars=max_output_chars,
         )
         return self.tool_execution_config(
-            change=configuration_change("tool_execution", "updated", "next_runtime")
+            change=configuration_change("tool_execution", "updated", "next_request")
         )
 
     def queued_input_config(
@@ -886,7 +886,7 @@ class ConfigurationFacade:
     ) -> QueuedInputConfigView:
         self.queued_inputs.update(consumption_mode=consumption_mode)
         return self.queued_input_config(
-            change=configuration_change("queued_inputs", "updated", "next_runtime")
+            change=configuration_change("queued_inputs", "updated", "next_request")
         )
 
     def run_budget_config(
@@ -918,7 +918,7 @@ class ConfigurationFacade:
             clear=clear,
         )
         return self.run_budget_config(
-            change=configuration_change("run_budget", "updated", "next_runtime")
+            change=configuration_change("run_budget", "updated", "next_request")
         )
 
     def agent_runtime_config(
@@ -1013,7 +1013,7 @@ class ConfigurationFacade:
         return compaction_view(
             config,
             config_path=self.compaction.file.path,
-            change=configuration_change("compaction", "model_updated", "next_runtime"),
+            change=configuration_change("compaction", "model_updated", "next_request"),
         )
 
     def save_compaction(self, draft: CompactionConfigInput) -> CompactionConfigView:
@@ -1044,7 +1044,7 @@ class ConfigurationFacade:
         return compaction_view(
             saved,
             config_path=self.compaction.file.path,
-            change=configuration_change("compaction", "updated", "next_runtime"),
+            change=configuration_change("compaction", "updated", "next_request"),
         )
 
     def _validate_compaction_model_capabilities(self, model: CompactionModelConfig) -> None:

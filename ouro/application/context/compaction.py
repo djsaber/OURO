@@ -7,6 +7,7 @@ from time import monotonic
 
 from ouro.application.context.preparation import ContextPreparationService, PreparedContext
 from ouro.application.context.prompts import PromptContext
+from ouro.application.context.summary import LLMSummaryCompactionStrategy
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.harness import capture_harness
 from ouro.application.usage import UsageService
@@ -145,6 +146,7 @@ class ContextCompactionService:
         skill_instructions: str = "",
         prompt: str = "",
     ) -> tuple[ContextView, int]:
+        config = self.config.model_copy(deep=True)
         prepared = await self.preparation.build(
             sequence,
             session=session,
@@ -161,9 +163,9 @@ class ContextCompactionService:
         added_context, prompt_context = prepared.added_context, prepared.prompt_context
         active_adapter = adapter or self.preparation.adapter
         budget = active_adapter.model.context_budget.input_tokens
-        trigger_tokens = int(budget * self.config.policy.trigger_ratio)
+        trigger_tokens = int(budget * config.policy.trigger_ratio)
         estimated = view.metrics.estimated_input_tokens
-        if self.config.policy.auto_enabled and estimated >= trigger_tokens:
+        if config.policy.auto_enabled and estimated >= trigger_tokens:
             try:
                 execution = await self.compact(
                     sequence,
@@ -179,6 +181,7 @@ class ContextCompactionService:
                     skill_instructions=skill_instructions,
                     prompt_context=prompt_context,
                     prepared=prepared,
+                    config=config,
                 )
             except CompactionError as exc:
                 if isinstance(exc, CompactionAbortedError):
@@ -274,7 +277,9 @@ class ContextCompactionService:
         skill_instructions: str = "",
         prompt_context: PromptContext | None = None,
         prepared: PreparedContext | None = None,
+        config: CompactionConfig | None = None,
     ) -> CompactionExecution:
+        config = config if config is not None else self.config.model_copy(deep=True)
         if prepared is None:
             session, active, messages = await run_blocking(
                 self.preparation.load_history, session.session_id
@@ -311,7 +316,7 @@ class ContextCompactionService:
             history=messages,
         )
         before_tokens = initial_view.metrics.estimated_input_tokens
-        target_tokens = int(budget * self.config.policy.target_ratio)
+        target_tokens = int(budget * config.policy.target_ratio)
         fixed_tokens = initial_view.metrics.estimated_fixed_tokens
         summary_tokens = initial_view.estimated_summary_tokens
         tail_budget = max(0, target_tokens - fixed_tokens - summary_tokens)
@@ -349,11 +354,11 @@ class ContextCompactionService:
             payload={
                 "compaction_id": compaction_id,
                 "trigger": trigger,
-                "strategy_id": self.config.strategy_id,
+                "strategy_id": config.strategy_id,
                 "tokens_before": before_tokens,
                 "target_tokens": target_tokens,
-                "configured_model_provider": self.config.model.provider_id,
-                "configured_model_endpoint": self.config.model.endpoint_id,
+                "configured_model_provider": config.model.provider_id,
+                "configured_model_endpoint": config.model.endpoint_id,
             },
         )
         sequence = await self.events.emit(
@@ -374,7 +379,7 @@ class ContextCompactionService:
             ),
             session_id=session.session_id,
             run_id=run.run_id,
-            strategy_id=self.config.strategy_id,
+            strategy_id=config.strategy_id,
             trigger=trigger,
             agent_system_prompt=initial_view.provider_context.system_prompt,
             previous_summary=active.summary if active else None,
@@ -383,6 +388,7 @@ class ContextCompactionService:
         try:
             strategy, artifact = await self._execute_strategy(
                 request,
+                config=config,
                 signal=abort_signal,
                 strategies=strategies,
             )
@@ -488,7 +494,7 @@ class ContextCompactionService:
                 payload={
                     "compaction_id": compaction_id,
                     "trigger": trigger,
-                    "strategy_id": self.config.strategy_id,
+                    "strategy_id": config.strategy_id,
                     "error_type": type(exc).__name__,
                     "error": str(exc),
                 },
@@ -506,18 +512,21 @@ class ContextCompactionService:
         self,
         request: CompactionRequest,
         *,
+        config: CompactionConfig,
         signal: AbortSignal,
         strategies: CompactionStrategyRegistry | None = None,
     ) -> tuple[CompactionStrategy, CompactionArtifact]:
         active_strategies = strategies or self.strategies
-        strategy_ids = [self.config.strategy_id]
-        if self.config.fallback_strategy_id:
-            strategy_ids.append(self.config.fallback_strategy_id)
+        strategy_ids = [config.strategy_id]
+        if config.fallback_strategy_id:
+            strategy_ids.append(config.fallback_strategy_id)
         failures: list[Exception] = []
         model_outputs: list[CompactionModelOutput] = []
         for strategy_id in strategy_ids:
             try:
                 strategy = active_strategies.get(strategy_id)
+                if isinstance(strategy, LLMSummaryCompactionStrategy):
+                    strategy = strategy.with_model_config(config.model)
                 active_request = request.model_copy(update={"strategy_id": strategy_id})
                 artifact = await _compact_until_aborted(
                     strategy,

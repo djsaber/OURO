@@ -213,7 +213,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 return None
             self.notify(
                 f"Queued messages: {_QUEUED_INPUT_CONSUMPTION_LABELS[saved.consumption_mode]}"
-                " (restart to apply)"
+                " (next input consumption)"
             )
             return choices(saved.consumption_mode)
 
@@ -274,7 +274,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             if route
             else "conversation model"
         )
-        self.notify(f"Context compaction saved: {label} (restart to apply)")
+        self.notify(f"Context compaction saved: {label} (next request)")
 
     async def _choose_tools(self, *, menu: ChoiceScreen | None = None) -> None:
         try:
@@ -393,7 +393,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         scope = "workspace only" if updated.workspace_only else "external paths allowed"
-        self.notify(f"Tool execution saved: {updated.mode}, {scope} (next restart)")
+        self.notify(f"Tool execution saved: {updated.mode}, {scope} (next tool batch)")
 
     async def _configure_agent_policy(self, *, menu: ChoiceScreen | None = None) -> None:
         try:
