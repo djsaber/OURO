@@ -19,7 +19,7 @@ OURO 的主包与升级包位于仓库根目录下的 `ouro/` 与 `ouro_upgrade/
 | `application/sessions/` | 会话用例、历史、编辑和恢复 |
 | `application/runs/` | 持久 Run 转换、执行所有权、续接、Driver/Turn 协作及恢复 |
 | `application/runtime/` | Runtime 编排、环境、配置和 RunResources；统一管理单次运行的进程内资源 |
-| `application/inputs/`、`context/` | 输入准备与队列、上下文构造与压缩 |
+| `application/inputs/`、`context/` | 输入准备与队列；`preparation.py` 提供上下文构造与记录，`compaction.py` 组合默认压缩流程，`summary.py` 实现摘要生成 |
 | `application/models/`、`observations/` | 模型查询和执行、会话快照与事件订阅 |
 | `application/configuration/`、`plugins/`、`provider_auth/`、`transfer/` | 对应能力的应用用例及投影 |
 | `application/supervisor.py`、`tool_calls.py` 等独立模块 | 任务调度、工具批次事务和各自的资源协作单元 |

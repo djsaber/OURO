@@ -63,6 +63,10 @@ async def experiment(root, backend, history_size, summary_count, repeat):
     store.create_session_snapshot(session, messages, compactions=records)
     run = RunRecord(session_id=session.session_id, status="running")
     store.save_run(run)
+    session = store.load_session_record(session.session_id).model_copy(
+        update={"active_run_id": run.run_id, "status": "running"}
+    )
+    store.save_session(session)
     runtime = RuntimeService(
         store=store,
         tools=ToolRegistry(),
@@ -79,8 +83,7 @@ async def experiment(root, backend, history_size, summary_count, repeat):
                     tracemalloc.start()
                     started = time.perf_counter()
                     try:
-                        prepared, _ = await runtime.context_preparation.prepare(
-                            [],
+                        prepared, _ = await runtime.context_compaction.prepare(
                             0,
                             session=session,
                             run=run,

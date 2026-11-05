@@ -11,7 +11,8 @@ from pydantic import JsonValue
 
 from ouro.application.agents.definitions import AgentDefinitionService
 from ouro.application.agents.recovery import AgentRecoveryService
-from ouro.application.context.compaction import ContextPreparationService
+from ouro.application.context.compaction import ContextCompactionService
+from ouro.application.context.preparation import ContextPreparationService
 from ouro.application.context.prompts import PromptContextResolver
 from ouro.application.context.summary import LLMSummaryCompactionStrategy
 from ouro.application.contracts.base import Diagnostic
@@ -338,8 +339,6 @@ class RuntimeService:
             context_providers=self.context_providers,
             events=self.event_recorder,
             context_builder=self.context_builder,
-            strategies=self.compaction_strategies,
-            config=self.compaction_config,
             system_prompt=compose_system_prompt(
                 self.system_prompt,
                 self.additional_system_prompt,
@@ -350,6 +349,14 @@ class RuntimeService:
             prepare_model_messages=(
                 resources.prepare_model_messages if resources is not None else None
             ),
+        )
+        self.context_compaction = ContextCompactionService(
+            preparation=self.context_preparation,
+            store=store,
+            events=self.event_recorder,
+            strategies=self.compaction_strategies,
+            config=self.compaction_config,
+            usage_service=usage_service,
         )
         self.run_ownership = RunExecutionOwnership(store)
         self._extension_catalog: PluginRuntimeResource | None = None
@@ -2335,7 +2342,7 @@ class RuntimeService:
                 tool_definitions=lambda: self._tools_for_run(run.run_id).definitions(),
                 run_budget=self._run_budget_for_run(run),
                 ports=ModelRequestPorts(
-                    prepare_context=lambda *args, **kwargs: self.context_preparation.prepare(
+                    prepare_context=lambda *args, **kwargs: self.context_compaction.prepare(
                         *args,
                         context_providers=self._context_providers_for_run(run.run_id),
                         strategies=self._compaction_for_run(run.run_id),
@@ -2522,7 +2529,7 @@ class RuntimeService:
             await self.event_recorder.publish_committed(committed_events)
             sequence = committed_events[-1].sequence
             try:
-                execution = await self.context_preparation.compact(
+                execution = await self.context_compaction.compact(
                     sequence,
                     session=active_session,
                     run=run,

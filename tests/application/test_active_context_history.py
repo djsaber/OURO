@@ -221,7 +221,7 @@ async def test_preparation_reads_only_the_selected_suffix(tmp_path, monkeypatch,
     for name in ("load_session", "load_runtime_session", "load_compactions", "load_run_messages"):
         monkeypatch.setattr(store, name, forbid_history)
     try:
-        view, _ = await runtime.context_preparation.prepare(
+        view, _ = await runtime.context_compaction.prepare(
             0,
             session=session,
             run=run,
@@ -291,7 +291,7 @@ async def test_persistent_fragment_retries_use_the_last_value_even_after_compact
     monkeypatch.setattr(store, "load_run_messages", forbid_scan)
 
     async def prepare():
-        return await runtime.context_preparation.prepare(
+        return await runtime.context_compaction.prepare(
             0,
             session=session,
             run=run,

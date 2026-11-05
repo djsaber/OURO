@@ -14,13 +14,88 @@ from ouro.core.context_providers import (
     ContextProviderRegistration,
     ContextProviderResult,
 )
+from ouro.core.errors import ContextBlockedError
 from ouro.core.input_content import InputFileReference
-from ouro.core.messages import ImageContent, MessageRecord
+from ouro.core.messages import ImageContent, MessageRecord, ModelMessage
 from ouro.core.state import RunRecord, SessionRecord
 from tests.application.test_compaction import RecordingProvider, RecordingStrategy, _runtime
 from tests.application.test_resources import _services
 from tests.event_capture import recorded_events
 from tests.session_summaries import commit_summary
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_context_building_and_recording_do_not_require_a_summary(tmp_path, backend):
+    store, _, _, _ = _services(tmp_path, backend=backend)
+    session = SessionRecord()
+    messages = [
+        MessageRecord.text(
+            session_id=session.session_id,
+            role="user" if index % 2 == 0 else "assistant",
+            text=f"message {index} " + "x" * 3000,
+        )
+        for index in range(6)
+    ]
+    store.create_session_snapshot(session, messages)
+    run = RunRecord(session_id=session.session_id, status="running")
+    store.save_run(run)
+    session = store.load_session_record(session.session_id).model_copy(
+        update={"active_run_id": run.run_id, "status": "running"}
+    )
+    store.save_session(session)
+    strategy, provider = RecordingStrategy(), RecordingProvider()
+    runtime = _runtime(store, provider, strategy, strategy_id=strategy.strategy_id)
+    preparation = runtime.context_preparation
+    saved = store.load_session(session.session_id).messages
+    try:
+        built = await preparation.build(0, session=session, run=run, tools=[], model_round=1)
+        assert built.view.metrics.over_budget
+        assert not strategy.requests and not provider.calls
+        with pytest.raises(ContextBlockedError):
+            await preparation.finalize(
+                built.sequence,
+                session=built.session,
+                run=run,
+                turn_id="turn_rebuild",
+                model_round=1,
+                adapter=runtime.adapter,
+                view=built.view,
+            )
+        assert store.load_latest_context(session.session_id) is None
+
+        # An application policy may prepare ordinary context without producing a
+        # CompactionArtifact or entering the built-in summary lifecycle.
+        context_note = ModelMessage.text(
+            role="user",
+            text='{"checkpoint": "evidence checked", "next": "finish remaining work"}',
+        )
+        replacement = preparation.build_view(
+            messages=[context_note, *built.messages[-2:]],
+            source_messages=built.messages,
+            tools=[],
+            added_context=built.added_context,
+            adapter=runtime.adapter,
+            prompt_context=built.prompt_context,
+        )
+        ready, _ = await preparation.finalize(
+            built.sequence,
+            session=built.session,
+            run=run,
+            turn_id="turn_rebuild",
+            model_round=1,
+            adapter=runtime.adapter,
+            view=replacement,
+        )
+        assert ready.provider_context.messages[0].role == "user"
+        assert ready.provider_context.messages[0].text_content == context_note.text_content
+        assert (
+            store.load_latest_context(session.session_id).provider_context == ready.provider_context
+        )
+        assert store.load_active_compaction(session.session_id) is None
+        assert store.load_session(session.session_id).messages == saved
+        assert not strategy.requests and not provider.calls
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
@@ -136,7 +211,7 @@ async def test_auto_compaction_reuses_views_and_reloads_only_changed_history(
     monkeypatch.setattr(store, "load_messages_tail", tail)
     monkeypatch.setattr(preparation.context_builder, "build", track_view)
     task = asyncio.create_task(
-        preparation.prepare(
+        runtime.context_compaction.prepare(
             0,
             session=session,
             run=run,
@@ -236,7 +311,7 @@ async def test_skipped_compaction_keeps_the_already_prepared_request(
     monkeypatch.setattr(preparation.context_builder, "build", track_view)
     monkeypatch.setattr(store, "load_messages_tail", tail)
     try:
-        view, _ = await preparation.prepare(
+        view, _ = await runtime.context_compaction.prepare(
             0,
             session=session,
             run=run,

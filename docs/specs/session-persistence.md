@@ -221,8 +221,8 @@ Session、Run、Message、Event、Compaction、ContextSnapshot 和 Delegation �
 转存将全部小请求记录、唯一最近骨架及其消息引用闭包直接纳入目标快照创建，不伪造一次新的执行提交或改写源 Session 时间；
 不重新写入完整 ProviderContext 副本。
 
-Session 的 `context_selection` 拥有当前摘要身份及媒体边界，替代根级 `active_compaction_id`；Host 状态 DTO
-仍可提供同名摘要字段，但不拥有另一份选择。选择更新通过 Session 提交校验新媒体边界的固定消息及规范位置，
+Session 的 `context_selection` 拥有当前摘要身份及媒体边界；Host 状态 DTO 的 `active_compaction_id`
+由该选择派生，不拥有另一份选择。选择更新通过 Session 提交校验新媒体边界的固定消息及规范位置，
 快照按输入顺序建立位置后校验同一关系。当前媒体选择属于 ContextSelection，转存保留已准备请求的 metadata。
 缺失、非整数、旧版本或未来版本均由共享 versioned decoder 在 adapter
 读取边界抛出 `UnsupportedDataVersionError`。领域模型校验各自版本，未知版本不能被验证为当前记录。

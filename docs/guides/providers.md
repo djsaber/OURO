@@ -172,7 +172,7 @@ None 清空摘要控制和偏好。自定义子集与默认值通过 JSON 声明
 Chat Completions 没有官方摘要预设，兼容服务的扩展通过 JSON 显式配置。
 
 思考正文与续接状态由协议适配器按实际响应接收，不需要在等级或摘要预设中开启。Chat Completions 支持
-reasoning_content 与 reasoning 扩展，Responses 与 Messages 支持各自原生格式。没有返回正文时不显示思考区域；
+reasoning_content、reasoning 与 reasoning_details 扩展，Responses 与 Messages 支持各自原生格式。没有返回正文时不显示思考区域；
 有正文时显示 `Thought`，可点击展开或执行 `/thoughts expand`。摘要请求不改变本地折叠偏好。
 签名、加密数据等续接状态按来源和协议约束保存、回传，修改思考等级或摘要选项不会丢弃这些数据。
 

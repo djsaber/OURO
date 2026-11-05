@@ -137,7 +137,7 @@ async def test_model_port_records_requests_and_usage_without_driving_or_finishin
         tool_definitions=runtime.tools.definitions,
         run_budget=RunBudgetPolicy(max_model_rounds=2),
         ports=ModelRequestPorts(
-            prepare_context=runtime.context_preparation.prepare,
+            prepare_context=runtime.context_compaction.prepare,
             record_settlement=runtime.context_preparation.record_request_settlement,
             record_usage=runtime.run_lifecycle.record_usage,
             commit_model_request=runtime._commit_model_request,
@@ -235,7 +235,7 @@ async def test_abort_during_usage_commit_keeps_usage_and_closes_stream(tmp_path)
         adapter=adapter,
         tool_definitions=runtime.tools.definitions,
         ports=ModelRequestPorts(
-            prepare_context=runtime.context_preparation.prepare,
+            prepare_context=runtime.context_compaction.prepare,
             record_settlement=runtime.context_preparation.record_request_settlement,
             record_usage=record_usage,
             commit_model_request=runtime._commit_model_request,

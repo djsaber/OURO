@@ -172,16 +172,17 @@ def _message_to_anthropic(
             protocol="anthropic-messages",
             model_id=model_id,
         ):
-            if len(continuation.blocks) == 1 and "content" in continuation.blocks[0]:
-                native = continuation.blocks[0]
-                _, _, calls = content_blocks_from_response(native)
-                if [(call.id, call.name, call.arguments) for call in calls] != [
-                    (call.id, call.name, call.arguments) for call in message.tool_calls
-                ]:
-                    raise ValueError("Anthropic continuation does not match tool calls")
-                return {"role": role, "content": deepcopy(native["content"])}
-            # Persisted thinking-only artifacts still need canonical text and tools.
-            content = [*(deepcopy(block) for block in continuation.blocks), *content]
+            if len(continuation.blocks) != 1 or not isinstance(
+                continuation.blocks[0].get("content"), list
+            ):
+                raise ValueError("Anthropic continuation requires complete response content")
+            native = continuation.blocks[0]
+            _, _, calls = content_blocks_from_response(native)
+            if [(call.id, call.name, call.arguments) for call in calls] != [
+                (call.id, call.name, call.arguments) for call in message.tool_calls
+            ]:
+                raise ValueError("Anthropic continuation does not match tool calls")
+            return {"role": role, "content": deepcopy(native["content"])}
         content.extend(
             {
                 "type": "tool_use",

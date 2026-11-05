@@ -230,6 +230,8 @@ class CompactionCommandResult(OuroModel):
 
 
 class CompactionStrategy(Protocol):
+    """Generate replacement text within the default compaction policy, not control the loop."""
+
     strategy_id: str
     version: str
 

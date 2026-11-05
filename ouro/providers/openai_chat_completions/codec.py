@@ -238,11 +238,16 @@ def _content_to_text(content: object) -> str:
     return "".join(parts)
 
 
-_REASONING_FIELDS = ("reasoning_content", "reasoning")
+_REASONING_FIELDS = ("reasoning_content", "reasoning", "reasoning_details")
 
 
 def reasoning_fields_from_response(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Keep supported extension fields in their native shape, separately from display text."""
+    details = payload.get("reasoning_details")
+    if details is not None and (
+        not isinstance(details, list) or any(not isinstance(item, Mapping) for item in details)
+    ):
+        raise ValueError("Chat Completions reasoning_details must be an array of objects")
     return {
         field: deepcopy(value)
         for field in _REASONING_FIELDS
@@ -250,27 +255,24 @@ def reasoning_fields_from_response(payload: Mapping[str, Any]) -> dict[str, Any]
     }
 
 
-def _reasoning_field_value(payload: Mapping[str, Any]) -> object | None:
-    """Pick the reasoning payload from an Chat Completions message or delta.
+def reasoning_text_from_response(payload: Mapping[str, Any]) -> str:
+    """Extract display text once from a Chat Completions message or delta.
 
-    Chat Completions services split across two field conventions: DeepSeek-style
-    `reasoning_content` and the bare `reasoning` used by OpenRouter and others.
-    Both accept the string-or-blocks shapes of _reasoning_content_to_text(); the
-    first field that yields non-empty text wins.
+    Prefer explicit display text to structured details when both represent the
+    same output. Native fields are retained independently for faithful replay.
     """
     for field in _REASONING_FIELDS:
-        value = payload.get(field)
-        if _reasoning_content_to_text(value):
-            return value
-    return None
+        text = _reasoning_content_to_text(payload.get(field))
+        if text:
+            return text
+    return ""
 
 
 def _reasoning_content_to_text(reasoning_content: object) -> str:
     """Extract reasoning text from a message/delta reasoning field value.
 
-    Providers such as DeepSeek return reasoning_content as either a plain string
-    or an array of content blocks. This helper mirrors _content_to_text() so
-    reasoning deltas are handled consistently with regular content.
+    Supported extensions carry strings or blocks with text/summary fields.
+    Signatures and encrypted data remain exclusively in the native artifact.
     """
     if isinstance(reasoning_content, str):
         return reasoning_content
@@ -282,7 +284,7 @@ def _reasoning_content_to_text(reasoning_content: object) -> str:
         if isinstance(block, str):
             parts.append(block)
         elif isinstance(block, Mapping):
-            text = block.get("text")
+            text = block.get("summary" if block.get("type") == "reasoning.summary" else "text")
             if isinstance(text, str):
                 parts.append(text)
     return "".join(parts)

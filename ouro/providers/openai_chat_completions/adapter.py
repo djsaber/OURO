@@ -32,14 +32,13 @@ from ouro.providers.openai_chat_completions.codec import (
     _content_to_text,
     _error_from_response,
     _first_choice,
-    _reasoning_content_to_text,
-    _reasoning_field_value,
     _tool_call_deltas,
     _tool_to_chat_completions,
     _usage_from_response,
     _usage_from_response_or_none,
     messages_to_chat_completions,
     reasoning_fields_from_response,
+    reasoning_text_from_response,
 )
 from ouro.providers.reasoning import ReasoningPayloadEncoder
 from ouro.providers.request_context import model_request_context
@@ -294,9 +293,9 @@ class OpenAIChatCompletionsProvider:
             yield ProviderStreamEvent(type="error", error="provider response message is invalid")
             return
 
-        raw_reasoning = _reasoning_field_value(message)
-        reasoning = _reasoning_content_to_text(raw_reasoning)
-        has_reasoning = bool(reasoning)
+        continuation = reasoning_fields_from_response(message)
+        reasoning = reasoning_text_from_response(message)
+        has_reasoning = bool(continuation)
         if reasoning:
             yield ProviderStreamEvent(type="reasoning_delta", reasoning_content=reasoning)
 
@@ -316,7 +315,6 @@ class OpenAIChatCompletionsProvider:
             return
         for tool_call in tool_calls:
             yield ProviderStreamEvent(type="tool_call_delta", tool_call_delta=tool_call)
-        continuation = reasoning_fields_from_response(message)
         if continuation:
             yield ProviderStreamEvent(
                 type="continuation",
@@ -368,11 +366,12 @@ class OpenAIChatCompletionsProvider:
             if not isinstance(delta, Mapping):
                 continue
 
-            reasoning = _reasoning_content_to_text(_reasoning_field_value(delta))
-            for field, value in reasoning_fields_from_response(delta).items():
+            fields = reasoning_fields_from_response(delta)
+            saw_reasoning = saw_reasoning or bool(fields)
+            reasoning = reasoning_text_from_response(delta)
+            for field, value in fields.items():
                 continuation_reasoning.setdefault(field, []).append(value)
             if reasoning:
-                saw_reasoning = True
                 yield ProviderStreamEvent(type="reasoning_delta", reasoning_content=reasoning)
 
             content = _content_to_text(delta.get("content"))

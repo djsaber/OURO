@@ -500,7 +500,7 @@ async def test_model_switch_after_failure_preserves_completed_tool_frames(
     assert not replies
 
 
-async def test_branch_replays_canonical_tool_history_without_source_execution_state(
+async def test_branch_preserves_native_tool_history_without_reexecuting_source_tools(
     responses_runtime,
 ):
     build, replies, requests, executions = responses_runtime
@@ -516,7 +516,7 @@ async def test_branch_replays_canonical_tool_history_without_source_execution_st
         result = await app.runtime.run("Continue on branch.", session_id=branch.session.session_id)
         assert result.run.status == "completed", result.run.error
         payload = requests[-1][0]
-        assert not output_items(payload)
+        assert output_items(payload) == tool_message.provider_continuation.blocks[0]["items"]
         calls = [i for i in payload["input"] if i.get("type") == "function_call"]
         results = [i for i in payload["input"] if i.get("type") == "function_call_output"]
         assert len(calls) == len(results) == 1

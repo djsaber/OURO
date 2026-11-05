@@ -18,6 +18,7 @@ from ouro.core.provider import ModelMetadata
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.core.tools import ToolCallRequest
 from ouro.providers import AnthropicMessagesProvider
+from ouro.providers.anthropic_messages.codec import messages_to_anthropic_messages
 from ouro.providers.reasoning import ReasoningPayloadEncoder
 
 
@@ -43,6 +44,24 @@ class FakeTransport:
             }
         )
         return self.response
+
+
+def test_native_replay_requires_complete_response_content():
+    message = MessageRecord.text(session_id="test", role="assistant", text="answer")
+    message.provider_continuation = ProviderContinuationArtifact(
+        provider_id="test",
+        protocol="anthropic-messages",
+        model_id="test",
+        blocks=({"type": "thinking", "thinking": "partial", "signature": "sig"},),
+    )
+    with pytest.raises(ValueError, match="complete response content"):
+        messages_to_anthropic_messages(
+            [message],
+            system_prompt="",
+            supports_image_input=False,
+            provider_id="test",
+            model_id="test",
+        )
 
 
 class FakeStreamingTransport(FakeTransport):

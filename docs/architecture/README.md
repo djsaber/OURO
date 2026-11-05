@@ -72,6 +72,11 @@ Store 负责匹配身份、原生更新与替换清理。该边界避免把请�
 `ContextBuilder` 生成最终 `ProviderContext` 并估算，记录和 Adapter 复用这个准备值。最近输入查询直接解析保存值，
 不调用当前投影算法；动态贡献只在下一次请求准备时重新评估。输入的精确性因此不依赖重放算法或 context digest。
 
+上下文准备能力与默认摘要流程分离：`ContextPreparationService` 负责读取、投影和最终请求记录，
+`ContextCompactionService` 负责压缩的触发、生成及激活，并单向调用准备能力。模型请求端口接收已准备的上下文，
+不要求它由摘要生成；具体上下文维护流程由应用装配。职责与提交契约见
+[上下文准备边界](../specs/context-and-compaction.md#准备能力与执行策略)。
+
 工具执行事实、类型化内容与协议呈现的职责划分见[工具结果架构](tool-results.md)。同一结果可在请求边界展开为
 原生工具响应及补充上下文，展开不改变 canonical 历史或执行事务。
 

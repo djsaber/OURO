@@ -568,6 +568,8 @@ def _serialize_messages(messages: Sequence[MessageRecord]) -> str:
         if message.metadata.get("incomplete"):
             label += " (interrupted/incomplete)"
         parts.append(f"[{label}] {model_visible_message(message).text_content}")
+        if message.reasoning_content:
+            parts.append(f"[Assistant reasoning] {message.reasoning_content}")
         if message.tool_calls:
             serialized_calls = [call.model_dump(mode="json") for call in message.tool_calls]
             parts.append(f"[Assistant tool calls] {serialized_calls}")

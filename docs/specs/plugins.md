@@ -564,7 +564,7 @@ Host capability 清单由以下 15 类组成。这里的“消费者”指真正
 | `commands` | snapshot | Goal builtin、inprocess-command example | `PluginService.execute_command` 与 Host command route | stable |
 | `observers` | snapshot | inprocess-observer example、observer contract tests | `ObserverDispatcher` 的有界 mailbox | stable |
 | `context_providers` | snapshot | System Information/Goal builtin、worker semantic contract | `ContextPreparationService` | stable |
-| `compaction_strategies` | snapshot | SDK/worker/contract adapter 与 compaction tests | `ContextPreparationService` 的 strategy selection | stable |
+| `compaction_strategies` | snapshot | SDK/worker/contract adapter 与 compaction tests | `ContextCompactionService` 的 strategy selection | stable |
 | `skills` | snapshot | declarative-skill example、plugin skill catalog tests | Runtime prompt/context preparation | stable |
 | `mcp_servers` | snapshot | generation resource/MCP catalog contract tests | MCP runtime 投影到 Run-local `ToolRegistry`，随后走 Tool consumer | stable |
 | `background_services` | activation singleton | in-process/worker lifecycle contract tests | `PluginRuntime._handover_background_services` | stable |

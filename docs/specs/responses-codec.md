@@ -77,12 +77,12 @@ scope 由调用者从同次认证快照传入，不含 Token、有效期或 refr
 
 ## Runtime 与会话边界
 
-Responses 复用既有工具循环、消息存储、恢复入口、分支和压缩管线。成功的模型轮次保存完整 continuation 与 canonical 工具帧；同一历史执行范围内重建 Runtime 后，managed 认证使用稳定 scope 续接，401 刷新不会改变重放内容或重新执行已完成工具。
+Responses 复用既有工具循环、消息存储、恢复入口、分支和压缩管线。成功的模型轮次保存完整 continuation 与 canonical 工具帧；重建 Runtime 后，managed 认证使用稳定 scope 续接，401 刷新不会改变重放内容或重新执行已完成工具。
 
 协议以 incomplete、failed 或 error 结束的响应不提交成功 continuation 或用量，也不能执行已观察到的工具调用。
 重启后使用 continue_run 恢复已有任务，不追加提示词，不重复执行已完成工具。当前 Session 模型在通用请求边界绑定；跨模型、协议或账户继续使用 canonical 完整帧，兼容原生附件可随对应消息重放。后续成功响应才能触发新的工具执行和用量记录。
 
-分支保留完整 canonical 工具调用/结果帧，沿用现有规则隔离源执行范围的 opaque 状态；不会把源 Run 的执行许可带入新分支。源消息保持不变。压缩以 canonical 历史生成摘要，不把密文或续接 envelope 发送给摘要模型；主模型请求仅保留未被摘要覆盖的完整帧及其有效 continuation。
+分支和撤销后保留的消息仍携带原生响应数据，重放资格由来源、认证 scope 和协议结构决定，与历史执行代次无关；源 Run 的执行许可不随消息带入新分支。源消息保持不变。压缩以 canonical 历史（包括可读思考）生成摘要，不把密文或续接 envelope 发送给摘要模型；主模型请求仅保留未被摘要覆盖的完整帧及其有效 continuation。
 
 ## 流与完成边界
 

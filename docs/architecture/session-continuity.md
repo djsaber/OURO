@@ -58,6 +58,8 @@ SQLite 的正式响应复用同事务释放的 Draft 页；Files 将正式正文
 执行快照读取 Session 指向的 Run 和当前代待处理 Run，完整 Run 历史属于显式查询。
 Core 定义待处理条件，存储适配器在原生提交内维护可定位的成员；应用恢复只处理所选事实，不靠扫描旧 Run 重建执行头。
 历史撤销同时终结未结算 continuation 的资格，保存的审计事实不构成恢复旧授权的依据。
+该执行资格不同于消息的 `ProviderContinuationArtifact`：后者是已接收的响应数据，随保留消息进入协议兼容性判断，
+不授予任何执行权限。原生回传的来源与协议边界见[Provider 规格](../specs/provider-configuration.md#响应续接与展示)。
 定向读取与局部损坏的边界见[会话持久化契约](../specs/session-persistence.md#sessionstore-契约)。
 
 ## 决策与环境生效

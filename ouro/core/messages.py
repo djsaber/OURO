@@ -61,6 +61,7 @@ class ProviderContinuationArtifact(OuroModel):
 
     Core persists opaque blocks; the target codec decides replay compatibility.
     Incompatible routes continue from canonical content and complete tool frames.
+    Retained response data is independent of its Run's execution authority.
     """
 
     provider_id: str

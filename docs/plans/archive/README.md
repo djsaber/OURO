@@ -5,6 +5,8 @@
 
 | 日期 | 记录 |
 |---|---|
+| 2026-11-05 | [上下文准备与压缩策略：设计与验收](2026-11-05-context-preparation-boundary.md) |
+| 2026-11-05 | [上下文与协议边界：设计与验收](2026-11-05-context-protocol-boundaries.md) |
 | 2026-10-30 | [会话事实存储与增量观察改进计划](2026-10-30-session-observation-without-event-log.md) |
 | 2026-10-29 | [TUI 性能改进计划](2026-10-29-tui-performance.md) |
 | 2026-10-26 | [会话数据与执行管线：设计与验收](2026-10-26-session-data-implementation.md) |

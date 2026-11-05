@@ -52,14 +52,14 @@ async def test_input_accepted_after_reopening_compacting_session_is_executed(tmp
     await first.wait()
     session_id = first.receipt.session_id
     entered, release = asyncio.Event(), asyncio.Event()
-    compact = application.runtime.context_preparation.compact
+    compact = application.runtime.context_compaction.compact
 
     async def held_compact(*args, **kwargs):
         entered.set()
         await release.wait()
         return await compact(*args, **kwargs)
 
-    monkeypatch.setattr(application.runtime.context_preparation, "compact", held_compact)
+    monkeypatch.setattr(application.runtime.context_compaction, "compact", held_compact)
     app = OuroTuiApp(application=application, resume_session_id=session_id)
     async with run_ready_app(app, size=(100, 36)) as pilot, release_on_exit(release):
         worker = app._compact_session()

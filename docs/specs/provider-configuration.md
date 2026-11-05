@@ -280,7 +280,7 @@ Application DTO 提供 capability、requested 和 effective，声明不代表自
 协议适配器接收实际返回的可读思考并生成 canonical reasoning，保留协议识别的原生续接状态。这两条输出独立存在：
 没有可读正文时仍可保存签名或加密数据；没有续接状态时仍可展示正文。不从不透明数据生成文本，也不从展示文本重建原生状态。
 
-Chat Completions 支持 reasoning_content 与 reasoning 扩展；Responses 和 Messages 按各自原生 item/block 处理。
+Chat Completions 支持 reasoning_content、reasoning 与 reasoning_details 扩展；Responses 和 Messages 按各自原生 item/block 处理。
 `ProviderContinuationArtifact` 携带 provider_id、protocol、model_id，仅在来源匹配时回传，并遵守协议的认证绑定与结构校验。
 普通回答和工具调用均保留实际返回的原生状态。更改请求等级或摘要选项不会丢弃已有状态。
 
@@ -364,8 +364,8 @@ Endpoint model、连接和凭据等本次 CLI 显式参数在合并后应用，�
 Faux 只作为框架内部安全运行时和测试实现存在，不进入 application/CLI 的 Provider 目录、默认展示、选择或
 连接检查；没有用户配置时，公开目录的默认 Provider 为 `null`。
 
-思考 profile 按端点声明原生参数、可展示输出与 continuation。始终思考的模型拒绝关闭请求，
-只支持开关的模型不提供 effort 等级。
+思考 profile 按端点声明请求控制参数；可展示思考与原生续接由协议适配器按实际响应处理。
+始终思考的模型拒绝关闭请求，只支持开关的模型不提供 effort 等级。
 
 模板目录以本地文件形式提供：内联目录是唯一真源，首次使用时物化为
 `config/provider-templates.json`，用户可在该文件上修改、新增模板并随内联目录自动升级。
@@ -439,18 +439,24 @@ OpenAI Chat Completions 实现负责：
 
 - system message、文本与原生媒体输入、tool history 和声明式 reasoning profile 编码；
 - 普通 JSON 与 SSE transport；
-- usage、tool call、reasoning 和错误响应解码；`reasoning_content` 与 `reasoning` 是兼容服务的扩展，
-  不是 OpenAI Chat Completions 的标准字段。展示文本优先读取 `reasoning_content`，支持字符串或 block 数组。
+- usage、tool call、reasoning 和错误响应解码；`reasoning_content`、`reasoning` 与 `reasoning_details` 是兼容服务的扩展，
+  不是 OpenAI Chat Completions 的标准字段。展示文本依次读取这些字段，采用首个非空文本，避免同一响应片段重复展示。
+  `reasoning_details` 为对象数组，可读部分取 text 或 reasoning.summary 的 summary；签名与密文不进入展示正文。
   原字段名与原生结构独立保存；流式字符串按顺序连接，block 数组按顺序追加，
   同一字段的形态不能在流中改变。回放不改名，也不从展示文本重建状态；
 - 外部流缺失 tool index 时按块位置处理；
 - 不符合 Endpoint 能力、媒体格式或消息角色的直接输入明确报错；工具结果按能力提供原生内容或明确降级说明。
 
+结构化思考扩展依据：[Reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)
+（2026-11-05 核对）。支持该扩展的兼容端点使用同一字段解析与原样回传逻辑，不按供应商、URL 或模型名称分派。
+数组按接收顺序追加，保留每个片段的 index、签名及加密内容。
+
 Anthropic Messages 实现负责 Messages API 的顶层 system、content blocks、image source、tool use/result、
 usage/error 与 SSE event 映射。适配器保存完整、有序的 assistant content 数组；流式响应
 按 content block index 组装文本、thinking、signature、工具参数和 citations，在消息完成时保存。续接使用
 原生数组，保留 thinking、redacted_thinking 与其他内容的相对顺序，不从 canonical 文本和工具调用重排。
-工具调用身份及参数必须与 canonical 工具记录一致。协议差异留在各自 codec/adapter 中。
+续接 envelope 必须包含完整 content 数组，工具调用身份及参数必须与 canonical 工具记录一致。
+协议差异留在各自 codec/adapter 中。
 
 Endpoint 声明 structured output 能力后才接受结构化 `response_format`。共享请求重试只对明确可重试的
 timeout/HTTP 状态执行有界退避；一旦已经收到模型输出，就不再重放请求。每次重试形成可持久化

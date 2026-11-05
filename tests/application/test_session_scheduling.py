@@ -141,14 +141,14 @@ async def test_compaction_release_schedules_accepted_session_input(tmp_path, mon
     app = streaming_application(tmp_path, FauxProvider())
     runtime, supervisor = app.runtime, app.supervisor
     entered, release = asyncio.Event(), asyncio.Event()
-    compact = runtime.context_preparation.compact
+    compact = runtime.context_compaction.compact
 
     async def held_compact(*args, **kwargs):
         entered.set()
         await release.wait()
         return await compact(*args, **kwargs)
 
-    monkeypatch.setattr(runtime.context_preparation, "compact", held_compact)
+    monkeypatch.setattr(runtime.context_compaction, "compact", held_compact)
     try:
         first = await supervisor.submit_user_input(UserInputRequest(prompt="initial"))
         await first.wait()

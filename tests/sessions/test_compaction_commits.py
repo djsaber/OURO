@@ -125,7 +125,7 @@ async def test_activation_checks_only_its_captured_dependencies(store, change):
         generated.set()
         await release.wait()
         await asyncio.to_thread(
-            runtime.context_preparation._commit_compaction,
+            runtime.context_compaction._commit_compaction,
             candidate,
             run,
             selection=session.context_selection.model_copy(
@@ -235,7 +235,7 @@ async def test_native_failure_never_exposes_a_half_activated_summary(tmp_path, s
     )
 
     def activate():
-        return runtime.context_preparation._commit_compaction(
+        return runtime.context_compaction._commit_compaction(
             candidate,
             run,
             request_id=header.context_id,

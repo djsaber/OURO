@@ -378,8 +378,8 @@ async def test_cancel_and_consume_compete_on_the_exact_queue_identity(store, win
 
 @pytest.mark.parametrize("withdraw", [False, True])
 @pytest.mark.parametrize("route", ["matching", "other-provider", "other-model"])
-async def test_provider_artifact_budget_and_replay_require_current_route_and_epoch(
-    store, withdraw, route
+async def test_retained_provider_artifact_depends_on_source_not_execution_epoch(
+    store, withdraw, route, monkeypatch
 ):
     runtime = runtime_for(store)
     try:
@@ -415,6 +415,18 @@ async def test_provider_artifact_budget_and_replay_require_current_route_and_epo
                 before_message_id=boundary.message_id,
                 expected_last_message_id=boundary.message_id,
             )
+        project_context = runtime.context_preparation.project
+
+        def project_without_run_reads(**kwargs):
+            with monkeypatch.context() as patch:
+
+                def reject_run_read(*args, **kwargs):
+                    raise AssertionError("context projection must not read execution Runs")
+
+                patch.setattr(store, "load_run", reject_run_read)
+                return project_context(**kwargs)
+
+        monkeypatch.setattr(runtime.context_preparation, "project", project_without_run_reads)
         result = await runtime.continue_run(session_id=first.session.session_id)
         assert result.run.status == "completed"
         canonical = store.load_message(first.session.session_id, response.message_id)
@@ -426,9 +438,7 @@ async def test_provider_artifact_budget_and_replay_require_current_route_and_epo
             for m in context.provider_context.messages
             if m.role == response.role and m.text_content == response.text_content
         )
-        assert projected.provider_continuation == (
-            artifact if not withdraw and route == "matching" else None
-        )
+        assert projected.provider_continuation == (artifact if route == "matching" else None)
         assert not context.metrics.over_budget
     finally:
         await runtime.close()

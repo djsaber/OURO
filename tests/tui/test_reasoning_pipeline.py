@@ -19,13 +19,20 @@ from ouro.tui.conversation.transcript import project_transcript_entries
 
 @pytest.mark.parametrize("store_type", [LocalSessionStore, SQLiteSessionStore])
 @pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("reasoning_field", ["reasoning_content", "reasoning_details"])
 async def test_max_effort_response_reaches_persisted_conversation_history(
     tmp_path: Path,
     store_type: type[LocalSessionStore] | type[SQLiteSessionStore],
     streaming: bool,
+    reasoning_field: str,
 ) -> None:
     reasoning = reasoning_effort_preset("openai-chat-completions-effort")
     requests = []
+    native_reasoning = (
+        "Checking the evidence."
+        if reasoning_field == "reasoning_content"
+        else [{"type": "reasoning.text", "text": "Checking the evidence.", "signature": "sig"}]
+    )
 
     def respond(request: httpx.Request) -> httpx.Response:
         requests.append(json.loads(request.content))
@@ -34,7 +41,7 @@ async def test_max_effort_response_reaches_persisted_conversation_history(
                 {
                     "delta" if streaming else "message": {
                         "role": "assistant",
-                        "reasoning_content": "Checking the evidence.",
+                        reasoning_field: native_reasoning,
                         "content": "The answer.",
                     },
                     "finish_reason": "stop",
@@ -98,5 +105,12 @@ async def test_max_effort_response_reaches_persisted_conversation_history(
                 "Checking the evidence."
             ]
             assert entries[-1].text == "The answer."
+            continued = await runtime.run("continue", session_id=result.session.session_id)
+            assert continued.run.status == "completed", continued.run.error
+            assert (
+                requests[1]["messages"][: len(requests[0]["messages"])] == requests[0]["messages"]
+            )
+            replayed = next(m for m in requests[1]["messages"] if m["role"] == "assistant")
+            assert replayed[reasoning_field] == native_reasoning
         finally:
             await runtime.close()

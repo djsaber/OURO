@@ -24,7 +24,12 @@ from ouro.core.compaction import (
 from ouro.core.context import ContextBuilder
 from ouro.core.context_budget import ContextBudget
 from ouro.core.errors import CompactionError
-from ouro.core.messages import ImageContent, MessageRecord, ModelMessage
+from ouro.core.messages import (
+    ImageContent,
+    MessageRecord,
+    ModelMessage,
+    ProviderContinuationArtifact,
+)
 from ouro.core.provider import (
     ModelMetadata,
     ProviderCheckResult,
@@ -368,6 +373,14 @@ async def test_summary_receives_agent_system_and_history_only_as_user_scaffoldin
         _summary_adapter(provider, provider_id="runtime", endpoint_id="chat")
     )
     request = _summary_request().model_copy(update={"previous_summary": "Earlier progress"})
+    request.messages[-1].reasoning_content = "A useful reasoning observation."
+    request.messages[-1].provider_continuation = ProviderContinuationArtifact(
+        provider_id="source",
+        protocol="private",
+        model_id="source",
+        blocks=({"ciphertext": "opaque-state-must-not-be-summarized"},),
+    )
+    saved = request.model_dump_json()
 
     await strategy.compact(request)
 
@@ -380,6 +393,9 @@ async def test_summary_receives_agent_system_and_history_only_as_user_scaffoldin
     assert "Earlier progress" in history.text_content
     assert "old question" in history.text_content
     assert "old answer" in history.text_content
+    assert "[Assistant reasoning] A useful reasoning observation." in history.text_content
+    assert "opaque-state-must-not-be-summarized" not in history.text_content
+    assert request.model_dump_json() == saved
 
 
 def _summary_adapter(

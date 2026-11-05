@@ -36,6 +36,8 @@ from ouro.core.usage_queries import RunUsageTotals
 
 
 class ContextPreparer(Protocol):
+    """Deliver a recorded request context; its construction policy belongs to the caller."""
+
     async def __call__(
         self,
         sequence: int,

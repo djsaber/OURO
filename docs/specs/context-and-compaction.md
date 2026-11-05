@@ -7,9 +7,26 @@
 上下文系统从 canonical messages 构建一次 Provider 请求视图，在不改写历史的前提下应用系统提示词、
 Skills 指令、恢复投影、媒体整理、摘要压缩和模型 token 预算。
 
-压缩是框架的请求准备机制，对用户消息与 Agent 执行轨迹构成的会话记录做上下文重构。框架负责预算判断、
-历史帧选择、结果校验与激活；内置或插件贡献的策略负责生成继续执行所需的背景上下文，正文形式由策略决定。
+压缩是默认请求准备流程采用的上下文维护策略，对用户消息与 Agent 执行轨迹构成的会话记录做上下文重构。
+默认压缩管线负责触发、历史帧选择、结果校验与激活；内置或插件贡献的生成策略负责产出继续执行所需的背景上下文。
 规划只依赖会话材料、完整帧边界和预算，不依赖具体插件或 Run 的完成状态。
+
+## 准备能力与执行策略
+
+模型请求端口依赖 `ContextPreparer`，取得已记录的 `ContextView` 后继续执行；该端口不要求摘要或
+`CompactionArtifact`，也不决定如何重建上下文。同一 Session 的上下文重建不意味着更换 Session 或 Run。
+
+`application/context/preparation.py` 的 `ContextPreparationService` 提供通用能力：读取当前选定历史、
+解析提示与动态材料、构建请求投影，以及校验容量并记录最终请求。`build` 返回本次已读取材料和视图，
+即使超预算也不会自行调用生成策略；`finalize` 拒绝超预算视图，按现有执行授权和选择条件提交请求。
+服务可以投影已有压缩事实，但不负责触发或执行压缩。应用可通过 `build_view` 构建其他明确选定的上下文，
+再使用同一 `finalize` 边界交付请求；选择和生成哪些内容属于上层流程。
+新材料直接使用 `ModelMessage`；已有历史可使用 `MessageRecord`，只有显式传入的 canonical 来源参与引用复用。
+
+`application/context/compaction.py` 的 `ContextCompactionService` 是默认准备流程，单向依赖上述能力。
+它拥有自动阈值、压缩规划、生成策略调用与原子激活，手动压缩使用同一执行路径。
+`RuntimeService` 将其 `prepare` 接到既有 `ContextPreparer` 端口，不在模型执行或默认 Agent 循环中加入摘要分支。
+`CompactionStrategy` 仅扩展此默认压缩流程中的文本生成，不作为所有上下文维护方式的统一策略接口。
 
 ## ContextView
 
@@ -60,8 +77,8 @@ Agent 的有效系统上下文为固定系统上下文加最新压缩结果。�
 `role=system, semantic_tag=conversation-summary` 投影进入 Provider 的 system/instructions；原系统提示词完整保留。
 再次压缩只替换这一结果，不累计追加旧摘要。canonical history 保留原始消息，投影使用最新结果及未覆盖尾部。
 
-显式用户技能激活正文保存在 canonical 输入中。请求准备层根据压缩记录的 `history_boundary_message_id`
-确定该边界所属 Run，恢复其中已被覆盖的技能正文为 ephemeral user context；仍在尾部的激活不重复注入。
+显式用户技能激活正文保存在 canonical 输入中。压缩记录通过 `retained_skill_message_ids` 保存需要随上下文提供的
+已覆盖技能来源；请求准备层按这些固定引用恢复技能正文为 ephemeral user context，仍在尾部的激活不重复注入。
 正文从已接受的激活块重建，不重新读取文件、不提升角色、不追加 canonical 消息，并计入预算与请求快照。
 这部分背景固定到下一次压缩，不随当前执行 Run 切换而移除，也不依赖运行实例的内存状态。
 
@@ -165,7 +182,10 @@ Manifest schema 10 保存最终 provider-neutral 骨架，独立请求头 schema
 
 `ContextMetrics` 保存 `estimated_input_tokens`、`estimated_fixed_tokens`、可选 `budget` 及 estimator 身份。输入预算、剩余容量、利用率和 `over_budget` 是派生属性，不重复持久化。请求快照中的 `budget` 保存当时最终请求的窗口和上限；无预算的纯投影可以仅记录输入估算。
 
-估算覆盖 system prompt、message content、typed tool fields 和 tool definitions。默认 estimator 是 Provider 无关的保守近似。原生协议附件先按当前 provider/model 和执行 history_epoch 筛选，再进入估算；不遍历或解码私有 blocks。不匹配附件从请求投影移除，canonical 正文、工具帧和持久化附件保持完整。协议及认证 scope 的兼容性由 codec 在实际请求边界判断。
+估算覆盖 system prompt、message content、typed tool fields 和 tool definitions。默认 estimator 是 Provider 无关的保守近似。
+原生协议附件先按当前 provider/model 选择预算候选；该选择不读取历史 Run，不依赖执行 history_epoch，也不解码私有 blocks。
+不匹配附件从请求投影移除，canonical 正文、工具帧和持久化附件保持完整。协议及认证 scope 的兼容性由 codec 在实际请求边界判断。
+撤销和分支只影响历史选择及执行授权，不改变所保留响应的来源。只追加由上层上下文选择策略维持，不是底层消息或 codec 的限制。
 
 内置 estimator 复用最近一次构建中仍在活动输入内的不可变消息单元成本。键来自同次构建的 Manifest：
 Session/message/block 身份、最终 role/工具结果小字段及 Call/continuation 成员引用；不保存正文或参数，不散列正文。
@@ -221,6 +241,7 @@ Run；Run 是执行归属，不是压缩边界。摘要覆盖不删除或改写 
 不创建持久化 Session，不携带普通工具。摘要模型的 system 仅含其压缩指令；Agent 系统背景以
 `role=user, semantic_tag=agent-system-context` 脚手架传入，已有摘要与待压缩会话以
 `role=user, semantic_tag=conversation-to-summarize` 传入。两者都是待理解的材料，不能混入摘要模型的系统指令。
+会话材料包含正文、可读思考、工具调用与结果；签名、密文及原生续接 envelope 不作为摘要正文。
 每个分块及重试均保留 Agent 背景，估算覆盖全部脚手架、标签、转义正文、已有摘要及压缩指令。
 其提示词要求完整简洁的替代摘要，不复述固定系统指令，不依赖数值输出预算模板。
 当前内置解析器提取非空 `<summary>` 正文，格式规则与提示词一起维护。

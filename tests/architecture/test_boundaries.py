@@ -164,6 +164,20 @@ def test_semantic_policy_modules_do_not_depend_on_observers() -> None:
     }.intersection(observer_modules)
 
 
+def test_context_building_and_model_execution_do_not_select_compaction_strategies() -> None:
+    for path in (
+        APPLICATION_DIR / "context" / "preparation.py",
+        APPLICATION_DIR / "models" / "requests.py",
+        CORE_DIR / "inner_loop.py",
+    ):
+        imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+        assert not {
+            "ouro.application.context.compaction",
+            "ouro.application.context.summary",
+            "ouro.config.compaction",
+        }.intersection(imports)
+
+
 def test_auth_contracts_do_not_load_concrete_storage_or_lifecycle() -> None:
     for filename in ("contracts.py", "driver_contracts.py"):
         path = PROJECT_ROOT / "ouro" / "auth" / filename

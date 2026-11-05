@@ -23,7 +23,7 @@ Session 是长期会话容器。关键字段包括：
 - `status`：`idle`、`running`、`waiting_user`、`waiting_approval` 或 `failed`；
 - `active_run_id`：唯一 active Run；
 - `last_message_id`、`message_count`：canonical message 游标；
-- `active_compaction_id`：当前上下文摘要投影；
+- `context_selection`：当前摘要身份及媒体选择边界；
 - `harness_version`：当前不可变业务状态版本；`history_epoch`：当前执行历史代次；
 - lineage、标题、归档、置顶、工作区与标签状态。
 
@@ -60,7 +60,7 @@ Run 的 `current_request_id` 与最近准备输入同提交；可能开始调用
 
 ### Run Driver 与原生端口
 
-Run 记录使用 schema 9，Message 记录使用 schema 6。Run 保存不可变的 `driver` 绑定。默认算法的身份为
+`RunRecord` 保存不可变的 `driver` 绑定。默认算法的身份为
 `ouro.default`；插件 Driver 保存 `plugin_id/run_drivers/id`、贡献契约，以及所属插件和传递依赖的实现引用。
 每个实现引用包含 plugin identity/class、release、配置修订 ID 和执行契约哈希，不保存解析后的凭据。
 Host 在执行前校验精确契约，缺失或不匹配时报告错误，不切换算法。Driver 调用只租用所属插件及其依赖，

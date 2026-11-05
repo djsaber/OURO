@@ -77,7 +77,7 @@ async def test_projection_uses_selected_tail_without_old_prefix_or_last_request(
         ),
     )
     try:
-        view = runtime.context_preparation._project_context(
+        view = runtime.context_preparation.project(
             session=session,
             messages=messages[2:],
             active=summary,
