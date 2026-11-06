@@ -24,6 +24,8 @@ from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStrea
 from ouro.core.state import SessionRecord
 from ouro.core.tools import ToolCallRequest
 from ouro.local_application import LocalApplication
+from ouro.providers.anthropic_messages.codec import messages_to_anthropic_messages
+from ouro.providers.openai_chat_completions.codec import messages_to_chat_completions
 from ouro.providers.openai_responses.codec import responses_input
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
@@ -69,6 +71,66 @@ def _assert_provider_input_prefix(provider):
     for previous, current in pairwise(payloads):
         assert current["instructions"] == previous["instructions"]
         assert current["input"][: len(previous["input"])] == previous["input"]
+
+
+def _assert_goal_model_messages(g):
+    messages = g.runtime.store.load_session(g.session.session_id).messages
+    envelopes = set()
+    for message in messages:
+        if message.scaffold:
+            assert message.role == "user"
+            assert message.semantic_tag in {
+                "goal-create",
+                "goal-context",
+                "goal-continue",
+                "goal-updated",
+                "goal-cancelled",
+            }
+            envelopes.add(
+                f"<{message.semantic_tag}>\n{message.text_content}\n</{message.semantic_tag}>"
+            )
+        elif message.tool_result is None or message.tool_result.tool_name not in {
+            "CreateGoal",
+            "GetGoal",
+            "UpdateGoal",
+        }:
+            continue
+        assert "/goal" not in message.text_content
+        assert "--token-budget" not in message.text_content
+        assert "--no-token-budget" not in message.text_content
+    assert envelopes <= {
+        projected.text_content for request in g.provider.requests for projected in request
+    }
+    for request, system_prompt in zip(g.provider.requests, g.provider.system_prompts, strict=True):
+        assert "<goal-context>...</goal-context>" in system_prompt
+        kwargs = {
+            "system_prompt": system_prompt,
+            "provider_id": g.provider.provider_id,
+            "model_id": "goal-test",
+        }
+        payloads = (
+            responses_input(request, **kwargs, scope=())["input"],
+            messages_to_chat_completions(request, **kwargs, supports_image_input=False),
+            messages_to_anthropic_messages(request, **kwargs, supports_image_input=False)[1],
+        )
+        for payload in payloads:
+            user_text = "".join(
+                item["content"]
+                if isinstance(item["content"], str)
+                else "".join(part.get("text", "") for part in item["content"])
+                for item in payload
+                if item.get("role") == "user"
+            )
+            for envelope in envelopes:
+                count = sum(message.text_content == envelope for message in request)
+                assert user_text.count(envelope) == count
+            for tag in {message.semantic_tag for message in messages if message.scaffold}:
+                for delimiter in (f"<{tag}>", f"</{tag}>"):
+                    assert user_text.count(delimiter) == sum(
+                        projected.text_content.count(delimiter)
+                        for projected in request
+                        if projected.role == "user"
+                    )
 
 
 class GoalSummary:
@@ -195,11 +257,17 @@ async def test_goal_progress_only_appends_context_at_state_boundaries(goal_app):
         for message in g.runtime.store.load_session(g.session.session_id).messages
         if message.semantic_tag == "goal-context"
     ]
-    assert len(snapshots) == 2
+    assert len(snapshots) == 1
     assert "Status: active" in snapshots[0].text_content
-    assert "Status: complete" in snapshots[1].text_content
     assert g.executed_tools == ["ReadInfo", "ChangeInfo"]
+    first_text = "\n".join(m.text_content for m in g.provider.requests[0])
+    assert first_text.count("Inspect and update the information") == 1
+    assert first_text.count("Do not call CreateGoal again") == 1
+    assert "three consecutive" not in first_text
+    assert g.provider.requests[-2][-1].role == "tool_result"
+    assert "Inspected and updated." not in g.provider.requests[-2][-1].text_content
     _assert_provider_input_prefix(g.provider)
+    _assert_goal_model_messages(g)
 
 
 async def test_goal_creation_and_completion_preserve_the_provider_input_prefix(goal_app):
@@ -224,7 +292,9 @@ async def test_goal_creation_and_completion_preserve_the_provider_input_prefix(g
     snapshots = [message for message in messages if message.semantic_tag == "goal-context"]
     assert snapshots
     assert all(message.role == "user" and message.scaffold for message in snapshots)
-    assert "Status: complete" in snapshots[-1].text_content
+    assert len(snapshots) == 1
+    assert "Status: complete" in g.provider.requests[-1][-1].text_content
+    assert g.provider.requests[-1][-1].role == "tool_result"
 
 
 @pytest.mark.parametrize("command", ["pause", "resume", "replace Updated objective", "cancel"])
@@ -253,6 +323,7 @@ async def test_goal_lifecycle_commands_preserve_the_provider_input_prefix(goal_a
         await g.say("Handle the latest operation.")
     assert len(g.provider.requests) >= 2
     _assert_provider_input_prefix(g.provider)
+    _assert_goal_model_messages(g)
 
 
 async def test_goal_context_refreshes_when_resuming_a_context_blocked_round(goal_app):
@@ -496,11 +567,14 @@ async def test_natural_language_creation_gets_context_and_preserves_request_usag
     assert len(g.provider.requests) == 3
     second = g.provider.requests[1]
     assert "Status: active" in second[-1].text_content
-    assert "Check the result" in second[-1].text_content
-    assert "Goal: active" in second[-2].text_content
-    assert "will be created" not in second[-2].text_content
+    assert second[-1].role == "tool_result"
+    assert "Check the result" not in second[-1].text_content
+    assert "UpdateGoal" in second[-1].text_content
+    assert "CreateGoal" not in second[-1].text_content
+    assert not any("<goal-context>" in message.text_content for message in second)
     messages = g.runtime.store.load_run_messages(g.session.session_id, result.run.run_id)
     assert not any(message.semantic_tag == "goal-create" for message in messages)
+    _assert_goal_model_messages(g)
 
 
 async def test_automatic_empty_work_pauses_and_user_information_does_not_resume(goal_app):
@@ -527,6 +601,8 @@ async def test_automatic_empty_work_pauses_and_user_information_does_not_resume(
     assert (await g.goal())["status"] == "paused"
     assert (await g.goal())["tokens_used"] == 10
     assert "The goal is stopped" in g.provider.requests[-1][-1].text_content
+    assert 'UpdateGoal with status="active"' in g.provider.requests[-1][-1].text_content
+    _assert_goal_model_messages(g)
 
 
 @pytest.mark.parametrize("status", ["paused", "blocked", "budget_exhausted"])
@@ -568,6 +644,8 @@ async def test_stopped_goal_allows_normal_tools_without_resuming(goal_app, statu
     assert (await g.goal())["status"] == status
     assert (await g.goal())["tokens_used"] == used
     assert g.pending() == []
+
+    _assert_goal_model_messages(g)
 
 
 async def test_compaction_does_not_repost_unchanged_goal_and_get_goal_reads_current_state(goal_app):
@@ -654,6 +732,17 @@ async def test_model_can_resume_stopped_goal_without_changing_its_budget(goal_ap
     assert after["status"] == "complete"
     assert after["token_budget"] == before["token_budget"]
     assert after["created_at"] == before["created_at"]
+    for messages, status in zip(g.provider.requests[-2:], ("active", "complete"), strict=True):
+        assert messages[-1].role == "tool_result"
+        assert f"Status: {status}" in messages[-1].text_content
+        assert "Total tokens used:" in messages[-1].text_content
+    snapshots = [
+        m
+        for m in g.runtime.store.load_session(g.session.session_id).messages
+        if m.semantic_tag == "goal-context"
+    ]
+    assert len(snapshots) == 1
+    assert "Status: paused" in snapshots[0].text_content
 
 
 async def test_resume_after_completed_discussion_adds_no_input(goal_app):
@@ -783,3 +872,32 @@ async def test_pause_during_tool_execution_preserves_completed_results(goal_app,
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_replacement_delivers_objective_once_and_only_notifies_changed_state(goal_app):
+    g = goal_app
+    await g.command("Original objective")
+    await g.command("pause")
+    g.provider.responses.append("Paused.")
+    await g.consume()
+    await g.command("replace Updated objective")
+    g.provider.responses.extend(
+        [
+            ToolCallRequest(
+                id="complete",
+                name="UpdateGoal",
+                arguments={"status": "complete", "report": "Verified."},
+            ),
+            "Done.",
+        ]
+    )
+    await g.consume()
+    messages = g.provider.requests[-2]
+    assert sum(m.text_content.count("Updated objective") for m in messages) == 1
+    updated = next(m for m in messages if "<goal-updated>" in m.text_content)
+    assert "Status:" not in updated.text_content
+    assert "Token budget:" not in updated.text_content
+    assert "<goal-context>" in messages[-1].text_content
+    assert "Status: active" in messages[-1].text_content
+    assert g.provider.requests[-1][-1].role == "tool_result"
+    _assert_provider_input_prefix(g.provider)

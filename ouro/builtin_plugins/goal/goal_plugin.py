@@ -40,6 +40,7 @@ from .prompts import (
     continuation_prompt,
     format_goal_status,
     goal_context,
+    goal_tool_result,
     runtime_stop_report,
 )
 from .state import (
@@ -55,7 +56,7 @@ _TERMINAL_RUN_STATUSES = {"completed", "aborted", "failed", "paused", "recoverab
 
 class GoalPlugin:
     def __init__(self, context: PluginContext) -> None:
-        self._context_snapshots: dict[str, tuple[GoalRecord, str, int]] = {}
+        self._context_snapshots: dict[str, tuple[GoalRecord, str | None, int | None]] = {}
         required = {"sessions.write", "background.run"}
         missing = required - context.permissions
         if missing:
@@ -226,7 +227,8 @@ class GoalPlugin:
         if current is not None and current.status != "complete":
             return _tool_error(
                 "unfinished_goal_exists",
-                f"The current goal is {current.status}; it must be updated by the user first.",
+                f"The current goal is {current.status}; CreateGoal cannot replace it. "
+                "Use GetGoal to inspect the existing goal.",
             )
         return ToolOutput(
             content="",
@@ -236,6 +238,7 @@ class GoalPlugin:
                     controller_id="mode",
                     payload={
                         "operation": "create",
+                        "source": "tool",
                         "objective": objective,
                         "token_budget": token_budget,
                     },
@@ -283,14 +286,18 @@ class GoalPlugin:
                         action="replace",
                         controller_id="mode",
                         replace_activation_ids=(control.activation_id,),
-                        payload={"operation": "resume", "token_budget": goal.token_budget},
+                        payload={
+                            "operation": "resume",
+                            "source": "tool",
+                            "token_budget": goal.token_budget,
+                        },
                         reason="goal_resumed",
                     ),
                 ),
             )
         if goal.status != "active":
             return _tool_error("goal_not_active", "There is no active goal to update.")
-        payload: dict[str, JsonValue] = {"operation": status, "report": report}
+        payload: dict[str, JsonValue] = {"operation": status, "source": "tool", "report": report}
         if status == "complete":
             transition = SessionControlTransition(
                 action="release",
@@ -376,7 +383,7 @@ class GoalPlugin:
         repository.save(SessionGoalState(goal=goal))
         tokens_used = repository.tokens_used(goal)
         return SessionControllerOutput(
-            output=format_goal_status(goal, tokens_used=tokens_used),
+            output=self._transition_message(call, goal, tokens_used=tokens_used),
             data={"goal": goal.to_public(tokens_used=tokens_used)},
             usage_scope=goal.goal_id if goal.status == "active" else None,
         )
@@ -404,7 +411,7 @@ class GoalPlugin:
             repository.save(SessionGoalState(goal=completed))
             tokens_used = repository.tokens_used(completed)
             return SessionControllerOutput(
-                output=format_goal_status(completed, tokens_used=tokens_used),
+                output=self._transition_message(call, completed, tokens_used=tokens_used),
                 data={"goal": completed.to_public(tokens_used=tokens_used)},
             )
         repository.delete()
@@ -413,6 +420,16 @@ class GoalPlugin:
             data={"goal": None, "cancelled": True},
         )
 
+    def _transition_message(
+        self, call: SessionControllerCall, goal: GoalRecord, *, tokens_used: int | None
+    ) -> str:
+        if _mapping_payload(call.payload).get("source") != "tool":
+            return format_goal_status(goal, tokens_used=tokens_used)
+        # The tool result and Goal state commit together. Only an exact match with the
+        # committed record at preparation confirms that this result supplies the notice.
+        self._context_snapshots[call.session_id] = (goal, None, None)
+        return goal_tool_result(goal, tokens_used=tokens_used)
+
     def goal_context(self, call: ContextCall) -> ContextOutput:
         goal = GoalStateRepository(call.session_state).load().goal
         if goal is None:
@@ -420,8 +437,18 @@ class GoalPlugin:
             return ContextOutput()
         snapshot = (goal, call.run_id, call.model_round)
         previous = self._context_snapshots.get(call.session_id)
-        if previous is not None and previous[0] == goal and previous != snapshot:
-            return ContextOutput()
+        if previous is not None:
+            previous_goal, run_id, model_round = previous
+            if run_id is None:
+                if previous_goal == goal:
+                    self._context_snapshots[call.session_id] = (goal, call.run_id, None)
+                    return ContextOutput()
+            elif (
+                previous_goal.goal_id == goal.goal_id
+                and goal_context(previous_goal) == goal_context(goal)
+                and (run_id, model_round) != (call.run_id, call.model_round)
+            ):
+                return ContextOutput()
         # Retry the same preparation boundary: only the Host can confirm persistence.
         self._context_snapshots[call.session_id] = snapshot
         return ContextOutput(

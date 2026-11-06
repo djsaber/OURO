@@ -15,7 +15,7 @@ from ouro.billing import LocalUsageLedger
 from ouro.builtin_plugins.goal import GOAL_PLUGIN
 from ouro.builtin_plugins.goal.commands import parse_goal_command
 from ouro.builtin_plugins.goal.goal_plugin import GoalPlugin
-from ouro.builtin_plugins.goal.state import SessionGoalState
+from ouro.builtin_plugins.goal.state import GoalRecord, SessionGoalState
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.harness_calls import accept_state_changes
 from ouro.core.messages import MessageRecord
@@ -138,7 +138,7 @@ def _plugin(tmp_path: Path) -> GoalPlugin:
     context = sdk.PluginContext(
         identity=sdk.PluginIdentity(
             plugin_id=PLUGIN_ID,
-            version="2.1.0",
+            version="2.2.0",
             plugin_class="builtin",
             release_id="test-release",
             package_digest=None,
@@ -320,7 +320,7 @@ def test_manifest_and_tool_contract_are_minimal_and_generic() -> None:
     manifest = GOAL_PLUGIN.manifest
 
     assert manifest.name == "Goal"
-    assert manifest.version == "2.1.0"
+    assert manifest.version == "2.2.0"
     assert {item.id for item in manifest.contributes.tools} == {
         "get-goal",
         "create-goal",
@@ -340,6 +340,7 @@ def test_manifest_and_tool_contract_are_minimal_and_generic() -> None:
         "background.run",
     }
     descriptions = "\n".join(item.description for item in manifest.contributes.tools)
+    assert "/goal" not in descriptions
     forbidden = {
         "ouro",
         "session",
@@ -393,7 +394,10 @@ async def test_create_command_returns_one_atomic_user_message_pair(goal_session)
     assert [item.role for item in batch.inputs] == ["user", "user"]
     assert [item.semantic_tag for item in batch.inputs] == ["goal-create", None]
     assert batch.inputs[1].prompt == "Preserve this objective exactly"
-    assert "1200" in batch.inputs[0].prompt
+    assert "Preserve this objective exactly" not in batch.inputs[0].prompt
+    assert "1200" not in batch.inputs[0].prompt
+    assert "The user has already created" in batch.inputs[0].prompt
+    assert "Do not call CreateGoal again" in batch.inputs[0].prompt
 
 
 async def test_resume_preserves_budget_until_explicitly_removed(goal_session) -> None:
@@ -415,6 +419,10 @@ async def test_model_resume_rejects_stale_work_and_preserves_budget(goal_session
     old_request = g.request()
     g.record_usage(old_request, 5)
     await g.command("pause")
+    duplicate = await g.tool("CreateGoal", {"objective": "Ship"})
+    assert duplicate.structured["error_type"] == "unfinished_goal_exists"
+    assert "Use GetGoal" in duplicate.content
+    assert "user first" not in duplicate.content
     stale = await g.tool("UpdateGoal", {"status": "active", "report": "Resume"}, run=old_request)
     assert stale.structured["error_type"] == "stale_goal_update"
     result = await g.tool(
@@ -822,6 +830,50 @@ async def test_unavailable_usage_pauses_budgeted_goal_without_inventing_zero(goa
         assert "unavailable" in result.content
 
 
+@pytest.mark.parametrize(
+    "stop", ["aborted", "failed", "paused", "recoverable", "usage", "budget", "no_tools"]
+)
+async def test_system_stop_reports_and_context_use_agent_interfaces(goal_session, stop):
+    g = goal_session
+    await g.command("--token-budget 10 Ship")
+    run = g.request()
+    if stop == "budget":
+        g.record_usage(run, 10)
+    outcome = await g.continue_run(
+        run,
+        status=stop if stop in {"aborted", "failed", "paused", "recoverable"} else "completed",
+        usage={} if stop == "usage" else None,
+        automatic_continuation=stop == "no_tools",
+        tool_call_count=0,
+    )
+    assert outcome.action == "pause"
+    result = await g.tool("GetGoal", {})
+    context, change = await invoke_plugin_callback(
+        g.plugin.goal_context,
+        sdk.ContextCall(g.session.session_id, run.run_id, 0, 1),
+        snapshot=capture_harness(g.store, g.session.session_id, run=run),
+        owner_id=PLUGIN_ID,
+        writable=False,
+    )
+    assert change is None
+    assert len(context.fragments) == 1
+    notice = context.fragments[0]
+    assert notice.semantic_tag == "goal-context"
+    assert notice.scaffold and notice.role == "user"
+    assert g.goal().report in result.content
+    assert g.goal().report in notice.text
+    for text in (result.content, notice.text):
+        assert "/goal" not in text
+        assert "--token-budget" not in text
+        assert "--no-token-budget" not in text
+    if stop == "budget":
+        assert "Only the user can increase or remove the budget" in notice.text
+        assert 'status="active"' not in notice.text
+    else:
+        assert 'UpdateGoal with status="active"' in notice.text
+        assert "wait for success" in notice.text
+
+
 async def test_blocked_goal_retains_claim_but_stops_usage_scope(goal_session):
     g = goal_session
     await g.tool("CreateGoal", {"objective": "Ship"})
@@ -957,7 +1009,7 @@ async def test_failed_self_replacement_keeps_goal_and_different_controller_relea
 
 async def test_goal_context_retries_and_plugin_restart(goal_session, tmp_path):
     g = goal_session
-    await g.tool("CreateGoal", {"objective": "Check the result"})
+    await g.command("Check the result")
     run = g.request()
 
     async def context(plugin, *, model_round=1):
@@ -980,10 +1032,10 @@ async def test_goal_context_retries_and_plugin_restart(goal_session, tmp_path):
     assert len(first) == 1
     assert await context(g.plugin) == first
     assert await context(g.plugin, model_round=2) == ()
-    await g.tool("UpdateGoal", {"status": "blocked", "report": "Missing data."}, run=run)
+    await g.command("pause")
     stopped = await context(g.plugin, model_round=2)
     assert len(stopped) == 1
-    assert "Status: blocked" in stopped[0].text
+    assert "Status: paused" in stopped[0].text
     assert await context(g.plugin, model_round=2) == stopped
     assert await context(g.plugin, model_round=3) == ()
     assert await context(_plugin(tmp_path / "restarted"), model_round=3) == stopped
@@ -1018,3 +1070,67 @@ async def test_paused_goal_resumes_after_releasing_an_outdated_controller(goal_s
     current = g.store.load_session_record(g.session.session_id).controls.activations[0]
     assert current.release_id == "updated-release"
     assert current.activation_id != activation.activation_id
+
+
+async def test_tool_notice_requires_committed_state_and_ignores_timestamp_only_changes(
+    goal_session, monkeypatch
+):
+    g = goal_session
+    await g.command("Check the result")
+    run = g.request()
+
+    async def context(model_round):
+        result, _ = await invoke_plugin_callback(
+            g.plugin.goal_context,
+            sdk.ContextCall(g.session.session_id, run.run_id, 0, model_round),
+            snapshot=capture_harness(g.store, g.session.session_id, run=run),
+            owner_id=PLUGIN_ID,
+            writable=False,
+        )
+        return result.fragments
+
+    assert len(await context(1)) == 1
+    await g.command("replace Check the result")
+    assert await context(2) == ()
+    await g.command("pause")
+    paused = g.goal()
+
+    def fail_commit(*args, **kwargs):
+        raise RuntimeError("commit failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(g.coordinator, "commit", fail_commit)
+        with pytest.raises(RuntimeError, match="commit failed"):
+            await g.tool("UpdateGoal", {"status": "active", "report": "Ready."})
+    assert g.goal() == paused
+    stopped = await context(3)
+    assert len(stopped) == 1
+    assert "Status: paused" in stopped[0].text
+    assert await context(3) == stopped
+
+    await g.tool("UpdateGoal", {"status": "active", "report": "Ready."})
+    assert await context(4) == ()
+    assert await context(4) == ()
+    await g.command("replace Check the result")
+    assert await context(5) == ()
+
+
+def test_continuation_exposes_usage_only_when_budgeted():
+    from ouro.builtin_plugins.goal.prompts import continuation_prompt
+
+    goal = GoalRecord(
+        goal_id="goal",
+        objective="Exact objective",
+        status="active",
+        token_budget=None,
+        created_at="created",
+        updated_at="updated",
+        report=None,
+    )
+    prompt = continuation_prompt(goal, tokens_used=40)
+    assert "Exact objective" not in prompt
+    assert "tokens" not in prompt.lower()
+    assert "three consecutive" not in prompt
+    assert "UpdateGoal" in prompt
+    budgeted = continuation_prompt(replace(goal, token_budget=100), tokens_used=40)
+    assert "Tokens used: 40; tokens remaining: 60" in budgeted

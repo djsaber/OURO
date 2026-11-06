@@ -172,7 +172,7 @@ def _creation_output(objective: str, token_budget: int | None) -> CommandOutput:
             SessionInputBatch(
                 inputs=(
                     SessionInput(
-                        prompt=creation_instruction(objective, token_budget),
+                        prompt=creation_instruction(),
                         mode="follow_up",
                         title=f"Create Goal: {objective[:48]}",
                         role="user",
