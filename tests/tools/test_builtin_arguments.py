@@ -35,7 +35,7 @@ async def test_builtin_argument_errors_are_rejected_before_execution(tmp_path, n
     "name, arguments",
     [
         ("Glob", {"pattern": "*.txt", "path": None}),
-        ("Grep", {"pattern": "original", "path": None, "glob": None, "type": None, "-C": None}),
+        ("Grep", {"pattern": "original", "path": None, "glob": None, "-C": None}),
     ],
 )
 async def test_nullable_search_options_use_workspace_and_no_filter(tmp_path, name, arguments):

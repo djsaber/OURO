@@ -151,6 +151,11 @@ class _ShellArguments(BuiltinArguments):
     )
 
 
+def builtin_command_tools() -> list[Tool]:
+    shell = detect_command_shell()
+    return [builtin_command_tool(shell)] if shell is not None else []
+
+
 def builtin_command_tool(shell: CommandShell) -> Tool:
     parameters = _ShellArguments.model_json_schema()
     parameters["properties"]["command"]["description"] = _command_description(shell)

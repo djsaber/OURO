@@ -312,10 +312,14 @@ class Composer(AttachmentTextArea):
         draft = self._command_draft
         if draft is not None:
             command_text = self._prefix_before_draft(draft)
-            if command_text is not None and (
-                command_text.startswith("/")
-                or (self.attachment_menu_open and command_text.startswith("@"))
-            ) and "\n" not in command_text:
+            if (
+                command_text is not None
+                and (
+                    command_text.startswith("/")
+                    or (self.attachment_menu_open and command_text.startswith("@"))
+                )
+                and "\n" not in command_text
+            ):
                 return command_text, draft
             self._command_draft = None
         text = self.input_text

@@ -7,7 +7,7 @@ from asyncio import create_task, sleep
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -170,11 +170,24 @@ def test_shell_delegation_contract_depends_on_dialect_not_local_executable_bindi
     assert tool_definition_contract_hash(alias) != tool_definition_contract_hash(legacy)
 
 
-def test_builtin_tool_list_exposes_exactly_the_detected_shell() -> None:
-    shell = detect_command_shell()
+@pytest.mark.parametrize(
+    "shell",
+    [
+        None,
+        CommandShell("bash", "/bin/bash", "Bash", "Bash"),
+        CommandShell("sh", "/bin/sh", "Sh", "POSIX sh"),
+        CommandShell("powershell", "C:/pwsh.exe", "PowerShell", "PowerShell 7"),
+        CommandShell("windows_powershell", "C:/powershell.exe", "PowerShell", "Windows PowerShell"),
+        CommandShell("cmd", "C:/cmd.exe", "CommandPrompt", "Windows Command Prompt"),
+    ],
+)
+def test_builtin_tool_list_exposes_exactly_the_detected_shell(monkeypatch, shell) -> None:
+    detect = Mock(return_value=shell)
+    monkeypatch.setattr("ouro.tools.builtin.shell.detect_command_shell", detect)
     command_definitions = [
         tool.definition for tool in builtin_tools() if "shell_kind" in tool.definition.metadata
     ]
+    detect.assert_called_once_with()
 
     if shell is None:
         assert command_definitions == []

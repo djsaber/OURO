@@ -55,6 +55,8 @@ def present_tool(
         return _present_write(tool.arguments, theme=theme)
     if name == "edit":
         return _present_edit(tool.arguments, theme=theme)
+    if name in {"glob", "grep"}:
+        return _present_search(tool.arguments, theme=theme)
     if name in _COMMAND_TOOLS:
         return _present_command(tool.arguments)
     if name == "todolist":
@@ -157,6 +159,18 @@ def _present_edit(arguments: dict[str, JsonValue], *, theme: TuiTheme) -> ToolPr
     if arguments.get("replace_all") is True:
         detail.append(ToolPresentationPart(f"{theme.inline_separator}replace all", "muted"))
     return ToolPresentation(lines=(ToolPresentationLine("└", tuple(detail)),))
+
+
+def _present_search(arguments: dict[str, JsonValue], *, theme: TuiTheme) -> ToolPresentation:
+    parts: list[ToolPresentationPart] = []
+    for key, label in (("pattern", ""), ("path", ""), ("glob", "glob: "), ("type", "type: ")):
+        value = arguments.get(key)
+        if not isinstance(value, str) or not value:
+            continue
+        if parts:
+            parts.append(ToolPresentationPart(theme.inline_separator, "muted"))
+        parts.append(ToolPresentationPart(label + " ↵ ".join(value.splitlines())))
+    return ToolPresentation(lines=(ToolPresentationLine("└", tuple(parts)),) if parts else ())
 
 
 def _present_command(arguments: dict[str, JsonValue]) -> ToolPresentation:

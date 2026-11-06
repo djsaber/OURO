@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 import pytest
 
-import ouro.tools.builtin.grep as builtin_grep
 from ouro.tools import Tool, ToolExecutionContext, ToolInvocation, builtin_tools
+from ouro.tools.builtin import search
 
 
 def _tools() -> dict[str, Tool]:
@@ -47,6 +48,19 @@ def context(workspace: Path) -> ToolExecutionContext:
     return ToolExecutionContext(workspace=workspace)
 
 
+@pytest.fixture(autouse=True)
+def python_search_backend(monkeypatch):
+    monkeypatch.setattr(search, "detect_ripgrep", lambda: None)
+
+
+@pytest.fixture(params=["python", "ripgrep"])
+def glob_backend(request, monkeypatch, python_search_backend):
+    executable = shutil.which("rg") if request.param == "ripgrep" else None
+    if request.param == "ripgrep" and executable is None:
+        pytest.skip("ripgrep is not installed")
+    monkeypatch.setattr(search, "detect_ripgrep", lambda: executable)
+
+
 # ---------------------------------------------------------------------------
 # Definition and registry assembly
 # ---------------------------------------------------------------------------
@@ -58,7 +72,7 @@ def test_grep_small_file_does_not_allocate_the_full_file_limit(workspace):
     target = _write(workspace, "small.txt", b"needle\n" * 100)
     tracemalloc.start()
     try:
-        assert builtin_grep._read_searchable_text(target) == "needle\n" * 100
+        assert search._read_searchable_text(target) == "needle\n" * 100
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
@@ -68,10 +82,10 @@ def test_grep_small_file_does_not_allocate_the_full_file_limit(workspace):
 @pytest.mark.parametrize("extra", [0, 1])
 def test_grep_retains_exact_file_size_limit(workspace, monkeypatch, extra):
     limit = 100_000
-    monkeypatch.setattr(builtin_grep, "_MAX_SEARCHABLE_FILE_BYTES", limit)
+    monkeypatch.setattr(search, "_MAX_SEARCHABLE_FILE_BYTES", limit)
     content = "a" * (limit + extra)
     target = _write(workspace, "bounded.txt", content)
-    assert builtin_grep._read_searchable_text(target) == (None if extra else content)
+    assert search._read_searchable_text(target) == (None if extra else content)
 
 
 def test_search_and_todolist_tools_are_assembled_as_host_builtins() -> None:
@@ -99,7 +113,7 @@ def test_grep_summary_does_not_materialize_content(
     def unexpected_content(*args, **kwargs):
         pytest.fail("summary queries must not construct matched content or context")
 
-    monkeypatch.setattr(builtin_grep, "MatchedLine", unexpected_content)
+    monkeypatch.setattr(search, "MatchedLine", unexpected_content)
     result = _tools()["Grep"].handler(
         _call(
             "Grep",
@@ -137,6 +151,7 @@ def test_grep_multiline_empty_file_has_no_matched_lines(context, workspace, sing
     assert result.structured["total"] == 0
 
 
+@pytest.mark.usefixtures("glob_backend")
 async def test_glob_bare_pattern_matches_recursively_sorted_by_mtime(
     workspace: Path,
     context: ToolExecutionContext,
@@ -146,13 +161,14 @@ async def test_glob_bare_pattern_matches_recursively_sorted_by_mtime(
     _write(workspace, "src/readme.md", "doc", mtime=3_000)
     tools = _tools()
 
-    output = tools["Glob"].handler(_call("Glob", {"pattern": "*.py"}), context)
+    output = await tools["Glob"].execute(_call("Glob", {"pattern": "*.py"}), context=context)
 
     expected = "\n".join(path.relative_to(workspace).as_posix() for path in (new, old))
     assert output.content == expected
     assert output.structured["total"] == 2
 
 
+@pytest.mark.usefixtures("glob_backend")
 async def test_glob_anchored_pattern_matches_one_level(
     workspace: Path,
     context: ToolExecutionContext,
@@ -161,11 +177,12 @@ async def test_glob_anchored_pattern_matches_one_level(
     _write(workspace, "src/pkg/nested.py", "b")
     tools = _tools()
 
-    output = tools["Glob"].handler(_call("Glob", {"pattern": "src/*.py"}), context)
+    output = await tools["Glob"].execute(_call("Glob", {"pattern": "src/*.py"}), context=context)
 
     assert output.content == "src/top.py"
 
 
+@pytest.mark.usefixtures("glob_backend")
 async def test_glob_brace_expansion(
     workspace: Path,
     context: ToolExecutionContext,
@@ -175,11 +192,12 @@ async def test_glob_brace_expansion(
     _write(workspace, "c/main.js", "c")
     tools = _tools()
 
-    output = tools["Glob"].handler(_call("Glob", {"pattern": "*.{ts,tsx}"}), context)
+    output = await tools["Glob"].execute(_call("Glob", {"pattern": "*.{ts,tsx}"}), context=context)
 
     assert set(output.content.splitlines()) == {"a/main.ts", "b/main.tsx"}
 
 
+@pytest.mark.usefixtures("glob_backend")
 async def test_glob_respects_gitignore_and_include_ignored(
     workspace: Path,
     context: ToolExecutionContext,
@@ -189,16 +207,17 @@ async def test_glob_respects_gitignore_and_include_ignored(
     _write(workspace, "build/out.py", "b")
     tools = _tools()
 
-    default = tools["Glob"].handler(_call("Glob", {"pattern": "*.py"}), context)
-    included = tools["Glob"].handler(
+    default = await tools["Glob"].execute(_call("Glob", {"pattern": "*.py"}), context=context)
+    included = await tools["Glob"].execute(
         _call("Glob", {"pattern": "*.py", "include_ignored": True}),
-        context,
+        context=context,
     )
 
     assert default.content == "src/app.py"
     assert set(included.content.splitlines()) == {"src/app.py", "build/out.py"}
 
 
+@pytest.mark.usefixtures("glob_backend")
 async def test_glob_respects_nested_gitignore(
     workspace: Path,
     context: ToolExecutionContext,
@@ -208,11 +227,25 @@ async def test_glob_respects_nested_gitignore(
     _write(workspace, "src/generated/skip.py", "b")
     tools = _tools()
 
-    output = tools["Glob"].handler(_call("Glob", {"pattern": "*.py"}), context)
+    output = await tools["Glob"].execute(_call("Glob", {"pattern": "*.py"}), context=context)
 
     assert output.content == "src/kept.py"
 
 
+@pytest.mark.usefixtures("glob_backend")
+@pytest.mark.parametrize("parent_ignore", [".gitignore", ".ignore", ".rgignore"])
+async def test_glob_ignore_file_kind_precedes_directory_depth(workspace, context, parent_ignore):
+    _write(workspace, parent_ignore, "*.py\n")
+    _write(workspace, "src/.gitignore", "!kept.py\n")
+    _write(workspace, "src/kept.py", "")
+    _write(workspace, "src/skipped.py", "")
+    result = await _tools()["Glob"].execute(_call("Glob", {"pattern": "*.py"}), context=context)
+    assert result.structured["matches"] == (
+        ["src/kept.py"] if parent_ignore == ".gitignore" else []
+    )
+
+
+@pytest.mark.usefixtures("glob_backend")
 async def test_glob_always_excludes_sensitive_files_and_vcs_metadata(
     workspace: Path,
     context: ToolExecutionContext,
@@ -223,14 +256,15 @@ async def test_glob_always_excludes_sensitive_files_and_vcs_metadata(
     _write(workspace, "visible.txt", "ok")
     tools = _tools()
 
-    output = tools["Glob"].handler(
+    output = await tools["Glob"].execute(
         _call("Glob", {"pattern": "**/*", "include_ignored": True}),
-        context,
+        context=context,
     )
 
     assert output.content == "visible.txt"
 
 
+@pytest.mark.usefixtures("glob_backend")
 async def test_glob_truncates_at_hundred_matches(
     workspace: Path,
     context: ToolExecutionContext,
@@ -239,7 +273,7 @@ async def test_glob_truncates_at_hundred_matches(
         _write(workspace, f"files/file_{index:03}.txt", "x")
     tools = _tools()
 
-    output = tools["Glob"].handler(_call("Glob", {"pattern": "files/*.txt"}), context)
+    output = await tools["Glob"].execute(_call("Glob", {"pattern": "files/*.txt"}), context=context)
 
     lines = output.content.splitlines()
     assert lines[0] == "[Truncated at 100 matches — use a more specific pattern]"
@@ -249,6 +283,7 @@ async def test_glob_truncates_at_hundred_matches(
     assert output.structured["truncated"] is True
 
 
+@pytest.mark.usefixtures("glob_backend")
 async def test_glob_reports_empty_result_and_rejects_file_root(
     workspace: Path,
     context: ToolExecutionContext,
@@ -256,13 +291,13 @@ async def test_glob_reports_empty_result_and_rejects_file_root(
     target = _write(workspace, "plain.txt", "x")
     tools = _tools()
 
-    empty = tools["Glob"].handler(_call("Glob", {"pattern": "*.rs"}), context)
+    empty = await tools["Glob"].execute(_call("Glob", {"pattern": "*.rs"}), context=context)
     assert empty.content == "No files found."
 
     with pytest.raises(ValueError, match="not a directory"):
-        tools["Glob"].handler(
+        await tools["Glob"].execute(
             _call("Glob", {"pattern": "*.txt", "path": str(target)}),
-            context,
+            context=context,
         )
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -121,6 +122,58 @@ def test_file_tool_presentations_expose_target_and_line_semantics() -> None:
         ("−2", "removed"),
         (" lines", "muted"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments", "expected"),
+    [
+        ("Glob", {"pattern": "**/*.py", "path": "src"}, "**/*.py • src"),
+        ("Glob", {"pattern": "*.py", "path": None}, "*.py"),
+        ("Grep", {"pattern": r"foo\s+bar"}, r"foo\s+bar"),
+        (
+            "Grep",
+            {"pattern": "TODO|FIXME", "path": "src", "glob": "*.py", "type": "py"},
+            "TODO|FIXME • src • glob: *.py • type: py",
+        ),
+        ("Grep", {"pattern": "  needle  ", "glob": None, "type": None}, "  needle  "),
+    ],
+)
+def test_search_presentation_shows_pattern_and_explicit_scope(
+    name: str,
+    arguments: dict[str, object],
+    expected: str,
+) -> None:
+    presentation = present_tool(_tool(name, arguments=arguments))
+
+    assert [(line.marker, line.text) for line in presentation.lines] == [("└", expected)]
+
+
+@pytest.mark.parametrize("name", ["Glob", "Grep"])
+def test_search_presentation_omits_missing_arguments(name: str) -> None:
+    assert not present_tool(_tool(name, status="failed")).lines
+
+
+@pytest.mark.parametrize("name", ["Glob", "Grep"])
+@pytest.mark.parametrize("status", ["running", "completed", "failed"])
+def test_search_detail_stays_on_one_line_and_uses_available_width(name: str, status: str) -> None:
+    theme = replace(DEFAULT_TUI_THEME, inline_separator_mark="|")
+    tool = _tool(
+        name,
+        arguments={"pattern": "first\r\nsecond" + "x" * 80, "path": "src"},
+        status=status,
+    )
+    rendered = _tool_activity_text(tool, frame=0, theme=theme)
+
+    assert rendered.plain.splitlines()[1] == "  └ first ↵ second" + "x" * 80 + " | src"
+    for width in (40, 120):
+        console = Console(width=width, color_system=None)
+        lines = [
+            "".join(segment.text for segment in line)
+            for line in console.render_lines(rendered, pad=False)
+        ]
+        assert len(lines) == 2
+        assert all(cell_len(line) <= width for line in lines)
+        assert lines[1].endswith("…" if width == 40 else " | src")
 
 
 def test_command_presentation_keeps_full_flattened_command_for_layout_time() -> None:
