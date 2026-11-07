@@ -180,9 +180,6 @@ class ToolExecutionContext(CancellationContext, Protocol):
     @property
     def workspace(self) -> str | None: ...
 
-    @property
-    def workspace_only(self) -> bool: ...
-
     def resolve_path(self, path: str) -> str: ...
 
     def resolve_working_directory(self, cwd: str | None = None) -> str | None: ...
@@ -197,7 +194,6 @@ class ToolCall:
     tool_name: str
     arguments: Mapping[str, object]
     workspace: str | None = None
-    workspace_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -255,7 +251,6 @@ class ToolResumeCall:
     request: JsonValue
     resolution: ToolInputResolution
     workspace: str | None = None
-    workspace_only: bool = False
 
     @property
     def answer(self) -> JsonValue:

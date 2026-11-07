@@ -6,14 +6,14 @@ from typing import cast
 
 from ouro.application.contracts.configuration import ToolExecutionConfigView
 from ouro.core.tool_batches import ToolExecutionMode
-from ouro.tui.features.configuration.values import _enabled_label, _positive_int
+from ouro.tui.features.configuration.values import _positive_int
 from ouro.tui.menus.editable import EditableChoiceScreen
 from ouro.tui.menus.models import Choice
 from ouro.tui.view_models import TuiToolExecutionConfiguration
 
 
 class ToolExecutionConfigurationScreen(EditableChoiceScreen):
-    """Edit tool execution and path access through the shared grouped menu."""
+    """Edit tool execution limits through the shared grouped menu."""
 
     _MODES = ("sequential", "parallel")
 
@@ -23,9 +23,8 @@ class ToolExecutionConfigurationScreen(EditableChoiceScreen):
             "tool-max-concurrency": str(config.max_concurrency),
             "tool-max-output": str(config.max_output_chars),
         }
-        self._workspace_only = config.workspace_only
         super().__init__(
-            title="TOOL LIMITS & FILE ACCESS",
+            title="TOOL EXECUTION LIMITS",
             placeholder="Search tool settings…",
             choices=self._tool_execution_choices(),
             on_save=self._save_field,
@@ -35,10 +34,6 @@ class ToolExecutionConfigurationScreen(EditableChoiceScreen):
         if self._editing_value is None and selected == "tool-execution-mode":
             current = self._values[selected]
             self._values[selected] = self._MODES[(self._MODES.index(current) + 1) % 2]
-            self._refresh(selected)
-            return
-        if self._editing_value is None and selected == "tool-workspace-only":
-            self._workspace_only = not self._workspace_only
             self._refresh(selected)
             return
         if self._editing_value is None and selected == "tool-config-save":
@@ -59,7 +54,6 @@ class ToolExecutionConfigurationScreen(EditableChoiceScreen):
             max_concurrency=_positive_int(
                 self._values["tool-max-concurrency"], "Parallel tool limit"
             ),
-            workspace_only=self._workspace_only,
             max_output_chars=_positive_int(
                 self._values["tool-max-output"], "Max output characters"
             ),
@@ -107,12 +101,6 @@ class ToolExecutionConfigurationScreen(EditableChoiceScreen):
                 group="EXECUTION",
                 edit_value=self._values["tool-max-output"],
                 edit_placeholder="Enter a positive integer",
-            ),
-            Choice(
-                "tool-workspace-only",
-                "Restrict paths to workspace",
-                trailing_badge=_enabled_label(self._workspace_only),
-                group="PATH ACCESS",
             ),
             Choice(
                 "tool-config-save",

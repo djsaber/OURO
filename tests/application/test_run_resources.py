@@ -141,7 +141,6 @@ async def test_close_releases_all_run_references_with_or_without_catalog(runtime
     catalog_reference = weakref.ref(run.agent_catalog)
     await app._ensure_extension_snapshot(run)
     coordinator_reference = weakref.ref(app._tool_calls_for_run(run.run_id))
-    assert coordinator_reference().execution_config.workspace_only
     del run
 
     await app.close()

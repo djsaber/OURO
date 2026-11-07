@@ -47,9 +47,7 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
             "agent-policy-sync",
             "agent-policy-async",
             "agent-policy-write",
-            "agent-policy-network",
             "agent-policy-mcp",
-            "agent-policy-external-paths",
         }
     )
 
@@ -69,9 +67,7 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
             "agent-policy-sync": "sync" in policy.allowed_execution_modes,
             "agent-policy-async": "async" in policy.allowed_execution_modes,
             "agent-policy-write": policy.allow_write,
-            "agent-policy-network": policy.allow_network,
             "agent-policy-mcp": policy.allow_mcp,
-            "agent-policy-external-paths": policy.allow_external_paths,
         }
         super().__init__(
             title="SUBAGENT PERMISSIONS",
@@ -142,9 +138,7 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
             allowed_model_patterns=tuple(sorted(self._allowed_model_keys)),
             allowed_execution_modes=cast(tuple[ExecutionMode, ...], execution_modes),
             allow_write=self._toggles["agent-policy-write"],
-            allow_network=self._toggles["agent-policy-network"],
             allow_mcp=self._toggles["agent-policy-mcp"],
-            allow_external_paths=self._toggles["agent-policy-external-paths"],
         )
 
     def _validation_error(self) -> str:
@@ -212,21 +206,9 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
                 group="CAPABILITIES",
             ),
             Choice(
-                "agent-policy-network",
-                "Network tools",
-                trailing_badge=state("agent-policy-network"),
-                group="CAPABILITIES",
-            ),
-            Choice(
                 "agent-policy-mcp",
                 "MCP tools",
                 trailing_badge=state("agent-policy-mcp"),
-                group="CAPABILITIES",
-            ),
-            Choice(
-                "agent-policy-external-paths",
-                "Files outside workspace",
-                trailing_badge=state("agent-policy-external-paths"),
                 group="CAPABILITIES",
             ),
             Choice(

@@ -4115,6 +4115,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if not self._surface_available():
             return
         counts, error = await self._controller.task_status()
+        if self._host_closing:
+            return
         if counts != self._system_status.task_counts or error != self._system_status.task_error:
             self._system_status = replace(self._system_status, task_counts=counts, task_error=error)
             self.query_one(ConversationView).set_system_status(self._system_status)

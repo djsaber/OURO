@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from collections.abc import Iterator
@@ -10,7 +11,7 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from ouro.automation.file_records import StoredExecution, StoredTask
-from ouro.core.agents import DelegationRecord
+from ouro.core.agents import AgentCatalogSnapshot, DelegationRecord
 from ouro.core.base import VersionedOuroModel
 from ouro.core.billing import ProviderUsageEntry, UsageLedgerEvent
 from ouro.core.context import ContextMetrics
@@ -29,6 +30,7 @@ MODELS: dict[str, type[BaseModel]] = {
     "context": ContextSnapshotRecord,
     "harness": HarnessVersion,
     "delegation": DelegationRecord,
+    "agent_catalog": AgentCatalogSnapshot,
     "resource": SessionResourceReference,
     "task": StoredTask,
     "execution": StoredExecution,
@@ -290,15 +292,58 @@ def _usage_event_v1_to_v2(value: dict[str, Any]) -> None:
     """The envelope is unchanged; its entry has an independent schema conversion."""
 
 
+def _session_v5_to_v6(value: dict[str, Any]) -> None:
+    value.pop("workspace_trusted", None)
+
+
+def _tool_call_authority(tools: list[dict[str, Any]]) -> None:
+    for tool in tools:
+        for field in ("requires_network", "requires_mcp", "requires_external_paths"):
+            tool.pop(field, None)
+
+
+def _catalog_hash(value: dict[str, Any]) -> str:
+    payload = {key: value[key] for key in ("schema_version", "revision", "entries", "spawn_policy")}
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _agent_catalog_v1_to_v2(value: dict[str, Any]) -> None:
+    if value["contract_hash"] != _catalog_hash(value):
+        raise UpgradeDataError("agent catalog contract hash does not match its content")
+    for field in ("allow_network", "allow_external_paths"):
+        value["spawn_policy"].pop(field, None)
+    for entry in value["entries"]:
+        _tool_call_authority(entry["effective_tools"])
+    value["schema_version"] = 2
+    value["contract_hash"] = _catalog_hash(value)
+
+
+def _run_v10_to_v11(value: dict[str, Any]) -> None:
+    if value.get("agent_catalog") is not None:
+        _convert_owned("agent_catalog", value["agent_catalog"])
+
+
+def _delegation_v2_to_v3(value: dict[str, Any]) -> None:
+    _tool_call_authority(value["effective_tools"])
+    value["constraints"].pop("allow_external_paths", None)
+
+
 VERSION_STEPS: dict[str, dict[int, UpgradeStep]] = {
+    "agent_catalog": {1: UpgradeStep(2, _agent_catalog_v1_to_v2)},
+    "delegation": {2: UpgradeStep(3, _delegation_v2_to_v3)},
     "context": {
         3: UpgradeStep(4, _context_v3_to_v4),
         4: UpgradeStep(5, _context_v4_to_v5),
         5: UpgradeStep(11, _context_v5_to_v11),
     },
     "resource": {2: UpgradeStep(3, _resource_v2_to_v3)},
-    "session": {2: UpgradeStep(5, _session_v2_to_v5)},
-    "run": {2: UpgradeStep(5, _run_v2_to_v5), 5: UpgradeStep(10, _run_v5_to_v10)},
+    "session": {2: UpgradeStep(5, _session_v2_to_v5), 5: UpgradeStep(6, _session_v5_to_v6)},
+    "run": {
+        2: UpgradeStep(5, _run_v2_to_v5),
+        5: UpgradeStep(10, _run_v5_to_v10),
+        10: UpgradeStep(11, _run_v10_to_v11),
+    },
     "message": {3: UpgradeStep(4, _message_v3_to_v4), 4: UpgradeStep(8, _message_v4_to_v8)},
     "task": {1: UpgradeStep(3, _task_v1_to_v3)},
     "execution": {1: UpgradeStep(3, _execution_v1_to_v3)},

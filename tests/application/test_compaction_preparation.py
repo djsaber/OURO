@@ -141,7 +141,6 @@ async def test_auto_compaction_reuses_views_and_reloads_only_changed_history(
         ),
         input_modalities=frozenset({"image"}),
         workspace=str(tmp_path),
-        workspace_only=True,
     )
     store.append_message(media)
     source.unlink()

@@ -423,7 +423,7 @@ def _directory_arg(raw: str | None, context: ToolExecutionContext) -> Path:
         resolved = context.resolve_working_directory(None)
         root = Path(resolved) if resolved is not None else Path.cwd()
     else:
-        root = Path(context.resolve_path(raw, read_only=True))
+        root = Path(context.resolve_path(raw))
     if not root.is_dir():
         raise ValueError(f"search root is not a directory: {root}")
     return root
@@ -898,7 +898,7 @@ def _path_arg(raw: str | None, context: ToolExecutionContext) -> Path:
         if resolved is None:
             raise ValueError("tool argument 'path' is required when no workspace is configured")
         return Path(resolved)
-    return Path(context.resolve_path(raw, read_only=True))
+    return Path(context.resolve_path(raw))
 
 
 @dataclass(frozen=True)

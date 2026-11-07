@@ -14,7 +14,6 @@ from ouro.tools import (
     ToolInvocation,
     builtin_tools,
 )
-from ouro.tools.base import ToolPolicyError
 from ouro.tools.builtin import search
 from ouro.tools.builtin.search import builtin_grep_tool, builtin_ripgrep_tool, detect_ripgrep
 from ouro.tools.schema import tool_argument_error
@@ -38,8 +37,9 @@ def test_detection_only_selects_ripgrep(commands, expected):
 
 
 @pytest.mark.parametrize("executable", ["/native/rg", None])
+@pytest.mark.parametrize("external", [False, True])
 async def test_registry_binds_both_search_tools_with_one_detection(
-    monkeypatch, tmp_path, executable
+    monkeypatch, tmp_path, executable, external
 ):
     detect = Mock(return_value=executable)
     monkeypatch.setattr(search, "detect_ripgrep", detect)
@@ -52,12 +52,17 @@ async def test_registry_binds_both_search_tools_with_one_detection(
         "properties"
     ].keys()
     (tmp_path / "one.txt").write_text("needle", encoding="utf-8")
-    context = ToolExecutionContext(workspace=tmp_path)
+    workspace = tmp_path / "workspace" if external else tmp_path
+    workspace.mkdir(exist_ok=True)
+    context = ToolExecutionContext(workspace=workspace)
     context.run_process = AsyncMock(return_value=ProcessResult("", "", 1))
     for name, pattern in (("Glob", "*.txt"), ("Grep", "needle")):
         result = await tools[name].execute(
             ToolInvocation(
-                session_id="s", run_id="r", tool_name=name, arguments={"pattern": pattern}
+                session_id="s",
+                run_id="r",
+                tool_name=name,
+                arguments={"pattern": pattern, "path": ".." if external else "."},
             ),
             context=context,
         )
@@ -134,11 +139,9 @@ async def test_paths_and_sensitive_files_are_checked_before_execution(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / ".env.local").write_text("secret", encoding="utf-8")
-    context = ToolExecutionContext(workspace=workspace, workspace_only=True)
+    context = ToolExecutionContext(workspace=workspace)
     context.run_process = AsyncMock()
     tool = builtin_ripgrep_tool("unused")
-    with pytest.raises(ToolPolicyError):
-        await tool.execute(_call(pattern="x", path="../outside.txt"), context=context)
     result = await tool.execute(_call(pattern="x", path=".env.local"), context=context)
     assert result.is_error and "sensitive" in result.content
     context.run_process.assert_not_called()

@@ -73,7 +73,7 @@ SYSTEM_SETTING_ACTIONS = (
     SystemSettingAction("plugins.list", "Manage plugins", "Plugins"),
     SystemSettingAction("plugins.install", "+ plugin", "Plugins"),
     SystemSettingAction("tools.permissions", "Tool permissions", "Tools"),
-    SystemSettingAction("tools.execution", "Tool limits & file access", "Tools"),
+    SystemSettingAction("tools.execution", "Tool execution limits", "Tools"),
     SystemSettingAction("agents.policy", "Subagent permissions", "Subagents"),
     SystemSettingAction("agents.list", "Manage subagents", "Subagents"),
     SystemSettingAction("agents.create", "+ subagent", "Subagents"),
@@ -392,8 +392,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        scope = "workspace only" if updated.workspace_only else "external paths allowed"
-        self.notify(f"Tool execution saved: {updated.mode}, {scope} (next tool batch)")
+        self.notify(f"Tool execution saved: {updated.mode} (next tool batch)")
 
     async def _configure_agent_policy(self, *, menu: ChoiceScreen | None = None) -> None:
         try:

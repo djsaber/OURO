@@ -125,7 +125,6 @@ async def invoke_plugin_callback(
             session_id=snapshot.session_id if snapshot is not None else None,
             run_id=getattr(call, "run_id", None),
             workspace=getattr(call, "workspace", None),
-            workspace_only=getattr(call, "workspace_only", False),
         ) as invocation:
 
             def close() -> None:

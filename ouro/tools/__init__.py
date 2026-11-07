@@ -13,7 +13,6 @@ from ouro.tools.base import (
     ToolInputRequest,
     ToolInvocation,
     ToolPermissionControl,
-    ToolPolicyError,
     ToolResult,
 )
 from ouro.tools.batch_executor import ToolBatchExecutor
@@ -36,7 +35,6 @@ __all__ = [
     "ToolExecutor",
     "ToolInvocation",
     "ProcessResult",
-    "ToolPolicyError",
     "ToolPermissionControl",
     "ToolRegistry",
     "ToolResult",

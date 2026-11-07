@@ -109,9 +109,7 @@ class AgentSpawnPolicy(OuroModel):
     allowed_execution_modes: tuple[ExecutionMode, ...] = ("sync", "async")
     allowed_lifecycle_bindings: tuple[LifecycleBinding, ...] = ("bound",)
     allow_write: bool = True
-    allow_network: bool = True
     allow_mcp: bool = True
-    allow_external_paths: bool = True
 
     @field_validator("allowed_agent_id_patterns", "allowed_model_patterns")
     @classmethod
@@ -146,11 +144,7 @@ class AgentSpawnPolicy(OuroModel):
     def allows_tool(self, tool: EffectiveToolRef) -> bool:
         if tool.effect != "read_only" and not self.allow_write:
             return False
-        if tool.requires_network and not self.allow_network:
-            return False
-        if tool.requires_mcp and not self.allow_mcp:
-            return False
-        return not tool.requires_external_paths or self.allow_external_paths
+        return tool.source != "mcp" or self.allow_mcp
 
 
 class EffectiveToolRef(OuroModel):
@@ -167,9 +161,6 @@ class EffectiveToolRef(OuroModel):
     ] = "builtin"
     effect: Literal["read_only", "state_changing", "unknown"] = "unknown"
     minimum_permission_mode: PermissionMode = "auto"
-    requires_network: bool = False
-    requires_mcp: bool = False
-    requires_external_paths: bool = False
 
     def permits(self, current: EffectiveToolRef) -> bool:
         """Intersect current capability with this delegation's authority ceiling."""
@@ -187,9 +178,6 @@ class EffectiveToolRef(OuroModel):
                 or self.effect == "unknown"
                 or current.effect == "read_only"
             )
-            and (self.requires_network or not current.requires_network)
-            and (self.requires_mcp or not current.requires_mcp)
-            and (self.requires_external_paths or not current.requires_external_paths)
         )
 
 
@@ -213,6 +201,7 @@ class AgentCatalogEntry(OuroModel):
 
 
 class AgentCatalogSnapshot(VersionedOuroModel):
+    schema_version: Literal[2] = 2
     revision: int = Field(default=0, ge=0)
     entries: tuple[AgentCatalogEntry, ...] = ()
     spawn_policy: AgentSpawnPolicy = Field(default_factory=AgentSpawnPolicy)
@@ -258,7 +247,6 @@ class AgentCatalogSnapshot(VersionedOuroModel):
 
 class DelegatedConstraints(OuroModel):
     workspace: str | None = None
-    allow_external_paths: bool = False
 
 
 class ResultDelivery(OuroModel):
@@ -296,7 +284,7 @@ class DelegationResult(OuroModel):
 
 
 class DelegationRecord(VersionedOuroModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     revision: int = Field(default=0, ge=0)
     delegation_id: str = Field(default_factory=lambda: new_id("dlg"))
     idempotency_key: str = Field(min_length=1, max_length=256)

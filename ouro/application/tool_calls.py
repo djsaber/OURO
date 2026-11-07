@@ -5,7 +5,6 @@ import json
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import datetime, timedelta
-from pathlib import Path
 from time import monotonic
 from typing import Literal, Protocol, cast
 
@@ -154,9 +153,7 @@ class ToolCallCoordinator:
         runs: RunLifecycle,
         execution_config: ToolExecutionConfig,
         default_workspace: str | None,
-        artifact_root: str | None,
         is_aborted: Callable[[str, str], bool],
-        readable_directory: Callable[[str], Path] | None = None,
         tool_policies: ToolPolicyRegistry | None = None,
         session_controls: SessionControlCoordinator | None = None,
         session_controllers: PluginSessionControllerRegistry | None = None,
@@ -170,8 +167,6 @@ class ToolCallCoordinator:
         self.runs = runs
         self.execution_config = execution_config
         self.default_workspace = default_workspace
-        self.artifact_root = artifact_root
-        self.readable_directory = readable_directory
         self.is_aborted = is_aborted
         self.tool_policies = tool_policies or ToolPolicyRegistry()
         self.session_controls = session_controls
@@ -853,11 +848,6 @@ class ToolCallCoordinator:
             signal=abort_signal,
             on_late_result=preserve_late_result,
             workspace=session.workspace or self.default_workspace,
-            artifact_root=self.artifact_root,
-            readable_roots=(self.readable_directory(session.session_id),)
-            if self.readable_directory
-            else (),
-            workspace_only=self.execution_config.workspace_only,
             max_output_chars=self.execution_config.max_output_chars,
         )
         await self.batch_executor.execute(
@@ -1176,11 +1166,6 @@ class ToolCallCoordinator:
                 execution_context = ToolExecutionContext(
                     harness=harness,
                     workspace=workspace or self.default_workspace,
-                    artifact_root=self.artifact_root,
-                    readable_roots=(self.readable_directory(session.session_id),)
-                    if self.readable_directory
-                    else (),
-                    workspace_only=self.execution_config.workspace_only,
                     max_output_chars=self.execution_config.max_output_chars,
                 )
                 # Persist the answer and execution intent before a callback may cause effects.

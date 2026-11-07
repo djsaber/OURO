@@ -172,7 +172,6 @@ class TuiToolConfiguration:
 class TuiToolExecutionConfiguration:
     mode: ToolExecutionMode
     max_concurrency: int
-    workspace_only: bool
     max_output_chars: int
 
 
@@ -182,9 +181,7 @@ class TuiAgentRuntimeConfiguration:
     allowed_model_patterns: tuple[str, ...]
     allowed_execution_modes: tuple[ExecutionMode, ...]
     allow_write: bool
-    allow_network: bool
     allow_mcp: bool
-    allow_external_paths: bool
 
 
 @dataclass(frozen=True)

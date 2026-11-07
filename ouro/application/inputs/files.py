@@ -230,7 +230,6 @@ class FileInputProjector:
         *,
         input_modalities: frozenset[MediaModality],
         workspace: str | None,
-        workspace_only: bool,
     ) -> MessageRecord:
         """Persist the bounded file material in the ordinary scaffold content once."""
         content = _prepare_media_content(
@@ -251,7 +250,7 @@ class FileInputProjector:
                 "the model in use did not support it. Only the file information was provided."
             )
 
-        context = ToolExecutionContext(workspace=workspace, workspace_only=workspace_only)
+        context = ToolExecutionContext(workspace=workspace)
         for item in message.input_attachments:
             if isinstance(item, InputFileReference):
                 try:

@@ -61,7 +61,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Manage plugins",
             "+ plugin",
             "Tool permissions",
-            "Tool limits & file access",
+            "Tool execution limits",
             "Subagent permissions",
             "Manage subagents",
             "+ subagent",

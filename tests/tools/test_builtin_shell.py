@@ -376,7 +376,7 @@ async def test_detected_shell_executes_its_own_syntax(tmp_path) -> None:
     outcome = await ToolExecutor(registry).execute(
         _invocation(shell, command),
         approved=True,
-        context=ToolExecutionContext(workspace=tmp_path, workspace_only=True),
+        context=ToolExecutionContext(workspace=tmp_path),
     )
 
     assert outcome.result is not None
@@ -405,7 +405,7 @@ async def test_detected_shell_surfaces_command_failure(tmp_path) -> None:
     outcome = await ToolExecutor(registry).execute(
         _invocation(shell, command),
         approved=True,
-        context=ToolExecutionContext(workspace=tmp_path, workspace_only=True),
+        context=ToolExecutionContext(workspace=tmp_path),
     )
 
     assert outcome.result is not None

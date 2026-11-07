@@ -149,7 +149,7 @@ def builtin_file_tools() -> list[Tool]:
 
 def _read(invocation: ToolInvocation, context: ToolExecutionContext) -> ToolResult:
     arguments = _ReadArguments.model_validate(invocation.arguments)
-    path = context.resolve_path(arguments.path, read_only=True)
+    path = context.resolve_path(arguments.path)
     if path.is_dir():
         raise IsADirectoryError(f"path is a directory, not a text file: {path}")
     offset, limit = arguments.offset, arguments.limit

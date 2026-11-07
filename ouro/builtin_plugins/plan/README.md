@@ -67,8 +67,8 @@ While Plan mode is active:
 - approval cannot override the Plan tool policy;
 - shell, MCP, plugin, or other indirect write paths cannot be used to modify the Plan.
 
-The policy reads the active controller and canonical target path. Planning restrictions do
-not replace workspace policy, tool permissions, or normal execution safety checks.
+The policy reads the active controller and canonical target path. Planning restrictions compose
+with tool permissions and invocation checks. They govern tool calls, not filesystem isolation.
 
 ### Review and Resumption
 

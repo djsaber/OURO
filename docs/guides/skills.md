@@ -2,6 +2,8 @@
 
 > 文档类型：使用指南
 
+工作空间用于解析相对路径和提供默认工作目录；工具调用由权限和审批控制，文件与网络访问由宿主环境和外部服务决定。
+
 个性化基础 / 追加提示词见[配置文件指南](configuration.md)。下例中的 Provider、Endpoint 和 Skill 标识须替换为实际目录中的值。
 
 ```bash
@@ -10,7 +12,7 @@ uv run --frozen ouro config permissions --home ./.ouro-dev --tool PowerShell --m
 uv run --frozen ouro config permissions --home ./.ouro-dev --tool Write --mode deny
 uv run --frozen ouro config permissions --home ./.ouro-dev --plugin dev.example.plugin --mode approval
 uv run --frozen ouro config tool-execution --home ./.ouro-dev --mode parallel --max-concurrency 4 \
-  --workspace-only --max-output-chars 100000
+  --max-output-chars 100000
 uv run --frozen ouro config queued-inputs --home ./.ouro-dev --consumption-mode all-at-once
 uv run --frozen ouro config run-budget --home ./.ouro-dev --max-model-rounds 50
 uv run --frozen ouro config compaction --home ./.ouro-dev --provider <provider_id> --endpoint <endpoint_id>

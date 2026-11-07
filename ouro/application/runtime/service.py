@@ -604,14 +604,7 @@ class RuntimeService:
         if resources is None:
             resources = RunResources()
             self._run_resources[run_id] = resources
-        delegated = resources.constraints
         execution_config = self._tool_execution_config
-        if (
-            delegated is not None
-            and not delegated.allow_external_paths
-            and not execution_config.workspace_only
-        ):
-            execution_config = execution_config.model_copy(update={"workspace_only": True})
         current = resources.tool_calls
         if (
             current is not None
@@ -636,13 +629,7 @@ class RuntimeService:
             runs=self.run_lifecycle,
             execution_config=execution_config,
             default_workspace=self.default_workspace,
-            artifact_root=(
-                str(self.environment.artifact_root)
-                if self.environment.artifact_root is not None
-                else None
-            ),
             is_aborted=self.run_ownership.is_aborted,
-            readable_directory=self.resources.directory_for if self.resources else None,
             tool_policies=self._tool_policies_for_run(run_id),
             session_controls=self.session_controls,
             session_controllers=self._session_controllers_for_run(run_id),
@@ -1113,8 +1100,6 @@ class RuntimeService:
                     "current_model": selected.key,
                     "reasoning_request": reasoning,
                     "workspace": resolved_workspace,
-                    "workspace_trusted": session.workspace_trusted
-                    and session.workspace == resolved_workspace,
                     "approval_mode": approval_mode,
                     "interaction_mode": interaction_mode,
                 }
@@ -2413,7 +2398,6 @@ class RuntimeService:
                 runs=self.run_lifecycle,
                 workspace=session.workspace
                 or self._tool_calls_for_run(run.run_id).default_workspace,
-                workspace_only=self._tool_calls_for_run(run.run_id).execution_config.workspace_only,
                 resume_turn_id=resume_turn_id,
             )
             if run.driver.is_default:
@@ -3496,18 +3480,12 @@ class RuntimeService:
                     for resource_id in item.resource_refs
                 )
             messages = separate_attachments(message, attachments)
-            resources = self._run_resources.get(run.run_id)
-            constraints = resources.constraints if resources is not None else None
-            workspace_only = self._tool_execution_config.workspace_only or (
-                constraints is not None and not constraints.allow_external_paths
-            )
             messages[0] = self.resources.prepare_input(
                 messages[0],
                 input_modalities=self._adapter_for_session_id(
                     session.session_id
                 ).model.input_modalities,
                 workspace=session.workspace,
-                workspace_only=workspace_only,
             )
             return messages
         return [message]

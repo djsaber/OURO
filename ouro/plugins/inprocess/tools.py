@@ -40,7 +40,6 @@ def _adapt_tool(contribution: sdk.ToolContribution, *, owner_id: str) -> Tool:
             tool_name=invocation.tool_name,
             arguments=MappingProxyType(dict(invocation.arguments)),
             workspace=str(context.workspace) if context.workspace is not None else None,
-            workspace_only=context.workspace_only,
         )
         try:
             raw, change = await invoke_plugin_callback(
@@ -77,7 +76,6 @@ def _adapt_tool(contribution: sdk.ToolContribution, *, owner_id: str) -> Tool:
             request=request.data,
             resolution=_sdk_input_resolution(resolution),
             workspace=str(context.workspace) if context.workspace is not None else None,
-            workspace_only=context.workspace_only,
         )
         try:
             raw, change = await invoke_plugin_callback(
@@ -178,10 +176,6 @@ class _SDKToolExecutionContext:
     def workspace(self) -> str | None:
         value = self._context.workspace
         return str(value) if value is not None else None
-
-    @property
-    def workspace_only(self) -> bool:
-        return self._context.workspace_only
 
     @property
     def is_aborted(self) -> bool:

@@ -109,9 +109,6 @@ class RunDriverContext(Protocol):
     def workspace(self) -> str | None: ...
 
     @property
-    def workspace_only(self) -> bool: ...
-
-    @property
     def session_id(self) -> str: ...
 
     @property

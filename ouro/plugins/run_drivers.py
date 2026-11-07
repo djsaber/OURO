@@ -180,7 +180,6 @@ def run_driver_invocation(
         session_id=context.session_id,
         run_id=context.run_id,
         workspace=context.workspace,
-        workspace_only=context.workspace_only,
         native_run=native_run,
     ):
         yield native_run

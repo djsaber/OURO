@@ -100,12 +100,6 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Maximum parallel tool calls (1-64)",
     )
     tool_execution_parser.add_argument(
-        "--workspace-only",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Restrict built-in file paths and Bash cwd to the Session workspace",
-    )
-    tool_execution_parser.add_argument(
         "--max-output-chars",
         type=int,
         default=None,
@@ -173,9 +167,7 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     for flag, dest, help_text in (
         ("--write", "allow_write", "Allow state-changing tools"),
-        ("--network", "allow_network", "Allow tools that require network access"),
         ("--mcp", "allow_mcp", "Allow MCP tools"),
-        ("--external-paths", "allow_external_paths", "Allow tools to use external paths"),
     ):
         agents_parser.add_argument(
             flag,

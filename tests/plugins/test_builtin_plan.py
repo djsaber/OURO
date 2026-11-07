@@ -989,7 +989,7 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     option_properties = exit_properties["options"]["items"]["properties"]
     assert all("description" in schema for schema in option_properties.values())
     controller = catalog.session_controllers.get("dev.ouro.plan/session_controllers/mode")
-    context = ToolExecutionContext(workspace=workspace, workspace_only=True)
+    context = ToolExecutionContext(workspace=workspace)
     session_id = "ses_plan_contract"
     run_id = "run_plan_contract"
     store.create_session(SessionRecord(session_id=session_id))

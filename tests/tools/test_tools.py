@@ -1,5 +1,6 @@
 import asyncio
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -113,7 +114,7 @@ async def test_relative_file_path_resolves_against_workspace(tmp_path) -> None:
             tool_name="Read",
             arguments={"path": "note.txt"},
         ),
-        context=ToolExecutionContext(workspace=tmp_path, workspace_only=True),
+        context=ToolExecutionContext(workspace=tmp_path),
     )
 
     assert outcome.result is not None
@@ -122,85 +123,51 @@ async def test_relative_file_path_resolves_against_workspace(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_workspace_policy_rejects_parent_traversal(tmp_path) -> None:
+@pytest.mark.parametrize("absolute", [False, True])
+async def test_file_tools_use_external_paths_with_normal_call_permissions(tmp_path, absolute):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    outside = tmp_path / "outside.txt"
-    outside.write_text("secret", encoding="utf-8")
-
-    outcome = await ToolExecutor(_registry()).execute(
-        ToolInvocation(
-            session_id="ses_1",
-            run_id="run_1",
-            tool_name="Read",
-            arguments={"path": "../outside.txt"},
-        ),
-        context=ToolExecutionContext(workspace=workspace, workspace_only=True),
+    target = tmp_path / "notes.txt"
+    path = str(target) if absolute else "../notes.txt"
+    context = ToolExecutionContext(workspace=workspace)
+    executor = ToolExecutor(_registry())
+    write = ToolInvocation(
+        session_id="ses_1",
+        run_id="run_1",
+        tool_name="Write",
+        arguments={"path": path, "content": "first"},
     )
-
-    assert outcome.result is not None
-    assert outcome.result.is_error is True
-    assert outcome.result.structured["error_type"] == "ToolPolicyError"
-    assert "outside the configured workspace" in outcome.result.content
-
-
-@pytest.mark.asyncio
-async def test_workspace_policy_allows_host_artifact_root(tmp_path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    artifact_root = tmp_path / "home" / "artifacts"
-    target = artifact_root / "dev.example.plugin" / "plan.md"
-
-    outcome = await ToolExecutor(_registry()).execute(
-        ToolInvocation(
-            session_id="ses_1",
-            run_id="run_1",
-            tool_name="Write",
-            arguments={"path": str(target), "content": "# Plan"},
-        ),
-        approved=True,
-        context=ToolExecutionContext(
-            workspace=workspace,
-            artifact_root=artifact_root,
-            workspace_only=True,
-        ),
-    )
-
-    assert outcome.result is not None
-    assert outcome.result.is_error is False
-    assert target.read_text(encoding="utf-8") == "# Plan"
-
-
-@pytest.mark.asyncio
-async def test_workspace_policy_does_not_allow_other_user_data(tmp_path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    home = tmp_path / "home"
-    target = home / "config" / "config.json"
-
-    outcome = await ToolExecutor(_registry()).execute(
-        ToolInvocation(
-            session_id="ses_1",
-            run_id="run_1",
-            tool_name="Write",
-            arguments={"path": str(target), "content": "{}"},
-        ),
-        approved=True,
-        context=ToolExecutionContext(
-            workspace=workspace,
-            artifact_root=home / "artifacts",
-            workspace_only=True,
-        ),
-    )
-
-    assert outcome.result is not None
-    assert outcome.result.is_error is True
-    assert outcome.result.structured["error_type"] == "ToolPolicyError"
+    assert (await executor.execute(write, context=context)).status == "approval_required"
     assert not target.exists()
+    written = await executor.execute(write, context=context, approved=True)
+    assert written.result is not None and not written.result.is_error
+    edit = ToolInvocation(
+        session_id="ses_1",
+        run_id="run_1",
+        tool_name="Edit",
+        arguments={"path": path, "old": "first", "new": "second"},
+    )
+    assert (await executor.execute(edit, context=context)).status == "approval_required"
+    assert target.read_text(encoding="utf-8") == "first"
+    edited = await executor.execute(edit, context=context, approved=True)
+    assert edited.result is not None and not edited.result.is_error
+    read = ToolInvocation(
+        session_id="ses_1",
+        run_id="run_1",
+        tool_name="Read",
+        arguments={"path": path},
+    )
+    observed = await executor.execute(read, context=context)
+    assert observed.result is not None and observed.result.content == "1\tsecond"
+    executor.replace_permission_overrides({"Write": "deny"})
+    denied = await executor.execute(write, context=context, approved=True)
+    assert denied.result is not None and denied.result.is_error
+    assert denied.result.structured["error_type"] == "ToolPermissionDenied"
+    assert target.read_text(encoding="utf-8") == "second"
 
 
 @pytest.mark.asyncio
-async def test_workspace_policy_rejects_symlink_escape(tmp_path) -> None:
+async def test_read_resolves_symlink_to_external_file(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     outside = tmp_path / "outside.txt"
@@ -218,11 +185,12 @@ async def test_workspace_policy_rejects_symlink_escape(tmp_path) -> None:
             tool_name="Read",
             arguments={"path": "link.txt"},
         ),
-        context=ToolExecutionContext(workspace=workspace, workspace_only=True),
+        context=ToolExecutionContext(workspace=workspace),
     )
 
     assert outcome.result is not None
-    assert outcome.result.structured["error_type"] == "ToolPolicyError"
+    assert not outcome.result.is_error
+    assert outcome.result.content == "1\tsecret"
 
 
 @pytest.mark.asyncio
@@ -251,23 +219,31 @@ async def test_tool_output_is_truncated_at_executor_boundary() -> None:
 
 
 @pytest.mark.asyncio
-async def test_command_shell_rejects_working_directory_outside_workspace(tmp_path) -> None:
+async def test_command_shell_accepts_working_directory_outside_workspace(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    shell = detect_command_shell()
+    assert shell is not None
+    command = {
+        "powershell": "(Get-Location).ProviderPath",
+        "windows_powershell": "(Get-Location).ProviderPath",
+        "cmd": "cd",
+    }.get(shell.kind, "pwd")
 
     outcome = await ToolExecutor(_registry()).execute(
         ToolInvocation(
             session_id="ses_1",
             run_id="run_1",
-            tool_name=_command_tool_name(),
-            arguments={"command": "echo unreachable", "cwd": str(tmp_path)},
+            tool_name=shell.tool_name,
+            arguments={"command": command, "cwd": str(tmp_path)},
         ),
         approved=True,
-        context=ToolExecutionContext(workspace=workspace, workspace_only=True),
+        context=ToolExecutionContext(workspace=workspace),
     )
 
     assert outcome.result is not None
-    assert outcome.result.structured["error_type"] == "ToolPolicyError"
+    assert not outcome.result.is_error
+    assert Path(outcome.result.structured["stdout"].strip()).resolve() == tmp_path.resolve()
 
 
 @pytest.mark.asyncio

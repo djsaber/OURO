@@ -316,13 +316,11 @@ class ResourceService:
         *,
         input_modalities: frozenset[MediaModality],
         workspace: str | None,
-        workspace_only: bool,
     ) -> MessageRecord:
         return self._projector().prepare_input(
             message,
             input_modalities=input_modalities,
             workspace=workspace,
-            workspace_only=workspace_only,
         )
 
     def project_model_messages(

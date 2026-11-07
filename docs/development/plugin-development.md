@@ -109,7 +109,7 @@ class Plugin:
 - `stop` 必须幂等，并在 deadline 内关闭 owner 资源。
 
 `PluginContext.data` 保存实例级插件私有数据；会话业务状态使用调用内的 `call.session_state`。若插件需要产生可由 OURO 内置文件工具读取或编辑的用户制品，使用
-`PluginContext.artifact_root`。Host 为每个插件提供 `OURO_HOME/artifacts/<plugin-id>/` 隔离目录；该目录不是
+`PluginContext.artifact_root`。Host 为每个插件提供 `OURO_HOME/artifacts/<plugin-id>/` 制品目录；该目录不是
 configuration、插件私有 data 或 canonical Session 数据。没有本地用户数据根的 Host 可以返回 `None`，依赖文件
 制品的插件应在激活时明确失败。
 

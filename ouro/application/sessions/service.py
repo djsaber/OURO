@@ -960,7 +960,6 @@ class SessionService:
             updated_at=now,
             last_activity_at=now,
             workspace=source.workspace,
-            workspace_trusted=source.workspace_trusted,
             current_model=source.current_model,
             reasoning_request=source.reasoning_request,
             approval_mode=source.approval_mode,

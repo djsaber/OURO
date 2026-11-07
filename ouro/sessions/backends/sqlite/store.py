@@ -126,7 +126,7 @@ from ouro.sessions.sqlite_runs import (
 from ouro.sessions.sqlite_sessions import read_session
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
-SQLITE_SCHEMA_VERSION = 27
+SQLITE_SCHEMA_VERSION = 28
 
 
 class SQLiteSessionStore:

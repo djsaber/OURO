@@ -127,8 +127,10 @@ async def test_reference_uses_original_path_and_freezes_observed_text(tmp_path, 
     source = tmp_path / "SECURITY.md"
     source.write_text("original security policy", encoding="utf-8")
     item = input_content.InputFileReference(name=source.name, path=str(source))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
     result = await app.runtime.run(
-        "What is this file?", attachments=(item,), workspace=str(tmp_path)
+        "What is this file?", attachments=(item,), workspace=str(workspace)
     )
     session_id = result.session.session_id
     context = app.runtime.sessions.context(session_id)

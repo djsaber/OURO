@@ -95,7 +95,6 @@ class SessionCatalogEntry(ApplicationDTO):
     approval_mode: SessionApprovalMode = "inherit"
     interaction_mode: SessionInteractionMode = "interactive"
     workspace: str | None = None
-    workspace_trusted: bool = False
     archived: bool = False
     pinned: bool = False
     tags: tuple[str, ...] = ()
@@ -136,7 +135,6 @@ class SessionView(ApplicationDTO):
     archived: bool
     pinned: bool
     workspace: str | None = None
-    workspace_trusted: bool
     current_model: str | None = None
     reasoning_request: ReasoningRequest = Field(default_factory=ReasoningRequest)
     approval_mode: SessionApprovalMode = "inherit"
@@ -171,7 +169,6 @@ class SessionView(ApplicationDTO):
             archived=session.archived,
             pinned=session.pinned,
             workspace=session.workspace,
-            workspace_trusted=session.workspace_trusted,
             current_model=session.current_model,
             reasoning_request=session.reasoning_request,
             approval_mode=session.approval_mode,

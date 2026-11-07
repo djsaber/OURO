@@ -710,7 +710,6 @@ async def test_tool_execution_uses_shared_grouped_inline_menu(tmp_path: Path) ->
             "EXECUTION",
             "EXECUTION",
             "EXECUTION",
-            "PATH ACCESS",
             "ACTIONS",
         ]
 
@@ -745,17 +744,11 @@ async def test_tool_execution_uses_shared_grouped_inline_menu(tmp_path: Path) ->
         await pilot.pause()
         assert screen._values["tool-execution-mode"] != current.mode
 
-        screen._refresh("tool-workspace-only")
-        await pilot.press("enter")
-        await pilot.pause()
-        assert screen._workspace_only is not current.workspace_only
-
         screen._refresh("tool-config-save")
         await pilot.press("enter")
         await pilot.pause()
         assert len(results) == 1
         assert results[0].mode != current.mode
-        assert results[0].workspace_only is not current.workspace_only
 
 
 @pytest.mark.asyncio

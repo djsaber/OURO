@@ -370,6 +370,29 @@ async def test_welcome_task_counts_show_only_actionable_activity(tmp_path):
         assert app.query_one("#welcome-task-counts", Static).content.plain == "8/11 completed"
 
 
+async def test_task_status_refresh_discards_result_after_host_closes(tmp_path, monkeypatch):
+    app = OuroTuiApp(application=_application(tmp_path))
+    entered, release = asyncio.Event(), asyncio.Event()
+    refresh = None
+    try:
+        async with run_ready_app(app):
+            previous = app._system_status
+
+            async def delayed_status():
+                entered.set()
+                await release.wait()
+                return TaskCounts(waiting=1), None
+
+            monkeypatch.setattr(app._controller, "task_status", delayed_status)
+            refresh = asyncio.create_task(app._sync_task_status())
+            await asyncio.wait_for(entered.wait(), 2)
+    finally:
+        release.set()
+        if refresh is not None:
+            await refresh
+    assert app._system_status == previous
+
+
 @pytest.mark.parametrize(
     ("field", "title", "current"),
     [

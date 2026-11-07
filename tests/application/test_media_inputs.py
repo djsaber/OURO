@@ -278,7 +278,6 @@ def test_oversized_attachment_batch_raises_without_silently_saving_partial_media
             message,
             input_modalities=frozenset({"image"}),
             workspace=str(tmp_path),
-            workspace_only=False,
         )
     assert message.content == []
 

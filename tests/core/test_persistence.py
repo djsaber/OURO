@@ -26,7 +26,8 @@ def test_versioned_record_model_rejects_unknown_schema_version() -> None:
         ({"schema_version": 2, "session_id": "ses_previous"}, "2"),
         ({"schema_version": 3, "session_id": "ses_previous_selection"}, "3"),
         ({"schema_version": 4, "session_id": "ses_previous_counts"}, "4"),
-        ({"schema_version": 6, "session_id": "ses_future"}, "6"),
+        ({"schema_version": 5, "session_id": "ses_previous_trust"}, "5"),
+        ({"schema_version": 7, "session_id": "ses_future"}, "7"),
     ],
 )
 def test_versioned_decoder_requires_explicit_current_version(
@@ -35,7 +36,7 @@ def test_versioned_decoder_requires_explicit_current_version(
 ) -> None:
     with pytest.raises(
         UnsupportedDataVersionError,
-        match=rf"found {found}, expected 5",
+        match=rf"found {found}, expected 6",
     ):
         decode_versioned_record_json(
             SessionRecord,
@@ -64,7 +65,7 @@ def test_versioned_decoder_returns_current_typed_record_without_intermediate_jso
     )
 
     assert session.session_id == "ses_current"
-    assert session.schema_version == 5
+    assert session.schema_version == 6
 
 
 def _activation(**changes):

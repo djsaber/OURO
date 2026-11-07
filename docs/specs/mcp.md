@@ -17,6 +17,9 @@ transport 契约。stdio 和 Streamable HTTP 使用 SDK transport；legacy SSE �
 `ouro.mcp.sse_transport` 适配为 SDK session stream，协议编解码与 session 仍由 SDK 负责。该边界保证 SSE
 任一方向失败都进入 OURO 生命周期，而不是由依赖直接写进程日志。新配置优先使用 Streamable HTTP。
 
+MCP 工具遵循统一调用授权。stdio 服务使用宿主系统的资源权限，远程服务使用服务端及其账号的权限；
+Session workspace 不限制服务端访问范围。服务启动与工具调用各自由对应的配置和授权决定。
+
 ## 配置与身份
 
 `MCPServerConfig` 按 transport 严格校验：

@@ -110,7 +110,6 @@ TUI 复用分组列表及多行编辑器，支持 Ctrl+Enter 换行、编辑、�
   "tool_execution": {
     "mode": "parallel",
     "max_concurrency": 4,
-    "workspace_only": true,
     "max_output_chars": 100000
   },
   "queued_inputs": {

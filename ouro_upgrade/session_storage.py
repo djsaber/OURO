@@ -1,4 +1,4 @@
-"""Upgrade native Session containers without decoding retained business payloads."""
+"""Upgrade native Session containers while preserving message bodies and execution facts."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from ouro.core.inputs import InputState
 from ouro.sessions.sqlite_observation import OBSERVATION_SCHEMA
 from ouro_upgrade.databases import database
 from ouro_upgrade.errors import UpgradeDataError, require
-from ouro_upgrade.files import children
-from ouro_upgrade.records import loads, validate
+from ouro_upgrade.files import children, record
+from ouro_upgrade.records import MODELS, convert, dumps, loads, validate
 from ouro_upgrade.workspace import Workspace
 
 
@@ -26,12 +26,34 @@ def observation_schema(connection: sqlite3.Connection) -> None:
 
 def current_file(connection: sqlite3.Connection) -> bool:
     # Successful units can already be current while the home still awaits others.
-    return (
+    return connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_revisions'"
+    ).fetchone() is not None and all(
         connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_revisions'"
+            f"SELECT 1 FROM {table} "
+            "WHERE json_extract(payload, '$.schema_version') IS NOT ? LIMIT 1",
+            (MODELS[kind].model_fields["schema_version"].default,),
         ).fetchone()
-        is not None
+        is None
+        for table, kind in (("sessions", "session"), ("runs", "run"))
     )
+
+
+def authority_records(connection: sqlite3.Connection, *, include_delegations: bool = False) -> None:
+    tables = [("sessions", "session"), ("runs", "run")]
+    if include_delegations:
+        tables.append(("delegations", "delegation"))
+    for table, kind in tables:
+        rows = connection.execute(
+            f"SELECT rowid, payload FROM {table} "
+            "WHERE json_extract(payload, '$.schema_version') IS NOT ?",
+            (MODELS[kind].model_fields["schema_version"].default,),
+        )
+        for identity, payload in rows:
+            value = convert(kind, loads(payload))
+            connection.execute(
+                f"UPDATE {table} SET payload=? WHERE rowid=?", (dumps(value), identity)
+            )
 
 
 def file_session(work: Workspace, directory: Path) -> None:
@@ -44,28 +66,35 @@ def file_session(work: Workspace, directory: Path) -> None:
     def transform(connection: sqlite3.Connection) -> bool:
         if current_file(connection):
             return False
-        connection.execute(
-            "CREATE TABLE input_states (session_id TEXT NOT NULL, input_id TEXT NOT NULL, "
-            "payload TEXT NOT NULL, PRIMARY KEY(session_id, input_id), "
-            "FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE)"
-        )
-        observation_schema(connection)
-        sources = (
-            path.relative_to(work.home).as_posix()
-            for path in children(directory / "inputs/states", "*.json")
-        )
-        for name, data in work.read_many(sources):
-            try:
-                payload = data.decode("utf-8")
-            except UnicodeError:
-                raise UpgradeDataError(f"{name}: invalid UTF-8 input state") from None
-            state = validate(InputState, loads(payload))
-            require(state.session_id == directory.name, name, "foreign input state")
+        if (
             connection.execute(
-                "INSERT INTO input_states(session_id, input_id, payload) VALUES (?, ?, ?)",
-                (state.session_id, state.input_id, payload),
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_revisions'"
+            ).fetchone()
+            is None
+        ):
+            connection.execute(
+                "CREATE TABLE input_states (session_id TEXT NOT NULL, input_id TEXT NOT NULL, "
+                "payload TEXT NOT NULL, PRIMARY KEY(session_id, input_id), "
+                "FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE)"
             )
-            work.stage(name, None)
+            observation_schema(connection)
+            sources = (
+                path.relative_to(work.home).as_posix()
+                for path in children(directory / "inputs/states", "*.json")
+            )
+            for name, data in work.read_many(sources):
+                try:
+                    payload = data.decode("utf-8")
+                except UnicodeError:
+                    raise UpgradeDataError(f"{name}: invalid UTF-8 input state") from None
+                state = validate(InputState, loads(payload))
+                require(state.session_id == directory.name, name, "foreign input state")
+                connection.execute(
+                    "INSERT INTO input_states(session_id, input_id, payload) VALUES (?, ?, ?)",
+                    (state.session_id, state.input_id, payload),
+                )
+                work.stage(name, None)
+        authority_records(connection)
         return True
 
     database(
@@ -74,3 +103,5 @@ def file_session(work: Workspace, directory: Path) -> None:
         transform,
         current=current_file,
     )
+    for path in children(directory / "delegations", "*.json"):
+        record(work, path.relative_to(work.home).as_posix(), "delegation")

@@ -37,7 +37,7 @@ OURO_HOME/
   trash/sessions/<trash_id>/
 ```
 
-当前 `data_layout_version` 为 42，SQLite schema 为 27；各持久记录的版本见下文 Canonical 数据与投影。
+当前 `data_layout_version` 为 43，SQLite schema 为 28；各持久记录的版本见下文 Canonical 数据与投影。
 SQLite 同样使用会话文件目录保存附件，资源元信息保存在数据库；跨后端传输使用统一归档。
 初始化只接受当前格式；不支持或缺失的版本抛出 `UnsupportedDataVersionError`，不扫描或转换历史记录。
 空数据目录/数据库初始化为当前格式。已有数据不自动清空，由用户选择新目录或清理失效测试数据。
@@ -212,7 +212,7 @@ Files 的 `session_read` 遇到未决 `commit.json` 抛出 `SessionRecoveryRequi
 使用同一只读边界，不隐式恢复；创建和 CAS 更新仍显式进入 mutation。其余旧查询入口继续按执行恢复职责审查。
 
 Session、Run、Message、Event、Compaction、ContextSnapshot 和 Delegation 是独立持久化根记录。每个 payload
-必须显式携带各自当前 `schema_version`：Session 为 5，Run 为 10，ModelRequestHeader 为 11、Manifest 为 10，Message 为 8，Compaction 为 3，Delegation 为 2，InputRecord/InputState/ToolCallRecord/ToolCallStart/ToolCallState 为 1，ToolOutcomeRecord 为 2；ResourceRecord 为 3。
+必须显式携带各自当前 `schema_version`：Session 为 6，Run 为 11，ModelRequestHeader 为 11、Manifest 为 10，Message 为 8，Compaction 为 3，Delegation 为 3，InputRecord/InputState/ToolCallRecord/ToolCallStart/ToolCallState 为 1，ToolOutcomeRecord 为 2；ResourceRecord 为 3。
 
 最近请求通过统一 Session 提交接收小头和 `RequestManifestRecord`，不接受完整查询 DTO 作为持久正文。
 `load_latest_request` 返回已存骨架；完整 `load_latest_context` 在同一个 Session 读边界内点读其固定消息引用，
@@ -492,7 +492,7 @@ Files 保存 canonical `delegations/<id>.json`，request/child 指针及 parent 
 opaque 幂等请求键仅为路径定位编码为 SHA-256 文件名，不散列正文；业务 ID 沿用路径隔离校验。
 SQLite 在原生事务中维护 payload 和 root/request、child、root/parent Run 索引。完整转存从委派记录重建索引。
 CAS 冲突抛出 `DelegationRevisionConflictError`，不能与普通持久化损坏混为一类。
-CAS 还保护已接受的冻结定义、权限上限、路径约束、交互模式及预算不被生命周期更新替换；字段范围见
+CAS 还保护已接受的冻结定义、权限上限、workspace、交互模式及预算不被生命周期更新替换；字段范围见
 [子智能体权限契约](subagents.md#权限与能力继承)。
 
 运行路径使用 `RuntimeSessionSnapshot`，只包含 Session、当前 epoch 的待处理 Run 和 active/last 指针指向的 Run，

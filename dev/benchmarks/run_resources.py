@@ -20,7 +20,6 @@ import weakref
 from pathlib import Path
 from time import perf_counter
 from types import SimpleNamespace
-from unittest.mock import patch
 
 
 def make_runtime(root, backend="files"):
@@ -73,12 +72,7 @@ def make_run(session_id="synthetic"):
         session_id=session_id,
         status="waiting_approval",
         agent_catalog=AgentCatalogSnapshot(),
-        metadata={
-            "effective_tool_names": [],
-            "effective_tool_refs": [],
-            "delegated_constraints": {"allow_external_paths": False},
-            "extension_generations": [],
-        },
+        metadata={"extension_generations": []},
     )
 
 
@@ -137,7 +131,6 @@ async def resource_probe(root, count, scenario, *, memory):
 
 async def prepared_probe(root, backend):
     from ouro.application.runs.lifecycle import reserve_run
-    from ouro.core.agents import DelegatedConstraints
     from ouro.core.session_controls import HostSessionInput
 
     app, catalog = make_runtime(root, backend)
@@ -159,28 +152,14 @@ async def prepared_probe(root, backend):
             assert catalog.lease_count == 0
             if index:
                 samples.append(elapsed)
-        # Count decoding separately from the uninstrumented pipeline timings.
-        session = app.create_session(title="prepared")
-        run = make_run(session.session_id).model_copy(update={"status": "queued"})
-        reserve_run(app.store, run)
-        with patch.object(
-            DelegatedConstraints, "model_validate", wraps=DelegatedConstraints.model_validate
-        ) as decode:
-            result = await app.run_prepared(
-                run, HostSessionInput(prompt="hello", host_source_id="benchmark")
-            )
-        await app.drain_events()
         snapshot = app.store.load_session(session.session_id)
         content = [
             {key: message.model_dump(mode="json")[key] for key in ("role", "content")}
             for message in snapshot.messages
         ]
-        assert result.run.status == "completed"
-        assert catalog.lease_count == 0
         return {
-            "scenario": "prepared_decode",
+            "scenario": "prepared_run",
             "backend": backend,
-            "constraint_decodes": decode.call_count,
             "run_ms": samples,
             "status": result.run.status,
             "messages_digest": hashlib.sha256(

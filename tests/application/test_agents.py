@@ -1252,9 +1252,7 @@ async def test_spawn_uses_run_frozen_agent_mode_and_tool_capability_policy(tmp_p
         allowed_agent_id_patterns=("reader",),
         allowed_execution_modes=("sync",),
         allow_write=False,
-        allow_network=False,
         allow_mcp=False,
-        allow_external_paths=False,
     )
     service, supervisor, store, _ = await _services(tmp_path, spawn_policy=policy)
     parent = store.load_run("ses_root", "run_parent")
@@ -1289,7 +1287,6 @@ async def test_spawn_uses_run_frozen_agent_mode_and_tool_capability_policy(tmp_p
         )
     )
     relation = store.load_delegation("ses_root", handle.delegation_id)
-    assert relation.constraints.allow_external_paths is False
     assert relation.child_session_id is not None
     assert relation.current_child_run_id is not None
     child_run = store.load_run(

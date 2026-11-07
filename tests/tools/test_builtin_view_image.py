@@ -176,31 +176,20 @@ async def test_invalid_files_return_actionable_text_errors_without_pixels(tmp_pa
     assert not any(isinstance(part, ImageContent) for part in result.content_blocks)
 
 
-async def test_path_boundaries_include_artifacts_and_readable_roots_but_reject_escape(tmp_path):
-    workspace, artifacts, readable = (
-        tmp_path / name for name in ("workspace", "artifacts", "readable")
-    )
-    for directory in (workspace, artifacts, readable):
-        directory.mkdir()
-        image_file(directory / "image.png")
+async def test_images_resolve_relative_absolute_and_linked_external_paths(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    image_file(workspace / "image.png")
     outside = image_file(tmp_path / "outside.png")
-    context = ToolExecutionContext(
-        workspace=workspace,
-        artifact_root=artifacts,
-        readable_roots=(readable,),
-        workspace_only=True,
-    )
-    for path in ("image.png", artifacts / "image.png", readable / "image.png"):
+    context = ToolExecutionContext(workspace=workspace)
+    for path in ("image.png", outside, "../outside.png"):
         assert not (await execute(path, context=context)).is_error
-    for path in (outside, "../outside.png"):
-        result = await execute(path, context=context)
-        assert result.is_error and result.structured["error_type"] == "ToolPolicyError"
     link = workspace / "link.png"
     try:
         link.symlink_to(outside)
     except OSError:
         pytest.skip("symlink creation is unavailable")
-    assert (await execute(link, context=context)).structured["error_type"] == "ToolPolicyError"
+    assert not (await execute(link, context=context)).is_error
 
 
 async def test_input_and_pixel_limits_fail_before_reading_or_decoding(tmp_path, monkeypatch):

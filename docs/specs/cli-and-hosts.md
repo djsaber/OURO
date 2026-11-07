@@ -137,7 +137,7 @@ definition list/show/tools/create/update/delete/copy 通过 provider-independent
 builtin general 只可查询或复制，不可编辑、删除或覆盖；定义变更从下一次模型决策生效（`effective_from=next_decision`），已发出的请求及其调用使用该轮绑定的目录。
 
 Application 的 Agent runtime 配置接口覆盖完整 AgentSpawnPolicy。CLI 开放 agent/model pattern、sync/async 执行模式
-及 write/network/MCP/external-paths 能力开关；固定的 depth=1 与 bound lifecycle 只展示，不提供无效修改参数。
+及按 effect 与 MCP 来源筛选工具的开关；固定的 depth=1 与 bound lifecycle 只展示，不提供无效修改参数。
 TUI 通过选择界面投影相同配置，两个入口不另建 policy。
 
 运行命令统一构建 `LocalApplication` 并调用 `AgentService`。短生命周期 CLI 只能基于 completed parent Run 的冻结

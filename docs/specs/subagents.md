@@ -206,7 +206,7 @@ detached/nested 在校验期明确失败。runtime policy 由 `LocalApplication`
 subagent 默认值继续复用 `RunBudgetPolicy`，不增加第二套 AgentBudget 配置或执行引擎。
 
 `AgentSpawnPolicy` 是所有 definition 共用的平台派遣上限，不是 per-definition 配置。它统一表达允许的 agent/model
-pattern、execution/lifecycle mode，以及 write、network、MCP 和 external-path 能力；每轮 parent 决策把
+pattern、execution/lifecycle mode，以及按 effect 和 MCP 来源筛选工具；每轮 parent 决策把
 当时的全局 policy 写入 AgentCatalogSnapshot。最终 child 能力继续由全局 policy、选中 AgentDefinition、父级可下放能力和当前权限策略求交。
 Application 配置 API 必须能读取和更新完整 policy；CLI、TUI 或其他 Host 可以只展示适合其产品面的字段，但不能
 在入口层复制或缩减底层 policy 语义。
@@ -245,9 +245,9 @@ tool_selection 保存当前产品公开的 ToolRegistry name，不保存 display
 
 - all：选择本次派遣决策的 ExtensionCatalog 中对 child 可见的全部候选工具；
 - selected：只选择 names 与本次决策可见工具的精确交集；空列表表示无工具 Agent；不设置固定数量上限；
-- 两种模式都继续与 platform hard cap、父级可下放约束、workspace、depth、当前 revocation 和现有
+- 两种模式都继续与 platform hard cap、父级可下放工具、depth、当前 revocation 和现有
   auto/approval/deny、ToolPolicy 求交；
-- all 不是 all permissions，不跳过 approval，也不自动允许 shell、network、MCP、external path 或 Agent control；
+- all 不是 all permissions，不跳过 approval、工具筛选或 Agent control 的派遣限制；
 - can_spawn=false 或 depth 已达上限时，Spawn/Wait/Send 等 Agent control tools 必须从 child 工具视图移除。
 
 创建或更新 selected definition 时，当前目录未知的 tool name 返回校验错误。之后因 plugin/MCP 禁用、移除或启动失败
@@ -255,12 +255,12 @@ tool_selection 保存当前产品公开的 ToolRegistry name，不保存 display
 missing_tool_names，并从新的 SpawnAgent agent_id 选项中排除。
 
 AgentCatalogSnapshot 把配置 name 解析为 EffectiveToolRef，Delegation 保存被委派的 public name、canonical identity、
-来源、effect、最低权限和 network/MCP/external-path 上限。两种选择模式都冻结已授予的工具身份集合；后来新增的工具
+来源、effect 和最低调用权限。两种选择模式都冻结已授予的工具身份集合；后来新增的工具
 不会自动进入已有 child。approval 下限不能被后续 auto 配置放宽，当前 deny 仍然拒绝。
 
 child 每轮用当前工具与该上限求交：同一 canonical plugin identity 可采用更新实现；Host/MCP 还要求相同 registry
 owner。插件 registry owner 中的 release/generation 是实例来源，不能成为长期委派身份。工具移除、owner 或 source
-改变，以及写入、network、MCP、external-path 能力扩大都会排除该工具。任务、workspace、明确的模型选择和预算继续
+改变，以及 effect 超出冻结声明都会排除该工具。任务、workspace、明确的模型选择和预算继续
 使用 Delegation 的原有值。工具缺失是当前能力事实，不修改已委派任务或伪造完成。
 
 待审批及等待 resume 的具体调用仍检查自身精确执行契约，不能借能力更新执行另一操作。外部结果未知时不自动重放。
@@ -303,7 +303,7 @@ ExtensionCatalog；当前决策目录落在 Run；实际执行通过 AgentServic
 
 ## DelegationRecord
 
-DelegationRecord 是 schema 2 的 canonical record，主要字段如下：
+DelegationRecord 是 schema 3 的 canonical record，主要字段如下：
 
 | 分组 | 字段 |
 |---|---|
@@ -701,7 +701,6 @@ child final result 建议结构化包含：
     platform hard cap
       intersection parent delegated cap
       intersection AgentDefinition effective tool selection and constraints
-      intersection workspace/resource constraints
       intersection current root/session revocations
       = candidate capability
 
@@ -712,22 +711,19 @@ child final result 建议结构化包含：
 - auto 只跳过 ask，不扩大 candidate capability；
 - tool-controlled permission 继续不可被 Session 模式绕过。
 
-不引入通用 capability algebra、规则语言或新的权限引擎。允许的工具、命令、network/MCP 和最低权限模式
-由冻结的 `EffectiveToolRefs` 完整表达；Delegation constraints 只保存 workspace 与 external path 这类不能由
-工具引用独立表达、且恢复时确实需要的运行约束。实际工具调用进入 permission/ToolPolicy 边界，不复制
-`allowed_tool_names`、`allow_write`、`allow_network` 或 `allow_mcp` 等可由冻结目录推导的字段，也不保存可与当前
-权限漂移的通用 capability blob。工具能力不参与 subagent 派遣并发决策。
+可下放工具的身份、来源、effect 与最低调用权限由冻结的 `EffectiveToolRefs` 表达。
+`allow_write` 按声明的 effect 筛选工具，`allow_mcp` 按 source 筛选工具；这些规则控制工具目录，不构成资源隔离。
+Delegation constraints 保存已接受的 workspace，确保恢复时路径解释一致。实际工具调用进入 permission/ToolPolicy
+边界，不复制可由冻结目录推导的筛选配置。工具能力不参与 subagent 派遣并发决策。
 
 父 Agent 只能下放自己拥有的能力。AgentDefinition、child Session 配置、一次审批、插件 ToolPolicy 或模型请求都不能
 扩大父 capability。
 
 运行时先从 parent 当前决策绑定的 ToolRegistry 解析 exact EffectiveToolRefs，再由 AgentService 将 AgentSpawnPolicy 与
-definition 结果求交并把最终目录持久化到 parent Run。插件 manifest 的进程/网络权限会进入 Host-owned tool metadata，
-插件提供的同名 metadata 不能覆盖它；shell、MCP 和声明了相关 package 权限的工具据此受 network/external-path cap。
-Delegation 是冻结定义、工具权限上限、路径约束和 child 预算的持久来源；child Run 保存所属 root/Delegation 身份与
+definition 结果求交并把最终目录持久化到 parent Run。插件 Host 服务权限在各自端口检查，不用于推断工具的资源访问范围。
+Delegation 是冻结定义、工具权限上限、workspace 和 child 预算的持久来源；child Run 保存所属 root/Delegation 身份与
 定义契约摘要，不复制这些配置。Runtime 在首次绑定或等待后重新绑定时点读该记录，核对 Session backlink、冻结策略
 及 Run 来源，随后在 RunResources 中持有本次执行所需值；缺失或不匹配直接失败，不退回 Host 默认权限。
-external path 未下放时，普通文件工具即使 Host 全局配置更宽也强制使用 workspace-only 执行上下文。
 手动摘要按 child Session 的关联读取同一冻结提示与工具上限，不创建委派执行；执行中用户插入消息的策略检查沿用
 活动 child Run 的来源。新 child 执行仍须具有已接受的委派关联。
 
@@ -744,7 +740,7 @@ approval_mode、interaction_mode 或 budget。两后端在原生 mutation/CAS �
 - max_depth；
 - root/direct child 数；
 - 是否允许向 child 下放写工具；
-- 可下放的 shell、network、MCP 和 external path 能力。
+- 是否允许下放 MCP 来源的工具。
 
 Spawn approval 与 child 后续工具 approval 是不同请求。批准 spawn 不等于批准 child 的危险工具。
 
@@ -968,7 +964,7 @@ execution 能力，没有调度 handle。
 AgentDefinition、contract hash 或 AgentService 分支；list 不返回 system_prompt，显式 get/edit 才返回全文。
 child task 完整文本只存在 child canonical message 和目标 child ContextView；Delegation、handle、root tree、关系
 event 与工具 schema 只包含 digest、稳定 identity 或安全 description。application control error 经过现有 redaction
-边界。child shell/path 继续使用 ToolExecutionContext；delegated external-path cap 会强制 `workspace_only=true`。
+边界。child 的工具和命令使用统一 ToolExecutionContext 解析路径与工作目录。
 并行写冲突不在 spawn 边界预测或阻止；工具执行失败作为标准 ToolResult 返回触发 child 自然调整，不增加工具名、
 路径锁或 writer quota。
 
@@ -986,7 +982,7 @@ Delegation。恢复在 Host 明确打开、运行 Session 或执行 Agent 命令
 6. 重建 AgentTreeSnapshot 和 interaction inbox projection。
 7. 仅在显式 Host/model 请求后 resume/retry，不自动重放 child 工作。
 
-对账同时验证 Session 的 root/parent/delegation backlink、冻结 approval/interaction/workspace policy，以及 child Run 的
+对账同时验证 Session 的 root/parent/delegation backlink、冻结 approval/interaction 模式与 workspace，以及 child Run 的
 parent/delegation/root/agent/definition-contract provenance。只有一个 Run 能由这些 durable identity 唯一证明归属时，
 才允许补齐 `current_child_run_id` 和 `spawn_state=submitted`；其余情况 fail-closed、保留证据并报告到目标操作的
 application diagnostic。根归档判断 active descendant 时以 child Run 为事实源，不能以可能缺失或跨记录不一致的

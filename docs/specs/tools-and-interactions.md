@@ -111,8 +111,8 @@ ripgrep 负责原生遍历，支持自身的 Unicode 正则、glob、`type` 和 
 但仍检查敏感文件和大小。
 
 写入、编辑和命令行工具默认可由权限配置要求审批。Read/ViewImage/Write/Edit 的路径和命令行工具的工作目录统一经过
-`ToolExecutionContext` 解析；默认限制在 Session workspace 或 Host 管理的 `OURO_HOME/artifacts` 制品根目录内，
-不会放开其他用户数据，并拒绝 `..` 与符号链接逃逸。Read 在文件 IO 边界流式执行自身的行数和 UTF-8 字节上限，
+`ToolExecutionContext` 解析；相对路径以 Session workspace 为基准，未配置时使用宿主当前目录，绝对路径和符号链接
+按宿主文件系统解析。工作空间内外的路径遵循相同调用授权。Read 在文件 IO 边界流式执行自身的行数和 UTF-8 字节上限，
 返回 `next_offset`、实际行数与截断信息，避免为截取一页而全量载入文件；工具结果在 executor 边界对全部文本块
 共享 `max_output_chars` 上限并标记截断，媒体 URI 共享独立的 `max_output_media_chars` 上限（默认 20 Mi 字符）。
 媒体超限整块替换为说明，保留的媒体不切片、不解码。请求级内容预算独立于执行结果限额。
@@ -135,7 +135,7 @@ Use this for images already available on disk.”。JSON Schema 由严格参数�
 以及需要缩放、方向校正的图片转换为静态 PNG。动画和多页图片只返回首帧，并在结果文字中明确说明。
 格式由内容识别，不依赖扩展名；SVG、PDF、损坏文件和非普通文件返回工具错误。
 
-工具声明 `read_only`，默认自动执行，但受统一权限覆盖与路径边界约束；会话资源目录只提供读取授权。
+工具声明 `read_only`，默认自动执行，遵循统一权限覆盖、会话审批模式与 ToolPolicy。
 文件读取与 [Pillow 解码](https://pillow.readthedocs.io/en/stable/reference/Image.html) 在宿主拥有的同步 worker
 中执行，并在阶段边界检查取消。Pillow 在文件读取与取消检查通过后按需导入，同一进程复用 Python 模块缓存；
 启动和工具注册不加载图片库。源文件至多 32 MiB，选定帧至多 40,000,000 像素；媒体结果遵循执行上下文的
@@ -147,6 +147,10 @@ Use this for images already available on disk.”。JSON Schema 由严格参数�
 文本反馈由[通用结果呈现](../architecture/tool-results.md)处理。TUI 展示路径与输出尺寸，不渲染 Base64。
 
 ## 权限
+
+工具权限裁定调用能否通过 OURO 执行，不创建文件系统或网络隔离。用户接受动作及受信扩展的执行能力，
+系统校验并执行授权决定；资源访问仍受宿主系统和外部服务约束。`effect` 是工具的行为声明，用于调度、工具筛选与策略，
+不是系统调用级的只读保证。
 
 权限模式包括：
 
@@ -211,7 +215,7 @@ tools/core 不导入 AgentService、RuntimeService 或 Supervisor。SpawnAgent �
 `agent_id` schema、execution mode 与实际解析都来自同一 decision-bound `AgentCatalogSnapshot`；目录没有可派遣
 definition 时省略 SpawnAgent，而不是生成非法空枚举。控制名称属于产品保留集，plugin/MCP 不能覆盖。
 
-child 工具权限先与 parent 可下放的工具、workspace、network/MCP/external-path hard cap 求交，再应用现有
+child 工具权限先与 parent 可下放的工具集合及平台工具筛选规则求交，再应用现有
 auto/approval/deny 与 ToolPolicy。`tool_selection=all` 不绕过 hard deny。child Approval 与 AskUser 仍保存在
 child Run；根 Host 通过包含 delegation/session/run/tool-call/request identity 的 interaction inbox 精确路由，
 错投到 sibling 或 parent 明确拒绝。unattended child 对残余审批和输入请求沿用统一确定性策略，不无限等待。
@@ -243,8 +247,8 @@ Agent control 使用同一取消所有权：操作实际返回完成值时只保
 
 插件工具应使用 execution context 的协作式 API，不能屏蔽取消信号。
 
-workspace 约束只限制命令行工具的工作目录，不是操作系统命令沙箱；命令执行仍依赖权限策略、审批和部署
-环境隔离。
+命令行工具与插件 Host 进程服务使用 workspace 作为默认工作目录，也接受其他有效目录。命令及子进程使用
+宿主环境授予的资源权限；进程树管理负责取消与清理，不提供资源隔离。
 
 ## 恢复
 

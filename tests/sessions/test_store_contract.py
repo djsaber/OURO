@@ -212,7 +212,9 @@ def test_session_store_rejects_record_without_explicit_schema_version(
         finally:
             connection.close()
 
-    with pytest.raises(UnsupportedDataVersionError, match="found missing, expected 5"):
+    with pytest.raises(
+        UnsupportedDataVersionError, match=f"found missing, expected {session.schema_version}"
+    ):
         session_store.load_session_record(session.session_id)
 
 

@@ -78,7 +78,6 @@ def catalog_entry_from_session(
         approval_mode=session.approval_mode,
         interaction_mode=session.interaction_mode,
         workspace=session.workspace,
-        workspace_trusted=session.workspace_trusted,
         archived=session.archived,
         pinned=session.pinned,
         tags=list(session.tags),

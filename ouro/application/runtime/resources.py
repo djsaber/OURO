@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 
 from ouro.core.agents import (
     AgentCatalogSnapshot,
-    DelegatedConstraints,
     DelegationRecord,
     EffectiveToolRef,
 )
@@ -27,7 +26,6 @@ class RunResources:
     agent_catalog: AgentCatalogSnapshot | None = None
     tool_names: frozenset[str] | None = None
     tool_refs: tuple[EffectiveToolRef, ...] = ()
-    constraints: DelegatedConstraints | None = None
     agent_prompt: str = ""
     budget: RunBudgetPolicy | None = None
     tool_calls: ToolCallCoordinator | None = None
@@ -39,7 +37,6 @@ class RunResources:
             else None
         )
         self.tool_refs = relation.effective_tools if relation is not None else ()
-        self.constraints = relation.constraints if relation is not None else None
         self.agent_prompt = relation.definition.system_prompt if relation is not None else ""
         self.budget = relation.budget if relation is not None else None
 

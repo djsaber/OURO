@@ -414,7 +414,7 @@ def test_delegation_native_decision_recovers_record_and_lookups(
                 agent_id="general", name="Changed", description="Replace frozen instructions."
             ),
         ),
-        ("constraints", DelegatedConstraints(allow_external_paths=True)),
+        ("constraints", DelegatedConstraints(workspace="another-workspace")),
         ("approval_mode", "auto"),
         ("interaction_mode", "unattended"),
         ("budget", RunBudgetPolicy(max_model_rounds=10)),

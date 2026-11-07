@@ -475,7 +475,6 @@ def _config_command(args: argparse.Namespace) -> int:
             home=home,
             mode=args.mode,
             max_concurrency=args.max_concurrency,
-            workspace_only=args.workspace_only,
             max_output_chars=args.max_output_chars,
             json_mode=args.json,
         )
@@ -506,9 +505,7 @@ def _config_command(args: argparse.Namespace) -> int:
             allowed_model_patterns=args.allowed_model_patterns,
             allowed_execution_modes=args.allowed_execution_modes,
             allow_write=args.allow_write,
-            allow_network=args.allow_network,
             allow_mcp=args.allow_mcp,
-            allow_external_paths=args.allow_external_paths,
             json_mode=args.json,
         )
 

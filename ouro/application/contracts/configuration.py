@@ -192,7 +192,6 @@ class ToolExecutionConfigView(ApplicationDTO):
     config_path: str
     mode: ToolExecutionMode
     max_concurrency: int
-    workspace_only: bool
     max_output_chars: int
     change: ConfigurationChange | None = None
 

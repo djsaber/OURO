@@ -45,7 +45,6 @@ __all__ = [
     "ToolExecutionAborted",
     "ToolExecutionContext",
     "ToolExecutionInterrupted",
-    "ToolPolicyError",
     "ToolExecutionOutcome",
     "ToolInputRequest",
     "ToolInvocation",
@@ -73,19 +72,12 @@ class ToolExecutionInterrupted(Exception):
         self.propagate_cancel = propagate_cancel
 
 
-class ToolPolicyError(ValueError):
-    """Raised when a tool request violates an execution policy."""
-
-
 @dataclass
 class ToolExecutionContext:
     harness: HarnessCallSnapshot | None = None
     signal: AbortSignal | None = None
     poll_interval: float = 0.05
     workspace: str | Path | None = None
-    artifact_root: str | Path | None = None
-    readable_roots: tuple[Path, ...] = ()
-    workspace_only: bool = False
     max_output_chars: int | None = DEFAULT_PROCESS_OUTPUT_LIMIT
     max_output_media_chars: int = 20 * 1024 * 1024
     on_late_result: Callable[[ToolInvocation, ToolResultValue], Awaitable[None]] | None = None
@@ -170,28 +162,13 @@ class ToolExecutionContext:
                 return
             await asyncio.sleep(min(self.poll_interval, remaining))
 
-    def resolve_path(self, path: str, *, read_only: bool = False) -> Path:
-        """Resolve a tool path and enforce the Host-configured path boundaries."""
+    def resolve_path(self, path: str) -> Path:
+        """Resolve absolute and workspace-relative paths in the host filesystem."""
 
         candidate = Path(path).expanduser()
-        workspace = self._resolved_workspace()
         if not candidate.is_absolute():
-            candidate = (workspace or Path.cwd()) / candidate
-        candidate = candidate.resolve(strict=False)
-        if self.workspace_only:
-            artifact_root = self._resolved_artifact_root()
-            allowed_roots = tuple(root for root in (workspace, artifact_root) if root is not None)
-            if read_only:
-                allowed_roots += tuple(root.resolve() for root in self.readable_roots)
-            if not allowed_roots:
-                raise ToolPolicyError(
-                    "workspace-only tool execution requires a configured workspace or artifact root"
-                )
-            if not any(candidate.is_relative_to(root) for root in allowed_roots):
-                raise ToolPolicyError(
-                    f"path is outside the configured workspace and artifact roots: {candidate}"
-                )
-        return candidate
+            candidate = (self._resolved_workspace() or Path.cwd()) / candidate
+        return candidate.resolve(strict=False)
 
     def resolve_working_directory(self, cwd: str | None) -> Path | None:
         resolved: Path | None
@@ -202,7 +179,7 @@ class ToolExecutionContext:
         else:
             resolved = None
         if resolved is not None and not resolved.is_dir():
-            raise ToolPolicyError(f"working directory does not exist: {resolved}")
+            raise NotADirectoryError(f"working directory is not a directory: {resolved}")
         return resolved
 
     def limit_output(self, text: str) -> tuple[str, bool]:
@@ -215,11 +192,6 @@ class ToolExecutionContext:
         if self.workspace is None:
             return None
         return Path(self.workspace).expanduser().resolve(strict=False)
-
-    def _resolved_artifact_root(self) -> Path | None:
-        if self.artifact_root is None:
-            return None
-        return Path(self.artifact_root).expanduser().resolve(strict=False)
 
     async def run_shell(
         self,

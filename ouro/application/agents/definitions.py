@@ -330,14 +330,6 @@ class AgentDefinitionService:
             else f"ouro.host/tools/{definition.name}"
         )
         execution_hash = metadata.get("execution_contract_hash")
-        raw_plugin_permissions = metadata.get("plugin_permissions", ())
-        plugin_permissions = (
-            frozenset(item for item in raw_plugin_permissions if isinstance(item, str))
-            if isinstance(raw_plugin_permissions, (list, tuple))
-            else frozenset()
-        )
-        is_shell = isinstance(metadata.get("shell_kind"), str)
-        is_mcp = definition.source == "mcp"
         return EffectiveToolRef(
             public_name=definition.name,
             canonical_tool_id=canonical_id,
@@ -350,9 +342,6 @@ class AgentDefinitionService:
             source=definition.source,
             effect=definition.effect,
             minimum_permission_mode=minimum_permission_mode,
-            requires_network=(is_shell or is_mcp or "network.outbound" in plugin_permissions),
-            requires_mcp=is_mcp,
-            requires_external_paths=(is_shell or is_mcp or "process.spawn" in plugin_permissions),
         )
 
     @staticmethod

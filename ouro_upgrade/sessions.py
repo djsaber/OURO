@@ -237,7 +237,7 @@ def files(work: Workspace, units: UpgradeUnits) -> None:
     layout = read_json(work, "layout.json")
     version = layout.get("data_layout_version")
     require(
-        type(version) is int and version in (9, 41, DATA_LAYOUT_VERSION),
+        type(version) is int and version in (9, 41, 42, DATA_LAYOUT_VERSION),
         "layout",
         "unsupported Session layout",
     )
@@ -267,7 +267,7 @@ def files(work: Workspace, units: UpgradeUnits) -> None:
     for number, directory in enumerate(directories, 1):
         if (directory / "session-data.sqlite3").exists():
             unit = UpgradeUnit("session", directory.name)
-            if version == 41:
+            if version in (41, 42):
                 units.run(
                     unit,
                     partial(session_storage.file_session, work, directory),
@@ -297,7 +297,7 @@ def files(work: Workspace, units: UpgradeUnits) -> None:
             )
         work.progress("sessions", number, len(directories))
     # Keep the home gated until every native container supports the current reader.
-    if version == 41 and len(units.failures) > failures:
+    if version in (41, 42) and len(units.failures) > failures:
         return
     work.json("sessions/index.json", SessionIndex(sessions=entries).model_dump(mode="json"))
     if version != DATA_LAYOUT_VERSION:
@@ -309,15 +309,21 @@ def sqlite(connection: sqlite3.Connection, units: UpgradeUnits) -> bool | Path:
         "SELECT value FROM metadata WHERE key='sqlite_schema_version'"
     ).fetchone()
     require(
-        version is not None and version[0] in ("7", "26", str(SQLITE_SCHEMA_VERSION)),
+        version is not None and version[0] in ("7", "26", "27", str(SQLITE_SCHEMA_VERSION)),
         "sessions",
         "unsupported SQLite schema",
     )
     if version[0] == str(SQLITE_SCHEMA_VERSION):
         return False
-    if version[0] == "26":
-        session_storage.observation_schema(connection)
-        connection.execute("CREATE INDEX messages_sequence ON messages(session_id, sequence)")
+    if version[0] in ("26", "27"):
+        if version[0] == "26":
+            session_storage.observation_schema(connection)
+            connection.execute("CREATE INDEX messages_sequence ON messages(session_id, sequence)")
+        session_storage.authority_records(connection, include_delegations=True)
+        connection.execute(
+            "UPDATE session_catalog SET payload=json_remove(payload, '$.workspace_trusted') "
+            "WHERE json_type(payload, '$.workspace_trusted') IS NOT NULL"
+        )
         connection.execute(
             "UPDATE metadata SET value=? WHERE key='sqlite_schema_version'",
             (str(SQLITE_SCHEMA_VERSION),),

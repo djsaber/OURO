@@ -288,9 +288,7 @@ def test_agent_runtime_update_exposes_the_complete_spawn_policy(tmp_path) -> Non
         allowed_execution_modes=("async",),
         allowed_lifecycle_bindings=("bound",),
         allow_write=False,
-        allow_network=False,
         allow_mcp=False,
-        allow_external_paths=False,
     )
 
     assert updated.revision == 1
@@ -299,9 +297,7 @@ def test_agent_runtime_update_exposes_the_complete_spawn_policy(tmp_path) -> Non
     assert updated.spawn_policy.allowed_execution_modes == ("async",)
     assert updated.spawn_policy.allowed_lifecycle_bindings == ("bound",)
     assert updated.spawn_policy.allow_write is False
-    assert updated.spawn_policy.allow_network is False
     assert updated.spawn_policy.allow_mcp is False
-    assert updated.spawn_policy.allow_external_paths is False
 
 
 @pytest.mark.asyncio

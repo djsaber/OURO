@@ -12,20 +12,17 @@ from ouro.sdk.plugins import v5 as sdk
 from ouro.sdk.plugins.worker_drivers import WorkerRunContext
 
 
-async def test_driver_invocation_inherits_accepted_run_workspace_constraints():
+async def test_driver_invocation_inherits_accepted_run_workspace():
     async def handler(context, resume):
         invocation = current_invocation.get()
         assert invocation.session_id == "session"
         assert invocation.run_id == "run"
         assert invocation.workspace == "workspace"
-        assert invocation.workspace_only
         return sdk.DriverFinished("done")
 
     driver = adapt_run_driver(sdk.RunDriverContribution("review", handler), owner_id="plugin")
     result = await driver.handler(
-        SimpleNamespace(
-            session_id="session", run_id="run", workspace="workspace", workspace_only=True
-        ),
+        SimpleNamespace(session_id="session", run_id="run", workspace="workspace"),
         None,
     )
     assert result == core.DriverFinished("done")
@@ -59,7 +56,6 @@ async def test_accepted_child_driver_gets_its_own_scope_after_parent_callback_ha
                 session_id="child-session",
                 run_id="child-run",
                 workspace="child-workspace",
-                workspace_only=True,
             ),
             None,
         )
@@ -80,9 +76,7 @@ async def test_sdk_context_cannot_be_reused_inside_another_run_invocation():
     driver = adapt_run_driver(sdk.RunDriverContribution("review", handler), owner_id="plugin")
     for identity in ("first", "second"):
         await driver.handler(
-            SimpleNamespace(
-                session_id=identity, run_id=identity, workspace=None, workspace_only=False
-            ),
+            SimpleNamespace(session_id=identity, run_id=identity, workspace=None),
             None,
         )
     with pytest.raises(RuntimeError, match="live parent"):

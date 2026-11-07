@@ -161,7 +161,7 @@ def test_delegation_parent_query_uses_current_index(historical_home):
     )
     found = store.list_delegations("ses_fixture", parent_run_id="run_fixture")
     assert [item.delegation_id for item in found] == ["dlg_upgrade"]
-    assert found[0].schema_version == 2
+    assert found[0].schema_version == 3
 
 
 def test_usage_schema_two_preserves_original_and_effective_totals(historical_home):

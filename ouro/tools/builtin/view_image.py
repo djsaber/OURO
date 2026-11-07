@@ -74,7 +74,7 @@ def builtin_view_image_tool() -> Tool:
 def _view_image(invocation: ToolInvocation, context: ToolExecutionContext) -> ToolResult:
     arguments = _ViewImageArguments.model_validate(invocation.arguments)
     context.raise_if_aborted()
-    path = context.resolve_path(arguments.path, read_only=True)
+    path = context.resolve_path(arguments.path)
     raw = _read_image(path)
     context.raise_if_aborted()
     # Load the decoder only when needed; registration and file checks stay lightweight.

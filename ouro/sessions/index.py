@@ -53,7 +53,6 @@ class SessionIndexEntry(OuroModel):
     approval_mode: SessionApprovalMode = "inherit"
     interaction_mode: SessionInteractionMode = "interactive"
     workspace: str | None = None
-    workspace_trusted: bool = False
     archived: bool = False
     pinned: bool = False
     tags: list[str] = Field(default_factory=list)

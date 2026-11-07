@@ -52,8 +52,8 @@ async def test_sdk_tool_receives_host_owned_workspace_and_cancellation_context(t
             {
                 "call_workspace": call.workspace,
                 "context_workspace": context.workspace,
-                "workspace_only": context.workspace_only,
                 "resolved": context.resolve_path("nested/file.txt"),
+                "external": context.resolve_path("../shared.txt"),
                 "aborted": context.is_aborted,
             }
         )
@@ -83,7 +83,6 @@ async def test_sdk_tool_receives_host_owned_workspace_and_cancellation_context(t
         context=ToolExecutionContext(
             signal=signal,
             workspace=tmp_path,
-            workspace_only=True,
         ),
     )
 
@@ -91,8 +90,8 @@ async def test_sdk_tool_receives_host_owned_workspace_and_cancellation_context(t
     assert seen == {
         "call_workspace": str(tmp_path),
         "context_workspace": str(tmp_path),
-        "workspace_only": True,
         "resolved": str(tmp_path / "nested" / "file.txt"),
+        "external": str(tmp_path.parent / "shared.txt"),
         "aborted": False,
     }
 

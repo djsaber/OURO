@@ -121,8 +121,8 @@ def test_delegation_spawn_phases_validate_child_identity() -> None:
         definition=definition,
     )
     assert requested.child_session_id is None
-    assert requested.schema_version == 2
-    with pytest.raises(ValidationError, match="schema_version must be 2"):
+    assert requested.schema_version == 3
+    with pytest.raises(ValidationError, match="schema_version must be 3"):
         DelegationRecord.model_validate({**requested.model_dump(), "schema_version": 1})
     for missing in ("parent_batch_id", "parent_tool_call_id"):
         values = {

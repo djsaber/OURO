@@ -1273,7 +1273,6 @@ class TuiController:
             configuration.update_tool_execution,
             mode=draft.mode,
             max_concurrency=draft.max_concurrency,
-            workspace_only=draft.workspace_only,
             max_output_chars=draft.max_output_chars,
         )
 
@@ -1292,9 +1291,7 @@ class TuiController:
             allowed_model_patterns=draft.allowed_model_patterns,
             allowed_execution_modes=draft.allowed_execution_modes,
             allow_write=draft.allow_write,
-            allow_network=draft.allow_network,
             allow_mcp=draft.allow_mcp,
-            allow_external_paths=draft.allow_external_paths,
         )
 
     async def agent_definition_catalog(self) -> AgentDefinitionCatalogView:

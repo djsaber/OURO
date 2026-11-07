@@ -56,7 +56,6 @@ def observe(services, tmp_path, source_kind, size):
         ),
         input_modalities=frozenset({"image"}),
         workspace=str(tmp_path),
-        workspace_only=True,
     )
     store.append_message(message)
     path.unlink()
@@ -192,7 +191,6 @@ async def test_runtime_does_not_read_media_excluded_from_the_final_request(
         ),
         input_modalities=frozenset({"image"}),
         workspace=str(tmp_path),
-        workspace_only=True,
     )
     store.append_message(newest)
     source.unlink()
@@ -319,7 +317,6 @@ def test_observation_publication_failure_is_not_an_unavailable_file_fallback(
             ),
             input_modalities=frozenset({"image"}),
             workspace=str(tmp_path),
-            workspace_only=True,
         )
     assert store.load_session_record(session.session_id).message_count == 0
     assert files.load_content(session.session_id, published[0]) == raw

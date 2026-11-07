@@ -51,7 +51,6 @@ def test_optional_sections_keep_existing_null_semantics(tmp_path):
     )
     settings = RuntimeSettingsResolver(tmp_path).snapshot()
     assert settings.permissions.tools == {}
-    assert settings.tool_execution.workspace_only
     assert settings.queued_inputs.consumption_mode == "one_by_one"
 
 

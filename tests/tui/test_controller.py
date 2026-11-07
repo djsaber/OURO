@@ -885,7 +885,7 @@ async def test_controller_configures_preset_and_custom_providers(
 
 
 @pytest.mark.asyncio
-async def test_controller_manages_tool_permissions_and_path_scope_via_facade(
+async def test_controller_manages_tool_permissions_and_execution_limits_via_facade(
     tmp_path: Path,
 ) -> None:
     configuration = ConfigurationFacade(tmp_path)
@@ -944,13 +944,10 @@ async def test_controller_manages_tool_permissions_and_path_scope_via_facade(
             TuiToolExecutionConfiguration(
                 mode="parallel",
                 max_concurrency=3,
-                workspace_only=False,
                 max_output_chars=50_000,
             )
         )
         assert execution.mode == "parallel"
-        assert execution.workspace_only is False
-        assert configuration.tool_execution.snapshot().workspace_only is False
     finally:
         await controller.close()
 
@@ -982,9 +979,7 @@ async def test_controller_manages_subagent_policy_and_definitions(
                 allowed_model_patterns=("faux",),
                 allowed_execution_modes=("sync",),
                 allow_write=False,
-                allow_network=False,
                 allow_mcp=False,
-                allow_external_paths=False,
             )
         )
         assert updated_runtime.spawn_policy.allowed_agent_id_patterns == allowed_agents

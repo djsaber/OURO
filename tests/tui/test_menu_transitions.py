@@ -265,7 +265,7 @@ async def test_plugin_catalog_wait_has_feedback_and_respects_menu_close(
         ("Delete session", "DELETE SESSIONS • ARCHIVED"),
         ("+ task", "CREATE TASK"),
         ("+ plugin", "INSTALL PLUGIN"),
-        ("Tool limits & file access", "TOOL LIMITS & FILE ACCESS"),
+        ("Tool execution limits", "TOOL EXECUTION LIMITS"),
         ("Subagent permissions", "SUBAGENT PERMISSIONS"),
         ("+ subagent", "CREATE SUBAGENT"),
         ("+ mcp", "ADD MCP"),

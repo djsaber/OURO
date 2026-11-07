@@ -12,7 +12,7 @@ from ouro.core.agents import DelegationRecord
 from ouro.sessions.backends.files.delegations import LookupKind, lookup_path, record_path
 from ouro_upgrade.errors import require
 from ouro_upgrade.files import decode, read_json
-from ouro_upgrade.records import validate
+from ouro_upgrade.records import convert, validate
 from ouro_upgrade.workspace import Workspace
 
 
@@ -86,7 +86,7 @@ def resolve_file_parents(work: Workspace, root: str, records: list[dict[str, Any
 def save_delegation(
     connection: sqlite3.Connection, raw: dict[str, Any], *, directory: Path | None = None
 ) -> None:
-    require(raw.get("schema_version") in (1, 2), "delegation", "unsupported version")
+    require(raw.get("schema_version") in (1, 2, 3), "delegation", "unsupported version")
     value = dict(raw)
     if value["schema_version"] == 1:
         batch_id = value.get("parent_batch_id")
@@ -99,7 +99,7 @@ def save_delegation(
             batch_id = row[0] if row else None
             bind_parent(value, batch_id)
         value.update(schema_version=2, parent_batch_id=batch_id)
-    record = validate(DelegationRecord, value)
+    record = validate(DelegationRecord, convert("delegation", value))
     if directory is not None:
         path = record_path(directory, record.delegation_id)
         path.parent.mkdir(parents=True, exist_ok=True)

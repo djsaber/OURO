@@ -2146,7 +2146,7 @@ for line in sys.stdin:
                 tool_name="worker__echo",
                 arguments={"value": "worker-ok"},
             ),
-            context=ToolExecutionContext(workspace=tmp_path, workspace_only=True),
+            context=ToolExecutionContext(workspace=tmp_path),
         )
     assert result.content == f"worker-ok|{tmp_path}"
     await service.disable("dev.ouro.worker")

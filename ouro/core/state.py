@@ -206,7 +206,7 @@ class SessionContinuationRequest(OuroModel):
 
 
 class SessionRecord(VersionedOuroModel):
-    schema_version: Literal[5] = 5
+    schema_version: Literal[6] = 6
     session_id: str = Field(default_factory=lambda: new_id("ses"))
     harness_version: str = Field(
         default_factory=lambda: new_id("harness"), pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
@@ -228,7 +228,6 @@ class SessionRecord(VersionedOuroModel):
     archived: bool = False
     pinned: bool = False
     workspace: str | None = None
-    workspace_trusted: bool = False
     current_model: str | None = None
     reasoning_request: ReasoningRequest = Field(default_factory=ReasoningRequest)
     approval_mode: SessionApprovalMode = "inherit"
@@ -293,7 +292,7 @@ class RunRequestCounts(OuroModel):
 
 
 class RunRecord(VersionedOuroModel):
-    schema_version: Literal[10] = 10
+    schema_version: Literal[11] = 11
     history_epoch: int = Field(default=0, ge=0)
     run_id: str = Field(default_factory=lambda: new_id("run"))
     session_id: str

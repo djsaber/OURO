@@ -9,7 +9,6 @@ import pytest
 from ouro.core.cancellation import AbortSignal
 from ouro.core.tools import tool_definition_contract_hash
 from ouro.tools import ProcessResult, ToolExecutionAborted, ToolExecutionContext, ToolInvocation
-from ouro.tools.base import ToolPolicyError
 from ouro.tools.builtin.search import builtin_search_tools, search_glob
 
 
@@ -112,14 +111,12 @@ async def test_native_failures_do_not_report_partial_totals(tmp_path, process, m
     context.run_process.assert_awaited_once()
 
 
-async def test_native_glob_checks_arguments_and_workspace_before_spawning(tmp_path):
-    context = ToolExecutionContext(workspace=tmp_path, workspace_only=True)
+async def test_native_glob_checks_arguments_before_spawning(tmp_path):
+    context = ToolExecutionContext(workspace=tmp_path)
     context.run_process = AsyncMock()
     tool = _tool("/native/rg")
     with pytest.raises(ValueError):
         await tool.execute(_call(pattern=""), context=context)
-    with pytest.raises(ToolPolicyError):
-        await tool.execute(_call(path=".."), context=context)
     context.run_process.assert_not_called()
 
 

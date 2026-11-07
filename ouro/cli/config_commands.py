@@ -211,7 +211,6 @@ def show_tool_execution_config(
     home: str | Path | None = None,
     mode: ToolExecutionMode | None = None,
     max_concurrency: int | None = None,
-    workspace_only: bool | None = None,
     max_output_chars: int | None = None,
     json_mode: bool = False,
 ) -> int:
@@ -221,13 +220,9 @@ def show_tool_execution_config(
             facade.update_tool_execution(
                 mode=mode,
                 max_concurrency=max_concurrency,
-                workspace_only=workspace_only,
                 max_output_chars=max_output_chars,
             )
-            if any(
-                value is not None
-                for value in (mode, max_concurrency, workspace_only, max_output_chars)
-            )
+            if any(value is not None for value in (mode, max_concurrency, max_output_chars))
             else facade.tool_execution_config()
         )
     except OuroError as exc:
@@ -252,7 +247,6 @@ def show_tool_execution_config(
             [
                 f"Tool execution mode: {config.mode}",
                 f"Max concurrency: {config.max_concurrency}",
-                f"Workspace only: {'yes' if config.workspace_only else 'no'}",
                 f"Max output chars: {config.max_output_chars}",
                 f"Config: {config.config_path}",
             ]
@@ -374,9 +368,7 @@ def show_agent_runtime_config(
     allowed_model_patterns: list[str] | None = None,
     allowed_execution_modes: list[ExecutionMode] | None = None,
     allow_write: bool | None = None,
-    allow_network: bool | None = None,
     allow_mcp: bool | None = None,
-    allow_external_paths: bool | None = None,
     json_mode: bool = False,
 ) -> int:
     try:
@@ -388,9 +380,7 @@ def show_agent_runtime_config(
                 allowed_model_patterns,
                 allowed_execution_modes,
                 allow_write,
-                allow_network,
                 allow_mcp,
-                allow_external_paths,
             )
         )
         if has_update and expected_revision is None:
@@ -410,9 +400,7 @@ def show_agent_runtime_config(
                     tuple(allowed_execution_modes) if allowed_execution_modes is not None else None
                 ),
                 allow_write=allow_write,
-                allow_network=allow_network,
                 allow_mcp=allow_mcp,
-                allow_external_paths=allow_external_paths,
             )
             if has_update and expected_revision is not None
             else facade.agent_runtime_config()
@@ -446,9 +434,7 @@ def show_agent_runtime_config(
                 "Allowed models: " + ", ".join(config.spawn_policy.allowed_model_patterns),
                 "Execution modes: " + ", ".join(config.spawn_policy.allowed_execution_modes),
                 f"Allow write: {config.spawn_policy.allow_write}",
-                f"Allow network: {config.spawn_policy.allow_network}",
                 f"Allow MCP: {config.spawn_policy.allow_mcp}",
-                f"Allow external paths: {config.spawn_policy.allow_external_paths}",
                 "Root budget: inherited from config run-budget and frozen parent Run.",
                 f"Config: {config.config_path}",
             ]

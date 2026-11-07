@@ -53,7 +53,6 @@ class PluginProcessService:
         async with self.gate.invocation():
             context = ToolExecutionContext(
                 workspace=invocation.workspace if invocation is not None else None,
-                workspace_only=invocation.workspace_only if invocation is not None else False,
             )
             result = await context.run_process(
                 request.arguments,

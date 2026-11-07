@@ -65,14 +65,12 @@ class NativeRunDriverContext:
         consume_inputs: DriverInputConsumer,
         runs: RunLifecycle,
         workspace: str | None = None,
-        workspace_only: bool = False,
         resume_turn_id: str | None = None,
     ) -> None:
         self.session, self.run = session, run
         self.sequence = sequence
         self.signal = abort_signal
         self.workspace = workspace or session.workspace
-        self.workspace_only = workspace_only
         self._request_model, self._request_tools, self._runs = request_model, request_tools, runs
         self._request_driver_tools = request_driver_tools
         self._consume_inputs = consume_inputs

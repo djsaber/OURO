@@ -844,7 +844,6 @@ class ConfigurationFacade:
             config_path=str(self.tool_execution.file.path),
             mode=config.mode,
             max_concurrency=config.max_concurrency,
-            workspace_only=config.workspace_only,
             max_output_chars=config.max_output_chars,
             change=change,
         )
@@ -854,13 +853,11 @@ class ConfigurationFacade:
         *,
         mode: ToolExecutionMode | None = None,
         max_concurrency: int | None = None,
-        workspace_only: bool | None = None,
         max_output_chars: int | None = None,
     ) -> ToolExecutionConfigView:
         self.tool_execution.update(
             mode=mode,
             max_concurrency=max_concurrency,
-            workspace_only=workspace_only,
             max_output_chars=max_output_chars,
         )
         return self.tool_execution_config(
@@ -944,9 +941,7 @@ class ConfigurationFacade:
         allowed_execution_modes: tuple[ExecutionMode, ...] | None = None,
         allowed_lifecycle_bindings: tuple[LifecycleBinding, ...] | None = None,
         allow_write: bool | None = None,
-        allow_network: bool | None = None,
         allow_mcp: bool | None = None,
-        allow_external_paths: bool | None = None,
     ) -> AgentRuntimeConfigView:
         current = self.agents.snapshot()
         policy = current.runtime.spawn_policy
@@ -958,9 +953,7 @@ class ConfigurationFacade:
                 ("allowed_execution_modes", allowed_execution_modes),
                 ("allowed_lifecycle_bindings", allowed_lifecycle_bindings),
                 ("allow_write", allow_write),
-                ("allow_network", allow_network),
                 ("allow_mcp", allow_mcp),
-                ("allow_external_paths", allow_external_paths),
             )
             if value is not None
         }

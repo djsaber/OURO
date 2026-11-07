@@ -20,13 +20,15 @@ times depend on maintainer availability and are not guaranteed.
 ## Security boundaries
 
 - `deny` is the hard tool-disable policy; `approval` is a human authorization boundary.
-- Workspace-only mode constrains built-in file paths and detected-shell working directories. It is not an
-  operating-system sandbox: an approved shell command can still access resources allowed to the
-  OURO process.
+- The Session workspace provides task context, relative-path resolution, and a default working
+  directory. OURO does not provide filesystem or network sandboxing; resource access follows
+  host-system and external-service permissions.
 - Prefer environment-backed credential references. Inline credentials are stored as local plain
   text even though public DTO and CLI output redact them.
 - MCP servers, plugins, Skills, imported resources, and model-produced tool arguments are
   untrusted input. Review their provenance and permissions before enabling them.
+- Enabled code plugins run as trusted code. Host-service permissions govern those service calls,
+  not direct Python or operating-system access.
 
-Reports involving credential disclosure, path escape, command execution without authorization,
+Reports involving credential disclosure, package extraction path traversal, command execution without authorization,
 resource integrity bypass, or cross-Session state corruption should be treated as high priority.

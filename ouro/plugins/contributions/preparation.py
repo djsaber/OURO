@@ -280,9 +280,6 @@ class ContributionCoordinator:
                         "builtin_contract_hash": owner.builtin_contract_hash,
                         "generation_id": owner.generation_id,
                         "contribution_id": declaration.id,
-                        "plugin_permissions": sorted(
-                            permission.id for permission in manifest.permissions
-                        ),
                         "contract_hash": contract_hash,
                     }
                 }
@@ -403,9 +400,6 @@ class ContributionCoordinator:
                         "builtin_contract_hash": owner.builtin_contract_hash,
                         "generation_id": owner.generation_id,
                         "contribution_id": f"mcp:{server_id}:{remote_name}",
-                        "plugin_permissions": sorted(
-                            permission.id for permission in manifest.permissions
-                        ),
                         "contract_hash": contract_hash,
                     },
                 }

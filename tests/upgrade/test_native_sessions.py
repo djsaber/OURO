@@ -16,8 +16,10 @@ from ouro.sessions.layout import DATA_LAYOUT_VERSION
 from ouro_upgrade import databases, session_records, workspace
 from ouro_upgrade.engine import upgrade
 from ouro_upgrade.errors import UpgradeError
+from ouro_upgrade.records import convert
 from ouro_upgrade.units import UpgradeUnit
 from tests.upgrade.test_isolation import confirmed
+from tests.upgrade.test_steps import historical_agent_catalog
 from tests.upgrade.test_upgrade import hashes
 
 
@@ -37,7 +39,7 @@ def repository(home, backend):
     )
 
 
-def test_native_upgrade_preserves_payloads_and_only_reads_input_states(native_home, monkeypatch):
+def test_native_upgrade_converts_authority_and_preserves_other_facts(native_home, monkeypatch):
     home, backend = native_home
     path = database(home, backend)
     with closing(sqlite3.connect(path)) as connection:
@@ -69,7 +71,21 @@ def test_native_upgrade_preserves_payloads_and_only_reads_input_states(native_ho
     with closing(sqlite3.connect(path)) as connection:
         assert not connection.execute("SELECT 1 FROM sqlite_master WHERE name='events'").fetchone()
         for table, (columns, rows) in retained.items():
-            assert connection.execute(f"SELECT {columns} FROM {table}").fetchall() == rows
+            actual = connection.execute(f"SELECT {columns} FROM {table}").fetchall()
+            kind = {"sessions": "session", "runs": "run", "delegations": "delegation"}.get(table)
+            if kind is None and table != "session_catalog":
+                assert actual == rows
+            else:
+                payload_index = columns.split(",").index("payload")
+                for before, after in zip(rows, actual, strict=True):
+                    assert before[:payload_index] == after[:payload_index]
+                    assert before[payload_index + 1 :] == after[payload_index + 1 :]
+                    expected = json.loads(before[payload_index])
+                    if kind is not None:
+                        expected = convert(kind, expected)
+                    else:
+                        expected.pop("workspace_trusted", None)
+                    assert json.loads(after[payload_index]) == expected
         assert connection.execute("PRAGMA foreign_key_check").fetchone() is None
 
     store = repository(home, backend)
@@ -245,3 +261,51 @@ def test_corrupt_native_database_can_be_removed_at_its_own_boundary(native_home)
     assert result["status"] == "upgraded"
     assert not path.exists()
     repository(home, backend).initialize()
+
+
+def test_native_authority_upgrade_preserves_catalog_grants_from_existing_container(native_home):
+    home, backend = native_home
+    upgrade(home, session_backend=backend)
+    with closing(sqlite3.connect(database(home, backend))) as connection:
+        session = json.loads(connection.execute("SELECT payload FROM sessions").fetchone()[0])
+        session.update(schema_version=5, workspace_trusted=True)
+        connection.execute("UPDATE sessions SET payload=?", (json.dumps(session),))
+        run = json.loads(connection.execute("SELECT payload FROM runs").fetchone()[0])
+        run.update(schema_version=10, agent_catalog=historical_agent_catalog())
+        connection.execute(
+            "UPDATE runs SET payload=? WHERE run_id=?", (json.dumps(run), run["run_id"])
+        )
+        if backend == "sqlite":
+            connection.execute("UPDATE metadata SET value='27' WHERE key='sqlite_schema_version'")
+            connection.execute(
+                "UPDATE session_catalog SET payload=json_set(payload, '$.workspace_trusted', 1)"
+            )
+        connection.commit()
+    if backend == "files":
+        layout = home / "layout.json"
+        raw = json.loads(layout.read_text("utf-8"))
+        raw["data_layout_version"] = 42
+        layout.write_text(json.dumps(raw), "utf-8")
+        index = home / "sessions/index.json"
+        raw_index = json.loads(index.read_text("utf-8"))
+        for entry in raw_index["sessions"]:
+            entry["workspace_trusted"] = True
+        index.write_text(json.dumps(raw_index), "utf-8")
+    assert upgrade(home, session_backend=backend)["status"] == "upgraded"
+    store = repository(home, backend)
+    current = store.load_run(session["session_id"], run["run_id"])
+    reference = current.agent_catalog.resolve("reader").effective_tools[0]
+    assert reference.public_name == "Read"
+    assert reference.minimum_permission_mode == "approval"
+    assert store.load_session_record(session["session_id"]).workspace == session["workspace"]
+    if backend == "sqlite":
+        with closing(sqlite3.connect(database(home, backend))) as connection:
+            entries = [
+                json.loads(row[0])
+                for row in connection.execute("SELECT payload FROM session_catalog")
+            ]
+    else:
+        entries = json.loads(index.read_text("utf-8"))["sessions"]
+    assert entries
+    assert all("workspace_trusted" not in entry for entry in entries)
+    assert upgrade(home, session_backend=backend)["status"] == "current"

@@ -182,35 +182,26 @@ def test_catalog_excludes_hard_denied_tools_and_freezes_approval_floor(
     assert refs[0].minimum_permission_mode == "approval"
 
 
-def test_effective_tool_refs_freeze_declared_network_and_process_capabilities(
-    tmp_path,
-) -> None:
+@pytest.mark.parametrize("source", ["builtin", "third_party_plugin", "mcp"])
+@pytest.mark.parametrize("effect", ["read_only", "state_changing", "unknown"])
+def test_agent_tool_filters_use_declared_effect_and_source(tmp_path, source, effect):
     registry = ToolRegistry()
     registry.register(
         Tool(
             definition=ToolDefinition(
-                name="community__fetch",
-                description="Fetch through a community plugin.",
-                source="third_party_plugin",
-                effect="read_only",
-                metadata={"plugin_permissions": ["network.outbound", "process.spawn"]},
+                name="inspect",
+                description="Inspect data.",
+                source=source,
+                effect=effect,
             ),
             handler=_handler,
         )
     )
     service = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
-
     reference = service.catalog_snapshot(registry).resolve("general").effective_tools[0]
-
-    assert reference.requires_network is True
-    assert reference.requires_external_paths is True
-    assert (
-        AgentSpawnPolicy(
-            allow_network=False,
-            allow_external_paths=False,
-        ).allows_tool(reference)
-        is False
-    )
+    assert AgentSpawnPolicy().allows_tool(reference)
+    assert AgentSpawnPolicy(allow_write=False).allows_tool(reference) == (effect == "read_only")
+    assert AgentSpawnPolicy(allow_mcp=False).allows_tool(reference) == (source != "mcp")
 
 
 def test_builtin_definition_is_immutable_but_can_be_copied(tmp_path) -> None:
@@ -268,9 +259,6 @@ async def test_runtime_persists_run_frozen_agent_catalog(tmp_path) -> None:
         ({"canonical_tool_id": "dev.other/tools/read"}, False),
         ({"effect": "state_changing"}, False),
         ({"effect": "unknown"}, False),
-        ({"requires_network": True}, False),
-        ({"requires_mcp": True}, False),
-        ({"requires_external_paths": True}, False),
         ({"source": "mcp"}, False),
     ],
 )

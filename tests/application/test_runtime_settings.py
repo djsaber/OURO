@@ -128,14 +128,11 @@ async def test_tool_batches_pick_up_execution_settings_and_permissions(tmp_path)
     observed = []
 
     async def read(invocation, context):
-        observed.append((context.workspace_only, context.max_output_chars))
+        observed.append(context.max_output_chars)
         if len(observed) == 1:
-            execution.update(
-                workspace_only=False, max_output_chars=2048, mode="parallel", max_concurrency=2
-            )
+            execution.update(max_output_chars=2048, mode="parallel", max_concurrency=2)
             await runtime.refresh_configuration()
             # The active tool retains the context with which it was invoked.
-            assert context.workspace_only is True
             assert context.max_output_chars == 100_000
         else:
             permissions.set_tool_mode("ReadChunk", "deny")
@@ -148,7 +145,7 @@ async def test_tool_batches_pick_up_execution_settings_and_permissions(tmp_path)
         result = await runtime.run("Read three times")
         assert result.run.status == "completed", result.run.error
         assert len(provider.calls) == 4
-        assert observed == [(True, 100_000), (False, 2048)]
+        assert observed == [100_000, 2048]
         results = [m.tool_result for m in provider.calls[-1] if m.tool_result]
         assert results[-1].is_error
 

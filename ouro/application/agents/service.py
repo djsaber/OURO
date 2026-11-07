@@ -632,7 +632,6 @@ class AgentService:
             effective_tools=entry.effective_tools,
             constraints=DelegatedConstraints(
                 workspace=parent_session.workspace,
-                allow_external_paths=policy.allow_external_paths,
             ),
             approval_mode=parent_session.approval_mode,
             interaction_mode=(
@@ -919,7 +918,6 @@ class AgentService:
                 delegation_id=relation.delegation_id,
                 title=relation.nickname or relation.definition.name,
                 workspace=relation.constraints.workspace,
-                workspace_trusted=parent_session.workspace_trusted,
                 current_model=self._selected_model(
                     relation.definition.model, parent_session.current_model
                 ),

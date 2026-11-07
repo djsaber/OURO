@@ -45,18 +45,21 @@ async def test_process_permission_and_read_only_calls_reject_execution():
         await PluginProcessService(gate, frozenset({"process.spawn"})).run(request)
 
 
-async def test_nested_process_call_preserves_workspace_restriction(tmp_path):
-    from ouro.tools.base import ToolPolicyError
-
+@pytest.mark.parametrize("cwd", [None, ".."])
+async def test_nested_process_call_inherits_workspace_and_accepts_external_cwd(tmp_path, cwd):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
     port = PluginProcessService(GenerationGate("process-test"), frozenset({"process.spawn"}))
-    with plugin_invocation("caller", writable=True, workspace=str(tmp_path), workspace_only=True):
-        with plugin_invocation("service", writable=True, workspace_only=False):
-            with pytest.raises(ToolPolicyError, match="outside"):
-                await port.run(
-                    ProcessRequest(
-                        (sys.executable, "-c", "print('forbidden')"), cwd=str(tmp_path.parent)
-                    )
+    with plugin_invocation("caller", writable=True, workspace=str(workspace)):
+        with plugin_invocation("service", writable=True, workspace=str(tmp_path / "unused")):
+            result = await port.run(
+                ProcessRequest(
+                    (sys.executable, "-c", "import os; print(os.getcwd())"),
+                    cwd=cwd,
                 )
+            )
+    assert result.returncode == 0
+    assert result.stdout.strip() == str(workspace if cwd is None else tmp_path)
 
 
 async def test_generation_revocation_stops_streaming_process_before_returning(monkeypatch):
