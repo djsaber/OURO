@@ -533,10 +533,10 @@ async def test_relative_user_navigation_uses_history_coordinates(tmp_path):
         conversation.scroll_to_user_turn(10)
         await pilot.pause()
         position = conversation.scroll_y
-        conversation.scroll_to_previous_user_turn()
+        conversation.scroll_to_previous_turn()
         await pilot.pause()
         assert conversation.scroll_y == position - (history.user_lines[10] - history.user_lines[9])
-        conversation.scroll_to_next_user_turn()
+        conversation.scroll_to_next_turn()
         await pilot.pause()
         assert conversation.scroll_y == position
 

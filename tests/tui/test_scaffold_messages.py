@@ -175,6 +175,11 @@ async def test_settings_toggle_refreshes_visible_session_and_survives_navigation
             assert {choice.label for choice in app.screen._choices} == {
                 "Theme",
                 "Display",
+                "Remember drafts",
+                "Session grouping",
+                "New session",
+                "Open session",
+                "Keyboard help",
             }
         await choose_menu(pilot, "Display", title="DISPLAY")
         menu = app.screen

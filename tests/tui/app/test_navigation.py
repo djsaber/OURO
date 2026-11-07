@@ -305,3 +305,47 @@ async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path
         await pilot.pause()
         assert isinstance(app.screen, ChoiceScreen)
         assert app.screen.navigation_id == "help"
+
+
+@pytest.mark.parametrize("scaffold_visible", [False, True])
+async def test_child_shortcuts_navigate_runs_without_user_messages(tmp_path, scaffold_visible):
+    from tests.tui.app.support import _persist_direct_child_session
+
+    application = _application(tmp_path)
+    _, child_id = _persist_direct_child_session(application)
+    app = OuroTuiApp(application=application)
+    async with run_ready_app(app, size=(80, 12)) as pilot:
+        await app._open_session(child_id)
+        await app._set_scaffold_messages(scaffold_visible)
+        conversation = app.query_one(ConversationView)
+        messages = tuple(
+            MessageRecord(
+                session_id=child_id,
+                run_id=f"run_child_{index}",
+                role=role,
+                scaffold=role == "user",
+                content=[TextContent(text=text)],
+            )
+            for index in range(4)
+            for role, text in (
+                ("user", f"Delegated task {index}"),
+                ("assistant", "\n\n".join(f"Answer {index} line {n}" for n in range(12))),
+            )
+        )
+        await conversation.load_messages(messages)
+        await wait_for_history_render(pilot)
+        await pilot.pause()
+        bottom = conversation.scroll_y
+        assert bottom > 0
+        assert app.query_one(Composer).disabled
+        await pilot.press("alt+pageup")
+        await pilot.pause()
+        previous = conversation.scroll_y
+        assert previous < bottom
+        await pilot.press("alt+pageup")
+        await pilot.pause()
+        assert conversation.scroll_y < previous
+        await pilot.press("alt+pagedown")
+        await pilot.pause()
+        assert conversation.scroll_y == previous
+        assert app.query_one(Composer).disabled

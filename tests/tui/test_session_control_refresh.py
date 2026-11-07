@@ -4,7 +4,11 @@ import asyncio
 
 import pytest
 
-from ouro.core.events import EventRecord
+from ouro.application.contracts.sessions import (
+    SessionObservationBatch,
+    SessionObservationFacts,
+    SessionView,
+)
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.view_models import TuiSessionControlStatus
 from ouro.tui.widgets.activity import ActivityIndicator
@@ -192,21 +196,9 @@ async def test_pending_status_read_cannot_overwrite_reopened_session(tmp_path, m
         assert app.query_one(ActivityIndicator)._session_control_labels == ()
 
 
-@pytest.mark.parametrize(
-    ("event_type", "payload", "expected_reads"),
-    [
-        ("session_control_transition", {"phase": "applied"}, 1),
-        ("session_control_transition", {"phase": "started"}, 0),
-        ("session_control_transition", {"phase": "failed"}, 0),
-        ("model_text_delta", {"text": "Working"}, 0),
-        ("tool_call_completed", {"tool_call_id": "call_test"}, 1),
-    ],
-)
-async def test_control_refresh_uses_committed_events_once(
-    tmp_path, monkeypatch, event_type, payload, expected_reads
-):
+async def test_control_refresh_reads_only_changed_harness_facts(tmp_path, monkeypatch):
     application = streaming_application(tmp_path, BlockingStreamProvider())
-    session = application.runtime.create_session(title="Control events")
+    session = application.runtime.create_session(title="Control facts")
     app = OuroTuiApp(application=application)
     reads = 0
 
@@ -218,21 +210,112 @@ async def test_control_refresh_uses_committed_events_once(
     async with run_ready_app(app) as pilot:
         await app._open_session(session.session_id)
         monkeypatch.setattr(app._controller, "session_control_statuses", statuses)
-        event = EventRecord(
-            session_id=session.session_id,
-            event_type=event_type,
-            sequence=1,
-            payload=payload,
-        )
-        for candidate in (
-            event.model_copy(update={"session_id": "another_session"}),
-            event.model_copy(update={"history_epoch": session.history_epoch + 1}),
-            event.model_copy(update={"sequence": 2}),
-            event.model_copy(update={"sequence": 2}),
-        ):
-            await app._apply_runtime_event_batch((candidate,), input_messages={})
+        for version in (session.harness_version, "harness_changed", "harness_changed"):
+            facts = SessionObservationFacts(
+                session=SessionView.from_record(session).model_copy(
+                    update={"harness_version": version}
+                )
+            )
+            await app._apply_observation_facts(
+                SessionObservationBatch(
+                    session_id=session.session_id,
+                    history_epoch=session.history_epoch,
+                    facts=facts,
+                )
+            )
             task = app._session_controls_refresh_task
             if task is not None:
                 await task
         await pilot.pause()
-        assert reads == expected_reads
+        assert reads == 1
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_completed_goal_clears_mode_without_reloading(tmp_path, backend):
+    from tests.plugins.test_builtin_goal import _EndToEndGoalProvider
+
+    provider = _EndToEndGoalProvider()
+    application = streaming_application(tmp_path, provider, backend=backend)
+    app = OuroTuiApp(application=application)
+    async with run_ready_app(app) as pilot:
+        await application.plugins.enable("dev.ouro.goal")
+        session = application.runtime.create_session(title="Goal completion", approval_mode="auto")
+        await app._open_session(session.session_id)
+        await app._dispatch_command("/goal Ship end to end")
+        await _wait_for_worker_group(app, pilot, group="plugin-command")
+        await _wait_until(
+            lambda: provider.calls == 3, pilot, description="Goal completion acknowledgement"
+        )
+        assert await app._controller.session_control_statuses() == ()
+        await _wait_until(
+            lambda: app.query_one(ActivityIndicator)._session_control_labels == (),
+            pilot,
+            description="completed Goal mode cleared without reloading",
+        )
+
+
+async def test_empty_controls_do_not_read_plugin_catalog(tmp_path, monkeypatch):
+    application = streaming_application(tmp_path, BlockingStreamProvider())
+    session = application.runtime.create_session(title="No controls")
+    app = OuroTuiApp(application=application)
+    reads = []
+    async with run_ready_app(app):
+        await app._open_session(session.session_id)
+        monkeypatch.setattr(application.plugins, "list", lambda: reads.append(True) or ())
+        assert await app._controller.session_control_statuses() == ()
+        assert reads == []
+
+
+async def test_fact_refresh_burst_coalesces_without_blocking_presentation(tmp_path, monkeypatch):
+    application = streaming_application(tmp_path, BlockingStreamProvider())
+    session = application.runtime.create_session(title="Control burst")
+    app = OuroTuiApp(application=application)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    reads = 0
+
+    async def statuses():
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            entered.set()
+            await release.wait()
+            return (TuiSessionControlStatus(controller_id="test/control", label="Old"),)
+        return ()
+
+    async def apply_version(version):
+        await app._apply_observation_facts(
+            SessionObservationBatch(
+                session_id=session.session_id,
+                history_epoch=session.history_epoch,
+                facts=SessionObservationFacts(
+                    session=SessionView.from_record(session).model_copy(
+                        update={
+                            "harness_version": f"harness_{version}",
+                            "title": f"Title {version}",
+                        }
+                    )
+                ),
+            )
+        )
+
+    async with run_ready_app(app) as pilot:
+        await app._open_session(session.session_id)
+        monkeypatch.setattr(app._controller, "session_control_statuses", statuses)
+        try:
+            await apply_version(1)
+            await wait_for_events(entered, pilot=pilot, description="blocked control read")
+            task = app._session_controls_refresh_task
+            async with asyncio.timeout(5):
+                for version in range(2, 34):
+                    await apply_version(version)
+                    assert app._session_controls_refresh_task is task
+            assert reads == 1
+            assert app._active_title == "Title 33"
+        finally:
+            release.set()
+            task = app._session_controls_refresh_task
+            if task is not None:
+                await task
+        assert reads == 2
+        assert app.query_one(ActivityIndicator)._session_control_labels == ()

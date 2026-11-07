@@ -1929,6 +1929,9 @@ class TuiController:
         application = self._application
         if application is None:
             return ()
+        activations = self._runtime().session_control_activations(session_id)
+        if not activations:
+            return ()
         plugin_names: dict[str, str] = {}
         if application.plugins is not None:
             try:
@@ -1939,7 +1942,7 @@ class TuiController:
                 pass
         statuses: list[TuiSessionControlStatus] = []
         seen_labels: set[str] = set()
-        for activation in self._runtime().session_control_activations(session_id):
+        for activation in activations:
             label = plugin_names.get(activation.plugin_id) or _session_control_fallback_label(
                 activation.plugin_id
             )

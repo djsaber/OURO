@@ -6,6 +6,7 @@ import asyncio
 import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from rich.text import Text
@@ -161,46 +162,32 @@ async def test_tui_changes_model_and_approval_while_the_session_is_running(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_runtime_event_handler_schedules_session_control_refresh_without_awaiting_it(
+async def test_runtime_tool_event_does_not_query_session_controls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     application = _application(tmp_path)
     session_id = application.runtime.sessions.create(title="Control refresh").session.session_id
     app = OuroTuiApp(application=application)
-    app._projection = TuiSessionProjection(session_id)
-    app._controller._session_id = session_id
-    entered = asyncio.Event()
-    release = asyncio.Event()
-
-    async def delayed_statuses() -> tuple[TuiSessionControlStatus, ...]:
-        entered.set()
-        await release.wait()
-        return (TuiSessionControlStatus(controller_id="control", label="Control"),)
-
-    monkeypatch.setattr(app._controller, "session_control_statuses", delayed_statuses)
-    event = EventRecord(
-        session_id=session_id,
-        run_id="run_control_refresh",
-        event_type="tool_call_completed",
-        sequence=1,
-        payload={"tool_call_id": "call_control_refresh"},
-    )
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
+        await app._open_session(session_id)
+        statuses = AsyncMock(return_value=())
+        monkeypatch.setattr(app._controller, "session_control_statuses", statuses)
+        app.query_one(StatusLine).set_session_controls(("Control",))
+        assert app._projection is not None
+        event = EventRecord(
+            session_id=session_id,
+            run_id="run_control_refresh",
+            event_type="tool_call_completed",
+            sequence=app._projection.last_sequence + 1,
+            payload={"tool_call_id": "call_control_refresh"},
+        )
+        await app._apply_runtime_events((event,))
         await pilot.pause()
-        applying = asyncio.create_task(app._apply_runtime_events((event,)))
-        try:
-            await asyncio.wait_for(entered.wait(), timeout=1)
-            # Subscription initialization can await its replay read, while the
-            # deliberately blocked status refresh must remain independent.
-            await asyncio.wait_for(applying, timeout=1)
-        finally:
-            release.set()
-        await applying
-        refresh_task = app._session_controls_refresh_task
-        assert refresh_task is not None
-        await refresh_task
+
+        statuses.assert_not_awaited()
+        assert app._session_controls_refresh_task is None
         assert app.query_one(ActivityIndicator)._session_control_labels == ("Control",)
 
 

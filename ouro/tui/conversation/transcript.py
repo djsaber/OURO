@@ -133,6 +133,7 @@ def _input_transcript_entry(
         text=text,
         created_at=message.created_at,
         scaffold=message.scaffold,
+        run_id=message.run_id,
         reference_start=reference_start,
     )
 

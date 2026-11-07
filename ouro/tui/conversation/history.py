@@ -202,6 +202,19 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         return tuple(self._user_lines)
 
     @property
+    def run_lines(self) -> tuple[int, ...]:
+        """Locate each Run at its first visible history piece."""
+        seen: set[str] = set()
+        lines: list[int] = []
+        for piece, line in zip(self._pieces, self._piece_line_starts, strict=True):
+            run_id = self._entries[piece.entry_index].run_id
+            if run_id is None or run_id in seen or self._trace_entry_hidden(piece.entry_index):
+                continue
+            seen.add(run_id)
+            lines.append(line)
+        return tuple(lines)
+
+    @property
     def rendered_text(self) -> str:
         return "\n".join(line.text.rstrip() for line in self.lines)
 

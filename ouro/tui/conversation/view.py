@@ -430,19 +430,21 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             self.release_anchor()
             self.scroll_to(y=historical_lines[index], animate=False)
 
-    def scroll_to_previous_user_turn(self) -> bool:
-        historical_lines = self._history.user_lines
+    def scroll_to_previous_turn(self, *, by_run: bool = False) -> bool:
+        historical_lines = self._history.run_lines if by_run else self._history.user_lines
         index = bisect_left(historical_lines, self.scroll_y) - 1
         if index < 0:
             return False
-        self.scroll_to_user_turn(index)
+        self.release_anchor()
+        self.scroll_to(y=historical_lines[index], animate=False)
         return True
 
-    def scroll_to_next_user_turn(self) -> None:
-        historical_lines = self._history.user_lines
+    def scroll_to_next_turn(self, *, by_run: bool = False) -> None:
+        historical_lines = self._history.run_lines if by_run else self._history.user_lines
         index = bisect_right(historical_lines, self.scroll_y)
         if index < len(historical_lines):
-            self.scroll_to_user_turn(index)
+            self.release_anchor()
+            self.scroll_to(y=historical_lines[index], animate=False)
         else:
             self.scroll_end(animate=False)
 

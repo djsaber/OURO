@@ -789,3 +789,34 @@ async def test_subagent_definition_editor_does_not_limit_selected_tool_count(
         assert all(choice.trailing == "read only" for choice in tool_choices)
         assert all("selected" not in choice.trailing for choice in tool_choices)
         await pilot.press("escape")
+
+
+async def test_child_view_keeps_browsing_actions_and_nested_tool_navigation(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    application = _application(tmp_path)
+    _, child_id = _persist_direct_child_session(application)
+    app = OuroTuiApp(application=application)
+    async with run_ready_app(app) as pilot:
+        await app._open_session(child_id)
+        choices = {choice.value for choice in app._action_choices()}
+        assert {"/new", "/sessions", "/help"} <= choices
+        assert not {"/model", "/fork", "/undo", "/continue"} & choices
+        resolve = AsyncMock(return_value=None)
+        monkeypatch.setattr(app._controller, "resolve_agent_navigation", resolve)
+        await app.on_tool_navigation_requested(
+            ToolNavigationRequested(
+                parent_run_id="run_nested",
+                parent_tool_call_id="call_nested",
+                parent_batch_id=None,
+            )
+        )
+        resolve.assert_awaited_once_with(
+            parent_session_id=child_id,
+            parent_run_id="run_nested",
+            parent_tool_call_id="call_nested",
+            parent_batch_id=None,
+        )
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        assert app.query_one(Composer).disabled
