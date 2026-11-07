@@ -10,10 +10,10 @@ from textual.containers import Horizontal, Vertical
 from textual.timer import Timer
 from textual.widgets import Static
 
-from ouro import __version__
 from ouro.tui.state import format_compact_count
 from ouro.tui.theme import TuiTheme, label_text, theme_for
 from ouro.tui.view_models import TuiSystemStatus
+from ouro.tui.widgets.version import VersionLabel
 
 
 def _compact_names(names: tuple[str, ...], *, limit: int = 3) -> str:
@@ -430,20 +430,14 @@ class WelcomeTips(WelcomeInformation):
         )
 
 
-class WelcomeVersion(Static):
+class WelcomeVersion(VersionLabel):
     """Optional package-owned version label."""
 
     DEFAULT_CSS = """
     WelcomeVersion {
-        width: 100%;
-        height: 1;
-        padding: 0 2;
         color: $ouro-text-lowlight;
-        text-style: none;
-        text-align: right;
     }
-
     """
 
     def __init__(self) -> None:
-        super().__init__(f"v{__version__}", id="welcome-version")
+        super().__init__(id="welcome-version")

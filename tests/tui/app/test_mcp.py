@@ -14,11 +14,13 @@ from textual.widgets import Input, OptionList, Static
 from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.mcp import MCPManager, MCPRuntimeResource, MCPServerConfig, MCPServerConfigUpdate
 from ouro.tui.app import OuroTuiApp
+from ouro.tui.composer.input import Composer
 from ouro.tui.features.configuration.mcp import MCPConfigurationScreen
 from ouro.tui.features.configuration.workflows import _mcp_management_choices
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.confirmation import ConfirmationScreen
 from ouro.tui.menus.editable import EditableChoiceScreen
+from ouro.tui.startup_screen import StartupScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME
 from ouro.tui.view_models import McpServerStatus
 from tests.tui.app.providers import LiveMcpFactory, LiveMcpSession
@@ -60,6 +62,10 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
         release_on_exit(session.initialize_gate),
     ):
         welcome = await _wait_for_welcome_render(app, pilot, contains="connecting")
+        assert not isinstance(app.screen, StartupScreen)
+        assert not session.initialize_gate.is_set()
+        await pilot.press("h", "i")
+        assert app.query_one(Composer).text == "hi"
         mcp_label = welcome.query_one("#welcome-mcp-label", Static)
         connecting_label = mcp_label.render().plain
         assert connecting_label.endswith(" MCP")

@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
+from typing import cast
 
 from pydantic import JsonValue
 
@@ -89,7 +90,7 @@ from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.attachment_input import is_editable_user_input
 from ouro.core.base import Metadata, new_id
 from ouro.core.billing import UsageFilter
-from ouro.core.callbacks import run_blocking
+from ouro.core.callbacks import CallbackCancelled, invoke_owned_callback, run_blocking
 from ouro.core.compaction import CompactionCommandResult
 from ouro.core.errors import ConfigError, PersistenceError, SessionNotFoundError
 from ouro.core.events import EventRecord
@@ -234,13 +235,17 @@ class TuiController:
         if self._started:
             raise RuntimeError("TUI controller is already started")
         if self._application is None:
-            self._application = await asyncio.to_thread(
-                LocalApplication.build,
-                self._home,
-                system_prompt=self._system_prompt,
-                session_backend=self._session_backend,
-                task_backend=self._task_backend,
-            )
+            try:
+                self._application = await invoke_owned_callback(
+                    LocalApplication.build,
+                    self._home,
+                    system_prompt=self._system_prompt,
+                    session_backend=self._session_backend,
+                    task_backend=self._task_backend,
+                )
+            except CallbackCancelled as exc:
+                await cast(LocalApplication, exc.result).close()
+                raise asyncio.CancelledError from None
         startup_configs = self._application.mcp.startup_configs
         if startup_configs:
             self._publish_lifecycle(

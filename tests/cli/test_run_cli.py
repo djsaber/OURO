@@ -354,7 +354,7 @@ def test_run_mode_passes_system_prompt_override(monkeypatch) -> None:
         calls.append((prompt, kwargs["system_prompt"]))
         return 0
 
-    monkeypatch.setattr("ouro.cli.main.run_print", fake_run_print)
+    monkeypatch.setattr("ouro.cli.dispatch.run_print", fake_run_print)
 
     code = main(["run", "--system-prompt", "Custom", "hello"])
 
@@ -369,7 +369,7 @@ def test_run_mode_passes_repeatable_resource_references(monkeypatch) -> None:
         calls.append((prompt, kwargs["session_id"], kwargs["resource_refs"]))
         return 0
 
-    monkeypatch.setattr("ouro.cli.main.run_print", fake_run_print)
+    monkeypatch.setattr("ouro.cli.dispatch.run_print", fake_run_print)
 
     code = main(
         [
@@ -402,7 +402,7 @@ def test_run_mode_passes_endpoint_capability_overrides(monkeypatch) -> None:
         calls.append((prompt, kwargs["provider_options"]))
         return 0
 
-    monkeypatch.setattr("ouro.cli.main.run_print", fake_run_print)
+    monkeypatch.setattr("ouro.cli.dispatch.run_print", fake_run_print)
 
     code = main(
         [

@@ -24,6 +24,7 @@ from ouro.tui.composer.popup import CommandPopup
 from ouro.tui.composer.surface import WelcomePanel
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
+from ouro.tui.startup_screen import StartupScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
 from ouro.tui.view_models import TuiSystemStatus
 from ouro.tui.welcome import WelcomePage, WelcomeStyle, welcome_catalog
@@ -556,8 +557,7 @@ async def test_particle_theme_pauses_when_hidden_and_releases_worker_on_replacem
         assert app.query_one(Composer).region.y == panel.page._top.region.bottom
 
 
-def test_normal_startup_displays_saved_particle_theme(tmp_path: Path, monkeypatch):
-    frames = []
+def test_normal_startup_keeps_saved_theme_worker_alive(tmp_path: Path, monkeypatch):
     mount = DotMatrix.on_mount
     frame_loop = DotMatrix._render_frames
     worker_started = asyncio.Event()
@@ -575,31 +575,32 @@ def test_normal_startup_displays_saved_particle_theme(tmp_path: Path, monkeypatc
     monkeypatch.setattr(DotMatrix, "on_mount", yielding_mount)
     monkeypatch.setattr(DotMatrix, "_render_frames", early_frame_loop)
 
-    class OutputSink(HeadlessDriver):
+    class TestDriver(HeadlessDriver):
         @property
         def is_headless(self):
             return False
 
-        def write(self, data):
-            if any(0x2800 < ord(char) <= 0x28FF for char in data):
-                frames.append(data)
-
     class StartupApp(OuroTuiApp):
         def get_driver_class(self):
-            return OutputSink
+            return TestDriver
 
         def on_ready(self):
             self.set_timer(5, lambda: self.exit(False))
-            self.set_interval(1 / 30, self.check_output)
+            self.set_interval(1 / 30, self.check_ready)
 
-        def check_output(self):
-            if len(set(frames)) >= 2:
-                self.exit(True)
+        def check_ready(self):
+            if isinstance(self.screen, StartupScreen):
+                return
+            composer = self.query_one(Composer)
+            if self.focused is not composer or composer.disabled:
+                return
+            matrix = self.query_one(DotMatrix)
+            self.exit(any(worker.node is matrix and worker.is_running for worker in self.workers))
 
     TuiPreferencesStore(tmp_path).save(TuiPreferences(welcome_style="event-horizon"))
     app = StartupApp(application=two_route_application(tmp_path))
     # App.run uses production startup ordering; run_test can mask an early worker exit.
-    assert app.run(size=(130, 31)), "the selected particle theme never reached terminal output"
+    assert app.run(size=(130, 31)), "the selected theme worker stopped before input was ready"
 
 
 async def test_failed_style_save_keeps_current_package_and_preference(tmp_path, monkeypatch):

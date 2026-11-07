@@ -91,7 +91,7 @@ def test_tui_terminal_guard_restores_console_state_after_reset_failure(
     )
     monkeypatch.setattr(
         terminal,
-        "_prepare_windows_console_for_reset",
+        "_enable_windows_terminal_sequences",
         lambda captured: calls.append(("prepare", captured)),
     )
 
@@ -110,7 +110,7 @@ def test_tui_terminal_guard_restores_console_state_after_reset_failure(
         with tui_terminal_guard(input_stream=TerminalStream(), output_stream=TerminalStream()):
             calls.append("body")
 
-    assert calls == ["body", ("prepare", state), "reset", ("restore", state)]
+    assert calls == [("prepare", state), "body", ("prepare", state), "reset", ("restore", state)]
 
 
 def test_windows_console_reset_restores_captured_modes(
@@ -134,7 +134,7 @@ def test_windows_console_reset_restores_captured_modes(
         lambda handle: calls.append(("flush", handle, None)) or True,
     )
 
-    terminal._prepare_windows_console_for_reset(state)
+    terminal._enable_windows_terminal_sequences(state)
     terminal._restore_windows_console_state(state)
 
     assert calls == [
@@ -151,7 +151,7 @@ def test_run_tui_sets_title_before_starting_textual(
     calls: list[str] = []
 
     @contextmanager
-    def fake_terminal_guard():
+    def fake_terminal_guard(**_kwargs):
         calls.append("guard:enter")
         try:
             yield
@@ -168,8 +168,11 @@ def test_run_tui_sets_title_before_starting_textual(
             calls.append("run")
             return 0
 
-    monkeypatch.setattr(entry, "set_terminal_title", lambda title: calls.append(f"title:{title}"))
-    monkeypatch.setattr(entry, "tui_terminal_guard", fake_terminal_guard)
+    monkeypatch.setattr(
+        "ouro.tui.startup.set_terminal_title",
+        lambda title, **_: calls.append(f"title:{title}"),
+    )
+    monkeypatch.setattr("ouro.tui.startup.tui_terminal_guard", fake_terminal_guard)
     monkeypatch.setattr("ouro.tui.app.OuroTuiApp", FakeApp)
 
     assert entry.run_tui(home=tmp_path) == 0

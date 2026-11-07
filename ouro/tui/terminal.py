@@ -8,8 +8,7 @@ import sys
 from collections.abc import Generator
 from contextlib import contextmanager
 from ctypes import wintypes
-from dataclasses import dataclass
-from typing import TextIO
+from typing import NamedTuple, TextIO
 
 _TITLE_ESCAPE = "\x1b]0;{title}\x07"
 _TUI_RESET_ESCAPE = (
@@ -27,8 +26,7 @@ _TUI_RESET_ESCAPE = (
 _ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
 
 
-@dataclass(frozen=True)
-class _WindowsConsoleState:
+class _WindowsConsoleState(NamedTuple):
     input_handle: int | None
     input_mode: int | None
     output_handle: int | None
@@ -69,9 +67,10 @@ def tui_terminal_guard(
     console_state = _capture_windows_console_state(terminal_in, terminal_out)
     with _tui_color_environment():
         try:
+            _enable_windows_terminal_sequences(console_state)
             yield
         finally:
-            _prepare_windows_console_for_reset(console_state)
+            _enable_windows_terminal_sequences(console_state)
             try:
                 _write_tui_reset(terminal_out)
             finally:
@@ -159,7 +158,7 @@ def _windows_console_handle_and_mode(stream: TextIO | None) -> tuple[int | None,
     return handle, mode.value
 
 
-def _prepare_windows_console_for_reset(state: _WindowsConsoleState | None) -> None:
+def _enable_windows_terminal_sequences(state: _WindowsConsoleState | None) -> None:
     if state is None:
         return
     if state.output_handle is not None and state.output_mode is not None:

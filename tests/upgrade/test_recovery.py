@@ -214,7 +214,7 @@ def test_entry_releases_host_before_upgrade_and_reloads_homepage(tmp_path, monke
 
     monkeypatch.setattr(app_module, "OuroTuiApp", Host)
     monkeypatch.setattr(recovery, "DataRecoveryApp", Recovery)
-    monkeypatch.setattr(entry, "set_terminal_title", lambda _: None)
+    monkeypatch.setattr("ouro.tui.startup.set_terminal_title", lambda *_, **__: None)
     assert (
         entry.run_tui(
             home=tmp_path, session_backend="sqlite", task_backend="files", resume_session_id="old"
@@ -228,7 +228,6 @@ def test_entry_releases_host_before_upgrade_and_reloads_homepage(tmp_path, monke
 def test_pending_marker_enters_recovery_before_main_app(tmp_path, monkeypatch) -> None:
     from ouro.cli.main import main
     from ouro.tui import app as app_module
-    from ouro.tui import entry
 
     (tmp_path / ".upgrade").mkdir()
     (tmp_path / ".upgrade/in-progress.json").write_text(
@@ -247,5 +246,5 @@ def test_pending_marker_enters_recovery_before_main_app(tmp_path, monkeypatch) -
 
     monkeypatch.setattr(app_module, "OuroTuiApp", forbidden)
     monkeypatch.setattr(recovery, "DataRecoveryApp", Recovery)
-    monkeypatch.setattr(entry, "set_terminal_title", lambda _: None)
+    monkeypatch.setattr("ouro.tui.startup.set_terminal_title", lambda *_, **__: None)
     assert main(["--home", str(tmp_path)]) == 1

@@ -5,6 +5,7 @@ import pytest
 from ouro import __version__
 from ouro.cli.main import main
 from ouro.cli.parser import build_parser
+from ouro.tui.startup import TerminalStartup
 
 
 def test_root_parser_accepts_tui_resume_session() -> None:
@@ -34,6 +35,7 @@ def test_default_command_starts_tui_with_host_options(monkeypatch, tmp_path) -> 
     )
 
     assert code == 7
+    assert isinstance(captured.pop("startup"), TerminalStartup)
     assert captured == {
         "home": str(tmp_path),
         "system_prompt": None,
@@ -43,6 +45,15 @@ def test_default_command_starts_tui_with_host_options(monkeypatch, tmp_path) -> 
         "interaction_mode": "unattended",
         "resume_session_id": "ses_saved",
     }
+
+
+def test_interrupt_before_textual_takes_over_exits_without_traceback(monkeypatch, capsys) -> None:
+    def interrupt():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("ouro.cli.parser.build_parser", interrupt)
+    assert main([]) == 130
+    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.parametrize("command", ["interactive", "tui"])

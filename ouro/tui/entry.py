@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-from pathlib import Path
+from contextlib import nullcontext
+from typing import TYPE_CHECKING
 
-from ouro.core.approvals import SessionApprovalMode
-from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
-from ouro.core.interactions import SessionInteractionMode
-from ouro.deployment import SessionBackend, TaskBackend, access_home, resolve_home
-from ouro.tui.terminal import set_terminal_title, tui_terminal_guard
-from ouro.tui.theme import TuiTheme
-from ouro.tui.welcome.model import WelcomeStyle
+from ouro.tui.startup import TerminalStartup
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from ouro.core.approvals import SessionApprovalMode
+    from ouro.core.interactions import SessionInteractionMode
+    from ouro.deployment import SessionBackend, TaskBackend
+    from ouro.tui.theme import TuiTheme
+    from ouro.tui.welcome.model import WelcomeStyle
 
 
 def run_tui(
@@ -22,15 +26,17 @@ def run_tui(
     resume_session_id: str | None = None,
     theme: TuiTheme | None = None,
     welcome_styles: tuple[WelcomeStyle, ...] = (),
+    startup: TerminalStartup | None = None,
 ) -> int:
     """Run the full-screen Textual Host and return its process exit code."""
 
-    from ouro.tui.app import OuroTuiApp
+    with nullcontext(startup) if startup is not None else TerminalStartup() as feedback:
+        from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
+        from ouro.deployment import access_home, resolve_home
+        from ouro.tui.app import OuroTuiApp
 
-    root = resolve_home(home)
-    attempted_upgrade = False
-    with tui_terminal_guard():
-        set_terminal_title("OURO")
+        root = resolve_home(home)
+        attempted_upgrade = False
         while True:
             recovery_theme = theme
             try:
@@ -45,6 +51,7 @@ def run_tui(
                         resume_session_id=resume_session_id,
                         theme=theme,
                         welcome_styles=welcome_styles,
+                        startup=feedback,
                     )
                     result = app.run()
                     failure = app.startup_data_error
@@ -57,6 +64,7 @@ def run_tui(
             # independent recovery App can acquire exclusive home access.
             from ouro.tui.recovery import DataRecoveryApp
 
+            feedback.stop()
             recovery = DataRecoveryApp(
                 home=root,
                 error=str(failure),
@@ -69,5 +77,6 @@ def run_tui(
             if recovery != "upgraded":
                 return 1
             attempted_upgrade = True
+            feedback.start(stage="data")
             # Return to the homepage; the previous selection may no longer exist.
             resume_session_id = None

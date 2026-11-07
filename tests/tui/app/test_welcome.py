@@ -13,9 +13,9 @@ from ouro.tui.composer.input import Composer
 from ouro.tui.composer.surface import WelcomePanel
 from ouro.tui.conversation.history import ConversationHistory
 from ouro.tui.conversation.view import ConversationView
+from ouro.tui.startup_screen import StartupScreen
 from ouro.tui.view_models import TuiBootstrap, TuiDailyUsage, TuiSystemStatus
 from ouro.tui.widgets.brand import BrandHeader
-from ouro.tui.widgets.status import StatusLine
 from tests.tui.app.providers import BlockingStreamProvider
 from tests.tui.app.support import _application, _blocking_application, _wait_for_welcome_render
 from tests.tui.helpers import run_ready_app
@@ -24,7 +24,7 @@ from tests.tui.helpers import wait_until as _wait_until
 
 
 @pytest.mark.asyncio
-async def test_tui_hides_welcome_header_while_startup_is_still_in_progress(
+async def test_startup_covers_welcome_until_input_and_commands_are_ready(
     tmp_path: Path,
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
@@ -45,20 +45,20 @@ async def test_tui_hides_welcome_header_while_startup_is_still_in_progress(
             await pilot.pause()
             header = app.query_one(BrandHeader)
             composer = app.query_one(Composer)
-            status_line = app.query_one(StatusLine)
+            assert isinstance(app.screen, StartupScreen)
             assert not header.display
             assert not composer.display
-            assert status_line.display
-            assert status_line.region.bottom == app.screen.region.bottom
-            visible_input_children = [
-                child
-                for child in app.query_one(WelcomePanel).input_surface.children
-                if child.display
-            ]
-            assert visible_input_children == [status_line]
             assert not app.query_one(WelcomePanel).page.display
+            await pilot.press("ctrl+p", "ctrl+n")
+            assert isinstance(app.screen, StartupScreen)
         finally:
             release_startup.set()
+        await _wait_for_worker_group(app, pilot, group="default")
+        assert not isinstance(app.screen, StartupScreen)
+        assert app.focused is composer
+        assert not composer.disabled
+        await pilot.press("h", "i")
+        assert composer.text == "hi"
 
 
 @pytest.mark.asyncio

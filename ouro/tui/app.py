@@ -129,6 +129,9 @@ from ouro.tui.preferences import (
     TuiPreferencesStore,
 )
 from ouro.tui.rendering import TuiCompositor
+from ouro.tui.startup import TerminalStartup
+from ouro.tui.startup_driver import startup_driver
+from ouro.tui.startup_screen import StartupScreen
 from ouro.tui.state import (
     PendingInteraction,
     TuiSessionProjection,
@@ -875,6 +878,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         welcome_styles: tuple[WelcomeStyle, ...] = (),
         application: LocalApplication | None = None,
         close_application: bool = True,
+        startup: TerminalStartup | None = None,
     ) -> None:
         preference_home = (
             application.runtime.environment.home
@@ -917,7 +921,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if theme is not None
             else theme_source.at_saturation_level(self._tui_theme_saturation_level)
         )
+        self._startup_terminal = startup
         super().__init__()
+        self._startup_screen = StartupScreen()
         self.console.push_theme(self._tui_theme.rich_theme())
         self._controller = TuiController(
             self._publish_control_event,
@@ -961,7 +967,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._model_menu_loading = False
         self._composer_submission_lock = asyncio.Lock()
         self._sessions: tuple[SessionCatalogEntry, ...] = ()
-        self._active_model = "starting"
+        self._active_model = ""
         self._active_title = DEFAULT_SESSION_TITLE
         self._active_workspace: str | None = None
         self._reasoning_state: ModelReasoningState | None = None
@@ -1042,7 +1048,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if driver_class is WindowsDriver:
                 from ouro.tui.windows_driver import OuroWindowsDriver
 
-                return OuroWindowsDriver
+                driver_class = OuroWindowsDriver
+        if self._startup_terminal is not None:
+            return startup_driver(driver_class, self._startup_terminal)
         return driver_class
 
     def get_default_screen(self) -> Screen:
@@ -1092,9 +1100,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     return
         await super().on_event(event)
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
+        await self.push_screen(self._startup_screen)
         self.screen_change_signal.subscribe(self, self._resume_runtime_event_frame, immediate=True)
-        self.query_one(StatusLine).set_activity("starting")
         composer = self.query_one(Composer)
         popup = self.query_one(CommandPopup)
         composer.set_suggestion_resolver(lambda: self._command_suggestion(composer, popup))
@@ -1172,6 +1180,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self.workers.cancel_all()
 
     async def _start(self) -> None:
+        await self._startup_screen.wait_for_refresh()
         try:
             await self._start_application()
         except PersistenceError as exc:
@@ -1186,11 +1195,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             raise
         except Exception as exc:  # noqa: BLE001 - surface boundary failures in the Host.
             if self._surface_available():
-                self.query_one(StatusLine).set_activity("failed")
-                self.notify(f"OURO could not start: {exc}", severity="error", markup=False)
+                self._startup_screen.show_error(f"OURO could not start: {exc}")
             return
         if not self._surface_available():
             return
+        self._startup_screen.prepare_view()
         try:
             drafts, recovered_session = await recover_input_drafts(
                 self._controller, self._input_drafts
@@ -1226,6 +1235,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         with self.batch_update():
             composer.display = True
             composer.disabled = self._visible_read_only
+            await self.pop_screen()
             if not self._visible_read_only:
                 composer.focus()
         if session_load_error is not None:
@@ -6076,6 +6086,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         )
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if isinstance(self.screen, StartupScreen):
+            return action == "quit"
         # Tab owns focus navigation; disable Textual's inherited reverse-focus action.
         if action == "focus_previous":
             return False
@@ -6098,6 +6110,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._abort_run()
 
     async def action_quit(self) -> None:
+        if isinstance(self.screen, StartupScreen):
+            if self._host_closing:
+                return
+            self._startup_screen.show_exiting()
+            workers = tuple(self.workers)
+            self._begin_host_close()
+            await self._startup_screen.wait_for_refresh()
+            await asyncio.gather(*(worker.wait() for worker in workers), return_exceptions=True)
         self.exit(0)
 
     def _has_active_run(self) -> bool:

@@ -164,7 +164,7 @@ def test_approval_host_receives_selected_backend(monkeypatch) -> None:
         captured.update({"session_id": session_id, **kwargs})
         return 0
 
-    monkeypatch.setattr("ouro.cli.main.approve_tool_command", fake_approve)
+    monkeypatch.setattr("ouro.cli.dispatch.approve_tool_command", fake_approve)
 
     assert main(["approve", "ses_1", "--session-backend", "sqlite"]) == 0
     assert captured["session_id"] == "ses_1"
