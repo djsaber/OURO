@@ -6,13 +6,24 @@ from dataclasses import dataclass, replace
 from typing import Protocol
 
 from ouro.plugins.contributions.models import ContributionValidationError, PreparedBackgroundService
-from ouro.plugins.contributions.preparation import (
-    ContributionCoordinator,
+from ouro.plugins.contributions.preparation_rules import (
     _missing_optional,
     _PreparationContext,
+    _prepare_commands,
+    _prepare_compaction,
+    _prepare_context_providers,
+    _prepare_continuation_policies,
+    _prepare_discovered_tools,
+    _prepare_observers,
+    _prepare_prompt_policies,
+    _prepare_session_controllers,
+    _prepare_tool_policies,
+    _prepare_turn_policies,
     _PreparedBuilder,
     _unique_contribution_map,
+    _validate_background_services,
     _validate_declared_set,
+    prepare_tools,
 )
 
 
@@ -22,7 +33,6 @@ class ContributionPreparationAdapter(Protocol):
 
     def prepare(
         self,
-        coordinator: ContributionCoordinator,
         context: _PreparationContext,
         builder: _PreparedBuilder,
     ) -> None: ...
@@ -40,12 +50,11 @@ class _ToolPreparationAdapter:
 
     def prepare(
         self,
-        coordinator: ContributionCoordinator,
         context: _PreparationContext,
         builder: _PreparedBuilder,
     ) -> None:
-        builder.tools = coordinator.prepare_tools(
-            context.candidate.manifest,
+        builder.tools = prepare_tools(
+            context.manifest,
             context.owner,
             context.source,
             context.contributions.tools,
@@ -59,7 +68,7 @@ class _ToolPreparationAdapter:
         del builder
         return _missing_optional(
             "tools",
-            context.candidate.manifest.contributes.tools,
+            context.manifest.contributes.tools,
             {tool.definition.name for tool in context.contributions.tools},
             exposed_name=True,
         )
@@ -71,14 +80,13 @@ class _ObserverPreparationAdapter:
 
     def prepare(
         self,
-        coordinator: ContributionCoordinator,
         context: _PreparationContext,
         builder: _PreparedBuilder,
     ) -> None:
         builder.observers = (
             *builder.observers,
-            *coordinator._prepare_observers(
-                context.candidate.manifest,
+            *_prepare_observers(
+                context.manifest,
                 context.owner,
                 context.source,
                 context.contributions.observers,
@@ -92,7 +100,7 @@ class _ObserverPreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "observers",
-            context.candidate.manifest.contributes.observers,
+            context.manifest.contributes.observers,
             {observer.observer_id for observer in builder.observers},
         )
 
@@ -103,12 +111,11 @@ class _ContextPreparationAdapter:
 
     def prepare(
         self,
-        coordinator: ContributionCoordinator,
         context: _PreparationContext,
         builder: _PreparedBuilder,
     ) -> None:
-        builder.context_providers = coordinator._prepare_context_providers(
-            context.candidate.manifest,
+        builder.context_providers = _prepare_context_providers(
+            context.manifest,
             context.owner,
             context.contributions.context_providers,
         )
@@ -120,7 +127,7 @@ class _ContextPreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "context_providers",
-            context.candidate.manifest.contributes.context_providers,
+            context.manifest.contributes.context_providers,
             {provider.provider_id for provider in builder.context_providers},
         )
 
@@ -131,12 +138,11 @@ class _CommandPreparationAdapter:
 
     def prepare(
         self,
-        coordinator: ContributionCoordinator,
         context: _PreparationContext,
         builder: _PreparedBuilder,
     ) -> None:
-        builder.commands = coordinator._prepare_commands(
-            context.candidate.manifest,
+        builder.commands = _prepare_commands(
+            context.manifest,
             context.owner,
             context.source,
             context.contributions.commands,
@@ -149,7 +155,7 @@ class _CommandPreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "commands",
-            context.candidate.manifest.contributes.commands,
+            context.manifest.contributes.commands,
             {command.name for command in builder.commands},
         )
 
@@ -160,12 +166,11 @@ class _SessionControllerPreparationAdapter:
 
     def prepare(
         self,
-        coordinator: ContributionCoordinator,
         context: _PreparationContext,
         builder: _PreparedBuilder,
     ) -> None:
-        builder.session_controllers = coordinator._prepare_session_controllers(
-            context.candidate.manifest,
+        builder.session_controllers = _prepare_session_controllers(
+            context.manifest,
             context.owner,
             context.source,
             context.contributions.session_controllers,
@@ -178,7 +183,7 @@ class _SessionControllerPreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "session_controllers",
-            context.candidate.manifest.contributes.session_controllers,
+            context.manifest.contributes.session_controllers,
             {controller.controller_id for controller in builder.session_controllers},
         )
 
@@ -189,12 +194,11 @@ class _CompactionPreparationAdapter:
 
     def prepare(
         self,
-        coordinator: ContributionCoordinator,
         context: _PreparationContext,
         builder: _PreparedBuilder,
     ) -> None:
-        builder.compaction_strategies = coordinator._prepare_compaction(
-            context.candidate.manifest,
+        builder.compaction_strategies = _prepare_compaction(
+            context.manifest,
             context.contributions.compaction_strategies,
         )
 
@@ -205,9 +209,9 @@ class _CompactionPreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "compaction_strategies",
-            context.candidate.manifest.contributes.compaction_strategies,
+            context.manifest.contributes.compaction_strategies,
             {
-                strategy.strategy_id.removeprefix(f"{context.candidate.plugin_id}.")
+                strategy.strategy_id.removeprefix(f"{context.manifest.plugin_id}.")
                 for strategy in builder.compaction_strategies
             },
         )
@@ -219,11 +223,9 @@ class _SkillPreparationAdapter:
 
     def prepare(
         self,
-        coordinator: ContributionCoordinator,
         context: _PreparationContext,
         builder: _PreparedBuilder,
     ) -> None:
-        del coordinator
         builder.skills = context.resource_skills
 
     def missing_optional(
@@ -233,7 +235,7 @@ class _SkillPreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "skills",
-            context.candidate.manifest.contributes.skills,
+            context.manifest.contributes.skills,
             {skill.name for skill in builder.skills},
         )
 
@@ -244,14 +246,13 @@ class _MCPPreparationAdapter:
 
     def prepare(
         self,
-        coordinator: ContributionCoordinator,
         context: _PreparationContext,
         builder: _PreparedBuilder,
     ) -> None:
         builder.tools = (
             *builder.tools,
-            *coordinator._prepare_discovered_tools(
-                context.candidate.manifest,
+            *_prepare_discovered_tools(
+                context.manifest,
                 context.owner,
                 context.discovered_tools,
             ),
@@ -272,17 +273,14 @@ class _BackgroundServicePreparationAdapter:
 
     def prepare(
         self,
-        coordinator: ContributionCoordinator,
         context: _PreparationContext,
         builder: _PreparedBuilder,
     ) -> None:
-        coordinator._validate_background_services(
-            context.candidate.manifest,
+        _validate_background_services(
+            context.manifest,
             context.contributions.background_services,
         )
-        declarations = {
-            item.id: item for item in context.candidate.manifest.contributes.background_services
-        }
+        declarations = {item.id: item for item in context.manifest.contributes.background_services}
         builder.background_services = tuple(
             PreparedBackgroundService(service, declarations[service.service_id].scope)
             for service in context.contributions.background_services
@@ -295,7 +293,7 @@ class _BackgroundServicePreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "background_services",
-            context.candidate.manifest.contributes.background_services,
+            context.manifest.contributes.background_services,
             {service.service_id for service in builder.background_services},
         )
 
@@ -306,12 +304,11 @@ class _ContinuationPreparationAdapter:
 
     def prepare(
         self,
-        coordinator: ContributionCoordinator,
         context: _PreparationContext,
         builder: _PreparedBuilder,
     ) -> None:
-        builder.continuation_policies = coordinator._prepare_continuation_policies(
-            context.candidate.manifest,
+        builder.continuation_policies = _prepare_continuation_policies(
+            context.manifest,
             context.owner,
             context.contributions.continuation_policies,
         )
@@ -323,7 +320,7 @@ class _ContinuationPreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "continuation_policies",
-            context.candidate.manifest.contributes.continuation_policies,
+            context.manifest.contributes.continuation_policies,
             {policy.policy_id for policy in builder.continuation_policies},
         )
 
@@ -334,12 +331,11 @@ class _ToolPolicyPreparationAdapter:
 
     def prepare(
         self,
-        coordinator: ContributionCoordinator,
         context: _PreparationContext,
         builder: _PreparedBuilder,
     ) -> None:
-        builder.tool_policies = coordinator._prepare_tool_policies(
-            context.candidate.manifest,
+        builder.tool_policies = _prepare_tool_policies(
+            context.manifest,
             context.owner,
             context.contributions.tool_policies,
         )
@@ -351,7 +347,7 @@ class _ToolPolicyPreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "tool_policies",
-            context.candidate.manifest.contributes.tool_policies,
+            context.manifest.contributes.tool_policies,
             {policy.policy_id for policy in builder.tool_policies},
         )
 
@@ -362,12 +358,11 @@ class _PromptPolicyPreparationAdapter:
 
     def prepare(
         self,
-        coordinator: ContributionCoordinator,
         context: _PreparationContext,
         builder: _PreparedBuilder,
     ) -> None:
-        builder.prompt_policies = coordinator._prepare_prompt_policies(
-            context.candidate.manifest,
+        builder.prompt_policies = _prepare_prompt_policies(
+            context.manifest,
             context.owner,
             context.contributions.prompt_policies,
         )
@@ -379,7 +374,7 @@ class _PromptPolicyPreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "prompt_policies",
-            context.candidate.manifest.contributes.prompt_policies,
+            context.manifest.contributes.prompt_policies,
             {policy.policy_id for policy in builder.prompt_policies},
         )
 
@@ -390,12 +385,11 @@ class _TurnPolicyPreparationAdapter:
 
     def prepare(
         self,
-        coordinator: ContributionCoordinator,
         context: _PreparationContext,
         builder: _PreparedBuilder,
     ) -> None:
-        builder.turn_policies = coordinator._prepare_turn_policies(
-            context.candidate.manifest,
+        builder.turn_policies = _prepare_turn_policies(
+            context.manifest,
             context.owner,
             context.contributions.turn_policies,
         )
@@ -407,7 +401,7 @@ class _TurnPolicyPreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "turn_policies",
-            context.candidate.manifest.contributes.turn_policies,
+            context.manifest.contributes.turn_policies,
             {policy.policy_id for policy in builder.turn_policies},
         )
 
@@ -445,11 +439,10 @@ class _RunDriverPreparationAdapter:
 
     def prepare(
         self,
-        coordinator: ContributionCoordinator,
         context: _PreparationContext,
         builder: _PreparedBuilder,
     ) -> None:
-        manifest = context.candidate.manifest
+        manifest = context.manifest
         declarations = {item.id: item for item in manifest.contributes.run_drivers}
         actual = _unique_contribution_map(
             "Run driver", ((item.driver_id, item) for item in context.contributions.run_drivers)
@@ -472,7 +465,7 @@ class _RunDriverPreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "run_drivers",
-            context.candidate.manifest.contributes.run_drivers,
+            context.manifest.contributes.run_drivers,
             {item.driver_id for item in builder.run_drivers},
         )
 
@@ -483,11 +476,10 @@ class _ProviderPreparationAdapter:
 
     def prepare(
         self,
-        coordinator: ContributionCoordinator,
         context: _PreparationContext,
         builder: _PreparedBuilder,
     ) -> None:
-        manifest = context.candidate.manifest
+        manifest = context.manifest
         declarations = {item.id: item for item in manifest.contributes.providers}
         actual = _unique_contribution_map(
             "Provider", ((item.provider_id, item) for item in context.contributions.providers)
@@ -503,7 +495,7 @@ class _ProviderPreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "providers",
-            context.candidate.manifest.contributes.providers,
+            context.manifest.contributes.providers,
             {item.provider_id for item in builder.providers},
         )
 

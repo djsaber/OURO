@@ -301,6 +301,66 @@ class RunLifecycle:
             message = message.model_copy(update={"metadata": dict(metadata)})
         return message
 
+    def save_budget(self, run: RunRecord, policy: dict[str, object]) -> None:
+        with self.store.session_mutation(run.session_id):
+            latest = self.store.load_run(run.session_id, run.run_id)
+            if latest.status not in ACTIVE_RUN_STATUSES or latest.abort_requested:
+                return
+            if latest.metadata.get("run_budget") != policy:
+                self.store.save_run(
+                    latest.model_copy(
+                        update={
+                            "metadata": {**latest.metadata, "run_budget": policy},
+                        }
+                    )
+                )
+
+    def commit_model_request(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        context_id: str,
+        event: EventRecord,
+    ) -> tuple[RunRecord, tuple[EventRecord, ...]]:
+        """Record possible dispatch and the Run counter together before network IO."""
+
+        del session
+        with self.store.session_mutation(run.session_id):
+            latest = self.store.load_run(run.session_id, run.run_id)
+            current = self.store.load_session_record(run.session_id)
+            if latest.history_epoch != current.history_epoch:
+                raise SessionCommitConflict("Run belongs to withdrawn Session history")
+            if latest.abort_requested or latest.status not in ACTIVE_RUN_STATUSES:
+                return latest, ()
+            if current.active_run_id != run.run_id:
+                raise SessionCommitConflict("Run no longer owns request dispatch")
+            header = self.store.load_latest_context_header(run.session_id)
+            if (
+                header is None
+                or header.context_id != context_id
+                or latest.current_request_id != context_id
+            ):
+                raise SessionCommitConflict("prepared request is no longer current")
+            if header.started_at is not None:
+                raise SessionCommitConflict("request dispatch is already recorded")
+            updated = latest.model_copy(
+                update={
+                    "model_round_count": latest.model_round_count + 1,
+                    "model": run.model,
+                    "model_endpoint_id": run.model_endpoint_id,
+                }
+            )
+            committed = self.store.commit_session(
+                SessionCommit(
+                    before=current,
+                    runs=(updated,),
+                    request_header=header.model_copy(update={"started_at": utc_now()}),
+                    events=(event,),
+                )
+            )
+            return updated, committed.events
+
     async def correct_model_output(
         self, run: RunRecord, turn_id: str, response: ModelExecutionResult
     ) -> tuple[SessionRecord, RunRecord, tuple[EventRecord, ...]]:
@@ -1017,6 +1077,28 @@ class RunLifecycle:
                 )
             )
             return updated_run, committed.events
+
+    def settle_requested_abort(
+        self,
+        session_id: str,
+        run_id: str,
+    ) -> tuple[SessionRecord, RunRecord, tuple[EventRecord, ...]]:
+        with self.store.session_mutation(session_id):
+            latest_run = self.store.load_run(session_id, run_id)
+            if latest_run.status not in ACTIVE_RUN_STATUSES or not latest_run.abort_requested:
+                return (
+                    self.store.load_session_record(latest_run.session_id),
+                    latest_run,
+                    (),
+                )
+            raw_reason = latest_run.metadata.get("abort_reason")
+            reason = raw_reason if isinstance(raw_reason, str) and raw_reason else "User aborted"
+            return abort_run_state(
+                self.store,
+                session_id=latest_run.session_id,
+                run_id=latest_run.run_id,
+                reason=reason,
+            )
 
     async def complete(
         self,

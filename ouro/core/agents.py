@@ -362,14 +362,6 @@ class DelegationRecord(VersionedOuroModel):
         return self
 
 
-class AgentHandle(OuroModel):
-    delegation_id: str
-    child_session_id: str | None = None
-    child_run_id: str | None = None
-    agent_id: str
-    status: str
-
-
 class AgentWaitResolution(OuroModel):
     resolved_delegation_id: str | None = None
     resolved_child_run_id: str | None = Field(default=None, min_length=1)
@@ -467,7 +459,6 @@ __all__ = [
     "AgentCatalogEntry",
     "AgentCatalogSnapshot",
     "AgentDefinition",
-    "AgentHandle",
     "AgentSpawnPolicy",
     "AgentWaitRequest",
     "AgentWaitResolution",

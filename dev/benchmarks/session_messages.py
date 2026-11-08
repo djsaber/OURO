@@ -18,11 +18,11 @@ from unittest.mock import patch
 
 import ouro.sessions.backends.files.inputs as file_inputs
 import ouro.sessions.backends.files.messages as file_messages
-import ouro.sessions.backends.sqlite.inputs as sqlite_inputs
 import ouro.sessions.backends.sqlite.store as sqlite_store
+import ouro.sessions.sqlite_inputs as sqlite_inputs
 from dev.benchmarks.session_resources import file_reads
 from ouro.core.inputs import InputRecord, InputState, QueuedInput
-from ouro.core.messages import InputMessageReference, MessageFact, MessageRecord
+from ouro.core.messages import InputMessageReference, MessageRecord
 from ouro.core.state import SessionRecord
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 
@@ -34,24 +34,28 @@ def adapter(root, backend):
 
 
 def sample(store, session_id, selected, operation):
-    decode_module = file_messages if isinstance(store, LocalSessionStore) else sqlite_store
+    message_module = file_messages if isinstance(store, LocalSessionStore) else sqlite_store
     input_module = file_inputs if isinstance(store, LocalSessionStore) else sqlite_inputs
-    decode = decode_module.decode_versioned_record_json
+    decode_message = message_module.decode_message_content
+    decode_input = input_module.decode_versioned_record_json
     decoded = 0
     inputs = 0
 
-    def counted(model, payload, **kwargs):
-        nonlocal decoded, inputs
-        if issubclass(model, MessageFact):
-            decoded += 1
-        elif model is InputRecord:
+    def counted_message(payload, **kwargs):
+        nonlocal decoded
+        decoded += 1
+        return decode_message(payload, **kwargs)
+
+    def counted_input(model, payload, **kwargs):
+        nonlocal inputs
+        if model is InputRecord:
             inputs += 1
-        return decode(model, payload, **kwargs)
+        return decode_input(model, payload, **kwargs)
 
     with (
         file_reads() as reads,
-        patch.object(decode_module, "decode_versioned_record_json", counted),
-        patch.object(input_module, "decode_versioned_record_json", counted),
+        patch.object(message_module, "decode_message_content", counted_message),
+        patch.object(input_module, "decode_versioned_record_json", counted_input),
     ):
         tracemalloc.start()
         started = time.perf_counter()

@@ -5,9 +5,62 @@ import weakref
 
 import pytest
 
+from ouro.application.contracts.sessions import SessionObservationFacts, SessionView
+from ouro.application.contracts.tool_activity import PendingInteraction
 from ouro.application.observations.content import SessionContentProjection
 from ouro.core.events import EventRecord
 from ouro.core.response_drafts import ResponseStreamPosition
+from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.tool_facts import ToolCallIdentity
+
+
+def test_fact_updates_preserve_unaffected_interactions_and_replace_changed_calls():
+    projection = SessionContentProjection("ses_output")
+    session = SessionView.from_record(SessionRecord(session_id=projection.session_id))
+    interactions = tuple(
+        PendingInteraction(
+            kind="approval",
+            run_id=run_id,
+            tool_call_id=call_id,
+            tool_name="Read",
+            request_id=request_id,
+        )
+        for run_id, call_id, request_id in (
+            ("live", "keep", "keep"),
+            ("live", "replace", "old"),
+            ("done", "keep", "done"),
+            ("abort", "keep", "abort"),
+            ("outside_page", "replace", "outside_page"),
+        )
+    )
+    projection.apply_facts(
+        SessionObservationFacts(session=session, pending_interactions=interactions)
+    )
+    replacement = PendingInteraction(
+        kind="question", run_id="live", tool_call_id="replace", tool_name="AskUser"
+    )
+    facts = SessionObservationFacts(
+        session=session,
+        runs=(
+            RunRecord(session_id=projection.session_id, run_id="live", status="waiting_user"),
+            RunRecord(session_id=projection.session_id, run_id="done", status="completed"),
+            RunRecord(
+                session_id=projection.session_id,
+                run_id="abort",
+                status="running",
+                abort_requested=True,
+            ),
+        ),
+        changed_calls=(ToolCallIdentity(run_id="live", batch_id="batch", tool_call_id="replace"),),
+        pending_interactions=(replacement,),
+    )
+
+    projection.apply_facts(facts)
+
+    expected = (interactions[0], interactions[-1], replacement)
+    assert projection.pending_interactions == expected
+    projection.apply_facts(facts)
+    assert projection.pending_interactions == expected
 
 
 def event(sequence, kind, *, context_id=None, cursor=None, **payload):

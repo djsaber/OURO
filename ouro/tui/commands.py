@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ouro.tui.menus.labels import APPROVAL_DESCRIPTIONS, MODEL_THINKING_LABEL, TOOL_APPROVAL_LABEL
-from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
 
 
 @dataclass(frozen=True)
@@ -291,8 +290,3 @@ def _bracket_choices(branch: str) -> tuple[str, ...] | None:
     if len(choices) < 2 or any(not choice or " " in choice for choice in choices):
         return None
     return choices
-
-
-def slash_command_help(*, theme: TuiTheme = DEFAULT_TUI_THEME) -> str:
-    """Render command usage as a wrap-friendly, bullet-separated cloud."""
-    return theme.inline_separator.join(command.usage for command in TUI_COMMANDS)

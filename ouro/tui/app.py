@@ -4,19 +4,17 @@ import asyncio
 import json
 import logging
 import sys
-from calendar import month_name
 from collections import Counter, OrderedDict
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime
+from datetime import datetime
 from functools import partial
 from pathlib import Path
 from typing import Literal, cast
 from weakref import ReferenceType, ref
 
 from pydantic import JsonValue
-from rich.text import Text
 from textual import events, work
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -24,7 +22,6 @@ from textual.containers import Vertical
 from textual.driver import Driver
 from textual.geometry import Size
 from textual.message import Message
-from textual.messages import Prune
 from textual.screen import Screen
 from textual.timer import Timer
 from textual.widget import Widget
@@ -60,7 +57,6 @@ from ouro.core.reasoning import REASONING_EFFORTS, ReasoningRequest
 from ouro.core.state import DEFAULT_SESSION_TITLE, RunRecord
 from ouro.deployment import SessionBackend, TaskBackend
 from ouro.local_application import LocalApplication
-from ouro.tui.clipboard import ClipboardWriteError, write_system_clipboard
 from ouro.tui.commands import (
     REFERENCE_COMMANDS,
     TUI_COMMANDS,
@@ -78,6 +74,7 @@ from ouro.tui.composer.attachment_paths import (
     pasted_text_file,
 )
 from ouro.tui.composer.attachment_picker import AttachmentPicker
+from ouro.tui.composer.draft_persistence import InputDraftPersistence
 from ouro.tui.composer.drafts import TuiInputDrafts, TuiInputDraftStore, TuiPendingInput
 from ouro.tui.composer.input import COMPOSER_MAX_HEIGHT, COMPOSER_MIN_HEIGHT, Composer
 from ouro.tui.composer.popup import COMMAND_POPUP_MAX_HEIGHT, COMMAND_POPUP_MIN_HEIGHT, CommandPopup
@@ -89,7 +86,7 @@ from ouro.tui.controller import TuiController
 from ouro.tui.conversation.history import ConversationHistory
 from ouro.tui.conversation.history_models import ConversationHistoryState, TranscriptEntry
 from ouro.tui.conversation.markdown_stream import AssistantMarkdownStream
-from ouro.tui.conversation.messages import MessageCopyRequested, ToolNavigationRequested
+from ouro.tui.conversation.messages import ToolNavigationRequested
 from ouro.tui.conversation.tools import is_terminal_tool
 from ouro.tui.conversation.transcript import project_transcript_entries
 from ouro.tui.conversation.view import ConversationView, PreparedTranscript
@@ -105,6 +102,7 @@ from ouro.tui.features.providers.model_menus import (
     reasoning_request,
     reasoning_values,
 )
+from ouro.tui.host_screen import _OuroHostScreen
 from ouro.tui.interactions.approval import (
     INTERACTION_PANEL_MAX_HEIGHT,
     INTERACTION_PANEL_MIN_HEIGHT,
@@ -120,15 +118,19 @@ from ouro.tui.menus.help import help_choices
 from ouro.tui.menus.labels import MODEL_THINKING_LABEL, THINKING_LABELS, TOOL_APPROVAL_LABEL
 from ouro.tui.menus.models import Choice, MenuDestination
 from ouro.tui.menus.multiple import MultiChoiceScreen
+from ouro.tui.menus.sessions import (
+    _SESSION_DOMAIN_LABELS,
+    _SESSION_GROUPING_LABELS,
+    _session_choices,
+    _sessions_in_domain,
+)
 from ouro.tui.menus.sorting import sorted_models
 from ouro.tui.menus.styles import MENU_CSS
 from ouro.tui.preferences import (
     MAX_RECENT_WORKSPACES,
-    SessionGrouping,
     TuiPreferences,
     TuiPreferencesStore,
 )
-from ouro.tui.rendering import TuiCompositor
 from ouro.tui.startup import TerminalStartup
 from ouro.tui.startup_driver import startup_driver
 from ouro.tui.startup_screen import StartupScreen
@@ -141,6 +143,7 @@ from ouro.tui.state import (
     project_run_presentations,
 )
 from ouro.tui.status import project_mcp_system_status, project_usage_system_status
+from ouro.tui.styles import _OURO_TUI_CSS
 from ouro.tui.subagent_navigation import SubagentNavigationPanel
 from ouro.tui.theme import (
     DEFAULT_TUI_THEME,
@@ -209,9 +212,7 @@ class HistoryLoadRequest:
 
 
 _MCP_STATUS_SYNC_INTERVAL_SECONDS = 0.25
-_INPUT_DRAFT_SAVE_DEBOUNCE_SECONDS = 0.3
 _AGENT_SWITCH_DEBOUNCE_SECONDS = 0.1
-_SESSION_TITLE_MAX_CELLS = 56
 _RUNTIME_EVENT_APPLY_MAX = 64
 _SESSION_HISTORY_CACHE_SIZE = 3
 _RUNTIME_RENDER_BOUNDARY_EVENTS = {
@@ -262,16 +263,6 @@ _MENU_SESSIONS: MenuDestination = "sessions"
 _MENU_TASKS: MenuDestination = "tasks"
 _MENU_SKILLS: MenuDestination = "skills"
 _MENU_HELP: MenuDestination = "help"
-_SESSION_DOMAIN_LABELS = {
-    "default": "USER",
-    "task": "TASK",
-    "subagent": "SUBAGENT",
-    "archived": "ARCHIVED",
-}
-_SESSION_GROUPING_LABELS: dict[SessionGrouping, str] = {
-    "date": "By date",
-    "workspace": "By workspace",
-}
 _ACTION_GROUP_RANK = {
     group: rank
     for rank, group in enumerate(
@@ -292,470 +283,6 @@ _ACTION_GROUP_RANK = {
 _THOUGHT_DISPLAY_OPTIONS: dict[str, bool] = {"expand": True, "collapse": False}
 _INPUT_DRAFT_MEMORY_OPTIONS: dict[str, bool] = {"enable": True, "disable": False}
 _CLEAR_WORKSPACE_HISTORY_ARGUMENT = "clear"
-
-
-class _OuroHostScreen(Screen):
-    """Own Host-level lifecycle and page-selection interactions."""
-
-    DEFAULT_CSS = """
-    _OuroHostScreen > .screen--selection {
-        color: transparent;
-        background: transparent;
-        text-style: reverse;
-    }
-    """
-
-    def __init__(
-        self,
-        on_prune: Callable[[], None],
-        on_resize: Callable[[Size], None] | None = None,
-        *,
-        clipboard_writer: Callable[[str], None] = write_system_clipboard,
-    ) -> None:
-        super().__init__(id="_default")
-        self._compositor = TuiCompositor()
-        self._on_host_prune = on_prune
-        self._on_host_resize = on_resize
-        self._clipboard_writer = clipboard_writer
-
-    async def on_mouse_down(self, event: events.MouseDown) -> None:
-        if event.button != 3 or not (selected_text := self.get_selected_text()):
-            return
-        event.prevent_default()
-        event.stop()
-        if await self._copy_to_clipboard(selected_text):
-            self.clear_selection()
-
-    async def on_message_copy_requested(self, message: MessageCopyRequested) -> None:
-        message.stop()
-        await self._copy_to_clipboard(message.text)
-
-    async def _copy_to_clipboard(self, text: str) -> bool:
-        try:
-            await asyncio.to_thread(self._clipboard_writer, text)
-        except ClipboardWriteError as exc:
-            self.notify(str(exc), severity="error", markup=False)
-            return False
-        self.app.copy_to_clipboard(text)
-        self.notify("Copied to clipboard", markup=False)
-        return True
-
-    async def on_prune(self, event: Prune) -> None:
-        self._on_host_prune()
-        await super().on_prune(event)
-
-    def on_resize(self, event: events.Resize) -> None:
-        if self._on_host_resize is not None:
-            self._on_host_resize(event.size)
-
-
-_OURO_TUI_CSS = """
-    /* Geometry remains fixed here; the owning app injects every visual token
-       from its complete TuiTheme so CSS and Rich rendering share one source. */
-    $conversation-left-gutter: 1;
-    $conversation-right-gutter: 1;
-
-    Screen {
-        width: 100%;
-        height: 100%;
-        margin: 0;
-        padding: 0;
-        background: $ouro-background;
-        color: $ouro-text-primary;
-        layout: vertical;
-    }
-
-    /* Textual mounts notifications as screen-level system widgets. Keep that
-       framework lifecycle, but project the chrome through the same frontend
-       tokens as OURO's composer and menus. Severity changes only the rail
-       color; geometry and surfaces remain stable. */
-    ToastRack {
-        dock: top;
-        align: right top;
-        margin-top: 1;
-        margin-bottom: 0;
-        scrollbar-background: transparent;
-        scrollbar-color: transparent;
-        scrollbar-color-hover: transparent;
-        scrollbar-size-vertical: 0;
-        scrollbar-gutter: auto;
-    }
-
-    Toast {
-        width: auto;
-        min-width: 28;
-        max-width: 50%;
-        height: auto;
-        margin: 0 1 1 0;
-        padding: 1 2;
-        color: $ouro-text-primary;
-        background: $ouro-panel;
-        border-top: none;
-        border-right: solid $ouro-progress-track;
-        border-bottom: none;
-        border-left: solid $ouro-theme;
-    }
-
-    Toast.-information {
-        border-left: solid $ouro-theme;
-    }
-
-    Toast.-warning {
-        border-left: solid $ouro-warning;
-    }
-
-    Toast.-error {
-        border-left: solid $ouro-failure;
-    }
-
-    VerticalScroll, TextArea, OptionList {
-        scrollbar-background: $ouro-background;
-        scrollbar-color: $ouro-border;
-        scrollbar-color-hover: $ouro-scrollbar-hover;
-        scrollbar-size-vertical: 1;
-        scrollbar-gutter: stable;
-    }
-
-    #brand-header {
-        width: 100%;
-        height: 1;
-        dock: top;
-        padding: 0 $conversation-right-gutter 0 $conversation-left-gutter;
-        background: $ouro-background;
-        color: $ouro-text-primary;
-    }
-
-    #main {
-        width: 100%;
-        height: 1fr;
-        background: $ouro-background;
-    }
-
-    #conversation {
-        width: 100%;
-        height: 1fr;
-        padding: 1 $conversation-right-gutter 0 $conversation-left-gutter;
-        background: $ouro-background;
-        scrollbar-background: transparent;
-        scrollbar-color: transparent;
-        scrollbar-color-hover: transparent;
-        scrollbar-size-vertical: 0;
-        scrollbar-gutter: auto;
-    }
-
-    #conversation-transcript {
-        width: 100%;
-        height: auto;
-        min-height: 100%;
-        background: transparent;
-        /* One growing history buffer and the live rows form a bounded widget
-           tree. Position these siblings from their current content heights. */
-        layout: vertical;
-    }
-
-    #conversation-history {
-        width: 100%;
-        height: auto;
-        min-height: 0;
-        background: transparent;
-        overflow: hidden;
-        scrollbar-background: transparent;
-        scrollbar-color: transparent;
-        scrollbar-color-hover: transparent;
-        scrollbar-size: 0 0;
-        scrollbar-gutter: auto;
-    }
-
-    #input-region {
-        width: 100%;
-        height: auto;
-        margin: 0;
-        padding: 0;
-        color: $ouro-text-primary;
-        background: $ouro-background;
-    }
-
-    #main.welcome-page #conversation {
-        display: none;
-    }
-
-    #input-region.welcome-page {
-        height: 100%;
-    }
-
-    #input-region.welcome-page #composer,
-    #input-region.welcome-page #command-popup,
-    #input-region.welcome-page #subagent-navigation-panel,
-    #input-region.welcome-page StatusLine {
-        width: 100%;
-        margin-left: 0;
-        margin-right: 0;
-    }
-
-    #input-region.welcome-page StatusLine {
-        padding-left: 0;
-        padding-right: 0;
-    }
-
-    .turn {
-        width: 100%;
-        height: auto;
-        margin-bottom: 1;
-        background: transparent;
-    }
-
-    .assistant-turn {
-        padding: 0;
-    }
-
-    .assistant-turn.after-tool {
-        padding: 1 0 0 0;
-    }
-
-    .assistant-markdown {
-        width: 100%;
-        height: auto;
-        background: transparent;
-        padding: 0;
-    }
-
-    .reasoning-view {
-        height: auto;
-        margin: 0 0 1 0;
-        padding: 0;
-        color: $ouro-text-lowlight;
-        background: transparent;
-    }
-
-    .reasoning-label {
-        height: 1;
-        color: $ouro-text-lowlight;
-        text-style: none;
-    }
-
-    /* The reasoning body carries its │ border inside its strips, matching
-       the immutable history's frozen rendering cell for cell. */
-    .reasoning-lines {
-        width: 1fr;
-        height: auto;
-        margin: 1 0 0 0;
-        padding: 0 1 0 0;
-        color: $ouro-text-lowlight;
-        background: transparent;
-    }
-
-    .reasoning-lines.collapsed {
-        height: 0;
-        margin-top: 0;
-    }
-
-    .tool-row {
-        height: auto;
-        margin: 0;
-        color: $ouro-text-lowlight;
-        background: transparent;
-    }
-
-    #subagent-navigation-panel {
-        width: 100%;
-        height: 1;
-        margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
-        padding: 0;
-        color: $ouro-text-lowlight;
-        background: $ouro-background;
-        text-align: right;
-        overflow: hidden;
-    }
-
-    .approval-panel {
-        height: auto;
-        margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
-        padding: 1 2;
-        color: $ouro-text-primary;
-        background: $ouro-panel;
-        border-top: none;
-        border-right: solid $ouro-progress-track;
-        border-bottom: none;
-        border-left: solid $ouro-border-subtle;
-    }
-
-    .approval-panel:focus {
-        border-left: solid $ouro-theme;
-        border-right: solid $ouro-border-focus;
-    }
-
-    .approval-title {
-        height: 1;
-    }
-
-    .approval-controls {
-        height: auto;
-    }
-
-    #interaction-bar {
-        min-height: $interaction-panel-min-height;
-        max-height: $interaction-panel-max-height;
-        overflow-y: auto;
-        scrollbar-background: transparent;
-        scrollbar-color: transparent;
-        scrollbar-color-hover: transparent;
-        scrollbar-size-vertical: 0;
-        scrollbar-gutter: auto;
-    }
-
-    #interaction-summary {
-        height: auto;
-        margin-bottom: 1;
-    }
-
-    #ask-user-panel {
-        height: auto;
-        max-height: 18;
-        margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
-        padding: 1 2;
-        color: $ouro-text-primary;
-        background: $ouro-panel;
-        border-top: none;
-        border-right: solid $ouro-progress-track;
-        border-bottom: none;
-        border-left: solid $ouro-border-subtle;
-    }
-
-    #ask-user-panel:focus {
-        border-left: solid $ouro-theme;
-        border-right: solid $ouro-border-focus;
-    }
-
-    #plan-confirmation-panel {
-        max-height: 24;
-        overflow: hidden;
-    }
-
-    #plan-confirmation-title {
-        height: 1;
-        margin-bottom: 1;
-    }
-
-    #plan-confirmation-document {
-        height: auto;
-        max-height: 12;
-        overflow-y: auto;
-        scrollbar-background: transparent;
-        scrollbar-color: transparent;
-        scrollbar-color-hover: transparent;
-        scrollbar-size-vertical: 0;
-        scrollbar-gutter: auto;
-    }
-
-    #plan-confirmation-body {
-        height: auto;
-    }
-
-    #plan-confirmation-controls {
-        margin-top: 1;
-    }
-
-    #command-popup {
-        height: auto;
-        min-height: $command-popup-min-height;
-        max-height: $command-popup-max-height;
-        margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
-        padding: 1 2;
-        color: $ouro-text-primary;
-        background: $ouro-panel;
-        border-top: none;
-        border-right: none;
-        border-bottom: none;
-        border-left: solid $ouro-border-subtle;
-        overflow-y: hidden;
-        scrollbar-gutter: auto;
-    }
-
-    #command-popup-heading {
-        dock: top;
-        width: 100%;
-        height: 1;
-    }
-
-    #command-popup-content {
-        width: 100%;
-        height: auto;
-    }
-
-    /* The composer grows with its wrapped document. `height: auto` on a
-       TextArea resolves through its virtual size, so Textual measures the
-       text itself; the bounds below (border-box, so inclusive of the blank
-       frame row above and below) cap it at three text rows and keep one row
-       when empty. Past the cap the widget scrolls instead of growing. */
-    #composer {
-        height: auto;
-        min-height: $composer-min-height;
-        max-height: $composer-max-height;
-        margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
-        padding: 1 2;
-        color: $ouro-text-emphasis;
-        background: $ouro-panel;
-        border-top: none;
-        border-right: none;
-        border-bottom: none;
-        border-left: solid $ouro-border-subtle;
-        scrollbar-background: transparent;
-        scrollbar-color: transparent;
-        scrollbar-color-hover: transparent;
-        scrollbar-size-vertical: 0;
-        scrollbar-gutter: auto;
-    }
-
-    #composer:focus {
-        border-left: solid $ouro-theme;
-    }
-
-    #composer.read-only-session:disabled {
-        opacity: 1;
-    }
-
-    #composer .text-area--suggestion {
-        color: $ouro-text-disabled;
-    }
-
-    #composer .text-area--cursor-line {
-        background: transparent;
-    }
-
-    #queued-input-panel {
-        height: auto;
-        max-height: 8;
-        margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
-        padding: 1 2 0 2;
-        color: $ouro-text-primary;
-        background: $ouro-panel;
-        border-top: none;
-        border-right: none;
-        border-bottom: none;
-        border-left: solid $ouro-border-subtle;
-    }
-
-    #queued-input-content {
-        width: 100%;
-        height: auto;
-        background: transparent;
-        text-wrap: nowrap;
-        text-overflow: ellipsis;
-    }
-
-    StatusLine {
-        height: 1;
-        margin: 0;
-        padding: 0 $conversation-right-gutter 0 $conversation-left-gutter;
-        color: $ouro-text-lowlight;
-        background: $ouro-background;
-    }
-
-    #activity-indicator { width: 1fr; }
-    #context-detail { width: auto; text-align: right; }
-
-
-"""
 
 
 class OuroTuiApp(ConfigurationWorkflowsApp):
@@ -902,11 +429,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             preferences = TuiPreferences()
             self._preferences_error = str(exc)
         self._preferences = preferences
-        self._input_draft_store = TuiInputDraftStore(preference_home)
+        input_draft_store = TuiInputDraftStore(preference_home)
         self._input_drafts_error: str | None = None
         try:
             input_drafts = (
-                self._input_draft_store.load()
+                input_draft_store.load()
                 if preferences.input_draft_memory_enabled
                 else TuiInputDrafts()
             )
@@ -996,10 +523,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._queued_inputs_lock = asyncio.Lock()
         self._mcp_status_timer: Timer | None = None
         self._input_surface: WelcomePanel | None = None
-        self._input_draft_revision = 0
-        self._input_draft_save_task: asyncio.Task[None] | None = None
-        self._input_draft_save_requested = asyncio.Event()
-        self._input_draft_saved_revision = 0
+        self._draft_persistence = InputDraftPersistence(
+            input_draft_store,
+            snapshot=lambda: (
+                self._input_drafts
+                if self._preferences.input_draft_memory_enabled
+                else TuiInputDrafts()
+            ),
+            on_error=self._report_input_draft_error,
+        )
         self._input_draft_error_notified = False
         self._preferences_save_lock = asyncio.Lock()
         self._pending_tui_theme_id: str | None = None
@@ -1138,8 +670,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self._session_controls_refresh_task,
                 return_exceptions=True,
             )
-        if self._input_draft_save_task is not None:
-            await self._input_draft_save_task
+        await self._draft_persistence.wait()
         if not self._controller.started:
             await self._controller.close()
             return
@@ -3254,60 +2785,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         if not self._preferences.input_draft_memory_enabled and not force_persist:
             return
-        self._input_draft_revision += 1
-        task = self._input_draft_save_task
-        if task is None or task.done():
-            self._input_draft_save_task = asyncio.create_task(
-                self._persist_input_drafts(),
-                name="tui-input-drafts",
-            )
+        self._draft_persistence.changed()
 
-    async def _persist_input_drafts(self) -> None:
-        try:
-            while True:
-                revision = self._input_draft_revision
-                try:
-                    await asyncio.wait_for(
-                        self._input_draft_save_requested.wait(), _INPUT_DRAFT_SAVE_DEBOUNCE_SECONDS
-                    )
-                except TimeoutError:
-                    if revision != self._input_draft_revision:
-                        continue
-                self._input_draft_save_requested.clear()
-                revision = self._input_draft_revision
-                drafts = (
-                    self._input_drafts
-                    if self._preferences.input_draft_memory_enabled
-                    else TuiInputDrafts()
-                )
-                try:
-                    await asyncio.to_thread(self._input_draft_store.save, drafts)
-                    self._input_draft_saved_revision = revision
-                except OuroError as exc:
-                    _LOG.warning("Could not persist TUI input drafts: %s", exc)
-                    if not self._input_draft_error_notified and not self._host_closing:
-                        self._input_draft_error_notified = True
-                        self.notify(str(exc), severity="warning", markup=False)
-                    if revision != self._input_draft_revision:
-                        continue
-                    return
-                if revision == self._input_draft_revision:
-                    return
-        finally:
-            self._input_draft_save_task = None
+    def _report_input_draft_error(self, exc: OuroError) -> None:
+        _LOG.warning("Could not persist TUI input drafts: %s", exc)
+        if not self._input_draft_error_notified and not self._host_closing:
+            self._input_draft_error_notified = True
+            self.notify(str(exc), severity="warning", markup=False)
 
     async def _flush_input_drafts(self) -> None:
         if not self._preferences.input_draft_memory_enabled or self._input_drafts_error is not None:
             return
-        if self._input_draft_saved_revision == self._input_draft_revision:
-            return
-        self._input_draft_save_requested.set()
-        if self._input_draft_save_task is None:
-            self._input_draft_save_task = asyncio.create_task(self._persist_input_drafts())
-        # Closing the Host cancels workers, but its pending disk save must finish.
-        await asyncio.shield(self._input_draft_save_task)
-        if self._input_draft_saved_revision < self._input_draft_revision:
-            raise ConfigError("Could not save the input draft; retry before sending")
+        await self._draft_persistence.flush()
 
     async def _dispatch_command(self, value: str) -> None:
         command, argument = resolve_command(value)
@@ -6310,92 +5799,6 @@ def _format_reasoning_state(state: ModelReasoningState) -> str:
     requested = _reasoning_value(state.requested)
     effective = _reasoning_value(state.effective)
     return f"Thinking: {requested} (effective: {effective})"
-
-
-def _truncate_session_title(title: str) -> str:
-    rendered = Text(title)
-    rendered.truncate(_SESSION_TITLE_MAX_CELLS, overflow="ellipsis")
-    return rendered.plain
-
-
-def _session_choice_label(item: SessionCatalogEntry, *, theme: TuiTheme) -> str:
-    title = item.title
-    if item.session_kind == "primary" and item.parent_session_id is not None:
-        title = f"forked{theme.inline_separator}{title}"
-    if item.pinned:
-        title = f"★ {title}"
-    return _truncate_session_title(title)
-
-
-def _sessions_in_domain(
-    sessions: tuple[SessionCatalogEntry, ...], domain: str
-) -> tuple[SessionCatalogEntry, ...]:
-    return tuple(
-        item
-        for item in sessions
-        if (
-            item.archived
-            if domain == "archived"
-            else not item.archived
-            and (
-                item.session_kind == "subagent"
-                if domain == "subagent"
-                else item.session_kind != "subagent" and item.namespace == domain
-            )
-        )
-    )
-
-
-def _session_choices(
-    sessions: tuple[SessionCatalogEntry, ...],
-    *,
-    selected_session_id: str | None = None,
-    today: date | None = None,
-    grouping: SessionGrouping = "date",
-    theme: TuiTheme = DEFAULT_TUI_THEME,
-) -> tuple[Choice, ...]:
-    local_today = today or datetime.now().astimezone().date()
-    groups: dict[str, list[Choice]] = {}
-    for item in sessions:
-        group = (
-            item.workspace or "No workspace"
-            if grouping == "workspace"
-            else _session_date_group(item.last_activity_at, today=local_today)
-        )
-        groups.setdefault(group, []).append(
-            Choice(
-                value=item.session_id,
-                label=_session_choice_label(item, theme=theme),
-                edit_value=item.title,
-                trailing="index error" if item.catalog_error is not None else item.status,
-                accent=(
-                    theme.failure
-                    if (item.catalog_error is not None or item.catalog_marks_unreadable)
-                    else theme.warning
-                    if item.health != "ok"
-                    else None
-                ),
-                marker=(
-                    theme.selected_choice_marker if item.session_id == selected_session_id else ""
-                ),
-                group=group,
-            )
-        )
-    return tuple(choice for group_choices in groups.values() for choice in group_choices)
-
-
-def _session_date_group(activity_at: datetime, *, today: date) -> str:
-    activity_date = activity_at.astimezone().date()
-    age = (today - activity_date).days
-    if age <= 0:
-        return "Today"
-    if age == 1:
-        return "Yesterday"
-    if age < 7:
-        return "Previous 7 days"
-    if age < 30:
-        return "Previous 30 days"
-    return f"{month_name[activity_date.month]} {activity_date.year}"
 
 
 def _queued_input_draft(item: QueuedUserInputView) -> str:

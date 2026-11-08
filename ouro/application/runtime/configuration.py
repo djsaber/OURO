@@ -41,8 +41,8 @@ class RuntimeConfigurationResolver:
     """Resolve startup configuration and explicitly refreshable request settings."""
 
     def __init__(self, root: str | Path | None = None) -> None:
-        self.root = ProviderConfigManager(root).root
-        self._providers = ProviderConfigManager(self.root)
+        self._providers = ProviderConfigManager(root)
+        self.root = self._providers.root
         self._prompts = PromptConfigManager(self.root)
         self.settings = RuntimeSettingsResolver(self.root)
 

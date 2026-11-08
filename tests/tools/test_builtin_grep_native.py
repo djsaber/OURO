@@ -14,8 +14,12 @@ from ouro.tools import (
     ToolInvocation,
     builtin_tools,
 )
-from ouro.tools.builtin import search
-from ouro.tools.builtin.search import builtin_grep_tool, builtin_ripgrep_tool, detect_ripgrep
+from ouro.tools.builtin.search import registration, ripgrep
+from ouro.tools.builtin.search.registration import (
+    builtin_grep_tool,
+    builtin_ripgrep_tool,
+    detect_ripgrep,
+)
 from ouro.tools.schema import tool_argument_error
 
 
@@ -42,7 +46,7 @@ async def test_registry_binds_both_search_tools_with_one_detection(
     monkeypatch, tmp_path, executable, external
 ):
     detect = Mock(return_value=executable)
-    monkeypatch.setattr(search, "detect_ripgrep", detect)
+    monkeypatch.setattr(registration, "detect_ripgrep", detect)
     tools = {tool.definition.name: tool for tool in builtin_tools()}
     tool = tools["Grep"]
     assert tool.definition.effect == "read_only"
@@ -153,7 +157,7 @@ async def test_aborted_search_does_not_spawn_a_process(tmp_path):
     context = ToolExecutionContext(workspace=tmp_path, signal=signal)
     context.run_process = AsyncMock()
     with pytest.raises(ToolExecutionAborted, match="cancel search"):
-        await builtin_grep_tool(search.detect_ripgrep()).execute(
+        await builtin_grep_tool(registration.detect_ripgrep()).execute(
             _call(pattern="x"), context=context
         )
     context.run_process.assert_not_called()
@@ -234,7 +238,7 @@ async def test_real_explicit_file_bypasses_filters_and_dash_is_a_filename(tmp_pa
 async def test_real_large_files_and_directory_symlinks_are_skipped(
     tmp_path, native_tool, monkeypatch
 ):
-    monkeypatch.setattr(search, "_MAX_SEARCHABLE_FILE_BYTES", 32)
+    monkeypatch.setattr(ripgrep, "_MAX_SEARCHABLE_FILE_BYTES", 32)
     _write(tmp_path, "large.txt", "needle\n" * 10)
     root = tmp_path / "root"
     root.mkdir()

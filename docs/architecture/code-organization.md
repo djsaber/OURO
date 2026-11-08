@@ -25,10 +25,23 @@ OURO 的主包与升级包位于仓库根目录下的 `ouro/` 与 `ouro_upgrade/
 | `application/supervisor.py`、`tool_calls.py` 等独立模块 | 任务调度、工具批次事务和各自的资源协作单元 |
 
 RunLifecycle 拥有持久转换，Supervisor 拥有会话调度、执行队列和执行许可，Runtime 拥有单次运行协作。
+模型请求派发记录、Run 预算写入和已请求中止的状态结算归 RunLifecycle；Runtime 负责调用时机、
+资源收尾与提交后的事件发布，避免两个服务分别维护同一类持久转换。
 Runtime 通过装配的窄回调报告会话推进机会，不引用具体调度器或 Host。调度按当前队列事实安排执行，
 TUI、AgentService 和任务协调器保留自己的业务身份、授权与结算。
+`agents/budgets.py` 从 SessionStore 与用量账本读取共享预算事实；AgentService 拥有派遣、等待与结果交付的事务状态。
 输入、观察和模型请求协作者不取得完整 Runtime 的控制权。契约放置在独立目录不意味着轻量导入：
 父包显式导出服务，因此导入初始化成本与模块的类型依赖需要分别评估。
+
+输入队列直接消费已验证的请求，处理接受、顺序和替换；用户、任务、Agent 及插件入口拥有各自的身份和调度规则。
+插件命令的输入与 Harness 变更在同一事务中提交，保证整批操作的原子性。
+
+工具首次执行与恢复共用 `tools/executor.py` 的回调执行边界，统一取消收尾、迟到结果保留、异常转换和
+结果归类；恢复入口负责恢复前的契约判断。Executor 返回结果、待输入或控制意图，
+ToolCallCoordinator 与 RunLifecycle 负责结果事实、控制变更和批次发布的提交顺序。
+
+控制状态快照与续接检查点显式接收调用方取得的 SessionControlState，读取时机与事务边界由调用方控制。
+审批、问答和子任务等待的恢复在取得执行锁后重新读取 Session 和目标 Run；Run 选择与恢复使用 RuntimeSessionSnapshot。
 
 ## 终端呈现与功能界面
 
@@ -39,12 +52,17 @@ TUI、AgentService 和任务协调器保留自己的业务身份、授权与结�
 | `tui/composer/` | 输入框、命令提示、队列、草稿、附件、技能选择及欢迎输入表面 |
 | `tui/interactions/` | 审批、问答、计划确认与表单投影 |
 | `tui/menus/` | Choice 记录、选择/编辑/确认菜单及共用行呈现 |
+| `tui/menus/sessions.py` | 会话菜单的领域筛选、标题与分组投影，不持有 App 或 Controller |
+| `tui/host_screen.py`、`styles.py` | 宿主屏幕的剪贴板和页面生命周期交互；应用布局样式 |
 | `tui/features/` | providers、plugins、configuration、tasks、prompts、transfer 的屏幕与工作流 |
 | `tui/widgets/` | 跨界面共用的品牌、活动和状态小控件 |
 
 `app.py` 拥有界面任务和视图协调，`controller.py` 衔接应用服务。完整 Widget 类持有自己的
 渲染任务、滚动锚点和交互状态。功能工作流通过类继承与 App 协作，其方法访问 App 的界面状态；
 维护这一边界时需要同时检查状态访问、消息分发与 Textual 装饰器契约。
+`composer/draft_persistence.py` 独立拥有草稿保存任务、修订号、防抖等待与提交前刷盘，
+App 保留草稿内容、偏好、错误通知及关闭顺序。保存器在写入时取得当前快照，不依赖 App、
+Controller 或 Textual；提交取消时保护已有保存任务，关闭时等待其完成。
 
 `theme.py`、`welcome/`、终端平台适配和渲染基础各自承担独立职责。欢迎输入表面的 `WelcomePanel`
 属于 `composer/surface.py`，可选主题包通过欢迎页接口提供页面。
@@ -65,8 +83,10 @@ TUI、AgentService 和任务协调器保留自己的业务身份、授权与结�
 `installation/paths.py`，包校验和 MCP 声明处理共用它。`contributions/inventory.py` 保留显式、
 封闭的贡献类型清单与注册顺序；增加贡献类型需要同时接入声明、准备、投影和协议适配。
 
-ContributionCoordinator 与 WorkerPluginInstance 通过方法内导入访问清单，清单依赖具体适配器，
-形成局部导入耦合。调用时机与代次生命周期共同约束该关系，模块依赖审查必须覆盖方法内导入。
+ContributionCoordinator 编排准备过程；`preparation_rules.py` 依据 Manifest、owner 和贡献值完成校验与绑定，
+不持有 Coordinator、运行候选对象或 Catalog。静态贡献与动态工具组复用这些规则，准备适配器只接收
+准备上下文和结果构建器。Worker 适配器仅在类型检查时引用实例类型；清单按需加载，轻量启动无需载入整套适配器。
+循环依赖检查覆盖函数内导入。清单完整性和生命周期匹配由开发测试验证；插件输入、执行契约及资源校验在对应运行边界执行。
 SDK 与内置插件具有独立边界；内置插件 Python 内容、相对路径和声明的运行资源参与持久化实现身份计算。
 
 ## 协议与基础设施
@@ -76,11 +96,15 @@ SDK 与内置插件具有独立边界；内置插件 Python 内容、相对路�
 | `providers/openai_responses/`、`openai_chat_completions/`、`anthropic_messages/` | 按线协议组织 adapter、codec 和协议专属流处理；认证仍归 auth，共享传输、重试和工厂保留独立模块 |
 | `sessions/backends/files/`、`sqlite/` | 后端专属 store、commit 和索引；base、portable、共享查询、layout 与锁保持后端中立 |
 | `tools/builtin/` | 内置工具与显式注册；Agent 控制工具按能力绑定 |
+| `tools/builtin/search/` | `registration.py` 选择并装配搜索后端；`glob.py`、`grep.py`、`ripgrep.py` 各自拥有工具参数、执行和结果呈现；`files.py` 提供共享路径、遍历与忽略规则 |
 | `config/providers/` | Provider 配置管理、codec、运行解析与模板存储；共享声明位于 `config/provider_models.py`，内置模板位于 `config/provider_templates/` |
 | `cli/parsers/` | 命令族的完整参数注册函数；`cli/parser.py` 保持明确的注册顺序 |
 
 Core、Auth、MCP、Automation、Billing、Resources、Skills 和 Transfer 各自组织领域规则与实现。
 不建立统一 infrastructure、foundation 或 utils 容器；新分组应对应多个实际协作者或完整、可独立理解的定义集合。
+搜索后端单向依赖共享文件搜索规则，不互相引用或反向依赖注册模块；后端在工具装配时确定。
+AskUser 的数据契约位于 `tools/builtin/ask_user_contract.py`，工具实现与 Host 表单共用它。
+通用 Run / ToolInputRequest 管线保留不透明 JSON，不依赖具体问答字段或业务插件；Host 负责解析呈现契约。
 
 ## 导入、测试与演进
 
@@ -88,6 +112,7 @@ Core、Auth、MCP、Automation、Billing、Resources、Skills 和 Transfer 各�
 `ouro.tools` 的显式导出。目录不承担路径代理或隐式注册职责。
 递归架构测试保护顶层依赖及契约、协议和 Host 边界。源码定位、类的 `__module__` 与诊断 logger 名称
 属于 Python 模块元数据，不作为业务数据格式或插件协议。
+显式运行时模块依赖（含函数内导入）由循环依赖测试约束；`TYPE_CHECKING` 中的纯类型引用不构成运行时边。
 
 TUI 应用集成场景位于 `tests/tui/app/`，共用构造函数和受控 Provider 分别位于 `support.py`、`providers.py`。
 通用异步等待使用 `tests/tui/helpers.py`。组件测试与跨 Host、恢复、资源和并发测试具有不同的验证边界；

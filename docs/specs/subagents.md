@@ -67,8 +67,9 @@ Delegation 不是 Session branch：
 
 ### Agent handle
 
-AgentHandle 是 Host 或模型控制面使用的有界 DTO，至少含 delegation_id、child_session_id、当前
-child_run_id 和状态。Handle 是控制引用，不是 canonical 运行事实。
+`AgentHandleView` 是 AgentService 返回给 Host 的有界 DTO，包含 delegation_id、child_session_id、当前
+child_run_id 和状态。异步 SpawnAgent 将该视图转换为 Markdown 回执，并在结构化结果中保留 handle。
+Handle 是控制引用，不是 canonical 运行事实。
 
 ## 强制架构不变量
 
@@ -519,7 +520,7 @@ spawn 使用分步提交，父子 Session 之间不承诺单一原子写：
 模型侧使用最小的 product-owned 内置控制工具：
 
 - SpawnAgent：按 agent_id 选择 decision-bound AgentDefinition，携带 task、显式 resource refs 和 execution mode 创建 child；sync 模式
-  挂起原调用并最终返回 child result，async 模式立即返回 AgentHandle 并自动交付结果；Host 可显示为“派遣子智能体”；
+  挂起原调用并最终返回 child result，async 模式返回派遣回执，child 结束后自动交付结果；Host 可显示为“派遣子智能体”；
 - SendAgentMessage：向 child active Run steer，或为 idle child 创建 follow-up；
 - InterruptAgent：中断当前 child Run；
 

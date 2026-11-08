@@ -59,7 +59,6 @@ from ouro.application.runs.lifecycle import (
     DelegationStartRevoked,
     RunLifecycle,
     SessionContinuationSuperseded,
-    abort_run_state,
     find_active_run,
     maybe_active_run,
     request_run_abort_state,
@@ -146,7 +145,7 @@ from ouro.core.redaction import SensitiveValueRedactor, redact_text
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy, RunPauseReason
 from ouro.core.run_drivers import DEFAULT_DRIVER_ID, DriverInputDelivery, RunDriverBinding
-from ouro.core.session_commits import SessionCommit, SessionCommitConflict
+from ouro.core.session_commits import SessionCommitConflict
 from ouro.core.session_controls import (
     AttributedSessionControlTransition,
     AttributedSessionInput,
@@ -156,7 +155,6 @@ from ouro.core.session_controls import (
     SessionControlActivation,
     SessionControlState,
     SessionControlTransitionResult,
-    SessionInputRequest,
     SessionInputRole,
 )
 from ouro.core.session_titles import normalize_session_title, with_session_title
@@ -2377,7 +2375,7 @@ class RuntimeService:
                     run_usage=self.usage.run_usage if self.usage is not None else None,
                     begin_model_round=self._bind_run_capabilities,
                     prepare_configuration=self._prepare_request_configuration,
-                    commit_model_request=self._commit_model_request,
+                    commit_model_request=self.run_lifecycle.commit_model_request,
                     publish_committed=self.event_recorder.publish_committed,
                     shared_budget_reason=(
                         self._shared_budget_reason if self._agent_controls is not None else None
@@ -2488,22 +2486,8 @@ class RuntimeService:
         if self.settings_resolver is not None and self._run_resources[run.run_id].budget is None:
             serialized = policy.model_dump(mode="json")
             if run.metadata.get("run_budget") != serialized:
-                await run_blocking(self._save_run_budget, run, serialized)
+                await run_blocking(self.run_lifecycle.save_budget, run, serialized)
         return policy
-
-    def _save_run_budget(self, run: RunRecord, policy: dict[str, object]) -> None:
-        with self.store.session_mutation(run.session_id):
-            latest = self.store.load_run(run.session_id, run.run_id)
-            if latest.status not in ACTIVE_RUN_STATUSES or latest.abort_requested:
-                return
-            if latest.metadata.get("run_budget") != policy:
-                self.store.save_run(
-                    latest.model_copy(
-                        update={
-                            "metadata": {**latest.metadata, "run_budget": policy},
-                        }
-                    )
-                )
 
     def _run_budget_for_run(self, run: RunRecord) -> RunBudgetPolicy:
         resources = self._run_resources[run.run_id]
@@ -3037,21 +3021,10 @@ class RuntimeService:
         batch: AttributedSessionInputBatch,
     ) -> tuple[SessionRecord, tuple[QueuedInput, ...]]:
         first = batch.inputs[0]
-        requests = tuple(
-            SessionInputRequest(
-                prompt=item.prompt,
-                mode=item.mode,
-                title=item.title,
-                role=item.role,
-                scaffold=item.scaffold,
-                semantic_tag=item.semantic_tag,
-            )
-            for item in batch.inputs
-        )
         session, queued, _, _, events = await run_blocking(
             self.queued_inputs.enqueue_batch,
             snapshot=snapshot,
-            inputs=requests,
+            inputs=batch.inputs,
             source="plugin",
             plugin_id=first.plugin_id,
             contribution_id=first.contribution_id,
@@ -3588,11 +3561,9 @@ class RuntimeService:
         snapshot = catalog_snapshot or self._extension_snapshot_for_run(run.run_id)
         if snapshot is not None:
             self._session_control_snapshot(
-                session.session_id,
-                run_id=run.run_id,
+                session.controls,
                 model_round=0,
                 catalog=snapshot,
-                session_record=session,
             )
             active = {activation.controller_id for activation in session.controls.activations}
             registry = snapshot.prompt_policies.scoped(lambda: active)
@@ -3749,8 +3720,7 @@ class RuntimeService:
         if run_lock is None:
             raise SessionBusyError(f"run is already active: {run.run_id}")
         try:
-            snapshot = await run_blocking(self.store.load_runtime_session, session_id)
-            session = snapshot.session
+            session = await run_blocking(self.store.load_session_record, session_id)
             run = await run_blocking(self.store.load_run, session_id, run.run_id)
             if run.status != "waiting_approval":
                 raise ValueError(f"run is not waiting for approval: {run.status}")
@@ -3808,7 +3778,6 @@ class RuntimeService:
                 result = RunResult(session=session, run=run)
             else:
                 result = await self._continue_resolved_batch(
-                    snapshot=snapshot,
                     session=session,
                     run=run,
                     batch=batch,
@@ -3849,8 +3818,7 @@ class RuntimeService:
         if run_lock is None:
             raise SessionBusyError(f"run is already active: {run.run_id}")
         try:
-            snapshot = await run_blocking(self.store.load_runtime_session, session_id)
-            session = snapshot.session
+            session = await run_blocking(self.store.load_session_record, session_id)
             run = await run_blocking(self.store.load_run, session_id, run.run_id)
             if run.status != "waiting_user":
                 raise ValueError(f"run is not waiting for user input: {run.status}")
@@ -3939,7 +3907,6 @@ class RuntimeService:
                 sequence = committed_events[-1].sequence
             assert batch is not None
             result = await self._continue_resolved_batch(
-                snapshot=snapshot,
                 session=session,
                 run=run,
                 batch=batch,
@@ -3961,7 +3928,7 @@ class RuntimeService:
         """Resolve one durable child join and continue the original parent Run."""
 
         run_id, tool_call_id = identity.run_id, identity.tool_call_id
-        snapshot = await run_blocking(
+        await run_blocking(
             self._load_runtime_snapshot,
             session_id,
             recover=True,
@@ -3977,8 +3944,7 @@ class RuntimeService:
         if run_lock is None:
             raise SessionBusyError(f"run is already active: {run_id}")
         try:
-            snapshot = await run_blocking(self.store.load_runtime_session, session_id)
-            session = snapshot.session
+            session = await run_blocking(self.store.load_session_record, session_id)
             run = await run_blocking(self.store.load_run, session_id, run_id)
             if run.status != "waiting_child" or run.active_tool_batch is None:
                 raise ValueError("parent Run no longer has a durable child wait")
@@ -4072,7 +4038,6 @@ class RuntimeService:
             assert batch is not None
             sequence = 0
             resumed = await self._continue_resolved_batch(
-                snapshot=snapshot,
                 session=session,
                 run=run,
                 batch=batch,
@@ -4085,7 +4050,6 @@ class RuntimeService:
     async def _continue_resolved_batch(
         self,
         *,
-        snapshot: RuntimeSessionSnapshot,
         session: SessionRecord,
         run: RunRecord,
         batch: ToolCallBatchRecord,
@@ -4135,13 +4099,13 @@ class RuntimeService:
                     abort_signal=active_signal,
                 )
             except Exception as exc:  # noqa: BLE001 - coordinator is a runtime boundary.
-                latest = await run_blocking(
-                    self.store.load_runtime_session,
+                latest_session = await run_blocking(
+                    self.store.load_session_record,
                     session.session_id,
                 )
                 latest_run = await run_blocking(self.store.load_run, session.session_id, run.run_id)
                 failed = await self.run_lifecycle.fail(
-                    session=latest.session,
+                    session=latest_session,
                     run=latest_run,
                     error=f"tool batch handling failed: {exc}",
                     final_text="",
@@ -4187,34 +4151,12 @@ class RuntimeService:
         """Publish terminal abort only after the active owner has settled its work."""
 
         session, aborted_run, events = await run_blocking(
-            self._settle_requested_abort_state,
+            self.run_lifecycle.settle_requested_abort,
             result.run.session_id,
             result.run.run_id,
         )
         await self.event_recorder.publish_committed(events)
         return result.model_copy(update={"session": session, "run": aborted_run})
-
-    def _settle_requested_abort_state(
-        self,
-        session_id: str,
-        run_id: str,
-    ) -> tuple[SessionRecord, RunRecord, tuple[EventRecord, ...]]:
-        with self.store.session_mutation(session_id):
-            latest_run = self.store.load_run(session_id, run_id)
-            if latest_run.status not in ACTIVE_RUN_STATUSES or not latest_run.abort_requested:
-                return (
-                    self.store.load_session_record(latest_run.session_id),
-                    latest_run,
-                    (),
-                )
-            raw_reason = latest_run.metadata.get("abort_reason")
-            reason = raw_reason if isinstance(raw_reason, str) and raw_reason else "User aborted"
-            return abort_run_state(
-                self.store,
-                session_id=latest_run.session_id,
-                run_id=latest_run.run_id,
-                reason=reason,
-            )
 
     async def _finalize_run_boundary(
         self,
@@ -4410,11 +4352,9 @@ class RuntimeService:
             metadata = dict(latest.metadata)
             snapshot = self._extension_snapshot_for_run(latest.run_id)
             metadata["session_control_snapshot"] = self._session_control_snapshot(
-                latest.session_id,
-                run_id=latest.run_id,
+                session.controls,
                 model_round=model_round,
                 catalog=snapshot,
-                session_record=session,
             )
             self._run_resources[latest.run_id].controller_ids = frozenset(
                 item["controller_id"]
@@ -4422,7 +4362,9 @@ class RuntimeService:
             )
             update: dict[str, object] = {"metadata": metadata}
             if latest.kind == "agent" and snapshot is not None:
-                update["continuation"] = self._continuation_checkpoint(latest, snapshot, session)
+                update["continuation"] = self._continuation_checkpoint(
+                    latest, snapshot, session.controls
+                )
                 metadata["extension_catalog_id"] = snapshot.catalog_id
                 metadata["extension_generations"] = [
                     generation.model_dump(mode="json", exclude_none=True)
@@ -4447,62 +4389,13 @@ class RuntimeService:
             self.store.save_run(updated)
             return updated
 
-    def _commit_model_request(
-        self,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        context_id: str,
-        event: EventRecord,
-    ) -> tuple[RunRecord, tuple[EventRecord, ...]]:
-        """Record possible dispatch and the Run counter together before network IO."""
-
-        del session
-        with self.store.session_mutation(run.session_id):
-            latest = self.store.load_run(run.session_id, run.run_id)
-            current = self.store.load_session_record(run.session_id)
-            if latest.history_epoch != current.history_epoch:
-                raise SessionCommitConflict("Run belongs to withdrawn Session history")
-            if latest.abort_requested or latest.status not in ACTIVE_RUN_STATUSES:
-                return latest, ()
-            if current.active_run_id != run.run_id:
-                raise SessionCommitConflict("Run no longer owns request dispatch")
-            header = self.store.load_latest_context_header(run.session_id)
-            if (
-                header is None
-                or header.context_id != context_id
-                or latest.current_request_id != context_id
-            ):
-                raise SessionCommitConflict("prepared request is no longer current")
-            if header.started_at is not None:
-                raise SessionCommitConflict("request dispatch is already recorded")
-            updated = latest.model_copy(
-                update={
-                    "model_round_count": latest.model_round_count + 1,
-                    "model": run.model,
-                    "model_endpoint_id": run.model_endpoint_id,
-                }
-            )
-            committed = self.store.commit_session(
-                SessionCommit(
-                    before=current,
-                    runs=(updated,),
-                    request_header=header.model_copy(update={"started_at": utc_now()}),
-                    events=(event,),
-                )
-            )
-            return updated, committed.events
-
+    @staticmethod
     def _session_control_snapshot(
-        self,
-        session_id: str,
+        controls: SessionControlState,
         *,
-        run_id: str,
         model_round: int,
         catalog: ExtensionCatalogLease | None = None,
-        session_record: SessionRecord | None = None,
     ) -> dict[str, object]:
-        controls = (session_record or self.store.load_session_record(session_id)).controls
         activations = [
             {
                 "activation_id": activation.activation_id,
@@ -4595,11 +4488,9 @@ class RuntimeService:
             update: dict[str, object] = {"metadata": metadata}
             if snapshot is not None:
                 metadata["session_control_snapshot"] = self._session_control_snapshot(
-                    run.session_id,
-                    run_id=run.run_id,
+                    session.controls,
                     model_round=0,
                     catalog=snapshot,
-                    session_record=session,
                 )
                 resources.controller_ids = frozenset(
                     activation.controller_id for activation in session.controls.activations
@@ -4610,7 +4501,9 @@ class RuntimeService:
                     for generation in snapshot.generations
                 ]
                 if run.kind == "agent":
-                    update["continuation"] = self._continuation_checkpoint(run, snapshot, session)
+                    update["continuation"] = self._continuation_checkpoint(
+                        run, snapshot, session.controls
+                    )
             return run.model_copy(update=update)
         except BaseException:
             self._release_run_resources(run.run_id)
@@ -4620,15 +4513,10 @@ class RuntimeService:
         self,
         run: RunRecord,
         snapshot: ExtensionCatalogLease,
-        session_record: SessionRecord | None = None,
+        controls: SessionControlState,
     ) -> RunContinuationCheckpoint | None:
         generations = {generation.generation_id: generation for generation in snapshot.generations}
-        activations = {
-            activation.controller_id: activation
-            for activation in (
-                session_record or self.store.load_session_record(run.session_id)
-            ).controls.activations
-        }
+        activations = {activation.controller_id: activation for activation in controls.activations}
         controllers: list[RunContinuationControllerRef] = []
         for registration in self._continuations_for_run(run.run_id).registered():
             generation_id = registration.generation_id

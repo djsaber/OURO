@@ -136,6 +136,6 @@ class AssistantMarkdownStream:
 def split_markdown_blocks(text: str) -> tuple[str, ...]:
     """Split a complete markdown document into top-level block slices."""
     stream = AssistantMarkdownStream()
-    blocks = list(stream.feed(text)[0])
-    blocks.extend(stream.close())
-    return tuple(blocks)
+    # Complete documents need no intermediate streaming parse or live-tail copy.
+    stream._append_logical_lines(text)
+    return stream.close()

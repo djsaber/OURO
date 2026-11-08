@@ -8,17 +8,17 @@ from unittest.mock import AsyncMock
 import pytest
 
 from ouro.tools import ToolExecutionContext, ToolInvocation
-from ouro.tools.builtin import search
-from ouro.tools.builtin.search import search_glob
+from ouro.tools.builtin.search import files, grep, registration
+from ouro.tools.builtin.search.glob import search_glob
 
 
 @pytest.fixture(params=["python", "ripgrep"])
 def grep_tool(request, monkeypatch):
     if request.param == "python":
-        monkeypatch.setattr(search, "detect_ripgrep", lambda: None)
+        monkeypatch.setattr(registration, "detect_ripgrep", lambda: None)
     elif shutil.which("rg") is None:
         pytest.skip("ripgrep is not installed")
-    return search.builtin_grep_tool(search.detect_ripgrep())
+    return registration.builtin_grep_tool(registration.detect_ripgrep())
 
 
 def _call(**arguments):
@@ -100,12 +100,12 @@ def test_excluded_directories_are_pruned_before_scanning(tmp_path, monkeypatch):
         assert path != tmp_path / "cache"
         return real_scandir(path)
 
-    monkeypatch.setattr(search.os, "scandir", scan)
+    monkeypatch.setattr(files.os, "scandir", scan)
     entries = list(
-        search.iter_files(
+        files.iter_files(
             tmp_path,
             include_ignored=True,
-            exclude_dirs=search.DirectoryExclusions.parse(["cache/"]),
+            exclude_dirs=files.DirectoryExclusions.parse(["cache/"]),
         )
     )
     assert [entry.relative for entry in entries] == ["src/kept.txt"]
@@ -141,7 +141,7 @@ def test_glob_filters_before_stat_and_preserves_file_order(tmp_path, monkeypatch
         def __exit__(self, *args):
             return self.directory.__exit__(*args)
 
-    monkeypatch.setattr(search.os, "scandir", Scan)
+    monkeypatch.setattr(files.os, "scandir", Scan)
     result = search_glob(tmp_path, "*.py", include_ignored=False, limit=100)
     assert result.total == 2
     assert statted == ["b.py", "c.py"]
@@ -150,7 +150,7 @@ def test_glob_filters_before_stat_and_preserves_file_order(tmp_path, monkeypatch
 @pytest.mark.parametrize("pattern", ["needle", "need.e"])
 def test_python_file_list_stops_matching_after_first_hit(tmp_path, monkeypatch, pattern):
     _write(tmp_path, "many.txt", "needle\n" * 25_000)
-    real_numbers = search._matched_line_numbers
+    real_numbers = grep._matched_line_numbers
     yielded = 0
 
     def numbers(*args, **kwargs):
@@ -160,8 +160,8 @@ def test_python_file_list_stops_matching_after_first_hit(tmp_path, monkeypatch, 
             assert yielded <= 1
             yield number
 
-    monkeypatch.setattr(search, "_matched_line_numbers", numbers)
-    result = search._grep(_call(pattern=pattern), ToolExecutionContext(workspace=tmp_path))
+    monkeypatch.setattr(grep, "_matched_line_numbers", numbers)
+    result = grep._grep(_call(pattern=pattern), ToolExecutionContext(workspace=tmp_path))
     assert result.structured["files"] == ["many.txt"]
     assert yielded == (0 if pattern == "needle" else 1)
 
@@ -169,8 +169,8 @@ def test_python_file_list_stops_matching_after_first_hit(tmp_path, monkeypatch, 
 def test_content_counts_remain_exact_after_collection_cap(tmp_path, monkeypatch):
     _write(tmp_path, "a.txt", "needle\n" * 2)
     _write(tmp_path, "b.txt", "needle\n" * 3)
-    monkeypatch.setattr(search, "_MAX_COLLECTED_MATCHES", 2)
-    result = search._grep(
+    monkeypatch.setattr(grep, "_MAX_COLLECTED_MATCHES", 2)
+    result = grep._grep(
         _call(pattern="needle", output_mode="content"),
         ToolExecutionContext(workspace=tmp_path),
     )
@@ -188,7 +188,7 @@ def test_python_modes_agree_on_matching_files_and_exact_line_counts(tmp_path, pa
         _write(tmp_path, name, text)
     context = ToolExecutionContext(workspace=tmp_path)
     results = {
-        mode: search._grep(_call(pattern=pattern, multiline=multiline, output_mode=mode), context)
+        mode: grep._grep(_call(pattern=pattern, multiline=multiline, output_mode=mode), context)
         for mode in ("content", "files_with_matches", "count_matches")
     }
     content = results["content"].structured

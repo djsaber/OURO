@@ -12,7 +12,7 @@ from textual.widgets import OptionList
 import ouro.tui.conversation.history as conversation_history
 from ouro.core.errors import PersistenceError
 from ouro.core.messages import MessageRecord, TextContent
-from ouro.tui.app import OuroTuiApp, _session_choices
+from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.drafts import TuiInputDrafts, TuiInputDraftStore
 from ouro.tui.composer.input import Composer
 from ouro.tui.composer.popup import CommandPopup
@@ -20,6 +20,7 @@ from ouro.tui.conversation.history import ConversationHistory
 from ouro.tui.conversation.turn import AssistantTurn
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.menus.sessions import _session_choices
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
 from tests.tui.app.support import _application

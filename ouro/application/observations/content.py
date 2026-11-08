@@ -164,17 +164,18 @@ class SessionContentProjection:
 
     def apply_facts(self, facts: SessionObservationFacts) -> bool:
         self.activity = apply_observed_activity(self.activity, facts)
-        changed = {(identity.run_id, identity.tool_call_id) for identity in facts.changed_calls}
-        self._pending_interactions = {
-            key: value
-            for key, value in self._pending_interactions.items()
-            if (value.run_id, value.tool_call_id) not in changed
-            and not any(
-                run.run_id == value.run_id
-                and (run.abort_requested or run.status not in ACTIVE_RUN_STATUSES)
-                for run in facts.runs
-            )
-        }
+        if self._pending_interactions:
+            changed = {(identity.run_id, identity.tool_call_id) for identity in facts.changed_calls}
+            self._pending_interactions = {
+                key: value
+                for key, value in self._pending_interactions.items()
+                if (value.run_id, value.tool_call_id) not in changed
+                and not any(
+                    run.run_id == value.run_id
+                    and (run.abort_requested or run.status not in ACTIVE_RUN_STATUSES)
+                    for run in facts.runs
+                )
+            }
         for interaction in facts.pending_interactions:
             key = (
                 interaction.request_id

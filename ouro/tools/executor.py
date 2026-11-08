@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
-from typing import Literal
+from collections.abc import Callable, Coroutine, Mapping
+from typing import Any, Literal
 
 from ouro.core.agents import AgentControlRequest
 from ouro.core.approvals import (
@@ -29,6 +29,7 @@ from ouro.tools.base import (
     ToolExecutionContext,
     ToolExecutionInterrupted,
     ToolExecutionOutcome,
+    ToolExecutionResult,
     ToolInputRequest,
     ToolInvocation,
     ToolResult,
@@ -198,54 +199,11 @@ class ToolExecutor:
                 error_message=f"unknown tool: {invocation.tool_name}",
             )
         context = context or ToolExecutionContext(signal=signal)
-        try:
-            execution_result = await context.invoke_owned(
-                lambda: tool.execute(invocation, context=context),
-            )
-        except ToolExecutionAborted as exc:
-            return _cancelled_outcome(invocation, status="aborted", reason=exc.reason)
-        except (CallbackCancelled, ToolExecutionInterrupted) as exc:
-            await _record_late_result(invocation, exc.result, context)
-            if isinstance(exc, ToolExecutionInterrupted) and exc.propagate_cancel:
-                raise asyncio.CancelledError from None
-            reason = getattr(exc, "reason", None) or context.abort_reason
-            return _cancelled_outcome(
-                invocation,
-                status="unknown_outcome",
-                reason=reason,
-            )
-        except Exception as exc:  # noqa: BLE001
-            # Tool handlers may raise arbitrary exceptions when interacting with
-            # the filesystem, network, subprocesses, or third-party code. The
-            # executor is the framework boundary that isolates a single tool
-            # failure from the rest of the run so the model can observe the
-            # error and decide how to proceed.
-            error_type = type(exc).__name__
-            error_message = redact_text(str(exc))
-            result = ToolResult(
-                tool_call_id=invocation.tool_call_id,
-                tool_name=invocation.tool_name,
-                is_error=True,
-                content=f"Tool {invocation.tool_name} failed: [{error_type}] {error_message}",
-                structured={
-                    "error_type": error_type,
-                    "error_message": error_message,
-                },
-                ended_at=utc_now(),
-            )
-            return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
-        if isinstance(execution_result, AgentControlRequest):
-            return ToolExecutionOutcome(
-                status="control_requested", invocation=invocation, control_request=execution_result
-            )
-        if isinstance(execution_result, ToolInputRequest):
-            return ToolExecutionOutcome(
-                status="waiting_user",
-                invocation=invocation,
-                input_request=execution_result,
-            )
-        result = _validated_tool_result(invocation, execution_result, context)
-        return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
+        return await _invoke_tool_handler(
+            invocation,
+            context,
+            lambda: tool.execute(invocation, context=context),
+        )
 
     async def resume(
         self,
@@ -278,56 +236,68 @@ class ToolExecutor:
                 error_message=f"tool does not support resume: {invocation.tool_name}",
             )
         context = context or ToolExecutionContext(signal=signal)
-        try:
-            execution_result = await context.invoke_owned(
-                lambda: tool.resume(
-                    invocation,
-                    resolution,
-                    request=request,
-                    context=context,
-                ),
-            )
-        except ToolExecutionAborted as exc:
-            return _cancelled_outcome(invocation, status="aborted", reason=exc.reason)
-        except (CallbackCancelled, ToolExecutionInterrupted) as exc:
-            await _record_late_result(invocation, exc.result, context)
-            if isinstance(exc, ToolExecutionInterrupted) and exc.propagate_cancel:
-                raise asyncio.CancelledError from None
-            reason = getattr(exc, "reason", None) or context.abort_reason
-            return _cancelled_outcome(
-                invocation,
-                status="unknown_outcome",
-                reason=reason,
-            )
-        except Exception as exc:  # noqa: BLE001 - tool resume is an extension boundary.
-            error_type = type(exc).__name__
-            error_message = redact_text(str(exc))
-            result = ToolResult(
-                tool_call_id=invocation.tool_call_id,
-                tool_name=invocation.tool_name,
-                is_error=True,
-                content=(
-                    f"Tool {invocation.tool_name} resume failed: [{error_type}] {error_message}"
-                ),
-                structured={
-                    "error_type": error_type,
-                    "error_message": error_message,
-                },
-                ended_at=utc_now(),
-            )
-            return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
-        if isinstance(execution_result, AgentControlRequest):
-            return ToolExecutionOutcome(
-                status="control_requested", invocation=invocation, control_request=execution_result
-            )
-        if isinstance(execution_result, ToolInputRequest):
-            return ToolExecutionOutcome(
-                status="waiting_user",
-                invocation=invocation,
-                input_request=execution_result,
-            )
-        result = _validated_tool_result(invocation, execution_result, context)
+        return await _invoke_tool_handler(
+            invocation,
+            context,
+            lambda: tool.resume(invocation, resolution, request=request, context=context),
+            failure_action="resume failed",
+        )
+
+
+async def _invoke_tool_handler(
+    invocation: ToolInvocation,
+    context: ToolExecutionContext,
+    handler: Callable[[], Coroutine[Any, Any, ToolExecutionResult]],
+    *,
+    failure_action: Literal["failed", "resume failed"] = "failed",
+) -> ToolExecutionOutcome:
+    """Apply the same owned-callback and outcome contract to execute and resume."""
+    try:
+        execution_result = await context.invoke_owned(handler)
+    except ToolExecutionAborted as exc:
+        return _cancelled_outcome(invocation, status="aborted", reason=exc.reason)
+    except (CallbackCancelled, ToolExecutionInterrupted) as exc:
+        await _record_late_result(invocation, exc.result, context)
+        if isinstance(exc, ToolExecutionInterrupted) and exc.propagate_cancel:
+            raise asyncio.CancelledError from None
+        reason = getattr(exc, "reason", None) or context.abort_reason
+        return _cancelled_outcome(
+            invocation,
+            status="unknown_outcome",
+            reason=reason,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Tool handlers may raise arbitrary exceptions when interacting with
+        # the filesystem, network, subprocesses, or third-party code. The
+        # executor is the framework boundary that isolates a single tool
+        # failure from the rest of the run so the model can observe the
+        # error and decide how to proceed.
+        error_type = type(exc).__name__
+        error_message = redact_text(str(exc))
+        result = ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+            is_error=True,
+            content=f"Tool {invocation.tool_name} {failure_action}: [{error_type}] {error_message}",
+            structured={
+                "error_type": error_type,
+                "error_message": error_message,
+            },
+            ended_at=utc_now(),
+        )
         return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
+    if isinstance(execution_result, AgentControlRequest):
+        return ToolExecutionOutcome(
+            status="control_requested", invocation=invocation, control_request=execution_result
+        )
+    if isinstance(execution_result, ToolInputRequest):
+        return ToolExecutionOutcome(
+            status="waiting_user",
+            invocation=invocation,
+            input_request=execution_result,
+        )
+    result = _validated_tool_result(invocation, execution_result, context)
+    return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
 
 
 async def _record_late_result(

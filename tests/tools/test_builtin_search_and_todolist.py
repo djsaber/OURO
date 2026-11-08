@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from ouro.tools import Tool, ToolExecutionContext, ToolInvocation, builtin_tools
-from ouro.tools.builtin import search
+from ouro.tools.builtin.search import grep, registration
 
 
 def _tools() -> dict[str, Tool]:
@@ -50,7 +50,7 @@ def context(workspace: Path) -> ToolExecutionContext:
 
 @pytest.fixture(autouse=True)
 def python_search_backend(monkeypatch):
-    monkeypatch.setattr(search, "detect_ripgrep", lambda: None)
+    monkeypatch.setattr(registration, "detect_ripgrep", lambda: None)
 
 
 @pytest.fixture(params=["python", "ripgrep"])
@@ -58,7 +58,7 @@ def glob_backend(request, monkeypatch, python_search_backend):
     executable = shutil.which("rg") if request.param == "ripgrep" else None
     if request.param == "ripgrep" and executable is None:
         pytest.skip("ripgrep is not installed")
-    monkeypatch.setattr(search, "detect_ripgrep", lambda: executable)
+    monkeypatch.setattr(registration, "detect_ripgrep", lambda: executable)
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +72,7 @@ def test_grep_small_file_does_not_allocate_the_full_file_limit(workspace):
     target = _write(workspace, "small.txt", b"needle\n" * 100)
     tracemalloc.start()
     try:
-        assert search._read_searchable_text(target) == "needle\n" * 100
+        assert grep._read_searchable_text(target) == "needle\n" * 100
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
@@ -82,10 +82,10 @@ def test_grep_small_file_does_not_allocate_the_full_file_limit(workspace):
 @pytest.mark.parametrize("extra", [0, 1])
 def test_grep_retains_exact_file_size_limit(workspace, monkeypatch, extra):
     limit = 100_000
-    monkeypatch.setattr(search, "_MAX_SEARCHABLE_FILE_BYTES", limit)
+    monkeypatch.setattr(grep, "_MAX_SEARCHABLE_FILE_BYTES", limit)
     content = "a" * (limit + extra)
     target = _write(workspace, "bounded.txt", content)
-    assert search._read_searchable_text(target) == (None if extra else content)
+    assert grep._read_searchable_text(target) == (None if extra else content)
 
 
 def test_search_and_todolist_tools_are_assembled_as_host_builtins() -> None:
@@ -113,7 +113,7 @@ def test_grep_summary_does_not_materialize_content(
     def unexpected_content(*args, **kwargs):
         pytest.fail("summary queries must not construct matched content or context")
 
-    monkeypatch.setattr(search, "MatchedLine", unexpected_content)
+    monkeypatch.setattr(grep, "MatchedLine", unexpected_content)
     result = _tools()["Grep"].handler(
         _call(
             "Grep",

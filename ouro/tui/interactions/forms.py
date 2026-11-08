@@ -6,7 +6,7 @@ from typing import Literal, cast
 
 from pydantic import JsonValue
 
-from ouro.tools.builtin.ask_user import parse_builtin_ask_user_request
+from ouro.tools.builtin.ask_user_contract import parse_builtin_ask_user_request
 
 AnswerMode = Literal["mapping", "value"]
 

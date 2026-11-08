@@ -367,13 +367,13 @@ async def test_unchanged_budget_does_not_write_policy_again(tmp_path, monkeypatc
 
     runtime, _, _ = loop_runtime(tmp_path, read)
     writes = []
-    save = runtime._save_run_budget
+    save = runtime.run_lifecycle.save_budget
 
     def record_write(run, policy):
         writes.append(policy)
         save(run, policy)
 
-    monkeypatch.setattr(runtime, "_save_run_budget", record_write)
+    monkeypatch.setattr(runtime.run_lifecycle, "save_budget", record_write)
     async with runtime:
         result = await runtime.run("Read three times")
         assert result.run.status == "completed", result.run.error

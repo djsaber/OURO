@@ -187,7 +187,7 @@ async def test_both_pages_keep_input_when_draft_save_fails(tmp_path, existing, m
             raise PersistenceError("draft disk unavailable")
 
         with monkeypatch.context() as patch:
-            patch.setattr(app._input_draft_store, "save", fail)
+            patch.setattr(app._draft_persistence._store, "save", fail)
             composer = app.query_one(Composer)
             composer.load_text("keep my input")
             await pilot.press("enter")
@@ -198,7 +198,7 @@ async def test_both_pages_keep_input_when_draft_save_fails(tmp_path, existing, m
             # Restoring rejected input schedules another debounced save. Keep
             # the injected disk fault in force until that owned write settles;
             # restoring the method cannot replace a callable already in flight.
-            save_task = app._input_draft_save_task
+            save_task = app._draft_persistence._task
             assert save_task is not None and not save_task.done()
             release_recovery.set()
             await asyncio.shield(save_task)
@@ -298,14 +298,14 @@ async def test_cancelled_submission_does_not_cancel_its_durable_draft_save(tmp_p
     app = OuroTuiApp(application=application)
     async with run_ready_app(app) as pilot:
         reached, release = threading.Event(), threading.Event()
-        save = app._input_draft_store.save
+        save = app._draft_persistence._store.save
 
         def delayed(drafts):
             reached.set()
             assert release.wait(5)
             save(drafts)
 
-        monkeypatch.setattr(app._input_draft_store, "save", delayed)
+        monkeypatch.setattr(app._draft_persistence._store, "save", delayed)
         app.query_one(Composer).load_text("interrupted before acceptance")
         await pilot.press("enter")
         assert await asyncio.to_thread(reached.wait, 5)

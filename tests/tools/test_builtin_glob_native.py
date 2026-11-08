@@ -9,7 +9,8 @@ import pytest
 from ouro.core.cancellation import AbortSignal
 from ouro.core.tools import tool_definition_contract_hash
 from ouro.tools import ProcessResult, ToolExecutionAborted, ToolExecutionContext, ToolInvocation
-from ouro.tools.builtin.search import builtin_search_tools, search_glob
+from ouro.tools.builtin.search import builtin_search_tools
+from ouro.tools.builtin.search.glob import search_glob
 
 
 def _call(pattern="**/*", **arguments):
@@ -22,7 +23,7 @@ def _call(pattern="**/*", **arguments):
 
 
 def _tool(executable):
-    with patch("ouro.tools.builtin.search.detect_ripgrep", return_value=executable):
+    with patch("ouro.tools.builtin.search.registration.detect_ripgrep", return_value=executable):
         return builtin_search_tools()[0]
 
 

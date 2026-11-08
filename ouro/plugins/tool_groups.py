@@ -11,13 +11,13 @@ from ouro.plugins.catalog.bindings import bind_generation_gate
 from ouro.plugins.catalog.gates import GenerationGate
 from ouro.plugins.contributions.binding import bind_execution_contract
 from ouro.plugins.contributions.models import ContributionOwner, PreparedContributionSet
-from ouro.plugins.contributions.preparation import ContributionCoordinator
+from ouro.plugins.contributions.preparation_rules import prepare_tools
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.plugins.invocation import current_invocation
 from ouro.plugins.manifest import PluginManifest, ToolContributionSpec
 from ouro.plugins.models import PluginGenerationRecord
 from ouro.sdk.plugins import v5 as sdk
-from ouro.tools import Tool
+from ouro.tools.base import Tool
 
 
 @dataclass(frozen=True)
@@ -196,7 +196,7 @@ class PluginToolGroups:
         adapted = adapt_sdk_contributions(
             sdk.ContributionSet(tools=list(group.tools)), owner_id=self.manifest.plugin_id
         )
-        tools = ContributionCoordinator.prepare_tools(
+        tools = prepare_tools(
             self.manifest,
             self.owner,
             "official" if self.owner.plugin_class == "builtin" else "third_party",

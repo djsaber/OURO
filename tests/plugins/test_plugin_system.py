@@ -321,7 +321,11 @@ def test_contribution_type_inventory_is_closed_complete_and_lifecycle_explicit()
     resources = {adapter.kind for adapter in adapters if adapter.resource is not None}
     assert resources == {"skills", "mcp_servers"}
     for adapter in adapters:
+        assert adapter.preparation.kind == adapter.kind
+        assert adapter.lifecycle == adapter.projection.lifecycle
         if adapter.kind in resources:
+            assert adapter.resource is not None
+            assert adapter.resource.kind == adapter.kind
             assert adapter.sdk is None
             assert adapter.worker is None
         else:

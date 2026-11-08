@@ -7,7 +7,7 @@ from ouro.tools import (
     ToolRegistry,
     builtin_tools,
 )
-from ouro.tools.builtin import search
+from ouro.tools.builtin.search import registration
 from ouro.tools.schema import tool_argument_error
 
 
@@ -66,7 +66,7 @@ async def test_integer_arguments_have_the_same_meaning_in_schema_and_execution(
     monkeypatch,
 ):
     if tool_name == "Grep":
-        monkeypatch.setattr(search, "detect_ripgrep", lambda: None)
+        monkeypatch.setattr(registration, "detect_ripgrep", lambda: None)
     (tmp_path / "sample.txt").write_text("alpha\nbravo\n", encoding="utf-8")
     registry = _registry()
     tool = registry.get(tool_name)

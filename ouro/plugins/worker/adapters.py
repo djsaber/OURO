@@ -4,14 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ouro.plugins.worker.codec import _worker_schema
-from ouro.plugins.worker.instance import WorkerPluginInstance
 from ouro.sdk.plugins import v5 as sdk
 
+if TYPE_CHECKING:
+    from ouro.plugins.worker.instance import WorkerPluginInstance
+
+
 WorkerContributionBuilder = Callable[
-    [WorkerPluginInstance, object, dict[str, set[str]]],
+    ["WorkerPluginInstance", object, dict[str, set[str]]],
     list[Any],
 ]
 

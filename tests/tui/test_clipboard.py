@@ -13,7 +13,7 @@ from textual.widgets import Input, Static
 
 from ouro.application.contracts.agents import AgentTreeNode
 from ouro.application.contracts.execution import RuntimeToolCallActivity
-from ouro.tui.app import OuroTuiApp, _OuroHostScreen
+from ouro.tui.app import OuroTuiApp
 from ouro.tui.clipboard import (
     ClipboardReadError,
     ClipboardWriteError,
@@ -25,6 +25,7 @@ from ouro.tui.conversation.history import ConversationHistory
 from ouro.tui.conversation.history_models import TranscriptEntry
 from ouro.tui.conversation.history_rendering import AssistantTailLines
 from ouro.tui.conversation.view import ConversationView
+from ouro.tui.host_screen import _OuroHostScreen
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.theme import TuiTheme
 from tests.tui.helpers import run_ready_app, two_route_application

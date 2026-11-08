@@ -255,12 +255,6 @@ def project_transcript_entries(
     return tuple(transcript), frozenset(presented_run_ids)
 
 
-def user_message_text(
-    message: MessageRecord | ModelMessage, *, include_scaffold_content: bool = False
-) -> str:
-    return _user_message_presentation(message, include_scaffold_content=include_scaffold_content)[0]
-
-
 def _user_message_presentation(
     message: MessageRecord | ModelMessage, *, include_scaffold_content: bool = False
 ) -> tuple[str, int | None]:

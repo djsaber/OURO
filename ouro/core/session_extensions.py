@@ -40,24 +40,7 @@ class SessionExtensionStateRecord(VersionedOuroModel):
         return self
 
 
-class SessionExtensionStateCollection(VersionedOuroModel):
-    """Versioned local container for all extension states owned by one Session."""
-
-    states: list[SessionExtensionStateRecord] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def validate_owner_uniqueness(self) -> Self:
-        owners = [state.owner_id for state in self.states]
-        if len(set(owners)) != len(owners):
-            raise ValueError("Session extension state owners must be unique")
-        session_ids = {state.session_id for state in self.states}
-        if len(session_ids) > 1:
-            raise ValueError("Session extension state collection cannot mix Sessions")
-        return self
-
-
 __all__ = [
     "SessionExtensionBranchPolicy",
-    "SessionExtensionStateCollection",
     "SessionExtensionStateRecord",
 ]

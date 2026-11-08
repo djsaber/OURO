@@ -10,10 +10,10 @@ from textual import events
 from textual.content import Content
 from textual.widgets import TextArea
 
-import ouro.tui.app as tui_app_module
 from ouro.core.errors import PersistenceError
 from ouro.core.messages import MessageRecord
 from ouro.tui.app import OuroTuiApp
+from ouro.tui.composer import draft_persistence
 from ouro.tui.composer.drafts import TuiInputDrafts, TuiInputDraftStore
 from ouro.tui.composer.input import (
     COMPOSER_FRAME_HEIGHT,
@@ -452,9 +452,8 @@ async def test_input_draft_persistence_debounces_to_the_latest_revision(
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
-        if app._input_draft_save_task is not None:
-            await app._input_draft_save_task
-        monkeypatch.setattr(app._input_draft_store, "save", saved.append)
+        await app._draft_persistence.wait()
+        monkeypatch.setattr(app._draft_persistence._store, "save", saved.append)
 
         cycles = asyncio.Queue()
         gates = []
@@ -469,8 +468,8 @@ async def test_input_draft_persistence_debounces_to_the_latest_revision(
         try:
             with monkeypatch.context() as patch:
                 # Drive debounce expiry explicitly; editing must reset the window.
-                patch.setattr(tui_app_module, "_INPUT_DRAFT_SAVE_DEBOUNCE_SECONDS", None)
-                patch.setattr(app._input_draft_save_requested, "wait", expire_debounce)
+                patch.setattr(draft_persistence, "_INPUT_DRAFT_SAVE_DEBOUNCE_SECONDS", None)
+                patch.setattr(app._draft_persistence._save_requested, "wait", expire_debounce)
                 app._remember_input_draft(None, "a")
                 for text in ("ab", "abc"):
                     gate = await asyncio.wait_for(cycles.get(), 30)
@@ -480,8 +479,8 @@ async def test_input_draft_persistence_debounces_to_the_latest_revision(
                 gate = await asyncio.wait_for(cycles.get(), 30)
                 assert saved == []
                 gate.set()
-                assert app._input_draft_save_task is not None
-                await app._input_draft_save_task
+                assert app._draft_persistence._task is not None
+                await app._draft_persistence._task
         finally:
             for gate in gates:
                 gate.set()
@@ -495,15 +494,14 @@ async def test_tui_close_waits_for_pending_input_draft_save(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(tui_app_module, "_INPUT_DRAFT_SAVE_DEBOUNCE_SECONDS", 0.05)
+    monkeypatch.setattr(draft_persistence, "_INPUT_DRAFT_SAVE_DEBOUNCE_SECONDS", 0.05)
     app = OuroTuiApp(application=_application(tmp_path))
     saved: list[TuiInputDrafts] = []
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
-        if app._input_draft_save_task is not None:
-            await app._input_draft_save_task
-        monkeypatch.setattr(app._input_draft_store, "save", saved.append)
+        await app._draft_persistence.wait()
+        monkeypatch.setattr(app._draft_persistence._store, "save", saved.append)
         app._remember_input_draft(None, "saved while closing")
 
     assert len(saved) == 1
@@ -515,7 +513,7 @@ async def test_input_draft_save_failure_allows_a_later_revision_to_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(tui_app_module, "_INPUT_DRAFT_SAVE_DEBOUNCE_SECONDS", 0.01)
+    monkeypatch.setattr(draft_persistence, "_INPUT_DRAFT_SAVE_DEBOUNCE_SECONDS", 0.01)
     app = OuroTuiApp(application=_application(tmp_path))
     save_attempts = 0
     saved: list[TuiInputDrafts] = []
@@ -529,13 +527,12 @@ async def test_input_draft_save_failure_allows_a_later_revision_to_retry(
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
-        if app._input_draft_save_task is not None:
-            await app._input_draft_save_task
-        monkeypatch.setattr(app._input_draft_store, "save", save)
+        await app._draft_persistence.wait()
+        monkeypatch.setattr(app._draft_persistence._store, "save", save)
 
         app._remember_input_draft(None, "first revision")
         await _wait_until(
-            lambda: app._input_draft_save_task is None,
+            lambda: app._draft_persistence._task is None,
             pilot,
             description="failed draft save task to settle",
         )

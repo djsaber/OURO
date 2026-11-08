@@ -18,12 +18,13 @@ from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.state import SessionRecord
-from ouro.tui.app import OuroTuiApp, _session_choices
+from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
 from ouro.tui.conversation.history import ConversationHistory
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.editable import EditableChoiceScreen
 from ouro.tui.menus.multiple import MultiChoiceScreen
+from ouro.tui.menus.sessions import _session_choices
 from ouro.tui.state import TuiSessionProjection
 from ouro.tui.theme import DEFAULT_TUI_THEME
 from ouro.tui.view_models import TuiSessionControlStatus

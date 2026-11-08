@@ -139,7 +139,7 @@ async def test_native_usage_survives_undo_and_keeps_request_attribution(store, t
         )
         with catalog.acquire() as lease:
             latest.metadata["session_control_snapshot"] = app._session_control_snapshot(
-                session.session_id, run_id=latest.run_id, model_round=1, catalog=lease
+                store.load_session_record(session.session_id).controls, model_round=1, catalog=lease
             )
         store.save_run(latest)
         for _ in range(2):

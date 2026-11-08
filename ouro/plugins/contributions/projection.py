@@ -17,7 +17,7 @@ def project_prepared_contributions(
     projected: set[int] = set()
     for contribution_type in contribution_type_adapters():
         adapter = contribution_type.projection
-        if adapter is None or id(adapter) in projected:
+        if id(adapter) in projected:
             continue
         projected.add(id(adapter))
         adapter.project(targets, owner=owner, prepared=prepared)

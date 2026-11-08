@@ -1092,6 +1092,32 @@ def test_split_markdown_blocks_of_blank_document_is_empty() -> None:
     assert split_markdown_blocks("\n\n  \n") == ()
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "paragraph\nwith another line\n",
+        _MULTIBLOCK_ANSWER,
+        "Title\r\n=====\r\n\r\n[label]\r\n\r\n[label]: /url\r\n",
+        "```text\n" + "large block\n" * 1000 + "```\n",
+    ],
+)
+def test_complete_markdown_parses_once_with_the_same_block_boundaries(monkeypatch, source):
+    stream = AssistantMarkdownStream()
+    completed, _ = stream.feed(source)
+    expected = (*completed, *stream.close())
+    parsed = []
+    original = conversation_history_markdown_stream._block_starts
+
+    def record_parse(text):
+        parsed.append(text)
+        return original(text)
+
+    monkeypatch.setattr(conversation_history_markdown_stream, "_block_starts", record_parse)
+
+    assert split_markdown_blocks(source) == expected
+    assert parsed == [source]
+
+
 def test_stream_keeps_trailing_block_live_until_next_block_starts() -> None:
     stream = AssistantMarkdownStream()
 

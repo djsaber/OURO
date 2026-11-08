@@ -480,6 +480,55 @@ def test_welcome_and_view_records_do_not_depend_on_the_controller() -> None:
         assert not any(module.startswith("ouro.tui.controller") for module in imports), path
 
 
+def test_host_screen_and_menu_projections_do_not_depend_on_app_or_controller() -> None:
+    tui = PROJECT_ROOT / "ouro" / "tui"
+    for relative in ("host_screen.py", "styles.py", "menus/sessions.py"):
+        path = tui / relative
+        imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+        assert not any(
+            module.startswith(("ouro.tui.app", "ouro.tui.controller")) for module in imports
+        ), relative
+
+
+def test_search_backends_only_depend_on_shared_search_files() -> None:
+    search = PROJECT_ROOT / "ouro" / "tools" / "builtin" / "search"
+    for name in ("files", "glob", "grep", "ripgrep"):
+        path = search / f"{name}.py"
+        imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+        search_imports = {
+            module for module in imports if module.startswith("ouro.tools.builtin.search")
+        }
+        assert search_imports <= (
+            {"ouro.tools.builtin.search.files"} if name != "files" else set()
+        ), name
+
+
+def test_question_form_hosts_only_depend_on_the_wire_contract() -> None:
+    host = PROJECT_ROOT / "ouro" / "tui" / "interactions" / "forms.py"
+    imports = _imported_modules(ast.parse(host.read_text(encoding="utf-8")))
+    assert "ouro.tools.builtin.ask_user_contract" in imports
+    assert "ouro.tools.builtin.ask_user" not in imports
+
+    contract = PROJECT_ROOT / "ouro" / "tools" / "builtin" / "ask_user_contract.py"
+    imports = _imported_modules(ast.parse(contract.read_text(encoding="utf-8")))
+    assert not any(
+        module.startswith(("ouro.application", "ouro.tui", "ouro.tools")) for module in imports
+    )
+
+
+def test_contribution_rules_do_not_depend_on_host_composition() -> None:
+    contributions = PROJECT_ROOT / "ouro" / "plugins" / "contributions"
+    for name in ("preparation_rules.py", "preparation_adapters.py"):
+        imports = _imported_modules(ast.parse((contributions / name).read_text(encoding="utf-8")))
+        assert not {
+            "ouro.plugins.contributions.preparation",
+            "ouro.plugins.contributions.inventory",
+            "ouro.plugins.worker.instance",
+            "ouro.plugins.lifecycle.runtime",
+        }.intersection(imports), name
+        assert not any(module.startswith("ouro.plugins.lifecycle") for module in imports), name
+
+
 def test_plugin_loading_and_wire_codecs_do_not_depend_on_host_composition() -> None:
     plugins = PROJECT_ROOT / "ouro" / "plugins"
     for relative in ("inprocess/loading.py", "worker/codec.py"):
@@ -498,3 +547,19 @@ def test_plugin_loading_and_wire_codecs_do_not_depend_on_host_composition() -> N
             )
             for module in imports
         ), relative
+
+
+def test_agent_budget_reads_do_not_depend_on_execution_owners() -> None:
+    path = APPLICATION_DIR / "agents" / "budgets.py"
+    imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+    application_imports = {module for module in imports if module.startswith("ouro.application")}
+    assert application_imports <= {"ouro.application.usage"}
+    assert not any(module.startswith(("ouro.tui", "ouro.cli")) for module in imports)
+
+
+def test_draft_persistence_does_not_depend_on_host_or_widgets() -> None:
+    path = PROJECT_ROOT / "ouro" / "tui" / "composer" / "draft_persistence.py"
+    imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+    tui_imports = {module for module in imports if module.startswith("ouro.tui")}
+    assert tui_imports <= {"ouro.tui.composer.drafts"}
+    assert not any(module.startswith(("ouro.application", "textual")) for module in imports)

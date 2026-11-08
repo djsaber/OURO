@@ -75,7 +75,7 @@ from ouro.plugins.lifecycle.generation_resources import (
     SKILL_RESOURCE_ADAPTER,
     GenerationResourceAdapter,
 )
-from ouro.plugins.manifest import PluginCapability, PluginContributes
+from ouro.plugins.manifest import PluginCapability
 from ouro.plugins.worker.adapters import (
     BACKGROUND_SERVICE_WORKER_ADAPTER,
     COMMAND_WORKER_ADAPTER,
@@ -247,30 +247,6 @@ def contribution_type_adapters() -> tuple[ContributionTypeAdapter, ...]:
     """Return the immutable Host-owned contribution type inventory."""
 
     return _CONTRIBUTION_TYPE_ADAPTERS
-
-
-def _validate_adapter_inventory() -> None:
-    expected = tuple(PluginContributes().by_kind())
-    actual = tuple(adapter.kind for adapter in _CONTRIBUTION_TYPE_ADAPTERS)
-    if len(actual) != len(set(actual)) or set(actual) != set(expected):
-        raise RuntimeError(
-            "contribution adapter inventory does not match manifest capabilities: "
-            f"expected={expected}, actual={actual}"
-        )
-    for adapter in _CONTRIBUTION_TYPE_ADAPTERS:
-        if adapter.preparation.kind != adapter.kind:
-            raise RuntimeError(f"preparation adapter kind mismatch: {adapter.kind}")
-        if adapter.lifecycle != adapter.projection.lifecycle:
-            raise RuntimeError(f"projection lifecycle mismatch: {adapter.kind}")
-        if adapter.resource is None and (adapter.sdk is None or adapter.worker is None):
-            raise RuntimeError(f"callable contribution adapter is incomplete: {adapter.kind}")
-        if adapter.resource is not None and adapter.resource.kind != adapter.kind:
-            raise RuntimeError(f"resource adapter kind mismatch: {adapter.kind}")
-        if adapter.contract is None and adapter.resource is None:
-            raise RuntimeError(f"contribution contract adapter is missing: {adapter.kind}")
-
-
-_validate_adapter_inventory()
 
 
 __all__ = [
