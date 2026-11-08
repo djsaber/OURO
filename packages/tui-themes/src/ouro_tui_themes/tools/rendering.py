@@ -25,6 +25,9 @@ from textual.widget import Widget
 
 type RunStyle = Style | int | None
 
+# Fixed byte values, not a cache of the millions of transient RGB combinations.
+_DECIMAL = tuple(str(value) for value in range(256))
+
 _CACHE_SIZES = {
     "_divide_cache": 4,
     "_crop_cache": 16,
@@ -201,6 +204,26 @@ class FrameStrip(Strip):
             return self
         if end <= start:
             return FrameStrip((), 0)
+        if self._single_cell:
+            # Damage often trims only a few cells off a wide row. Walk the
+            # discarded edges, then copy retained run references in native code.
+            # Only the two boundary strings can need splitting.
+            first, last = 0, len(self._texts)
+            left, right = start, self.cell_length - end
+            while first < last and left >= len(self._texts[first]):
+                left -= len(self._texts[first])
+                first += 1
+            while last > first and right >= len(self._texts[last - 1]):
+                right -= len(self._texts[last - 1])
+                last -= 1
+            texts = self._texts[first:last]
+            if texts:
+                texts[0] = texts[0][left:]
+                if right:
+                    texts[-1] = texts[-1][:-right]
+            row = FrameStrip.from_runs(texts, self._run_styles[first:last], end - start)
+            row._base_style = self._base_style
+            return row
         return self.divide((start, end))[-1] if start else self.divide((end,))[0]
 
     def render(self, console: Console) -> str:
@@ -210,13 +233,23 @@ class FrameStrip(Strip):
             rgb_output = color_system == ColorSystem.TRUECOLOR and not (base and base.link)
             prefix, suffix = _rgb_affixes(base) if rgb_output else ("", "")
             rendered = []
+            rgb_run = False
             for i, (text, style) in enumerate(zip(self._texts, self._run_styles, strict=True)):
                 if isinstance(style, int) and rgb_output:
+                    # Consecutive RGB runs share canvas attributes/background.
+                    # Change only foreground until a style boundary or row end;
+                    # each fragment still restores the terminal's default state.
                     rendered.append(
-                        f"{prefix}38;2;{style >> 16};{(style >> 8) & 255};{style & 255}"
-                        f"{suffix}{text}\x1b[0m"
+                        f"{'\x1b[' if rgb_run else prefix}"
+                        f"38;2;{_DECIMAL[style >> 16]};"
+                        f"{_DECIMAL[(style >> 8) & 255]};{_DECIMAL[style & 255]}"
+                        f"{'m' if rgb_run else suffix}{text}"
                     )
+                    rgb_run = True
                     continue
+                if rgb_run:
+                    rendered.append("\x1b[0m")
+                    rgb_run = False
                 effective = _rich_style(style)
                 if base:
                     effective = None if self._controls and self._controls[i] else base + effective
@@ -231,6 +264,8 @@ class FrameStrip(Strip):
                         else self.render_style(effective, text, color_system)
                     )
                 )
+            if rgb_run:
+                rendered.append("\x1b[0m")
             self._render_cache = "".join(rendered)
         return self._render_cache
 

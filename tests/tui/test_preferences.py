@@ -15,6 +15,7 @@ from ouro.tui.preferences import (
 from ouro.tui.theme import (
     DEFAULT_TUI_THEME,
     THEME_SATURATION_LEVELS,
+    TUI_THEMES,
 )
 
 
@@ -71,7 +72,8 @@ def test_tui_theme_rejects_invalid_token_values(
         replace(DEFAULT_TUI_THEME, **changes)  # type: ignore[arg-type]
 
 
-def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> None:
+@pytest.mark.parametrize("theme_id", TUI_THEMES)
+def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path, theme_id: str) -> None:
     store = TuiPreferencesStore(tmp_path)
 
     assert TuiPreferences().session_grouping == "date"
@@ -82,7 +84,7 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
     assert TuiPreferences().theme_saturation_level == 0
     store.save(
         TuiPreferences(
-            theme="indigo",
+            theme=theme_id,
             session_grouping="workspace",
             theme_saturation_level=17,
             reasoning_expanded=False,
@@ -96,7 +98,7 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
 
     assert store.path == tmp_path / "config" / "tui.json"
     assert store.load() == TuiPreferences(
-        theme="indigo",
+        theme=theme_id,
         session_grouping="workspace",
         theme_saturation_level=17,
         reasoning_expanded=False,

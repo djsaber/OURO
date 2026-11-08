@@ -10,13 +10,43 @@ import pytest
 
 pytest.importorskip("ouro_tui_themes")
 
-import ouro_tui_themes.dot_matrix.requirements as theme_styles
+import ouro_tui_themes.tools.dot_matrix.requirements as theme_styles
+from ouro_tui_themes.packs import PACKAGES
 
 from ouro.core.errors import ConfigError
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.surface import WelcomePanel
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
+from ouro.tui.welcome import welcome_catalog
+from ouro.tui.welcome_packages import load_theme_packages
 from tests.tui.helpers import run_ready_app, two_route_application
+
+
+def test_bundled_packages_integrate_with_the_existing_host_catalog():
+    assert {
+        package.package_id: tuple(theme.style_id for theme in package.themes)
+        for package in PACKAGES
+    } == {
+        "particle-art": ("event-horizon", "quantum-veil"),
+        "matrix": ("matrix",),
+    }
+    assert len({package.package_id for package in PACKAGES}) == len(PACKAGES)
+    loaded, error = load_theme_packages()
+    assert error is None
+    catalog = welcome_catalog(loaded)  # Also rejects duplicate theme IDs across packages.
+    assert len(catalog) == 1 + sum(len(package.themes) for package in PACKAGES)
+    for package in PACKAGES:
+        assert all(
+            value.strip()
+            for value in (package.package_id, package.name, package.description, package.author)
+        )
+        for theme in package.themes:
+            assert catalog[theme.style_id] is theme
+    particle, matrix = PACKAGES
+    assert all(
+        theme.check_requirements is theme_styles.check_requirements for theme in particle.themes
+    )
+    assert all(theme.check_requirements is None for theme in matrix.themes)
 
 
 def test_style_metadata_does_not_load_numpy_or_renderers():
@@ -26,13 +56,67 @@ def test_style_metadata_does_not_load_numpy_or_renderers():
             "-c",
             textwrap.dedent("""
             import sys
-            from ouro_tui_themes.styles import STYLES
+            from ouro_tui_themes.packs import PACKAGES
 
-            assert len(STYLES) == 4
+            assert {style.style_id for package in PACKAGES for style in package.themes} == {
+                "event-horizon", "quantum-veil", "matrix"
+            }
             assert "numpy" not in sys.modules
-            assert "ouro_tui_themes.dot_matrix.widget" not in sys.modules
-            assert not any(name.startswith("ouro_tui_themes.styles.") for name in sys.modules)
+            assert {name for name in sys.modules if name.startswith("ouro_tui_themes.tools.")} == {
+                "ouro_tui_themes.tools.dot_matrix",
+                "ouro_tui_themes.tools.dot_matrix.requirements",
+            }
+            assert {name for name in sys.modules if name.startswith("ouro_tui_themes.packs.")} == {
+                "ouro_tui_themes.packs.particle_art", "ouro_tui_themes.packs.matrix"
+            }
         """),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "selected", [style.style_id for package in PACKAGES for style in package.themes]
+)
+def test_page_factories_load_only_the_selected_renderer(selected):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent("""
+            import sys
+            from ouro_tui_themes.packs import PACKAGES
+
+            selected = sys.argv[1]
+            renderers = {
+                "event-horizon": "ouro_tui_themes.packs.particle_art.event_horizon",
+                "quantum-veil": "ouro_tui_themes.packs.particle_art.quantum_veil",
+                "matrix": "ouro_tui_themes.packs.matrix.matrix",
+            }
+            blocked = {module for name, module in renderers.items() if name != selected}
+            if selected == "matrix":
+                blocked.update({"numpy", "ouro_tui_themes.tools.dot_matrix.field",
+                                "ouro_tui_themes.tools.dot_matrix.raster",
+                                "ouro_tui_themes.tools.dot_matrix.widget"})
+
+            class RejectUnselected:
+                def find_spec(self, fullname, path=None, target=None):
+                    assert fullname not in blocked, fullname
+
+            sys.meta_path.insert(0, RejectUnselected())
+            theme = next(
+                style for package in PACKAGES for style in package.themes
+                if style.style_id == selected
+            )
+            first, second = theme.create(), theme.create()
+            assert type(first).__module__ == renderers[selected]
+            assert type(second) is type(first) and first is not second
+            assert blocked.isdisjoint(sys.modules)
+        """),
+            selected,
         ],
         capture_output=True,
         text=True,
@@ -97,10 +181,10 @@ async def test_missing_builtin_dependency_keeps_tui_usable_and_preferences_intac
     monkeypatch.setattr(app, "notify", lambda message, **_kwargs: notices.append(message))
     async with run_ready_app(app):
         assert app._preferences_error is None
-        assert app.query_one(WelcomePanel).style_package.style_id == "basic"
+        assert app.query_one(WelcomePanel).welcome_style.style_id == "basic"
         assert [
-            choice.value for choice in app._theme_choices() if choice.value.startswith("welcome:")
-        ] == ["welcome:basic", "welcome:matrix"]
+            choice.value for choice in app._theme_choices() if choice.group == "Welcome style"
+        ] == ["welcome:basic", "welcome-package:matrix"]
         if selected != "basic":
             assert any("Horizon is unavailable" in notice for notice in notices)
         else:

@@ -13,7 +13,7 @@ import ouro.tui.welcome_packages as theme_packages
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.surface import WelcomePanel
 from ouro.tui.preferences import TuiPreferencesStore
-from ouro.tui.welcome import WELCOME_STYLES, unavailable_styles
+from ouro.tui.welcome import WELCOME_STYLES, ThemePackage, unavailable_styles
 from tests.tui.helpers import run_ready_app, two_route_application
 
 
@@ -59,16 +59,16 @@ def test_missing_distribution_does_not_import_extension_code(monkeypatch):
 
     monkeypatch.setattr(theme_packages, "version", missing)
     monkeypatch.setattr(theme_packages, "import_module", lambda _: pytest.fail("unexpected import"))
-    styles, reason = theme_packages.load_theme_styles()
+    styles, reason = theme_packages.load_theme_packages()
     assert not styles
     assert "not installed" in reason and "ouro-agent[themes]" in reason
 
 
-@pytest.mark.parametrize("installed", ["0.0.1", "0.3.6.post1", "invalid"])
+@pytest.mark.parametrize("installed", ["0.0.1", "0.3.6.post1", "0.4.0", "invalid"])
 def test_incompatible_distribution_is_rejected_before_import(monkeypatch, installed):
     monkeypatch.setattr(theme_packages, "version", lambda _: installed)
     monkeypatch.setattr(theme_packages, "import_module", lambda _: pytest.fail("unexpected import"))
-    styles, reason = theme_packages.load_theme_styles()
+    styles, reason = theme_packages.load_theme_packages()
     assert not styles
     assert "incompatible" in reason
 
@@ -76,12 +76,15 @@ def test_incompatible_distribution_is_rejected_before_import(monkeypatch, instal
 @pytest.mark.parametrize("installed", [theme_packages.THEME_PACKAGE_VERSION, "99.0.0"])
 def test_matching_distribution_supplies_style_metadata(monkeypatch, installed):
     styles = (replace(WELCOME_STYLES["basic"], style_id="installed-scene"),)
+    packages = (ThemePackage("installed", "Installed", "Installed themes.", "Tests", styles),)
     monkeypatch.setattr(theme_packages, "version", lambda _: installed)
-    monkeypatch.setattr(theme_packages, "import_module", lambda _: SimpleNamespace(STYLES=styles))
-    assert theme_packages.load_theme_styles() == (styles, None)
+    monkeypatch.setattr(
+        theme_packages, "import_module", lambda _: SimpleNamespace(PACKAGES=packages)
+    )
+    assert theme_packages.load_theme_packages() == (packages, None)
 
 
-@pytest.mark.parametrize("missing", ["ouro_tui_themes", "ouro_tui_themes.styles", "internal_bug"])
+@pytest.mark.parametrize("missing", ["ouro_tui_themes", "ouro_tui_themes.packs", "internal_bug"])
 def test_only_missing_package_modules_are_reported_as_unavailable(monkeypatch, missing):
     monkeypatch.setattr(theme_packages, "version", lambda _: theme_packages.THEME_PACKAGE_VERSION)
 
@@ -91,9 +94,9 @@ def test_only_missing_package_modules_are_reported_as_unavailable(monkeypatch, m
     monkeypatch.setattr(theme_packages, "import_module", fail)
     if missing == "internal_bug":
         with pytest.raises(ModuleNotFoundError):
-            theme_packages.load_theme_styles()
+            theme_packages.load_theme_packages()
     else:
-        styles, reason = theme_packages.load_theme_styles()
+        styles, reason = theme_packages.load_theme_packages()
         assert not styles and "could not load" in reason
 
 
@@ -122,13 +125,14 @@ async def test_restarting_after_dependency_install_restores_the_saved_theme(tmp_
         return None if installed else "renderer missing"
 
     style = replace(WELCOME_STYLES["basic"], style_id="optional-scene", check_requirements=check)
+    package = ThemePackage("optional", "Optional", "Optional themes.", "Tests", (style,))
     store = TuiPreferencesStore(tmp_path)
     store.save(store.validate({"welcome_style": style.style_id}))
     for available in (False, True):
         installed = available
-        app = OuroTuiApp(application=two_route_application(tmp_path), welcome_styles=(style,))
+        app = OuroTuiApp(application=two_route_application(tmp_path), welcome_packages=(package,))
         async with run_ready_app(app):
-            assert app.query_one(WelcomePanel).style_package.style_id == (
+            assert app.query_one(WelcomePanel).welcome_style.style_id == (
                 style.style_id if available else "basic"
             )
             assert store.load().welcome_style == style.style_id
@@ -137,5 +141,5 @@ async def test_restarting_after_dependency_install_restores_the_saved_theme(tmp_
 async def test_installing_theme_dependencies_does_not_change_the_default(tmp_path):
     app = OuroTuiApp(application=two_route_application(tmp_path))
     async with run_ready_app(app):
-        assert app.query_one(WelcomePanel).style_package.style_id == "basic"
+        assert app.query_one(WelcomePanel).welcome_style.style_id == "basic"
         assert app._preferences.welcome_style == "basic"

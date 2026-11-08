@@ -58,34 +58,6 @@ def buffer(size: int, value: float = 0.0) -> Field:
     return np.full(size, value, dtype=np.float64)
 
 
-def clip(values: Field, low: float, high: float) -> None:
-    """Clamp in one native pass without cancellation at the bounds."""
-    np.clip(values, low, high, out=values)
-
-
-def band(values: Field, width: float) -> None:
-    """Replace signed distances with a Gaussian light band."""
-    np.divide(values, width, out=values)
-    np.square(values, out=values)
-    np.negative(values, out=values)
-    np.exp(values, out=values)
-
-
-class Spectrum:
-    """Reusable piecewise-linear RGB interpolation buffers for one sampler."""
-
-    def __init__(self, size: int, stops: tuple[tuple[float, float, float], ...]) -> None:
-        self.stops = stops
-        self.channels: Radiance = (buffer(size), buffer(size), buffer(size))
-        self._knots = np.linspace(0.0, 1.0, len(stops))
-        self._colors = np.asarray(stops).T.copy()
-
-    def sample(self, position: Field, light: Field) -> Radiance:
-        for channel, colors in zip(self.channels, self._colors, strict=True):
-            np.multiply(np.interp(position, self._knots, colors), light, out=channel)
-        return self.channels
-
-
 class PhosphorField:
     """Size-owned buffers; no terminal encoding, UI objects or theme knowledge."""
 

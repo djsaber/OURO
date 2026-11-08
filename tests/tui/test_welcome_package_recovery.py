@@ -4,7 +4,7 @@ from dataclasses import replace
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.surface import WelcomePanel
 from ouro.tui.preferences import TuiPreferencesStore
-from ouro.tui.welcome import WELCOME_STYLES
+from ouro.tui.welcome import WELCOME_STYLES, ThemePackage
 from tests.tui.helpers import run_ready_app, two_route_application
 
 
@@ -12,6 +12,7 @@ async def test_removed_package_keeps_preferences_and_restores_when_registered(
     tmp_path, monkeypatch
 ):
     style = replace(WELCOME_STYLES["basic"], style_id="external-scene")
+    package = ThemePackage("external", "External", "External themes.", "Tests", (style,))
     store = TuiPreferencesStore(tmp_path)
     # A valid saved identity can outlive the package that supplied it.
     store.path.parent.mkdir(parents=True)
@@ -22,7 +23,7 @@ async def test_removed_package_keeps_preferences_and_restores_when_registered(
     for registered in (False, True):
         app = OuroTuiApp(
             application=two_route_application(tmp_path),
-            welcome_styles=(style,) if registered else (),
+            welcome_packages=(package,) if registered else (),
         )
         notices = []
         monkeypatch.setattr(app, "notify", lambda message, sink=notices, **_: sink.append(message))
@@ -30,7 +31,7 @@ async def test_removed_package_keeps_preferences_and_restores_when_registered(
             assert app._preferences_error is None
             assert app._preferences.theme == ("indigo" if registered else "coral")
             assert app._preferences.collapse_traces
-            assert app.query_one(WelcomePanel).style_package.style_id == (
+            assert app.query_one(WelcomePanel).welcome_style.style_id == (
                 style.style_id if registered else "basic"
             )
             assert bool(notices) is not registered

@@ -9,14 +9,14 @@ from rich.style import Style
 from textual.geometry import Region
 from textual.strip import Strip
 
-from ouro_tui_themes.dot_matrix.field import (
+from ouro_tui_themes.tools.dot_matrix.field import (
     EngineFactory,
     Field,
     ParticleGrid,
     PhosphorField,
     Prepare,
 )
-from ouro_tui_themes.rendering import FrameStrip, RunStyle
+from ouro_tui_themes.tools.rendering import FrameStrip, RunStyle
 
 _BRAILLE_BITS = (1, 8, 2, 16, 4, 32, 64, 128)
 _THRESHOLDS = (0.08, 0.48, 0.68, 0.28, 0.23, 0.63, 0.43, 0.13)

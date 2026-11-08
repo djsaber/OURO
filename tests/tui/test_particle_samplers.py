@@ -1,85 +1,119 @@
-"""Scalar equations guard the vectorized spatial/time separation and projection."""
+"""Sampler contracts, bounded resources and pointer-state isolation."""
 
-from importlib import import_module
-from math import atan2, cos, exp, hypot, sin
+from math import cos, sin
 
 import pytest
 
 pytest.importorskip("numpy")
 
 import numpy as np
-from ouro_tui_themes.dot_matrix.field import ParticleGrid
+from ouro_tui_themes.packs.particle_art.horizon_field import HorizonScene
+from ouro_tui_themes.packs.particle_art.quantum_field import QuantumScene
+from ouro_tui_themes.tools.dot_matrix.field import ParticleGrid
 
 
-def band(distance, width):
-    return exp(-((distance / width) ** 2))
-
-
-def scalar(name, x, y, seconds, depths=()):
-    if name == "interference":
-        left, right, lower = hypot(x + 0.83, y), hypot(x - 0.83, y), hypot(x, y - 1.2)
-        phase = seconds * 0.55
-        wave = cos(left * 18 - phase) + cos(right * 18 + phase)
-        wave += cos(lower * 15 + phase * 0.6) * 0.65
-        position = abs(wave) / 2.65
-        light = (position**3 * 1.7 + band(left - right, 0.05) * 0.1) * exp(
-            -((x / 2.1) ** 6 + (y / 0.9) ** 6)
-        )
-        return position, light
-    if name == "clifford":
-        x, y = x * 2.5, y * 2.5
-        radial, angle = x * x + y * y, atan2(y, x)
-        a, b = 0.18 * sin(seconds * 0.19), 0.55 + 0.35 * sin(seconds * 0.13)
-        light, transmission = 0.0, 1.0
-        for depth in depths:
-            radius = radial + depth * depth
-            rx = (x * 2 * cos(a) - (radius - 1) * sin(a)) / (radius + 1)
-            ry = (y * 2 * cos(b) - 2 * depth * sin(b)) / (radius + 1)
-            surface = rx * rx + ry * ry - 0.5
-            weave = cos((rx + ry) * 28 - seconds * 0.5) ** 2 * 0.35 + 0.65
-            density = band(surface, 0.07) * exp(-radial * 0.32)
-            density *= exp(-depth * depth * 0.32) * 0.65
-            light += density * weave * transmission * (1 - depth * 0.18)
-            transmission *= 1 - density * 0.55
-        return sin(angle + seconds * 0.17) * 0.5 + 0.5, light * 1.8
-    assert name == "event_horizon"
-    tilted = y - x * (0.10 + 0.055 * sin(seconds * 0.13))
-    radius, angle = hypot(x, tilted), atan2(tilted, x)
-    disk_radius = hypot(x, tilted / 0.24)
-    turbulence = sin(disk_radius * 21 - seconds * 1.7 + angle * 3) * 0.16 + 0.76
-    turbulence += sin(disk_radius * 43 + angle * 7 + seconds * 0.8) * 0.08
-    beaming = min(1, max(-0.7, x / -1.6)) * 0.48 + 0.65
-    light = band(disk_radius - 1.13, 0.62) * turbulence * beaming
-    light += band(radius - 0.64, 0.085) * (cos(angle + 1.1) * 0.36 + 0.64)
-    light += band(radius - 0.70, 0.20) * 0.17 + band(radius - 0.535, 0.018) * 0.9
-    light *= min(1, max(0, (radius - 0.49) * 55)) * exp(-max(0, radius - 1.9) * 3)
-    return light * 1.15, light * 1.65
-
-
-@pytest.mark.parametrize("name", ["event_horizon", "interference", "clifford"])
-def test_sampler_matches_scalar_equations_at_arbitrary_times(name):
-    module = import_module(f"ouro_tui_themes.styles.{name}")
-    grid = ParticleGrid.create(11, 9, span=(5.8, 2.7))
-    sample = module.prepare(grid)
+@pytest.mark.parametrize("scene_type", [HorizonScene, QuantumScene])
+def test_sampler_reuses_buffers_and_handles_nonmonotonic_time_without_mutating_grid(scene_type):
+    prepare = scene_type().prepare
+    grid = ParticleGrid.create(80, 64, span=(5.8, 3.6))
     coordinates = (grid.x.copy(), grid.y.copy())
-    stops = module._SPECTRUM
-    for seconds in (0.0, 1 / 30, 7.5, 99999.0, 0.0, 73.2):
-        expected = []
-        for x, y in zip(grid.x, grid.y, strict=True):
-            position, light = scalar(
-                name, float(x), float(y), seconds, getattr(module, "_DEPTHS", ())
-            )
-            scaled = max(0, min(1, position)) * (len(stops) - 1)
-            index = min(int(scaled), len(stops) - 2)
-            weight = scaled - index
-            expected.append(
-                [
-                    (a + (b - a) * weight) * light
-                    for a, b in zip(stops[index], stops[index + 1], strict=True)
-                ]
-            )
-        actual = np.asarray(sample(seconds))
-        np.testing.assert_allclose(actual, np.asarray(expected).T, rtol=1e-8, atol=2e-11)
-        assert np.isfinite(actual).all() and (actual >= 0).all()
+    sample = prepare(grid)
+    outputs = sample(0)
+    assert all(channel.dtype == np.float64 for channel in outputs)
+    for seconds in (0, 1 / 30, 7.5, 8.34, 99999, 0, 73.2):
+        actual = sample(seconds)
+        assert all(a is b for a, b in zip(actual, outputs, strict=True))
+        assert np.asarray(actual).shape == (3, grid.width * grid.height)
+        assert np.isfinite(actual).all() and (np.asarray(actual) >= 0).all()
+        # Cached state must give the same result as a fresh sampler at that time.
+        np.testing.assert_array_equal(actual, prepare(grid)(seconds))
     np.testing.assert_array_equal(grid.x, coordinates[0])
     np.testing.assert_array_equal(grid.y, coordinates[1])
+
+
+@pytest.mark.parametrize(
+    ("scene_type", "pointer"), [(HorizonScene, "pointer_x"), (QuantumScene, "pointer_y")]
+)
+def test_pointer_state_is_local_and_returns_to_neutral(scene_type, pointer):
+    grid = ParticleGrid.create(64, 40, span=(5.8, 3.6))
+    scene, other = scene_type(), scene_type()
+    sample, control = scene.prepare(grid), other.prepare(grid)
+    np.testing.assert_array_equal(sample(0), control(0))
+    setattr(scene, pointer, 1)
+    for tick in range(1, 121):
+        sample(tick / 30)
+    assert getattr(other, pointer) == 0
+    np.testing.assert_array_equal(control(4), scene_type().prepare(grid)(4))
+    setattr(scene, pointer, 0)
+    for tick in range(121, 241):
+        actual = sample(tick / 30)
+    np.testing.assert_array_equal(actual, control(8))
+
+
+@pytest.mark.parametrize("scene_type", [HorizonScene, QuantumScene])
+@pytest.mark.parametrize("size", [(1, 1), (1, 80), (80, 1), (480, 280)])
+def test_sampler_handles_tiny_and_large_grids_without_numerical_faults(scene_type, size):
+    grid = ParticleGrid.create(*size, span=(5.8, 3.6))
+    with np.errstate(over="raise", invalid="raise", divide="raise", under="ignore"):
+        frame = np.asarray(scene_type(1).prepare(grid)(99999))
+    assert frame.shape == (3, size[0] * size[1])
+    assert np.isfinite(frame).all() and (frame >= 0).all()
+
+
+@pytest.mark.parametrize("size", [(40, 32), (40, 4)])
+@pytest.mark.parametrize("angle", [-0.035, 0.035])
+def test_horizon_rotation_preserves_linear_fields_and_source_buffers(size, angle):
+    from ouro_tui_themes.packs.particle_art.horizon_projection import _RotationMap
+
+    grid = ParticleGrid.create(*size, span=(5.8, 2.7))
+    mapping = _RotationMap(grid)
+    source = (grid.x, grid.y, np.ones_like(grid.x))
+    original = np.array(source)
+    output = tuple(np.empty_like(grid.x) for _ in range(3))
+    mapping.update(angle)
+    mapping.apply(source, output)
+    # Bilinear interpolation is exact for linear fields, independent of tap order.
+    x = grid.x[mapping.dots] * cos(angle) - grid.y[mapping.dots] * sin(angle)
+    y = grid.x[mapping.dots] * sin(angle) + grid.y[mapping.dots] * cos(angle)
+    valid = (x >= grid.x.min()) & (x <= grid.x.max()) & (y >= grid.y.min()) & (y <= grid.y.max())
+    expected = original.copy()
+    expected[:, mapping.dots] = np.asarray((x, y, np.ones_like(x))) * valid
+    np.testing.assert_allclose(output, expected, atol=1e-13)
+    np.testing.assert_array_equal(source, original)
+
+
+def test_horizon_pointer_easing_is_frame_rate_independent_and_reuses_bounded_buffers():
+    from ouro_tui_themes.packs.particle_art.horizon_projection import HorizonProjection
+
+    grid = ParticleGrid.create(60, 40, span=(5.8, 2.7))
+    channels = (grid.x**2, grid.y**2, np.ones_like(grid.x))
+    slow, fast = HorizonProjection(grid), HorizonProjection(grid)
+    for projection, hz in ((slow, 30), (fast, 60)):
+        assert projection.sample(channels, 0, 0) is channels
+        assert projection.mapping is projection.output is None
+        for tick in range(1, hz + 1):
+            projection.sample(channels, 1, tick / hz)
+    assert slow.position == pytest.approx(fast.position)
+    np.testing.assert_allclose(slow.output, fast.output, atol=1e-13)
+    mapping, output = slow.mapping, slow.output
+    for tick in range(31, 151):
+        slow.sample(channels, sin(tick) * 10, tick / 30)
+        assert -1 <= slow.position <= 1
+        assert slow.mapping is mapping and slow.output is output
+    for tick in range(151, 301):
+        result = slow.sample(channels, 0, tick / 30)
+    assert result is channels and slow.position == 0
+
+
+def test_quantum_pointer_easing_is_frame_rate_independent_with_reused_output():
+    grid = ParticleGrid.create(60, 40, span=(4.0, 2.7))
+    results = []
+    for hz in (30, 60):
+        scene = QuantumScene()
+        sample = scene.prepare(grid)
+        channels = sample(0)
+        scene.pointer_y = 1
+        for tick in range(1, hz + 1):
+            assert sample(tick / hz) is channels
+        results.append(np.array(channels))
+    np.testing.assert_allclose(results[0], results[1], atol=1e-13)

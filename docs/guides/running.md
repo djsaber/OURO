@@ -63,8 +63,9 @@ TUI 欢迎页可通过 `/workspace <path>` 为尚未创建的会话选择工作�
 
 ### 欢迎页主题
 
-通过 `Ctrl+P → Theme` 菜单前面的 `Welcome style` 分组选择欢迎页主题，后面的 `Theme color`
-分组选择界面配色。基础安装默认使用静态字标欢迎页，包含完整的 TUI 功能。
+通过 `Ctrl+P → Theme` 菜单前面的 `Welcome style` 分组选择静态主题 `Still` 或进入主题包。
+包内显示简介、作者和可用主题，`Enter` 应用主题，`Esc` 返回并保留父页筛选位置。
+后面的 `Theme color` 分组选择界面配色。基础安装默认使用静态字标欢迎页，包含完整的 TUI 功能。
 
 安装可选主题拓展（PowerShell、bash 或 zsh）：
 
@@ -85,7 +86,7 @@ TUI 每次启动检测扩展版本及依赖，只列出可用主题；安装后�
 
 主题选择立即保存，独立于界面配色。动画由各主题自行实现，TUI 菜单不提供主题内部设置。
 所选作品立即显示在菜单后方，菜单打开期间暂停动画。自定义主题接入见
-[欢迎页样式包开发](../development/welcome-styles.md)。
+[欢迎页主题开发](../development/welcome-styles.md)。
 
 ### 终端颜色
 

@@ -7,12 +7,10 @@ import pytest
 pytest.importorskip("numpy")
 
 import numpy as np
-from ouro_tui_themes.dot_matrix.field import (
+from ouro_tui_themes.tools.dot_matrix.field import (
     ParticleGrid,
     PhosphorField,
-    Spectrum,
     buffer,
-    clip,
 )
 
 
@@ -55,18 +53,6 @@ def test_field_matches_scalar_persistence_and_neighbours_without_mutating_sample
         previous = expected_emission
         light[:] = buffer(len(light))
     assert captured == [0.0, 1.0, 2.0]
-
-
-def test_clipping_and_piecewise_interpolation_keep_bounds_and_reuse_output():
-    positions = np.array([-1, 0, 0.25, 0.5, 0.75, 1, 2])
-    clipped = positions.copy()
-    clip(clipped, 0.0, 1.0)
-    assert list(clipped) == [0, 0, 0.25, 0.5, 0.75, 1, 1]
-    spectrum = Spectrum(len(positions), ((0.0, 0.2, 1.0), (0.5, 0.6, 0.5), (1.0, 1.0, 0.0)))
-    result = spectrum.sample(positions, buffer(len(positions), 0.5))
-    assert list(result[0]) == pytest.approx([value * 0.5 for value in clipped])
-    assert list(result[1]) == pytest.approx([(0.2 + value * 0.8) * 0.5 for value in clipped])
-    assert spectrum.sample(positions, buffer(len(positions), 1.0)) is result
 
 
 def test_preparing_same_grid_creates_independent_state():

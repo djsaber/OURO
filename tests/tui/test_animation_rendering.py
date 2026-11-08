@@ -8,8 +8,9 @@ import pytest
 
 pytest.importorskip("ouro_tui_themes")
 
-from ouro_tui_themes.rendering import FrameStrip, render_frame_lines
-from ouro_tui_themes.styles import STYLES
+from ouro_tui_themes.packs import PACKAGES
+from ouro_tui_themes.tools.rendering import FrameStrip, render_frame_lines
+from rich.ansi import AnsiDecoder
 from rich.color import Color as RichColor
 from rich.console import Console
 from rich.segment import Segment
@@ -209,8 +210,17 @@ def test_packed_runs_match_rich_encoding_filters_and_cell_cuts(color_system, fil
         frame = frame.apply_filter(filter, Color.parse("#183456"))
     for cuts in ([7], [0, 2, 3, 4, 6, 7]):
         console = Console(color_system=color_system)
-        actual, expected = frame.divide(cuts), native.divide(cuts)
-        assert [row.render(console) for row in actual] == [row.render(console) for row in expected]
+        bounds = ((0, 6), (1, 7), (1, 6), (1, 2), (3, 4), (4, 4), (-1, 30), (10, 12))
+        actual = [*frame.divide(cuts), *(frame.crop(start, end) for start, end in bounds)]
+        expected = [*native.divide(cuts), *(native.crop(start, end) for start, end in bounds)]
+        for row, reference in zip(actual, expected, strict=True):
+            actual_decoder, expected_decoder = AnsiDecoder(), AnsiDecoder()
+            # Compact SGR retains state between RGB runs; compare decoded
+            # characters/styles and the final terminal state, not redundant bytes.
+            assert actual_decoder.decode_line(row.render(console)) == expected_decoder.decode_line(
+                reference.render(console)
+            )
+            assert actual_decoder.style == expected_decoder.style
         assert list(actual) == list(expected)
 
 
@@ -232,7 +242,7 @@ def test_packed_frame_pipeline_allocates_no_per_run_rich_objects(monkeypatch):
     assert all(part.render(console) for part in parts)
 
 
-@pytest.mark.parametrize("style", ["matrix", "clifford-torus", "event-horizon", "interference"])
+@pytest.mark.parametrize("style", ["matrix", "event-horizon", "quantum-veil"])
 @pytest.mark.parametrize("monochrome", [False, True])
 async def test_theme_frames_match_native_compositor_after_resize(style, monochrome, monkeypatch):
     if monochrome:
@@ -245,7 +255,7 @@ async def test_theme_frames_match_native_compositor_after_resize(style, monochro
             return {**super().get_css_variables(), **DEFAULT_TUI_THEME.css_variables()}
 
         def compose(self):
-            host = WelcomeHost(Input("draft"), welcome_catalog(STYLES)[style])
+            host = WelcomeHost(Input("draft"), welcome_catalog(PACKAGES)[style])
             host.set_welcome_mode(True)
             yield host
 

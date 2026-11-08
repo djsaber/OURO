@@ -9,6 +9,7 @@ from packaging.requirements import Requirement
 
 ROOT = Path(__file__).resolve().parents[2]
 EXTENSION = ROOT / "packages/tui-themes"
+SOURCE = EXTENSION / "src/ouro_tui_themes"
 
 
 def imported_modules(path):
@@ -31,17 +32,24 @@ def test_core_welcome_contracts_and_preferences_do_not_import_extensions():
             assert module.split(".")[0] not in {"numpy", "ouro_tui_themes"}, (path, module)
 
 
-@pytest.mark.parametrize("module", ["__init__", "field", "raster", "widget", "requirements"])
-def test_dot_matrix_is_independent_of_welcome_contracts_and_style_packages(module):
-    path = EXTENSION / f"src/ouro_tui_themes/dot_matrix/{module}.py"
+@pytest.mark.parametrize("path", sorted((SOURCE / "tools").rglob("*.py")))
+def test_tools_are_independent_of_welcome_contracts_and_theme_packages(path):
     for dependency in imported_modules(path):
-        assert not dependency.startswith("ouro."), (path, dependency)
-        if dependency.startswith("ouro_tui_themes."):
-            assert dependency == "ouro_tui_themes.rendering" or dependency.startswith(
-                "ouro_tui_themes.dot_matrix."
-            ), (path, dependency)
-        if module == "field":
+        assert dependency.split(".")[0] != "ouro", (path, dependency)
+        if dependency.split(".")[0] == "ouro_tui_themes":
+            assert dependency.startswith("ouro_tui_themes.tools."), (path, dependency)
+        if path.stem == "field":
             assert dependency.split(".")[0] not in {"rich", "textual"}, (path, dependency)
+
+
+@pytest.mark.parametrize("package", ["particle_art", "matrix"])
+def test_theme_packages_do_not_depend_on_each_other(package):
+    for path in (SOURCE / "packs" / package).rglob("*.py"):
+        for dependency in imported_modules(path):
+            if dependency.split(".")[0] == "ouro_tui_themes":
+                assert dependency.startswith(
+                    (f"ouro_tui_themes.packs.{package}.", "ouro_tui_themes.tools.")
+                ), (path, dependency)
 
 
 def test_core_and_theme_distribution_declare_compatible_releases():
@@ -60,6 +68,6 @@ def test_core_and_theme_distribution_declare_compatible_releases():
 
 
 def test_frame_adapter_is_independent_of_themes_numerics_and_host():
-    path = EXTENSION / "src/ouro_tui_themes/rendering.py"
+    path = SOURCE / "tools/rendering.py"
     for dependency in imported_modules(path):
         assert dependency.split(".")[0] not in {"ouro", "ouro_tui_themes", "numpy"}

@@ -1,4 +1,4 @@
-"""Renderer-independent contracts for custom welcome style packages."""
+"""Renderer-independent contracts for welcome themes and their packages."""
 
 from __future__ import annotations
 
@@ -17,11 +17,11 @@ WELCOME_STYLE_ID_PATTERN = r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
 
 
 class WelcomePage(Widget):
-    """A package-owned page covering the entire welcome viewport.
+    """A theme-owned page covering the entire welcome viewport.
 
     Compose arbitrary Textual children, use local CSS or a custom Layout, and
     render at any cell. The host overlays its persistent input surface at the
-    region returned by place_input. Input state never belongs to a package.
+    region returned by place_input. Input state never belongs to a theme.
     """
 
     DEFAULT_CSS = """
@@ -29,11 +29,11 @@ class WelcomePage(Widget):
     """
 
     input_region = reactive(Region(), layout=True)
-    """Host-resolved input rectangle, in page coordinates; read-only to packages."""
+    """Host-resolved input rectangle, in page coordinates; read-only to themes."""
 
     def _watch_input_region(self) -> None:
         # Textual caches arrangements by page size and child membership. Input
-        # growth changes neither, but package layouts may depend on this region.
+        # growth changes neither, but theme layouts may depend on this region.
         self._clear_arrangement_cache()
 
     def place_input(self, viewport: Size, measure: Callable[[int], int]) -> Region:
@@ -49,7 +49,7 @@ class WelcomePage(Widget):
         """Receive the host's immutable system/usage snapshot without querying services."""
 
     def set_active(self, active: bool) -> None:
-        """Receive foreground visibility; the package owns its resource policy."""
+        """Receive foreground visibility; the theme owns its resource policy."""
 
     @property
     def tui_theme(self) -> TuiTheme:
@@ -88,3 +88,22 @@ class WelcomeStyle:
             raise ValueError("welcome style IDs must use lowercase words separated by hyphens")
         if not self.label.strip() or not self.description.strip() or not callable(self.create):
             raise ValueError("welcome styles require a label, description and page factory")
+
+
+@dataclass(frozen=True)
+class ThemePackage:
+    """A named collection of themes, independent of their rendering implementation."""
+
+    package_id: str
+    name: str
+    description: str
+    author: str
+    themes: tuple[WelcomeStyle, ...]
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(WELCOME_STYLE_ID_PATTERN, self.package_id) is None:
+            raise ValueError("theme package IDs must use lowercase words separated by hyphens")
+        if not self.themes or not all(
+            value.strip() for value in (self.name, self.description, self.author)
+        ):
+            raise ValueError("theme packages require a name, description, author and themes")

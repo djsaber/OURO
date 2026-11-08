@@ -39,7 +39,7 @@
 - [测试策略](development/testing.md)：验证边界、异步同步、并行回归与人工视觉检查。
 - [中文编码准则](development/coding-guidelines.zh-CN.md) / [English guidelines](development/coding-guidelines.en.md)：实现、测试和重构原则。
 - [插件开发指南](development/plugin-development.md)与[可运行示例](../examples/plugins/README.md)。
-- [欢迎页样式包开发](development/welcome-styles.md)：组件工厂、自定义包注册和艺术渲染生命周期。
+- [欢迎页主题开发](development/welcome-styles.md)：主题包注册、页面工厂和艺术渲染生命周期。
 - [文档规范](development/documentation.md)：分类、命名、内容与验证要求。
 - [开发工具](../dev/README.md)：基准与协议探针的独立入口。
 - [安全策略](../SECURITY.md)、[发布流程](../RELEASING.md)与[变更记录](../CHANGELOG.md)。

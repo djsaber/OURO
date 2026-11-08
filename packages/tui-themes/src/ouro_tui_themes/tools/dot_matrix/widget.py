@@ -11,8 +11,8 @@ from textual.strip import Strip
 from textual.widget import Widget
 from textual.worker import Worker
 
-from ouro_tui_themes.dot_matrix.raster import DotArtwork, PhosphorRaster
-from ouro_tui_themes.rendering import FrameStrip, render_frame_lines
+from ouro_tui_themes.tools.dot_matrix.raster import DotArtwork, PhosphorRaster
+from ouro_tui_themes.tools.rendering import FrameStrip, render_frame_lines
 
 
 def _render_frame(

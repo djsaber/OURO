@@ -23,7 +23,7 @@ from statistics import median
 from threading import Event, Thread, current_thread
 from time import monotonic
 
-from ouro_tui_themes.styles import STYLES
+from ouro_tui_themes.packs import PACKAGES
 from rich.color import ColorSystem
 from textual import events
 from textual.app import App
@@ -37,7 +37,7 @@ from ouro.tui.theme import DEFAULT_TUI_THEME
 from ouro.tui.welcome import welcome_catalog
 from ouro.tui.welcome.host import WelcomeHost
 
-WELCOME_STYLES = welcome_catalog(STYLES)
+WELCOME_STYLES = welcome_catalog(PACKAGES)
 
 
 def distribution(values) -> dict[str, float]:
@@ -277,7 +277,7 @@ async def measure(args, motion: bool) -> dict:
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--style", choices=tuple(WELCOME_STYLES), default="clifford-torus")
+    parser.add_argument("--style", choices=tuple(WELCOME_STYLES), default="quantum-veil")
     parser.add_argument("--keys", type=int, default=240)
     parser.add_argument("--seconds", type=float)
     parser.add_argument("--warmup", type=float, default=2)

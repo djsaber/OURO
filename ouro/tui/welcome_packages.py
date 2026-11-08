@@ -10,13 +10,13 @@ from typing import cast
 
 from packaging.version import InvalidVersion, Version
 
-from ouro.tui.welcome import WelcomeStyle
+from ouro.tui.welcome import ThemePackage
 
-THEME_PACKAGE_VERSION = "0.3.6.post2"
+THEME_PACKAGE_VERSION = "0.4.1"
 INSTALL_HINT = "Install ouro-agent[themes] in the OURO environment and restart the TUI."
 
 
-def load_theme_styles() -> tuple[tuple[WelcomeStyle, ...], str | None]:
+def load_theme_packages() -> tuple[tuple[ThemePackage, ...], str | None]:
     """Load lightweight metadata for the supported theme release, once per App."""
     try:
         installed = version("ouro-tui-themes")
@@ -32,9 +32,9 @@ def load_theme_styles() -> tuple[tuple[WelcomeStyle, ...], str | None]:
             f"requires >={THEME_PACKAGE_VERSION}. {INSTALL_HINT}"
         )
     try:
-        package = import_module("ouro_tui_themes.styles")
+        package = import_module("ouro_tui_themes.packs")
     except ModuleNotFoundError as exc:
-        if exc.name not in {"ouro_tui_themes", "ouro_tui_themes.styles"}:
+        if exc.name not in {"ouro_tui_themes", "ouro_tui_themes.packs"}:
             raise
         return (), f"ouro-tui-themes could not load: {exc}. {INSTALL_HINT}"
-    return cast(tuple[WelcomeStyle, ...], package.STYLES), None
+    return cast(tuple[ThemePackage, ...], package.PACKAGES), None

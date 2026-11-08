@@ -7,7 +7,6 @@ import threading
 from pathlib import Path
 
 import pytest
-from rich.console import Console
 from textual.widgets import OptionList
 
 import ouro.tui.conversation.history as conversation_history
@@ -22,7 +21,7 @@ from ouro.tui.conversation.turn import AssistantTurn
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
-from ouro.tui.theme import DEFAULT_TUI_THEME, THEME_SATURATION_LEVELS, TUI_THEMES
+from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
 from tests.tui.app.support import _application
 from tests.tui.helpers import choose_menu, run_ready_app, wait_for_history_render
 from tests.tui.helpers import wait_for_screen as _wait_for_screen
@@ -164,7 +163,10 @@ async def test_preference_writes_run_outside_the_event_loop_thread(
 
 
 @pytest.mark.asyncio
-async def test_theme_selection_and_saturation_persist_without_committing_preview(tmp_path: Path):
+@pytest.mark.parametrize("theme_id", ["burgundy", "crimson", "coral", "olive", "celeste"])
+async def test_theme_selection_and_saturation_persist_without_committing_preview(
+    tmp_path: Path, theme_id: str
+):
     preferences = TuiPreferencesStore(tmp_path)
     app = OuroTuiApp(application=_application(tmp_path))
     async with run_ready_app(app) as pilot:
@@ -172,20 +174,23 @@ async def test_theme_selection_and_saturation_persist_without_committing_preview
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         await choose_menu(pilot, "Theme", title="THEME")
         menu = app.screen
+        assert tuple(
+            choice.value for choice in menu._choices if choice.group == "Theme color"
+        ) == tuple(TUI_THEMES)
         options = menu.query_one(OptionList)
-        options.highlighted = options.get_option_index("coral")
+        options.highlighted = options.get_option_index(theme_id)
         await pilot.pause()
         assert app.tui_theme == TUI_THEMES["original"]
         assert preferences.load().theme == "original"
 
         await pilot.press("enter")
         await _wait_until(
-            lambda: preferences.load().theme == "coral" and not app._theme_switch_active,
+            lambda: preferences.load().theme == theme_id and not app._theme_switch_active,
             pilot,
             description="saved theme selection",
         )
         assert app.screen is menu
-        assert app.tui_theme == TUI_THEMES["coral"]
+        assert app.tui_theme == TUI_THEMES[theme_id]
 
         await pilot.press("right")
         assert preferences.load().theme_saturation_level == 0
@@ -195,10 +200,10 @@ async def test_theme_selection_and_saturation_persist_without_committing_preview
             pilot,
             description="saved saturation selection",
         )
-        assert app.tui_theme == TUI_THEMES["coral"].at_saturation_level(1)
+        assert app.tui_theme == TUI_THEMES[theme_id].at_saturation_level(1)
 
     restarted = OuroTuiApp(application=_application(tmp_path))
-    assert restarted.tui_theme == TUI_THEMES["coral"].at_saturation_level(1)
+    assert restarted.tui_theme == TUI_THEMES[theme_id].at_saturation_level(1)
 
 
 @pytest.mark.asyncio
@@ -216,7 +221,7 @@ async def test_theme_switch_stays_interactive_coalesces_and_outlives_picker(
         theme_screen = app.screen
         assert isinstance(theme_screen, ChoiceScreen)
         options = theme_screen.query_one(OptionList)
-        options.highlighted = options.get_option_index("original")
+        options.highlighted = options.get_option_index("blossom")
         entered = threading.Event()
         release = threading.Event()
         saved_themes: list[str] = []
@@ -236,14 +241,15 @@ async def test_theme_switch_stays_interactive_coalesces_and_outlives_picker(
         # Keep I/O blocked until all pending-state assertions have run, regardless
         # of machine speed; finally also releases the thread after an assertion fails.
         try:
-            await pilot.press("down", "enter")
+            await pilot.press("enter")
             await _wait_until(entered.is_set, pilot, description="theme save blocked")
             choices = {choice.value: choice for choice in theme_screen._choices}
             assert choices["blossom"].loading is True
             assert choices["coral"].loading is False
             assert app.tui_theme == TUI_THEMES["original"]
 
-            await pilot.press("down", "enter")
+            options.highlighted = options.get_option_index("coral")
+            await pilot.press("enter")
             await pilot.pause()
             choices = {choice.value: choice for choice in theme_screen._choices}
             assert choices["blossom"].loading is False
@@ -302,7 +308,7 @@ async def test_theme_loading_ends_after_history_reaches_the_new_theme(
         theme_screen = app.screen
         assert isinstance(theme_screen, ChoiceScreen)
         options = theme_screen.query_one(OptionList)
-        options.highlighted = options.get_option_index("original")
+        options.highlighted = options.get_option_index("blossom")
         entered = threading.Event()
         release = threading.Event()
         render_entries = conversation_history._render_entry_requests
@@ -320,7 +326,7 @@ async def test_theme_loading_ends_after_history_reaches_the_new_theme(
             blocking_render,
         )
         try:
-            await pilot.press("down", "enter")
+            await pilot.press("enter")
             await _wait_until(entered.is_set, pilot, description="theme history render blocked")
             await pilot.pause()
             assert app.tui_theme == TUI_THEMES["blossom"]
@@ -330,15 +336,6 @@ async def test_theme_loading_ends_after_history_reaches_the_new_theme(
                     choice for choice in theme_screen._choices if choice.value == "blossom"
                 ).loading
                 is True
-            )
-            loading_prompt = theme_screen.query_one(OptionList).get_option("blossom").prompt
-            loading_line = "".join(
-                segment.text for segment in Console(width=60).render(loading_prompt)
-            ).splitlines()[0]
-            assert loading_line[1:3] == "  "
-            assert loading_line[3 : 3 + THEME_SATURATION_LEVELS] == (
-                DEFAULT_TUI_THEME.selected_session_node_mark
-                + DEFAULT_TUI_THEME.session_node_mark * (THEME_SATURATION_LEVELS - 1)
             )
         finally:
             release.set()
@@ -497,7 +494,7 @@ async def test_theme_preview_is_local_and_cleared_when_picker_is_cancelled(
         assert app.tui_theme == TUI_THEMES["sienna"]
 
         theme_options = theme_screen.query_one(OptionList)
-        honey_index = theme_options.highlighted
+        initial_index = theme_options.highlighted
         enabled_indices = [
             index for index, option in enumerate(theme_options.options) if not option.disabled
         ]
@@ -524,7 +521,7 @@ async def test_theme_preview_is_local_and_cleared_when_picker_is_cancelled(
         await pilot.pause()
 
         expected_index = enabled_indices[
-            (enabled_indices.index(honey_index) + repeated_moves) % len(enabled_indices)
+            (enabled_indices.index(initial_index) + repeated_moves) % len(enabled_indices)
         ]
         assert theme_options.highlighted == expected_index
         assert clear_calls == 0
@@ -535,7 +532,7 @@ async def test_theme_preview_is_local_and_cleared_when_picker_is_cancelled(
             theme_screen.action_previous_choice()
         await pilot.pause()
 
-        assert theme_options.highlighted == honey_index
+        assert theme_options.highlighted == initial_index
         assert clear_calls == 0
         assert update_calls == 2
         assert app.tui_theme == TUI_THEMES["sienna"]

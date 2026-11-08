@@ -29,7 +29,7 @@ from textual.widgets import Static
 from ouro.tui.view_models import TuiSystemStatus
 from ouro.tui.welcome.components import WelcomeSystem, WelcomeTips, WelcomeUsage, WelcomeVersion
 from ouro.tui.welcome.model import WelcomePage
-from ouro_tui_themes.rendering import FrameStrip, RunStyle, render_frame_lines
+from ouro_tui_themes.tools.rendering import FrameStrip, RunStyle, render_frame_lines
 
 _FRAME_INTERVAL = 1 / 20
 _MAX_TICK_SECONDS = 0.25
@@ -580,7 +580,3 @@ class MatrixPage(WelcomePage):
         texts.append("".join(cells))
         colors.append(styles[current])
         return FrameStrip.from_runs(texts, colors, width)
-
-
-def create_page() -> MatrixPage:
-    return MatrixPage()

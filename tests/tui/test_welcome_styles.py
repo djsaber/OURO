@@ -7,8 +7,8 @@ from functools import partial
 from pathlib import Path
 
 import pytest
-from ouro_tui_themes.dot_matrix.widget import DotMatrix
-from ouro_tui_themes.styles import STYLES
+from ouro_tui_themes.packs import PACKAGES
+from ouro_tui_themes.tools.dot_matrix.widget import DotMatrix
 from rich.segment import Segment
 from rich.text import Text
 from textual.app import App
@@ -25,14 +25,14 @@ from ouro.tui.composer.surface import WelcomePanel
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.startup_screen import StartupScreen
-from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
+from ouro.tui.theme import TUI_THEMES
 from ouro.tui.view_models import TuiSystemStatus
-from ouro.tui.welcome import WelcomePage, WelcomeStyle, welcome_catalog
+from ouro.tui.welcome import ThemePackage, WelcomePage, WelcomeStyle, welcome_catalog
 from ouro.tui.welcome.components import WelcomeUsage
 from ouro.tui.welcome.host import WelcomeHost
 from tests.tui.helpers import resize_terminal, run_ready_app, two_route_application, wait_until
 
-WELCOME_STYLES = welcome_catalog(STYLES)
+WELCOME_STYLES = welcome_catalog(PACKAGES)
 
 
 class CustomPage(WelcomePage):
@@ -57,27 +57,17 @@ class CustomPage(WelcomePage):
 
 
 CUSTOM = WelcomeStyle("custom-scene", "Custom scene", "A custom component.", CustomPage)
+CUSTOM_PACKAGE = ThemePackage("custom", "Custom themes", "Custom pages.", "Tests", (CUSTOM,))
 
 
 async def test_custom_page_tracks_initial_palette_saturation_and_hidden_updates(tmp_path):
     class PalettePage(CustomPage):
-        DEFAULT_CSS = """
-        PalettePage .palette-css { color: $ouro-theme; background: $ouro-panel; height: 1; }
-        PalettePage .palette-rich { height: 1; }
-        """
-
         def __init__(self):
             super().__init__()
             self.palettes = []
 
-        def compose(self):
-            yield Static("CSS palette", classes="palette-css")
-            yield Static(classes="palette-rich")
-
         def refresh_theme(self):
-            theme = self.tui_theme
-            self.palettes.append(theme)
-            self.query_one(".palette-rich", Static).update(Text(theme.label, style=theme.accent))
+            self.palettes.append(self.tui_theme)
 
     package = WelcomeStyle("palette-page", "Palette", "Follows TUI colors", PalettePage)
     store = TuiPreferencesStore(tmp_path)
@@ -90,7 +80,10 @@ async def test_custom_page_tracks_initial_palette_saturation_and_hidden_updates(
             }
         )
     )
-    app = OuroTuiApp(application=two_route_application(tmp_path), welcome_styles=(package,))
+    app = OuroTuiApp(
+        application=two_route_application(tmp_path),
+        welcome_packages=(replace(CUSTOM_PACKAGE, themes=(package,)),),
+    )
     async with run_ready_app(app) as pilot:
         host, composer = app.query_one(WelcomePanel), app.query_one(Composer)
         page = host.page
@@ -100,10 +93,6 @@ async def test_custom_page_tracks_initial_palette_saturation_and_hidden_updates(
         def assert_palette(theme_id, level):
             expected = TUI_THEMES[theme_id].at_saturation_level(level)
             assert page.tui_theme == page.palettes[-1] == expected
-            assert page.query_one(".palette-css").styles.color.hex.lower() == expected.accent
-            assert page.query_one(".palette-css").styles.background.hex.lower() == expected.panel
-            content = page.query_one(".palette-rich", Static).render()
-            assert content.render_segments()[0].style.color.name == expected.accent
 
         assert_palette("coral", 5)
         await pilot.press("ctrl+p")
@@ -128,30 +117,6 @@ async def test_custom_page_tracks_initial_palette_saturation_and_hidden_updates(
         assert page.active
         assert app.query_one(Composer) is composer and app.focused is composer
         assert composer.text == "keep this draft" and composer.selection == selection
-
-
-@pytest.mark.parametrize(
-    "style",
-    # Matrix is not a DotMatrix particle page; it owns its own caption test.
-    [style for key, style in WELCOME_STYLES.items() if key not in {"basic", "matrix"}],
-)
-async def test_particle_page_owns_caption_independently_of_catalog_label(style):
-    class PackageApp(App):
-        def get_css_variables(self):
-            return {**super().get_css_variables(), **DEFAULT_TUI_THEME.css_variables()}
-
-        def compose(self):
-            host = WelcomeHost(Static("input"), replace(style, label="Menu label"))
-            host.set_welcome_mode(True)
-            yield host
-
-    app = PackageApp()
-    async with app.run_test(size=(120, 40)):
-        page = app.query_one(WelcomeHost).page
-        assert page.query_one(".art-caption", Static).render().plain == (
-            f"O U R O  /  {style.label.upper()}"
-        )
-        assert page.query_one(DotMatrix) is page.matrix
 
 
 async def test_package_owns_pointer_interaction_without_replacing_host_input():
@@ -259,7 +224,10 @@ async def test_full_page_controls_viewport_input_layout_composition_and_style_sc
     package = WelcomeStyle(
         "byte-page", "Byte page", "Whole-page character field", partial(BytePage, top=top)
     )
-    app = OuroTuiApp(application=two_route_application(tmp_path), welcome_styles=(package,))
+    app = OuroTuiApp(
+        application=two_route_application(tmp_path),
+        welcome_packages=(replace(CUSTOM_PACKAGE, themes=(package,)),),
+    )
     async with run_ready_app(app, size=(160, 48)) as pilot:
         host = app.query_one(WelcomePanel)
         composer = app.query_one(Composer)
@@ -271,7 +239,6 @@ async def test_full_page_controls_viewport_input_layout_composition_and_style_sc
         assert isinstance(page, BytePage)
         await wait_until(lambda: page.frames > 0, pilot, description="first welcome frame")
         assert page.frames > 0
-        assert page.query_one(".byte-label", Static).render().plain == "OURO / BYTE FIELD"
         assert composer.selection == selection and app.focused is composer
         host.set_system_status(TuiSystemStatus(usage_request_count=42))
         assert page.usage._requests.render().plain == "42 request(s)"
@@ -375,13 +342,22 @@ async def test_page_layout_rejects_invalid_input_geometry_with_package_identity(
 
 
 def test_custom_catalog_is_immutable_isolated_and_rejects_colliding_identities():
-    catalog = welcome_catalog((CUSTOM,))
+    catalog = welcome_catalog((CUSTOM_PACKAGE,))
     assert "custom-scene" not in WELCOME_STYLES
     assert catalog["custom-scene"].create() is not catalog["custom-scene"].create()
     with pytest.raises(TypeError):
         catalog["extra"] = CUSTOM  # type: ignore[index]
     with pytest.raises(ValueError, match="duplicate"):
-        welcome_catalog((CUSTOM, CUSTOM))
+        welcome_catalog((CUSTOM_PACKAGE, CUSTOM_PACKAGE))
+    with pytest.raises(ValueError, match="duplicate welcome style"):
+        welcome_catalog((CUSTOM_PACKAGE, replace(CUSTOM_PACKAGE, package_id="another")))
+    with pytest.raises(ValueError, match="lowercase"):
+        replace(CUSTOM_PACKAGE, package_id="../package")
+    with pytest.raises(ValueError, match="author and themes"):
+        replace(CUSTOM_PACKAGE, themes=())
+    for field in ("name", "description", "author"):
+        with pytest.raises(ValueError, match="author and themes"):
+            replace(CUSTOM_PACKAGE, **{field: " "})
     with pytest.raises(ValueError, match="lowercase"):
         WelcomeStyle("../scene", "Bad", "Bad ID", CustomPage)
 
@@ -415,12 +391,15 @@ async def open_welcome_picker(app, pilot):
 
 
 @pytest.mark.parametrize("standalone", [False, True])
-async def test_theme_menu_groups_inline_styles_and_keeps_color_settings_independent(
+async def test_theme_menu_navigates_packages_and_keeps_color_settings_independent(
     tmp_path: Path, standalone: bool
 ):
-    # A package ID may also be a color ID; sharing a menu must not couple them.
+    # A theme ID may also be a color ID; selecting it must not change the palette.
     package = WelcomeStyle("coral", "Ember", "A custom component.", CustomPage)
-    app = OuroTuiApp(application=two_route_application(tmp_path), welcome_styles=(package,))
+    app = OuroTuiApp(
+        application=two_route_application(tmp_path),
+        welcome_packages=(replace(CUSTOM_PACKAGE, themes=(package,)),),
+    )
     async with run_ready_app(app, size=(80, 24)) as pilot:
         if standalone:
             app.run_worker(app._choose_theme())
@@ -436,41 +415,40 @@ async def test_theme_menu_groups_inline_styles_and_keeps_color_settings_independ
             "Theme color",
         ]
         assert len({choice.value for choice in choices}) == len(choices)
-        assert all(not choice.description for choice in choices)
-        style_choices = choices[: len(WELCOME_STYLES) + 1]
-        assert [choice.label for choice in style_choices] == [
-            "Still",
-            "Horizon",
-            "Tide",
-            "Iris",
-            "Matrix",
-            "Ember",
-        ]
+        assert {choice.value for choice in choices if choice.group == "Welcome style"} == {
+            "welcome:basic",
+            "welcome-package:particle-art",
+            "welcome-package:matrix",
+            "welcome-package:custom",
+        }
         options = menu.query_one(OptionList)
         assert options.get_option_at_index(options.highlighted).id == "welcome:basic"
-        assert options.get_option_at_index(0).disabled
-        assert options.get_option_at_index(0).prompt.plain == "Welcome style"
-        assert all(
-            len(options.get_option(choice.value).prompt.plain.splitlines()) == 1
-            for choice in style_choices
-        )
-        options.highlighted = options.get_option_index("coral")
-        await pilot.pause()
-
-        menu.query_one(Input).value = "Welcome style"
-        await pilot.pause()
-        assert options.option_count == len(style_choices) + 1  # group heading
-        menu.query_one(Input).value = "Ember"
-        await pilot.pause()
+        await select_menu(app, pilot, "Custom themes")
+        assert app.screen is menu and menu.page_title == "CUSTOM THEMES"
+        assert menu.page_revision > revision
+        child_revision = menu.page_revision
+        assert CUSTOM_PACKAGE.description in menu._description
+        assert CUSTOM_PACKAGE.author in menu._description
+        assert [choice.value for choice in menu._choices] == ["welcome:coral"]
         await pilot.press("left", "right")
         await select_menu(app, pilot, "Ember")
-        assert app.screen is menu and menu.page_revision == revision
+        assert app.screen is menu and menu.page_revision == child_revision
         assert isinstance(app.query_one(WelcomePanel).page, CustomPage)
         preferences = app._preferences_store.load()
         assert preferences.welcome_style == "coral"
         assert preferences.theme == "original" and preferences.theme_saturation_level == 0
         assert next(choice for choice in menu._choices if choice.label == "Ember").marker
 
+        await pilot.press("escape")
+        await wait_until(lambda: menu.page_title == "THEME", pilot, description="theme menu parent")
+        assert menu.query_one(Input).value == "Custom themes"
+        parent_choice = next(
+            choice for choice in menu._choices if choice.value == "welcome-package:custom"
+        )
+        assert parent_choice.marker and parent_choice.trailing == "Ember"
+        options = menu.query_one(OptionList)
+        assert options.get_option_at_index(options.highlighted).id == "welcome-package:custom"
+        revision = menu.page_revision
         menu.query_one(Input).value = "Theme color"
         await pilot.pause()
         assert options.option_count == len(TUI_THEMES) + 1
@@ -492,18 +470,21 @@ async def test_theme_menu_groups_inline_styles_and_keeps_color_settings_independ
 
 
 async def test_picker_mounts_arbitrary_custom_package_preserves_input_and_persists(tmp_path: Path):
-    app = OuroTuiApp(application=two_route_application(tmp_path), welcome_styles=(CUSTOM,))
+    app = OuroTuiApp(
+        application=two_route_application(tmp_path), welcome_packages=(CUSTOM_PACKAGE,)
+    )
     async with run_ready_app(app, size=(100, 40)) as pilot:
         composer = app.query_one(Composer)
         await pilot.press("d", "r", "a", "f", "t")
         await open_welcome_picker(app, pilot)
         menu = app.screen
+        await select_menu(app, pilot, "Custom themes")
         await select_menu(app, pilot, "Custom scene")
         slot = app.query_one(WelcomePanel)
         assert isinstance(slot.page, CustomPage)
         assert not slot.page.active
         assert app.screen is menu
-        await pilot.press("escape", "escape")
+        await pilot.press("escape", "escape", "escape")
         await pilot.pause()
         assert slot.page.active
         assert composer.text == "draft"
@@ -511,15 +492,139 @@ async def test_picker_mounts_arbitrary_custom_package_preserves_input_and_persis
         assert app._preferences_store.load().welcome_style == CUSTOM.style_id
         assert app._preferences_store.load().theme == "original"
 
-    restarted = OuroTuiApp(application=two_route_application(tmp_path), welcome_styles=(CUSTOM,))
+    restarted = OuroTuiApp(
+        application=two_route_application(tmp_path), welcome_packages=(CUSTOM_PACKAGE,)
+    )
     async with run_ready_app(restarted):
         assert isinstance(restarted.query_one(WelcomePanel).page, CustomPage)
 
 
+async def test_package_menu_filters_unavailable_themes_without_constructing_pages(tmp_path):
+    created = []
+
+    def create():
+        page = CustomPage()
+        created.append(page)
+        return page
+
+    available = replace(CUSTOM, create=create)
+    unavailable = replace(
+        CUSTOM, style_id="unavailable-scene", check_requirements=lambda: "missing"
+    )
+    package = replace(CUSTOM_PACKAGE, themes=(available, unavailable))
+    app = OuroTuiApp(application=two_route_application(tmp_path), welcome_packages=(package,))
+    async with run_ready_app(app, size=(60, 18)) as pilot:
+        await open_welcome_picker(app, pilot)
+        menu = app.screen
+        entry = next(choice for choice in menu._choices if choice.value == "welcome-package:custom")
+        assert entry.trailing == "1 theme"
+        await select_menu(app, pilot, "Custom themes")
+        assert [choice.value for choice in menu._choices] == ["welcome:custom-scene"]
+        assert not created
+        await select_menu(app, pilot, "Custom scene")
+        assert created == [app.query_one(WelcomePanel).page]
+
+
+@pytest.mark.parametrize("reenter", [False, True])
+async def test_theme_save_after_navigation_refreshes_the_current_page(
+    tmp_path, monkeypatch, reenter
+):
+    app = OuroTuiApp(
+        application=two_route_application(tmp_path), welcome_packages=(CUSTOM_PACKAGE,)
+    )
+    entered, release = threading.Event(), threading.Event()
+    async with run_ready_app(app) as pilot:
+        await open_welcome_picker(app, pilot)
+        menu = app.screen
+        await select_menu(app, pilot, "Custom themes")
+        save = app._preferences_store.save
+
+        def slow_save(preferences):
+            entered.set()
+            assert release.wait(10)
+            save(preferences)
+
+        monkeypatch.setattr(app._preferences_store, "save", slow_save)
+        try:
+            await pilot.press("enter")
+            await wait_until(entered.is_set, pilot, description="theme persistence started")
+            await pilot.press("escape")
+            assert menu.page_title == "THEME"
+            if reenter:
+                await pilot.press("enter")
+                await wait_until(
+                    lambda: menu.page_title == "CUSTOM THEMES",
+                    pilot,
+                    description="package reopened during persistence",
+                )
+            expected_title = "CUSTOM THEMES" if reenter else "THEME"
+            expected_choice = "welcome:custom-scene" if reenter else "welcome-package:custom"
+            revision = menu.page_revision
+            release.set()
+            await wait_until(
+                lambda: any(
+                    choice.value == expected_choice and choice.marker for choice in menu._choices
+                ),
+                pilot,
+                description="saved theme reflected in current menu page",
+            )
+            assert app.screen is menu and menu.page_title == expected_title
+            assert menu.page_revision == revision
+            assert menu.query_one(Input).value == ("" if reenter else "Custom themes")
+            assert app.query_one(WelcomePanel).welcome_style.style_id == CUSTOM.style_id
+        finally:
+            release.set()
+
+
+async def test_color_save_does_not_replace_an_open_package_page(tmp_path, monkeypatch):
+    app = OuroTuiApp(
+        application=two_route_application(tmp_path), welcome_packages=(CUSTOM_PACKAGE,)
+    )
+    entered, release = threading.Event(), threading.Event()
+    async with run_ready_app(app) as pilot:
+        await open_welcome_picker(app, pilot)
+        menu = app.screen
+        save = app._preferences_store.save
+
+        def slow_save(preferences):
+            entered.set()
+            assert release.wait(10)
+            save(preferences)
+
+        monkeypatch.setattr(app._preferences_store, "save", slow_save)
+        try:
+            await select_menu(app, pilot, "Coral")
+            await wait_until(entered.is_set, pilot, description="palette persistence started")
+            await select_menu(app, pilot, "Custom themes")
+            revision = menu.page_revision
+            parent_refreshes = []
+            theme_choices = app._theme_choices
+
+            def record_parent_refresh(*args, **kwargs):
+                parent_refreshes.append(True)
+                return theme_choices(*args, **kwargs)
+
+            monkeypatch.setattr(app, "_theme_choices", record_parent_refresh)
+            release.set()
+            await wait_until(
+                lambda: not app._theme_switch_active, pilot, description="palette saved"
+            )
+            assert app.screen is menu and menu.page_title == "CUSTOM THEMES"
+            assert menu.page_revision == revision
+            assert [choice.value for choice in menu._choices] == ["welcome:custom-scene"]
+            assert not parent_refreshes
+            assert app._preferences_store.load().theme == "coral"
+            assert app._preferences_store.load().welcome_style == "basic"
+        finally:
+            release.set()
+
+
+@pytest.mark.parametrize("style_id", ["event-horizon", "quantum-veil"])
 async def test_particle_theme_pauses_when_hidden_and_releases_worker_on_replacement(
     tmp_path: Path,
+    style_id,
 ):
-    TuiPreferencesStore(tmp_path).save(TuiPreferences(welcome_style="event-horizon"))
+    TuiPreferencesStore(tmp_path).save(TuiPreferences(welcome_style=style_id))
     app = OuroTuiApp(application=two_route_application(tmp_path))
     async with run_ready_app(app, size=(100, 40)) as pilot:
         panel = app.query_one(WelcomePanel)
@@ -547,14 +652,146 @@ async def test_particle_theme_pauses_when_hidden_and_releases_worker_on_replacem
         for size in ((40, 16), (80, 24), (160, 48)):
             await resize_terminal(pilot, *size)
             await pilot.pause()
-            assert matrix.region in panel.page._top.region
             assert matrix._raster is not None
             assert matrix._raster.columns == matrix.size.width
         await panel.set_welcome_style(WELCOME_STYLES["basic"])
         await pilot.pause()
         assert not any(worker.node is matrix for worker in app.workers)
         assert not list(panel.query(DotMatrix))
-        assert app.query_one(Composer).region.y == panel.page._top.region.bottom
+
+
+@pytest.mark.parametrize("style_id", ["event-horizon", "quantum-veil"])
+@pytest.mark.parametrize("dimensions", [(1, 1), (10, 50), (50, 10), (80, 24), (160, 50), (300, 90)])
+def test_particle_input_placement_stays_in_bounds_for_short_and_full_height_drafts(
+    style_id, dimensions
+):
+    from textual.geometry import Size
+
+    viewport = Size(*dimensions)
+    page = WELCOME_STYLES[style_id].create()
+    for height in (1, min(4, viewport.height), viewport.height):
+        measured = []
+
+        def measure(width, measured=measured, height=height):
+            assert 1 <= width <= viewport.width
+            measured.append(width)
+            return height
+
+        region = page.place_input(viewport, measure)
+        assert region in viewport.region
+        assert region.height == height
+        assert measured == [region.width]
+
+
+@pytest.mark.parametrize("style_id", ["event-horizon", "quantum-veil"])
+async def test_particle_input_reuses_raster_and_workspace_follows_theme_lifecycle(
+    tmp_path, monkeypatch, style_id
+):
+    from ouro.tui.widgets.status import StatusLine
+
+    TuiPreferencesStore(tmp_path).save(TuiPreferences(welcome_style=style_id))
+    app = OuroTuiApp(application=two_route_application(tmp_path))
+    async with run_ready_app(app, size=(160, 50)) as pilot:
+        panel, composer = app.query_one(WelcomePanel), app.query_one(Composer)
+        page = panel.page
+        await wait_until(lambda: page.matrix._raster is not None, pilot, description="first frame")
+        raster = page.matrix._raster
+        composer.focus()
+        for text in ("draft", "a\nb\nc", "x" * 350, "restored", "/"):
+            composer.load_text(text)
+            await pilot.pause()
+            assert page.matrix._raster is raster
+            assert composer.text == text and app.focused is composer
+            x, y = composer.region.x + 1, composer.region.y
+            assert app.screen.get_widget_at(x, y)[0] is composer
+        assert app.query_one(CommandPopup).display
+        await pilot.press("escape")
+
+        workspace, status_line = page._workspace, app.query_one(StatusLine)
+        assert workspace.parent is status_line
+        assert len(panel.query(".particle-workspace")) == 1
+        host_children = [child for child in status_line.children if child is not workspace]
+        updates = []
+        update = workspace.update
+
+        def record_update(content):
+            updates.append(content)
+            return update(content)
+
+        monkeypatch.setattr(workspace, "update", record_update)
+        panel.set_welcome_mode(False)
+        await pilot.pause()
+        assert not workspace.display
+        status = TuiSystemStatus(workspace=str(tmp_path / "changed-workspace"))
+        panel.set_system_status(status)
+        panel.set_system_status(replace(status, usage_request_count=42))
+        assert len(updates) == 1
+        assert status.workspace in workspace.render().plain
+        page.refresh_theme()
+        assert len(updates) == 2
+        panel.set_welcome_mode(True)
+        await pilot.pause()
+        assert workspace.display
+        await panel.set_welcome_style(WELCOME_STYLES["basic"])
+        await pilot.pause()
+        assert not panel.query(".particle-workspace")
+        assert list(status_line.children) == host_children
+
+
+@pytest.mark.parametrize(
+    ("style_id", "pointer"),
+    [
+        ("event-horizon", "pointer_x"),
+        ("quantum-veil", "pointer_y"),
+    ],
+)
+async def test_particle_mouse_target_is_coalesced_and_does_not_capture_input(
+    tmp_path, style_id, pointer
+):
+    from textual import events
+
+    TuiPreferencesStore(tmp_path).save(TuiPreferences(welcome_style=style_id))
+    app = OuroTuiApp(application=two_route_application(tmp_path))
+    async with run_ready_app(app, size=(160, 50)) as pilot:
+        page = app.query_one(WelcomePanel).page
+        matrix, composer = page.matrix, app.query_one(Composer)
+        await wait_until(lambda: matrix._raster is not None, pilot, description="first frame")
+        raster, region = matrix._raster, matrix.region
+        vertical = pointer == "pointer_y"
+        extent = matrix.size.height if vertical else matrix.size.width
+        direction = -1 if vertical else 1
+
+        def offset(value):
+            return (5, value) if vertical else (value, 5)
+
+        composer.focus()
+        await pilot.hover(DotMatrix, offset=offset(0))
+        assert getattr(page._scene, pointer) == -direction
+        await pilot.hover(DotMatrix, offset=offset(extent - 1))
+        assert getattr(page._scene, pointer) == direction
+        assert app.focused is composer
+        revision = matrix._render_revision
+        for index in range(1000):
+            x, y = offset(index % extent)
+            matrix.on_mouse_move(events.MouseMove(matrix, x, y, 0, 0, 0, False, False, False))
+        assert getattr(page._scene, pointer) == pytest.approx(
+            direction * (2 * (999 % extent) / (extent - 1) - 1)
+        )
+        assert matrix._render_revision == revision
+        assert matrix.region == region and matrix._raster is raster
+        assert len([worker for worker in app.workers if worker.node is matrix]) == 1
+        await pilot.hover(Composer)
+        assert getattr(page._scene, pointer) == 0
+        await pilot.click(DotMatrix, offset=offset(extent - 1))
+        assert app.focused is composer
+        await pilot.press("ctrl+p")
+        assert not matrix.active and getattr(page._scene, pointer) == 0
+        await pilot.press("escape")
+        composer.load_text("a\nb\nc")
+        await pilot.pause()
+        await pilot.hover(Composer, offset=(2, 0))
+        assert getattr(page._scene, pointer) == 0
+        assert matrix.region == region and matrix._raster is raster
 
 
 def test_normal_startup_keeps_saved_theme_worker_alive(tmp_path: Path, monkeypatch):
@@ -613,7 +850,8 @@ async def test_failed_style_save_keeps_current_package_and_preference(tmp_path, 
             raise PersistenceError("style storage unavailable")
 
         monkeypatch.setattr(app._preferences_store, "save", fail_save)
-        await select_menu(app, pilot, "Iris")
+        await select_menu(app, pilot, "Particle Art")
+        await select_menu(app, pilot, "Quantum veil")
         assert app.query_one(WelcomePanel).page is original
         assert app._preferences.welcome_style == "basic"
         assert app._preferences_store.load().welcome_style == "basic"
@@ -621,7 +859,7 @@ async def test_failed_style_save_keeps_current_package_and_preference(tmp_path, 
 
 @pytest.mark.parametrize(
     ("next_choice", "style_id", "theme_id"),
-    [("Tide", "interference", "original"), ("Coral", "clifford-torus", "coral")],
+    [("Horizon", "event-horizon", "original"), ("Coral", "quantum-veil", "coral")],
 )
 async def test_style_transaction_survives_reselection_and_picker_close(
     tmp_path, monkeypatch, next_choice, style_id, theme_id
@@ -630,24 +868,27 @@ async def test_style_transaction_survives_reselection_and_picker_close(
     entered, release = threading.Event(), threading.Event()
     async with run_ready_app(app) as pilot:
         await open_welcome_picker(app, pilot)
+        await select_menu(app, pilot, "Particle Art")
         save = app._preferences_store.save
 
         def slow_save(preferences):
-            if preferences.welcome_style == "clifford-torus":
+            if preferences.welcome_style == "quantum-veil":
                 entered.set()
                 assert release.wait(5)
             save(preferences)
 
         monkeypatch.setattr(app._preferences_store, "save", slow_save)
         try:
-            app.screen.query_one("#choice-filter", Input).value = "Iris"
+            app.screen.query_one("#choice-filter", Input).value = "Quantum veil"
             await pilot.pause()
             await pilot.press("enter")
             assert await asyncio.to_thread(entered.wait, 2)
+            if next_choice == "Coral":
+                await pilot.press("escape")
             app.screen.query_one("#choice-filter", Input).value = next_choice
             await pilot.pause()
             await pilot.press("enter")
-            await pilot.press("escape", "escape")
+            await pilot.press(*(["escape"] * (2 if next_choice == "Coral" else 3)))
         finally:
             release.set()
         workers = [
@@ -658,5 +899,6 @@ async def test_style_transaction_survives_reselection_and_picker_close(
         preferences = app._preferences_store.load()
         assert preferences.welcome_style == style_id
         assert preferences.theme == theme_id
-        assert app.query_one(WelcomePanel).style_package.style_id == style_id
+        assert not isinstance(app.screen, ChoiceScreen)
+        assert app.query_one(WelcomePanel).welcome_style.style_id == style_id
         assert app.focused is app.query_one(Composer)

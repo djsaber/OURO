@@ -32,24 +32,26 @@ async def check_tui(*, themes: bool) -> None:
             assert app.startup_data_error is None
             assert app._preferences_error is None
             host = app.query_one(WelcomePanel)
-            assert host.style_package.style_id == ("event-horizon" if themes else "basic")
+            assert host.welcome_style.style_id == ("event-horizon" if themes else "basic")
             expected = (
                 {
                     "basic",
                     "event-horizon",
-                    "interference",
-                    "clifford-torus",
+                    "quantum-veil",
                     "matrix",
                 }
                 if themes
                 else {"basic"}
             )
-            actual = {
-                choice.value.removeprefix("welcome:")
-                for choice in app._theme_choices()
-                if choice.value.startswith("welcome:")
-            }
+            actual = set(app._welcome_styles) - set(app._unavailable_welcome_styles)
             assert actual == expected, actual
+            assert {
+                choice.value for choice in app._theme_choices() if choice.group == "Welcome style"
+            } == (
+                {"welcome:basic", "welcome-package:particle-art", "welcome-package:matrix"}
+                if themes
+                else {"welcome:basic"}
+            )
             app._request_tui_theme("coral")
             workers = [worker for worker in app.workers if worker.group == "theme-switch"]
             await asyncio.gather(*(worker.wait() for worker in workers))
@@ -83,8 +85,20 @@ def main() -> None:
         assert args.themes, "base installation unexpectedly contains the theme extension"
         assert extension.version in optional.specifier
         files = {str(file).replace("\\", "/") for file in extension.files or ()}
-        assert "ouro_tui_themes/dot_matrix/field.py" in files
-        assert "ouro_tui_themes/styles/event_horizon.py" in files
+        assert {
+            "ouro_tui_themes/packs/__init__.py",
+            "ouro_tui_themes/tools/dot_matrix/field.py",
+            "ouro_tui_themes/packs/particle_art/__init__.py",
+            "ouro_tui_themes/packs/particle_art/event_horizon.py",
+            "ouro_tui_themes/packs/particle_art/quantum_veil.py",
+            "ouro_tui_themes/packs/matrix/__init__.py",
+            "ouro_tui_themes/packs/matrix/matrix.py",
+        } <= files
+        assert not any(
+            file.startswith(("ouro_tui_themes/styles/", "ouro_tui_themes/dot_matrix/"))
+            or file in {"ouro_tui_themes/rendering.py", "ouro_tui_themes/model.py"}
+            for file in files
+        )
         dependencies = [Requirement(value) for value in extension.requires or ()]
         numpy = next(value for value in dependencies if value.name == "numpy")
         assert distribution("numpy").version in numpy.specifier

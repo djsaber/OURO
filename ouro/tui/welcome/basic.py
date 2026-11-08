@@ -1,4 +1,4 @@
-"""The quiet, typographic OURO welcome package."""
+"""The quiet, typographic OURO welcome theme."""
 
 from rich.text import Text
 from textual.widgets import Static

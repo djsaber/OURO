@@ -95,9 +95,11 @@ async def test_right_click_files_use_normal_upload_on_both_pages(
         composer = app.query_one(Composer)
         composer.load_text("draft")
         await pilot.click(composer, offset=(2, 0), button=3)
-        await app.workers.wait_for_complete(
-            [w for w in app.workers if w.group in {"composer-clipboard", "attachment-import"}]
-        )
+        # Textual treats an empty collection as "wait for every worker", including observers.
+        if workers := [
+            w for w in app.workers if w.group in {"composer-clipboard", "attachment-import"}
+        ]:
+            await app.workers.wait_for_complete(workers)
         await pilot.pause()
         if workers := [w for w in app.workers if w.group == "attachment-import"]:
             await app.workers.wait_for_complete(workers)

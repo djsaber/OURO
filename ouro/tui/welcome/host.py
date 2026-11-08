@@ -1,4 +1,4 @@
-"""Full-page package lifecycle and placement of the persistent input surface."""
+"""Full-page theme lifecycle and placement of the persistent input surface."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ class _WelcomeLayout(Layout):
 
         def measure(width: int) -> int:
             if not isinstance(width, int) or not 1 <= width <= size.width:
-                raise ValueError(f"{host.style_package.style_id}: invalid input width {width}")
+                raise ValueError(f"{host.welcome_style.style_id}: invalid input width {width}")
             content_width = max(0, width - surface.styles.gutter.width)
             height = surface.get_content_height(
                 Size(content_width, size.height), host.app.size, content_width
@@ -48,7 +48,7 @@ class _WelcomeLayout(Layout):
             or region not in size.region
         ):
             raise ValueError(
-                f"{host.style_package.style_id}: invalid input region for {size}: {region}"
+                f"{host.welcome_style.style_id}: invalid input region for {size}: {region}"
             )
         page.input_region = region
         host.constrain_input(region, size)
@@ -69,7 +69,7 @@ class WelcomeHost(Widget):
     def __init__(self, surface: Widget, style: WelcomeStyle) -> None:
         super().__init__(id="input-region")
         self.input_surface = surface
-        self.style_package = style
+        self.welcome_style = style
         self.page = self._create(style)
         self.page.display = False
         self.welcome_active = False
@@ -106,14 +106,14 @@ class WelcomeHost(Widget):
         self.page.set_system_status(status)
 
     async def set_welcome_style(self, style: WelcomeStyle) -> None:
-        if style != self.style_package:
+        if style != self.welcome_style:
             page = self._create(style)
             page.display = False
             with self.app.batch_update():
                 self.page.set_active(False)
                 await asyncio.shield(self.page.remove())
-                self.remove_class(f"welcome-style-{self.style_package.style_id}")
-                self.style_package, self.page = style, page
+                self.remove_class(f"welcome-style-{self.welcome_style.style_id}")
+                self.welcome_style, self.page = style, page
                 await self.mount(page, before=self.input_surface)
                 self.set_class(self.welcome_active, f"welcome-style-{style.style_id}")
                 page.display = self.welcome_active
@@ -125,7 +125,7 @@ class WelcomeHost(Widget):
     def set_welcome_mode(self, enabled: bool) -> None:
         self.welcome_active = enabled
         self.set_class(enabled, "welcome-page")
-        self.set_class(enabled, f"welcome-style-{self.style_package.style_id}")
+        self.set_class(enabled, f"welcome-style-{self.welcome_style.style_id}")
         self.page.display = enabled
         self._sync_active()
         self.refresh(layout=True)

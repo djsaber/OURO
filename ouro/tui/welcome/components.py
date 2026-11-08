@@ -431,7 +431,7 @@ class WelcomeTips(WelcomeInformation):
 
 
 class WelcomeVersion(VersionLabel):
-    """Optional package-owned version label."""
+    """Optional theme-owned version label."""
 
     DEFAULT_CSS = """
     WelcomeVersion {

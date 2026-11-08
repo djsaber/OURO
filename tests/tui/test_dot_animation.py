@@ -7,10 +7,10 @@ from array import array
 from copy import copy
 
 import pytest
-from ouro_tui_themes.dot_matrix.raster import DotArtwork, PhosphorRaster
-from ouro_tui_themes.dot_matrix.widget import DotMatrix
-from ouro_tui_themes.rendering import FrameStrip
-from ouro_tui_themes.styles import STYLES
+from ouro_tui_themes.packs import PACKAGES
+from ouro_tui_themes.tools.dot_matrix.raster import DotArtwork, PhosphorRaster
+from ouro_tui_themes.tools.dot_matrix.widget import DotMatrix
+from ouro_tui_themes.tools.rendering import FrameStrip
 from rich.console import Console
 from rich.segment import Segment
 from rich.style import Style
@@ -24,7 +24,7 @@ from textual.worker import WorkerFailed
 from ouro.tui.welcome import welcome_catalog
 from tests.tui.helpers import wait_until
 
-WELCOME_STYLES = welcome_catalog(STYLES)
+WELCOME_STYLES = welcome_catalog(PACKAGES)
 
 
 class ArtworkApp(App):
@@ -273,9 +273,9 @@ async def test_replacement_engine_uses_same_widget_pipeline_and_one_lifetime_wor
 
 
 def test_unchanged_frame_does_not_construct_terminal_rows(monkeypatch):
-    import ouro_tui_themes.dot_matrix.raster as raster_module
+    import ouro_tui_themes.tools.dot_matrix.raster as raster_module
 
-    raster = PhosphorRaster(WELCOME_STYLES["interference"].create().artwork, 38, 8)
+    raster = PhosphorRaster(WELCOME_STYLES["quantum-veil"].create().artwork, 38, 8)
     previous = raster.frame(0, 0)
 
     def unexpected(*args, **kwargs):

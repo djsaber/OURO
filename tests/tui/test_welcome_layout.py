@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from ouro_tui_themes.dot_matrix.widget import DotMatrix
-from ouro_tui_themes.styles import STYLES
+from ouro_tui_themes.packs import PACKAGES
+from ouro_tui_themes.tools.dot_matrix.widget import DotMatrix
 from textual import events
 
 from ouro.tui.app import OuroTuiApp
@@ -14,7 +14,7 @@ from ouro.tui.composer.surface import WelcomePanel
 from ouro.tui.welcome import welcome_catalog
 from tests.tui.helpers import resize_terminal, run_ready_app, two_route_application, wait_until
 
-WELCOME_STYLES = welcome_catalog(STYLES)
+WELCOME_STYLES = welcome_catalog(PACKAGES)
 
 
 @pytest.mark.parametrize(
@@ -53,7 +53,7 @@ async def test_animation_keeps_editor_layout_and_cursor_stable_during_cjk_edits(
     app = OuroTuiApp(application=two_route_application(tmp_path))
     async with run_ready_app(app, size=(140, 50)) as pilot:
         welcome = app.query_one(WelcomePanel)
-        await welcome.set_welcome_style(WELCOME_STYLES["clifford-torus"])
+        await welcome.set_welcome_style(WELCOME_STYLES["quantum-veil"])
         await pilot.pause()
         assert welcome.page.query_one(DotMatrix) is welcome.page.matrix
         matrix = welcome.page.matrix

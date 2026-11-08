@@ -202,10 +202,10 @@ uv run --frozen python -m dev.benchmarks.startup --repeat 5
 ```powershell
 uv run --frozen --extra themes python -m dev.benchmarks.welcome --frames 60
 uv run --frozen --extra themes python -m dev.benchmarks.welcome --frames 300 --size 114 20 --size 200 50 --stages
-uv run --frozen --extra themes python -m dev.benchmarks.welcome_input --style clifford-torus --keys 240
+uv run --frozen --extra themes python -m dev.benchmarks.welcome_input --style quantum-veil --keys 240
 uv run --frozen --extra themes python -m dev.benchmarks.welcome_input --pattern alternate --keys 240
 uv run --frozen --extra themes python -m dev.benchmarks.welcome_input --style matrix --seconds 300 --motion active --output matrix.json
-uv run --frozen --extra themes python -m dev.benchmarks.welcome_input --style clifford-torus --seconds 300 --motion active --output particles.json
+uv run --frozen --extra themes python -m dev.benchmarks.welcome_input --style quantum-veil --seconds 300 --motion active --output particles.json
 ```
 
 点阵基准包含采样、公共数值处理与终端行编码，覆盖所有内置粒子主题和两个视口尺寸。
