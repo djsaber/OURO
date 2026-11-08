@@ -77,6 +77,6 @@ def run_tui(
             if recovery != "upgraded":
                 return 1
             attempted_upgrade = True
-            feedback.start(stage="data")
+            feedback.start()
             # Return to the homepage; the previous selection may no longer exist.
             resume_session_id = None

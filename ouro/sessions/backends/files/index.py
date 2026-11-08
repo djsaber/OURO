@@ -132,7 +132,7 @@ class LocalSessionIndex:
                         error_scope="catalog",
                     )
                 entries.append(entry)
-            return header.model_copy(update={"sessions": entries})
+            return header.model_copy(update={"sessions": sort_catalog_entries(entries)})
         except (OSError, ValidationError, ValueError) as exc:
             raise PersistenceError(
                 f"could not load session index {self.index_path}; rebuild required: {exc}"

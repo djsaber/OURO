@@ -19,7 +19,11 @@ from ouro.sessions.backends.files.message_locations import FileMessageIndex, Fil
 from ouro.sessions.backends.sqlite.commits import SQLiteSessionCommits
 from ouro.sessions.backends.sqlite.messages import write_messages
 from ouro.sessions.backends.sqlite.store import SQLITE_SCHEMA_VERSION
-from ouro.sessions.catalog import SessionCatalogProjection, catalog_entry_from_projection
+from ouro.sessions.catalog import (
+    SessionCatalogProjection,
+    catalog_entry_from_projection,
+    sort_catalog_entries,
+)
 from ouro.sessions.index import SessionIndex, SessionIndexEntry, invalid_session_index_entry
 from ouro.sessions.layout import DATA_LAYOUT_VERSION
 from ouro.sessions.sqlite_compactions import insert_compaction
@@ -299,7 +303,10 @@ def files(work: Workspace, units: UpgradeUnits) -> None:
     # Keep the home gated until every native container supports the current reader.
     if version in (41, 42) and len(units.failures) > failures:
         return
-    work.json("sessions/index.json", SessionIndex(sessions=entries).model_dump(mode="json"))
+    work.json(
+        "sessions/index.json",
+        SessionIndex(sessions=sort_catalog_entries(entries)).model_dump(mode="json"),
+    )
     if version != DATA_LAYOUT_VERSION:
         work.json("layout.json", {**layout, "data_layout_version": DATA_LAYOUT_VERSION})
 

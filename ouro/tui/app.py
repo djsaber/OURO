@@ -664,7 +664,7 @@ _OURO_TUI_CSS = """
         color: $ouro-text-primary;
         background: $ouro-panel;
         border-top: none;
-        border-right: solid $ouro-progress-track;
+        border-right: none;
         border-bottom: none;
         border-left: solid $ouro-border-subtle;
         overflow-y: hidden;
@@ -696,7 +696,7 @@ _OURO_TUI_CSS = """
         color: $ouro-text-emphasis;
         background: $ouro-panel;
         border-top: none;
-        border-right: solid $ouro-progress-track;
+        border-right: none;
         border-bottom: none;
         border-left: solid $ouro-border-subtle;
         scrollbar-background: transparent;
@@ -730,7 +730,7 @@ _OURO_TUI_CSS = """
         color: $ouro-text-primary;
         background: $ouro-panel;
         border-top: none;
-        border-right: solid $ouro-progress-track;
+        border-right: none;
         border-bottom: none;
         border-left: solid $ouro-border-subtle;
     }
@@ -1202,7 +1202,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         if not self._surface_available():
             return
-        self._startup_screen.prepare_view()
         try:
             drafts, recovered_session = await recover_input_drafts(
                 self._controller, self._input_drafts
