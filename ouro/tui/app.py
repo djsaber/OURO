@@ -3365,8 +3365,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         elif command.name == "/unqueue":
             if argument:
                 await self._unqueue_message(argument)
-        elif command.name == "/clear":
-            await self._show_welcome()
         elif command.name == "/navigate":
             self._navigate_to(argument)
         elif command.name == "/abort":

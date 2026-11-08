@@ -176,7 +176,6 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
         "Move a waiting message back to the input box",
         "<queued-message>",
     ),
-    TuiCommand("/clear", "Clear view", "Clear messages from view; keep saved history"),
     TuiCommand(
         "/navigate",
         "Jump to message",

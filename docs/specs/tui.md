@@ -167,7 +167,6 @@ Host 通过 `set_active(bool)` 通知前台可见性，页面自行管理动画�
 - `/new` 或 `Ctrl+N`：回到新会话欢迎页；
 - `/sessions`、`/resume` 或 `Ctrl+O`：浏览并打开 durable Session；
 - `/fork [full|#N]` 或 `/branch`：在合法消息边界创建独立分支；
-- `/clear`：只清空当前可见时间线，不删除 canonical 数据；
 - `/navigate [target]`：在顶部、底部和用户消息之间导航。
 
 打开、重命名和归档会话菜单通过 `Tab` 循环切换 `USER`、`TASK`、`SUBAGENT`、`ARCHIVED` 会话域，允许域为空。
@@ -278,7 +277,6 @@ Application 提供待处理输入及其正在等待的活动 Run，TUI 据此区
 | `/unqueue` | 取回排队输入 |
 | `/undo` | 撤销并恢复最近用户输入 |
 | `/continue` | 继续当前会话 |
-| `/clear` | 清空可见时间线 |
 | `/navigate` | 对话导航 |
 | `/abort` | 中止 active Run |
 | `/help` | 快捷键与命令帮助 |
