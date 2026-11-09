@@ -1383,12 +1383,22 @@ async def test_releasing_controller_cancels_its_queued_continuation(tmp_path, ba
 
 
 @pytest.mark.asyncio
-async def test_continuation_matches_rebuilt_generation_by_execution_contract(tmp_path) -> None:
+@pytest.mark.parametrize("plugin_class", ["builtin", "user"])
+@pytest.mark.parametrize("changed_contract", [None, "contract_hash", "execution_contract_hash"])
+async def test_continuation_matches_rebuilt_generation_by_execution_contract(
+    tmp_path, plugin_class, changed_contract
+) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord()
     store.create_session(session)
     controller = _controller("dev.ouro.goal", "goal", "gen_before_restart")
+    controller = RunContinuationControllerRef.model_validate(
+        {
+            **controller.model_dump(exclude={"release_id", "package_digest"}),
+            "plugin_class": plugin_class,
+        }
+    )
     run = RunRecord(
         session_id=session.session_id,
         status="completed",
@@ -1396,10 +1406,10 @@ async def test_continuation_matches_rebuilt_generation_by_execution_contract(tmp
     )
     store.save_run(run)
     registry = RunContinuationRegistry()
-    registry.replace_owner(
-        "goal-after-restart",
-        (_policy("dev.ouro.goal", "gen_after_restart", "continue after restart"),),
-    )
+    policy = _policy("dev.ouro.goal", "gen_after_restart", "continue after restart")
+    if changed_contract is not None:
+        policy = replace(policy, **{changed_contract: "changed"})
+    registry.replace_owner("goal-after-restart", (policy,))
     queue = QueuedInputQueue(store)
 
     settlement = await RunContinuationService(
@@ -1409,6 +1419,12 @@ async def test_continuation_matches_rebuilt_generation_by_execution_contract(tmp
     ).settle(session_id=session.session_id, run_id=run.run_id)
 
     queued = queue.eligible(store.load_runtime_session(session.session_id))
+    if changed_contract is not None:
+        assert not queued and not settlement.queued
+        assert [failure.error_type for failure in settlement.failures] == [
+            "ContinuationPolicyUnavailable"
+        ]
+        return
     assert settlement.queued is True
     assert len(queued) == 1
     assert queued[0].generation_id == "gen_before_restart"

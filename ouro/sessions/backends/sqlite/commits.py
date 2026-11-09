@@ -6,7 +6,6 @@ from ouro.core.compaction import CompactionRecord, retain_compaction_references
 from ouro.core.context_snapshots import ModelRequestHeader
 from ouro.core.errors import PersistenceError
 from ouro.core.harness import HarnessVersion
-from ouro.core.message_content import validate_tool_message
 from ouro.core.message_frames import MessageTruncation
 from ouro.core.messages import MessageFact
 from ouro.core.persistence import decode_versioned_record_json
@@ -17,8 +16,7 @@ from ouro.core.session_commits import (
     SessionCommitResult,
     prepare_session_commit,
 )
-from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
-from ouro.core.tool_batches import validate_call_states
+from ouro.core.state import ACTIVE_RUN_STATUSES, SessionRecord
 from ouro.core.tool_facts import ToolCallFacts, ToolOutcomeRecord
 from ouro.sessions.backends.sqlite.messages import truncate_messages, write_messages
 from ouro.sessions.sqlite_compactions import (
@@ -27,7 +25,12 @@ from ouro.sessions.sqlite_compactions import (
     update_compaction_boundary,
 )
 from ouro.sessions.sqlite_drafts import publish_draft
-from ouro.sessions.sqlite_facts import load_required, write_call_state, write_fact
+from ouro.sessions.sqlite_facts import (
+    load_required,
+    prepare_commit_facts,
+    write_call_state,
+    write_fact,
+)
 from ouro.sessions.sqlite_inputs import read_state, write_input, write_state
 from ouro.sessions.sqlite_observation import advance_revision
 from ouro.sessions.sqlite_requests import write_header
@@ -240,7 +243,7 @@ class SQLiteSessionCommits:
                 current_request = decode_versioned_record_json(
                     ModelRequestHeader, row[0], label="request header"
                 )
-        tool_facts, message_resources = self._prepare_tool_facts(request, current)
+        tool_facts, message_resources = prepare_commit_facts(self.connection, request, current)
         decision = prepare_session_commit(
             request,
             current,
@@ -341,74 +344,3 @@ class SQLiteSessionCommits:
             write_fact(self.connection, outcome)
             advance_revision(self.connection, outcome.session_id)
         return outcome
-
-    def _prepare_tool_facts(
-        self, request: SessionCommit, current: SessionRecord
-    ) -> tuple[ToolCallFacts, dict[str, tuple[str, ...]]]:
-        proposed = request.tool_facts
-        session_id = current.session_id
-        connection = self.connection
-        messages = tuple(step.message for step in request.steps if step.message is not None)
-        existing = load_required(connection, session_id, proposed, request.call_states, messages)
-        active_runs = {}
-        active_run_id = (
-            request.after.active_run_id
-            if request.after is not None
-            and request.after.active_run_id != request.before.active_run_id
-            else current.active_run_id
-        )
-        staged_runs = {run.run_id: run for run in request.runs}
-        for run_id in dict.fromkeys(
-            (*proposed.execution_run_ids, *(state.identity.run_id for state in request.call_states))
-        ):
-            run = staged_runs.get(run_id)
-            if run is None:
-                row = connection.execute(
-                    "SELECT payload FROM runs WHERE session_id = ? AND run_id = ?",
-                    (session_id, run_id),
-                ).fetchone()
-                if row is None:
-                    continue
-                run = decode_versioned_record_json(RunRecord, row[0], label=f"Call Run {run_id}")
-            if run.session_id != session_id or run.run_id != run_id:
-                raise PersistenceError("Call Run has a foreign identity")
-            if (
-                run.run_id == active_run_id
-                and run.status in ACTIVE_RUN_STATUSES
-                and not run.abort_requested
-            ):
-                active_runs[run_id] = run.history_epoch
-        prepared = proposed.prepare(
-            session_id=session_id,
-            history_epoch=current.history_epoch,
-            active_runs=active_runs,
-            existing=existing,
-        )
-        validate_call_states(
-            request.call_states,
-            ToolCallFacts(
-                calls=existing.calls + prepared.calls,
-                starts=existing.starts + prepared.starts,
-                outcomes=existing.outcomes + prepared.outcomes,
-            ),
-            session_id=session_id,
-            active_runs=active_runs,
-            history_epoch=current.history_epoch,
-        )
-        calls = {call.identity: call for call in (*existing.calls, *prepared.calls)}
-        outcomes = {
-            (item.identity, item.attempt): item for item in (*existing.outcomes, *prepared.outcomes)
-        }
-        resources = {}
-        for message in messages:
-            reference = message.outcome_ref
-            outcome = (
-                outcomes.get((reference.identity, reference.outcome_attempt))
-                if reference is not None and reference.outcome_attempt is not None
-                else None
-            )
-            validate_tool_message(message.as_fact(), calls, outcome)
-            resources[message.message_id] = tuple(
-                outcome.value.resource_refs if outcome is not None else message.resource_refs
-            )
-        return prepared, resources

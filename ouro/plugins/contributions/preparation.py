@@ -73,7 +73,6 @@ class ContributionCoordinator:
             release_id=candidate.release_id,
             generation_id=generation.generation_id,
             package_digest=candidate.package_digest,
-            builtin_contract_hash=candidate.builtin_contract_hash,
         )
         source: PluginSource = "official" if candidate.plugin_class == "builtin" else "third_party"
         context = _PreparationContext(

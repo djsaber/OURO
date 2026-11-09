@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING
@@ -11,7 +9,6 @@ from typing import TYPE_CHECKING
 from ouro.plugins.dependencies import BuiltinPluginContract, resolve_plugin_dependencies
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.models import PluginStateDocument
-from ouro.plugins.paths import portable_relative_path
 
 if TYPE_CHECKING:
     from ouro.sdk.plugins.v5 import PluginContext
@@ -28,8 +25,7 @@ class BuiltinPluginDefinition:
     factory: BuiltinPluginFactory
     root: Path
     default_enabled: bool = True
-    runtime_resources: tuple[str, ...] = ()
-    _contract_hash: str = field(init=False, repr=False)
+    contract_version: int = 1
 
     def __post_init__(self) -> None:
         root = self.root.expanduser().resolve()
@@ -44,11 +40,6 @@ class BuiltinPluginDefinition:
             raise ValueError("builtin package resource contributions are not supported yet")
         if not callable(self.factory):
             raise TypeError("builtin plugin factory must be callable")
-        object.__setattr__(
-            self,
-            "_contract_hash",
-            _builtin_contract_hash(self.manifest, root, self.runtime_resources),
-        )
 
     @property
     def plugin_id(self) -> str:
@@ -59,14 +50,15 @@ class BuiltinPluginDefinition:
         return self.manifest.version
 
     @property
-    def contract_hash(self) -> str:
-        return self._contract_hash
+    def release_id(self) -> str:
+        """Recovery identity; change only for incompatible persisted execution state."""
+        return f"{self.plugin_id}/{self.contract_version}"
 
     def dependency_contract(self) -> BuiltinPluginContract:
         return BuiltinPluginContract(
             plugin_id=self.plugin_id,
             version=self.version,
-            contract_hash=self.contract_hash,
+            release_id=self.release_id,
             dependencies=tuple(
                 (dependency.plugin_id, dependency.version)
                 for dependency in self.manifest.dependencies.plugins
@@ -145,38 +137,6 @@ class BuiltinPluginRegistry:
 
 
 EMPTY_BUILTIN_PLUGIN_REGISTRY = BuiltinPluginRegistry()
-
-
-def _builtin_contract_hash(
-    manifest: PluginManifest, root: Path, runtime_resources: tuple[str, ...]
-) -> str:
-    """Bind product-owned Python code and explicitly declared runtime data."""
-
-    inputs = {path for path in root.rglob("*.py") if path.is_file()}
-    inputs.update(root / portable_relative_path(resource) for resource in runtime_resources)
-    implementation: list[dict[str, str]] = []
-    for path in sorted(
-        inputs,
-        key=lambda candidate: candidate.relative_to(root).as_posix(),
-    ):
-        implementation.append(
-            {
-                "path": path.relative_to(root).as_posix(),
-                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-            }
-        )
-    payload = {
-        "schema_version": 2,
-        "manifest": manifest.model_dump(mode="json", exclude_none=True),
-        "implementation": implementation,
-    }
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 __all__ = [

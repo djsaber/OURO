@@ -95,7 +95,14 @@ def messages_and_runs(
                     )
                     if result is None and override is not None:
                         invocation_raw["arguments"] = override
-                    invocation = validate(ToolInvocation, invocation_raw)
+                    invocation = validate(
+                        ToolInvocation,
+                        {
+                            name: field
+                            for name, field in invocation_raw.items()
+                            if name in ToolInvocation.model_fields
+                        },
+                    )
                     binding = ToolInvocationBinding.model_validate(
                         invocation.model_dump(exclude={"arguments"})
                     )

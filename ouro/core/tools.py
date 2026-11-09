@@ -52,6 +52,8 @@ ToolOutcomeStatus = Literal[
 class ToolDefinition(OuroModel):
     name: str
     display_name: str | None = None
+    canonical_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    execution_variant: str | None = Field(default=None, exclude_if=lambda value: value is None)
     description: str
     parameters_schema: dict[str, Any] = Field(default_factory=dict)
     source: ToolSource = "builtin"
@@ -67,6 +69,19 @@ class ToolDefinition(OuroModel):
     interaction_controller_id: str | None = None
     kind: ToolKind = "standard"
     metadata: Metadata = MetadataField
+
+    @property
+    def identity(self) -> str:
+        return self.canonical_id or f"ouro.host/tools/{self.name}"
+
+    def execution_contract(self) -> dict[str, Any]:
+        """Invocation semantics, independent of presentation and runtime provenance."""
+        return {
+            **self.model_dump(
+                mode="json", exclude={"canonical_id", "description", "display_name", "metadata"}
+            ),
+            "canonical_id": self.identity,
+        }
 
     @model_validator(mode="after")
     def validate_tool_contract(self) -> Self:
@@ -107,8 +122,6 @@ class ToolCallProducer(OuroModel):
 class ToolInvocationBinding(OuroModel):
     """Execution provenance, separate from the arguments owned by a Call."""
 
-    model_config = ConfigDict(extra="forbid")
-
     producer: ToolCallProducer = Field(default_factory=ToolCallProducer)
     tool_call_id: str = Field(default_factory=lambda: new_id("tool"))
     session_id: str
@@ -131,7 +144,6 @@ class ToolInvocationBinding(OuroModel):
     plugin_class: Literal["builtin", "user"] | None = None
     release_id: str | None = None
     package_digest: str | None = None
-    builtin_contract_hash: str | None = None
     generation_id: str | None = None
     contract_hash: str | None = None
     execution_contract_hash: str | None = None
@@ -141,10 +153,19 @@ class ToolInvocationBinding(OuroModel):
     tool_policy_ids: list[str] = Field(default_factory=list)
     tool_policy_reason: str | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def validate_argument_ownership(cls, value: Any) -> Any:
+        if (
+            isinstance(value, Mapping)
+            and "arguments" in value
+            and "arguments" not in cls.model_fields
+        ):
+            raise ValueError("execution binding cannot own Call arguments")
+        return value
+
 
 class ToolInvocation(ToolInvocationBinding):
-    model_config = ConfigDict(extra="ignore")
-
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -267,7 +288,7 @@ class ToolExecutionOutcome(OuroModel):
 
 def tool_definition_contract_hash(definition: ToolDefinition) -> str:
     encoded = json.dumps(
-        definition.model_dump(mode="json"),
+        definition.execution_contract(),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),

@@ -216,7 +216,12 @@ class PluginToolGroups:
             metadata.update(contribution_id=identity, contract_hash=contract_hash)
             bound.append(
                 Tool(
-                    definition=tool.definition.model_copy(update={"metadata": metadata}),
+                    definition=tool.definition.model_copy(
+                        update={
+                            "canonical_id": f"{self.owner.plugin_id}/tools/{identity}",
+                            "metadata": metadata,
+                        }
+                    ),
                     handler=tool.handler,
                     resume_handler=tool.resume_handler,
                 )

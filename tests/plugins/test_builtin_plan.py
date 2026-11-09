@@ -348,7 +348,9 @@ async def test_plan_command_creates_and_binds_a_session(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["documentation", "implementation", "runtime_resource"])
+@pytest.mark.parametrize(
+    "change", ["documentation", "implementation", "runtime_resource", "version", "contract"]
+)
 async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes_after_restart(
     tmp_path,
     monkeypatch,
@@ -363,12 +365,17 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
     shutil.copytree(PLAN_PLUGIN.root, plugin_root)
     (plugin_root / "instructions.md").write_text("Runtime instructions", encoding="utf-8")
 
+    contract_version = 1
+    manifest = PLAN_PLUGIN.manifest
+
     def publish_plugin():
         monkeypatch.setattr(
             local_application,
             "LOCAL_BUILTIN_PLUGINS",
             BuiltinPluginRegistry(
-                replace(item, root=plugin_root, runtime_resources=("instructions.md",))
+                replace(
+                    item, root=plugin_root, contract_version=contract_version, manifest=manifest
+                )
                 if item.plugin_id == PLUGIN_ID
                 else item
                 for item in LOCAL_BUILTIN_PLUGINS.list()
@@ -440,11 +447,17 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
             "documentation": "README.md",
             "implementation": "plan_plugin.py",
             "runtime_resource": "instructions.md",
+            "version": "README.md",
+            "contract": "README.md",
         }[change]
     )
     changed_path.write_text(
         changed_path.read_text(encoding="utf-8") + "\n# Changed content\n", encoding="utf-8"
     )
+    if change == "contract":
+        contract_version = 2
+    if change == "version":
+        manifest = manifest.model_copy(update={"version": "2.0.0", "description": "Plan workflow"})
     publish_plugin()
 
     final_provider = FinalProvider()
@@ -452,7 +465,7 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
     second_application = LocalApplication.from_runtime(second_runtime, home=home)
     await second_application.start()
 
-    if change != "documentation":
+    if change == "contract":
         try:
             result = await second_runtime.answer_user(
                 session_id=waiting.session.session_id,

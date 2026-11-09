@@ -197,6 +197,7 @@ def prepare_tools(
             deep=True,
             update={
                 "name": declaration.exposed_name,
+                "canonical_id": f"{manifest.plugin_id}/tools/{declaration.id}",
                 "description": declaration.description,
                 "source": ("official_plugin" if source == "official" else "third_party_plugin"),
                 "permission_mode": declaration.permission_mode,
@@ -215,7 +216,7 @@ def prepare_tools(
                 ),
             },
         )
-        contract_hash = _hash(definition.model_dump(mode="json", exclude={"metadata"}))
+        contract_hash = _hash(definition.execution_contract())
         definition = definition.model_copy(
             update={
                 "metadata": {
@@ -225,7 +226,6 @@ def prepare_tools(
                     "plugin_class": owner.plugin_class,
                     "release_id": owner.release_id,
                     "package_digest": owner.package_digest,
-                    "builtin_contract_hash": owner.builtin_contract_hash,
                     "generation_id": owner.generation_id,
                     "contribution_id": declaration.id,
                     "contract_hash": contract_hash,
@@ -313,7 +313,6 @@ def _prepare_session_controllers(
                 plugin_class=owner.plugin_class,
                 release_id=owner.release_id,
                 package_digest=owner.package_digest,
-                builtin_contract_hash=owner.builtin_contract_hash,
                 generation_id=owner.generation_id,
                 maximum_timeout_seconds=5.0,
             )
@@ -334,10 +333,15 @@ def _prepare_discovered_tools(
             raise ContributionValidationError(
                 "dynamically discovered tools must carry MCP identity metadata"
             )
-        contract_hash = _hash(tool.definition.model_dump(mode="json", exclude={"metadata"}))
         definition = tool.definition.model_copy(
             update={
+                "canonical_id": f"{manifest.plugin_id}/tools/mcp:{server_id}:{remote_name}",
                 "permission_mode": "approval",
+            }
+        )
+        contract_hash = _hash(definition.execution_contract())
+        definition = definition.model_copy(
+            update={
                 "metadata": {
                     **tool.definition.metadata,
                     "plugin_id": manifest.plugin_id,
@@ -345,7 +349,6 @@ def _prepare_discovered_tools(
                     "plugin_class": owner.plugin_class,
                     "release_id": owner.release_id,
                     "package_digest": owner.package_digest,
-                    "builtin_contract_hash": owner.builtin_contract_hash,
                     "generation_id": owner.generation_id,
                     "contribution_id": f"mcp:{server_id}:{remote_name}",
                     "contract_hash": contract_hash,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import runpy
 import shutil
 import subprocess
 import sys
@@ -582,39 +583,19 @@ def test_permission_registry_and_builtin_identity_are_enforced_before_install(tm
         service.install(collision)
 
 
-def test_builtin_contract_hash_covers_implementation_content(tmp_path) -> None:
+def test_builtin_recovery_identity_is_independent_of_code_and_presentation(tmp_path):
     root = tmp_path / "builtin"
     root.mkdir()
     implementation = root / "example_plugin.py"
     implementation.write_text("VALUE = 1\n", encoding="utf-8")
     first = _builtin_plugin(root, plugin_id="dev.ouro.example")
-
     implementation.write_text("VALUE = 2\n", encoding="utf-8")
-    second = _builtin_plugin(root, plugin_id="dev.ouro.example")
-
-    assert first.contract_hash != second.contract_hash
-
-
-def test_builtin_contract_covers_declared_runtime_resources_and_excludes_documentation(tmp_path):
-    root = tmp_path / "builtin"
-    root.mkdir()
-    (root / "example_plugin.py").write_text("VALUE = 1\n", encoding="utf-8")
-    resource = root / "instructions.md"
-    resource.write_text("Runtime instructions", encoding="utf-8")
-    documentation = root / "guide.txt"
-    documentation.write_text("Documentation", encoding="utf-8")
-    definition = replace(
-        _builtin_plugin(root, plugin_id="dev.ouro.example"),
-        runtime_resources=("instructions.md",),
+    second = replace(
+        first,
+        manifest=first.manifest.model_copy(update={"version": "2.0.0", "description": "New text"}),
     )
-
-    documentation.write_text("Edited documentation", encoding="utf-8")
-    assert replace(definition).contract_hash == definition.contract_hash
-    resource.write_text("Changed runtime instructions", encoding="utf-8")
-    assert replace(definition).contract_hash != definition.contract_hash
-    resource.unlink()
-    with pytest.raises(FileNotFoundError):
-        replace(definition)
+    assert first.release_id == second.release_id
+    assert replace(first, contract_version=2).release_id != first.release_id
 
 
 @pytest.mark.asyncio
@@ -754,20 +735,27 @@ async def test_plugin_mcp_tools_are_frozen_in_catalog_and_resource_closes(tmp_pa
         assert definition.permission_mode == "approval"
         assert definition.metadata["mcp_server_id"] == "echo_calendar"
         assert definition.metadata["mcp_tool_name"] == "echo"
+        assert definition.identity == "dev.ouro.echo/tools/mcp:echo_calendar:echo"
         with pytest.raises(RuntimeError, match="frozen"):
             snapshot.tools.replace((), ())
         result = await asyncio.wait_for(
-            snapshot.tools.get("echo_calendar__echo").execute(
+            ToolExecutor(snapshot.tools).execute(
                 ToolInvocation(
                     session_id="ses_mcp",
                     run_id="run_mcp",
                     tool_name="echo_calendar__echo",
+                    canonical_tool_id=definition.identity,
+                    source=definition.source,
+                    contract_hash=definition.metadata["contract_hash"],
+                    execution_contract_hash=definition.metadata["execution_contract_hash"],
                     arguments={"value": "hello"},
-                )
+                ),
+                approved=True,
             ),
             timeout=10,
         )
-        assert result.structured == {"value": "hello"}
+        assert result.result is not None
+        assert result.result.structured == {"value": "hello"}
 
     assert (
         await asyncio.wait_for(service.disable("dev.ouro.echo"), timeout=10)
@@ -3152,8 +3140,10 @@ def create_plugin(context): return Plugin(context)
     await runtime.close()
 
 
-@pytest.mark.asyncio
-async def test_missing_optional_contribution_projects_degraded(tmp_path) -> None:
+@pytest.mark.parametrize("plugin_class", ["builtin", "user"])
+async def test_pending_tool_recovery_binds_only_its_contribution(
+    tmp_path, monkeypatch, plugin_class
+) -> None:
     source = tmp_path / "optional"
     source.mkdir()
     _write_native_plugin(
@@ -3163,38 +3153,115 @@ async def test_missing_optional_contribution_projects_degraded(tmp_path) -> None
         contributes={
             "tools": [
                 {
+                    "id": "run",
+                    "exposed_name": "optional__run",
+                    "description": "Run a stable tool.",
+                },
+                {
                     "id": "maybe",
                     "exposed_name": "optional__maybe",
                     "description": "May be unavailable.",
                     "optional": True,
-                }
+                },
             ]
         },
     )
-    (source / "optional_plugin.py").write_text(
-        """from ouro.sdk.plugins.v5 import ContributionSet
+    implementation = source / "optional_plugin.py"
+    implementation.write_text(
+        """import os
+from ouro.sdk.plugins.v5 import ContributionSet, ToolContribution
 class Plugin:
-    async def prepare(self): return ContributionSet()
+    async def prepare(self):
+        async def run(call): return 'ok'
+        mode = os.environ['OURO_TEST_OPTIONAL_CONTRIBUTIONS']
+        tools = [ToolContribution(
+            id='run', exposed_name='optional__run', description='Run a stable tool.',
+            handler=run, parameters_schema={
+                'type': 'object',
+                'properties': {'value': {'type': 'integer' if mode == 'changed' else 'string'}},
+            },
+        )]
+        if mode == 'both':
+            tools.append(ToolContribution(
+                id='maybe', exposed_name='optional__maybe', description='May be unavailable.',
+                handler=run,
+            ))
+        return ContributionSet(tools=tools)
     async def start(self): pass
     async def stop(self, reason, deadline): pass
 def create_plugin(context): return Plugin()
 """,
         encoding="utf-8",
     )
-    runtime, *_ = _runtime(tmp_path / "home")
-    service = PluginService(runtime.store, runtime=runtime)
-    service.install(source)
+    builtin_plugins = EMPTY_BUILTIN_PLUGIN_REGISTRY
+    if plugin_class == "builtin":
+        builtin_plugins = BuiltinPluginRegistry(
+            (
+                BuiltinPluginDefinition(
+                    manifest=validate_plugin_package(source).manifest,
+                    factory=runpy.run_path(str(implementation))["create_plugin"],
+                    root=source,
+                    default_enabled=False,
+                ),
+            )
+        )
+    home = tmp_path / "home"
+    runtime, *_ = _runtime(home, builtin_plugins=builtin_plugins)
+    service = PluginService(runtime.store, runtime=runtime, builtin_plugins=builtin_plugins)
+    if plugin_class == "user":
+        service.install(source)
+    monkeypatch.setenv("OURO_TEST_OPTIONAL_CONTRIBUTIONS", "both")
+    try:
+        assert (await service.enable("dev.ouro.optional")).status == "active"
+        with runtime.snapshot() as snapshot:
+            original = snapshot.generations[0]
+            definition = snapshot.tools.get("optional__run").definition
+            pending = ToolInvocation(
+                session_id="ses_pending",
+                run_id="run_pending",
+                tool_name=definition.name,
+                canonical_tool_id=definition.identity,
+                source=definition.source,
+                contract_hash=definition.metadata["contract_hash"],
+                execution_contract_hash=definition.metadata["execution_contract_hash"],
+                arguments={"value": "hello"},
+            )
+            assert ToolExecutor(snapshot.tools).preflight(pending).status == "approval_required"
+            persisted = pending.model_dump_json()
+        await runtime.close()
 
-    assert (await service.enable("dev.ouro.optional")).status == "degraded"
-    assert service.show("dev.ouro.optional").status == "degraded"
-    assert service.check("dev.ouro.optional").status == "degraded"
-    assert any(
-        item.code == "plugin_optional_contribution_unavailable" and "tools/maybe" in item.message
-        for item in service.diagnostics("dev.ouro.optional")
-    )
-    with runtime.snapshot() as snapshot:
-        assert "dev.ouro.optional/tools/maybe" not in snapshot.generations[0].contract_hashes
-    await runtime.close()
+        monkeypatch.setenv("OURO_TEST_OPTIONAL_CONTRIBUTIONS", "main")
+        runtime, *_ = _runtime(home, builtin_plugins=builtin_plugins)
+        service = PluginService(runtime.store, runtime=runtime, builtin_plugins=builtin_plugins)
+        await runtime.start()
+        assert service.show("dev.ouro.optional").status == "degraded"
+        assert service.check("dev.ouro.optional").status == "degraded"
+        assert any(
+            item.code == "plugin_optional_contribution_unavailable"
+            and "tools/maybe" in item.message
+            for item in service.diagnostics("dev.ouro.optional")
+        )
+        pending = ToolInvocation.model_validate_json(persisted)
+        with runtime.snapshot() as snapshot:
+            current = snapshot.generations[0]
+            assert current.generation_id != original.generation_id
+            assert current.execution_contract_hash == original.execution_contract_hash
+            assert "dev.ouro.optional/tools/maybe" not in current.contract_hashes
+            outcome = await ToolExecutor(snapshot.tools).execute(pending, approved=True)
+            assert outcome.status == "completed"
+            assert outcome.result is not None and outcome.result.content == "ok"
+
+        monkeypatch.setenv("OURO_TEST_OPTIONAL_CONTRIBUTIONS", "changed")
+        assert (await service.restart("dev.ouro.optional")).status == "degraded"
+        with runtime.snapshot() as snapshot:
+            assert (
+                snapshot.generations[0].execution_contract_hash == original.execution_contract_hash
+            )
+            outcome = await ToolExecutor(snapshot.tools).execute(pending, approved=True)
+            assert outcome.result is not None
+            assert outcome.result.structured["error_type"] == "ToolExecutionContractMismatch"
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -3579,9 +3646,7 @@ async def test_builtin_contract_participates_in_dependency_lock(tmp_path) -> Non
         builtin_contracts=contracts,
     )
     builtin = graph.nodes[0]
-    assert builtin.plugin_class == "builtin"
-    assert builtin.package_digest is None
-    assert builtin.contract_hash == definition.contract_hash
+    assert builtin.release_id == definition.release_id
     with runtime.snapshot() as catalog:
         assert [item.plugin_id for item in catalog.generations] == [
             "dev.ouro.builtin",
@@ -3622,14 +3687,12 @@ async def test_builtin_plugin_uses_generation_lifecycle_and_persisted_override(t
     assert detail.desired_enabled is True
     assert detail.status == "active"
     assert detail.package_digest is None
-    assert detail.builtin_contract_hash == definition.contract_hash
     assert detail.installs == []
     assert runtime.store.read_state().builtin_activation_overrides == {}
     with runtime.snapshot() as snapshot:
         generation = snapshot.generations[0]
         assert generation.plugin_class == "builtin"
-        assert generation.release_id == definition.contract_hash
-        assert generation.builtin_contract_hash == definition.contract_hash
+        assert generation.release_id == definition.release_id
         assert generation.package_digest is None
 
     assert (await service.disable("dev.ouro.builtin")).status == "disabled"

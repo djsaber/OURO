@@ -111,7 +111,6 @@ def invocation(catalog, *, name="discovered", arguments=None):
                 "plugin_id",
                 "plugin_class",
                 "release_id",
-                "builtin_contract_hash",
                 "contract_hash",
                 "execution_contract_hash",
             )
@@ -144,6 +143,22 @@ async def test_replacement_preserves_accepted_schema_handler_and_generation_cont
         with runtime.snapshot() as withdrawn:
             assert not withdrawn.tools.definitions()
         assert (await ToolExecutor(accepted.tools).execute(original)).result.content == "one:term"
+
+
+async def test_tool_description_update_preserves_pending_call(discovery):
+    runtime, instances = discovery
+    with runtime.snapshot() as accepted:
+        pending = invocation(accepted)
+    published = group()
+    updated = replace(
+        published,
+        tools=(replace(published.tools[0], description="A clearer search description"),),
+    )
+    await instances[-1].context.tool_groups.publish(updated)
+    with runtime.snapshot() as current:
+        assert current.tools.get("discovered").definition.identity == pending.canonical_tool_id
+        outcome = await ToolExecutor(current.tools).execute(pending)
+        assert outcome.result.content == "one:term"
 
 
 async def test_closing_replaced_registration_cannot_withdraw_current_group(discovery):

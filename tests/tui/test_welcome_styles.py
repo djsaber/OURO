@@ -651,7 +651,15 @@ async def test_particle_theme_pauses_when_hidden_and_releases_worker_on_replacem
         panel.set_welcome_mode(True)
         for size in ((40, 16), (80, 24), (160, 48)):
             await resize_terminal(pilot, *size)
-            await pilot.pause()
+            await wait_until(
+                lambda: (
+                    matrix._raster is not None
+                    and (matrix._raster.columns, matrix._raster.rows)
+                    == (matrix.size.width, matrix.size.height)
+                ),
+                pilot,
+                description="particle raster matches the resized viewport",
+            )
             assert matrix._raster is not None
             assert matrix._raster.columns == matrix.size.width
         await panel.set_welcome_style(WELCOME_STYLES["basic"])

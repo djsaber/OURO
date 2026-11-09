@@ -75,7 +75,6 @@ class ContributionOwnerRecord:
     plugin_id: str | None
     release_id: str | None
     package_digest: str | None
-    builtin_contract_hash: str | None
     generation_id: str | None
     contract_hash: str
 
@@ -492,7 +491,6 @@ def build_extension_catalog(
                     plugin_id=source.record.plugin_id,
                     release_id=source.record.release_id,
                     package_digest=source.record.package_digest,
-                    builtin_contract_hash=source.record.builtin_contract_hash,
                     generation_id=source.record.generation_id,
                     contract_hash=contract_hash,
                 )
@@ -535,11 +533,11 @@ def _base_owner_records(
     base: ExtensionCatalogBase,
 ) -> dict[str, ContributionOwnerRecord]:
     records: dict[str, ContributionOwnerRecord] = {}
-    for name, tool in base.tools[0].items():
-        identity = f"ouro.host/tools/{name}"
+    for tool in base.tools[0].values():
+        identity = tool.definition.identity
         records[identity] = _host_owner(
             identity,
-            _hash(tool.definition.model_dump(mode="json", exclude={"metadata"})),
+            _hash(tool.definition.execution_contract()),
         )
     for observer_registration in base.observers:
         identity = (
@@ -660,7 +658,6 @@ def _host_owner(identity: str, contract_hash: str) -> ContributionOwnerRecord:
         plugin_id="ouro.host",
         release_id=None,
         package_digest=None,
-        builtin_contract_hash=None,
         generation_id=None,
         contract_hash=contract_hash,
     )

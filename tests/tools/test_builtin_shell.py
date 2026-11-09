@@ -168,6 +168,7 @@ def test_shell_delegation_contract_depends_on_dialect_not_local_executable_bindi
     ).definition
     assert tool_definition_contract_hash(alias) == tool_definition_contract_hash(installed)
     assert tool_definition_contract_hash(alias) != tool_definition_contract_hash(legacy)
+    assert alias.identity == installed.identity == legacy.identity
 
 
 @pytest.mark.parametrize(
@@ -185,7 +186,7 @@ def test_builtin_tool_list_exposes_exactly_the_detected_shell(monkeypatch, shell
     detect = Mock(return_value=shell)
     monkeypatch.setattr("ouro.tools.builtin.shell.detect_command_shell", detect)
     command_definitions = [
-        tool.definition for tool in builtin_tools() if "shell_kind" in tool.definition.metadata
+        tool.definition for tool in builtin_tools() if tool.definition.execution_variant is not None
     ]
     detect.assert_called_once_with()
 
@@ -195,7 +196,7 @@ def test_builtin_tool_list_exposes_exactly_the_detected_shell(monkeypatch, shell
     assert len(command_definitions) == 1
     assert command_definitions[0].name == shell.tool_name
     assert command_definitions[0].display_name == shell.display_name
-    assert command_definitions[0].metadata["shell_kind"] == shell.kind
+    assert command_definitions[0].execution_variant == shell.kind
 
 
 @pytest.mark.parametrize(
@@ -239,7 +240,7 @@ def test_shell_contract_exposes_dialect_specific_pitfalls(
 
     assert definition.name == shell.tool_name
     assert definition.display_name == shell.display_name
-    assert definition.metadata["shell_kind"] == shell.kind
+    assert definition.execution_variant == shell.kind
     assert "non-interactive" in definition.description
     assert "variables and directory changes do not persist" in definition.description
     assert "Prefer Read/Write/Edit/Glob/Grep" in definition.description

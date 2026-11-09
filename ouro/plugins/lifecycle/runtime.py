@@ -668,6 +668,7 @@ class PluginRuntimeResource:
     ) -> tuple[ContributionBinding[RunDriverRegistration], tuple[PluginGeneration, ...]]:
         current = self.store.read_state()
         state, graph = resolve_driver_contract(expected, current, self.builtin_contracts)
+        graph_nodes = {node.plugin_id: node for node in graph.nodes}
         implementations = {item.plugin_id: item for item in expected.implementations}
         generations: dict[str, PluginGeneration] = {}
         created: list[PluginGeneration] = []
@@ -708,22 +709,8 @@ class PluginRuntimeResource:
                         raise PluginGenerationStartError(
                             f"plugin resources have not stopped: {node.plugin_id}"
                         )
-                    readiness = self._candidate_readiness(state, node.plugin_id)
-                    if readiness != "ready":
-                        raise PluginGenerationStartError(
-                            f"Run driver implementation is not ready: {node.plugin_id}: {readiness}"
-                        )
-                    dependency_graph = self._resolve_dependencies(state, roots={node.plugin_id})
-                    fingerprint = build_dependency_lock_fingerprint(
-                        dependency_graph,
-                        state,
-                        {key: item.record for key, item in generations.items()},
-                        owner_plugin_id=node.plugin_id,
-                    )
-                    generation = await self._build_generation(
-                        self._runtime_candidate(state, node.plugin_id),
-                        dependency_lock_fingerprint=fingerprint,
-                        dependencies={key: generations[key] for key in node.dependencies},
+                    generation = await self._prepare_generation(
+                        state, node, graph_nodes, generations, set()
                     )
                     created.append(generation)
                     if plugin_implementation(generation.record) != implementation:
@@ -833,7 +820,7 @@ class PluginRuntimeResource:
         cleanup_status = self._cleanup_status(plugin_id)
         if cleanup_status is not None:
             return cleanup_status
-        if self._failed.get(plugin_id) == definition.contract_hash:
+        if self._failed.get(plugin_id) == definition.release_id:
             return "failed"
         if state is None:
             state = self.store.read_state()
@@ -982,7 +969,7 @@ class PluginRuntimeResource:
         if graph is not None:
             for node in graph.nodes:
                 active = self._active.get(node.plugin_id)
-                release_id = node.package_digest or node.contract_hash
+                release_id = node.release_id
                 if active is None or active.candidate.release_id != release_id:
                     build_ids.add(node.plugin_id)
 
@@ -1110,28 +1097,12 @@ class PluginRuntimeResource:
                 raise PluginDependencyError(
                     f"required plugin generation is unavailable: {dependency_id}"
                 )
-            expected_release_id = dependency_node.package_digest or dependency_node.contract_hash
+            expected_release_id = dependency_node.release_id
             if dependency.candidate.release_id != expected_release_id:
                 raise PluginDependencyError(f"required plugin generation is stale: {dependency_id}")
             dependencies[dependency_id] = dependency
-        # Resolve versions once per operation. Each fingerprint still includes
-        # the exact transitive contracts, without rewalking manifests or state.
-        dependency_nodes: dict[str, LockedPluginDependency] = {}
-        records: dict[str, PluginGenerationRecord] = {}
-        pending = list(dependencies.values())
-        while pending:
-            generation = pending.pop()
-            plugin_id = generation.record.plugin_id
-            if plugin_id in dependency_nodes:
-                continue
-            dependency_nodes[plugin_id] = graph_nodes[plugin_id]
-            records[plugin_id] = generation.record
-            pending.extend(generation.dependencies)
         fingerprint = build_dependency_lock_fingerprint(
-            PluginLockGraph(tuple(dependency_nodes.values())),
-            state,
-            records,
-            owner_plugin_id=node.plugin_id,
+            plugin_implementation(generation.record) for generation in dependencies.values()
         )
         return await self._build_generation(
             self._runtime_candidate(state, node.plugin_id),
@@ -1234,7 +1205,7 @@ class PluginRuntimeResource:
             active = self._active.get(node.plugin_id)
             if active is not None and active.record.status in {"active", "degraded"}:
                 continue
-            release_id = node.package_digest or node.contract_hash
+            release_id = node.release_id
             if self._failed.get(node.plugin_id) == release_id:
                 status: PluginStatus = "failed"
             else:
@@ -1486,7 +1457,6 @@ class PluginRuntimeResource:
                         plugin_class=generation.candidate.plugin_class,
                         release_id=generation.candidate.release_id,
                         package_digest=generation.candidate.package_digest,
-                        builtin_contract_hash=generation.candidate.builtin_contract_hash,
                         generation_id=generation.record.generation_id,
                         suggested_action="Retry plugin restart or restart OURO.",
                     )
@@ -1531,7 +1501,6 @@ class PluginRuntimeResource:
                     plugin_class=generation.candidate.plugin_class,
                     release_id=generation.candidate.release_id,
                     package_digest=generation.candidate.package_digest,
-                    builtin_contract_hash=generation.candidate.builtin_contract_hash,
                     generation_id=generation.record.generation_id,
                     suggested_action="Resolve the cleanup failure, then disable the plugin again.",
                 )
@@ -1564,7 +1533,6 @@ class PluginRuntimeResource:
                             plugin_class=generation.candidate.plugin_class,
                             release_id=generation.candidate.release_id,
                             package_digest=generation.candidate.package_digest,
-                            builtin_contract_hash=(generation.candidate.builtin_contract_hash),
                             generation_id=generation.record.generation_id,
                             suggested_action="Inspect the service and restart OURO if needed.",
                         )
@@ -1640,7 +1608,6 @@ class PluginRuntimeResource:
             plugin_class=candidate.plugin_class,
             release_id=candidate.release_id,
             package_digest=candidate.package_digest,
-            builtin_contract_hash=candidate.builtin_contract_hash,
             runtime_kind=candidate.manifest.runtime.kind,
             configuration_revision_id=configuration.revision_id,
             dependency_lock_fingerprint=dependency_lock_fingerprint,
@@ -1669,7 +1636,6 @@ class PluginRuntimeResource:
                     plugin_class=candidate.plugin_class,
                     release_id=candidate.release_id,
                     package_digest=candidate.package_digest,
-                    builtin_contract_hash=candidate.builtin_contract_hash,
                     generation_id=generation.generation_id,
                 )
             )
@@ -1692,7 +1658,6 @@ class PluginRuntimeResource:
                     release_id=candidate.release_id,
                     generation_id=generation.generation_id,
                     package_digest=candidate.package_digest,
-                    builtin_contract_hash=candidate.builtin_contract_hash,
                 )
             ),
             gate=generation_gate,
@@ -1809,7 +1774,6 @@ class PluginRuntimeResource:
                             plugin_class=candidate.plugin_class,
                             release_id=candidate.release_id,
                             package_digest=candidate.package_digest,
-                            builtin_contract_hash=candidate.builtin_contract_hash,
                             generation_id=generation.generation_id,
                         )
                     )
@@ -1894,15 +1858,12 @@ class PluginRuntimeResource:
             generation.contract_hashes = dict(prepared.contract_hashes)
             generation.execution_contract_hash = build_execution_contract_hash(
                 plugin_id=generation.plugin_id,
-                version=generation.version,
-                plugin_class=generation.plugin_class,
                 release_id=candidate.release_id,
                 runtime_kind=generation.runtime_kind,
                 configuration_revision_id=generation.configuration_revision_id,
                 dependency_lock_fingerprint=generation.dependency_lock_fingerprint,
                 plugin_api_version=generation.plugin_api_version,
                 worker_protocol_version=generation.worker_protocol_version,
-                contribution_contract_hashes=generation.contract_hashes,
             )
             prepared = bind_execution_contract(
                 prepared,
@@ -1931,7 +1892,6 @@ class PluginRuntimeResource:
                         plugin_class=candidate.plugin_class,
                         release_id=candidate.release_id,
                         package_digest=candidate.package_digest,
-                        builtin_contract_hash=candidate.builtin_contract_hash,
                         generation_id=generation.generation_id,
                     )
                 )
@@ -1992,12 +1952,11 @@ class PluginRuntimeResource:
             return PluginRuntimeCandidate(
                 plugin_class="builtin",
                 manifest=definition.manifest,
-                release_id=definition.contract_hash,
+                release_id=definition.release_id,
                 root=definition.root,
                 configuration=builtin_configuration,
                 source_kind="builtin",
                 public_source="bundled with OURO",
-                builtin_contract_hash=definition.contract_hash,
                 factory=definition.factory,
             )
         record = _state_plugin_record(state, plugin_id)
@@ -2035,7 +1994,6 @@ class PluginRuntimeResource:
             plugin_class=candidate.plugin_class,
             release_id=candidate.release_id,
             package_digest=candidate.package_digest,
-            builtin_contract_hash=candidate.builtin_contract_hash,
             retryable=True,
             suggested_action="Review plugin diagnostics and retry activation.",
         )

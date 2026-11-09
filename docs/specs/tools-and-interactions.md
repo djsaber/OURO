@@ -10,7 +10,12 @@
 ## 工具契约
 
 `ToolDefinition` 描述：name、description、参数 schema、结果 schema、权限模式、来源和 metadata。
+`canonical_id` 表达稳定工具身份；Host 工具未指定时使用 `ouro.host/tools/<name>`，插件工具由贡献准备边界赋值。
+持久执行契约包含身份、输入输出与执行策略；工具说明、显示名称和 metadata 不参与定义摘要。
+插件拥有发布与依赖的解释，执行器只比较所绑定的工具身份、贡献契约与执行契约。
+同一工具能力的不同执行语义通过可选 `execution_variant` 声明；它参与执行契约，不改变规范身份或授权范围。
 `ToolCallRequest` 保存 Provider 调用身份、参数和原始顺序。`ToolInvocation` 增加 Session/Run 上下文。
+持久执行绑定只投影已知身份与授权字段，不因额外审计字段拒绝读取；调用参数必须由 Call 或显式参数覆盖持有，不能混入绑定。
 `ToolResult` 保存模型内容、结构化业务结果、错误标志和资源引用。`content` 接受字符串或有序的
 `TextContent` / `ImageContent` / `AudioContent` / `VideoContent` 列表；字符串是单个文本块的简写。`content_blocks` 给出统一内容序列，
 `text_content` 只提取文本供日志和 Observer 使用。模型消息与执行结果复用 `core.content` 类型，
@@ -118,7 +123,8 @@ ripgrep 负责原生遍历，支持自身的 Unicode 正则、glob、`type` 和 
 媒体超限整块替换为说明，保留的媒体不切片、不解码。请求级内容预算独立于执行结果限额。
 
 命令行工具的模型可见 name、方言描述和执行包装必须由同一个检测结果生成，不能用 `Bash` 名称委托宿主
-默认 shell。PowerShell 以无 Profile、非交互、UTF-8 文本模式运行；Bash 以无 Profile、非交互并启用
+默认 shell。Shell 方言通过执行变体区分，包括 PowerShell 7 与 Windows PowerShell；可执行文件路径属于本机绑定。
+PowerShell 以无 Profile、非交互、UTF-8 文本模式运行；Bash 以无 Profile、非交互并启用
 `pipefail` 的模式运行。各方言描述需明确其引用、管道、路径、可选程序探测、错误状态与非持久会话等常见
 陷阱。若没有支持的 shell，则不注册命令行工具，不能暴露一个实际无法执行或会落到其他方言的定义。
 

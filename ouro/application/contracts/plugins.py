@@ -35,7 +35,6 @@ class PluginSummary(OuroModel):
     name: str
     version: str
     package_digest: str | None = None
-    builtin_contract_hash: str | None = None
     status: PluginStatus
     runtime_kind: PluginRuntimeKind
     desired_enabled: bool

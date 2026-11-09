@@ -62,12 +62,7 @@ class _ToolContractAdapter:
 
     def contracts(self, context: ContributionContractContext) -> dict[str, object]:
         return {
-            f"{context.manifest.plugin_id}/tools/"
-            f"{tool.definition.metadata['contribution_id']}": tool.definition.model_dump(
-                mode="json",
-                exclude={"metadata"},
-            )
-            for tool in context.tools
+            tool.definition.identity: tool.definition.execution_contract() for tool in context.tools
         }
 
 
@@ -134,7 +129,6 @@ class _SessionControllerContractAdapter:
     def contracts(self, context: ContributionContractContext) -> dict[str, object]:
         return {
             f"{context.manifest.plugin_id}/session_controllers/{controller.controller_id}": {
-                "description": controller.description,
                 "claims": [claim.model_dump(mode="json") for claim in controller.claims],
                 "timeout_seconds": controller.timeout_seconds,
             }

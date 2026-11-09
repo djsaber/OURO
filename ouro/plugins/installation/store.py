@@ -172,7 +172,8 @@ class PluginPackageStore:
         self.initialize()
         with FileMutationLock(self.lock_root / "state-mutations.lock"):
             current = self.read_state()
-            updated = operation(current.model_copy(deep=True))
+            proposed = operation(current.model_copy(deep=True))
+            updated = PluginStateDocument.model_validate(proposed.model_dump(mode="python"))
             self._commit_state_unlocked(current, updated)
             return updated
 
@@ -303,7 +304,6 @@ class PluginPackageStore:
 
     def _write_state_unlocked(self, state: PluginStateDocument) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        state = PluginStateDocument.model_validate(state.model_dump(mode="python"))
         temporary: Path | None = None
         try:
             with NamedTemporaryFile(

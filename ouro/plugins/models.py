@@ -209,7 +209,6 @@ class PluginDiagnostic(OuroModel):
     plugin_class: PluginClass | None = None
     release_id: str | None = None
     package_digest: str | None = None
-    builtin_contract_hash: str | None = None
     generation_id: str | None = None
     contribution_id: str | None = None
     correlation_id: str | None = None
@@ -223,7 +222,6 @@ class PluginGenerationRecord(OuroModel):
     plugin_class: PluginClass = "user"
     release_id: str = ""
     package_digest: str | None = None
-    builtin_contract_hash: str | None = None
     runtime_kind: PluginRuntimeKind
     configuration_revision_id: str
     dependency_lock_fingerprint: str
@@ -237,18 +235,14 @@ class PluginGenerationRecord(OuroModel):
     @model_validator(mode="after")
     def validate_execution_contract(self) -> PluginGenerationRecord:
         if self.plugin_class == "user":
-            if self.package_digest is None or self.builtin_contract_hash is not None:
+            if self.package_digest is None:
                 raise ValueError("user plugin generation requires only a package digest")
             if not self.release_id:
                 self.release_id = self.package_digest
             elif self.release_id != self.package_digest:
                 raise ValueError("user plugin generation release id must equal package digest")
-        elif self.builtin_contract_hash is None or self.package_digest is not None:
-            raise ValueError("builtin plugin generation requires only a builtin contract hash")
-        elif not self.release_id:
-            raise ValueError("builtin plugin generation requires a release id")
-        elif self.release_id != self.builtin_contract_hash:
-            raise ValueError("builtin plugin generation release id must equal contract hash")
+        elif self.package_digest is not None or not self.release_id:
+            raise ValueError("builtin implementation requires a release id and no package digest")
         if self.status in {"active", "degraded"} and self.execution_contract_hash is None:
             raise ValueError("active plugin generation requires an execution contract")
         for field_name, value in (

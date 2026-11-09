@@ -5,7 +5,7 @@ import pytest
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
 from ouro.tui.composer.popup import CommandPopup
-from tests.tui.helpers import run_ready_app
+from tests.tui.helpers import run_ready_app, wait_until
 from tests.tui.test_history_commands import application_at
 
 
@@ -17,9 +17,14 @@ async def test_arrow_navigation_reuses_displayed_command_candidates(tmp_path, mo
     async with run_ready_app(app) as pilot:
         composer = app.query_one(Composer)
         composer.load_command(command)
-        await pilot.pause()
         popup = app.query_one(CommandPopup)
-        assert popup.display and popup.argument_command is not None
+        await wait_until(
+            lambda: (
+                popup.display and popup.argument_command is not None and not app._model_menu_loading
+            ),
+            pilot,
+            description="command candidates loaded",
+        )
         calls = 0
         original = app._command_catalog
 

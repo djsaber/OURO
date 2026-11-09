@@ -6,6 +6,7 @@ import pytest
 
 from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
+from ouro.core.tools import tool_definition_contract_hash
 from ouro.tools import (
     Tool,
     ToolBatchExecutor,
@@ -80,6 +81,63 @@ def test_terminal_tool_result_without_start_has_zero_duration() -> None:
 
     assert result.started_at == ended_at
     assert result.ended_at == ended_at
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("plugin", [False, True])
+@pytest.mark.parametrize("change", ["presentation", "identity", "parameters"])
+async def test_pending_tool_checks_execution_semantics_before_calling_handler(plugin, change):
+    definition = ToolDefinition(
+        name="pending",
+        canonical_id="example/tools/pending" if plugin else None,
+        source="official_plugin" if plugin else "builtin",
+        description="Original description",
+        parameters_schema={"type": "object"},
+    )
+    contract_hash = tool_definition_contract_hash(definition)
+    invocation = ToolInvocation(
+        session_id="ses_1",
+        run_id="run_1",
+        tool_name=definition.name,
+        arguments={},
+        source=definition.source,
+        canonical_tool_id=definition.identity,
+        definition_contract_hash=None if plugin else contract_hash,
+        contract_hash=contract_hash if plugin else None,
+        execution_contract_hash="execution" if plugin else None,
+    )
+    if change == "presentation":
+        definition.description = "Reworded description"
+        definition.display_name = "A friendly label"
+        definition.canonical_id = definition.identity
+        definition.metadata = {"generation_id": "another-process"}
+    elif change == "identity":
+        definition.canonical_id = "another/tools/pending"
+    else:
+        definition.parameters_schema = {"type": "object", "required": ["value"]}
+    if plugin:
+        definition.metadata.update(
+            contract_hash=tool_definition_contract_hash(definition),
+            execution_contract_hash="execution",
+        )
+    calls = []
+
+    def handler(invocation, context):
+        calls.append(invocation.tool_call_id)
+        return ToolResult(
+            tool_call_id=invocation.tool_call_id, tool_name=invocation.tool_name, content="done"
+        )
+
+    registry = ToolRegistry()
+    registry.register(Tool(definition=definition, handler=handler))
+    outcome = await ToolExecutor(registry).execute(invocation)
+    assert outcome.result is not None
+    if change == "presentation":
+        assert not outcome.result.is_error
+        assert calls == [invocation.tool_call_id]
+    else:
+        assert outcome.result.structured["error_type"] == "ToolExecutionContractMismatch"
+        assert calls == []
 
 
 @pytest.mark.asyncio

@@ -61,7 +61,6 @@ class PluginSessionController:
     plugin_class: PluginClass = "user"
     release_id: str | None = None
     package_digest: str | None = None
-    builtin_contract_hash: str | None = None
     owner: str | None = None
     generation_id: str | None = None
     contract_hash: str | None = None
@@ -229,7 +228,6 @@ def bind_plugin_session_controller(
     plugin_class: PluginClass,
     release_id: str,
     package_digest: str | None,
-    builtin_contract_hash: str | None,
     generation_id: str,
     contract_hash: str | None = None,
     execution_contract_hash: str | None = None,
@@ -242,7 +240,6 @@ def bind_plugin_session_controller(
         plugin_class=plugin_class,
         release_id=release_id,
         package_digest=package_digest,
-        builtin_contract_hash=builtin_contract_hash,
         generation_id=generation_id,
         contract_hash=contract_hash,
         execution_contract_hash=execution_contract_hash,

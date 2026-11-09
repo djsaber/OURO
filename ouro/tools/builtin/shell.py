@@ -166,14 +166,12 @@ def builtin_command_tool(shell: CommandShell) -> Tool:
     return Tool(
         definition=ToolDefinition(
             name=shell.tool_name,
+            execution_variant=shell.kind,
             display_name=shell.display_name,
             description=_shell_description(shell),
             parameters_schema=parameters,
             permission_mode="approval",
             effect="state_changing",
-            # The executable path is a local binding captured by the handler,
-            # not part of the portable tool contract used by delegated Runs.
-            metadata={"shell_kind": shell.kind},
         ),
         handler=execute,
     )

@@ -360,13 +360,18 @@ disable 关闭该插件所有代次的 gate 并取消正在执行的回调；实
 旧 Background Service 停止失败时，不启动新代服务。停止中的代码或私有数据不能被卸载、清除。
 同步 Python 回调的线程不能强杀；取消后仍等待线程退出并丢弃迟到结果，插件应主动遵守停止约定。
 
-Run、Tool/Approval 和 Continuation 持久化稳定 `execution_contract_hash`，覆盖 package、immutable configuration
-revision、传递 dependency lock、Plugin API/worker protocol 和 contribution contract。随机 `generation_id` 只用于
-当前进程 owner 与诊断。重启后使用当前已激活的 process-local generation 检查具体调用；同名但不同 contract 的 Tool
-不能接管 pending invocation。
+Run、Tool/Approval 和 Continuation 持久化稳定 `execution_contract_hash`。内置与用户插件使用同一契约计算和
+调用管线，覆盖 plugin identity、release_id、runtime、immutable configuration revision、传递 dependency lock、
+Plugin API/worker protocol。依赖指纹绑定实际直接依赖的 execution contract，由其覆盖传递依赖。
+随机 `generation_id` 只用于当前进程 owner 与诊断。重启后使用当前已激活的 process-local generation 检查具体调用；
+同名但不同 contract 的 Tool 不能接管 pending invocation。
 
-对 builtin，用户包摘要由 definition 在装配时冻结的 builtin contract hash 取代；该摘要同时覆盖规范化 Manifest 与实现
-目录内容，因此代码变化不会沿用旧 release identity。
+待完成调用独立绑定所用贡献的契约；同一发布、配置与依赖下，无关贡献的可用性变化不影响它。工具契约包含身份、
+参数、结果与执行策略，工具说明、显示名称和 metadata 不参与比较。
+
+Builtin definition 以 `contract_version` 声明持久执行兼容性，`release_id` 为 `<plugin_id>/<contract_version>`。
+只有无法承接既有待完成调用或私有状态的变化需要提升该版本；说明、源码组织和显示版本不参与恢复身份。
+用户插件以规范化 package digest 作为 `release_id`。来源归属用于装配、加载和诊断，不决定执行契约的校验规则。
 
 ### 动态工具组
 

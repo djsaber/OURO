@@ -75,8 +75,7 @@ OURO 是强扩展的个人智能体。插件是系统级扩展模块，不是项
 16. Disable 后的每次插件调用必须经过 generation gate；关闭 gate 后不得开始新调用。
 17. 依赖未 active 时依赖者不得 active。
 18. 状态查询和管理命令必须使用同一 observed-state reconciler。
-19. Pending tool/approval 恢复必须验证发布引用（user package digest 或 builtin contract hash）和 execution
-    contract，不能按同名新工具替代。
+19. Pending tool/approval 恢复必须匹配工具身份、所用贡献契约和所属插件执行契约，不能按同名新工具替代。
 20. 只支持当前格式，不提供旧 schema、插件身份或 API 别名的兼容转换。
 21. 依赖契约变化时必须原子重建受影响的 active dependant closure，不能在新 Catalog 中保留旧 dependency lock。
 22. 候选阶段不得执行自主后台副作用或破坏性修改共享 plugin data。
@@ -115,6 +114,13 @@ ExtensionCatalog
 - `configuration_revision_id` 是规范化配置与完整凭据绑定的内容摘要；环境引用按引用计算，直接密钥按真实值计算；
 - 相同 version、不同 digest 是不同内容，不能静默覆盖。
 
+所有插件使用同一执行契约：plugin identity、`release_id`、runtime、不可变配置修订、dependency lock、
+Plugin API 与 worker protocol。依赖指纹绑定实际装载的直接依赖及其 execution contract，并通过依赖自身的
+契约覆盖传递闭包。依赖锁只保存插件身份、版本、发布身份和直接依赖关系；来源归属由装配和加载边界管理。
+
+具体待完成调用独立绑定所用 contribution contract；同一发布、配置与依赖下，无关贡献的可用性变化不阻止
+该调用恢复。外部工作区指令、Session 制品与动态输入由各自读取和持久化边界管理。
+
 配置修订属于插件记录，包选版只引用其中一个修订。修改配置或移除某个包版本不删除既有修订，等待中的 Run 可以
 继续引用原配置。最终安装记录删除时一并删除配置修订；插件私有数据按显式保留／清除选项处理。
 
@@ -131,23 +137,19 @@ Builtin plugin：
 - 由 application composition root 提供；
 - 由显式、不可变的 builtin definition registry 提供，不扫描 workspace、`OURO_HOME` 或用户插件目录；
 - definition 包含稳定 identity、version、Manifest contribution/dependency contract、in-process factory、
-  `default_enabled`、显式 `runtime_resources` 和由规范化 Manifest 与运行输入派生的 builtin contract hash；
+  `default_enabled` 与持久执行契约版本 `contract_version`；
 - 与 user plugin 复用同一 generation、gate、owner、contribution preparation、catalog transaction 和 durable
   execution contract；builtin 不是 Host baseline，也不建立第二套 runtime；
-- 不进入 user install/update/remove 流程；
 - 不经过 user install/select/remove 流程；
 - identity 和公开名称不能被 user plugin 覆盖；
-- 以稳定 version 和 builtin contract hash 参与 dependency lock；实现内容变化即使忘记提升 version，也必须产生不同 release identity。
+- version 用于展示与依赖版本约束，`release_id = <plugin_id>/<contract_version>` 用于恢复与 dependency lock。
 
-Builtin contract hash 的输入格式版本为 2，包含规范化 Manifest、definition root 下全部 Python 源文件，
-以及 `runtime_resources` 声明的包内相对文件路径与内容摘要。插件读取的非 Python 提示词、模板、schema 等
-随代码发布的运行资源必须显式列入；缺失的声明资源使 definition 构造失败。普通说明文档不作为运行输入，
-判断依据是是否参与执行，不是文件名或扩展名。外部工作区指令、Session 制品和用户配置属于动态业务输入，
-继续由各自的读取与持久化契约管理。插件间依赖通过 dependency lock 纳入 execution contract，
-SDK 和 Host 通过既有 API、贡献与执行契约约束，不把整个应用文件树纳入局部插件摘要。
+Builtin 由产品组合根提供，持久执行兼容性由插件维护者声明。只有无法解释既有待完成调用或私有状态的变化
+需要提升 `contract_version`；源码组织、说明、提示词和显示版本本身不构成恢复障碍。框架不扫描内置实现目录
+计算代码身份。
 
-User package digest 覆盖排除缓存后的完整规范化包文件树，用于安装内容身份与完整性检查。
-`builtin_contract_hash` 作为 release identity，并参与 execution contract。
+User package digest 覆盖排除缓存后的完整规范化包文件树，用于安装内容身份与完整性检查，并作为该包的
+`release_id`。来源差异由装配和加载边界解析，准备完成后进入统一的执行契约与调用管线。
 
 `builtin | user` 是代码供应类别，`declarative | python-inprocess | worker` 是运行方式，二者相互独立。Manifest
 不能声明 plugin class，也不设置可由 user package 伪造的 `runtime.kind = builtin`。Builtin 使用 Plan/Goal
@@ -1087,9 +1089,11 @@ Host shutdown 按已发布 Catalog 的依赖顺序关闭资源，不依赖持久
 每次模型决策取得当前 `ExtensionCatalogLease`。同一响应及其工具调用共享该绑定，下一轮决策可以采用新环境。
 审批、用户回答和 child join 的等待不持有整组插件实例。历史消息与已完成结果不要求产生它们的工具仍然存在。
 
-待完成插件调用保存精确执行契约：plugin id、release（user package digest 或 builtin contract hash）、配置 revision、
-传递依赖、Plugin API/worker protocol 及 contribution contract。`generation_id` 是进程实例和审计身份，不是跨重启
-等价性的判据。当前同一契约的新实例可承接；包、配置或契约不匹配时，调用产生明确错误，不转调同名新实现。
+待完成插件调用保存稳定工具身份、所用 contribution contract 与所属插件的 execution contract。
+插件层拥有 release、依赖、配置与协议的解释；通用工具执行器比较准备阶段提供的执行身份，不解释插件包或供应类别。
+Continuation 同样以贡献契约和插件执行契约绑定策略；发布来源字段用于记录归属，不作为独立的恢复条件。
+`generation_id` 是进程实例和审计身份，不是跨重启等价性的判据。当前同一契约的新实例可承接；
+执行契约不匹配时，调用产生明确错误，不转调同名新实现。工具说明、显示名称与审计 metadata 不参与工具执行契约。
 框架不重建历史 Catalog，也不为继续 Session 要求无关插件的旧代码或配置。
 
 Prompt Policy 在接受直接用户输入前执行；排队输入在消费前按当前策略再检查。已接受的输入保留原文、技能正文、

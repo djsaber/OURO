@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from ouro.plugins.models import PluginClass, PluginStateDocument
+from ouro.plugins.models import PluginStateDocument
 from ouro.plugins.semver import version_satisfies
 
 
@@ -15,7 +15,7 @@ class PluginDependencyError(ValueError):
 class BuiltinPluginContract:
     plugin_id: str
     version: str
-    contract_hash: str
+    release_id: str
     dependencies: tuple[tuple[str, str], ...] = ()
     default_enabled: bool = True
 
@@ -24,9 +24,7 @@ class BuiltinPluginContract:
 class LockedPluginDependency:
     plugin_id: str
     version: str
-    plugin_class: PluginClass
-    package_digest: str | None
-    contract_hash: str | None = None
+    release_id: str
     dependencies: tuple[str, ...] = ()
 
 
@@ -128,9 +126,7 @@ def _resolve_plugin_activation(
             node = LockedPluginDependency(
                 plugin_id=plugin_id,
                 version=builtin.version,
-                plugin_class="builtin",
-                package_digest=None,
-                contract_hash=builtin.contract_hash,
+                release_id=builtin.release_id,
                 dependencies=tuple(item[0] for item in dependencies),
             )
         else:
@@ -149,8 +145,7 @@ def _resolve_plugin_activation(
             node = LockedPluginDependency(
                 plugin_id=plugin_id,
                 version=chosen.version,
-                plugin_class="user",
-                package_digest=chosen.package_digest,
+                release_id=chosen.package_digest,
                 dependencies=tuple(item[0] for item in dependencies),
             )
         visiting.append(plugin_id)

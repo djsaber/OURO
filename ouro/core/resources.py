@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from datetime import datetime
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from ouro.core.base import OuroModel, VersionedOuroModel, new_id, utc_now
 
@@ -22,6 +23,8 @@ def validate_resource_id(resource_id: str) -> str:
 
 class ResourceSource(OuroModel):
     """Non-path provenance safe to expose through application DTOs."""
+
+    model_config = ConfigDict(frozen=True)
 
     kind: ResourceSourceKind = "import"
     name: str
@@ -41,6 +44,8 @@ class ResourceSource(OuroModel):
 class ResourceRecord(VersionedOuroModel):
     """Metadata for one named file in a prepared or accepted Session namespace."""
 
+    model_config = ConfigDict(frozen=True)
+
     schema_version: int = 3
     resource_id: str = Field(default_factory=lambda: new_id("res"))
     filename: str
@@ -50,6 +55,11 @@ class ResourceRecord(VersionedOuroModel):
     source: ResourceSource
     internal: bool = False
     created_at: datetime = Field(default_factory=utc_now)
+
+    def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
+        if update:
+            return type(self).model_validate({**self.model_dump(), **update})
+        return self
 
     @model_validator(mode="after")
     def validate_identity(self) -> Self:

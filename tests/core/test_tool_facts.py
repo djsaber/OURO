@@ -82,6 +82,19 @@ def test_execution_binding_cannot_silently_discard_changed_arguments():
     assert call.request.arguments == {"nested": ["original"]}
 
 
+def test_persisted_binding_ignores_unowned_audit_fields_but_rejects_call_arguments():
+    call = call_record()
+    start = ToolCallStart.from_invocation(call, invocation(call), attempt=1)
+    payload = start.model_dump()
+    payload["binding"]["audit_label"] = "a producer annotation"
+    restored = ToolCallStart.model_validate(payload)
+    assert restored.materialize(call) == start.materialize(call)
+    assert "audit_label" not in restored.binding.model_dump()
+    payload["binding"]["arguments"] = {"nested": ["different"]}
+    with pytest.raises(ValidationError, match="cannot own Call arguments"):
+        ToolCallStart.model_validate(payload)
+
+
 def test_outcome_content_cannot_silently_drop_a_business_proposal():
     call = call_record()
     result = ToolResult(

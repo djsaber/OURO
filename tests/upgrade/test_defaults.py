@@ -11,6 +11,7 @@ from ouro.core.inputs import validate_input_snapshot
 from ouro.core.tool_batches import validate_call_states
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro_upgrade.engine import upgrade
+from ouro_upgrade.errors import UpgradeDataError
 from tests.upgrade.conftest import FIXTURES
 from tests.upgrade.test_isolation import clone_files
 
@@ -126,6 +127,34 @@ def test_unmodified_historical_tool_identity_is_accepted(historical_home):
     assert snapshot.messages[-1].tool_result.tool_call_id == "tool_fixture"
     orphan = next(call for call in snapshot.tool_facts.calls if call.request.id == "tool_fixture")
     assert orphan.request.arguments == {}
+
+
+@pytest.mark.parametrize("historical_home", ["files", "sqlite"], indirect=True)
+@pytest.mark.parametrize("invalid_permission", [False, True])
+def test_invocation_projection_preserves_execution_fields_and_validates_them(
+    historical_home, invalid_permission
+):
+    arguments = {"approved": {"schema_version": 999, "value": [1, None]}}
+
+    def change(raw):
+        raw["active_tool_batch"]["calls"][0]["invocation"].update(
+            producer_annotation={"schema_version": 999},
+            arguments=arguments,
+            execution_contract_hash="a" * 64,
+            permission_mode="invalid" if invalid_permission else "approval",
+        )
+
+    edit(historical_home, "run", change)
+    if invalid_permission:
+        with pytest.raises(UpgradeDataError, match="invalid ToolInvocation"):
+            upgraded(historical_home)
+        return
+    _, snapshot = upgraded(historical_home)
+    state = snapshot.call_states[0]
+    assert state.arguments_override == arguments
+    assert state.prepared_binding.permission_mode == "approval"
+    assert state.prepared_binding.execution_contract_hash == "a" * 64
+    assert "producer_annotation" not in state.prepared_binding.model_dump()
 
 
 @pytest.mark.parametrize("historical_home", ["files", "sqlite"], indirect=True)

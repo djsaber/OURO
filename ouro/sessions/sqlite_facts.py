@@ -8,9 +8,12 @@ from typing import Any
 from pydantic import TypeAdapter, ValidationError
 
 from ouro.core.errors import PersistenceError
+from ouro.core.message_content import validate_tool_message
 from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
-from ouro.core.tool_batches import ToolCallState
+from ouro.core.session_commits import SessionCommit
+from ouro.core.state import ACTIVE_RUN_STATUSES, SessionRecord
+from ouro.core.tool_batches import ToolCallState, validate_call_states
 from ouro.core.tool_facts import (
     ToolCallFacts,
     ToolCallIdentity,
@@ -18,6 +21,7 @@ from ouro.core.tool_facts import (
     ToolCallStart,
     ToolOutcomeRecord,
 )
+from ouro.sessions.sqlite_runs import read_run
 
 _STRUCTURED_RESULT = TypeAdapter(dict[str, Any])
 
@@ -324,3 +328,70 @@ def load_required(
             is not None
         ),
     )
+
+
+def prepare_commit_facts(
+    connection: sqlite3.Connection, request: SessionCommit, current: SessionRecord
+) -> tuple[ToolCallFacts, dict[str, tuple[str, ...]]]:
+    proposed = request.tool_facts
+    session_id = current.session_id
+    messages = tuple(step.message for step in request.steps if step.message is not None)
+    existing = load_required(connection, session_id, proposed, request.call_states, messages)
+    active_runs = {}
+    active_run_id = (
+        request.after.active_run_id
+        if request.after is not None and request.after.active_run_id != request.before.active_run_id
+        else current.active_run_id
+    )
+    staged_runs = {run.run_id: run for run in request.runs}
+    for run_id in dict.fromkeys(
+        (*proposed.execution_run_ids, *(state.identity.run_id for state in request.call_states))
+    ):
+        run = staged_runs.get(run_id)
+        if run is None:
+            try:
+                run = read_run(connection, session_id, run_id)
+            except FileNotFoundError:
+                continue
+        elif run.session_id != session_id:
+            raise PersistenceError("Call Run has a foreign identity")
+        if (
+            run.run_id == active_run_id
+            and run.status in ACTIVE_RUN_STATUSES
+            and not run.abort_requested
+        ):
+            active_runs[run_id] = run.history_epoch
+    prepared = proposed.prepare(
+        session_id=session_id,
+        history_epoch=current.history_epoch,
+        active_runs=active_runs,
+        existing=existing,
+    )
+    validate_call_states(
+        request.call_states,
+        ToolCallFacts(
+            calls=existing.calls + prepared.calls,
+            starts=existing.starts + prepared.starts,
+            outcomes=existing.outcomes + prepared.outcomes,
+        ),
+        session_id=session_id,
+        active_runs=active_runs,
+        history_epoch=current.history_epoch,
+    )
+    calls = {call.identity: call for call in (*existing.calls, *prepared.calls)}
+    outcomes = {
+        (item.identity, item.attempt): item for item in (*existing.outcomes, *prepared.outcomes)
+    }
+    resources = {}
+    for message in messages:
+        reference = message.outcome_ref
+        outcome = (
+            outcomes.get((reference.identity, reference.outcome_attempt))
+            if reference is not None and reference.outcome_attempt is not None
+            else None
+        )
+        validate_tool_message(message.as_fact(), calls, outcome)
+        resources[message.message_id] = tuple(
+            outcome.value.resource_refs if outcome is not None else message.resource_refs
+        )
+    return prepared, resources

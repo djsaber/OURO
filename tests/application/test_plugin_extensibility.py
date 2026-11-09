@@ -1261,7 +1261,6 @@ async def test_waiting_approval_survives_unrelated_builtin_change(
     builtin_generation = next(item for item in generations if item["plugin_class"] == "builtin")
     stale_contract_hash = "f" * 64
     builtin_generation["release_id"] = stale_contract_hash
-    builtin_generation["builtin_contract_hash"] = stale_contract_hash
     metadata = dict(waiting.run.metadata)
     metadata["extension_generations"] = generations
     first_store.save_run(waiting.run.model_copy(update={"metadata": metadata}))

@@ -142,7 +142,6 @@ def _plugin(tmp_path: Path) -> GoalPlugin:
             plugin_class="builtin",
             release_id="test-release",
             package_digest=None,
-            builtin_contract_hash="test-contract",
             generation_id="test-generation",
         ),
         provenance=sdk.PluginProvenanceSummary(

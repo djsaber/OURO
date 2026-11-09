@@ -26,7 +26,7 @@ def resolve_driver_contract(
         plugin_id = implementation.plugin_id
         if implementation.plugin_class == "builtin":
             builtin = builtin_contracts.get(plugin_id)
-            if builtin is None or builtin.contract_hash != implementation.release_id:
+            if builtin is None or builtin.release_id != implementation.release_id:
                 raise ValueError(f"Run driver builtin contract is unavailable: {plugin_id}")
             if not builtin_desired_enabled(current, builtin):
                 raise ValueError(f"Run driver implementation is disabled: {plugin_id}")

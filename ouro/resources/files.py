@@ -41,7 +41,6 @@ def session_resource_directory(root: Path, session_id: str) -> Path:
 
 
 def checked_file(directory: Path, record: ResourceRecord) -> Path:
-    ResourceRecord.model_validate(record.model_dump())
     path = directory / record.filename
     if any(
         candidate.is_symlink() or candidate.is_junction()

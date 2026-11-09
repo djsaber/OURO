@@ -84,7 +84,6 @@ class PluginIdentity:
     plugin_class: Literal["builtin", "user"]
     release_id: str
     package_digest: str | None
-    builtin_contract_hash: str | None
     generation_id: str
 
 

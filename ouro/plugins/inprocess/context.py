@@ -99,7 +99,6 @@ class PluginDiagnosticEmitter:
                 plugin_class=self.candidate.plugin_class,
                 release_id=self.candidate.release_id,
                 package_digest=self.candidate.package_digest,
-                builtin_contract_hash=self.candidate.builtin_contract_hash,
                 generation_id=self.generation.generation_id,
             )
         )
@@ -133,7 +132,6 @@ def build_plugin_context(
             plugin_class=candidate.plugin_class,
             release_id=candidate.release_id,
             package_digest=candidate.package_digest,
-            builtin_contract_hash=candidate.builtin_contract_hash,
             generation_id=generation.generation_id,
         ),
         provenance=sdk.PluginProvenanceSummary(

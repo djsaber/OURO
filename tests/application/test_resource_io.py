@@ -79,9 +79,8 @@ def test_delete_batch_preserves_unselected_files_and_other_sessions(tmp_path):
 def test_resource_filename_cannot_escape_session_directory(tmp_path):
     store, (record,) = _store(tmp_path, b"first")
     for name in ("../escape.txt", "C:/escape.txt", "CON", "evil."):
-        invalid = record.model_copy(update={"filename": name})
         with pytest.raises(ValueError):
-            store.delete_resources("ses_test", (invalid,))
+            record.model_copy(update={"filename": name})
     assert store.load_content("ses_test", record) == b"first"
 
 
@@ -159,3 +158,15 @@ def test_window_read_rejects_missing_or_resized_resource(tmp_path, damage):
         blob.write_bytes(damage)
     with pytest.raises(ResourceIntegrityError):
         store.read_ranges("ses_test", record, ((0, 1),))
+
+
+def test_resource_metadata_is_immutable_and_copies_preserve_validity(tmp_path):
+    store, (record,) = _store(tmp_path, b"first")
+    with pytest.raises(ValueError):
+        record.filename = "other.txt"
+    with pytest.raises(ValueError):
+        record.source.name = "other.txt"
+    assert record.model_copy(deep=True) is record
+    renamed = record.model_copy(update={"filename": "other.txt"})
+    assert renamed.filename == "other.txt"
+    assert store.load_content("ses_test", record) == b"first"

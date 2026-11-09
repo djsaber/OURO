@@ -413,44 +413,13 @@ def _tool_contract_error(
         invocation.definition_contract_hash != tool_definition_contract_hash(definition)
     ):
         return "persisted tool definition does not match the current contract"
-    metadata = definition.metadata
-    if invocation.canonical_tool_id is not None:
-        plugin_id = metadata.get("plugin_id")
-        contribution_id = metadata.get("contribution_id")
-        identity = (
-            f"{plugin_id}/tools/{contribution_id}"
-            if isinstance(plugin_id, str) and isinstance(contribution_id, str)
-            else f"ouro.host/tools/{definition.name}"
-        )
-        if identity != invocation.canonical_tool_id or definition.source != invocation.source:
-            return "persisted tool identity does not match the current tool"
-        if invocation.plugin_id is None and plugin_id is not None:
-            return "a plugin cannot take over a persisted Host tool call"
-    expected_common = {
-        "plugin_id": invocation.plugin_id,
-        "plugin_class": invocation.plugin_class,
-        "release_id": invocation.release_id,
-        "contract_hash": invocation.contract_hash,
-        "execution_contract_hash": invocation.execution_contract_hash,
-    }
-    if not any(value is not None for value in expected_common.values()):
-        return None
-    for field, expected_value in expected_common.items():
-        actual = metadata.get(field)
-        if expected_value is None or actual != expected_value:
-            return f"persisted {field} does not match the active tool contract"
-    if invocation.plugin_class == "user":
-        if (
-            invocation.package_digest is None
-            or metadata.get("package_digest") != invocation.package_digest
-        ):
-            return "persisted package_digest does not match the active tool contract"
-    elif invocation.plugin_class == "builtin":
-        if (
-            invocation.builtin_contract_hash is None
-            or metadata.get("builtin_contract_hash") != invocation.builtin_contract_hash
-        ):
-            return "persisted builtin_contract_hash does not match the active tool contract"
-    else:
-        return "persisted plugin_class does not identify a supported plugin class"
+    if invocation.canonical_tool_id is not None and (
+        invocation.canonical_tool_id != definition.identity
+        or invocation.source != definition.source
+    ):
+        return "persisted tool identity does not match the current tool"
+    for field in ("contract_hash", "execution_contract_hash"):
+        if (expected := getattr(invocation, field)) is not None:
+            if expected != definition.metadata.get(field):
+                return f"persisted {field} does not match the active tool contract"
     return None

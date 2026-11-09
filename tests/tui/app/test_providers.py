@@ -533,12 +533,16 @@ async def test_provider_deletions_use_shared_menu_confirmation(
         assert app.screen._choices[1].description == message
         options = app.screen.query_one(OptionList)
         assert options.highlighted == 0
-        assert options.has_focus
+        await _wait_until(
+            lambda: options.has_focus, pilot, description="confirmation actions focused"
+        )
         confirm = options.get_option(ConfirmationScreen.CONFIRM_VALUE).prompt
         assert isinstance(confirm, Text)
         assert message in confirm.plain
 
         await pilot.press("down")
+        await app.screen.wait_for_refresh()
+        assert options.highlighted == 1
         assert any("Delete" in options.render_line(y).text for y in range(options.size.height))
         await pilot.press("up")
 

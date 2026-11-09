@@ -1416,7 +1416,9 @@ class ToolCallCoordinator:
             turn_id=turn_id,
             tool_call_id=request.id,
             tool_name=request.name,
-            canonical_tool_id=_canonical_tool_id(request.name, metadata),
+            canonical_tool_id=definition.identity
+            if definition
+            else f"ouro.host/tools/{request.name}",
             owner_id=_optional_text(metadata.get("plugin_id")) or "ouro.host",
             source=definition.source if definition is not None else "builtin",
             effect=definition.effect if definition is not None else "unknown",
@@ -1436,7 +1438,6 @@ class ToolCallCoordinator:
             plugin_class=_optional_plugin_class(metadata.get("plugin_class")),
             release_id=_optional_text(metadata.get("release_id")),
             package_digest=_optional_text(metadata.get("package_digest")),
-            builtin_contract_hash=_optional_text(metadata.get("builtin_contract_hash")),
             generation_id=_optional_text(metadata.get("generation_id")),
             contract_hash=_optional_text(metadata.get("contract_hash")),
             execution_contract_hash=_optional_text(metadata.get("execution_contract_hash")),
@@ -1866,11 +1867,3 @@ def _interaction_tool_identity(invocation: ToolInvocation | None) -> dict[str, J
         "plugin_id": invocation.plugin_id if invocation is not None else None,
         "plugin_class": invocation.plugin_class if invocation is not None else None,
     }
-
-
-def _canonical_tool_id(name: str, metadata: dict[str, object]) -> str:
-    plugin_id = _optional_text(metadata.get("plugin_id"))
-    contribution_id = _optional_text(metadata.get("contribution_id"))
-    if plugin_id is not None and contribution_id is not None:
-        return f"{plugin_id}/tools/{contribution_id}"
-    return f"ouro.host/tools/{name}"

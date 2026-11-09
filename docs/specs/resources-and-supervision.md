@@ -12,6 +12,7 @@ Session 的 Run 提供进程内调度、订阅和 Host 生命周期。二者都�
 
 - 内部资源身份是会话范围的稳定 ID，与完整性 SHA-256 摘要解耦；模型使用真实路径。
 - `SessionResourceReference` 保存完整 `ResourceRecord` 元信息：ID、原名称、安全文件名、类型、大小、摘要、时间及复制来源。
+- `ResourceRecord` 与 `ResourceSource` 是不可变值；构造、反序列化和元信息替换时校验，普通文件读取复用已成立的元信息契约。
 - 上传文件位于 `OURO_HOME/sessions/<reserved_or_session_id>/resources/files/`，不自动写入会话工作目录。
 - 两后端均以所属会话原生数据库中的 `resource_references` 作为资源元信息权威；无全局资源目录或重复元信息库。
 - 元信息按 Session 与 resource_id 定向读取；同身份不同记录拒绝覆盖。资源列表是显式枚举，模型投影只读取选中身份。

@@ -410,7 +410,7 @@ def test_persisted_plugin_tool_requires_the_same_execution_contract() -> None:
     assert outcome.result.structured["error_type"] == "ToolExecutionContractMismatch"
 
 
-def test_incomplete_user_plugin_tool_contract_is_rejected() -> None:
+def test_plugin_tool_execution_contract_does_not_require_duplicate_release_provenance() -> None:
     async def execute(_invocation, context):
         return "unused"
 
@@ -419,6 +419,8 @@ def test_incomplete_user_plugin_tool_contract_is_rejected() -> None:
         Tool(
             definition=ToolDefinition(
                 name="example__run",
+                canonical_id="dev.ouro.example/tools/run",
+                source="third_party_plugin",
                 description="Run the example plugin.",
                 metadata={
                     "plugin_id": "dev.ouro.example",
@@ -436,14 +438,12 @@ def test_incomplete_user_plugin_tool_contract_is_rejected() -> None:
         session_id="s1",
         run_id="r1",
         tool_name="example__run",
-        plugin_id="dev.ouro.example",
-        package_digest="a" * 64,
+        canonical_tool_id="dev.ouro.example/tools/run",
+        source="third_party_plugin",
         contract_hash="b" * 64,
         execution_contract_hash="c" * 64,
     )
 
     outcome = ToolExecutor(registry).preflight(invocation)
 
-    assert outcome.status == "completed"
-    assert outcome.result is not None
-    assert outcome.result.structured["error_type"] == "ToolExecutionContractMismatch"
+    assert outcome.status == "ready"

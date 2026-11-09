@@ -322,13 +322,7 @@ class AgentDefinitionService:
         minimum_permission_mode: PermissionMode = "auto",
     ) -> EffectiveToolRef:
         metadata = definition.metadata
-        plugin_id = metadata.get("plugin_id")
-        contribution_id = metadata.get("contribution_id")
-        canonical_id = (
-            f"{plugin_id}/tools/{contribution_id}"
-            if isinstance(plugin_id, str) and isinstance(contribution_id, str)
-            else f"ouro.host/tools/{definition.name}"
-        )
+        canonical_id = definition.identity
         execution_hash = metadata.get("execution_contract_hash")
         return EffectiveToolRef(
             public_name=definition.name,

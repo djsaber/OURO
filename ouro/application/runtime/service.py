@@ -4555,7 +4555,6 @@ class RuntimeService:
                     plugin_class=generation.plugin_class,
                     release_id=generation.release_id,
                     package_digest=generation.package_digest,
-                    builtin_contract_hash=generation.builtin_contract_hash,
                     generation_id=generation.generation_id,
                     contract_hash=contract_hash,
                     execution_contract_hash=generation.execution_contract_hash,

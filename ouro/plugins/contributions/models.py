@@ -72,7 +72,6 @@ class ContributionOwner:
     release_id: str
     generation_id: str
     package_digest: str | None = None
-    builtin_contract_hash: str | None = None
 
     @property
     def key(self) -> str:
