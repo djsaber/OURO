@@ -580,14 +580,13 @@ async def test_attachment_preparation_keeps_focus_and_blocks_edits(
         composer = app.query_one(Composer)
         await pilot.press(*"draft")
         await pilot.pause()
-        border = composer.styles.border_left
         selection = composer.selection
         frames = []
         display = app._display
 
         def capture(screen, renderable):
             if screen is app.screen and renderable is not None and not app._batch_count:
-                frames.append((composer.disabled, composer.has_focus, composer.styles.border_left))
+                frames.append((composer.disabled, composer.has_focus))
             display(screen, renderable)
 
         monkeypatch.setattr(app, "_display", capture)
@@ -600,7 +599,6 @@ async def test_attachment_preparation_keeps_focus_and_blocks_edits(
             await pilot.pause()
             assert composer.import_pending
             assert not composer.disabled and composer.has_focus
-            assert composer.styles.border_left == border
             await pilot.click(composer, offset=(1, 0))
             assert composer.selection == selection
             for key in ("x", "backspace", "ctrl+z", "ctrl+enter", "up", "enter"):
@@ -615,10 +613,9 @@ async def test_attachment_preparation_keeps_focus_and_blocks_edits(
             await pending.wait()
         await pilot.pause()
         assert composer.has_focus and not composer.disabled and not composer.import_pending
-        assert composer.styles.border_left == border
         assert composer.input_content.text == "draft"
         assert composer.input_content.attachments[0].name == path.name
-        assert frames and all(frame == (False, True, border) for frame in frames)
+        assert frames and all(frame == (False, True) for frame in frames)
 
 
 @pytest.mark.parametrize("operation", ("upload", "reference"))

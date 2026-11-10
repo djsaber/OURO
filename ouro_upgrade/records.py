@@ -294,6 +294,7 @@ def _usage_event_v1_to_v2(value: dict[str, Any]) -> None:
 
 def _session_v5_to_v6(value: dict[str, Any]) -> None:
     value.pop("workspace_trusted", None)
+    value.pop("title_locked", None)
 
 
 def _tool_call_authority(tools: list[dict[str, Any]]) -> None:

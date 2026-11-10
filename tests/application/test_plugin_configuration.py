@@ -276,7 +276,6 @@ async def test_build_time_store_conflict_discards_candidate_and_preserves_other_
                     create_configuration_revision(
                         values={"count": 9, "fail": False}, schema_version=1
                     ),
-                    activate=True,
                 )
                 return state
 

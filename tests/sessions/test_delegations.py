@@ -53,7 +53,6 @@ def _record(root: SessionRecord, *, suffix: str = "one") -> DelegationRecord:
         root_session_id=root.session_id,
         parent_session_id=root.session_id,
         parent_run_id="run_parent",
-        agent_id=definition.agent_id,
         task_description=f"Task {suffix}",
         prompt_digest=f"sha256:{suffix}",
         definition=definition,

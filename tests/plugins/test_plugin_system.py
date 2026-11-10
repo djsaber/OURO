@@ -371,7 +371,7 @@ def test_host_tool_effect_and_batch_behavior_participate_in_catalog_contract_has
     assert compatible_read != exclusive_read
 
 
-def test_development_schema_versions_remain_strict_and_removed_fields_are_ignored(
+def test_development_schema_versions_remain_strict(
     tmp_path,
 ) -> None:
     plugin = tmp_path / "plugin"
@@ -389,34 +389,6 @@ def test_development_schema_versions_remain_strict_and_removed_fields_are_ignore
     manifest_path.write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(ValueError, match="schema_version"):
         validate_plugin_package(plugin)
-
-    raw["schema_version"] = 3
-    raw["dependencies"] = {
-        "plugins": [
-            {
-                "plugin_id": "dev.ouro.dependency",
-                "version": "^1.0.0",
-                "optional_feature": "legacy",
-            }
-        ]
-    }
-    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
-    manifest = PluginManifest.model_validate(raw)
-    assert "optional_feature" not in manifest.dependencies.plugins[0].model_dump()
-
-    raw["dependencies"] = {"plugins": []}
-    raw["contributes"] = {
-        "mcp_servers": [
-            {
-                "id": "legacy",
-                "path": "./legacy.json",
-                "auto_start": False,
-            }
-        ]
-    }
-    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
-    manifest = PluginManifest.model_validate(raw)
-    assert "auto_start" not in manifest.contributes.mcp_servers[0].model_dump()
 
     store = PluginPackageStore(tmp_path / "home")
     store.initialize()
@@ -611,7 +583,7 @@ async def test_configuration_is_content_addressed_and_schema_less_values_are_rej
     revision = record.activation.configuration_for(installed.package_digest)
     assert revision is not None
     assert revision.values == {}
-    assert record.activation.active_configuration_revision_id == revision.revision_id
+    assert record.activation.configuration_for(record.activation.selected_digest) == revision
 
     with pytest.raises(PluginPackageError, match="requires an empty configuration"):
         await service.configure(
@@ -627,7 +599,7 @@ async def test_configuration_is_content_addressed_and_schema_less_values_are_rej
 
 
 @pytest.mark.asyncio
-async def test_plugin_mcp_starts_on_enable_without_manifest_auto_start(tmp_path) -> None:
+async def test_plugin_mcp_starts_on_enable(tmp_path) -> None:
     source = tmp_path / "mcp"
     (source / "mcp").mkdir(parents=True)
     _write_native_plugin(
@@ -1486,7 +1458,7 @@ def test_candidate_catalog_failure_does_not_mutate_host_registries(tmp_path) -> 
         generation_id="plg_test",
         plugin_id=installed.plugin_id,
         version=installed.version,
-        package_digest=installed.package_digest,
+        release_id=installed.package_digest,
         runtime_kind="declarative",
         configuration_revision_id="1" * 64,
         dependency_lock_fingerprint="2" * 64,
@@ -1554,7 +1526,7 @@ def test_failed_candidate_catalog_leaves_previous_catalog_immutable() -> None:
         generation_id="generation-1",
         plugin_id="dev.ouro.echo",
         version="1.0.0",
-        package_digest="digest-1",
+        release_id="digest-1",
         runtime_kind="declarative",
         configuration_revision_id="1" * 64,
         dependency_lock_fingerprint="2" * 64,
@@ -1603,7 +1575,7 @@ def test_failed_candidate_catalog_leaves_previous_catalog_immutable() -> None:
         generation_id="generation-2",
         plugin_id="dev.ouro.echo",
         version="2.0.0",
-        package_digest="digest-2",
+        release_id="digest-2",
         runtime_kind="declarative",
         configuration_revision_id="3" * 64,
         dependency_lock_fingerprint="4" * 64,
@@ -2569,7 +2541,7 @@ for line in sys.stdin:
 
     assert (await service.enable("dev.ouro.worker_goal")).status == "active"
     command = await service.execute_command("dev.ouro.worker_goal:goal", "ship")
-    assert command.session_inputs == []
+    assert "session_inputs" not in command.model_dump()
     assert command.session_input_batches[0].inputs[0].prompt == "Goal: ship"
     assert command.session_input_batches[0].inputs[0].role == "user"
     assert command.session_input_batches[0].inputs[0].semantic_tag == "goal-create"
@@ -3418,7 +3390,10 @@ def create_plugin(context): return Plugin(context)
     active_configuration = record.activation.configuration_for(selected.package_digest)
     assert active_configuration is not None
     assert active_configuration.values == {"fail": False}
-    assert record.activation.active_configuration_revision_id == active_configuration.revision_id
+    assert (
+        record.activation.configuration_for(record.activation.selected_digest)
+        == active_configuration
+    )
     assert len(record.activation.configuration_revisions) == 2
     assert service.show("dev.ouro.configuration").status == "active"
     with runtime.snapshot() as current:
@@ -4305,9 +4280,9 @@ async def test_plugin_command_attributes_an_atomic_input_batch_as_one_owner() ->
 
     result = await registry.execute("dev.example.commands:batch")
 
-    assert result.attributed_session_inputs == []
-    assert len(result.attributed_session_input_batches) == 1
-    batch = result.attributed_session_input_batches[0]
+    assert "session_inputs" not in result.model_dump()
+    assert len(result.session_input_batches) == 1
+    batch = result.session_input_batches[0]
     assert batch.coalesce_key == "goal-lifecycle"
     assert [item.prompt for item in batch.inputs] == ["control", "objective"]
     assert {item.plugin_id for item in batch.inputs} == {"dev.example.commands"}

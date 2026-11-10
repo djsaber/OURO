@@ -176,7 +176,6 @@ def test_delegation_upgrade_retains_workspace_tool_grants_and_identity():
         root_session_id="root",
         parent_session_id="root",
         parent_run_id="run",
-        agent_id=definition.agent_id,
         task_description="Inspect",
         prompt_digest="sha256:prompt",
         definition=definition,

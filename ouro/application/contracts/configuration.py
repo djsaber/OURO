@@ -214,7 +214,6 @@ class RunBudgetConfigView(ApplicationDTO):
 class AgentRuntimeConfigView(ApplicationDTO):
     config_path: str
     revision: int
-    max_depth: Literal[1]
     spawn_policy: AgentSpawnPolicy
     change: ConfigurationChange | None = None
 

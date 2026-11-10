@@ -54,7 +54,6 @@ async def test_generated_title_uses_bounded_context_without_loading_history(serv
     result = await sessions.generate_title(session.session_id, generator)
     assert result.session.title == "Generated title"
     assert result.session.title_source == "generated"
-    assert not result.session.title_locked
 
 
 async def test_rename_at_generator_write_boundary_wins_without_another_write(services, monkeypatch):

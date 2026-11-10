@@ -42,7 +42,6 @@ class SessionIndexEntry(OuroModel):
     parent_session_id: str | None = None
     title: str
     title_source: SessionTitleSource = "fallback"
-    title_locked: bool = False
     created_at: datetime
     updated_at: datetime
     last_activity_at: datetime

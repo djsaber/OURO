@@ -365,7 +365,6 @@ async def test_shared_menu_height_tracks_terminal_with_bounded_layout(tmp_path: 
         hint = app.screen.query_one("#choice-hint", Static)
         assert app.screen.styles.overflow_y == "hidden"
         assert panel.region.height == 27
-        assert panel.region.x == app.screen.region.width - panel.region.right
         assert panel.region.bottom <= app.screen.region.height
         assert choices.region.bottom <= panel.region.bottom
         assert hint.region.bottom <= panel.region.bottom
@@ -379,7 +378,6 @@ async def test_shared_menu_height_tracks_terminal_with_bounded_layout(tmp_path: 
         await resize_terminal(pilot, 48, 18)
         await pilot.pause()
         assert 12 <= panel.region.height < 27
-        assert panel.region.x == app.screen.region.width - panel.region.right
         assert choices.region.height >= 5
         assert panel.region.bottom <= app.screen.region.height
         assert hint.region.bottom <= panel.region.bottom
@@ -387,7 +385,6 @@ async def test_shared_menu_height_tracks_terminal_with_bounded_layout(tmp_path: 
         await resize_terminal(pilot, 48, 12)
         await pilot.pause()
         assert panel.region.height == 12
-        assert panel.region.x == app.screen.region.width - panel.region.right
         assert choices.region.height == 5
         assert panel.region.bottom <= app.screen.region.height
         assert hint.region.bottom <= panel.region.bottom

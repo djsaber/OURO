@@ -193,7 +193,7 @@ class PluginConfigurationService:
         )
         updated = expected.model_copy(deep=True)
         updated.plugins[candidate.plugin_id].activation.set_configuration(
-            candidate.package_digest, revision, activate=target.selected
+            candidate.package_digest, revision
         )
         outcome: Literal["saved", "published"]
         if target.requires_runtime:

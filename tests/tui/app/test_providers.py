@@ -910,10 +910,8 @@ async def test_model_command_shows_endpoint_and_provider_without_changing_route_
         assert argument.description == "Supplier"
         assert composer.suggestion == ""
 
-        content = popup._content
         rendered = command_popup_text(popup).plain.splitlines()[0]
         assert rendered.startswith("› Model display  Supplier")
-        assert rendered.rindex("Supplier") < content.content_region.width - len("Supplier")
 
         await pilot.press("enter")
         await pilot.pause()

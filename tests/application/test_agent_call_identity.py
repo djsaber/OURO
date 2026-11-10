@@ -272,31 +272,14 @@ async def test_reused_provider_call_id_has_distinct_delegations_and_delivery_rec
                     session_id=handle.session_id,
                     identity=identities[0],
                     resolution=AgentWaitResolution(
-                        resolved_delegation_id=relations[0].delegation_id,
-                        resolved_child_run_id=relations[0].current_child_run_id,
                         reason="condition_met",
                     ),
                 )
-            with pytest.raises(ValueError, match="requested delegation"):
+            with pytest.raises(PersistenceError, match="no recorded child observation"):
                 await app.runtime.resume_agent_wait(
                     session_id=handle.session_id,
                     identity=identities[1],
-                    resolution=AgentWaitResolution(
-                        resolved_delegation_id=relations[0].delegation_id,
-                        resolved_child_run_id=relations[0].current_child_run_id,
-                        reason="condition_met",
-                    ),
-                )
-            assert store.load_tool_call_state(handle.session_id, identities[1]) == second
-            with pytest.raises(ValueError, match="requested child Run"):
-                await app.runtime.resume_agent_wait(
-                    session_id=handle.session_id,
-                    identity=identities[1],
-                    resolution=AgentWaitResolution(
-                        resolved_delegation_id=relations[1].delegation_id,
-                        resolved_child_run_id=relations[0].current_child_run_id,
-                        reason="condition_met",
-                    ),
+                    resolution=AgentWaitResolution(reason="condition_met"),
                 )
             assert store.load_tool_call_state(handle.session_id, identities[1]) == second
             reads = []
@@ -477,11 +460,9 @@ async def test_child_outcome_precedes_parent_callback_and_survives_interruption(
                 # extension code runs only after the observation commit closes.
                 with store.session_mutation(parent.session_id):
                     state = store.load_tool_call_state(parent.session_id, identity)
-                    assert state.agent_wait.state == "resolved"
+                    assert state.agent_wait.resolution is not None
                     assert state.agent_wait.child_run_id == relation.current_child_run_id
-                    assert state.agent_wait.resolution.resolved_child_run_id == (
-                        relation.current_child_run_id
-                    )
+                    assert state.agent_wait.child_run_id == (relation.current_child_run_id)
                     assert state.outcome_attempt == state.attempt == 1
                     assert state.result_message_id is None
                     assert store.load_run(parent.session_id, identity.run_id).status == "running"
@@ -568,7 +549,7 @@ async def test_child_observation_survives_abort_between_resume_read_and_commit(
 
             def held_commit(**kwargs):
                 if kwargs["run"].run_id == identity.run_id and any(
-                    call.agent_wait is not None and call.agent_wait.state == "resolved"
+                    call.agent_wait is not None and call.agent_wait.resolution is not None
                     for call in kwargs["batch"].calls
                 ):
                     loop.call_soon_threadsafe(entered.set)

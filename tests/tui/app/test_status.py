@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from textual.app import App, ComposeResult
 from textual.widgets import Input, OptionList, Static
 
 import ouro.tui.app as tui_app_module
@@ -29,6 +30,9 @@ from ouro.tui.conversation.view import ConversationView
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.state import TuiSessionProjection
 from ouro.tui.subagent_navigation import SubagentNavigationPanel
+from ouro.tui.theme import DEFAULT_TUI_THEME
+from ouro.tui.view_models import TuiSystemStatus
+from ouro.tui.welcome.components import WelcomeSystem
 from ouro.tui.widgets.activity import ActivityIndicator
 from ouro.tui.widgets.status import StatusLine
 from tests.tui.app.providers import RetryThenBlockProvider
@@ -43,6 +47,49 @@ from tests.tui.helpers import command_popup_text, run_ready_app
 from tests.tui.helpers import wait_for_screen as _wait_for_screen
 from tests.tui.helpers import wait_for_worker_group as _wait_for_worker_group
 from tests.tui.helpers import wait_until as _wait_until
+
+
+async def test_system_and_activity_status_preserve_actionable_labels_on_refresh():
+    class StatusApp(App):
+        def get_css_variables(self) -> dict[str, str]:
+            return {**super().get_css_variables(), **DEFAULT_TUI_THEME.css_variables()}
+
+        def compose(self) -> ComposeResult:
+            yield WelcomeSystem(
+                TuiSystemStatus(
+                    plugin_active_count=1,
+                    plugin_total_count=2,
+                    plugin_issue_count=1,
+                    mcp_total_count=3,
+                    mcp_connected_count=1,
+                    mcp_connecting_count=1,
+                    mcp_failed_count=1,
+                )
+            )
+            yield ActivityIndicator()
+
+    app = StatusApp()
+    async with app.run_test():
+        welcome = app.query_one(WelcomeSystem)
+        indicator = app.query_one(ActivityIndicator)
+        indicator.set_approval_mode("auto")
+        assert "failed" in welcome._mcp.content.plain
+        assert "need attention" in welcome._plugins.content.plain
+        for activity, label in (
+            ("idle", "Ready"),
+            ("completed", "Ready"),
+            ("failed", "Failed"),
+            ("aborted", "Aborted"),
+            ("paused", "Paused"),
+            ("recoverable", "Recovery required"),
+            ("waiting_approval", "Approval required"),
+            ("waiting_model", "Waiting for model"),
+        ):
+            indicator.set_activity(activity)
+            assert label in indicator.content.plain
+            indicator.refresh_theme()
+            assert label in indicator.content.plain
+            assert "auto" in indicator.content.plain
 
 
 @pytest.mark.asyncio
@@ -630,14 +677,12 @@ async def test_status_line_hides_thinking_when_disabled(tmp_path: Path) -> None:
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         indicator = app.query_one(ActivityIndicator)
-        active_separator_count = indicator.render().plain.count(" • ")
+        assert "low" in indicator.render().plain
 
         await pilot.press("slash", *"thinking", "enter", *"disabled", "enter")
         await _wait_for_worker_group(app, pilot, group="composer-command")
         assert indicator._reasoning is None
-        # Disabling reasoning removes the trailing separator so the status line
-        # shows only the activity, approval mode, and model endpoint.
-        assert indicator.render().plain.count(" • ") == active_separator_count - 1
+        assert "low" not in indicator.render().plain
 
 
 @pytest.mark.asyncio

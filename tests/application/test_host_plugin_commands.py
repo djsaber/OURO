@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from ouro.application.contracts.events import project_runtime_event
 from ouro.application.plugins.commands import (
     AmbiguousPluginCommandError,
     consume_plugin_command,
@@ -454,6 +455,16 @@ async def test_command_inputs_keep_fifo_batch_boundaries_and_attribution(system,
     assert len({message.run_id for message in messages}) == (2 if kind == "multiple" else 1)
     assert messages[0].scaffold and messages[0].semantic_tag == "setup"
     assert all(message.metadata["plugin_id"] == "dev.example" for message in messages)
+    if not existing:
+        queued_events = [
+            event
+            for event in recorded_events(submitted.session_id)
+            if event.event_type == "session_input_batch_queued"
+        ]
+        assert len(queued_events) == (2 if kind == "multiple" else 1)
+        assert all(
+            project_runtime_event(event).category == "interaction" for event in queued_events
+        )
     if existing:
         # Durable receipts can be consumed again without replaying the plugin or input.
         async for _result in consume_plugin_command(system.runtime, submitted):
@@ -764,7 +775,7 @@ def test_plugin_command_application_runs_with_host_imports_blocked(tmp_path):
 
 
 async def test_command_consumption_does_not_retain_prior_run_results(system, monkeypatch):
-    submit = system.runtime.submit_plugin_input
+    submit = system.runtime.submit_plugin_input_batch
     references = []
     retained = []
 
@@ -782,7 +793,7 @@ async def test_command_consumption_does_not_retain_prior_run_results(system, mon
             session_inputs=[SessionInputRequest(prompt=f"input {index}") for index in range(3)],
         )
 
-    monkeypatch.setattr(system.runtime, "submit_plugin_input", observed_submit)
+    monkeypatch.setattr(system.runtime, "submit_plugin_input_batch", observed_submit)
     submission = await submit_plugin_command(
         system.plugins(handler=command),
         system.runtime,

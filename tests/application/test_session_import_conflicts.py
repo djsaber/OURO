@@ -31,7 +31,6 @@ def _tree(home, backend, title, child_id, *, sequence=1):
         parent_session_id=root.session_id,
         parent_run_id=run.run_id,
         child_session_id=child_id,
-        agent_id=definition.agent_id,
         definition=definition,
         idempotency_key="review",
         task_description="Review",

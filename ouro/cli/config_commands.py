@@ -429,7 +429,6 @@ def show_agent_runtime_config(
         "\n".join(
             [
                 f"Agent config revision: {config.revision}",
-                f"Max depth: {config.max_depth} (fixed)",
                 "Allowed agent ids: " + ", ".join(config.spawn_policy.allowed_agent_id_patterns),
                 "Allowed models: " + ", ".join(config.spawn_policy.allowed_model_patterns),
                 "Execution modes: " + ", ".join(config.spawn_policy.allowed_execution_modes),

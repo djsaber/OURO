@@ -63,36 +63,3 @@ def test_public_identifier_options_use_consistent_resource_and_session_names() -
 
     assert spawn.resource_ids == ["res_context"]
     assert plugin.session_id == "ses_target"
-
-
-@pytest.mark.parametrize(
-    "args",
-    (
-        [
-            "agent",
-            "spawn",
-            "ses_parent",
-            "run_parent",
-            "general",
-            "Review this change",
-            "--description",
-            "Review",
-            "--request-id",
-            "cli/review-1",
-            "--resource-id",
-            "res_context",
-        ],
-        [
-            "plugin",
-            "run-command",
-            "dev.ouro.example:hello",
-            "--session-id",
-            "ses_target",
-        ],
-    ),
-)
-def test_removed_identifier_option_spellings_are_rejected(args) -> None:
-    with pytest.raises(SystemExit) as exc_info:
-        build_parser().parse_args(args)
-
-    assert exc_info.value.code == 2

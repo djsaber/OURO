@@ -77,7 +77,7 @@ from ouro.config.compaction import CompactionRequestChanges
 from ouro.config.endpoints import EndpointChanges
 from ouro.config.prompts import PromptConfigSnapshot, PromptDraft, PromptKind
 from ouro.config.skills import SKILL_DISCOVERY_SOURCE_IDS, SkillInstallScope
-from ouro.core.agents import ExecutionMode, LifecycleBinding
+from ouro.core.agents import ExecutionMode
 from ouro.core.compaction import CompactionPolicy
 from ouro.core.context import compose_system_prompt
 from ouro.core.context_budget import ContextBudget
@@ -935,11 +935,9 @@ class ConfigurationFacade:
         self,
         *,
         expected_revision: int,
-        max_depth: int | None = None,
         allowed_agent_id_patterns: tuple[str, ...] | None = None,
         allowed_model_patterns: tuple[str, ...] | None = None,
         allowed_execution_modes: tuple[ExecutionMode, ...] | None = None,
-        allowed_lifecycle_bindings: tuple[LifecycleBinding, ...] | None = None,
         allow_write: bool | None = None,
         allow_mcp: bool | None = None,
     ) -> AgentRuntimeConfigView:
@@ -951,7 +949,6 @@ class ConfigurationFacade:
                 ("allowed_agent_id_patterns", allowed_agent_id_patterns),
                 ("allowed_model_patterns", allowed_model_patterns),
                 ("allowed_execution_modes", allowed_execution_modes),
-                ("allowed_lifecycle_bindings", allowed_lifecycle_bindings),
                 ("allow_write", allow_write),
                 ("allow_mcp", allow_mcp),
             )
@@ -960,8 +957,6 @@ class ConfigurationFacade:
         if policy_updates:
             policy = policy.model_copy(update=policy_updates)
         updates: dict[str, object] = {"spawn_policy": policy}
-        if max_depth is not None:
-            updates["max_depth"] = max_depth
         try:
             runtime = AgentRuntimeConfig.model_validate(
                 current.runtime.model_copy(update=updates).model_dump()

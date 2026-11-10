@@ -40,7 +40,6 @@ def with_session_title(
         update={
             "title": normalize_session_title(title),
             "title_source": source,
-            "title_locked": source == "user",
         }
     )
 
@@ -48,7 +47,7 @@ def with_session_title(
 def fill_session_title(session: SessionRecord, messages: Iterable[MessageRecord]) -> SessionRecord:
     """Fill an unnamed Session from the first meaningful, non-scaffold user input."""
 
-    if session.title_source != "placeholder" or session.title_locked:
+    if session.title_source != "placeholder":
         return session
     for message in messages:
         if message.role != "user" or message.scaffold:

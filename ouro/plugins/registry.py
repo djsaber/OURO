@@ -40,13 +40,20 @@ class PluginCommandResult(OuroModel):
     run_action: Literal["stop", "continue"] | None = None
     data: dict[str, Any] = Field(default_factory=dict)
     session_inputs: list[SessionInputRequest] = Field(default_factory=list)
-    attributed_session_inputs: list[AttributedSessionInput] = Field(default_factory=list)
     session_input_batches: list[SessionInputBatchRequest] = Field(default_factory=list)
-    attributed_session_input_batches: list[AttributedSessionInputBatch] = Field(
-        default_factory=list
-    )
     session_control_transitions: list[SessionControlTransitionRequest] = Field(default_factory=list)
-    attributed_control_transitions: list[AttributedSessionControlTransition] = Field(
+
+
+class BoundPluginCommandResult(OuroModel):
+    """Command effects with trusted attribution and one representation of input units."""
+
+    command_id: str
+    output: str = ""
+    data: dict[str, Any] = Field(default_factory=dict)
+    run_action: Literal["stop", "continue"] | None = None
+    harness_change: HarnessStateChange | None = None
+    session_input_batches: list[AttributedSessionInputBatch] = Field(default_factory=list)
+    session_control_transitions: list[AttributedSessionControlTransition] = Field(
         default_factory=list
     )
 
@@ -178,7 +185,7 @@ class PluginCommandRegistry:
         session_id: str | None = None,
         workspace: str | None = None,
         harness: HarnessCallSnapshot | None = None,
-    ) -> PluginCommandResult:
+    ) -> BoundPluginCommandResult:
         command = self.get(command_id)
         if command.requires_session and session_id is None:
             raise PluginCommandError(f"plugin command requires a target Session: {command_id}")
@@ -204,11 +211,7 @@ class PluginCommandRegistry:
                 f"plugin command failed ({type(exc).__name__}): {redact_text(str(exc))}"
             ) from exc
         if isinstance(raw, PluginCommandResult):
-            result = (
-                raw.model_copy(update={"command_id": command_id})
-                if raw.command_id != command_id
-                else raw
-            )
+            result = raw
         elif isinstance(raw, str):
             result = PluginCommandResult(command_id=command_id, output=raw)
         else:
@@ -229,68 +232,48 @@ class PluginCommandRegistry:
                 raise PluginCommandError("plugin command run actions require a target Session")
             if result.session_inputs or result.session_input_batches:
                 raise PluginCommandError("plugin command cannot mix run actions with new inputs")
-        if (
-            not result.session_inputs
-            and not result.session_input_batches
-            and not result.session_control_transitions
-            and result.run_action is None
-        ):
-            return result
+        batches = result.session_input_batches or [
+            SessionInputBatchRequest(inputs=(item,)) for item in result.session_inputs
+        ]
+        bound = BoundPluginCommandResult(
+            command_id=command_id,
+            output=result.output,
+            data=result.data,
+            run_action=result.run_action,
+            harness_change=result.harness_change,
+        )
+        if not (batches or result.session_control_transitions or result.run_action):
+            return bound
         if command.generation_id is None or command.execution_contract_hash is None:
             raise PluginCommandError(
                 f"plugin command has no active execution contract: {command_id}"
             )
-        return result.model_copy(
-            update={
-                "attributed_session_inputs": [
+        bound.session_input_batches = [
+            AttributedSessionInputBatch(
+                inputs=tuple(
                     AttributedSessionInput(
-                        prompt=item.prompt,
-                        mode=item.mode,
-                        title=item.title,
-                        role=item.role,
-                        scaffold=item.scaffold,
-                        semantic_tag=item.semantic_tag,
-                        driver_id=item.driver_id,
+                        **item.model_dump(include=set(SessionInputRequest.model_fields)),
                         plugin_id=command.plugin_id,
                         contribution_id=command.name,
                         generation_id=command.generation_id,
                         execution_contract_hash=command.execution_contract_hash,
                     )
-                    for item in result.session_inputs
-                ],
-                "attributed_session_input_batches": [
-                    AttributedSessionInputBatch(
-                        inputs=tuple(
-                            AttributedSessionInput(
-                                prompt=item.prompt,
-                                mode=item.mode,
-                                title=item.title,
-                                role=item.role,
-                                scaffold=item.scaffold,
-                                semantic_tag=item.semantic_tag,
-                                driver_id=item.driver_id,
-                                plugin_id=command.plugin_id,
-                                contribution_id=command.name,
-                                generation_id=command.generation_id,
-                                execution_contract_hash=command.execution_contract_hash,
-                            )
-                            for item in batch.inputs
-                        ),
-                        coalesce_key=batch.coalesce_key,
-                    )
-                    for batch in result.session_input_batches
-                ],
-                "attributed_control_transitions": [
-                    AttributedSessionControlTransition(
-                        **item.model_dump(mode="python"),
-                        plugin_id=command.plugin_id,
-                        generation_id=command.generation_id,
-                        execution_contract_hash=command.execution_contract_hash,
-                    )
-                    for item in result.session_control_transitions
-                ],
-            }
-        )
+                    for item in batch.inputs
+                ),
+                coalesce_key=batch.coalesce_key,
+            )
+            for batch in batches
+        ]
+        bound.session_control_transitions = [
+            AttributedSessionControlTransition(
+                **item.model_dump(include=set(SessionControlTransitionRequest.model_fields)),
+                plugin_id=command.plugin_id,
+                generation_id=command.generation_id,
+                execution_contract_hash=command.execution_contract_hash,
+            )
+            for item in result.session_control_transitions
+        ]
+        return bound
 
 
 def bind_plugin_command(

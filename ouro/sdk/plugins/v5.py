@@ -676,7 +676,6 @@ class SessionControlTransition:
     activation_id: str | None = None
     replace_activation_ids: tuple[str, ...] = ()
     expected_session_revision: int | None = None
-    expected_activation_revision: int | None = None
     payload: JsonValue = None
     reason: str | None = None
 

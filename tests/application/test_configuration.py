@@ -44,7 +44,6 @@ def test_configuration_overview_exposes_typed_defaults(tmp_path) -> None:
     assert overview.queued_inputs.consumption_mode == "one_by_one"
     assert overview.run_budget.max_model_rounds is None
     assert overview.agents.revision == 0
-    assert overview.agents.max_depth == 1
     assert overview.agents.spawn_policy.allowed_agent_id_patterns == ("*",)
     assert overview.compaction.model.has_dedicated_endpoint is False
     assert overview.mcp.servers == []
@@ -272,7 +271,7 @@ def test_invalid_agent_runtime_update_does_not_change_persisted_state(tmp_path) 
     before = facade.agent_runtime_config()
 
     with pytest.raises(ConfigError, match="invalid Agent runtime config"):
-        facade.update_agent_runtime(expected_revision=0, max_depth=2)
+        facade.update_agent_runtime(expected_revision=0, allowed_execution_modes=())
 
     after = facade.agent_runtime_config()
     assert after == before
@@ -286,7 +285,6 @@ def test_agent_runtime_update_exposes_the_complete_spawn_policy(tmp_path) -> Non
         allowed_agent_id_patterns=("review-*",),
         allowed_model_patterns=("trusted/*",),
         allowed_execution_modes=("async",),
-        allowed_lifecycle_bindings=("bound",),
         allow_write=False,
         allow_mcp=False,
     )
@@ -295,7 +293,6 @@ def test_agent_runtime_update_exposes_the_complete_spawn_policy(tmp_path) -> Non
     assert updated.spawn_policy.allowed_agent_id_patterns == ("review-*",)
     assert updated.spawn_policy.allowed_model_patterns == ("trusted/*",)
     assert updated.spawn_policy.allowed_execution_modes == ("async",)
-    assert updated.spawn_policy.allowed_lifecycle_bindings == ("bound",)
     assert updated.spawn_policy.allow_write is False
     assert updated.spawn_policy.allow_mcp is False
 
@@ -309,7 +306,6 @@ async def test_agent_runtime_config_is_applied_by_local_composition_root(tmp_pat
 
     async with LocalApplication.build(tmp_path) as application:
         assert application.agents is not None
-        assert application.agents.max_depth == 1
         assert application.agents.spawn_policy.allowed_agent_id_patterns == ("review-*",)
 
         handle = await application.supervisor.submit("Freeze the configured Agent catalog.")

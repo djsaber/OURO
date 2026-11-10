@@ -104,7 +104,6 @@ def test_agent_definition_limit_is_rejected_before_persisting_invalid_config(tmp
 def test_agent_runtime_config_defaults_and_update_preserve_definitions(tmp_path) -> None:
     manager = AgentDefinitionsConfigManager(tmp_path)
     initial = manager.snapshot()
-    assert initial.runtime.max_depth == 1
     assert initial.runtime.spawn_policy.allowed_agent_id_patterns == ("*",)
 
     created = manager.create(_definition(), expected_revision=0)
@@ -124,14 +123,14 @@ def test_agent_runtime_config_defaults_and_update_preserve_definitions(tmp_path)
         manager.update_runtime(AgentRuntimeConfig(), expected_revision=1)
 
 
-def test_agent_runtime_config_rejects_unsupported_first_release_modes(tmp_path) -> None:
+def test_agent_runtime_config_rejects_invalid_spawn_policy(tmp_path) -> None:
     manager = AgentDefinitionsConfigManager(tmp_path)
     path = tmp_path / "config" / "agents.json"
     path.parent.mkdir(parents=True)
 
     for runtime in (
-        {"max_depth": 2},
-        {"spawn_policy": {"allowed_lifecycle_bindings": ["bound", "detached"]}},
+        {"spawn_policy": {"allowed_execution_modes": []}},
+        {"spawn_policy": {"allowed_model_patterns": []}},
     ):
         path.write_text(
             json.dumps({"agents": {"revision": 0, "runtime": runtime}}),

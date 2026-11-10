@@ -1,7 +1,5 @@
 import pytest
 
-from ouro.core.tools import ToolInvocation
-from ouro.tools import ToolExecutor, ToolRegistry
 from ouro.tools.builtin.ask_user import (
     AskUserArguments,
     AskUserRequest,
@@ -57,26 +55,6 @@ def test_ask_user_contract_rejects_duplicate_question_ids_and_option_labels() ->
     question["options"][1]["label"] = "sqlite (recommended)"  # type: ignore[index]
     with pytest.raises(ValueError, match="option labels must be unique"):
         AskUserArguments.model_validate(arguments)
-
-
-@pytest.mark.asyncio
-async def test_ask_user_rejects_legacy_flat_question_arguments() -> None:
-    registry = ToolRegistry()
-    registry.register(builtin_ask_user_tool())
-
-    outcome = await ToolExecutor(registry).execute(
-        ToolInvocation(
-            session_id="ses_1",
-            run_id="run_1",
-            tool_name="AskUser",
-            arguments={"question": "Which file?"},
-        )
-    )
-
-    assert outcome.status == "completed"
-    assert outcome.result is not None
-    assert outcome.result.is_error is True
-    assert outcome.result.structured["error_type"] == "ToolArgumentValidationError"
 
 
 def test_parse_builtin_ask_user_request_requires_tool_and_discriminator() -> None:

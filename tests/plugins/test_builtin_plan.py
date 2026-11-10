@@ -640,7 +640,7 @@ async def test_plan_command_only_activates_mode_until_next_user_message(tmp_path
         workspace=str(workspace),
     )
 
-    assert command.session_inputs == []
+    assert "session_inputs" not in command.model_dump()
     before_run = store.load_session(session.session_id)
     assert before_run.messages == []
     assert before_run.runs == []
@@ -781,7 +781,6 @@ async def test_plan_off_releases_controller_without_creating_run_or_deleting_art
     assert len(active_snapshot.session.controls.activations) == 1
     activation = active_snapshot.session.controls.activations[0]
     assert activation.controller_id == f"{PLUGIN_ID}/session_controllers/mode"
-    assert activation.phase == "active"
     control_result = activated.data["session_controls"][0]
     plan_path = Path(str(control_result["data"]["plan_path"]))
     plan_path.parent.mkdir(parents=True, exist_ok=True)

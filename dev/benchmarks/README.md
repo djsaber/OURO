@@ -4,85 +4,6 @@
 使用锁定依赖，独立运行，不要与 pytest 或其他基准争用资源。输出为 JSON Lines，包含环境、原始样本和统计量；需要保存时写入本
 地忽略目录。基准结果只适用于测量环境，不能替代真实终端和网络 Provider 验证，也不作为 CI 的固定时间断言。
 
-## 会话重构前后对照
-
-```powershell
-uv run --frozen --extra themes python -B -X utf8 -m dev.benchmarks.session_refactor_comparison
-uv run --frozen --extra themes python -B -X utf8 -m dev.benchmarks.session_refactor_comparison --scenario history --messages 100 1000 10000 --repeat 3
-uv run --frozen --extra themes python -B -X utf8 -m dev.benchmarks.session_refactor_comparison --scenario agent_io --rounds 64 --repeat 3
-uv run --frozen --extra themes python -B -X utf8 -m dev.benchmarks.session_refactor_comparison --scenario stream_io --messages 10000 --stream-chunks 131072 --repeat 3
-uv run --frozen --extra themes python -B -X utf8 -m dev.benchmarks.session_refactor_comparison --scenario interaction --messages 1000 10000 --repeat 3
-```
-
-默认基线为重构前 `44724d8378632f3c5e63b6861e5e873493e71dce`，可用 `--baseline` 指定其他兼容基线。
-`--backend files|sqlite` 可只测一个后端；省略时测量两者。
-脚本将该提交和当前工作区的 `ouro/` 分别快照到临时目录，用同一锁定解释器串行启动独立子进程，
-逐次交换先后顺序。当前源码标识、环境和每次原始样本输出到 stdout；源码快照与合成数据在退出时清理。
-基线和当前版本使用各自格式构造数据，不调用升级模块，不访问用户 home。
-
-默认包含两种后端、三次重复和以下工作负载：
-
-- `long_run`：8/32/64 轮真实 Runtime、工具及自动摘要；每轮 4 KiB 输出与 4 KiB 工具结果。
-  测总耗时、末尾轮次、进程读写字节及次数、RSS 边界样本、RunResult 体积、持久文件及 SQLite 已用页、空闲页和结束时 WAL。
-- `history`：100/1,000/10,000 条各 1 KiB 的消息，固定八条活动消息及一条摘要。
-  测闲置会话恢复、Python 分配峰值、完整一轮、会话头/末尾 16 条/全量观察读取。
-  另测 32 个逐次确认的 256 B 分片写入与独立观察延迟，以及连续 128 个分片的 32 KiB 有效吞吐。
-  独立观察使用公开 `observe_session` 接口，不注入本地推送，不含 Host 呈现；连续输出允许框架原有的分片合并，
-  写入吞吐计至最后正文被本地事件 sink 收到，独立读取计至完整正文被观察者收到。
-
-`long_run` 和 `agent_io` 支持 `--structured-bytes 65536` 增加每个工具结果的独立结构化正文；
-`--harness-owner-bytes 65536` 在计时前保存八个 owner 的私有状态，各 64 KiB，并在执行期间保持其业务值不变。
-两项默认均为零。用零、小、大状态分别测量，区分固定成本与重复读取活动私有状态的增长成本。
-`--argument-bytes 65536` 另外给每个原始工具调用加入 64 KiB 字符串参数，默认零。
-该参数也将合成长循环的 context_window 从 5,000 调整为 `5,000 + argument_bytes`，容纳原工具帧；
-不同参数规模的摘要次数可能不同，前后性能必须在相同规模、相同摘要次数下比较，不能用跨规模总耗时推断参数增长成本。
-完整观察保留原参数；结果窗口可另行衡量框架只读取展示所需数据的成本。
-
-额外的 `agent_io` 使用真实工具循环留下的 Input、Call、Outcome、摘要、Run 和消息，执行同样的完整/窗口查询。
-它另测最后一条工具结果的消息点查，反映增量可视化取得确定结果正文的框架成本；消息身份在计时外确定。
-随后分别输出 256 个 256 B 分片（每片之后等待 20 ms）和连续 8,192 个 256 B 分片（共 2 MiB），
-测量本地发布及独立适配器观察的 P50/P95/最大延迟、交付次数和有效字节吞吐。
-仅最后一片等待独立观察确认，不用逐片确认控制生产速率；观察者按累计字节识别完整分片，支持框架合并交付。
-生产间隔是异步调度目标，并非硬实时频率；持续输出吞吐包括框架的读写、合并和轮询等待，
-不是无限负载的理论上限，也不是跨进程 IPC 或网络性能。读写双方使用同一进程中的不同存储适配器，观察者不接收本地推送。
-超过 32 个样本的分布输出样本数及分位数，避免测量输出随分片数膨胀。
-
-`stream_io` 在同样的一万条历史上单独测连续输出，`--stream-chunks 131072` 对应 32 MiB。
-较长输出跨越多个观察分页和轮询周期，减小 2 MiB 短流受轮询相位的影响；不更改框架轮询或分页设置。
-同时报告完整 Run 耗时、两端收齐正文后到 Run 与观察处理完成的收尾时间，以及前后逻辑存储与原生空闲页。
-观察计数按新增字节递增，不反复求和已收到的前缀；最终仍校验两端完整内容。
-
-`navigation` 单独重复加载、翻页与重进，每个样本的每项操作执行 30 次；`tui` 使用 Textual 测试终端，
-测量首次进入、缓存返回、键入和新增输出。调用方式与测量口径见[会话事实观察验收](../../docs/plans/archive/2026-10-30-session-observation-without-event-log.md)。
-
-`interaction` 补充实际 Application/Supervisor 入口的交互成本：
-
-- `SessionService.observation_snapshot(history_limit=200)`、向前翻页和新适配器重新打开；读取在线程中执行，
-  记录三次原始耗时、进程 IO 和实际返回条数，校验翻页没有重叠、重新打开内容一致。
-  首次调用单列，包含首次线程调度和读取，不混进“重复打开”数据；新进程不等于冷磁盘。
-- `submit_user_input` 在已有历史的 home 中新建空会话，以及继续原长会话：从用户提交分别计至接受回执、
-  进入 Provider、本地收到首段文本和完整 Run 返回；Supervisor 启动不在计时内。
-  即时合成 Provider 输出中文、reasoning 和 Markdown 代码块，用于分离框架成本，不模拟网络首 token 等待。
-- Provider 在首段后由 Event 保持运行，独立适配器恢复 200 条历史与当前输出；随后真实接受并取消一条排队输入，
-  最后分别记录 abort 返回、Provider 关闭和 Run 终态。校验排队输入没有执行、取消后不再待处理、Run 确实 aborted。
-  Event 只控制可操作阶段，60 秒期限仅防止挂起，不作为性能断言；取消结果与长 Run 吞吐分别解释。
-
-历史夹具仍是每条 1 KiB 文本、固定活动摘要与尾部，并非真实用户内容分布；大参数、structured、媒体和长流
-分别由其他场景度量。当前新会话测量也不代表应用冷启动。各用户操作、所需数据规模、已有证据和未测范围见
-[交互覆盖矩阵](../../docs/plans/archive/2026-10-26-session-data-implementation.md#场景覆盖与资源边界)。
-各场景分别报告，不以压力负载的吞吐替代短回复等待，不用统一总分掩盖某个交互退化；
-三对样本只提供中位数和范围，不能据此宣称稳定的交互 p95/p99 或真实屏幕体感已验收。
-
-构造、导入和清理不计入运行时间；计时与 tracemalloc 分开。未清空 OS 缓存；新适配器不等于冷磁盘。
-文件字节是逻辑长度，不是 NTFS 分配空间；RSS 不是连续峰值；结束时 WAL 不是 WAL 峰值。
-不同源码或参数的样本分别统计；进程 IO 计数与相同完整内容的交付耗时分别报告。
-Files 当前为顺序消息正文与会话级原生数据库，后者保存定位索引、工具事实、调用状态、摘要、请求小头与 Draft。
-SQLite 及 Files Draft 的原生连接只在执行所有者存续时复用。历史读取、
-流式本地发布和独立观察的计时边界保持相同，默认轮询间隔不计作 Host 渲染开销。
-全量观察是一次性完整历史读取，不是增量刷新 API；独立观察包含既有 100 ms 运行中轮询周期。
-这些数据度量框架提供数据的成本，不能换算为 Host 的实际帧率。完整口径、结果与局限见
-[重构前后性能对照](../../docs/plans/archive/2026-10-26-session-data-implementation.md#性能对照)。
-
 ## 长 Run、慢查询与取消
 
 ```powershell
@@ -122,19 +43,12 @@ Python IO 探针不计 SQLite 引擎读取；tracemalloc 不代表 RSS。暖适�
 
 ```powershell
 uv run --frozen python -m dev.benchmarks.context_completion --repeat 7
-uv run --frozen python dev/benchmarks/session_refactor_comparison.py --scenario request_io --repeat 3 --request-replacements 32 --request-bytes 4096 1048576 4194304
 ```
 
 固定请求头，增加不可变输入大小，单独测量完成操作。每次样本准备一个新请求，准备、同步和 SQLite checkpoint
 不计入计时；连接保持打开，完成后立即采样 WAL 大小。输出 Python 读取字节、分配峰值、逐次时间与中位数、
 真实文件数、逻辑字节、SQLite 页数/空闲页及剩余请求数。没有清空 OS 缓存，不代表完整轮次、RSS 或掉电恢复。
 结果见[请求头实施记录](../../docs/plans/archive/2026-10-26-session-data-implementation.md#上下文观察与计量)。
-
-`request_io` 场景使用隔离的重构前/后源码进程，保留真实 Session 执行锁及其连接寿命，连续替换当前请求，不强制 checkpoint。
-单独记录请求提交耗时、进程读写传输字节、每次提交后的文件总量与页数，以及执行锁释放后的真实占用。
-夹具和空间采样不计入提交时间；进程传输含缓存命中，不等于物理设备流量。默认 `--request-content changing`
-让每轮正文全部变化；`stable` 只改变前缀，单独观察原生页复用。它测量请求持久化，完整 Agent
-循环与实时观察仍使用 `session_refactor_comparison` 的 `agent_io` 场景。
 
 ## 活动摘要读取与投影
 
@@ -386,14 +300,6 @@ uv run --frozen python -m dev.benchmarks.plugin_lifecycle --cycles 100
 计时与 tracemalloc 分开执行，输出原始耗时、P50/P95、进程句柄或文件描述符数，以及 GC 后仍保留的
 generation、worker client、私有模块数量。句柄观测支持 Windows 和 Linux，其他平台输出 null；
 只统计 Host 进程自身，不代表全系统 IO、RSS 或跨平台性能结论。
-
-```powershell
-uv run --frozen python -m dev.benchmarks.plugin_startup_graph --counts 3 10 30 --repeat 3
-```
-
-启动图基准复用离线回归的内置插件夹具，覆盖链、共享依赖和独立插件。对照同一当前运行时下旧的逐根
-`activate` 启动循环与统一启动图，记录代次构建、后台服务启动、状态读取及原始耗时。每次新建临时 home，
-不计导入、夹具构造和关闭，不清除 OS 缓存；不启动 worker，不代表网络或整个旧版本的性能。
 
 ```powershell
 uv run --frozen python -m dev.benchmarks.worker_results --label current-environment

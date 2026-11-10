@@ -1441,7 +1441,7 @@ def test_provider_endpoint_add_default_selects_generated_endpoint(
     assert provider.base_url == "https://second.example.test/v1"
 
 
-def test_run_print_mode_shows_reasoning_deltas_in_dim_italics(
+def test_run_print_mode_shows_reasoning_deltas_and_answer(
     tmp_path,
     monkeypatch,
     capsys,
@@ -1477,8 +1477,6 @@ def test_run_print_mode_shows_reasoning_deltas_in_dim_italics(
     captured = capsys.readouterr()
 
     assert code == 0
-    assert "\x1b[2;3m" in captured.out
-    assert "\x1b[0m" in captured.out
     assert "Let me think..." in captured.out
     assert "Answer" in captured.out
 

@@ -47,7 +47,7 @@ AgentTree/interaction projection。本规格陈述由自动化证据约束的当
 ### Agent definition
 
 AgentDefinition 是可选择的能力模板，不是运行实例。它描述稳定 agent_id、说明、指令、模型策略、
-工具能力上限、workspace 策略、预算和是否允许继续派遣。
+工具能力上限、workspace 策略和预算。
 
 ### Delegation
 
@@ -92,7 +92,7 @@ Handle 是控制引用，不是 canonical 运行事实。
 16. agent_id 是持久化和工具参数使用的稳定 identity；可编辑 name 不能作为引用、权限键或恢复依据。
 17. builtin 与 user AgentDefinition 只在管理面的 editable 属性上不同；AgentService 不按来源选择执行分支。
 18. AgentDefinition 配置、SpawnAgent schema 和执行解析必须来自同一个 decision-bound AgentCatalogSnapshot。
-19. tool_selection=all 只扩大候选可见集合，不授予权限，也不能包含当前 depth 禁止的 Agent 控制工具。
+19. tool_selection=all 只扩大候选可见集合，不授予权限，子智能体的工具集合不包含 Agent 控制工具。
 
 ## 架构边界
 
@@ -142,7 +142,6 @@ Delegation 中的冻结副本；不定义字段近似相同的 AgentDefinitionSn
 | system_prompt | child 专用指令，不包含父级秘密或未经选择的完整历史 |
 | tool_selection | `all`，或 `selected` + 一组 ToolRegistry public names；selected 允许空集 |
 | model | 固定模型 route key；`None` 表示继承当前 Session model |
-| can_spawn | 是否可创建下一层 child |
 | default_budget | 复用 RunBudgetPolicy 的 model round、token 和 elapsed time 上限 |
 | contract_hash | 本次定义内容的稳定摘要 |
 
@@ -159,7 +158,7 @@ AgentTreeSnapshot。
 - system_prompt 由 OURO 代码提供并进入同一 contract hash；
 - tool_selection=all；
 - model/workspace/budget 使用受约束的 inherit；
-- can_spawn=false，与 max_depth=1 一致；
+- 子智能体不创建下一层子智能体；
 - 永远存在，不能被 user definition 覆盖、编辑或删除。
 
 用户可以创建、读取、更新和删除自定义 definition。管理 DTO 投影 `source=builtin|user` 和派生字段 editable；builtin
@@ -198,10 +197,9 @@ Agent 配置模型继续遵循全局 `OuroModel(extra="ignore")` 兼容策略：
 约束和跨字段不变量仍必须校验。不得为了 Agent 配置另建一套 strict model；definition 总数、identity 唯一性和
 reserved id 等约束直接属于当前配置模型，并在写入完整新值前重新校验。
 
-同一 `agents` 分区还保存 composition 配置：`runtime.max_depth=1` 和
-`runtime.spawn_policy.allowed_agent_id_patterns=("*",)`。definition 与 runtime policy 共用一个 expected
-revision，避免 Host 同时编辑时发生交叉覆盖。max depth 只能为 1，lifecycle 只能为 bound；配置
-detached/nested 在校验期明确失败。runtime policy 由 `LocalApplication` 在 composition start 读取，变更报告
+同一 `agents` 分区还保存 `runtime.spawn_policy`，包括允许的 Agent、模型、执行模式和工具能力。
+definition 与 runtime policy 共用一个 expected revision，避免 Host 同时编辑时交叉覆盖。
+子智能体只由 primary Session 派遣，生命周期绑定父级。runtime policy 由 `LocalApplication` 在 composition start 读取，变更报告
 `effective_from=next_runtime`；definition 内容由每轮 parent 模型决策绑定并报告
 `effective_from=next_decision`。根软预算来自 `run_budget`，在 parent Run 的每轮模型请求边界更新并记录到 Run；每个 definition 的
 subagent 默认值继续复用 `RunBudgetPolicy`，不增加第二套 AgentBudget 配置或执行引擎。
@@ -213,7 +211,7 @@ Application 配置 API 必须能读取和更新完整 policy；CLI、TUI 或其�
 在入口层复制或缩减底层 policy 语义。
 
 用户编辑面覆盖 name、description、system_prompt、model 和 tool_selection。model 使用单选，默认
-`None`（继承当前 Session model）；workspace/budget/can_spawn 先由产品默认值归一化，只有已有权限模型能安全表达的字段
+`None`（继承当前 Session model）；workspace/budget 先由产品默认值归一化，只有已有权限模型能安全表达的字段
 才逐项开放；不接受任意 policy JSON。新增可编辑字段必须进入
 同一 AgentDefinition validator、contract hash、Run snapshot 和 Delegation freeze，不得成为旁路配置。
 
@@ -246,10 +244,10 @@ tool_selection 保存当前产品公开的 ToolRegistry name，不保存 display
 
 - all：选择本次派遣决策的 ExtensionCatalog 中对 child 可见的全部候选工具；
 - selected：只选择 names 与本次决策可见工具的精确交集；空列表表示无工具 Agent；不设置固定数量上限；
-- 两种模式都继续与 platform hard cap、父级可下放工具、depth、当前 revocation 和现有
+- 两种模式都继续与 platform hard cap、父级可下放工具、当前 revocation 和现有
   auto/approval/deny、ToolPolicy 求交；
 - all 不是 all permissions，不跳过 approval、工具筛选或 Agent control 的派遣限制；
-- can_spawn=false 或 depth 已达上限时，Spawn/Wait/Send 等 Agent control tools 必须从 child 工具视图移除。
+- child 工具视图不包含 Agent control tools。
 
 创建或更新 selected definition 时，当前目录未知的 tool name 返回校验错误。之后因 plugin/MCP 禁用、移除或启动失败
 而缺失的 tool 不得导致配置被删除或静默缩成更小 Agent；目录把该 definition 标为 unavailable，给出
@@ -310,9 +308,9 @@ DelegationRecord 是 schema 3 的 canonical record，主要字段如下：
 |---|---|
 | identity | delegation_id、schema_version、root_session_id |
 | parent | parent_session_id、parent_run_id、parent_batch_id、parent_tool_call_id、idempotency_key |
-| child | child_session_id、current_child_run_id、agent_id、agent_contract_hash、nickname |
+| child | child_session_id、current_child_run_id、nickname |
 | task | description、initial_message_id、prompt_digest、显式 resource refs |
-| execution | execution_mode、lifecycle_binding、depth、spawn_state、control_state |
+| execution | execution_mode、spawn_state、control_state |
 | policy | frozen AgentDefinition、EffectiveToolRefs、显式 workspace/model 约束、approval_mode、interaction_mode、RunBudgetPolicy |
 | result | terminal child run、result message/resource refs、usage、delivery |
 
@@ -326,10 +324,10 @@ execution_mode：
 - sync：原 SpawnAgent ToolCall 建立 durable wait，child terminal 后恢复父 Run；
 - async：SpawnAgent 立即返回 handle，父 Run 可继续，child 结果自动在安全边界交付。
 
-lifecycle_binding：
-
-- bound：父 Run aborted/failed 或 root 生命周期关闭时按规则级联 child；父正常完成后 async child 可继续；默认值；
-- detached：保留的领域取值；config、Host request 和模型请求三个边界都明确拒绝。
+父 Run aborted/failed 或 root 生命周期关闭时按规则级联 child；父正常完成后 async child 可继续。
+Agent identity 来自冻结的 `definition.agent_id`。初始交付策略由父工具调用身份与执行模式确定：
+Host 派遣使用 notify_only，模型 sync 使用 resume_waiter，模型 async 使用 next_boundary。
+具体结果在结算时保存自己的 delivery policy。
 
 Delegation 不保存一套与 child Run 同步变化的执行状态机。关系自身只保存：
 
@@ -410,9 +408,7 @@ Call 的独立状态上，执行时显式装入 ToolBatchCall，至少包含：
 - wait_id；
 - delegation_id；
 - child_run_id；
-- state：pending 或 resolved；
-- resolved delegation id 与 child Run id；
-- resolution reason 和 resolved_at。
+- 可选 resolution，包含 reason 和 resolved_at；为空表示尚未解决。
 
 一个同步 SpawnAgent ToolCall 只创建并等待一个 Delegation。Host 批量等待是独立的查询便利接口，不扩张 durable
 ToolCall 协议；在出现真实的多子任务 join 产品语义前，不预留 all/any、集合或 deadline 状态。
@@ -481,7 +477,7 @@ canonical 终态固化结果并唤醒 sync parent；Supervisor 的内存 job 失
 
 spawn 使用分步提交，父子 Session 之间不承诺单一原子写：
 
-1. 从 parent Run 的 AgentCatalogSnapshot 按 agent_id 解析 definition，并校验 parent Session/Run、depth、预算、
+1. 从 parent Run 的 AgentCatalogSnapshot 按 agent_id 解析 definition，并校验 parent Session/Run、单层派遣限制、预算、
    compatibility、显式 resource refs 和权限。
 2. 模型调用由 application 使用完整 `(parent_run_id, parent_batch_id, parent_tool_call_id)` 生成稳定 idempotency key；Host 使用其 request_id。
    模型请求必须匹配当前活动批次中的原 Call、正 attempt 的 started 记录及实际执行参数；复制到其他 Session 的 Call 不授予执行资格。
@@ -569,7 +565,7 @@ sync 是以下组合：
 root budget。
 
 底层 AgentWaitRequest 精确表达当前产品语义：一个同步 SpawnAgent 固定等待自己创建的 delegation 的一个 child_run_id。
-解析结果显式携带 resolved_child_run_id，不能随 Delegation.current_child_run_id 的后续变化改指 follow-up。Host 的
+等待目标固定在 AgentWaitRequest.child_run_id，不能随 Delegation.current_child_run_id 的后续变化改指 follow-up。Host 的
 `wait_agents()` 可等待多个 handle，但它不是模型工具，也不进入 ToolCall 的 durable join 协议。
 
 等待以持久化 child Run identity 为准，通过 `RuntimeSupervisor.wait_run` 共享会话观察，并读取目标 Run 的终态事实。审批或用户输入只结束
@@ -737,8 +733,6 @@ approval_mode、interaction_mode 或 budget。两后端在原生 mutation/CAS �
 
 - 允许的 agent_id pattern；
 - sync/async；
-- lifecycle binding（当前只允许 bound）；
-- max_depth；
 - root/direct child 数；
 - 是否允许向 child 下放写工具；
 - 是否允许下放 MCP 来源的工具。
@@ -820,8 +814,7 @@ active child 必须先 interrupt 或达到 terminal/recoverable；不能以 clos
 
 ### 级联
 
-- bound：父 Run aborted/failed 时默认 interrupt 未 terminal child，并有限等待；
-- detached：当前不执行此分支；请求在创建 relation 前失败；
+- 父 Run aborted/failed 时 interrupt 未 terminal child，并有限等待；
 - 根 Session archive 时不得留下 active descendant；trash 必须在取得全部 live Run 锁后显式级联完整 subagent tree；
 - direct parent close 不删除 descendant history；
 - root delete 的范围必须在 Host 确认中明确显示，且 lifecycle 路径不得依赖 Run/Delegation 反序列化。
@@ -830,8 +823,7 @@ active child 必须先 interrupt 或达到 terminal/recoverable；不能以 clos
 
 默认目标配置：
 
-- max_depth=1；
-- detached 默认禁用；
+- 子智能体只由 primary Session 派遣，且生命周期绑定父级；
 - subagent budget 必须小于等于 root 剩余预算。
 
 每个 subagent 直接复用 RunBudgetPolicy，至少覆盖：
@@ -894,8 +886,8 @@ spawn requested/failed 由 Delegation spawn_state 和原 ToolCall/Host command �
 - parent_session_id；
 - delegation_id；
 - child_session_id；
-- agent_id、name、nickname、depth；
-- execution_mode、lifecycle_binding。
+- agent_id、name、nickname；
+- execution_mode。
 
 上述 scope 优先从 Session/Delegation join 得到，不要求在每个高频 canonical delta 中重复保存。
 
@@ -1112,7 +1104,7 @@ CLI 的 completed-parent spawn 固定 notify-only；会启动 parent next-bounda
 - 投递前、入队后、调度后的失败补偿和已消费 receipt 重试去重测试；
 - 结果重试耗尽后 pending/error 保留与定向恢复测试；
 - child resume 创建新 Run、旧 Run 不被覆盖测试；
-- parent abort 的 bound cascade 与 detached 明确拒绝测试；
+- parent abort 的取消级联与子智能体不能继续派遣测试；
 - child approval/AskUser root routing 与错配拒绝测试；
 - headless/unattended 不悬挂测试；
 - parent hard deny 不可被 child/auto/plugin 放宽的负向测试；

@@ -220,7 +220,7 @@ def prepare_batch_changes(
             # The Agent service binds before child dispatch, while the executor
             # still holds its pre-dispatch batch. Cancellation must retain that
             # binding and cannot reopen a wait already resolved by settlement.
-            if proposed is None or wait.state == "resolved":
+            if proposed is None or wait.resolution is not None:
                 item = item.model_copy(update={"agent_wait": wait})
         materialized.append(item)
         outcome_attempt = previous.outcome_attempt if previous is not None else None

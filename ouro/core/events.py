@@ -39,6 +39,7 @@ EventType = Literal[
     "ask_user_resolved",
     "follow_up_input_queued",
     "steering_input_queued",
+    "session_input_batch_queued",
     "queued_input_consumed",
     "turn_policy_continued",
     "turn_policy_failed",

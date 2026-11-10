@@ -45,7 +45,6 @@ def resolve_driver_contract(
         activation.configuration_revision_by_digest[implementation.release_id] = (
             implementation.configuration_revision_id
         )
-        activation.active_configuration_revision_id = implementation.configuration_revision_id
     graph = resolve_plugin_dependencies(
         state, roots={binding.implementation.plugin_id}, builtin_contracts=builtin_contracts
     )

@@ -428,7 +428,6 @@ def _worker_control_transitions(
                     activation_id=value.get("activation_id"),
                     replace_activation_ids=tuple(value.get("replace_activation_ids", [])),
                     expected_session_revision=value.get("expected_session_revision"),
-                    expected_activation_revision=value.get("expected_activation_revision"),
                     payload=value.get("payload"),
                     reason=value.get("reason"),
                 )

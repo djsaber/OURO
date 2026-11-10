@@ -584,7 +584,7 @@ class SessionService:
         generator: SessionTitleGenerator,
     ) -> SessionMutationResult:
         session = self._load_session_record(session_id)
-        if session.title_locked or session.title_source == "user":
+        if session.title_source == "user":
             return SessionMutationResult(session=SessionView.from_record(session))
         messages, _ = self._store.load_messages_page(
             session_id, cursor=0, limit=_TITLE_CONTEXT_MESSAGE_LIMIT
@@ -612,7 +612,7 @@ class SessionService:
             )
 
         def apply_title(current: SessionRecord) -> SessionRecord:
-            if current.title_locked or current.title_source == "user":
+            if current.title_source == "user":
                 return current
             if current.history_epoch != session.history_epoch:
                 raise SessionCommitConflict("Session history changed during title generation")
@@ -955,7 +955,6 @@ class SessionService:
             forked_from_run_id=(source_message.run_id if source_message else None),
             title=source.title,
             title_source=source.title_source,
-            title_locked=source.title_locked,
             created_at=now,
             updated_at=now,
             last_activity_at=now,

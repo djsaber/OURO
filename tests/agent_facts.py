@@ -35,7 +35,6 @@ def seed_delegation(
         parent_session_id=root.session_id,
         parent_run_id=parent.run_id,
         child_session_id=child.session_id,
-        agent_id=definition.agent_id,
         definition=definition,
         effective_tools=effective_tools,
         constraints=DelegatedConstraints(workspace=child.workspace),

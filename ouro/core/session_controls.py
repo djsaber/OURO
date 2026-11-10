@@ -13,7 +13,6 @@ from ouro.core.message_semantics import SemanticTag
 SessionInputMode = Literal["follow_up", "steer"]
 SessionInputRole = MessageRole
 SessionControlAccess = Literal["exclusive", "shared"]
-SessionControlPhase = Literal["active"]
 SessionControlTransitionAction = Literal["acquire", "release", "replace"]
 
 _CONTROL_DOMAIN = re.compile(
@@ -189,7 +188,6 @@ class SessionControlTransitionRequest(OuroModel):
     activation_id: str | None = None
     replace_activation_ids: list[str] = Field(default_factory=list)
     expected_session_revision: int | None = Field(default=None, ge=0)
-    expected_activation_revision: int | None = Field(default=None, ge=0)
     payload: JsonValue = None
     reason: str | None = None
 
@@ -287,12 +285,8 @@ class SessionControlActivation(OuroModel):
     generation_id: str
     execution_contract_hash: str
     claims: list[SessionControlClaim] = Field(default_factory=list)
-    revision: int = Field(default=1, ge=1)
-    phase: SessionControlPhase = "active"
     usage_scope: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
-    updated_at: datetime = Field(default_factory=utc_now)
-    error: str | None = None
     data: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -342,7 +336,6 @@ __all__ = [
     "SessionControlAccess",
     "SessionControlActivation",
     "SessionControlClaim",
-    "SessionControlPhase",
     "SessionControlState",
     "SessionControlTransitionAction",
     "SessionControlTransitionRequest",

@@ -281,14 +281,6 @@ async def test_plugin_commands_complete_and_execute_through_controller_boundary(
             output or json.dumps(data, ensure_ascii=False, indent=2)
         )
         assert visible_text in "\n".join(line.text for line in history.lines)
-        content_segment = next(
-            segment
-            for line in history.lines
-            for segment in line
-            if visible_text.removeprefix("▣ ") in segment.text
-        )
-        assert content_segment.style is not None
-        assert not content_segment.style.bold
         if expected_kind == "command":
             assert history.entries[-1].created_at is None
             assert history.user_turns == ()

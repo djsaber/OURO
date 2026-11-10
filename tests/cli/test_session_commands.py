@@ -212,7 +212,6 @@ def test_session_remove_child_cascades_old_incompatible_agent_tree(tmp_path, cap
             root_session_id=root.session_id,
             parent_session_id=root.session_id,
             parent_run_id="run_old",
-            agent_id="general",
             task_description="Old child",
             prompt_digest="sha256:old",
             definition=AgentDefinition(
@@ -285,7 +284,6 @@ def test_session_rename_archive_pin_and_filtered_list(tmp_path, capsys) -> None:
     assert code == 0
     assert [entry["session_id"] for entry in payload["sessions"]] == [session_id]
     assert payload["sessions"][0]["title_source"] == "user"
-    assert payload["sessions"][0]["title_locked"] is True
     assert payload["sessions"][0]["tags"] == ["review", "urgent"]
 
 
@@ -559,9 +557,3 @@ def test_session_compact_aborted_is_not_reported_as_skipped(capsys) -> None:
 # Keep pytest from treating helper classes as test classes.
 _DummyProvider.__test__ = False  # type: ignore[attr-defined]
 _RecordingStrategy.__test__ = False  # type: ignore[attr-defined]
-
-
-def test_session_parser_does_not_expose_history_migration():
-    with pytest.raises(SystemExit) as error:
-        build_parser().parse_args(["session", "migrate-harness", "ses_test"])
-    assert error.value.code == 2

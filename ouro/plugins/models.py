@@ -33,18 +33,23 @@ class PluginProvenance(OuroModel):
     source_reference: str
     public_source: str
     resolved_reference: str | None = None
-    package_digest: str
     installed_at: datetime = Field(default_factory=utc_now)
     installer_version: str = __version__
 
 
 class InstalledPlugin(OuroModel):
-    plugin_id: str
-    version: str
     package_digest: str
     manifest: PluginManifest
     provenance: PluginProvenance
     installed_at: datetime = Field(default_factory=utc_now)
+
+    @property
+    def plugin_id(self) -> str:
+        return self.manifest.plugin_id
+
+    @property
+    def version(self) -> str:
+        return self.manifest.version
 
 
 class PluginConfigurationRevision(OuroModel):
@@ -106,7 +111,6 @@ class PluginActivationState(OuroModel):
     selected_digest: str | None = None
     configuration_revisions: dict[str, PluginConfigurationRevision] = Field(default_factory=dict)
     configuration_revision_by_digest: dict[str, str] = Field(default_factory=dict)
-    active_configuration_revision_id: str | None = None
 
     def configuration_for(self, package_digest: str) -> PluginConfigurationRevision | None:
         revision_id = self.configuration_revision_by_digest.get(package_digest)
@@ -118,16 +122,12 @@ class PluginActivationState(OuroModel):
         self,
         package_digest: str,
         revision: PluginConfigurationRevision,
-        *,
-        activate: bool,
     ) -> None:
         existing = self.configuration_revisions.get(revision.revision_id)
         if existing is not None and existing != revision:
             raise ValueError("plugin configuration revision id collision")
         self.configuration_revisions[revision.revision_id] = revision
         self.configuration_revision_by_digest[package_digest] = revision.revision_id
-        if activate:
-            self.active_configuration_revision_id = revision.revision_id
 
     def remove_configuration_for(self, package_digest: str) -> None:
         # Revisions belong to the plugin, not a selected package. A Run may
@@ -171,10 +171,8 @@ class PluginStateDocument(OuroModel):
             if len(digests) != len(set(digests)):
                 raise ValueError(f"plugin state has duplicate package digests: {plugin_id}")
             for installed in record.installs:
-                if installed.plugin_id != plugin_id or installed.manifest.plugin_id != plugin_id:
+                if installed.plugin_id != plugin_id:
                     raise ValueError(f"plugin install identity is inconsistent: {plugin_id}")
-                if installed.provenance.package_digest != installed.package_digest:
-                    raise ValueError(f"plugin provenance digest is inconsistent: {plugin_id}")
 
             activation = record.activation
             if activation.selected_digest not in set(digests):
@@ -189,11 +187,6 @@ class PluginStateDocument(OuroModel):
             for revision_id in activation.configuration_revision_by_digest.values():
                 if revision_id not in activation.configuration_revisions:
                     raise ValueError(f"plugin configuration revision is missing: {plugin_id}")
-            selected_revision = activation.configuration_revision_by_digest[
-                activation.selected_digest
-            ]
-            if activation.active_configuration_revision_id != selected_revision:
-                raise ValueError(f"active plugin configuration revision is invalid: {plugin_id}")
         return self
 
 
@@ -220,8 +213,7 @@ class PluginGenerationRecord(OuroModel):
     plugin_id: str
     version: str
     plugin_class: PluginClass = "user"
-    release_id: str = ""
-    package_digest: str | None = None
+    release_id: str = Field(min_length=1)
     runtime_kind: PluginRuntimeKind
     configuration_revision_id: str
     dependency_lock_fingerprint: str
@@ -232,17 +224,12 @@ class PluginGenerationRecord(OuroModel):
     status: PluginStatus = "starting"
     created_at: datetime = Field(default_factory=utc_now)
 
+    @property
+    def package_digest(self) -> str | None:
+        return self.release_id if self.plugin_class == "user" else None
+
     @model_validator(mode="after")
     def validate_execution_contract(self) -> PluginGenerationRecord:
-        if self.plugin_class == "user":
-            if self.package_digest is None:
-                raise ValueError("user plugin generation requires only a package digest")
-            if not self.release_id:
-                self.release_id = self.package_digest
-            elif self.release_id != self.package_digest:
-                raise ValueError("user plugin generation release id must equal package digest")
-        elif self.package_digest is not None or not self.release_id:
-            raise ValueError("builtin implementation requires a release id and no package digest")
         if self.status in {"active", "degraded"} and self.execution_contract_hash is None:
             raise ValueError("active plugin generation requires an execution contract")
         for field_name, value in (

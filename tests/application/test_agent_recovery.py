@@ -82,7 +82,6 @@ def _relation(
         root_session_id=root.session_id,
         parent_session_id=root.session_id,
         parent_run_id="run_parent",
-        agent_id=definition.agent_id,
         task_description="Recover child state.",
         prompt_digest="sha256:recovery",
         definition=definition,

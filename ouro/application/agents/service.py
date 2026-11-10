@@ -58,7 +58,6 @@ from ouro.core.agents import (
     DelegationResult,
     DeliveryPolicy,
     ResultDelivery,
-    delivery_policy_for_execution_mode,
 )
 from ouro.core.base import new_id, utc_now
 from ouro.core.callbacks import run_blocking
@@ -188,11 +187,8 @@ class AgentService:
         resources: AgentResourcePort | None = None,
         usage_service: UsageService | None = None,
         spawn_policy: AgentSpawnPolicy | None = None,
-        max_depth: int = 1,
         cascade_timeout_seconds: float = 5.0,
     ) -> None:
-        if max_depth != 1:
-            raise ValueError("first-release AgentService supports only max_depth=1")
         if cascade_timeout_seconds <= 0:
             raise ValueError("cascade_timeout_seconds must be positive")
         self.store = store
@@ -202,7 +198,6 @@ class AgentService:
         self.resources = resources
         self.usage = usage_service
         self.spawn_policy = spawn_policy or AgentSpawnPolicy()
-        self.max_depth = max_depth
         self.cascade_timeout_seconds = cascade_timeout_seconds
         self.recovery = AgentRecoveryService(store)
         self._execution = AgentExecutionTasks(
@@ -298,7 +293,6 @@ class AgentService:
                 if state is None or state.agent_wait is None:
                     raise PersistenceError("synchronous SpawnAgent has no durable wait binding")
                 return AgentControlResult(
-                    status="waiting_child",
                     wait=state.agent_wait,
                 )
             structured = {"handle": handle.model_dump(mode="json")}
@@ -508,7 +502,7 @@ class AgentService:
                 parent_session_id=run.session_id,
                 parent_run_id=run.run_id,
             )
-            if relation.lifecycle_binding == "bound" and not self._is_terminal(relation)
+            if not self._is_terminal(relation)
         )
         return _TerminalSettlementTargets(bound_relations=relations)
 
@@ -557,9 +551,7 @@ class AgentService:
 
         parent_session, parent_run, _ = self._spawn_parent(request)
         if parent_session.session_kind == "subagent":
-            raise ValueError(f"maximum subagent depth is {self.max_depth}")
-        if request.lifecycle_binding != "bound":
-            raise ValueError("detached subagent is not supported in the first release")
+            raise ValueError("subagents cannot spawn other subagents")
         existing = self.store.find_delegation_by_idempotency_key(
             parent_session.agent_root_session_id,
             request.request_id,
@@ -580,10 +572,6 @@ class AgentService:
             raise ValueError("system default model is not allowed by the subagent policy")
         if request.execution_mode not in policy.allowed_execution_modes:
             raise ValueError(f"subagent execution mode is not allowed: {request.execution_mode}")
-        if request.lifecycle_binding not in policy.allowed_lifecycle_bindings:
-            raise ValueError(
-                f"subagent lifecycle binding is not allowed: {request.lifecycle_binding}"
-            )
         root_id = parent_session.agent_root_session_id
         budget = effective_child_budget(
             self.store,
@@ -608,19 +596,11 @@ class AgentService:
             parent_tool_call_id=request.parent_tool_call_id,
             child_session_id=new_id("ses"),
             current_child_run_id=new_id("run"),
-            agent_id=entry.definition.agent_id,
             nickname=request.nickname,
             task_description=request.description,
             prompt_digest=("sha256:" + hashlib.sha256(request.task.encode("utf-8")).hexdigest()),
             task_resource_refs=request.resource_refs,
             execution_mode=request.execution_mode,
-            lifecycle_binding=request.lifecycle_binding,
-            delivery_policy=(
-                "notify_only"
-                if request.parent_tool_call_id is None
-                else delivery_policy_for_execution_mode(request.execution_mode)
-            ),
-            depth=1,
             definition=entry.definition,
             effective_tools=entry.effective_tools,
             constraints=DelegatedConstraints(
@@ -721,7 +701,7 @@ class AgentService:
                 elif (
                     wait.delegation_id != relation.delegation_id
                     or wait.child_run_id != relation.current_child_run_id
-                    or wait.state != "pending"
+                    or wait.resolution is not None
                 ):
                     raise SessionBusyError("SpawnAgent Call is already bound to another wait")
             return session, run
@@ -747,7 +727,6 @@ class AgentService:
             and relation.prompt_digest == prompt_digest
             and relation.task_resource_refs == request.resource_refs
             and relation.execution_mode == request.execution_mode
-            and relation.lifecycle_binding == request.lifecycle_binding
         )
         if not matches:
             raise ValueError(
@@ -1204,7 +1183,7 @@ class AgentService:
                     call is None
                     or call.agent_wait is None
                     or (
-                        call.agent_wait.state == "pending"
+                        call.agent_wait.resolution is None
                         and call.agent_wait.child_run_id == relation.result.child_run_id
                     )
                 ):
@@ -1642,7 +1621,7 @@ class AgentService:
         session: SessionRecord,
         wait: AgentWaitRequest,
     ) -> str | None:
-        if wait.state != "pending":
+        if wait.resolution is not None:
             return "Parent ToolCall is waiting on an already resolved Agent wait."
         delegation_id = wait.delegation_id
         try:
@@ -2147,7 +2126,7 @@ class AgentService:
                 resolved = (
                     call is not None
                     and call.agent_wait is not None
-                    and call.agent_wait.state == "resolved"
+                    and call.agent_wait.resolution is not None
                 )
                 if not resolved and receipt is not None and attempt_finished:
                     receipt.result()
@@ -2217,8 +2196,6 @@ class AgentService:
         wait: AgentWaitRequest,
     ) -> RunHandle:
         resolution = AgentWaitResolution(
-            resolved_delegation_id=wait.delegation_id,
-            resolved_child_run_id=wait.child_run_id,
             reason="condition_met",
         )
         relation = await self._finalize_result(
@@ -2320,13 +2297,10 @@ class AgentService:
             or state.result_message_id is None
             or state.outcome_attempt is None
             or state.agent_wait is None
-            or state.agent_wait.state != "resolved"
             or state.agent_wait.delegation_id != delegation_id
             or state.agent_wait.child_run_id != child_run_id
             or state.agent_wait.resolution is None
             or state.agent_wait.resolution.reason != "condition_met"
-            or state.agent_wait.resolution.resolved_delegation_id != delegation_id
-            or state.agent_wait.resolution.resolved_child_run_id != child_run_id
         ):
             return False
         message = self.store.load_message_fact(session_id, state.result_message_id)
@@ -2423,7 +2397,7 @@ class AgentService:
                 return
             states = []
             for state in load_batch_states(self.store, run):
-                if state.agent_wait is None or state.agent_wait.state != "pending":
+                if state.agent_wait is None or state.agent_wait.resolution is not None:
                     continue
                 states.append(
                     state.model_copy(
@@ -2431,7 +2405,6 @@ class AgentService:
                             "status": "unknown_outcome",
                             "agent_wait": state.agent_wait.model_copy(
                                 update={
-                                    "state": "resolved",
                                     "resolution": AgentWaitResolution(reason="interrupted"),
                                 }
                             ),

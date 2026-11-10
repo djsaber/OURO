@@ -171,10 +171,6 @@ class SessionControlCoordinator:
             raise SessionControlConflictError(
                 f"a plugin cannot {transition.action} another plugin's Session controller"
             )
-        if transition.expected_activation_revision is not None and (
-            len(targets) != 1 or targets[0].revision != transition.expected_activation_revision
-        ):
-            raise SessionControlStaleRevisionError("session controller activation revision changed")
         target_controllers = []
         for target in targets:
             try:

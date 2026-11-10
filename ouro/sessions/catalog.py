@@ -67,7 +67,6 @@ def catalog_entry_from_session(
         parent_session_id=session.parent_session_id,
         title=session.title,
         title_source=session.title_source,
-        title_locked=session.title_locked,
         created_at=session.created_at,
         updated_at=session.updated_at,
         last_activity_at=last_activity_at or session.last_activity_at,

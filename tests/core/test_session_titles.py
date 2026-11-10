@@ -20,7 +20,6 @@ def test_title_uses_first_non_scaffold_user_text_and_limits_unicode_characters()
     titled = fill_session_title(session, messages)
     assert titled.title == ("你好 " * 20).rstrip()
     assert titled.title_source == "fallback"
-    assert not titled.title_locked
     assert session.title_source == "placeholder"
 
 

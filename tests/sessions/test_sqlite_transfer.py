@@ -48,7 +48,6 @@ def test_import_sessions_to_sqlite_is_exact_and_verified(tmp_path) -> None:
         root_session_id=first.session_id,
         parent_session_id=first.session_id,
         parent_run_id=run.run_id,
-        agent_id="reader",
         task_description="Verify transfer",
         prompt_digest="sha256:" + "a" * 64,
         definition=AgentDefinition(

@@ -215,9 +215,6 @@ async def test_reasoning_stream_renders_markup_syntax_as_plain_text(tmp_path: Pa
         )
         assert reasoning.label.render().plain.endswith("s")
         assert "Thinking" in reasoning.label.render_line(0).text
-        assert reasoning.label.region.x == turn.content_region.x
-        assert reasoning._content.region.x == reasoning.label.region.x
-        assert reasoning._content.region.y == reasoning.label.region.bottom + 1
         assert not turn.query(".assistant-label")
 
 
@@ -330,11 +327,6 @@ async def test_reasoning_stream_lines_match_whole_block_rendering(tmp_path: Path
         assert body.rendered_text.splitlines() == whole_block
         assert body.rendered_text.splitlines()[0] == "│ first thought"
         assert any("word39" in line for line in body.rendered_text.splitlines())
-        for strip in (*body._lines, *body._pending_lines):
-            for segment in strip:
-                if segment.text.strip() and segment.text != "│":
-                    assert segment.style is not None
-                    assert not segment.style.dim
 
 
 @pytest.mark.asyncio

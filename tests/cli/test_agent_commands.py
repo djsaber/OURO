@@ -305,7 +305,6 @@ def test_agent_runtime_config_cli_is_revisioned_and_typed(tmp_path, capsys) -> N
     )
     assert code == 0
     assert initial["agents"]["revision"] == 0  # type: ignore[index]
-    assert initial["agents"]["max_depth"] == 1  # type: ignore[index]
 
     code, missing_revision = _json_command(
         ["config", "agents", "--allow-agent", "general", "--home", home, "--json"],

@@ -93,7 +93,7 @@ InstalledUserPlugin
         |
         v
 PluginActivation
-  selected digest + desired state + active configuration revision
+  selected digest + desired state + per-package configuration revision
         |
         v
 PluginGeneration
@@ -120,6 +120,9 @@ Plugin API 与 worker protocol。依赖指纹绑定实际装载的直接依赖�
 
 具体待完成调用独立绑定所用 contribution contract；同一发布、配置与依赖下，无关贡献的可用性变化不阻止
 该调用恢复。外部工作区指令、Session 制品与动态输入由各自读取和持久化边界管理。
+
+安装记录从内嵌 Manifest 取得插件 ID 与版本，包摘要由安装记录拥有，provenance 保存来源。
+运行 generation 以 release_id 标识发布；用户插件的 release_id 即包摘要，内置插件使用自身发布身份。
 
 配置修订属于插件记录，包选版只引用其中一个修订。修改配置或移除某个包版本不删除既有修订，等待中的 Run 可以
 继续引用原配置。最终安装记录删除时一并删除配置修订；插件私有数据按显式保留／清除选项处理。
@@ -163,7 +166,7 @@ User plugin：
 
 - 安装到当前 `OURO_HOME`；
 - 每个 plugin id 可以保存多个 installed digest，但只有一个 selected digest；
-- 每个 plugin id 只有一份 desired enablement 和 active configuration revision reference；
+- 每个 plugin id 有一份 desired enablement；当前配置由 selected digest 对应的配置修订引用确定；
 - 不包含 workspace、managed 或 development activation scope。
 
 `PluginService.show` 的安装列表按 SemVer 与 package digest 降序返回；排序规则由应用层拥有，CLI/TUI
@@ -430,6 +433,10 @@ Session Controller 的 activate/deactivate call 还必须提供 Host 已知的 `
 形态。batch 必须非空、保持组内顺序且所有成员使用相同 delivery mode。Application 以一个 Session mutation 原子
 接受完整 batch，并在同一安全边界把整组转为 canonical messages；`one_by_one` 只能选择完整消费单位，不能拆分
 batch。SDK、in-process adapter、worker protocol、CLI 和 TUI 使用同一类型化契约。
+
+Registry 将独立输入归一为单元素批次，并为输入与控制意图绑定可信插件归属。
+Application 接收 `BoundPluginCommandResult`，只包含归属绑定后的批次和控制意图；多个独立输入仍是多个 FIFO
+消费单位，显式批次整体消费。每个接受的单位发布 `session_input_batch_queued`，其 payload 给出模式和成员身份。
 
 命令也可返回 `CommandOutput.run_action = stop | continue`，要求目标 Session、有效执行契约及
 `sessions.write`、`background.run` 权限；不能与新输入混用。`stop` 将当前执行的取消意图与命令状态共同提交，
@@ -802,7 +809,7 @@ JSON。Controller 使用 `<plugin_id>/session_controllers/<local_id>` canonical 
 `domain + exclusive|shared` claim，以及有界、幂等的 activate/deactivate callback。
 
 - Command 和 Tool 只返回 `acquire | release | replace` transition；Application 在 Session mutation 边界内校验
-  generation/execution contract、expected revision 和 claim 冲突，再提交 activation；
+  generation/execution contract、expected Session control revision 和 claim 冲突，再提交 activation；
 - 依赖目标 Session 才能执行的 Command 必须在 Manifest 声明 `requires_session: true`。Application 在调用 handler 前
   强制该前置条件；交互命令用例在尚无当前 Session 时，按 Host 传入的模型与交互策略创建并绑定 Session。默认
   `false`，无状态命令不能因此隐式创建 Session；
@@ -812,7 +819,7 @@ JSON。Controller 使用 `<plugin_id>/session_controllers/<local_id>` canonical 
 - 冲突不能按 priority、加载顺序或 last-command-wins 自动解决，Host 不维护 Plan/Goal/第三方插件冲突表；
 - `replace` 仅允许同一插件内部显式交接，插件不能替换其他 owner 的 activation；跨插件切换必须先明确 release；
 - Harness 版本只发布已经完成准备的 activation，包含 activation id、controller id、
-  release/generation/execution contract、claims 和 revision；activate/deactivate 在提交前生成提案，
+  release/generation/execution contract、claims、创建时间和回调数据；控制集合持有修订号。activate/deactivate 在提交前生成提案，
   失败不产生半激活状态，启动和 undo 不重放 Controller 回调；
 - Tool、Context Provider、Prompt Policy、Tool Policy、Turn Policy、Continuation Policy 和 Observer 可用
   Manifest/SDK 的

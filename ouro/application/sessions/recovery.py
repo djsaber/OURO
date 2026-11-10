@@ -314,7 +314,7 @@ def _interaction_state_error(run: RunRecord, calls: tuple[ToolCallState, ...]) -
         if not any(
             call.status == "waiting_child"
             and call.agent_wait is not None
-            and call.agent_wait.state == "pending"
+            and call.agent_wait.resolution is None
             for call in calls
         ):
             return "Run was waiting for a child without a pending Agent wait."

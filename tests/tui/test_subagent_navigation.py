@@ -33,9 +33,7 @@ def _agent(
         task_description=f"Inspect task {index}",
         status=status,
         execution_mode="async" if index % 2 else "sync",
-        lifecycle_binding="bound",
         control_state="open",
-        depth=1,
         activity=RuntimeActivitySnapshot(
             session_id=f"ses_child_{index}",
             status=status,

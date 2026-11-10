@@ -357,10 +357,10 @@ Files 未决帧决定使消息、Call 状态与 Run 点查明确报需恢复，�
 | `placeholder` | 尚未取得可命名的用户输入 |
 | `fallback` | 从用户输入提取，或由创建者提供的初始标题 |
 | `generated` | 由应用层注入的生成器提供 |
-| `user` | 用户显式命名，`title_locked=true` |
+| `user` | 用户显式命名，自动标题策略不得覆盖 |
 
 标题策略位于 Core，负责空白归一化、长度校验和输入提取；应用层负责创建、显式命名、生成器调用及写入所有权。
-消息提交的领域准备阶段只对 `placeholder` 且未锁定的 Session 提取标题，将结果与消息写入同一个
+消息提交的领域准备阶段只对 `placeholder` Session 提取标题，将结果与消息写入同一个
 `SessionCommit` 决定。File/SQLite adapter 不解释标题内容，不另建标题更新事务；读取列表不触发补全。
 
 提取只检查本次提交中 `role=user` 且 `scaffold=false` 的消息，选择第一条非空文字，合并连续空白后取前

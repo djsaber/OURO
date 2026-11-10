@@ -483,7 +483,6 @@ class PluginService:
         configuration = activation.configuration_for(package_digest)
         if configuration is None:
             raise ValueError("selected plugin digest has no configuration revision")
-        activation.active_configuration_revision_id = configuration.revision_id
         if activation.desired_enabled:
             affected = desired_dependant_closure(
                 candidate,

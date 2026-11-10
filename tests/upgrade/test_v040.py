@@ -121,7 +121,6 @@ def test_delegation_parent_query_uses_current_index(historical_home):
         root_session_id="ses_fixture",
         parent_session_id="ses_fixture",
         parent_run_id="run_fixture",
-        agent_id="general",
         task_description="Inspect",
         prompt_digest="sha256:fixture",
         definition=AgentDefinition(agent_id="general", name="General", description="Inspect"),

@@ -40,7 +40,6 @@ GENERAL_AGENT_DEFINITION = AgentDefinition(
         "a concise result with evidence, verification, and unresolved questions."
     ),
     tool_selection=ToolSelection(mode="all"),
-    can_spawn=False,
 )
 
 
@@ -155,7 +154,6 @@ class AgentDefinitionService:
             system_prompt=system_prompt,
             tool_selection=tool_selection,
             model=model,
-            can_spawn=current.can_spawn,
             default_budget=current.default_budget,
         )
         self.config.update(updated, expected_revision=expected_revision)

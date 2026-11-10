@@ -260,7 +260,6 @@ class LocalApplication:
             resources=runtime.resources,
             usage_service=runtime.usage,
             spawn_policy=configured_agents.runtime.spawn_policy,
-            max_depth=configured_agents.runtime.max_depth,
         )
         runtime.bind_extensions(
             catalog=plugin_runtime,

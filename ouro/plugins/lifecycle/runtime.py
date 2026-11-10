@@ -1607,7 +1607,6 @@ class PluginRuntimeResource:
             version=candidate.version,
             plugin_class=candidate.plugin_class,
             release_id=candidate.release_id,
-            package_digest=candidate.package_digest,
             runtime_kind=candidate.manifest.runtime.kind,
             configuration_revision_id=configuration.revision_id,
             dependency_lock_fingerprint=dependency_lock_fingerprint,
@@ -1966,8 +1965,6 @@ class PluginRuntimeResource:
         configuration = record.activation.configuration_for(installed.package_digest)
         if configuration is None:
             raise RuntimeError("plugin configuration revision is unavailable")
-        if record.activation.active_configuration_revision_id != configuration.revision_id:
-            raise RuntimeError("plugin active configuration revision is inconsistent")
         return PluginRuntimeCandidate(
             plugin_class="user",
             manifest=installed.manifest,

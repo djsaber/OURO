@@ -68,7 +68,7 @@ def test_versioned_decoder_returns_current_typed_record_without_intermediate_jso
     assert session.schema_version == 6
 
 
-def _activation(**changes):
+def _activation():
     return SessionControlActivation(
         controller_id="example.plugin/session_controllers/plan",
         plugin_id="example.plugin",
@@ -77,14 +77,16 @@ def _activation(**changes):
         release_id="release",
         generation_id="generation",
         execution_contract_hash="contract",
-        **changes,
     )
 
 
-@pytest.mark.parametrize("phase", ["activating", "deactivating", "failed"])
-def test_session_controls_reject_non_committed_lifecycle_phases(phase):
-    with pytest.raises(ValidationError, match="phase"):
-        _activation(phase=phase)
+def test_session_controls_persist_activations_with_collection_revision():
+    session = SessionRecord(controls=SessionControlState(revision=2, activations=[_activation()]))
+    restored = decode_versioned_record_json(
+        SessionRecord, session.model_dump_json(), label="session record"
+    )
+
+    assert restored.controls == session.controls
 
 
 def test_session_controls_reject_duplicate_controller_identity():

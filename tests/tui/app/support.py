@@ -509,7 +509,6 @@ def _persist_direct_child_session(application: LocalApplication) -> tuple[str, s
             parent_run_id=root_run_id,
             child_session_id=child.session_id,
             current_child_run_id=child_run_id,
-            agent_id=definition.agent_id,
             task_description="Inspect direct child navigation.",
             prompt_digest="sha256:picker-direct-child",
             spawn_state="submitted",

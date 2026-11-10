@@ -236,7 +236,7 @@ async def test_command_state_control_queue_and_result_share_one_decision(store, 
     assert [item.prompt for item in items] == ["first", "second"]
     assert items[0].batch_id == items[1].batch_id
     assert result.accepted_inputs[0].queue_id == items[0].queue_id
-    assert result.session_inputs == result.session_input_batches == []
+    assert result.session_input_batches == []
 
 
 async def test_failed_nested_controller_discards_the_command_and_its_inputs(store):

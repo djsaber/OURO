@@ -101,6 +101,7 @@ def validate_runtime_event_payload(event_type: str, payload: dict[str, Any]) -> 
         "run_status_changed": ("to_status",),
         "follow_up_input_queued": ("queue_id",),
         "steering_input_queued": ("queue_id",),
+        "session_input_batch_queued": ("queue_id",),
         "queued_input_cancelled": ("queue_id",),
         "queued_input_consumed": ("queue_id",),
         "turn_policy_continued": ("turn_id",),
@@ -161,6 +162,7 @@ def _event_category(event_type: str) -> RuntimeEventCategory:
     if event_type.startswith(("approval_", "ask_user_", "queued_input_")) or event_type in {
         "follow_up_input_queued",
         "steering_input_queued",
+        "session_input_batch_queued",
     }:
         return "interaction"
     if event_type.startswith("run_"):

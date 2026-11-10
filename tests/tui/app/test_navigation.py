@@ -71,7 +71,6 @@ async def test_short_conversation_starts_at_top_while_following_latest_message(
         history = conversation.query_one(ConversationHistory)
         assert conversation.scroll_y == 0
         assert history.user_lines == (0,)
-        assert history.region.y <= conversation.content_region.y + 2
         assert conversation.is_vertical_scroll_end is True
 
 

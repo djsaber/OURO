@@ -2531,7 +2531,6 @@ async def test_tree_projects_missing_child_run_as_recoverable(tmp_path) -> None:
             parent_run_id="run_parent",
             child_session_id="ses_missing_child",
             current_child_run_id="run_missing_child",
-            agent_id="reader",
             task_description="Missing child evidence",
             prompt_digest="sha256:" + "c" * 64,
             spawn_state="submitted",
@@ -2580,7 +2579,7 @@ async def test_concurrent_spawns_are_scheduled_and_subagent_cannot_spawn_nested_
         description="active child model stream",
     )
 
-    with pytest.raises(ValueError, match="maximum subagent depth is 1"):
+    with pytest.raises(ValueError, match="subagents cannot spawn other subagents"):
         await service.spawn_agent(
             SpawnAgentRequest(
                 request_id="host/nested-subagent",
@@ -2924,7 +2923,6 @@ async def test_primary_budget_check_does_not_scan_unrelated_delegations(
             root_session_id=unrelated.session_id,
             parent_session_id=unrelated.session_id,
             parent_run_id="run_old",
-            agent_id="reader",
             task_description="Old incompatible delegation",
             prompt_digest="sha256:old",
             definition=AgentDefinition(
@@ -3666,10 +3664,10 @@ async def test_parent_abort_resolves_sync_wait_and_cascades_waiting_child(
     assert outcome is not None
     assert outcome.value.structured["result"]["terminal_status"] == "aborted"
     assert spawn_call.agent_wait is not None
-    assert spawn_call.agent_wait.state == "resolved"
+    assert spawn_call.agent_wait.resolution is not None
     assert spawn_call.agent_wait.resolution is not None
     assert spawn_call.agent_wait.resolution.reason == "interrupted"
-    assert spawn_call.agent_wait.resolution.resolved_delegation_id is None
+    assert spawn_call.agent_wait.resolution.reason == "interrupted"
 
     relation = store.list_delegations(parent_handle.session_id)[0]
     assert relation.child_session_id is not None

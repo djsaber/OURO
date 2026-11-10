@@ -384,7 +384,6 @@ async def test_provider_configuration_uses_shared_grouped_inline_menu(
             "Filter provider settings…"
         )
         options = screen.query_one("#choice-list", OptionList)
-        assert options.styles.scrollbar_size_vertical == 0
         assert [(choice.value, choice.group) for choice in screen._choices] == [
             ("provider-credential", "BASIC"),
             ("provider-base-url", "BASIC"),

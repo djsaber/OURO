@@ -202,8 +202,8 @@ hatch 和链接悬停仍使用 Textual 原生 CSS 路径。适配只作用于主
 ```bash
 uv run --frozen pytest tests/architecture/test_welcome_boundaries.py tests/tui/test_optional_welcome_styles.py tests/tui/test_welcome_package_recovery.py
 uv run --frozen --extra themes pytest tests/tui/test_theme_package.py tests/tui/test_welcome_styles.py tests/tui/test_welcome_layout.py tests/tui/test_welcome_refresh.py tests/tui/test_preferences.py
-uv run --frozen --extra themes pytest tests/tui/app/ -k 'welcome or theme or composer_growth or session_input_surface or startup'
-uv run --frozen --extra themes pytest tests/tui/test_dot_animation.py tests/tui/test_particle_fields.py tests/tui/test_particle_raster.py tests/tui/test_particle_samplers.py
+uv run --frozen --extra themes pytest tests/tui/app/ -k 'welcome or theme or composer_growth or startup'
+uv run --frozen --extra themes pytest tests/tui/test_dot_animation.py tests/tui/test_particle_fields.py tests/tui/test_particle_samplers.py
 uv run --frozen --extra themes pytest tests/tui/test_animation_rendering.py
 ```
 

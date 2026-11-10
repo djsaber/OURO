@@ -142,7 +142,7 @@ Windows 11、Python 3.14.6、SQLite 3.53.1、20 个逻辑 CPU；隔离合成 hom
 小样本查询分位数不能解释为稳定尾延迟，不能从这些负载推断所有用户的平均提速。
 
 复现入口：[基准说明](../../../dev/benchmarks/README.md)、
-[session_refactor_comparison.py](../../../dev/benchmarks/session_refactor_comparison.py)。
+`session_refactor_comparison.py`。
 
 ```powershell
 .venv\Scripts\python.exe -B -X utf8 dev/benchmarks/session_refactor_comparison.py --scenario agent_io --rounds 64 --argument-bytes 65536 --structured-bytes 65536 --repeat 1

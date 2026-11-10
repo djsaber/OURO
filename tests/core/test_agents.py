@@ -38,9 +38,6 @@ def test_agent_definition_contract_is_stable_and_content_addressed() -> None:
         AgentDefinition.model_validate(
             {**first.model_dump(), "description": "changed", "contract_hash": first.contract_hash}
         )
-    assert "source" not in AgentDefinition.model_fields
-    assert "editable" not in AgentDefinition.model_fields
-    assert "context_policy" not in AgentDefinition.model_fields
 
 
 def test_agent_catalog_snapshot_freezes_definition_and_tool_contract() -> None:
@@ -115,7 +112,6 @@ def test_delegation_spawn_phases_validate_child_identity() -> None:
         root_session_id="ses_root",
         parent_session_id="ses_root",
         parent_run_id="run_parent",
-        agent_id=definition.agent_id,
         task_description="Inspect the runtime.",
         prompt_digest="sha256:prompt",
         definition=definition,
@@ -133,8 +129,6 @@ def test_delegation_spawn_phases_validate_child_identity() -> None:
         values[missing] = None
         with pytest.raises(ValidationError, match="both parent batch and tool call"):
             DelegationRecord.model_validate(values)
-    assert "context_message_ids" not in DelegationRecord.model_fields
-    assert "context_compaction_id" not in DelegationRecord.model_fields
 
     with pytest.raises(ValidationError, match="child identity"):
         requested.model_copy(update={"spawn_state": "child_created"}).__class__.model_validate(
@@ -146,28 +140,11 @@ def test_agent_wait_request_targets_one_delegation() -> None:
     wait = AgentWaitRequest(delegation_id="dlg_one", child_run_id="run_one")
 
     assert wait.delegation_id == "dlg_one"
-    with pytest.raises(ValidationError, match="requested delegation"):
-        AgentWaitRequest(
-            delegation_id="dlg_one",
-            child_run_id="run_one",
-            state="resolved",
-            resolution=AgentWaitResolution(
-                resolved_delegation_id="dlg_other",
-                resolved_child_run_id="run_one",
-                reason="condition_met",
-            ),
-        )
-    with pytest.raises(ValidationError, match="requested child Run"):
-        AgentWaitRequest(
-            delegation_id="dlg_one",
-            child_run_id="run_one",
-            state="resolved",
-            resolution=AgentWaitResolution(
-                resolved_delegation_id="dlg_one",
-                resolved_child_run_id="run_two",
-                reason="condition_met",
-            ),
-        )
+    assert wait.resolution is None
+    resolved = wait.model_copy(update={"resolution": AgentWaitResolution(reason="condition_met")})
+    assert resolved.delegation_id == wait.delegation_id
+    assert resolved.child_run_id == wait.child_run_id
+    assert resolved.resolution.reason == "condition_met"
 
 
 def test_delegated_budget_intersection_cannot_expand_parent_limit() -> None:

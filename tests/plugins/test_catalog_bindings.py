@@ -35,7 +35,7 @@ class Generation:
             generation_id=self.plugin_id,
             plugin_id=self.plugin_id,
             version="1.0.0",
-            package_digest="digest",
+            release_id="digest",
             runtime_kind="python-inprocess",
             configuration_revision_id="a" * 64,
             dependency_lock_fingerprint="b" * 64,

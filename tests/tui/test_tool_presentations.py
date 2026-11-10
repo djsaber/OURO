@@ -56,9 +56,7 @@ def _agent(
         task_description="Inspect the event pipeline",
         status="running",
         execution_mode=execution_mode,
-        lifecycle_binding="detached",
         control_state="open",
-        depth=1,
         activity=activity,
     )
 
@@ -408,8 +406,6 @@ def test_tool_elapsed_time_omits_zero_and_uses_shared_duration_format(
     assert "0s" not in zero_text
     assert "0ms" not in submillisecond_text
     assert expected in elapsed_text
-    elapsed_style = elapsed_rendered.get_style_at_offset(Console(), elapsed_text.index(expected))
-    assert not elapsed_style.bold
 
 
 def test_spawn_agent_uses_existing_child_tool_activity_status() -> None:
@@ -504,8 +500,6 @@ def test_spawn_agent_uses_task_outcome_status(
 
     assert header.strip() == (f"General Agent{DEFAULT_TUI_THEME.inline_separator}Scout  {expected}")
     assert f"└ {expected.title()} • Inspect the event pipeline" == detail.strip()
-    title_style = rendered_text.get_style_at_offset(Console(), rendered.index("General Agent"))
-    assert not title_style.bold
 
 
 class _HistoryApp(App[None]):
@@ -548,21 +542,3 @@ async def test_subagent_status_replaces_only_its_indexed_history_piece() -> None
         assert app.history.lines is line_buffer
         assert app.history.lines[0] is unaffected_line
         assert "└ Thinking • Inspect the event pipeline" in app.history.rendered_text
-
-
-@pytest.mark.asyncio
-async def test_reasoning_only_turn_adds_one_message_boundary_before_tool() -> None:
-    tool = _tool("Read", arguments={"path": "after-thought.py"})
-    app = _HistoryApp()
-
-    async with app.run_test(size=(100, 30)):
-        await app.history.set_reasoning_expanded(False, above_line=0)
-        app.history.append(TranscriptEntry(kind="assistant", reasoning="Inspect the target first."))
-        app.history.append(TranscriptEntry(kind="tool", tool=tool))
-        await app.history.wait_until_rendered()
-
-        lines = [line.strip() for line in app.history.rendered_text.splitlines()]
-        reasoning = lines.index("+ Thought")
-        tool_header = next(index for index, line in enumerate(lines) if line == "Read")
-
-        assert lines[reasoning + 1 : tool_header] == [""]

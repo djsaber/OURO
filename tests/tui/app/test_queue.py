@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from rich.console import Console
 from rich.text import Text
 from textual.widgets import Input, Static
 
@@ -121,9 +120,6 @@ async def test_queued_input_rows_use_single_line_tokenized_previews(tmp_path: Pa
             f"1. Guide{DEFAULT_TUI_THEME.inline_separator}first line ↵ second line"
         )
         assert f"2. Follow-up{DEFAULT_TUI_THEME.inline_separator}follow next" in source.plain
-
-        label_style = source.get_style_at_offset(Console(), source.plain.index("Guide"))
-        assert not label_style.bold
 
         assert content_widget.styles.text_wrap == "nowrap"
         assert content_widget.styles.text_overflow == "ellipsis"

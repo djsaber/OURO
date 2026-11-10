@@ -194,8 +194,6 @@ def test_file_delegation_resolves_cross_session_or_drops_missing_call(
         parent_run_id="run_fixture",
         parent_batch_id="batch_fixture",
         parent_tool_call_id=call_id,
-        delivery_policy="resume_waiter",
-        agent_id="general",
         task_description="Inspect",
         prompt_digest="sha256:fixture",
         definition=AgentDefinition(agent_id="general", name="General", description="Inspect"),

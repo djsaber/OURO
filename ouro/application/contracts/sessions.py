@@ -84,7 +84,6 @@ class SessionCatalogEntry(ApplicationDTO):
     parent_session_id: str | None = None
     title: str
     title_source: SessionTitleSource = "fallback"
-    title_locked: bool = False
     created_at: datetime
     updated_at: datetime
     last_activity_at: datetime
@@ -128,7 +127,6 @@ class SessionView(ApplicationDTO):
     forked_from_run_id: str | None = None
     title: str
     title_source: SessionTitleSource
-    title_locked: bool
     created_at: datetime
     updated_at: datetime
     last_activity_at: datetime
@@ -162,7 +160,6 @@ class SessionView(ApplicationDTO):
             forked_from_run_id=session.forked_from_run_id,
             title=session.title,
             title_source=session.title_source,
-            title_locked=session.title_locked,
             created_at=session.created_at,
             updated_at=session.updated_at,
             last_activity_at=session.last_activity_at,

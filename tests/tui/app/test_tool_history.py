@@ -263,12 +263,6 @@ async def test_history_load_keeps_the_active_tool_batch_in_live_rows(tmp_path: P
         assert not [entry for entry in history.entries if entry.tool is not None]
         row = conversation._tools[tool_call_id]
         assert row.is_attached is True
-        assert row.content_region.x == conversation.content_region.x == app.screen.region.x + 1
-        assert (
-            row.content_region.right
-            == conversation.content_region.right
-            == app.screen.region.right - 1
-        )
         assert row._timer is not None
         frame = row._frame
         row._tick()

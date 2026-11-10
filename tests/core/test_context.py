@@ -279,16 +279,6 @@ def test_semantic_tags_are_optional_and_independent_from_message_roles() -> None
                 "content": [{"type": "text", "text": "legacy"}],
             }
         )
-    legacy = MessageRecord.model_validate(
-        {
-            "session_id": "ses_1",
-            "role": "system",
-            "synthetic": True,
-            "content": [{"type": "text", "text": "legacy"}],
-        }
-    )
-    assert legacy.scaffold is False
-    assert "synthetic" not in legacy.model_dump()
     with pytest.raises(ValueError, match="Field required"):
         MessageRecord.model_validate(
             {

@@ -203,7 +203,6 @@ class SessionRecord(VersionedOuroModel):
     forked_from_run_id: str | None = None
     title: str = DEFAULT_SESSION_TITLE
     title_source: SessionTitleSource = "fallback"
-    title_locked: bool = False
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     last_activity_at: datetime = Field(default_factory=utc_now)

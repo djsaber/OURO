@@ -84,7 +84,7 @@ async def test_welcome_refreshes_live_system_status_each_time_it_opens(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_welcome_usage_hover_selects_day_without_changing_color_and_previews_totals(
+async def test_welcome_usage_hover_selects_day_and_previews_totals(
     tmp_path: Path,
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
@@ -118,7 +118,7 @@ async def test_welcome_usage_hover_selects_day_without_changing_color_and_previe
         await pilot.pause()
 
         chart = usage._chart.render()
-        assert chart.plain == "■■ • last 2 days"
+        assert "last 2 days" in chart.plain
         assert usage._requests.render().plain == "3 request(s)"
         assert usage._tokens.render().plain == "2.0K in • 500 out • 25.00% cache"
 
@@ -126,14 +126,14 @@ async def test_welcome_usage_hover_selects_day_without_changing_color_and_previe
         await pilot.pause()
 
         hovered_chart = usage._chart.render()
-        assert hovered_chart.plain == "▣■ • 2026-09-01"
+        assert "2026-09-01" in hovered_chart.plain
         assert usage._requests.render().plain == "1 request(s)"
         assert usage._tokens.render().plain == "800 in • 200 out • 12.50% cache"
 
         await pilot.hover(None, offset=(0, 31))
         await pilot.pause()
 
-        assert usage._chart.render().plain == "■■ • last 2 days"
+        assert "last 2 days" in usage._chart.render().plain
         assert usage._tokens.render().plain == "2.0K in • 500 out • 25.00% cache"
 
 

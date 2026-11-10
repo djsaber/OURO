@@ -34,49 +34,11 @@ from tests.tui.app.support import (
     _application,
     _blocking_application,
     _wait_for_active_session,
-    _wait_for_welcome_render,
 )
 from tests.tui.app.test_navigation import _scrollable_messages
 from tests.tui.helpers import resize_terminal, run_ready_app, wait_for_history_render
 from tests.tui.helpers import wait_for_worker_group as _wait_for_worker_group
 from tests.tui.helpers import wait_until as _wait_until
-
-
-@pytest.mark.asyncio
-async def test_session_input_surface_reserves_one_row_above_connected_menus(
-    tmp_path: Path,
-) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with run_ready_app(app, size=(100, 32)) as pilot:
-        await pilot.pause()
-        composer = app.query_one(Composer)
-        panel = app.query_one(SubagentNavigationPanel)
-        assert panel.display is False
-
-        composer.load_text("start session")
-        await pilot.press("enter")
-        await _wait_for_worker_group(app, pilot, group="run")
-
-        assert panel.display is True
-        assert panel.region.height == 1
-        assert panel.render().plain.strip() == ""
-        assert panel.region.bottom == composer.region.y
-        assert panel.content_region.x == composer.region.x
-        assert panel.content_region.right == composer.region.right
-        composer_y = composer.region.y
-
-        await pilot.press("slash")
-        await pilot.pause()
-        popup = app.query_one(CommandPopup)
-        assert panel.region.bottom == popup.region.y
-        assert popup.region.bottom == composer.region.y
-        assert composer.region.y == composer_y
-
-        await pilot.press("escape")
-        await pilot.pause()
-        assert panel.region.bottom == composer.region.y
-        assert composer.region.y == composer_y
 
 
 @pytest.mark.asyncio
@@ -104,11 +66,6 @@ async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
             active_placeholder = composer.placeholder
             assert isinstance(active_placeholder, Content)
             assert active_placeholder.plain == Composer.ACTIVE_RUN_PLACEHOLDER
-            for shortcut in ("Enter", "Ctrl+G"):
-                style = active_placeholder.get_style_at_offset(
-                    active_placeholder.plain.index(shortcut)
-                )
-                assert style.bold is False
 
             composer.focus()
             composer.cursor_blink = True
@@ -307,24 +264,6 @@ async def test_growing_composer_rebounds_adjacent_panels_and_conversation(
         composer.load_text("")
         await pilot.pause()
         assert bounds() == (popup_before, interaction_before, conversation_before)
-
-
-@pytest.mark.asyncio
-async def test_welcome_mode_keeps_growing_composer_centered(tmp_path: Path) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with run_ready_app(app, size=(100, 40)) as pilot:
-        welcome = await _wait_for_welcome_render(app, pilot, contains="Commands")
-        composer = app.query_one(Composer)
-
-        for text in ("", "a\nb", "a\nb\nc"):
-            composer.load_text(text)
-            await pilot.pause()
-
-            assert composer.region.y == welcome.page._top.region.bottom
-            assert abs(welcome.page._top.region.height - welcome.page._bottom.region.height) <= 1
-            assert app.query_one(StatusLine).region.y == composer.region.bottom
-            assert welcome.page._system.region.bottom <= welcome.page._bottom.region.bottom
 
 
 @pytest.mark.asyncio

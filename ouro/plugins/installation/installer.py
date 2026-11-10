@@ -75,11 +75,8 @@ class PluginInstaller:
                 source_reference=materialized.source_reference,
                 public_source=materialized.public_source,
                 resolved_reference=materialized.resolved_reference,
-                package_digest=package.package_digest,
             )
             installed = InstalledPlugin(
-                plugin_id=package.manifest.plugin_id,
-                version=package.manifest.version,
                 package_digest=package.package_digest,
                 manifest=package.manifest,
                 provenance=provenance,
@@ -127,15 +124,6 @@ class PluginInstaller:
                 record.activation.selected_digest = (
                     record.installs[-1].package_digest if record.installs else None
                 )
-                if record.activation.selected_digest is not None:
-                    revision = record.activation.configuration_for(
-                        record.activation.selected_digest
-                    )
-                    if revision is None:
-                        raise ValueError("selected plugin digest has no configuration revision")
-                    record.activation.active_configuration_revision_id = revision.revision_id
-                else:
-                    record.activation.active_configuration_revision_id = None
             if not record.installs:
                 state.plugins.pop(plugin_id, None)
             return state
@@ -167,7 +155,6 @@ class PluginInstaller:
                 activation.set_configuration(
                     installed.package_digest,
                     configuration,
-                    activate=True,
                 )
                 record = PluginRecord(
                     plugin_id=installed.plugin_id,
@@ -208,11 +195,9 @@ class PluginInstaller:
             record.activation.set_configuration(
                 installed.package_digest,
                 configuration,
-                activate=record.activation.selected_digest == installed.package_digest,
             )
             if record.activation.selected_digest is None:
                 record.activation.selected_digest = installed.package_digest
-                record.activation.active_configuration_revision_id = configuration.revision_id
             return state
 
         self.store.mutate_state(add)

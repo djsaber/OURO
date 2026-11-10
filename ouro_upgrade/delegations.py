@@ -19,7 +19,7 @@ from ouro_upgrade.workspace import Workspace
 def bind_parent(value: dict[str, Any], batch_id: str | None) -> None:
     value["parent_batch_id"] = batch_id
     if batch_id is None:
-        value.update(parent_tool_call_id=None, delivery_policy="notify_only")
+        value["parent_tool_call_id"] = None
         if value.get("result"):
             result = value["result"]
             value["result"] = {

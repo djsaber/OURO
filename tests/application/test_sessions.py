@@ -59,10 +59,8 @@ def test_session_create_and_rename_persist_explicit_identity_and_title_state(tmp
     assert created.session.title_source == "fallback"
     assert renamed.session.title == "User title"
     assert renamed.session.title_source == "user"
-    assert renamed.session.title_locked is True
     assert reloaded.title == renamed.session.title
     assert reloaded.title_source == renamed.session.title_source
-    assert reloaded.title_locked == renamed.session.title_locked
 
 
 def test_session_view_projects_subagent_delegation_identity() -> None:
@@ -404,7 +402,7 @@ async def test_generated_title_is_sanitized_and_never_overwrites_user_title(tmp_
 
     assert generated.session.title == "Generated title"
     assert generated.session.title_source == "generated"
-    assert renamed.session.title_locked is True
+    assert renamed.session.title_source == "user"
     assert ignored.session.title == "User title"
     assert store.load_session(generated_session.session_id).session.title == "User title"
 
@@ -808,7 +806,6 @@ def test_branch_preserves_canonical_title_state_without_display_markers(tmp_path
 
     assert branch.title == source.title
     assert branch.title_source == source.title_source
-    assert branch.title_locked == source.title_locked
     assert branch.parent_session_id == source.session_id
     assert branch.root_session_id == source.root_session_id
     assert branch.forked_from_message_id is None
@@ -1372,7 +1369,6 @@ def test_trash_accepts_root_with_incompatible_delegation_record(tmp_path, backen
             root_session_id=root.session_id,
             parent_session_id=root.session_id,
             parent_run_id="run_old_parent",
-            agent_id="general",
             task_description="Old child",
             prompt_digest="sha256:old-child",
             definition=AgentDefinition(
@@ -1383,14 +1379,7 @@ def test_trash_accepts_root_with_incompatible_delegation_record(tmp_path, backen
         )
     )
     payload = relation.model_dump(mode="json")
-    payload.update(
-        {
-            "parent_tool_call_id": "call_old",
-            "parent_batch_id": "batch_old",
-            "execution_mode": "async",
-            "delivery_policy": "notify_only",
-        }
-    )
+    payload["execution_mode"] = "foreground"
     if backend == "files":
         relation_path = (
             store.sessions_dir / root.session_id / "delegations" / f"{relation.delegation_id}.json"
@@ -1404,7 +1393,7 @@ def test_trash_accepts_root_with_incompatible_delegation_record(tmp_path, backen
             )
             connection.commit()
 
-    with pytest.raises(PersistenceError, match="async child requires next_boundary"):
+    with pytest.raises(PersistenceError, match="execution_mode"):
         store.list_delegations(root.session_id)
 
     result = sessions.trash(root.session_id)
@@ -1445,7 +1434,6 @@ def test_root_archive_and_trash_preserve_agent_descendant_scope(tmp_path, backen
             root_session_id=root.session_id,
             parent_session_id=root.session_id,
             parent_run_id=parent.run_id,
-            agent_id=definition.agent_id,
             task_description="Preserve descendant history",
             prompt_digest="sha256:agent-child",
             definition=definition,

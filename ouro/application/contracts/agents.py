@@ -11,7 +11,6 @@ from ouro.core.agents import (
     ControlState,
     DeliveryStatus,
     ExecutionMode,
-    LifecycleBinding,
     ToolSelection,
 )
 from ouro.core.run_budget import RunBudgetPolicy
@@ -63,7 +62,6 @@ class SpawnAgentRequest(ApplicationDTO):
     parent_batch_id: str | None = Field(default=None, min_length=1)
     parent_tool_call_id: str | None = Field(default=None, min_length=1)
     execution_mode: ExecutionMode = "sync"
-    lifecycle_binding: LifecycleBinding = "bound"
     unattended: bool = False
     resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
 
@@ -125,9 +123,7 @@ class AgentTreeNode(ApplicationDTO):
     task_description: str
     status: str
     execution_mode: ExecutionMode
-    lifecycle_binding: LifecycleBinding
     control_state: ControlState
-    depth: int
     usage: dict[str, int | float] = Field(default_factory=dict)
     budget: RunBudgetPolicy = Field(default_factory=RunBudgetPolicy)
     pending_interactions: tuple[AgentInteractionSummary, ...] = ()

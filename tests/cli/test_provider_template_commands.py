@@ -253,11 +253,9 @@ def test_provider_update_json_exposes_safe_template_merge_report(tmp_path, capsy
     }
 
 
-def test_removed_configure_and_unknown_type_are_not_parseable() -> None:
+def test_unknown_provider_type_is_not_parseable() -> None:
     parser = build_parser()
 
-    with pytest.raises(SystemExit):
-        parser.parse_args(["provider", "configure", "openai"])
     with pytest.raises(SystemExit):
         parser.parse_args(["provider", "add", "local", "--type", "unknown"])
 

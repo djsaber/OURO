@@ -19,14 +19,11 @@ from ouro.core.run_budget import RunBudgetPolicy
 AgentSource = Literal["builtin", "user"]
 ToolSelectionMode = Literal["all", "selected"]
 ExecutionMode = Literal["sync", "async"]
-LifecycleBinding = Literal["bound", "detached"]
 SpawnState = Literal["requested", "child_created", "submitted", "failed"]
 ControlState = Literal["open", "closed"]
 DeliveryPolicy = Literal["notify_only", "next_boundary", "resume_waiter"]
 DeliveryStatus = Literal["pending", "delivered", "skipped", "failed"]
-WaitState = Literal["pending", "resolved"]
 AgentControlAction = Literal["spawn", "send", "interrupt"]
-AgentControlStatus = Literal["completed", "waiting_child"]
 
 _AGENT_ID = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
 AGENT_CONTROL_TOOL_NAMES = frozenset({"SpawnAgent", "SendAgentMessage", "InterruptAgent"})
@@ -77,7 +74,6 @@ class AgentDefinitionContent(OuroModel):
 
 class AgentDefinition(AgentDefinitionContent, VersionedOuroModel):
     agent_id: str
-    can_spawn: bool = False
     default_budget: RunBudgetPolicy = Field(default_factory=RunBudgetPolicy)
     contract_hash: str = ""
 
@@ -107,7 +103,6 @@ class AgentSpawnPolicy(OuroModel):
     allowed_agent_id_patterns: tuple[str, ...] = ("*",)
     allowed_model_patterns: tuple[str, ...] = ("*",)
     allowed_execution_modes: tuple[ExecutionMode, ...] = ("sync", "async")
-    allowed_lifecycle_bindings: tuple[LifecycleBinding, ...] = ("bound",)
     allow_write: bool = True
     allow_mcp: bool = True
 
@@ -123,14 +118,10 @@ class AgentSpawnPolicy(OuroModel):
 
     @model_validator(mode="after")
     def validate_modes(self) -> Self:
-        for values, name in (
-            (self.allowed_execution_modes, "execution modes"),
-            (self.allowed_lifecycle_bindings, "lifecycle bindings"),
-        ):
-            if not values:
-                raise ValueError(f"spawn policy {name} must not be empty")
-            if len(set(values)) != len(values):
-                raise ValueError(f"spawn policy {name} must be unique")
+        if not self.allowed_execution_modes:
+            raise ValueError("spawn policy execution modes must not be empty")
+        if len(set(self.allowed_execution_modes)) != len(self.allowed_execution_modes):
+            raise ValueError("spawn policy execution modes must be unique")
         return self
 
     def allows_agent(self, agent_id: str) -> bool:
@@ -295,16 +286,12 @@ class DelegationRecord(VersionedOuroModel):
     parent_tool_call_id: str | None = Field(default=None, min_length=1)
     child_session_id: str | None = None
     current_child_run_id: str | None = None
-    agent_id: str
     nickname: str | None = Field(default=None, max_length=80)
     task_description: str = Field(min_length=1, max_length=500)
     initial_message_id: str | None = None
     prompt_digest: str = Field(min_length=1, max_length=256)
     task_resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
     execution_mode: ExecutionMode = "sync"
-    lifecycle_binding: LifecycleBinding = "bound"
-    delivery_policy: DeliveryPolicy = "notify_only"
-    depth: int = Field(default=1, ge=1, le=32)
     spawn_state: SpawnState = "requested"
     control_state: ControlState = "open"
     definition: AgentDefinition
@@ -317,6 +304,16 @@ class DelegationRecord(VersionedOuroModel):
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     error: str | None = None
+
+    @property
+    def agent_id(self) -> str:
+        return self.definition.agent_id
+
+    @property
+    def delivery_policy(self) -> DeliveryPolicy:
+        if self.parent_tool_call_id is None:
+            return "notify_only"
+        return delivery_policy_for_execution_mode(self.execution_mode)
 
     def require_frozen_contract(self, previous: DelegationRecord) -> None:
         """Lifecycle revisions cannot replace the accepted child authority."""
@@ -335,19 +332,6 @@ class DelegationRecord(VersionedOuroModel):
     def validate_relation(self) -> Self:
         if (self.parent_batch_id is None) != (self.parent_tool_call_id is None):
             raise ValueError("model delegation requires both parent batch and tool call identity")
-        if self.agent_id != self.definition.agent_id:
-            raise ValueError("delegation agent_id must match frozen definition")
-        if self.lifecycle_binding == "detached":
-            raise ValueError("detached child is not supported in the first release")
-        expected_delivery = (
-            "notify_only"
-            if self.parent_tool_call_id is None
-            else delivery_policy_for_execution_mode(self.execution_mode)
-        )
-        if self.delivery_policy != expected_delivery:
-            raise ValueError(
-                f"{self.execution_mode} child requires {expected_delivery} result delivery"
-            )
         if self.spawn_state in {"child_created", "submitted"} and self.child_session_id is None:
             raise ValueError("child identity is required after child creation")
         if self.spawn_state == "submitted" and self.current_child_run_id is None:
@@ -363,42 +347,15 @@ class DelegationRecord(VersionedOuroModel):
 
 
 class AgentWaitResolution(OuroModel):
-    resolved_delegation_id: str | None = None
-    resolved_child_run_id: str | None = Field(default=None, min_length=1)
     reason: Literal["condition_met", "interrupted"]
     resolved_at: datetime = Field(default_factory=utc_now)
-
-    @model_validator(mode="after")
-    def validate_resolution(self) -> Self:
-        if self.reason == "condition_met" and (
-            self.resolved_delegation_id is None or self.resolved_child_run_id is None
-        ):
-            raise ValueError("completed Agent wait requires a resolved delegation and child Run")
-        return self
 
 
 class AgentWaitRequest(OuroModel):
     wait_id: str = Field(default_factory=lambda: new_id("wait"))
     delegation_id: str = Field(min_length=1, max_length=128)
     child_run_id: str = Field(min_length=1)
-    state: WaitState = "pending"
     resolution: AgentWaitResolution | None = None
-
-    @model_validator(mode="after")
-    def validate_wait(self) -> Self:
-        if (self.state == "resolved") is not (self.resolution is not None):
-            raise ValueError("resolved wait state and resolution must agree")
-        if self.resolution is not None and self.resolution.resolved_delegation_id not in {
-            None,
-            self.delegation_id,
-        }:
-            raise ValueError("Agent wait resolution must reference its requested delegation")
-        if self.resolution is not None and self.resolution.resolved_child_run_id not in {
-            None,
-            self.child_run_id,
-        }:
-            raise ValueError("Agent wait resolution must reference its requested child Run")
-        return self
 
 
 class AgentControlRequest(OuroModel):
@@ -438,18 +395,11 @@ class AgentControlRequest(OuroModel):
 class AgentControlResult(OuroModel):
     """Application result returned to the ordinary tool-call state machine."""
 
-    status: AgentControlStatus = "completed"
     is_error: bool = False
     content: str = ""
     structured: dict[str, Any] = Field(default_factory=dict)
     resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
     wait: AgentWaitRequest | None = None
-
-    @model_validator(mode="after")
-    def validate_status(self) -> Self:
-        if (self.status == "waiting_child") is not (self.wait is not None):
-            raise ValueError("waiting_child status and wait request must agree")
-        return self
 
 
 __all__ = [

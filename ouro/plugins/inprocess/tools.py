@@ -142,7 +142,6 @@ def _tool_output(
                 activation_id=item.activation_id,
                 replace_activation_ids=list(item.replace_activation_ids),
                 expected_session_revision=item.expected_session_revision,
-                expected_activation_revision=item.expected_activation_revision,
                 payload=item.payload,
                 reason=item.reason,
             )

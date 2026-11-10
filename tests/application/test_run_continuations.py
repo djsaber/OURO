@@ -489,7 +489,9 @@ async def test_plugin_command_returns_permission_checked_session_input(tmp_path)
     )
     assert alias.execution.output == "Goal started."
     assert alias.session_id is not None
-    assert alias.execution.session_inputs[0].prompt == "Work on: inspect the feature"
+    assert (
+        alias.execution.session_input_batches[0].inputs[0].prompt == "Work on: inspect the feature"
+    )
     assert store.load_runs(alias.session_id) == []
 
     command = await submit_plugin_command(
@@ -503,8 +505,8 @@ async def test_plugin_command_returns_permission_checked_session_input(tmp_path)
     assert command.session_id is not None
     assert command.session_id != alias.session_id
     assert store.load_runs(command.session_id) == []
-    assert len(command.execution.session_inputs) == 1
-    attributed = command.execution.session_inputs[0]
+    assert len(command.execution.session_input_batches) == 1
+    attributed = command.execution.session_input_batches[0].inputs[0]
     assert attributed.plugin_id == TEST_GOAL_PLUGIN_ID
     assert attributed.contribution_id == "goal"
     assert attributed.generation_id

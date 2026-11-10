@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
-from typing import Literal, Self
+from typing import Self
 
 from pydantic import Field, ValidationError, model_validator
 
@@ -19,16 +19,9 @@ RESERVED_AGENT_IDS = frozenset({"general"})
 
 
 class AgentRuntimeConfig(OuroModel):
-    """Process-start policy for first-release subagent dispatch."""
+    """Process-start policy for subagent dispatch."""
 
-    max_depth: Literal[1] = 1
     spawn_policy: AgentSpawnPolicy = Field(default_factory=AgentSpawnPolicy)
-
-    @model_validator(mode="after")
-    def validate_first_release_policy(self) -> Self:
-        if self.spawn_policy.allowed_lifecycle_bindings != ("bound",):
-            raise ValueError("first-release Agent runtime supports only bound lifecycle")
-        return self
 
 
 class AgentDefinitionsConfig(OuroModel):

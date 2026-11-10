@@ -6,7 +6,7 @@ from pydantic import Field
 
 from ouro.application.contracts.execution import HostInputReceipt
 from ouro.core.base import OuroModel
-from ouro.core.session_controls import AttributedSessionInput, AttributedSessionInputBatch
+from ouro.core.session_controls import AttributedSessionInputBatch
 from ouro.core.state import SessionContinuationRequest
 from ouro.plugins.credentials import PluginCredentialBinding
 from ouro.plugins.manifest import PluginRuntimeKind, PluginStatus
@@ -128,7 +128,6 @@ class PluginCommandExecutionView(OuroModel):
     command_output: str | None = None
     command_data: dict[str, object] | None = None
     accepted_inputs: tuple[HostInputReceipt, ...] = ()
-    session_inputs: list[AttributedSessionInput] = Field(default_factory=list)
     session_input_batches: list[AttributedSessionInputBatch] = Field(default_factory=list)
 
 

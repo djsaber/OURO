@@ -1795,7 +1795,7 @@ def _tool_call_status_for_outcome(outcome: ToolExecutionOutcome) -> ToolCallStat
 def _agent_control_outcome(
     invocation: ToolInvocation, control: AgentControlResult
 ) -> ToolExecutionOutcome:
-    if control.status == "waiting_child":
+    if control.wait is not None:
         return ToolExecutionOutcome(
             status="waiting_child", invocation=invocation, agent_wait=control.wait
         )

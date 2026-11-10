@@ -581,7 +581,7 @@ async def test_cold_abort_restores_goal_snapshot_and_pauses_goal(tmp_path) -> No
 
         before = store.load_session_record(session.session_id)
         assert len(before.controls.activations) == 1
-        previous_activation_id = before.controls.activations[0].activation_id
+        previous_activation = before.controls.activations[0]
         runtime._release_run_resources(pending_hold.run.run_id)
 
         aborted = await runtime.abort_run(
@@ -603,8 +603,8 @@ async def test_cold_abort_restores_goal_snapshot_and_pauses_goal(tmp_path) -> No
         assert goal.report is not None
         assert "interrupted" in goal.report
         assert len(controls) == 1
-        assert controls[0].phase == "active"
-        assert controls[0].activation_id != previous_activation_id
+        assert controls[0].controller_id == previous_activation.controller_id
+        assert controls[0].activation_id != previous_activation.activation_id
         assert settled is not None
         assert settled.action == "pause"
         assert settled.reason == "run_aborted"

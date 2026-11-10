@@ -83,7 +83,7 @@ from ouro.config.queued_inputs import QueuedInputConfig
 from ouro.config.runtime import RuntimeSettings
 from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.adapter import RuntimeAdapter
-from ouro.core.agents import AgentWaitRequest, AgentWaitResolution
+from ouro.core.agents import AgentWaitResolution
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.attachment_input import separate_attachments
 from ouro.core.base import new_id, utc_now
@@ -3964,13 +3964,7 @@ class RuntimeService:
             )
             if waiting_call is None or waiting_call.agent_wait is None:
                 raise ValueError("parent ToolCall no longer has a pending child wait")
-            resolved_wait = AgentWaitRequest.model_validate(
-                {
-                    **waiting_call.agent_wait.model_dump(),
-                    "state": "resolved",
-                    "resolution": resolution,
-                }
-            )
+            resolved_wait = waiting_call.agent_wait.model_copy(update={"resolution": resolution})
             outcome = await run_blocking(
                 self.store.load_tool_outcome, session_id, identity, waiting_call.attempt
             )
@@ -4003,6 +3997,8 @@ class RuntimeService:
                         "turn_id": batch.turn_id,
                         "tool_call_id": tool_call_id,
                         "wait_id": resolved_wait.wait_id,
+                        "delegation_id": resolved_wait.delegation_id,
+                        "child_run_id": resolved_wait.child_run_id,
                         "resolution": resolution.model_dump(mode="json"),
                     },
                 )
@@ -4400,7 +4396,6 @@ class RuntimeService:
             {
                 "activation_id": activation.activation_id,
                 "controller_id": activation.controller_id,
-                "revision": activation.revision,
                 "generation_id": activation.generation_id,
                 "execution_contract_hash": activation.execution_contract_hash,
                 "usage_scope": activation.usage_scope,
