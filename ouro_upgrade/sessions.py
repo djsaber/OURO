@@ -247,9 +247,6 @@ def files(work: Workspace, units: UpgradeUnits) -> None:
     )
     entries = []
     directories = [item for item in children(root, "*") if item.is_dir()]
-    unfinished = any(not (directory / "session-data.sqlite3").exists() for directory in directories)
-    if version == DATA_LAYOUT_VERSION and not unfinished:
-        return
 
     previous = (
         read_json(work, "sessions/index.json")
@@ -271,14 +268,11 @@ def files(work: Workspace, units: UpgradeUnits) -> None:
     for number, directory in enumerate(directories, 1):
         if (directory / "session-data.sqlite3").exists():
             unit = UpgradeUnit("session", directory.name)
-            if version in (41, 42):
-                units.run(
-                    unit,
-                    partial(session_storage.file_session, work, directory),
-                    remove=partial(
-                        work.remove_directory, directory.relative_to(work.home).as_posix()
-                    ),
-                )
+            units.run(
+                unit,
+                partial(session_storage.file_session, work, directory),
+                remove=partial(work.remove_directory, directory.relative_to(work.home).as_posix()),
+            )
             if unit not in units.discarded and directory.name in current_entries:
                 entries.append(current_entries[directory.name])
             work.progress("sessions", number, len(directories))
@@ -303,10 +297,9 @@ def files(work: Workspace, units: UpgradeUnits) -> None:
     # Keep the home gated until every native container supports the current reader.
     if version in (41, 42) and len(units.failures) > failures:
         return
-    work.json(
-        "sessions/index.json",
-        SessionIndex(sessions=sort_catalog_entries(entries)).model_dump(mode="json"),
-    )
+    index = SessionIndex(sessions=sort_catalog_entries(entries)).model_dump(mode="json")
+    if index["sessions"] != previous["sessions"] or version != DATA_LAYOUT_VERSION:
+        work.json("sessions/index.json", index)
     if version != DATA_LAYOUT_VERSION:
         work.json("layout.json", {**layout, "data_layout_version": DATA_LAYOUT_VERSION})
 
@@ -321,7 +314,10 @@ def sqlite(connection: sqlite3.Connection, units: UpgradeUnits) -> bool | Path:
         "unsupported SQLite schema",
     )
     if version[0] == str(SQLITE_SCHEMA_VERSION):
-        return False
+        if session_storage.current_records(connection, include_delegations=True):
+            return False
+        session_storage.authority_records(connection, include_delegations=True)
+        return True
     if version[0] in ("26", "27"):
         if version[0] == "26":
             session_storage.observation_schema(connection)
@@ -386,7 +382,11 @@ def current_sqlite(connection: sqlite3.Connection) -> bool:
     row = connection.execute(
         "SELECT value FROM metadata WHERE key='sqlite_schema_version'"
     ).fetchone()
-    return row is not None and row[0] == str(SQLITE_SCHEMA_VERSION)
+    return (
+        row is not None
+        and row[0] == str(SQLITE_SCHEMA_VERSION)
+        and session_storage.current_records(connection, include_delegations=True)
+    )
 
 
 def remove_files(work: Workspace) -> None:

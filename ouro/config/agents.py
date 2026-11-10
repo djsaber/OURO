@@ -11,7 +11,7 @@ from ouro.config.file import JsonConfigFile, atomic_config_update
 from ouro.config.providers.manager import ProviderConfigManager
 from ouro.core.agents import AgentDefinition, AgentSpawnPolicy
 from ouro.core.base import OuroModel
-from ouro.core.errors import ConfigError
+from ouro.core.errors import ConfigError, InvalidConfigDataError
 from ouro.core.model_selection import DEFAULT_MODEL
 
 MAX_USER_AGENT_DEFINITIONS = 32
@@ -56,16 +56,17 @@ class AgentDefinitionsConfigManager:
         return self._file
 
     def snapshot(self) -> AgentDefinitionsConfig:
-        raw = self._file.read().get("agents", {})
-        if raw is None:
-            raw = {}
-        if not isinstance(raw, Mapping):
-            raise ConfigError("agents config must be an object")
         try:
-            config = AgentDefinitionsConfig.model_validate(dict(raw))
-        except ValidationError as exc:
-            raise ConfigError(f"invalid agents config: {exc}") from exc
-        return config
+            raw = self._file.read().get("agents", {})
+            if raw is None:
+                raw = {}
+            if not isinstance(raw, Mapping):
+                raise ConfigError("agents config must be an object")
+            return AgentDefinitionsConfig.model_validate(dict(raw))
+        except (ConfigError, ValidationError) as exc:
+            raise InvalidConfigDataError(
+                "invalid agents config: persisted data failed validation"
+            ) from exc
 
     @atomic_config_update
     def create(

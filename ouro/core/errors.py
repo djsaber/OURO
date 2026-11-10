@@ -19,6 +19,10 @@ class PersistenceError(OuroError):
     """Local persistence failed."""
 
 
+class InvalidConfigDataError(ConfigError, PersistenceError):
+    """Saved configuration cannot satisfy the current contract and needs recovery."""
+
+
 class SessionRecoveryRequiredError(PersistenceError):
     """A read encountered a pending native Session decision; recover explicitly."""
 

@@ -1,4 +1,4 @@
-"""Convert known persisted provider configuration without resolving credentials."""
+"""Convert owned configuration structures without starting application services."""
 
 from __future__ import annotations
 
@@ -6,11 +6,13 @@ import copy
 from collections.abc import Callable
 from typing import Any
 
+from ouro.config.agents import AgentDefinitionsConfig
 from ouro.config.endpoints import ProviderEndpointConfig
 from ouro.config.provider_models import BUILTIN_FAUX_PROVIDER_ID
 from ouro.config.providers.codec import provider_config_from_mapping
 from ouro.config.providers.template_store import template_fingerprint
 from ouro.core.errors import ConfigError
+from ouro_upgrade.agents import upgrade_definition, upgrade_spawn_policy
 from ouro_upgrade.errors import UpgradeDataError, require
 from ouro_upgrade.files import read_json
 from ouro_upgrade.workspace import Workspace
@@ -194,3 +196,42 @@ def providers(work: Workspace) -> None:
     converted = convert_providers(raw)
     if converted != raw:
         work.json(_PATH, converted)
+
+
+def convert_agents(raw: dict[str, Any]) -> dict[str, Any]:
+    """Validate source contracts before retiring inert dispatch settings."""
+    path = "config/agents.json"
+    value = copy.deepcopy(raw)
+    section = value.get("agents")
+    if section is None:
+        return value
+    require(isinstance(section, dict), path, "expected agents object")
+    try:
+        for definition in section.get("definitions", []):
+            upgrade_definition(definition)
+        runtime = section.get("runtime", {})
+        if "max_depth" in runtime:
+            require(
+                type(runtime["max_depth"]) is int and runtime["max_depth"] == 1,
+                path,
+                "unsupported agent depth",
+            )
+            runtime.pop("max_depth")
+        policy = runtime.get("spawn_policy", {})
+        upgrade_spawn_policy(policy)
+        AgentDefinitionsConfig.model_validate(section)
+    except UpgradeDataError:
+        raise
+    except ValueError, TypeError, AttributeError:
+        raise UpgradeDataError(f"{path}: invalid agent configuration") from None
+    return value
+
+
+def agents(work: Workspace) -> None:
+    path = "config/agents.json"
+    if not work.path(path).exists():
+        return
+    raw = read_json(work, path)
+    converted = convert_agents(raw)
+    if converted != raw:
+        work.json(path, converted)

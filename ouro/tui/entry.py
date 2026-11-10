@@ -31,7 +31,11 @@ def run_tui(
     """Run the full-screen Textual Host and return its process exit code."""
 
     with nullcontext(startup) if startup is not None else TerminalStartup() as feedback:
-        from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
+        from ouro.core.errors import (
+            InvalidConfigDataError,
+            PersistenceError,
+            UnsupportedDataVersionError,
+        )
         from ouro.deployment import access_home, resolve_home
         from ouro.tui.app import OuroTuiApp
 
@@ -68,7 +72,9 @@ def run_tui(
             recovery = DataRecoveryApp(
                 home=root,
                 error=str(failure),
-                auto_upgrade=isinstance(failure, UnsupportedDataVersionError)
+                auto_upgrade=isinstance(
+                    failure, (UnsupportedDataVersionError, InvalidConfigDataError)
+                )
                 and not attempted_upgrade,
                 session_backend=session_backend,
                 task_backend=task_backend,

@@ -72,7 +72,13 @@ def test_native_upgrade_converts_authority_and_preserves_other_facts(native_home
         assert not connection.execute("SELECT 1 FROM sqlite_master WHERE name='events'").fetchone()
         for table, (columns, rows) in retained.items():
             actual = connection.execute(f"SELECT {columns} FROM {table}").fetchall()
-            kind = {"sessions": "session", "runs": "run", "delegations": "delegation"}.get(table)
+            kind = {
+                "sessions": "session",
+                "runs": "run",
+                "delegations": "delegation",
+                "tool_call_states": "tool_state",
+                "harness_versions": "harness",
+            }.get(table)
             if kind is None and table != "session_catalog":
                 assert actual == rows
             else:
@@ -85,6 +91,7 @@ def test_native_upgrade_converts_authority_and_preserves_other_facts(native_home
                         expected = convert(kind, expected)
                     else:
                         expected.pop("workspace_trusted", None)
+                        expected.pop("title_locked", None)
                     assert json.loads(after[payload_index]) == expected
         assert connection.execute("PRAGMA foreign_key_check").fetchone() is None
 
@@ -308,4 +315,191 @@ def test_native_authority_upgrade_preserves_catalog_grants_from_existing_contain
         entries = json.loads(index.read_text("utf-8"))["sessions"]
     assert entries
     assert all("workspace_trusted" not in entry for entry in entries)
+    assert upgrade(home, session_backend=backend)["status"] == "current"
+
+
+def _frozen_catalog():
+    import hashlib
+
+    from ouro.core.agents import AgentCatalogEntry, AgentCatalogSnapshot, AgentDefinition
+
+    catalog = AgentCatalogSnapshot(
+        entries=(
+            AgentCatalogEntry(
+                definition=AgentDefinition(
+                    agent_id="reader", name="Reader", description="Frozen prompt"
+                ),
+            ),
+        )
+    ).model_dump(mode="json")
+    definition = catalog["entries"][0]["definition"]
+    definition["can_spawn"] = False
+    payload = {key: value for key, value in definition.items() if key != "contract_hash"}
+    definition["contract_hash"] = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
+    catalog["spawn_policy"]["allowed_lifecycle_bindings"] = ["bound"]
+    payload = {
+        key: catalog[key] for key in ("schema_version", "revision", "entries", "spawn_policy")
+    }
+    catalog["contract_hash"] = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
+    return catalog
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_current_container_upgrades_frozen_agents_and_isolates_invalid_contracts(
+    native_home, corrupt
+):
+    home, backend = native_home
+    upgrade(home, session_backend=backend)
+    catalog = _frozen_catalog()
+    if corrupt:
+        catalog["entries"][0]["definition"]["description"] = "tampered"
+    path = database(home, backend)
+    with closing(sqlite3.connect(path)) as connection:
+        run = json.loads(connection.execute("SELECT payload FROM runs LIMIT 1").fetchone()[0])
+        run["agent_catalog"] = catalog
+        connection.execute(
+            "UPDATE runs SET payload=? WHERE run_id=?", (json.dumps(run), run["run_id"])
+        )
+        connection.commit()
+    before = hashes(home)
+    report = upgrade(home, session_backend=backend, check=True, isolate_failures=True)
+    assert hashes(home) == before
+    if corrupt:
+        assert report["status"] == "partial"
+        assert "contract hash" in report["failures"][0]["error"]
+        result = upgrade(
+            home, session_backend=backend, isolate_failures=True, discard=confirmed(report)
+        )
+        assert result["status"] == "upgraded"
+        assert result["discarded"]
+        assert not path.exists()
+        return
+    assert report["status"] == "upgrade_required"
+    assert upgrade(home, session_backend=backend)["status"] == "upgraded"
+    loaded = repository(home, backend).load_run(run["session_id"], run["run_id"])
+    assert loaded.agent_catalog.entries[0].definition.description == "Frozen prompt"
+    assert (
+        loaded.agent_catalog.created_at.isoformat().replace("+00:00", "Z") == catalog["created_at"]
+    )
+    assert loaded.agent_catalog.contract_hash != catalog["contract_hash"]
+    assert upgrade(home, session_backend=backend)["status"] == "current"
+
+
+def test_delegation_definition_uses_the_same_offline_conversion():
+    from ouro.core.agents import AgentDefinition, DelegationRecord
+
+    definition = _frozen_catalog()["entries"][0]["definition"]
+    record = DelegationRecord(
+        root_session_id="root",
+        parent_session_id="root",
+        parent_run_id="run",
+        idempotency_key="request",
+        task_description="Inspect",
+        prompt_digest="sha256:prompt",
+        definition=AgentDefinition(agent_id="reader", name="Reader", description="Frozen prompt"),
+    ).model_dump(mode="json")
+    record["definition"] = definition
+    record.update(
+        agent_id="reader", delivery_policy="notify_only", depth=1, lifecycle_binding="bound"
+    )
+    result = convert("delegation", record)
+    restored = DelegationRecord.model_validate(result)
+    assert restored.delegation_id == record["delegation_id"]
+    assert restored.definition.description == definition["description"]
+    assert "can_spawn" in record["definition"]
+    assert convert("delegation", result) is result
+
+
+@pytest.mark.parametrize("invalid_phase", [False, True])
+def test_retired_control_and_wait_fields_upgrade_in_current_containers(native_home, invalid_phase):
+    from tests.core.test_persistence import _activation
+
+    home, backend = native_home
+    upgrade(home, session_backend=backend)
+    activation = _activation().model_dump(mode="json")
+    activation.update(
+        phase="broken" if invalid_phase else "active",
+        revision=1,
+        updated_at=activation["created_at"],
+        error=None,
+    )
+    # Same-named fields in opaque extension data are not schema-owned.
+    activation["data"] = {"phase": "business", "revision": 9}
+    controls = {"revision": 4, "activations": [activation]}
+    path = database(home, backend)
+    with closing(sqlite3.connect(path)) as connection:
+        session = json.loads(connection.execute("SELECT payload FROM sessions").fetchone()[0])
+        session.update(controls=controls, title_locked=False)
+        connection.execute("UPDATE sessions SET payload=?", (json.dumps(session),))
+        state = json.loads(
+            connection.execute("SELECT payload FROM tool_call_states LIMIT 1").fetchone()[0]
+        )
+        state["agent_wait"] = {
+            "wait_id": "wait",
+            "delegation_id": "delegation",
+            "child_run_id": "child",
+            "state": "resolved",
+            "resolution": {
+                "resolved_delegation_id": "delegation",
+                "resolved_child_run_id": "child",
+                "reason": "condition_met",
+                "resolved_at": activation["created_at"],
+            },
+        }
+        connection.execute("UPDATE tool_call_states SET payload=?", (json.dumps(state),))
+        if backend == "sqlite":
+            harness = json.loads(
+                connection.execute("SELECT payload FROM harness_versions LIMIT 1").fetchone()[0]
+            )
+            harness["state"]["controls"] = controls
+            connection.execute("UPDATE harness_versions SET payload=?", (json.dumps(harness),))
+        connection.commit()
+    if backend == "files":
+        harness_path = next((home / "sessions/ses_fixture/harness").glob("*.json"))
+        harness = json.loads(harness_path.read_text("utf-8"))
+        harness["state"]["controls"] = controls
+        harness_path.write_text(json.dumps(harness), "utf-8")
+    original = hashes(home)
+    report = upgrade(home, session_backend=backend, check=True, isolate_failures=True)
+    assert hashes(home) == original
+    if invalid_phase:
+        assert report["status"] == "partial"
+        assert "activation phase" in report["failures"][0]["error"]
+        result = upgrade(
+            home, session_backend=backend, isolate_failures=True, discard=confirmed(report)
+        )
+        assert result["discarded"] and not path.exists()
+        return
+    assert report["status"] == "upgrade_required"
+    upgrade(home, session_backend=backend)
+    with closing(sqlite3.connect(path)) as connection:
+        after = json.loads(connection.execute("SELECT payload FROM sessions").fetchone()[0])
+        assert "title_locked" not in after
+        assert after["controls"]["revision"] == 4
+        saved = after["controls"]["activations"][0]
+        assert saved["data"] == activation["data"]
+        assert not {"phase", "revision", "updated_at", "error"}.intersection(saved)
+        after = json.loads(
+            connection.execute("SELECT payload FROM tool_call_states LIMIT 1").fetchone()[0]
+        )
+        assert after["agent_wait"]["child_run_id"] == "child"
+        assert "state" not in after["agent_wait"]
+        assert set(after["agent_wait"]["resolution"]) == {"reason", "resolved_at"}
+        if backend == "sqlite":
+            harness = json.loads(
+                connection.execute("SELECT payload FROM harness_versions LIMIT 1").fetchone()[0]
+            )
+    if backend == "files":
+        harness = json.loads(harness_path.read_text("utf-8"))
+    assert "phase" not in harness["state"]["controls"]["activations"][0]
     assert upgrade(home, session_backend=backend)["status"] == "current"

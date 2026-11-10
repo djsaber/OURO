@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -11,7 +12,7 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from ouro.automation.file_records import StoredExecution, StoredTask
-from ouro.core.agents import AgentCatalogSnapshot, DelegationRecord
+from ouro.core.agents import AgentCatalogSnapshot, AgentDefinition, DelegationRecord
 from ouro.core.base import VersionedOuroModel
 from ouro.core.billing import ProviderUsageEntry, UsageLedgerEvent
 from ouro.core.context import ContextMetrics
@@ -20,8 +21,11 @@ from ouro.core.harness import HarnessVersion
 from ouro.core.messages import MessageRecord
 from ouro.core.resources import SessionResourceReference
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.tool_batches import ToolCallState
+from ouro_upgrade import retired_fields
+from ouro_upgrade.agents import upgrade_definition, upgrade_spawn_policy
 from ouro_upgrade.errors import UpgradeDataError
-from ouro_upgrade.steps import UpgradeStep, advance, migrate
+from ouro_upgrade.steps import UpgradeStep, advance
 
 MODELS: dict[str, type[BaseModel]] = {
     "session": SessionRecord,
@@ -29,8 +33,10 @@ MODELS: dict[str, type[BaseModel]] = {
     "message": MessageRecord,
     "context": ContextSnapshotRecord,
     "harness": HarnessVersion,
+    "tool_state": ToolCallState,
     "delegation": DelegationRecord,
     "agent_catalog": AgentCatalogSnapshot,
+    "agent_definition": AgentDefinition,
     "resource": SessionResourceReference,
     "task": StoredTask,
     "execution": StoredExecution,
@@ -310,19 +316,14 @@ def _catalog_hash(value: dict[str, Any]) -> str:
 
 
 def _agent_catalog_v1_to_v2(value: dict[str, Any]) -> None:
-    if value["contract_hash"] != _catalog_hash(value):
-        raise UpgradeDataError("agent catalog contract hash does not match its content")
     for field in ("allow_network", "allow_external_paths"):
         value["spawn_policy"].pop(field, None)
     for entry in value["entries"]:
         _tool_call_authority(entry["effective_tools"])
-    value["schema_version"] = 2
-    value["contract_hash"] = _catalog_hash(value)
 
 
 def _run_v10_to_v11(value: dict[str, Any]) -> None:
-    if value.get("agent_catalog") is not None:
-        _convert_owned("agent_catalog", value["agent_catalog"])
+    pass  # Nested records follow their own structural and schema transitions.
 
 
 def _delegation_v2_to_v3(value: dict[str, Any]) -> None:
@@ -359,13 +360,8 @@ def convert(kind: str, raw: dict[str, Any]) -> dict[str, Any]:
     try:
         if not _needs_upgrade(kind, raw):
             return raw
-        value = migrate(
-            kind,
-            raw,
-            target=model.model_fields["schema_version"].default,
-            steps=VERSION_STEPS.get(kind, {}),
-        )
-        _convert_nested(kind, value)
+        value = copy.deepcopy(raw)
+        _convert_owned(kind, value)
         validate(model, value)
     except (KeyError, TypeError, AttributeError) as exc:
         raise UpgradeDataError(f"incomplete historical {kind} structure") from exc
@@ -374,6 +370,13 @@ def convert(kind: str, raw: dict[str, Any]) -> dict[str, Any]:
 
 def _nested(kind: str, value: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]]:
     """Visit only schema-owned records, never dictionaries containing opaque data."""
+    if kind == "run" and value.get("agent_catalog") is not None:
+        yield "agent_catalog", value["agent_catalog"]
+    elif kind == "agent_catalog":
+        for entry in value["entries"]:
+            yield "agent_definition", entry["definition"]
+    elif kind == "delegation":
+        yield "agent_definition", value["definition"]
     if kind == "usage_event" and value.get("entry") is not None:
         yield "usage", value["entry"]
 
@@ -382,6 +385,12 @@ def _needs_upgrade(kind: str, value: dict[str, Any]) -> bool:
     version = value.get("schema_version")
     if type(version) is not int or version != MODELS[kind].model_fields["schema_version"].default:
         # The transition executor rejects unsupported versions before transforming.
+        return True
+    if next(retired_fields.members(kind, value), None) is not None:
+        return True
+    if kind == "agent_definition" and "can_spawn" in value:
+        return True
+    if kind == "agent_catalog" and "allowed_lifecycle_bindings" in value.get("spawn_policy", {}):
         return True
     return any(_needs_upgrade(child, raw) for child, raw in _nested(kind, value))
 
@@ -392,6 +401,10 @@ def _convert_nested(kind: str, value: dict[str, Any]) -> None:
 
 
 def _convert_owned(kind: str, value: dict[str, Any]) -> None:
+    if not _needs_upgrade(kind, value):
+        return
+    if kind == "agent_catalog" and value["contract_hash"] != _catalog_hash(value):
+        raise UpgradeDataError("agent catalog contract hash does not match its content")
     # The outer conversion owns this subtree. Its final model validation checks
     # the complete record graph, including required persisted facts, exactly once.
     advance(
@@ -400,7 +413,13 @@ def _convert_owned(kind: str, value: dict[str, Any]) -> None:
         target=MODELS[kind].model_fields["schema_version"].default,
         steps=VERSION_STEPS.get(kind, {}),
     )
+    retired_fields.retire(kind, value)
     _convert_nested(kind, value)
+    if kind == "agent_definition":
+        upgrade_definition(value)
+    elif kind == "agent_catalog":
+        upgrade_spawn_policy(value["spawn_policy"])
+        value["contract_hash"] = _catalog_hash(value)
 
 
 def convert_task(kind: str, raw: dict[str, Any], version: int) -> dict[str, Any]:

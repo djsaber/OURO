@@ -15,7 +15,7 @@ from ouro.deployment import (
     resolve_session_backend,
     resolve_task_backend,
 )
-from ouro_upgrade import configuration, databases, files
+from ouro_upgrade import configuration, databases, files, plugins
 from ouro_upgrade import sessions as session_upgrade
 from ouro_upgrade.errors import UpgradeError, require
 from ouro_upgrade.progress import ProgressCallback
@@ -76,11 +76,16 @@ def upgrade(
                     "unfinished publication; recover using original OURO version",
                 )
             work.progress("configuration")
-            units.run(
-                UpgradeUnit("configuration", "config/providers.json"),
-                partial(configuration.providers, work),
-                remove=partial(work.stage, "config/providers.json", None),
-            )
+            for path, converter in (
+                ("config/providers.json", configuration.providers),
+                ("config/agents.json", configuration.agents),
+                (plugins.PATH, plugins.state),
+            ):
+                units.run(
+                    UpgradeUnit("configuration", path),
+                    partial(converter, work),
+                    remove=partial(work.stage, path, None),
+                )
             work.progress("sessions")
             if sessions == "files":
                 units.run(
@@ -139,8 +144,8 @@ def upgrade(
                 "preserved_outside_scope": [
                     "unselected session/task backends",
                     "trash and maintenance backups",
-                    "configuration other than config/providers.json",
-                    "credentials, plugins and plugin-private data",
+                    "configuration other than config/providers.json and config/agents.json",
+                    "credentials, plugin packages, audit and plugin-private data",
                 ],
                 **units.report(),
             }

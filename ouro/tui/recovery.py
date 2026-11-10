@@ -30,7 +30,7 @@ from ouro_upgrade.units import UpgradeFailure, UpgradeUnit
 type RecoveryResult = Literal["upgraded"]
 
 _PHASE_LABELS: dict[UpgradePhase, str] = {
-    "configuration": "Checking and upgrading provider configuration",
+    "configuration": "Checking and upgrading configuration",
     "sessions": "Checking and upgrading sessions",
     "tasks": "Checking and upgrading tasks",
     "usage": "Checking and upgrading usage records",
@@ -97,7 +97,7 @@ def _unit_label(unit: UpgradeUnit) -> str:
     labels = {
         "session": "Session",
         "task": "Task",
-        "configuration": "Provider configuration",
+        "configuration": "Configuration",
         "session_store": "Session store",
         "task_store": "Task store",
         "usage": "Usage ledger",

@@ -11,6 +11,7 @@ from ouro_upgrade.databases import database
 from ouro_upgrade.errors import UpgradeDataError, require
 from ouro_upgrade.files import children, record
 from ouro_upgrade.records import MODELS, convert, dumps, loads, validate
+from ouro_upgrade.retired_fields import sql_predicate
 from ouro_upgrade.workspace import Workspace
 
 
@@ -24,29 +25,65 @@ def observation_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(OBSERVATION_SCHEMA)
 
 
-def current_file(connection: sqlite3.Connection) -> bool:
-    # Successful units can already be current while the home still awaits others.
-    return connection.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_revisions'"
-    ).fetchone() is not None and all(
+def record_predicate(kind: str) -> str:
+    """Select headers requiring conversion without loading message or request bodies."""
+    version = "json_extract(payload, '$.schema_version') IS NOT ?"
+    retired = sql_predicate(kind)
+    if retired:
+        version += " OR " + retired
+    if kind == "run":
+        catalog_version = MODELS["agent_catalog"].model_fields["schema_version"].default
+        return (
+            version
+            + f""" OR (
+            json_type(payload, '$.agent_catalog') = 'object' AND (
+                json_extract(payload, '$.agent_catalog.schema_version') IS NOT {catalog_version}
+                OR json_type(payload, '$.agent_catalog.spawn_policy.allowed_lifecycle_bindings')
+                   IS NOT NULL
+                OR EXISTS (SELECT 1 FROM json_each(payload, '$.agent_catalog.entries')
+                           WHERE json_type(value, '$.definition.can_spawn') IS NOT NULL)
+            ))"""
+        )
+    if kind == "delegation":
+        return version + " OR json_type(payload, '$.definition.can_spawn') IS NOT NULL"
+    return version
+
+
+def current_records(connection: sqlite3.Connection, *, include_delegations: bool = False) -> bool:
+    tables = [("sessions", "session"), ("runs", "run"), ("tool_call_states", "tool_state")]
+    if include_delegations:
+        tables.extend((("delegations", "delegation"), ("harness_versions", "harness")))
+    if (
+        include_delegations
+        and connection.execute(
+            "SELECT 1 FROM session_catalog "
+            "WHERE json_type(payload, '$.title_locked') IS NOT NULL LIMIT 1"
+        ).fetchone()
+    ):
+        return False
+    return all(
         connection.execute(
-            f"SELECT 1 FROM {table} "
-            "WHERE json_extract(payload, '$.schema_version') IS NOT ? LIMIT 1",
+            f"SELECT 1 FROM {table} WHERE {record_predicate(kind)} LIMIT 1",
             (MODELS[kind].model_fields["schema_version"].default,),
         ).fetchone()
         is None
-        for table, kind in (("sessions", "session"), ("runs", "run"))
+        for table, kind in tables
     )
 
 
+def current_file(connection: sqlite3.Connection) -> bool:
+    return connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_revisions'"
+    ).fetchone() is not None and current_records(connection)
+
+
 def authority_records(connection: sqlite3.Connection, *, include_delegations: bool = False) -> None:
-    tables = [("sessions", "session"), ("runs", "run")]
+    tables = [("sessions", "session"), ("runs", "run"), ("tool_call_states", "tool_state")]
     if include_delegations:
-        tables.append(("delegations", "delegation"))
+        tables.extend((("delegations", "delegation"), ("harness_versions", "harness")))
     for table, kind in tables:
         rows = connection.execute(
-            f"SELECT rowid, payload FROM {table} "
-            "WHERE json_extract(payload, '$.schema_version') IS NOT ?",
+            f"SELECT rowid, payload FROM {table} WHERE {record_predicate(kind)}",
             (MODELS[kind].model_fields["schema_version"].default,),
         )
         for identity, payload in rows:
@@ -54,6 +91,12 @@ def authority_records(connection: sqlite3.Connection, *, include_delegations: bo
             connection.execute(
                 f"UPDATE {table} SET payload=? WHERE rowid=?", (dumps(value), identity)
             )
+
+    if include_delegations:
+        connection.execute(
+            "UPDATE session_catalog SET payload=json_remove(payload, '$.title_locked') "
+            "WHERE json_type(payload, '$.title_locked') IS NOT NULL"
+        )
 
 
 def file_session(work: Workspace, directory: Path) -> None:
@@ -105,3 +148,6 @@ def file_session(work: Workspace, directory: Path) -> None:
     )
     for path in children(directory / "delegations", "*.json"):
         record(work, path.relative_to(work.home).as_posix(), "delegation")
+
+    for path in children(directory / "harness", "*.json"):
+        record(work, path.relative_to(work.home).as_posix(), "harness")
