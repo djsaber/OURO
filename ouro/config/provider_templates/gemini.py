@@ -7,7 +7,7 @@ from ouro.config.provider_templates.schema import ProviderTemplate
 from ouro.config.reasoning import openai_chat_completions_effort_reasoning
 from ouro.core.reasoning import ReasoningRequest
 
-_VERIFIED_ON = "2026-10-10"
+_VERIFIED_ON = "2026-11-11"
 
 _GEMINI_FLASH_REASONING = openai_chat_completions_effort_reasoning(
     activation="always_on",
@@ -40,6 +40,30 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         api_path="/chat/completions",
         default_endpoint="gemini-3.8-flash",
         endpoints=(
+            ProviderEndpointConfig(
+                endpoint_id="gemini-4-carbon",
+                display_name="Gemini 4 Carbon",
+                model_id="gemini-4-carbon",
+                context_window=1_048_576,
+                supports_tools=True,
+                supports_image_input=True,
+                supports_audio_input=True,
+                supports_streaming=True,
+                supports_structured_output=True,
+                reasoning=_GEMINI_PRO_REASONING,
+            ),
+            ProviderEndpointConfig(
+                endpoint_id="gemini-4-argon",
+                display_name="Gemini 4 Argon",
+                model_id="gemini-4-argon",
+                context_window=1_048_576,
+                supports_tools=True,
+                supports_image_input=True,
+                supports_audio_input=True,
+                supports_streaming=True,
+                supports_structured_output=True,
+                reasoning=_GEMINI_PRO_REASONING,
+            ),
             ProviderEndpointConfig(
                 endpoint_id="gemini-3.8-flash",
                 display_name="Gemini 3.8 Flash",
@@ -79,6 +103,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://ai.google.dev/gemini-api/docs/models",
         verified_on=_VERIFIED_ON,
-        revision=9,
+        revision=10,
     ),
 )

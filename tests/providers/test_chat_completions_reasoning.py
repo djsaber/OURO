@@ -2,16 +2,66 @@ from __future__ import annotations
 
 import pytest
 
+from ouro.config.reasoning import ReasoningProfileConfig
 from ouro.core.messages import ModelMessage, ProviderContinuationArtifact
 from ouro.core.provider import ModelMetadata
 from ouro.providers import OpenAIChatCompletionsProvider
+from ouro.providers.reasoning import ReasoningPayloadEncoder
 from tests.providers.test_openai_chat_completions import FakeStreamingTransport, FakeTransport
+
+
+@pytest.mark.parametrize("field", [None, "reasoning_content", "reasoning"])
+@pytest.mark.parametrize("foreign", [False, True])
+async def test_target_text_field_encodes_canonical_text_without_replaying_foreign_state(
+    field, foreign
+):
+    provider = OpenAIChatCompletionsProvider(
+        provider_id="target",
+        base_url="https://example.test",
+        transport=FakeTransport(
+            {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+        ),
+        reasoning_encoder=ReasoningPayloadEncoder(
+            ReasoningProfileConfig(name="reasoning-text", text_field=field)
+        ),
+    )
+    artifact = ProviderContinuationArtifact(
+        provider_id="source" if foreign else "target",
+        protocol="openai-chat-completions",
+        model_id="model",
+        blocks=({"reasoning": "original text"},),
+    )
+    messages = [
+        ModelMessage(
+            role="assistant", reasoning_content="original text", provider_continuation=artifact
+        ),
+        ModelMessage.text(role="assistant", text="answer without reasoning"),
+    ]
+    _ = [
+        e
+        async for e in provider.stream(
+            model=ModelMetadata(provider_id="target", model_id="model"), messages=messages
+        )
+    ]
+    sent = provider.transport.requests[0]["payload"]["messages"]
+    if field is not None:
+        assert sent[0] == {"role": "assistant", "content": "", field: "original text"}
+        assert sent[1] == {"role": "assistant", "content": "answer without reasoning"}
+    else:
+        assert sent[0] == {
+            "role": "assistant",
+            "content": "",
+            **({} if foreign else {"reasoning": "original text"}),
+        }
+        assert sent[1] == {"role": "assistant", "content": "answer without reasoning"}
+    assert artifact.blocks == ({"reasoning": "original text"},)
 
 
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("plain_text", [False, True])
+@pytest.mark.parametrize("text_field", [None, "reasoning_content", "reasoning"])
 async def test_structured_reasoning_roundtrip_preserves_blocks_and_displays_text_once(
-    streaming, plain_text
+    streaming, plain_text, text_field
 ):
     details = [
         {"type": "reasoning.text", "text": "check", "index": 0, "signature": None},
@@ -47,7 +97,13 @@ async def test_structured_reasoning_roundtrip_preserves_blocks_and_displays_text
             }
         )
     )
-    provider = OpenAIChatCompletionsProvider(base_url="https://example.test", transport=transport)
+    provider = OpenAIChatCompletionsProvider(
+        base_url="https://example.test",
+        transport=transport,
+        reasoning_encoder=ReasoningPayloadEncoder(
+            ReasoningProfileConfig(name="reasoning-text", text_field=text_field)
+        ),
+    )
     model = ModelMetadata(
         provider_id=provider.provider_id, model_id="reasoner", supports_streaming=streaming
     )
@@ -59,18 +115,22 @@ async def test_structured_reasoning_roundtrip_preserves_blocks_and_displays_text
     # Persistence must not flatten signatures, ciphertext or repeated native coordinates.
     artifact = ProviderContinuationArtifact.model_validate_json(artifact.model_dump_json())
     assistant = ModelMessage.text(role="assistant", text="answer").model_copy(
-        update={"provider_continuation": artifact}
+        update={"reasoning_content": "checked facts", "provider_continuation": artifact}
     )
     replay = FakeTransport({"choices": [{"message": {"content": "next"}, "finish_reason": "stop"}]})
     provider.transport = replay
     async for _ in provider.stream(model=model, messages=[assistant]):
         pass
     assert replay.requests[0]["payload"]["messages"][0]["reasoning_details"] == details
+    if text_field is not None:
+        assert replay.requests[0]["payload"]["messages"][0][text_field] == "checked facts"
     async for _ in provider.stream(
         model=model.model_copy(update={"model_id": "other"}), messages=[assistant]
     ):
         pass
     assert "reasoning_details" not in replay.requests[1]["payload"]["messages"][0]
+    if text_field is not None:
+        assert replay.requests[1]["payload"]["messages"][0][text_field] == "checked facts"
     assert artifact.blocks[0]["reasoning_details"] == details
 
 

@@ -3401,7 +3401,7 @@ class ReasoningToolProvider:
 
 
 @pytest.mark.asyncio
-async def test_runtime_keeps_internal_reasoning_out_of_provider_context(tmp_path) -> None:
+async def test_runtime_projects_reasoning_into_provider_context(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     (tmp_path / "data.txt").write_text("hello", encoding="utf-8")
@@ -3431,7 +3431,7 @@ async def test_runtime_keeps_internal_reasoning_out_of_provider_context(tmp_path
     assistant_messages = [m for m in second_call_messages if m.role == "assistant"]
     assert len(assistant_messages) == 1
     assistant_message = assistant_messages[0]
-    assert not hasattr(assistant_message, "reasoning_content")
+    assert assistant_message.reasoning_content == "I should read the file."
     assert assistant_message.provider_continuation is None
     assert assistant_message.tool_calls
     persisted_assistant = next(

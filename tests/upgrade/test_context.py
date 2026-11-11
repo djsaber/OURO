@@ -147,10 +147,8 @@ def test_context_v3_upgrades_in_place_for_both_backends(historical_home: Path, c
     assert report["status"] == "upgraded"
     context = store.load_latest_context("ses_fixture")
     assert context is not None
-    assert (
-        context.provider_context.model_dump(mode="json")
-        == convert("context", context_v3)["provider_context"]
-    )
+    expected = ContextSnapshotRecord.model_validate(convert("context", context_v3))
+    assert context.provider_context == expected.provider_context
     upgraded = hashes(home)
     assert upgrade(home, **options)["status"] == "current"
     assert hashes(home) == upgraded

@@ -245,6 +245,11 @@ class OpenAIChatCompletionsProvider:
             supports_video_input=model.supports_video_input,
             provider_id=self.provider_id,
             model_id=model.model_id,
+            reasoning_text_field=(
+                self.reasoning_encoder.profile.text_field
+                if self.reasoning_encoder.profile is not None
+                else None
+            ),
         )
         payload: dict[str, Any] = dict(self.request_options)
         if "response_format" in payload and not model.supports_structured_output:

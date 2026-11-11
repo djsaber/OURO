@@ -7,10 +7,11 @@ from ouro.config.provider_templates.schema import ProviderTemplate
 from ouro.config.reasoning import mapped_reasoning
 from ouro.core.reasoning import ReasoningRequest
 
-_VERIFIED_ON = "2026-10-10"
+_VERIFIED_ON = "2026-11-11"
 
 _DEEPSEEK_REASONING = mapped_reasoning(
     name="deepseek-thinking-effort",
+    text_field="reasoning_content",
     activation="toggle",
     supported_efforts=("low", "high", "max"),
     default=ReasoningRequest(mode="enabled", effort="high"),
@@ -29,7 +30,7 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         template_id="deepseek",
         display_name="DeepSeek",
         description=(
-            "DeepSeek's Chat Completions API with V4 Pro and V4.1 Flash (deepseek-flash). "
+            "DeepSeek's Chat Completions API with V4 Pro and V4.1 Flash 1017 (deepseek-flash). "
             "No request output limit is configured."
         ),
         provider_type="deepseek",
@@ -52,7 +53,7 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
             ),
             ProviderEndpointConfig(
                 endpoint_id="deepseek-flash",
-                display_name="DeepSeek V4.1 Flash",
+                display_name="DeepSeek V4.1 Flash 1017",
                 model_id="deepseek-flash",
                 context_window=1_000_000,
                 supports_tools=True,
@@ -64,6 +65,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://api-docs.deepseek.com/quick_start/pricing/",
         verified_on=_VERIFIED_ON,
-        revision=10,
+        revision=11,
     ),
 )

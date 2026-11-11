@@ -421,8 +421,8 @@ def test_provider_templates_are_typed_and_apply_provider_endpoint_atomically(
     ]
     assert facade.provider_template("anthropic").provider_type == "anthropic"
     assert facade.provider_template("anthropic").protocol == "anthropic-messages"
-    assert facade.provider_template("kimi").default_endpoint == "kimi-k3"
-    assert facade.provider_template("kimi").endpoint_count == 4
+    assert facade.provider_template("kimi").default_endpoint == "kimi-k3.1-pro"
+    assert facade.provider_template("kimi").endpoint_count == 3
 
     configured = facade.add_provider(
         display_name="Google Gemini",
@@ -437,6 +437,8 @@ def test_provider_templates_are_typed_and_apply_provider_endpoint_atomically(
     assert configured.change is not None
     assert configured.change.action == "created"
     assert {endpoint.model_id for endpoint in provider.endpoints} == {
+        "gemini-4-carbon",
+        "gemini-4-argon",
         "gemini-3.8-flash",
         "gemini-3.1-pro-preview",
         "gemini-3.5-flash-lite",

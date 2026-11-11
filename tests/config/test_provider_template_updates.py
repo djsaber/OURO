@@ -4,8 +4,29 @@ import json
 
 import pytest
 
-from ouro.config import ProviderConfigManager, ProviderEndpointConfig, ProviderTemplate
+from ouro.config import (
+    ProviderConfigManager,
+    ProviderEndpointConfig,
+    ProviderTemplate,
+    reasoning_effort_preset,
+)
+from ouro.config.provider_templates import get_provider_template
 from ouro.core.errors import ConfigError
+
+
+def test_template_update_applies_text_field_and_keeps_unconfigured_profiles_compact(tmp_path):
+    endpoint = _endpoint("primary")
+    endpoint.reasoning = reasoning_effort_preset("thinking-toggle")
+    assert "text_field" not in endpoint.model_dump()["reasoning"]["profile"]
+    original = _template(1, endpoint)
+    latest = original.model_copy(deep=True, update={"revision": 2})
+    latest.endpoints[0].reasoning.profile.text_field = "reasoning_content"
+    manager = ProviderConfigManager(tmp_path)
+    provider = manager.create_from_template(original)
+    updated = manager.update_from_template(latest, provider_id=provider.provider_id)
+    assert updated.updated_endpoints == (provider.default_endpoint,)
+    reloaded = manager.get_provider(provider.provider_id)
+    assert reloaded.endpoints[0].reasoning.profile.text_field == "reasoning_content"
 
 
 def _endpoint(
@@ -244,6 +265,32 @@ def test_template_update_keeps_generated_endpoint_id_mapping(tmp_path) -> None:
     )
     assert renamed.updated_endpoints == (primary_id,)
     assert renamed.provider.endpoint(primary_id).context_window == 300_000
+
+
+def test_go_template_update_moves_route_and_removes_retired_endpoint(tmp_path) -> None:
+    latest = get_provider_template("opencode-go")
+    previous = latest.model_copy(
+        update={
+            "base_url": "https://opencode.ai/inference/go/v1",
+            "revision": latest.revision - 1,
+            "endpoints": (_endpoint("kimi-k3"), _endpoint("kimi-k2.6")),
+        }
+    )
+    manager = ProviderConfigManager(tmp_path)
+    provider = manager.create_from_template(previous)
+    assert provider.template is not None
+    retired = provider.template.endpoint_binding("kimi-k2.6")
+    assert retired is not None
+
+    result = manager.update_from_template(latest, provider_id=provider.provider_id)
+    updated = result.provider
+    assert result.removed_endpoints == (retired.configured_endpoint_id,)
+    assert updated.endpoint(retired.configured_endpoint_id) is None
+    assert updated.base_url == "https://opencode.ai/inference/go/openai/v1"
+    assert updated.default_endpoint == provider.default_endpoint
+    endpoint = updated.endpoint(updated.default_endpoint)
+    assert endpoint is not None and endpoint.reasoning.profile is not None
+    assert endpoint.reasoning.profile.text_field == "reasoning_content"
 
 
 def test_update_requires_template_provenance_without_rewriting_provider(tmp_path) -> None:

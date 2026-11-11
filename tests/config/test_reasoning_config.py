@@ -12,9 +12,36 @@ from ouro.config import (
     reasoning_effort_preset,
     reasoning_summary_preset,
 )
+from ouro.config.provider_models import validate_reasoning_protocol_compatibility
 from ouro.core.provider import ModelMetadata
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest, resolve_reasoning
 from ouro.providers.reasoning import ReasoningPayloadEncoder
+
+
+@pytest.mark.parametrize("field", ["reasoning_content", "reasoning"])
+def test_reasoning_text_field_is_independent_of_generation_controls(field):
+    config = EndpointReasoningConfig(
+        profile=ReasoningProfileConfig(name="reasoning-text", text_field=field)
+    )
+    validate_reasoning_protocol_compatibility("openai-chat-completions", config)
+    for preset in ("thinking-toggle", "none"):
+        config = config.with_effort_preset(preset)
+        assert config.profile.text_field == field
+    config = config.with_summary_preset("none")
+    assert config.profile.text_field == field
+    payload = {}
+    ReasoningPayloadEncoder(config.profile).apply(
+        payload, ModelMetadata(provider_id="p", model_id="m")
+    )
+    assert payload == {}
+    for protocol in ("openai-responses", "anthropic-messages", "faux"):
+        with pytest.raises(ValueError, match="text_field"):
+            validate_reasoning_protocol_compatibility(protocol, config)
+
+
+def test_text_field_accepts_only_supported_wire_spellings():
+    with pytest.raises(ValueError):
+        ReasoningProfileConfig(name="invalid", text_field="private_field")
 
 
 def test_reasoning_profile_requires_every_controllable_variant() -> None:

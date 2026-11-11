@@ -9,6 +9,7 @@ from textual.widgets import Input, OptionList, Static
 
 from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.config import reasoning_effort_preset
+from ouro.config.provider_templates import get_provider_template
 from ouro.local_application import LocalApplication
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
@@ -329,7 +330,11 @@ async def test_add_provider_flow_integrates_presets_and_custom_profiles(
             if item.display_name == "Gemini Work"
         )
         assert provider.provider_type == "gemini"
-        assert provider.endpoint_count == 3
+        template = get_provider_template("gemini")
+        assert provider.endpoint_count == len(template.endpoints)
+        assert {endpoint.model_id for endpoint in provider.endpoints} == {
+            endpoint.model_id for endpoint in template.endpoints
+        }
 
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")

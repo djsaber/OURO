@@ -13,9 +13,9 @@ from ouro.config.provider_templates import get_provider_template
 @pytest.mark.parametrize(
     "provider_type,protocol,count",
     [
-        ("opencode-go", "openai-chat-completions", 19),
-        ("opencode-go-responses", "openai-responses", 6),
-        ("opencode-go-messages", "anthropic-messages", 6),
+        ("opencode-go", "openai-chat-completions", 21),
+        ("opencode-go-responses", "openai-responses", 5),
+        ("opencode-go-messages", "anthropic-messages", 5),
     ],
 )
 def test_add_go_preset_creates_matching_route_and_automatic_headers(
@@ -64,8 +64,8 @@ def test_add_go_preset_creates_matching_route_and_automatic_headers(
     assert saved.headers == provider.headers
 
 
-def test_provider_templates_command_lists_builtin_catalog(capsys) -> None:
-    code = main(["provider", "templates", "--json"])
+def test_provider_templates_command_lists_builtin_catalog(tmp_path, capsys) -> None:
+    code = main(["provider", "templates", "--home", str(tmp_path), "--json"])
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
@@ -85,8 +85,8 @@ def test_provider_templates_command_lists_builtin_catalog(capsys) -> None:
         "cohere",
     }
     kimi = next(item for item in payload["templates"] if item["template_id"] == "kimi")
-    assert kimi["default_endpoint"] == "kimi-k3"
-    assert kimi["endpoint_count"] == 4
+    assert kimi["default_endpoint"] == "kimi-k3.1-pro"
+    assert kimi["endpoint_count"] == 3
 
 
 def test_provider_templates_command_reports_template_file_notices(
@@ -157,7 +157,7 @@ def test_provider_add_integrated_type_persists_complete_default_route(
     assert provider["provider_type"] == "anthropic"
     assert provider["protocol"] == "anthropic-messages"
     assert provider["default_endpoint"].startswith("endpoint_")
-    assert provider["endpoint_count"] == 4
+    assert provider["endpoint_count"] == 5
     assert next(item for item in provider["endpoints"] if item["default"])["model_id"] == (
         "claude-custom"
     )

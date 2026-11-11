@@ -15,6 +15,7 @@ def test_prepared_manifest_keeps_final_values_and_references_unchanged_content()
     assistant = MessageRecord(
         session_id="session",
         role="assistant",
+        reasoning_content="original reasoning",
         tool_calls=[ToolCallRequest(id="call", name="Read", arguments={"path": "original"})],
         provider_continuation=ProviderContinuationArtifact(
             provider_id="test", protocol="test", model_id="test", blocks=({"opaque": "original"},)
@@ -31,6 +32,7 @@ def test_prepared_manifest_keeps_final_values_and_references_unchanged_content()
     manifest = view.manifest
     assert all(isinstance(block, RequestContentReference) for block in manifest.messages[0].content)
     assert isinstance(manifest.messages[1].tool_calls, RequestMessageReference)
+    assert isinstance(manifest.messages[1].reasoning_content, RequestMessageReference)
     assert isinstance(manifest.messages[1].provider_continuation, RequestMessageReference)
     assert "original input" not in manifest.model_dump_json()
     assert "original" not in manifest.model_dump_json()
@@ -51,6 +53,23 @@ def test_projected_literal_does_not_reference_the_original_value():
     view = ContextBuilder().build(messages=[replacement], source_messages=[source], tools=[])
     assert view.manifest.referenced_message_ids == ()
     assert view.manifest.materialize("session", {}) == view.provider_context.messages
+
+
+def test_reasoning_only_reference_and_replacement_survive_manifest_roundtrip():
+    source = MessageRecord(session_id="session", role="assistant", reasoning_content="thought")
+    view = ContextBuilder().build(messages=[source], source_messages=[source], tools=[])
+    manifest = type(view.manifest).model_validate_json(view.manifest.model_dump_json())
+    assert manifest.referenced_message_ids == (source.message_id,)
+    assert (
+        manifest.materialize("session", {source.message_id: source})
+        == view.provider_context.messages
+    )
+    with pytest.raises(PersistenceError):
+        manifest.materialize("session", {})
+    replacement = source.model_copy(update={"reasoning_content": "selected reasoning"})
+    view = ContextBuilder().build(messages=[replacement], source_messages=[source], tools=[])
+    assert view.manifest.referenced_message_ids == ()
+    assert view.manifest.materialize("session", {})[0].reasoning_content == "selected reasoning"
 
 
 def test_manifest_rejects_missing_block_or_foreign_source():

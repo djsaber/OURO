@@ -66,6 +66,7 @@ class ProviderMessage:
     semantic_tag: str | None = None
     tool_calls: tuple[ProviderToolCall, ...] = ()
     tool_result: ProviderToolResult | None = None
+    reasoning_content: str = ""
     provider_continuation: ProviderContinuation | None = None
 
 

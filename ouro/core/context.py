@@ -243,9 +243,13 @@ def _message_estimate_key(message: RequestMessage, sources: dict[str, MessageRec
         not isinstance(block, RequestContentReference | MediaContent) for block in message.content
     ):
         return None
-    if (isinstance(message.tool_calls, list) and message.tool_calls) or (
-        message.provider_continuation is not None
-        and not isinstance(message.provider_continuation, RequestMessageReference)
+    if (
+        (isinstance(message.reasoning_content, str) and message.reasoning_content)
+        or (isinstance(message.tool_calls, list) and message.tool_calls)
+        or (
+            message.provider_continuation is not None
+            and not isinstance(message.provider_continuation, RequestMessageReference)
+        )
     ):
         return None
 
@@ -256,7 +260,9 @@ def _message_estimate_key(message: RequestMessage, sources: dict[str, MessageRec
 
     # Media payload/size do not contribute to the default estimator's fixed
     # media cost. Text replacements and semantic envelopes stay literal above.
-    values = message.model_dump(exclude={"content", "tool_calls", "provider_continuation"})
+    values = message.model_dump(
+        exclude={"content", "tool_calls", "reasoning_content", "provider_continuation"}
+    )
     values["content"] = [
         (reference(block), block.block_index)
         if isinstance(block, RequestContentReference)
@@ -264,6 +270,7 @@ def _message_estimate_key(message: RequestMessage, sources: dict[str, MessageRec
         for block in message.content
     ]
     values["tool_calls"] = reference(message.tool_calls)
+    values["reasoning_content"] = reference(message.reasoning_content)
     values["provider_continuation"] = reference(message.provider_continuation)
     return json.dumps(values, ensure_ascii=False, separators=(",", ":"))
 
@@ -353,7 +360,7 @@ def _estimate_visible_message_tokens(
         else 0
         for block in model_message.content
     )
-    protocol_payload = {
+    protocol_payload: dict[str, Any] = {
         "role": model_message.role,
         "tool_calls": [call.model_dump(mode="json") for call in model_message.tool_calls],
         "tool_result": model_message.tool_result.model_dump(mode="json")
@@ -363,6 +370,10 @@ def _estimate_visible_message_tokens(
         if model_message.provider_continuation is not None
         else None,
     }
+    # Native continuation is an alternative representation of this response's
+    # reasoning. Its readable projection is counted only without that envelope.
+    if model_message.provider_continuation is None and model_message.reasoning_content:
+        protocol_payload["reasoning_content"] = model_message.reasoning_content
     return (
         4
         + content_tokens

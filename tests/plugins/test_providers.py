@@ -135,6 +135,7 @@ async def test_provider_request_preserves_model_visible_semantics_and_multimodal
         ModelMessage(
             role="assistant",
             tool_calls=[ToolCallRequest(id="t1", name="read")],
+            reasoning_content="Inspect the available facts.",
             provider_continuation=ProviderContinuationArtifact(
                 provider_id="native", protocol="opaque", model_id="m", blocks=({"state": "s"},)
             ),

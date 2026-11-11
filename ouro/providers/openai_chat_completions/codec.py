@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from copy import deepcopy
-from typing import Any
+from typing import Any, Literal
 
 from ouro.core.content import (
     AudioContent,
@@ -30,6 +30,7 @@ def messages_to_chat_completions(
     supports_video_input: bool = False,
     provider_id: str,
     model_id: str,
+    reasoning_text_field: Literal["reasoning_content", "reasoning"] | None = None,
 ) -> list[dict[str, Any]]:
     """Encode one request with at most one leading Chat Completions system message."""
 
@@ -50,6 +51,7 @@ def messages_to_chat_completions(
             modalities=modalities,
             provider_id=provider_id,
             model_id=model_id,
+            reasoning_text_field=reasoning_text_field,
         )
         if converted["role"] == "system":
             system_contents.append(converted["content"])
@@ -86,6 +88,7 @@ def _message_to_chat_completions(
     modalities: frozenset[MediaModality],
     provider_id: str,
     model_id: str,
+    reasoning_text_field: Literal["reasoning_content", "reasoning"] | None,
 ) -> dict[str, Any]:
     role = message.role
     if role == "tool_result":
@@ -98,6 +101,8 @@ def _message_to_chat_completions(
         "content": _message_content_to_chat_completions(message, modalities=modalities),
     }
     if wire_role == "assistant":
+        if reasoning_text_field is not None and message.reasoning_content:
+            converted[reasoning_text_field] = message.reasoning_content
         if message.tool_calls:
             converted["tool_calls"] = [
                 _tool_call_message_to_chat_completions(item.model_dump(mode="json"))
@@ -110,7 +115,11 @@ def _message_to_chat_completions(
             model_id=model_id,
         ):
             for block in continuation.blocks:
-                converted.update(reasoning_fields_from_response(block))
+                # The target's field spelling owns plain text; structured
+                # native blocks retain their shape, signatures and order.
+                for field, value in reasoning_fields_from_response(block).items():
+                    if reasoning_text_field is None or not isinstance(value, str):
+                        converted[field] = value
     if wire_role == "tool":
         if message.tool_result is None:
             raise ValueError("tool_result message is missing its tool result reference")

@@ -7,16 +7,18 @@ from ouro.config.provider_templates.schema import ProviderTemplate
 from ouro.config.reasoning import mapped_reasoning, toggle_reasoning
 from ouro.core.reasoning import ReasoningRequest
 
-_VERIFIED_ON = "2026-10-10"
+_VERIFIED_ON = "2026-11-11"
 
 _QWEN_REASONING = toggle_reasoning(
     name="qwen-thinking-toggle",
+    text_field="reasoning_content",
     enabled={"enable_thinking": True, "preserve_thinking": True},
     disabled={"enable_thinking": False, "preserve_thinking": False},
 )
 
-_QWEN_FLASH_REASONING = mapped_reasoning(
-    name="qwen-flash-thinking-effort",
+_QWEN_38_REASONING = mapped_reasoning(
+    name="qwen-3.8-thinking-effort",
+    text_field="reasoning_content",
     activation="toggle",
     supported_efforts=("low", "medium", "xhigh"),
     default=ReasoningRequest(mode="enabled", effort="xhigh"),
@@ -64,7 +66,7 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 supports_video_input=True,
                 supports_streaming=True,
                 supports_structured_output=True,
-                reasoning=_QWEN_REASONING,
+                reasoning=_QWEN_38_REASONING,
             ),
             ProviderEndpointConfig(
                 endpoint_id="qwen3.8-flash",
@@ -76,7 +78,7 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 supports_video_input=True,
                 supports_streaming=True,
                 supports_structured_output=True,
-                reasoning=_QWEN_FLASH_REASONING,
+                reasoning=_QWEN_38_REASONING,
             ),
             ProviderEndpointConfig(
                 endpoint_id="qwen3.7-plus",
@@ -93,6 +95,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://help.aliyun.com/zh/model-studio/text-generation-model",
         verified_on=_VERIFIED_ON,
-        revision=11,
+        revision=12,
     ),
 )

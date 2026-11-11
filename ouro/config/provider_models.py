@@ -378,6 +378,12 @@ def validate_reasoning_protocol_compatibility(
     capability = reasoning.capability
     if is_plugin_protocol(protocol):
         return
+    if (
+        protocol != "openai-chat-completions"
+        and reasoning.profile is not None
+        and reasoning.profile.text_field is not None
+    ):
+        raise ValueError("reasoning text_field requires the Chat Completions protocol")
     if protocol == "faux" and (
         capability.activation != "unsupported" or capability.supported_summaries
     ):

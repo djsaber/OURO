@@ -7,7 +7,6 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from ouro.plugins.models import PluginStateDocument
 from ouro_upgrade.errors import UpgradeDataError, require
 from ouro_upgrade.files import read_json
 from ouro_upgrade.workspace import Workspace
@@ -22,6 +21,9 @@ def _discard_copy(value: dict[str, Any], key: str, expected: Any) -> None:
 
 
 def convert_state(raw: dict[str, Any]) -> dict[str, Any]:
+    # Plugin schemas are needed only for homes with installation metadata.
+    from ouro.plugins.models import PluginStateDocument
+
     value = copy.deepcopy(raw)
     try:
         for record in value.get("plugins", {}).values():

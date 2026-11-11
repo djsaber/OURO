@@ -93,16 +93,19 @@ def test_transformed_literals_and_session_identity_cannot_reuse_stale_costs():
     assert build(builder, [other]) == build(contexts.ContextBuilder(), [other])
 
 
-@pytest.mark.parametrize("removed", ["tool_calls", "provider_continuation"])
-def test_default_reuse_distinguishes_native_protocol_membership(removed):
+@pytest.mark.parametrize("removed", ["tool_calls", "provider_continuation", "reasoning_content"])
+def test_default_reuse_distinguishes_projected_message_members(removed):
     builder = contexts.ContextBuilder()
     source = MessageRecord(
         session_id="session",
         role="assistant",
+        reasoning_content="readable reasoning " * 1000 if removed == "reasoning_content" else "",
         tool_calls=[
             ToolCallRequest(id="call", name="Act", arguments={"text": "arguments " * 1000})
         ],
-        provider_continuation=ProviderContinuationArtifact(
+        provider_continuation=None
+        if removed == "reasoning_content"
+        else ProviderContinuationArtifact(
             provider_id="provider",
             protocol="protocol",
             model_id="model",
@@ -110,11 +113,32 @@ def test_default_reuse_distinguishes_native_protocol_membership(removed):
         ),
     )
     full = build(builder, [source])
-    without_calls = source.model_copy(update={removed: [] if removed == "tool_calls" else None})
-    arguments = dict(messages=[without_calls], source_messages=[source], tools=[])
+    absent = {"tool_calls": [], "provider_continuation": None, "reasoning_content": ""}
+    selected = source.model_copy(update={removed: absent[removed]})
+    arguments = dict(messages=[selected], source_messages=[source], tools=[])
     projected = builder.build(**arguments)
     assert projected == contexts.ContextBuilder().build(**arguments)
     assert projected.metrics.estimated_input_tokens < full.metrics.estimated_input_tokens
+
+
+def test_reasoning_uses_reference_estimates_without_remeasuring_retained_text(monkeypatch):
+    measured = []
+    estimate = contexts._estimate_visible_message_tokens
+
+    def count(message, estimator):
+        measured.append(message.reasoning_content)
+        return estimate(message, estimator)
+
+    monkeypatch.setattr(contexts, "_estimate_visible_message_tokens", count)
+    builder = contexts.ContextBuilder()
+    source = MessageRecord(
+        session_id="session", role="assistant", reasoning_content="thought " * 4096
+    )
+    first = build(builder, [source])
+    second = build(builder, [source])
+    assert first == second
+    assert len(measured) == 1
+    assert source.reasoning_content not in next(iter(builder._message_estimates))
 
 
 def test_custom_estimator_is_called_for_the_full_current_input_each_time():

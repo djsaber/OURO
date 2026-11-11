@@ -7,7 +7,7 @@ from ouro.config.provider_templates.schema import ProviderTemplate
 from ouro.config.reasoning import mapped_reasoning
 from ouro.core.reasoning import ReasoningRequest
 
-_VERIFIED_ON = "2026-10-10"
+_VERIFIED_ON = "2026-11-11"
 
 _ANTHROPIC_SONNET_REASONING = mapped_reasoning(
     name="anthropic-always-on-adaptive-effort-high",
@@ -103,6 +103,18 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         default_endpoint="claude-sonnet-5-5",
         endpoints=(
             ProviderEndpointConfig(
+                endpoint_id="claude-fable-5-2",
+                display_name="Claude Fable 5.2",
+                model_id="claude-fable-5-2",
+                context_window=1_000_000,
+                max_output_tokens=32_768,
+                supports_tools=True,
+                supports_image_input=True,
+                supports_streaming=True,
+                supports_structured_output=False,
+                reasoning=_ANTHROPIC_SONNET_REASONING,
+            ),
+            ProviderEndpointConfig(
                 endpoint_id="claude-fable-5-1",
                 display_name="Claude Fable 5.1",
                 model_id="claude-fable-5-1",
@@ -153,6 +165,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://platform.claude.com/docs/en/models/overview",
         verified_on=_VERIFIED_ON,
-        revision=9,
+        revision=10,
     ),
 )

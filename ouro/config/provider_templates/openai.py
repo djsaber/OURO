@@ -21,13 +21,6 @@ _OPENAI_56_REASONING = openai_responses_effort_reasoning(
     supported_efforts=("low", "medium", "high", "xhigh", "max"),
 )
 
-_CODEX_55_REASONING = openai_responses_effort_reasoning(
-    supported_summaries=("auto",),
-    default=ReasoningRequest(summary="auto"),
-    activation="always_on",
-    supported_efforts=("low", "medium", "high", "xhigh"),
-)
-
 _OPENAI_ALWAYS_ON_REASONING = openai_responses_effort_reasoning(
     supported_summaries=("auto",),
     default=ReasoningRequest(summary="auto"),
@@ -54,7 +47,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         description=(
             "Browser subscription login with the documented Codex model catalog. "
             "Availability depends on the account and rollout. "
-            "GPT-5.5 retires from Codex on 2026-10-14. "
             "No request output limit is configured; the local context window is 1050000. "
             "Image input is enabled; "
             "structured output is not declared supported by this integration."
@@ -75,22 +67,21 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 supports_image_input=True,
                 supports_streaming=True,
                 supports_structured_output=False,
-                reasoning=reasoning,
+                reasoning=_OPENAI_ALWAYS_ON_REASONING,
             )
-            for model_id, reasoning in (
-                ("gpt-6-astra", _OPENAI_ALWAYS_ON_REASONING),
-                ("gpt-6.1-sol", _OPENAI_ALWAYS_ON_REASONING),
-                ("gpt-6-sol", _OPENAI_ALWAYS_ON_REASONING),
-                ("gpt-6-luna", _OPENAI_ALWAYS_ON_REASONING),
-                ("gpt-5.6-sol", _OPENAI_ALWAYS_ON_REASONING),
-                ("gpt-5.6-terra", _OPENAI_ALWAYS_ON_REASONING),
-                ("gpt-5.6-luna", _OPENAI_ALWAYS_ON_REASONING),
-                ("gpt-5.5", _CODEX_55_REASONING),
+            for model_id in (
+                "gpt-6-astra",
+                "gpt-6.1-sol",
+                "gpt-6-sol",
+                "gpt-6-luna",
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna",
             )
         ),
         documentation_url="https://learn.chatgpt.com/docs/models",
-        verified_on=_VERIFIED_ON,
-        revision=13,
+        verified_on="2026-11-11",
+        revision=14,
     ),
     ProviderTemplate(
         template_id="openai",

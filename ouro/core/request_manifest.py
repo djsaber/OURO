@@ -46,6 +46,7 @@ class RequestMessage(OuroModel):
     semantic_tag: SemanticTag | None = None
     tool_calls: list[ToolCallRequest] | RequestMessageReference = Field(default_factory=list)
     tool_result: ToolResultReference | None = None
+    reasoning_content: str | RequestMessageReference = ""
     provider_continuation: ProviderContinuationArtifact | RequestMessageReference | None = None
 
     @model_validator(mode="after")
@@ -68,10 +69,13 @@ class RequestMessage(OuroModel):
             else {}
         )
         calls: list[ToolCallRequest] | RequestMessageReference = value.tool_calls
+        reasoning: str | RequestMessageReference = value.reasoning_content
         continuation: ProviderContinuationArtifact | RequestMessageReference | None = (
             value.provider_continuation
         )
         if source is not None:
+            if reasoning and reasoning is source.reasoning_content:
+                reasoning = RequestMessageReference(message_id=source.message_id)
             if (
                 value.tool_calls
                 and len(value.tool_calls) == len(source.tool_calls)
@@ -96,6 +100,7 @@ class RequestMessage(OuroModel):
             semantic_tag=value.semantic_tag,
             tool_calls=calls,
             tool_result=value.tool_result,
+            reasoning_content=reasoning,
             provider_continuation=continuation,
         )
 
@@ -110,8 +115,11 @@ class RequestMessage(OuroModel):
             else:
                 content.append(block)
         calls = self.tool_calls
+        reasoning = self.reasoning_content
         continuation = self.provider_continuation
         try:
+            if isinstance(reasoning, RequestMessageReference):
+                reasoning = sources[reasoning.message_id].reasoning_content
             if isinstance(calls, RequestMessageReference):
                 calls = sources[calls.message_id].tool_calls
                 if not calls:
@@ -128,6 +136,7 @@ class RequestMessage(OuroModel):
             semantic_tag=self.semantic_tag,
             tool_calls=calls,
             tool_result=self.tool_result,
+            reasoning_content=reasoning,
             provider_continuation=continuation,
         )
 
@@ -149,7 +158,12 @@ class RequestManifest(OuroModel):
             dict.fromkeys(
                 item.message_id
                 for message in self.messages
-                for item in (*message.content, message.tool_calls, message.provider_continuation)
+                for item in (
+                    *message.content,
+                    message.tool_calls,
+                    message.reasoning_content,
+                    message.provider_continuation,
+                )
                 if isinstance(item, RequestMessageReference)
             )
         )

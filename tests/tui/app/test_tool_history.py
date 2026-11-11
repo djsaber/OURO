@@ -56,7 +56,8 @@ async def test_completed_tool_batch_archives_in_source_order(tmp_path: Path) -> 
             await conversation.sync_tools(
                 (first.model_copy(update={"status": first_status}), second)
             )
-            await pilot.pause()
+            await wait_for_history_render(pilot)
+            await history.wait_for_refresh()
 
             assert not [entry for entry in history.entries if entry.kind == "tool"]
             assert len(conversation.query(".tool-row")) == 2
@@ -71,7 +72,8 @@ async def test_completed_tool_batch_archives_in_source_order(tmp_path: Path) -> 
                 second.model_copy(update={"status": "completed"}),
             )
         )
-        await pilot.pause()
+        await wait_for_history_render(pilot)
+        await history.wait_for_refresh()
         tool_ids = [
             entry.tool.tool_call_id
             for entry in history.entries

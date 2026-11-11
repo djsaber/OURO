@@ -176,6 +176,15 @@ reasoning_content、reasoning 与 reasoning_details 扩展，Responses 与 Messa
 有正文时显示 `Thought`，可点击展开或执行 `/thoughts expand`。摘要请求不改变本地折叠偏好。
 签名、加密数据等续接状态按来源和协议约束保存、回传，修改思考等级或摘要选项不会丢弃这些数据。
 
+Chat Completions 端点的 `profile.text_field` 声明思考文本的协议字段：`reasoning_content` 或 `reasoning`。
+框架按此字段发送会话中已有的非空思考文本，包括其他模型产生的文本；空思考不发送字段。
+null 表示不发送规范思考扩展。该设置不改变本次生成的思考启停，也不控制响应读取。
+例如只声明思考文本编码的配置为：
+
+```json
+{"capability": {}, "profile": {"name": "reasoning-text", "text_field": "reasoning"}}
+```
+
 思考协议定义见 [OpenAI 推理文档](https://developers.openai.com/api/docs/guides/reasoning) 与
 [Anthropic 思考文档](https://platform.claude.com/docs/en/build-with-claude/thinking)。完整配置契约见
 [思考契约](../specs/provider-configuration.md#思考契约)。

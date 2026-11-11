@@ -44,6 +44,8 @@ def test_protocol_encoding_limits_apply_to_every_declared_input_modality(protoco
 
 def test_presets_only_enable_media_supported_by_the_configured_connection():
     audio_models = {
+        "gemini-4-carbon",
+        "gemini-4-argon",
         "gemini-3.8-flash",
         "gemini-3.1-pro-preview",
         "gemini-3.5-flash-lite",
@@ -54,10 +56,10 @@ def test_presets_only_enable_media_supported_by_the_configured_connection():
         "qwen3.8-flash",
         "qwen3.7-plus",
         "kimi-k3",
-        "kimi-k2.7-code",
-        "kimi-k2.7-code-highspeed",
-        "kimi-k2.6",
+        "kimi-k3.1-pro",
+        "kimi-k3.1-pro-highspeed",
         "MiniMax-M3",
+        "MiniMax-M3.1-Flash",
         "doubao-seed-2-1-pro-260915",
         "doubao-seed-2-1-lite-260915",
     }
@@ -66,8 +68,6 @@ def test_presets_only_enable_media_supported_by_the_configured_connection():
         "glm-5.3",
         "glm-5.2",
         "glm-5-turbo",
-        "MiniMax-M2.7",
-        "MiniMax-M2.7-highspeed",
     }
     for template in provider_templates():
         if template.template_id.startswith("opencode-go"):

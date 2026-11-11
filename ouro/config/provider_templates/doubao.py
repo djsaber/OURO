@@ -7,10 +7,12 @@ from ouro.config.provider_templates.schema import ProviderTemplate
 from ouro.config.reasoning import mapped_reasoning
 from ouro.core.reasoning import ReasoningRequest
 
-_VERIFIED_ON = "2026-10-10"
+_VERIFIED_ON = "2026-11-11"
 
 _DOUBAO_REASONING = mapped_reasoning(
     name="doubao-thinking-effort",
+    # Ark accepts this as a summary when the encrypted trace is unavailable.
+    text_field="reasoning_content",
     activation="toggle",
     supported_efforts=("minimal", "low", "medium", "high"),
     default=ReasoningRequest(mode="enabled", effort="high"),
@@ -68,6 +70,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://docs.volcengine.com/docs/ark/model-list?lang=zh",
         verified_on=_VERIFIED_ON,
-        revision=6,
+        revision=7,
     ),
 )

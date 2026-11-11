@@ -133,6 +133,7 @@ class ModelMessage(OuroModel):
     semantic_tag: SemanticTag | None = None
     tool_calls: list[ToolCallRequest] = Field(default_factory=list)
     tool_result: ToolResultReference | None = None
+    reasoning_content: str = ""
     provider_continuation: ProviderContinuationArtifact | None = None
 
     @model_validator(mode="after")
@@ -141,8 +142,10 @@ class ModelMessage(OuroModel):
             raise ValueError("only assistant model messages may contain tool_calls")
         if self.tool_result is not None and self.role != "tool_result":
             raise ValueError("only tool_result model messages may contain tool_result")
-        if self.provider_continuation is not None and self.role != "assistant":
-            raise ValueError("only assistant model messages may contain provider continuation")
+        if (self.reasoning_content or self.provider_continuation is not None) and (
+            self.role != "assistant"
+        ):
+            raise ValueError("only assistant model messages may contain reasoning state")
         _validate_skill_activation_blocks(self.role, self.content)
         return self
 
@@ -154,6 +157,7 @@ class ModelMessage(OuroModel):
             semantic_tag=message.semantic_tag,
             tool_calls=list(message.tool_calls),
             tool_result=message.tool_result,
+            reasoning_content=message.reasoning_content,
             provider_continuation=message.provider_continuation,
         )
 

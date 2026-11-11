@@ -14,7 +14,6 @@ _EXPECTED_ENDPOINTS = {
     "openai-codex": (
         "gpt-6.1-sol",
         {
-            "gpt-5.5",
             "gpt-5.6-luna",
             "gpt-5.6-terra",
             "gpt-5.6-sol",
@@ -39,17 +38,29 @@ _EXPECTED_ENDPOINTS = {
     ),
     "anthropic": (
         "claude-sonnet-5-5",
-        {"claude-fable-5-1", "claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"},
+        {
+            "claude-fable-5-2",
+            "claude-fable-5-1",
+            "claude-sonnet-5-5",
+            "claude-opus-5-5",
+            "claude-haiku-5-5",
+        },
     ),
     "gemini": (
         "gemini-3.8-flash",
-        {"gemini-3.8-flash", "gemini-3.1-pro-preview", "gemini-3.5-flash-lite"},
+        {
+            "gemini-4-carbon",
+            "gemini-4-argon",
+            "gemini-3.8-flash",
+            "gemini-3.1-pro-preview",
+            "gemini-3.5-flash-lite",
+        },
     ),
     "deepseek": ("deepseek-v4-pro", {"deepseek-v4-pro", "deepseek-flash"}),
     "qwen": ("qwen3.8-max", {"qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus"}),
     "kimi": (
-        "kimi-k3",
-        {"kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"},
+        "kimi-k3.1-pro",
+        {"kimi-k3.1-pro", "kimi-k3.1-pro-highspeed", "kimi-k3"},
     ),
     "glm": (
         "glm-5.3",
@@ -57,10 +68,10 @@ _EXPECTED_ENDPOINTS = {
     ),
     "grok": ("grok-4.7", {"grok-4.7"}),
     "mistral": (
-        "mistral-medium-3-5",
+        "mistral-large-4-0",
         {"mistral-medium-3-5", "mistral-small-2603", "mistral-large-4-0"},
     ),
-    "minimax": ("MiniMax-M3", {"MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"}),
+    "minimax": ("MiniMax-M3", {"MiniMax-M3", "MiniMax-M3.1-Flash"}),
     "doubao": (
         "doubao-seed-2-1-pro-260915",
         {"doubao-seed-2-1-pro-260915", "doubao-seed-2-1-lite-260915"},
@@ -72,9 +83,9 @@ _EXPECTED_ENDPOINTS = {
             "glm-5.3-flash",
             "glm-5.3",
             "glm-5.2",
+            "kimi-k3.1-pro",
             "kimi-k3",
             "kimi-k2.7-code",
-            "kimi-k2.6",
             "longcat-2.0",
             "deepseek-v4.1-flash",
             "deepseek-v4-pro",
@@ -82,19 +93,20 @@ _EXPECTED_ENDPOINTS = {
             "mimo-v2.6-pro",
             "mimo-v2.5",
             "mimo-v2.5-pro",
+            "minimax-m3.1-flash",
+            "hy4",
             "hy4-preview",
             "hy3",
-            "space-bunny",
-            "longcat-2.5-preview-free",
-            "step-5-preview-free",
-            "cat-jam-free",
+            "step-5-preview",
+            "beam-free",
+            "iceman-contributor-free",
+            "longcat-2.5-free",
         },
     ),
     "opencode-go-responses": (
         "gpt-6-luna",
         {
             "grok-4.7",
-            "grok-4.6",
             "gpt-6-luna",
             "gpt-5.6-luna",
             "muse-spark-1.3-contributor",
@@ -106,7 +118,6 @@ _EXPECTED_ENDPOINTS = {
         {
             "claude-haiku-5-5",
             "minimax-m3",
-            "minimax-m2.7",
             "qwen3.8-max",
             "qwen3.8-flash",
             "qwen3.7-plus",
@@ -142,7 +153,6 @@ def test_builtin_provider_templates_expose_reviewed_endpoint_sets() -> None:
     for template_id, (default_endpoint, endpoint_ids) in _EXPECTED_ENDPOINTS.items():
         template = templates[template_id]
         assert template.default_endpoint == default_endpoint
-        is_opencode = template_id.startswith("opencode-go")
         assert template.provider_type == template_id
         assert template.protocol in {
             "openai-chat-completions",
@@ -152,7 +162,29 @@ def test_builtin_provider_templates_expose_reviewed_endpoint_sets() -> None:
         assert {endpoint.endpoint_id for endpoint in template.endpoints} == endpoint_ids
         assert template.display_name.strip()
         assert all(endpoint.display_name for endpoint in template.endpoints)
-        assert template.verified_on == ("2026-10-14" if is_opencode else "2026-10-10")
+        assert template.verified_on == (
+            "2026-10-10" if template_id in {"openai", "cohere", "grok"} else "2026-11-11"
+        )
+        for endpoint in template.endpoints:
+            profile = endpoint.reasoning.profile
+            expects_text_field = template_id in {
+                "deepseek",
+                "doubao",
+                "glm",
+                "kimi",
+                "minimax",
+                "qwen",
+            }
+            if template_id == "opencode-go":
+                expects_text_field = endpoint.model_id not in {
+                    "hy4",
+                    "hy4-preview",
+                    "hy3",
+                    "iceman-contributor-free",
+                }
+            assert (profile.text_field if profile else None) == (
+                "reasoning_content" if expects_text_field else None
+            )
 
 
 def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
@@ -238,9 +270,8 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     assert plus_reasoning.profile.effort["enabled"]["preserve_thinking"] is True
 
     kimi = templates["kimi"]
-    assert kimi.endpoint("kimi-k2.7-code").reasoning.capability.activation == "always_on"
-    assert kimi.endpoint("kimi-k2.6").reasoning.capability.activation == "toggle"
-    k3_reasoning = kimi.endpoint("kimi-k3").reasoning
+    assert kimi.endpoint("kimi-k3").reasoning == kimi.endpoint().reasoning
+    k3_reasoning = kimi.endpoint().reasoning
     assert k3_reasoning.capability.activation == "always_on"
     assert k3_reasoning.capability.supported_efforts == ("low", "high", "max")
     assert k3_reasoning.capability.default.effort == "max"

@@ -19,9 +19,9 @@ from ouro.providers.http_transport import HttpxProviderHTTPTransport
 from tests.providers.test_request_authentication import response
 
 GO_ROUTES = (
-    ("opencode-go", "openai-chat-completions", "/chat/completions"),
-    ("opencode-go-responses", "openai-responses", "/responses"),
-    ("opencode-go-messages", "anthropic-messages", "/messages"),
+    ("opencode-go", "openai-chat-completions", "/openai/v1/chat/completions"),
+    ("opencode-go-responses", "openai-responses", "/openai/v1/responses"),
+    ("opencode-go-messages", "anthropic-messages", "/anthropic/v1/messages"),
 )
 
 
@@ -43,6 +43,15 @@ async def test_go_template_reaches_its_protocol_with_session_headers(
         received.append(request)
         return response(type(adapter.provider), streaming)
 
+    messages = [
+        ModelMessage.text(role="user", text="Review this code."),
+        ModelMessage.text(role="assistant", text="The tests cover the normal path.").model_copy(
+            update={"reasoning_content": "Check the existing tests first."}
+        ),
+        ModelMessage.text(role="user", text="Anything missing?"),
+        ModelMessage.text(role="assistant", text="I will look at error handling."),
+        ModelMessage.text(role="user", text="Go on."),
+    ]
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
         adapter.provider.transport = HttpxProviderHTTPTransport(client)
         for session in ("session-one", "session-two", "session-one"):
@@ -50,7 +59,7 @@ async def test_go_template_reaches_its_protocol_with_session_headers(
                 event
                 async for event in adapter.provider.stream(
                     model=adapter.model,
-                    messages=[ModelMessage.text(role="user", text="Review this code.")],
+                    messages=messages,
                     request_context=ProviderRequestContext({"session.id": session}),
                 )
             ]
@@ -63,7 +72,7 @@ async def test_go_template_reaches_its_protocol_with_session_headers(
         "session-one",
     ]
     for request in received:
-        assert str(request.url) == f"https://opencode.ai/inference/go/v1{path}"
+        assert str(request.url) == f"https://opencode.ai/inference/go{path}"
         assert request.headers["user-agent"].startswith("ouro/")
         credential_header = "x-api-key" if protocol == "anthropic-messages" else "authorization"
         assert request.headers[credential_header].endswith("test-key")
@@ -71,6 +80,9 @@ async def test_go_template_reaches_its_protocol_with_session_headers(
         assert body["model"] == template.endpoint().model_id
         assert "reasoning_effort" not in body
         assert "enable_thinking" not in body
+        if protocol == "openai-chat-completions":
+            assert body["messages"][1]["reasoning_content"] == "Check the existing tests first."
+            assert "reasoning_content" not in body["messages"][3]
     assert saved.headers == {"x-opencode-session": ContextHeaderValue(key="session.id")}
 
 
@@ -111,14 +123,11 @@ def test_template_headers_validate_and_public_views_redact_literal_values():
 
 def test_go_limits_and_capabilities_follow_the_gateway_and_local_codecs():
     chat = get_provider_template("opencode-go")
-    assert chat.endpoint("kimi-k2.6").context_window == 262_144
+    assert chat.endpoint("kimi-k3.1-pro").context_window == 1_048_576
     assert chat.endpoint("hy4-preview").context_window == 1_024_000
     assert chat.endpoint("deepseek-v4.1-flash").supports_image_input
     assert not chat.endpoint("deepseek-v4-pro").supports_image_input
     assert not chat.endpoint("mimo-v2.5-pro").supports_image_input
-    messages = get_provider_template("opencode-go-messages")
-    assert messages.endpoint("minimax-m2.7").context_window == 204_800
-    assert not messages.endpoint("minimax-m2.7").supports_image_input
     for template_id, _, _ in GO_ROUTES:
         template = get_provider_template(template_id)
         for endpoint in template.endpoints:

@@ -35,7 +35,7 @@ Skills 指令、恢复投影、媒体整理、摘要压缩和模型 token 预算
 在构建时一次完成模型可见内容转换，并对该值估算；不执行 Provider、文件或 SessionStore I/O。
 `provider_context` 是数据字段，读取它不再次执行投影。`RuntimeAdapter` 直接将其中的值交给 Provider。
 Manifest 与该值在同一次构建中产生；来源限定为本次已读取的 canonical 活动消息。未变内容按消息身份和块位置引用，
-工具参数及 opaque continuation 按所属消息引用；已变内容保存实际字面值，不通过正文 hash 或重新投影决定引用。
+思考文本、工具参数及 opaque continuation 按所属消息引用；已变内容保存实际字面值，不通过正文 hash 或重新投影决定引用。
 
 准备服务在一次 `session_read` 中读取 Session 当前选择、活动摘要与未覆盖尾部；读取结束后才执行动态
 Context Provider 和投影。Core 的摘要投影接收已经选定的尾部，不接收或切片完整 canonical 历史。
@@ -182,13 +182,14 @@ Manifest schema 10 保存最终 provider-neutral 骨架，独立请求头 schema
 
 `ContextMetrics` 保存 `estimated_input_tokens`、`estimated_fixed_tokens`、可选 `budget` 及 estimator 身份。输入预算、剩余容量、利用率和 `over_budget` 是派生属性，不重复持久化。请求快照中的 `budget` 保存当时最终请求的窗口和上限；无预算的纯投影可以仅记录输入估算。
 
-估算覆盖 system prompt、message content、typed tool fields 和 tool definitions。默认 estimator 是 Provider 无关的保守近似。
+估算覆盖 system prompt、message content、可读思考、typed tool fields 和 tool definitions。默认 estimator 是 Provider 无关的保守近似。
+原生响应附件携带同一响应的思考表示时，不重复计入规范思考文本；没有原生附件时直接计入规范思考。
 原生协议附件先按当前 provider/model 选择预算候选；该选择不读取历史 Run，不依赖执行 history_epoch，也不解码私有 blocks。
-不匹配附件从请求投影移除，canonical 正文、工具帧和持久化附件保持完整。协议及认证 scope 的兼容性由 codec 在实际请求边界判断。
+不匹配附件从请求投影移除，canonical 正文、可读思考、工具帧和持久化附件保持完整。协议及认证 scope 的兼容性由 codec 在实际请求边界判断。
 撤销和分支只影响历史选择及执行授权，不改变所保留响应的来源。只追加由上层上下文选择策略维持，不是底层消息或 codec 的限制。
 
 内置 estimator 复用最近一次构建中仍在活动输入内的不可变消息单元成本。键来自同次构建的 Manifest：
-Session/message/block 身份、最终 role/工具结果小字段及 Call/continuation 成员引用；不保存正文或参数，不散列正文。
+Session/message/block 身份、最终 role/工具结果小字段及思考/Call/continuation 成员引用；不保存正文或参数，不散列正文。
 每次构建替换此小成本表，移出的成员不再保留。协议成员变化重新估算；纯媒体使用内置固定成本，与媒体字节无关。
 变换后的字面文本、动态片段、提示和工具定义均重新估算。只有明确采用内置 estimator 才使用这一复用；
 自定义文本 estimator 仍按原契约处理当前全部组成字符串，自定义构建器的整请求处理入口和参数保持不变。

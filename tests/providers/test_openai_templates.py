@@ -103,9 +103,10 @@ def test_model_effort_limits_are_enforced_before_requests(template_id):
     astra = template.endpoint("gpt-6-astra").reasoning.capability
     with pytest.raises(ValueError, match="always on"):
         resolve_reasoning(astra, ReasoningRequest(mode="disabled"))
-    old = template.endpoint("gpt-5.5").reasoning.capability
-    with pytest.raises(ValueError, match="not supported"):
-        resolve_reasoning(old, ReasoningRequest(effort="max"))
+    if template_id == "openai":
+        old = template.endpoint("gpt-5.5").reasoning.capability
+        with pytest.raises(ValueError, match="not supported"):
+            resolve_reasoning(old, ReasoningRequest(effort="max"))
     for model_id in (
         "gpt-6-astra",
         "gpt-6-sol",

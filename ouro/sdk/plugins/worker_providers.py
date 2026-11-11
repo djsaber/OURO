@@ -93,6 +93,7 @@ def _message(raw: Mapping[str, Any]) -> ProviderMessage:
         role=raw["role"],
         content=tuple(blocks),
         semantic_tag=raw["semantic_tag"],
+        reasoning_content=raw["reasoning_content"],
         tool_calls=tuple(ProviderToolCall(**item) for item in raw["tool_calls"]),
         tool_result=ProviderToolResult(
             result["tool_call_id"],
