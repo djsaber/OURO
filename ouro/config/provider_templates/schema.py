@@ -11,6 +11,7 @@ from ouro.config.provider_models import (
     ProviderType,
     resolve_provider_connection,
     validate_media_protocol_compatibility,
+    validate_reasoning_protocol_compatibility,
 )
 from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError
@@ -69,6 +70,9 @@ class ProviderTemplate(OuroModel):
         if self.default_endpoint not in endpoint_ids:
             raise ValueError(f"default endpoint not found: {self.default_endpoint}")
         for endpoint in self.endpoints:
+            validate_reasoning_protocol_compatibility(
+                self.protocol, endpoint.reasoning, endpoint.reasoning_text_field
+            )
             validate_media_protocol_compatibility(
                 self.protocol,
                 supports_image_input=endpoint.supports_image_input,

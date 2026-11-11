@@ -91,7 +91,6 @@ async def test_model_switch_after_restart_preserves_reasoning_and_completed_tool
     reasoning = mapped_reasoning(
         name="thinking",
         activation="toggle",
-        text_field=text_field,
         effort={
             "enabled": {"thinking": {"type": "enabled"}},
             "disabled": {"thinking": {"type": "disabled"}},
@@ -118,6 +117,7 @@ async def test_model_switch_after_restart_preserves_reasoning_and_completed_tool
             provider = OpenAIChatCompletionsProvider(
                 base_url="https://example.test",
                 provider_id=identity,
+                reasoning_text_field=text_field if identity == "target" else None,
                 transport=HttpxProviderHTTPTransport(client=client),
                 reasoning_encoder=ReasoningPayloadEncoder(
                     reasoning.profile if identity == "target" else None

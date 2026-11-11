@@ -166,7 +166,6 @@ def test_builtin_provider_templates_expose_reviewed_endpoint_sets() -> None:
             "2026-10-10" if template_id in {"openai", "cohere", "grok"} else "2026-11-11"
         )
         for endpoint in template.endpoints:
-            profile = endpoint.reasoning.profile
             expects_text_field = template_id in {
                 "deepseek",
                 "doubao",
@@ -182,7 +181,7 @@ def test_builtin_provider_templates_expose_reviewed_endpoint_sets() -> None:
                     "hy3",
                     "iceman-contributor-free",
                 }
-            assert (profile.text_field if profile else None) == (
+            assert endpoint.reasoning_text_field == (
                 "reasoning_content" if expects_text_field else None
             )
 

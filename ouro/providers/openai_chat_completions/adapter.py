@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 from contextlib import aclosing
-from typing import Any
+from typing import Any, Literal
 
 from ouro.auth.request_auth import RequestAuthenticator, StaticRequestAuthenticator
 from ouro.config.provider_headers import ProviderHeaderValue
@@ -37,6 +37,7 @@ from ouro.providers.openai_chat_completions.codec import (
     _usage_from_response,
     _usage_from_response_or_none,
     messages_to_chat_completions,
+    reasoning_continuation,
     reasoning_fields_from_response,
     reasoning_text_from_response,
 )
@@ -63,6 +64,7 @@ class OpenAIChatCompletionsProvider:
         headers: Mapping[str, ProviderHeaderValue] | None = None,
         request_options: Mapping[str, Any] | None = None,
         reasoning_encoder: ReasoningPayloadEncoder | None = None,
+        reasoning_text_field: Literal["reasoning_content", "reasoning"] | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
     ) -> None:
         self.provider_id = provider_id or self.provider_id
@@ -82,6 +84,7 @@ class OpenAIChatCompletionsProvider:
         self.redact_errors = bool(headers)
         self.request_options = dict(request_options or {})
         self.reasoning_encoder = reasoning_encoder or ReasoningPayloadEncoder(None)
+        self.reasoning_text_field = reasoning_text_field
         self.retry_policy = retry_policy or ProviderRetryPolicy()
 
     async def close(self) -> None:
@@ -245,11 +248,7 @@ class OpenAIChatCompletionsProvider:
             supports_video_input=model.supports_video_input,
             provider_id=self.provider_id,
             model_id=model.model_id,
-            reasoning_text_field=(
-                self.reasoning_encoder.profile.text_field
-                if self.reasoning_encoder.profile is not None
-                else None
-            ),
+            reasoning_text_field=self.reasoning_text_field,
         )
         payload: dict[str, Any] = dict(self.request_options)
         if "response_format" in payload and not model.supports_structured_output:
@@ -298,9 +297,9 @@ class OpenAIChatCompletionsProvider:
             yield ProviderStreamEvent(type="error", error="provider response message is invalid")
             return
 
-        continuation = reasoning_fields_from_response(message)
+        continuation = reasoning_continuation(reasoning_fields_from_response(message))
         reasoning = reasoning_text_from_response(message)
-        has_reasoning = bool(continuation)
+        has_reasoning = bool(reasoning or continuation)
         if reasoning:
             yield ProviderStreamEvent(type="reasoning_delta", reasoning_content=reasoning)
 
@@ -372,10 +371,10 @@ class OpenAIChatCompletionsProvider:
                 continue
 
             fields = reasoning_fields_from_response(delta)
-            saw_reasoning = saw_reasoning or bool(fields)
             reasoning = reasoning_text_from_response(delta)
+            saw_reasoning = saw_reasoning or bool(reasoning)
             for field, value in fields.items():
-                continuation_reasoning.setdefault(field, []).append(value)
+                continuation_reasoning.setdefault(field, []).extend(value)
             if reasoning:
                 yield ProviderStreamEvent(type="reasoning_delta", reasoning_content=reasoning)
 
@@ -406,15 +405,8 @@ class OpenAIChatCompletionsProvider:
             )
             return
 
-        if continuation_reasoning:
-            continuation: dict[str, Any] = {}
-            for field, fragments in continuation_reasoning.items():
-                if all(isinstance(fragment, str) for fragment in fragments):
-                    continuation[field] = "".join(fragments)
-                elif all(isinstance(fragment, list) for fragment in fragments):
-                    continuation[field] = [block for fragment in fragments for block in fragment]
-                else:
-                    raise ValueError("inconsistent Chat Completions reasoning field shape")
+        continuation = reasoning_continuation(continuation_reasoning)
+        if continuation:
             yield ProviderStreamEvent(
                 type="continuation",
                 continuation=ProviderContinuationArtifact(
@@ -428,7 +420,9 @@ class OpenAIChatCompletionsProvider:
             type="done",
             usage=usage,
             completion=_chat_completions_completion(
-                provider_finish_reason, has_reasoning=saw_reasoning, refused=saw_refusal
+                provider_finish_reason,
+                has_reasoning=saw_reasoning or bool(continuation),
+                refused=saw_refusal,
             ),
         )
 

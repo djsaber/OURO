@@ -296,6 +296,12 @@ def _add_endpoint_mutation_args(
     )
     capability_group = parser.add_argument_group("endpoint capabilities")
     _add_endpoint_capability_args(capability_group)
+    capability_group.add_argument(
+        "--reasoning-text-field",
+        choices=("reasoning_content", "reasoning", "none"),
+        default=argparse.SUPPRESS,
+        help="Chat Completions history field; none uses labeled historical reasoning notes",
+    )
     reasoning_group = parser.add_argument_group("reasoning contract")
     endpoint_reasoning_group = reasoning_group.add_mutually_exclusive_group()
     endpoint_reasoning_group.add_argument(

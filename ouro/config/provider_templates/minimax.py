@@ -11,7 +11,6 @@ _VERIFIED_ON = "2026-11-11"
 
 _MINIMAX_REASONING = toggle_reasoning(
     name="minimax-adaptive-thinking",
-    text_field="reasoning_content",
     enabled={"thinking": {"type": "adaptive"}},
     disabled={"thinking": {"type": "disabled"}},
 )
@@ -20,7 +19,6 @@ _MINIMAX_FLASH_REASONING = openai_chat_completions_effort_reasoning(
     activation="always_on",
     supported_efforts=("low", "medium", "high", "xhigh", "max"),
     default=ReasoningRequest(mode="enabled", effort="max"),
-    text_field="reasoning_content",
 )
 
 
@@ -49,6 +47,7 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 supports_streaming=True,
                 supports_structured_output=False,
                 reasoning=_MINIMAX_REASONING,
+                reasoning_text_field="reasoning_content",
                 request_options={"reasoning_split": True},
             ),
             ProviderEndpointConfig(
@@ -62,11 +61,12 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 supports_streaming=True,
                 supports_structured_output=False,
                 reasoning=_MINIMAX_FLASH_REASONING,
+                reasoning_text_field="reasoning_content",
                 request_options={"reasoning_split": True},
             ),
         ),
         documentation_url="https://platform.minimax.cn/docs/api-reference/text-openai-api",
         verified_on=_VERIFIED_ON,
-        revision=6,
+        revision=7,
     ),
 )

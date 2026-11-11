@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from ouro.config.reasoning import ReasoningProfileConfig
 from ouro.core.messages import ModelMessage, ProviderContinuationArtifact
 from ouro.core.provider import ModelMetadata
 from ouro.providers import OpenAIChatCompletionsProvider
-from ouro.providers.reasoning import ReasoningPayloadEncoder
 from tests.providers.test_openai_chat_completions import FakeStreamingTransport, FakeTransport
 
 
@@ -21,15 +19,13 @@ async def test_target_text_field_encodes_canonical_text_without_replaying_foreig
         transport=FakeTransport(
             {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
         ),
-        reasoning_encoder=ReasoningPayloadEncoder(
-            ReasoningProfileConfig(name="reasoning-text", text_field=field)
-        ),
+        reasoning_text_field=field,
     )
     artifact = ProviderContinuationArtifact(
         provider_id="source" if foreign else "target",
         protocol="openai-chat-completions",
         model_id="model",
-        blocks=({"reasoning": "original text"},),
+        blocks=({"reasoning_details": [{"type": "reasoning.encrypted", "data": "opaque"}]},),
     )
     messages = [
         ModelMessage(
@@ -44,17 +40,17 @@ async def test_target_text_field_encodes_canonical_text_without_replaying_foreig
         )
     ]
     sent = provider.transport.requests[0]["payload"]["messages"]
-    if field is not None:
+    if not foreign:
+        assert sent[0] == {"role": "assistant", "content": "", **artifact.blocks[0]}
+    elif field is not None:
         assert sent[0] == {"role": "assistant", "content": "", field: "original text"}
-        assert sent[1] == {"role": "assistant", "content": "answer without reasoning"}
     else:
         assert sent[0] == {
             "role": "assistant",
-            "content": "",
-            **({} if foreign else {"reasoning": "original text"}),
+            "content": "[Assistant reasoning]\noriginal text\n[End assistant reasoning]\n\n",
         }
-        assert sent[1] == {"role": "assistant", "content": "answer without reasoning"}
-    assert artifact.blocks == ({"reasoning": "original text"},)
+    assert sent[1] == {"role": "assistant", "content": "answer without reasoning"}
+    assert artifact.blocks[0]["reasoning_details"][0]["data"] == "opaque"
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -100,9 +96,7 @@ async def test_structured_reasoning_roundtrip_preserves_blocks_and_displays_text
     provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test",
         transport=transport,
-        reasoning_encoder=ReasoningPayloadEncoder(
-            ReasoningProfileConfig(name="reasoning-text", text_field=text_field)
-        ),
+        reasoning_text_field=text_field,
     )
     model = ModelMetadata(
         provider_id=provider.provider_id, model_id="reasoner", supports_streaming=streaming
@@ -122,8 +116,11 @@ async def test_structured_reasoning_roundtrip_preserves_blocks_and_displays_text
     async for _ in provider.stream(model=model, messages=[assistant]):
         pass
     assert replay.requests[0]["payload"]["messages"][0]["reasoning_details"] == details
-    if text_field is not None:
-        assert replay.requests[0]["payload"]["messages"][0][text_field] == "checked facts"
+    assert replay.requests[0]["payload"]["messages"][0] == {
+        "role": "assistant",
+        "content": "answer",
+        "reasoning_details": details,
+    }
     async for _ in provider.stream(
         model=model.model_copy(update={"model_id": "other"}), messages=[assistant]
     ):
@@ -131,6 +128,11 @@ async def test_structured_reasoning_roundtrip_preserves_blocks_and_displays_text
     assert "reasoning_details" not in replay.requests[1]["payload"]["messages"][0]
     if text_field is not None:
         assert replay.requests[1]["payload"]["messages"][0][text_field] == "checked facts"
+    else:
+        assert (
+            "[Assistant reasoning]\nchecked facts"
+            in replay.requests[1]["payload"]["messages"][0]["content"]
+        )
     assert artifact.blocks[0]["reasoning_details"] == details
 
 

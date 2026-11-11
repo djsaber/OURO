@@ -143,6 +143,7 @@ def _build_openai_chat_completions(context: ProviderBuildContext) -> RuntimeAdap
     api_path = context.options.api_path or default_api_path("openai-chat-completions")
     assert api_path is not None
     provider = OpenAIChatCompletionsProvider(
+        reasoning_text_field=context.options.reasoning_text_field,
         base_url=context.base_url,
         api_key=context.api_key,
         authenticator=context.authenticator,
@@ -235,7 +236,7 @@ def _model_metadata(
             supports_structured_output=supports_structured_output,
         )
         reasoning.validate_request_options(options.extra or {})
-        validate_reasoning_protocol_compatibility(protocol, reasoning)
+        validate_reasoning_protocol_compatibility(protocol, reasoning, options.reasoning_text_field)
     except ValueError as exc:
         raise ConfigError(f"invalid endpoint reasoning config: {exc}") from exc
 

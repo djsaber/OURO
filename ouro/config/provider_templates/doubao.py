@@ -11,8 +11,6 @@ _VERIFIED_ON = "2026-11-11"
 
 _DOUBAO_REASONING = mapped_reasoning(
     name="doubao-thinking-effort",
-    # Ark accepts this as a summary when the encrypted trace is unavailable.
-    text_field="reasoning_content",
     activation="toggle",
     supported_efforts=("minimal", "low", "medium", "high"),
     default=ReasoningRequest(mode="enabled", effort="high"),
@@ -53,6 +51,7 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 supports_streaming=True,
                 supports_structured_output=True,
                 reasoning=_DOUBAO_REASONING,
+                reasoning_text_field="reasoning_content",
             ),
             ProviderEndpointConfig(
                 endpoint_id="doubao-seed-2-1-lite-260915",
@@ -66,10 +65,11 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 supports_streaming=True,
                 supports_structured_output=True,
                 reasoning=_DOUBAO_REASONING,
+                reasoning_text_field="reasoning_content",
             ),
         ),
         documentation_url="https://docs.volcengine.com/docs/ark/model-list?lang=zh",
         verified_on=_VERIFIED_ON,
-        revision=7,
+        revision=8,
     ),
 )

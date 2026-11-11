@@ -43,8 +43,10 @@ Endpoint 的 reasoning capability/profile 同样不参与 adapter 分派；它�
 
 `custom` 类型允许用户为自定义 Endpoint 声明思考请求配置。协议适配器独立解析可读思考和原生续接状态，
 不由启停、等级或摘要配置过滤返回内容。规范思考文本随会话进入模型消息；Chat Completions 通过
-`profile.text_field` 声明非空思考文本使用 reasoning_content 或 reasoning，null 不发送规范思考扩展。
-原生字段及 Responses、Messages 的 item/block 独立保存，回传时校验来源与协议结构。
+Endpoint 的 `reasoning_text_field` 声明非空历史思考使用 reasoning_content 或 reasoning，null 使用标注的历史推理文字。
+Responses 和 Messages 在没有可用原生续接时也使用历史推理文字。规范会话保存可读思考；Responses 的完整输出项、
+Messages 的完整 content 序列及 Chat Completions 含非文字信息的思考数组作为协议重放附件独立保存，
+回传时校验来源与协议结构。有效原生表示不重复附加可读副本。
 
 `faux` 类型和协议只保留给内部安全运行时与测试，不属于用户可配置类型，也不出现在用户 Provider 目录中。
 内置协议为 `faux`、`openai-chat-completions`、`openai-responses` 和 `anthropic-messages`；

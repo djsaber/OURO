@@ -39,7 +39,7 @@ class ContextMetrics(OuroModel):
     estimated_fixed_tokens: int = Field(ge=0)
     budget: ContextBudget | None = None
     estimator_id: str = "builtin.conservative"
-    estimator_version: str = "2"
+    estimator_version: str = "3"
 
     @model_validator(mode="after")
     def _validate_measurement(self) -> ContextMetrics:
@@ -366,18 +366,24 @@ def _estimate_visible_message_tokens(
         "tool_result": model_message.tool_result.model_dump(mode="json")
         if model_message.tool_result is not None
         else None,
-        "provider_continuation": model_message.provider_continuation.model_dump(mode="json")
-        if model_message.provider_continuation is not None
-        else None,
     }
-    # Native continuation is an alternative representation of this response's
-    # reasoning. Its readable projection is counted only without that envelope.
-    if model_message.provider_continuation is None and model_message.reasoning_content:
-        protocol_payload["reasoning_content"] = model_message.reasoning_content
+    # The codec chooses native replay or portable reasoning. Either may be
+    # larger: visible text can be streamed without appearing in the native item.
+    native_tokens = (
+        active_estimator(model_message.provider_continuation.model_dump_json())
+        if model_message.provider_continuation is not None
+        else 0
+    )
+    reasoning_tokens = (
+        active_estimator(model_message.reasoning_context_text)
+        if model_message.reasoning_content
+        else 0
+    )
     return (
         4
         + content_tokens
         + active_estimator(json.dumps(protocol_payload, ensure_ascii=False, sort_keys=True))
+        + max(native_tokens, reasoning_tokens)
     )
 
 

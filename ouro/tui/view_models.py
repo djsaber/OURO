@@ -137,6 +137,7 @@ class TuiEndpointConfiguration:
     supports_video_input: bool = False
     supports_streaming: bool = True
     supports_structured_output: bool = True
+    reasoning_text_field: Literal["reasoning_content", "reasoning"] | None = None
     reasoning: EndpointReasoningConfig | None = None
     request_options: dict[str, object] | None = None
 

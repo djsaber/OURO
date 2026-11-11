@@ -11,14 +11,12 @@ _VERIFIED_ON = "2026-11-11"
 
 _QWEN_REASONING = toggle_reasoning(
     name="qwen-thinking-toggle",
-    text_field="reasoning_content",
     enabled={"enable_thinking": True, "preserve_thinking": True},
     disabled={"enable_thinking": False, "preserve_thinking": False},
 )
 
 _QWEN_38_REASONING = mapped_reasoning(
     name="qwen-3.8-thinking-effort",
-    text_field="reasoning_content",
     activation="toggle",
     supported_efforts=("low", "medium", "xhigh"),
     default=ReasoningRequest(mode="enabled", effort="xhigh"),
@@ -67,6 +65,7 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 supports_streaming=True,
                 supports_structured_output=True,
                 reasoning=_QWEN_38_REASONING,
+                reasoning_text_field="reasoning_content",
             ),
             ProviderEndpointConfig(
                 endpoint_id="qwen3.8-flash",
@@ -79,6 +78,7 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 supports_streaming=True,
                 supports_structured_output=True,
                 reasoning=_QWEN_38_REASONING,
+                reasoning_text_field="reasoning_content",
             ),
             ProviderEndpointConfig(
                 endpoint_id="qwen3.7-plus",
@@ -91,10 +91,11 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 supports_streaming=True,
                 supports_structured_output=True,
                 reasoning=_QWEN_REASONING,
+                reasoning_text_field="reasoning_content",
             ),
         ),
         documentation_url="https://help.aliyun.com/zh/model-studio/text-generation-model",
         verified_on=_VERIFIED_ON,
-        revision=12,
+        revision=13,
     ),
 )

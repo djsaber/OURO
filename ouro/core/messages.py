@@ -57,7 +57,7 @@ class ToolResultReference(OuroModel):
 
 
 class ProviderContinuationArtifact(OuroModel):
-    """Native replay data owned by its source route, alongside canonical history.
+    """Protocol replay data, separate from canonical conversation facts.
 
     Core persists opaque blocks; the target codec decides replay compatibility.
     Incompatible routes continue from canonical content and complete tool frames.
@@ -135,6 +135,13 @@ class ModelMessage(OuroModel):
     tool_result: ToolResultReference | None = None
     reasoning_content: str = ""
     provider_continuation: ProviderContinuationArtifact | None = None
+
+    @property
+    def reasoning_context_text(self) -> str:
+        """Readable historical reasoning, distinct from the assistant's answer."""
+        if not self.reasoning_content:
+            return ""
+        return f"[Assistant reasoning]\n{self.reasoning_content}\n[End assistant reasoning]\n\n"
 
     @model_validator(mode="after")
     def validate_tool_fields(self) -> ModelMessage:

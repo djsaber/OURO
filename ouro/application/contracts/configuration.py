@@ -81,6 +81,7 @@ class ProviderEndpointView(ApplicationDTO):
     supports_video_input: bool
     supports_streaming: bool
     supports_structured_output: bool
+    reasoning_text_field: Literal["reasoning_content", "reasoning"] | None = None
     reasoning: EndpointReasoningConfig = Field(default_factory=EndpointReasoningConfig)
     request_options: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)

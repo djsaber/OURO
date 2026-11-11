@@ -20,28 +20,56 @@ from ouro.providers.reasoning import ReasoningPayloadEncoder
 
 @pytest.mark.parametrize("field", ["reasoning_content", "reasoning"])
 def test_reasoning_text_field_is_independent_of_generation_controls(field):
-    config = EndpointReasoningConfig(
-        profile=ReasoningProfileConfig(name="reasoning-text", text_field=field)
-    )
-    validate_reasoning_protocol_compatibility("openai-chat-completions", config)
+    endpoint = ProviderEndpointConfig(model_id="model", reasoning_text_field=field)
     for preset in ("thinking-toggle", "none"):
-        config = config.with_effort_preset(preset)
-        assert config.profile.text_field == field
-    config = config.with_summary_preset("none")
-    assert config.profile.text_field == field
+        endpoint.reasoning = endpoint.reasoning.with_effort_preset(preset)
+        assert endpoint.reasoning_text_field == field
+    endpoint.reasoning = endpoint.reasoning.with_summary_preset("none")
     payload = {}
-    ReasoningPayloadEncoder(config.profile).apply(
+    ReasoningPayloadEncoder(endpoint.reasoning.profile).apply(
         payload, ModelMetadata(provider_id="p", model_id="m")
     )
     assert payload == {}
+    validate_reasoning_protocol_compatibility("openai-chat-completions", endpoint.reasoning, field)
     for protocol in ("openai-responses", "anthropic-messages", "faux"):
-        with pytest.raises(ValueError, match="text_field"):
-            validate_reasoning_protocol_compatibility(protocol, config)
+        with pytest.raises(ValueError, match="reasoning_text_field"):
+            validate_reasoning_protocol_compatibility(protocol, endpoint.reasoning, field)
 
 
-def test_text_field_accepts_only_supported_wire_spellings():
+def test_reasoning_text_field_accepts_only_supported_wire_spellings():
     with pytest.raises(ValueError):
-        ReasoningProfileConfig(name="invalid", text_field="private_field")
+        ProviderEndpointConfig(model_id="model", reasoning_text_field="private_field")
+
+
+def test_history_field_roundtrips_and_runtime_override_can_clear_it(tmp_path):
+    from ouro.config import ProviderConfigManager, ProviderRuntimeOptions
+    from ouro.config.providers.runtime import merge_runtime_options, runtime_options_from_config
+    from ouro.providers.factory import build_runtime_adapter
+
+    manager = ProviderConfigManager(tmp_path)
+    provider = manager.create_provider(
+        display_name="Gateway",
+        provider_type="custom",
+        protocol="openai-chat-completions",
+        base_url="https://example.test",
+    )
+    endpoint = manager.create_endpoint(
+        provider.provider_id, model_id="model", reasoning_text_field="reasoning"
+    )
+    provider = manager.get_provider(provider.provider_id)
+    options = runtime_options_from_config(provider, endpoint_id=endpoint.endpoint_id)
+    assert options.reasoning_text_field == "reasoning"
+    adapter = build_runtime_adapter(options)
+    assert adapter.provider.reasoning_text_field == "reasoning"
+    assert (
+        merge_runtime_options(options, ProviderRuntimeOptions()).reasoning_text_field == "reasoning"
+    )
+    assert (
+        merge_runtime_options(
+            options, ProviderRuntimeOptions(reasoning_text_field=None)
+        ).reasoning_text_field
+        is None
+    )
 
 
 def test_reasoning_profile_requires_every_controllable_variant() -> None:

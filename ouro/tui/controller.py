@@ -1075,6 +1075,7 @@ class TuiController:
             supports_streaming=draft.supports_streaming,
             supports_structured_output=draft.supports_structured_output,
             reasoning=draft.reasoning,
+            reasoning_text_field=draft.reasoning_text_field,
             request_options=draft.request_options,
         )
         endpoint_id = catalog.changed_endpoint_id
@@ -1101,6 +1102,7 @@ class TuiController:
             "supports_video_input": draft.supports_video_input,
             "supports_streaming": draft.supports_streaming,
             "supports_structured_output": draft.supports_structured_output,
+            "reasoning_text_field": draft.reasoning_text_field,
         }
         if draft.reasoning is not None:
             changes["reasoning"] = draft.reasoning

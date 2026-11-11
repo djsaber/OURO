@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ouro.core.base import Metadata, OuroModel
 from ouro.core.errors import UnsupportedConfigVersionError
@@ -59,14 +58,13 @@ _RESERVED_REQUEST_FIELDS = frozenset(
 
 
 class ReasoningProfileConfig(OuroModel):
-    """Native request controls and the protocol field for reasoning text."""
+    """Native controls for this request's reasoning generation."""
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str
     effort: dict[ReasoningEffortVariant, Metadata] = Field(default_factory=dict)
     summary: dict[ReasoningSummary, Metadata] = Field(default_factory=dict)
-    text_field: Literal["reasoning_content", "reasoning"] | None = Field(
-        default=None, exclude_if=lambda value: value is None
-    )
 
     @field_validator("name")
     @classmethod
@@ -120,9 +118,7 @@ class EndpointReasoningConfig(OuroModel):
     def _validate_profile_coverage(self) -> EndpointReasoningConfig:
         capability = self.capability
         if capability.activation == "unsupported" and not capability.supported_summaries:
-            if self.profile is not None and (
-                self.profile.effort or self.profile.summary or self.profile.text_field is None
-            ):
+            if self.profile is not None:
                 raise ValueError("unsupported reasoning cannot define a payload profile")
             return self
         if self.profile is None:
@@ -162,21 +158,18 @@ class EndpointReasoningConfig(OuroModel):
             )
 
     def with_effort_preset(self, name: str) -> EndpointReasoningConfig:
-        """Replace effort controls, preserving summary preferences and text encoding."""
+        """Replace effort controls, preserving summary preferences."""
         result = reasoning_effort_preset(name)
         result.capability.supported_summaries = self.capability.supported_summaries
         result.capability.default.summary = self.capability.default.summary
-        if self.profile is not None and (
-            self.capability.supported_summaries or self.profile.text_field is not None
-        ):
+        if self.profile is not None and self.capability.supported_summaries:
             if result.profile is None:
                 result.profile = ReasoningProfileConfig(name=self.profile.name)
             result.profile.summary = self.profile.summary
-            result.profile.text_field = self.profile.text_field
         return EndpointReasoningConfig.model_validate(result.model_dump())
 
     def with_summary_preset(self, name: str) -> EndpointReasoningConfig:
-        """Replace summary controls, preserving effort, text encoding and compatible defaults."""
+        """Replace summary controls, preserving effort and compatible defaults."""
         preset = reasoning_summary_preset(name)
         result = self.model_copy(deep=True)
         summaries = preset.capability.supported_summaries
@@ -185,11 +178,7 @@ class EndpointReasoningConfig(OuroModel):
             result.profile = preset.profile
         else:
             result.profile.summary = preset.profile.summary if preset.profile else {}
-            if (
-                not result.profile.effort
-                and not result.profile.summary
-                and result.profile.text_field is None
-            ):
+            if not result.profile.effort and not result.profile.summary:
                 result.profile = None
         if not summaries:
             result.capability.default.summary = None
@@ -211,7 +200,6 @@ def mapped_reasoning(
     default: ReasoningRequest | None = None,
     supported_summaries: tuple[ReasoningSummary, ...] = (),
     summary: Mapping[ReasoningSummary, Mapping[str, object]] | None = None,
-    text_field: Literal["reasoning_content", "reasoning"] | None = None,
 ) -> EndpointReasoningConfig:
     """Build a validated profile for templates and custom endpoint config."""
 
@@ -228,7 +216,6 @@ def mapped_reasoning(
             "name": name,
             "effort": {key: dict(value) for key, value in effort.items()},
             "summary": {key: dict(value) for key, value in (summary or {}).items()},
-            "text_field": text_field,
         }
     )
     return EndpointReasoningConfig(capability=capability, profile=profile)
@@ -239,7 +226,6 @@ def openai_chat_completions_effort_reasoning(
     supported_efforts: tuple[ReasoningEffort, ...] = REASONING_EFFORTS,
     default: ReasoningRequest | None = None,
     activation: ReasoningActivation = "toggle",
-    text_field: Literal["reasoning_content", "reasoning"] | None = None,
 ) -> EndpointReasoningConfig:
     default = default or ReasoningRequest(mode="enabled")
     default = default.model_copy(update={"effort": default.effort or "medium"})
@@ -258,7 +244,6 @@ def openai_chat_completions_effort_reasoning(
         supported_efforts=supported_efforts,
         default=default,
         effort=effort_variants,
-        text_field=text_field,
     )
 
 
@@ -315,14 +300,12 @@ def toggle_reasoning(
     enabled: Mapping[str, object],
     disabled: Mapping[str, object],
     default_enabled: bool = True,
-    text_field: Literal["reasoning_content", "reasoning"] | None = None,
 ) -> EndpointReasoningConfig:
     return mapped_reasoning(
         name=name,
         activation="toggle",
         default=ReasoningRequest(mode="enabled" if default_enabled else "disabled"),
         effort={"enabled": enabled, "disabled": disabled},
-        text_field=text_field,
     )
 
 

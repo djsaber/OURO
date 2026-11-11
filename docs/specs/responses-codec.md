@@ -67,9 +67,12 @@ ProviderContinuationArtifact 外层保留 provider_id、protocol=`openai-respons
 }
 ```
 
+成功响应的非空输出序列作为完整重放单元保存，包括普通正文、工具调用、reasoning 及各项携带的元数据。
+附件保留原始项顺序和字段，规范会话独立保存正文、可读思考与工具调用。
+
 scope 由调用者从同次认证快照传入，不含 Token、有效期或 refresh revision。codec 不重新读凭据。没有 continuation 的普通文本不要求账户 scope；生成或重放 opaque 状态必须有非空稳定 scope。
 
-原生重放是请求编码的可选路径。provider/protocol/model 不匹配时，不解释来源 codec 的 blocks，直接编码该消息的 canonical 正文和工具调用。同一路由先校验 envelope 的版本与字段，再比较本次认证 scope；scope 不同同样使用 canonical 消息帧。选择只影响请求投影，不修改持久化附件，也不发送其他路由或账户的 opaque items。
+原生重放是请求编码的可选路径。provider/protocol/model 不匹配时，不解释来源 codec 的 blocks，编码该消息的 canonical 正文、标注的历史推理文字和工具调用。同一路由先校验 envelope 的版本与字段，再比较本次认证 scope；scope 不同同样使用 canonical 消息帧。选择只影响请求投影，不修改持久化附件，也不发送其他路由或账户的 opaque items。
 
 路由与 scope 均兼容时，重新验证完整 item 结构。function_call 的 call_id、name、解析后的 arguments 及次序必须与 canonical tool_calls 一致。损坏的 envelope、未知可执行 item、工具帧矛盾明确失败，不通过退回 canonical 编码掩盖数据错误。
 
@@ -77,7 +80,7 @@ scope 由调用者从同次认证快照传入，不含 Token、有效期或 refr
 
 ## Runtime 与会话边界
 
-Responses 复用既有工具循环、消息存储、恢复入口、分支和压缩管线。成功的模型轮次保存完整 continuation 与 canonical 工具帧；重建 Runtime 后，managed 认证使用稳定 scope 续接，401 刷新不会改变重放内容或重新执行已完成工具。
+Responses 复用既有工具循环、消息存储、恢复入口、分支和压缩管线。成功的模型轮次保存 canonical 会话事实，非空输出同时保存完整 continuation；重建 Runtime 后，managed 认证使用稳定 scope 续接，401 刷新不会改变重放内容或重新执行已完成工具。
 
 协议以 incomplete、failed 或 error 结束的响应不提交成功 continuation 或用量，也不能执行已观察到的工具调用。
 重启后使用 continue_run 恢复已有任务，不追加提示词，不重复执行已完成工具。当前 Session 模型在通用请求边界绑定；跨模型、协议或账户继续使用 canonical 完整帧，兼容原生附件可随对应消息重放。后续成功响应才能触发新的工具执行和用量记录。

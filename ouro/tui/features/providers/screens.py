@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import Literal, cast
 
 from ouro.application.contracts.configuration import (
     ProviderEndpointView,
@@ -412,6 +413,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
                 else ""
             ),
             "endpoint-reasoning-config": _reasoning_text(reasoning),
+            "endpoint-reasoning-field": existing.reasoning_text_field or "" if existing else "",
             "endpoint-request-options": request_options,
         }
         self._capabilities = {
@@ -617,9 +619,13 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
         )
         reasoning = _reasoning_config(self._values["endpoint-reasoning-config"])
         try:
+            field = self._values["endpoint-reasoning-field"] or None
+            if field not in (None, "reasoning_content", "reasoning"):
+                raise ValueError("History reasoning field must be reasoning_content or reasoning")
             validate_reasoning_protocol_compatibility(
                 self._provider.protocol,
                 reasoning,
+                field,
             )
             reasoning.validate_request_options(
                 {**self._provider.provider_options, **request_options}
@@ -643,6 +649,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             supports_video_input=self._capabilities["endpoint-video-input"],
             supports_streaming=self._capabilities["endpoint-streaming"],
             supports_structured_output=self._capabilities["endpoint-structured-output"],
+            reasoning_text_field=cast(Literal["reasoning_content", "reasoning"] | None, field),
             reasoning=(
                 None
                 if self._existing is not None and reasoning == self._existing.reasoning
@@ -763,6 +770,20 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
                 group="ADVANCED",
                 edit_value=self._values["endpoint-reasoning-config"],
                 edit_placeholder="Enter a reasoning JSON object",
+            ),
+            *(
+                (
+                    Choice(
+                        "endpoint-reasoning-field",
+                        "History reasoning field",
+                        trailing=self._values["endpoint-reasoning-field"] or "Historical notes",
+                        group="ADVANCED",
+                        edit_value=self._values["endpoint-reasoning-field"],
+                        edit_placeholder="reasoning_content, reasoning, or empty",
+                    ),
+                )
+                if self._provider.protocol == "openai-chat-completions"
+                else ()
             ),
             Choice(
                 "endpoint-request-options",

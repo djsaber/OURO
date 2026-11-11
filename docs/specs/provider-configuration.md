@@ -205,15 +205,14 @@ HTTP 合并、认证所有权和传输约束见[模型请求认证规格](reques
 
 ## 思考契约
 
-思考配置声明请求控制项、原生参数映射和思考文本的协议字段，不保证远端接受参数或返回思考内容。响应解析、原生状态续接与客户端展示
+思考生成配置声明请求控制项与原生参数映射，不保证远端接受参数或返回思考内容。响应解析、原生状态续接与客户端展示
 分别由协议适配器和 Host 负责，不由请求能力配置决定。运行时不按供应商名称或模型 ID 猜测、改写或降级思考设置。
 
 1. `ReasoningRequest` 表达本次调用的意图：`mode` 为 default、enabled 或 disabled；`effort` 为可选强度；
    `summary` 为独立的服务端摘要请求偏好。
 2. `ReasoningCapability` 声明 Endpoint 的请求控制：`activation`、`supported_efforts`、`supported_summaries`，
    以及集中保存 mode、effort、summary 偏好的 `default`。unsupported 表示没有启停或等级控制，不表示远端没有思考输出。
-3. `ReasoningProfileConfig` 的 `effort` 和 `summary` 两张表将选项映射到静态原生请求片段；
-   可选 `text_field` 声明 Chat Completions 思考文本的协议字段名。
+3. `ReasoningProfileConfig` 的 `effort` 和 `summary` 两张表将生成选项映射到静态原生请求片段。
 4. `ReasoningResolution` 解析有效意图，`ReasoningPayloadEncoder` 按 `effort_variant` 和 summary 组合请求片段。
 
 ### 请求解析与编码
@@ -239,11 +238,13 @@ HTTP 合并、认证所有权和传输约束见[模型请求认证规格](reques
 Profile 禁止覆盖 model、messages、tools、token limit、stream、system 等 core 请求字段。`request_options`
 与 profile 拥有的顶层字段冲突时配置失败。字段归属由两张映射表共同推导，不按选项名称猜测路径。
 
-`profile.text_field` 取 `reasoning_content`、`reasoning` 或 null，仅用于 Chat Completions。
-声明字段时，assistant 历史中非空的规范思考文本按该字段编码；空思考不发送字段。
-该声明独立于本次思考的启停、等级和摘要偏好，允许单独配置文本字段而不声明生成控制。
-null 表示不发送规范思考扩展；来源匹配的原生响应仍可按协议回传。
-字段名来自端点的显式协议声明，不由供应商品牌、URL、模型名称或历史来源推断。
+Endpoint 的 `reasoning_text_field` 取 `reasoning_content`、`reasoning` 或 null，仅用于 Chat Completions。
+它与 `reasoning` 并列，声明目标端点接收历史思考文字的字段，与本轮生成的启停、等级和摘要独立。
+没有可用原生续接时，非空规范思考按该字段发送；null 使用带 `[Assistant reasoning]` 和
+`[End assistant reasoning]` 标记的历史推理文字，置于对应 assistant 正文之前。空思考不添加字段或标记。
+响应字段名不决定下一次请求字段名，纯文本不需要来源匹配；字段名只来自目标端点声明。
+CLI `provider endpoint add/update --reasoning-text-field reasoning_content|reasoning|none` 和
+TUI 的 History reasoning field 编辑这一声明。none 或空值使用历史推理文字。
 
 ### 通用预设与端点声明
 
@@ -276,7 +277,7 @@ reasoning_content 等兼容生态字段不能视为 OpenAI 官方规范。Messag
 
 CLI `--reasoning-preset` 和 TUI Effort 使用同一目录；Summary 使用独立摘要目录，与协议不兼容的标准预设不可选。
 `--reasoning-config` / Settings (JSON) 编辑同一份 capability/profile，可指定子集、默认偏好和原生片段。
-`with_effort_preset` 保留摘要控制与偏好；`with_summary_preset` 保留启停、等级与偏好；两者均保留思考文本字段声明。
+`with_effort_preset` 保留摘要控制与偏好；`with_summary_preset` 保留启停、等级与偏好。历史思考的字段声明属于 Endpoint，不参与生成预设组合。
 选择摘要预设时保留仍兼容的默认摘要，否则采用预设首项；选择 none 清除摘要偏好。
 
 会话、任务、运行和压缩使用统一意图。Host 按声明列出控制项，修改强度或摘要时保留另一项；模型切换使用新端点声明重新解析意图。
@@ -291,7 +292,16 @@ Chat Completions 支持 reasoning_content、reasoning 与 reasoning_details 扩�
 可读思考作为 `reasoning_content` 进入规范会话、模型消息和请求快照，不因更换端点而丢弃。
 服务返回的思考摘要仍是已有文本，不代表未返回的完整内部思考，也不能用于生成签名、密文或原生 block。
 `ProviderContinuationArtifact` 携带 provider_id、protocol、model_id，仅在来源匹配时回传，并遵守协议的认证绑定与结构校验。
-普通回答和工具调用均保留实际返回的原生状态。更改请求等级或摘要选项不会丢弃已有状态。
+普通正文、可读思考、工具调用与结果由规范会话拥有。原生附件由协议适配器维护，作为来源兼容时的重放数据，
+不承担展示、压缩或跨端点会话事实的职责。Responses 保存完整输出项序列，Messages 保存完整 assistant content 序列；
+序列中的文字与工具调用可以和规范会话重复保存，但请求中只使用一种表示。更改生成选项不改变已有事实。
+
+每次请求先选择上下文，再由目标协议编码。可用的原生续接按协议结构回传，不重复附加可读思考。
+没有可用原生续接时，Chat Completions 使用端点声明的文字字段或历史推理标记；Responses 和 Messages
+使用同样的历史推理标记。标记中的内容是先前助手的推理记录，不作为用户指令、确认结论或已执行动作。
+切换模型、协议或 Responses 认证作用域不会删除会话思考，也不会将其伪造成目标协议的原生思考。
+上下文预算覆盖原生附件与可读表达中较大的一份；估算结果按消息引用复用，内置估算器版本标记为 `3`。
+压缩请求使用规范历史和可读思考，不包含原生密文或签名；压缩覆盖的历史不再逐条进入普通请求。
 
 TUI 只对已有正文提供思考区域与展开、折叠偏好。服务端摘要选项控制请求，客户端展示偏好控制投影；两者均不改变已保存的
 原生续接数据。缺失思考正文不是协议错误，也不能作为远端未执行思考的证据。
@@ -451,9 +461,10 @@ OpenAI Chat Completions 实现负责：
 - usage、tool call、reasoning 和错误响应解码；`reasoning_content`、`reasoning` 与 `reasoning_details` 是兼容服务的扩展，
   不是 OpenAI Chat Completions 的标准字段。展示文本依次读取这些字段，采用首个非空文本，避免同一响应片段重复展示。
   `reasoning_details` 为对象数组，可读部分取 text 或 reasoning.summary 的 summary；签名与密文不进入展示正文。
-  原字段名与原生结构独立保存；流式字符串按顺序连接，block 数组按顺序追加，
-  同一字段的形态不能在流中改变。普通思考文本按 text_field 编码，未声明时使用兼容的原生字段；
-  结构化原生块保持字段、形态与顺序，不从可读文本重建签名或密文；
+  普通字符串与仅含文字的数组归入规范思考，不保存响应字段名作为续接状态。
+  含签名、密文或其他非文字信息的数组保存完整原生字段与块顺序，不逐字段推断是否必须回传；
+  流式块在终态统一判断，允许签名晚于文字到达。
+  来源匹配时使用这些原生块；其他情况统一编码规范思考，不从文字重建签名或密文；
 - 外部流缺失 tool index 时按块位置处理；
 - 不符合 Endpoint 能力、媒体格式或消息角色的直接输入明确报错；工具结果按能力提供原生内容或明确降级说明。
 

@@ -149,8 +149,8 @@ _PROVIDER_TYPE_SPECS: dict[ProviderType, ProviderTypeSpec] = {
         ProviderConnectionSpec(
             "openai-responses",
             notice=(
-                "Persisted Responses state cannot be replayed after restarting this API Key "
-                "client; start a new conversation."
+                "Native Responses state is bound to this API Key client instance. "
+                "Rebuilt clients continue from saved conversation history."
             ),
         ),
         alternative_connections=(_OPENAI_CHAT_COMPLETIONS_STATIC,),
@@ -372,18 +372,15 @@ def validate_request_options(
 def validate_reasoning_protocol_compatibility(
     protocol: ProviderProtocol,
     reasoning: EndpointReasoningConfig,
+    reasoning_text_field: str | None = None,
 ) -> None:
     """Reject request controls a wire adapter cannot encode."""
 
     capability = reasoning.capability
     if is_plugin_protocol(protocol):
         return
-    if (
-        protocol != "openai-chat-completions"
-        and reasoning.profile is not None
-        and reasoning.profile.text_field is not None
-    ):
-        raise ValueError("reasoning text_field requires the Chat Completions protocol")
+    if protocol != "openai-chat-completions" and reasoning_text_field is not None:
+        raise ValueError("reasoning_text_field requires the Chat Completions protocol")
     if protocol == "faux" and (
         capability.activation != "unsupported" or capability.supported_summaries
     ):
@@ -554,7 +551,9 @@ class ProviderConfig(OuroModel):
                 supports_audio_input=endpoint.supports_audio_input,
                 supports_video_input=endpoint.supports_video_input,
             )
-            validate_reasoning_protocol_compatibility(self.protocol, endpoint.reasoning)
+            validate_reasoning_protocol_compatibility(
+                self.protocol, endpoint.reasoning, endpoint.reasoning_text_field
+            )
             request_options = {**self.extra, **endpoint.request_options}
             validate_request_options(
                 self.protocol,
@@ -639,6 +638,7 @@ class ProviderRuntimeOptions(OuroModel):
     supports_streaming: bool | None = None
     supports_structured_output: bool | None = None
     reasoning: EndpointReasoningConfig | None = None
+    reasoning_text_field: Literal["reasoning_content", "reasoning"] | None = None
     reasoning_request: ReasoningRequest | None = None
     retry_policy: ProviderRetryPolicy | None = None
     headers: dict[str, ProviderHeaderValue] | None = Field(default=None, repr=False)

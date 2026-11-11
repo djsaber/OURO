@@ -31,9 +31,13 @@ def sse(items):
     )
 
 
-async def test_formal_adapter_replays_encrypted_reasoning_across_refresh_and_two_tools():
+@pytest.mark.parametrize("encrypted_reasoning", [True, False])
+async def test_formal_adapter_continues_across_refresh_and_two_tools(encrypted_reasoning):
     requests = []
     refreshed = False
+    first_output = (
+        [reasoning(), message("OURO_OK")] if encrypted_reasoning else [message("OURO_OK")]
+    )
 
     def handler(request):
         payload = json.loads(request.content)
@@ -48,9 +52,13 @@ async def test_formal_adapter_replays_encrypted_reasoning_across_refresh_and_two
         assert "previous_response_id" not in payload
         if number == 1:
             assert not refreshed
-            return sse([reasoning(), message("OURO_OK")])
+            return sse(first_output)
         assert refreshed
-        assert payload["input"][1:3] == [reasoning(), message("OURO_OK")]
+        assert payload["input"][1 : 1 + len(first_output)] == first_output
+        tool_calls = [i for i in payload["input"] if i.get("type") == "function_call"]
+        assert [(i["call_id"], i["name"], json.loads(i["arguments"])) for i in tool_calls] == [
+            (f"call-{index}", "ouro_probe_echo", {"round": index}) for index in range(1, number - 1)
+        ]
         if number in (2, 3):
             assert payload["tools"][0]["strict"] is False
             return sse([call(number - 1, name="ouro_probe_echo")])
@@ -82,7 +90,13 @@ async def test_formal_adapter_replays_encrypted_reasoning_across_refresh_and_two
         assert client.event_hooks["response"] == []
     assert len(requests) == 4 and all(o["validated"] for o in observations)
     assert observations[-1]["scope_stable_after_refresh"] is True
-    assert observations[-1]["encrypted_reasoning_replayed"] is True
+    assert observations[-1]["encrypted_reasoning_replayed"] is encrypted_reasoning
+    assert [o["item_types"] for o in observations] == [
+        [item["type"] for item in first_output],
+        ["function_call"],
+        ["function_call"],
+        ["message"],
+    ]
     assert observations[0]["usage"]["input_tokens"] == 20
     assert "secret" not in json.dumps(observations)
     assert "opaque-ciphertext" not in json.dumps(observations)

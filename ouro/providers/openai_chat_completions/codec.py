@@ -96,30 +96,35 @@ def _message_to_chat_completions(
     else:
         wire_role = role
 
+    native: dict[str, Any] = {}
+    continuation = message.provider_continuation
+    if (
+        wire_role == "assistant"
+        and continuation is not None
+        and continuation.matches(
+            provider_id=provider_id,
+            protocol="openai-chat-completions",
+            model_id=model_id,
+        )
+    ):
+        for block in continuation.blocks:
+            native.update(reasoning_fields_from_response(block))
     converted: dict[str, Any] = {
         "role": wire_role,
         "content": _message_content_to_chat_completions(message, modalities=modalities),
     }
     if wire_role == "assistant":
-        if reasoning_text_field is not None and message.reasoning_content:
+        if native:
+            converted.update(native)
+        elif reasoning_text_field is not None and message.reasoning_content:
             converted[reasoning_text_field] = message.reasoning_content
+        elif message.reasoning_content:
+            converted["content"] = message.reasoning_context_text + converted["content"]
         if message.tool_calls:
             converted["tool_calls"] = [
                 _tool_call_message_to_chat_completions(item.model_dump(mode="json"))
                 for item in message.tool_calls
             ]
-        continuation = message.provider_continuation
-        if continuation is not None and continuation.matches(
-            provider_id=provider_id,
-            protocol="openai-chat-completions",
-            model_id=model_id,
-        ):
-            for block in continuation.blocks:
-                # The target's field spelling owns plain text; structured
-                # native blocks retain their shape, signatures and order.
-                for field, value in reasoning_fields_from_response(block).items():
-                    if reasoning_text_field is None or not isinstance(value, str):
-                        converted[field] = value
     if wire_role == "tool":
         if message.tool_result is None:
             raise ValueError("tool_result message is missing its tool result reference")
@@ -250,8 +255,8 @@ def _content_to_text(content: object) -> str:
 _REASONING_FIELDS = ("reasoning_content", "reasoning", "reasoning_details")
 
 
-def reasoning_fields_from_response(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Keep supported extension fields in their native shape, separately from display text."""
+def reasoning_fields_from_response(payload: Mapping[str, Any]) -> dict[str, list[Any]]:
+    """Copy native arrays once at the response boundary; strings remain canonical text."""
     details = payload.get("reasoning_details")
     if details is not None and (
         not isinstance(details, list) or any(not isinstance(item, Mapping) for item in details)
@@ -260,8 +265,31 @@ def reasoning_fields_from_response(payload: Mapping[str, Any]) -> dict[str, Any]
     return {
         field: deepcopy(value)
         for field in _REASONING_FIELDS
-        if isinstance(value := payload.get(field), str | list) and value
+        if isinstance(value := payload.get(field), list) and value
     }
+
+
+def reasoning_continuation(fields: dict[str, list[Any]]) -> dict[str, list[Any]]:
+    """Select owned arrays carrying more than plain text, without another copy.
+
+    Stream fragments remain together until completion: signatures may arrive
+    after their text. Other metadata is preserved without inferring its purpose.
+    """
+    return {
+        field: value
+        for field, value in fields.items()
+        if any(_has_reasoning_metadata(block) for block in value)
+    }
+
+
+def _has_reasoning_metadata(block: object) -> bool:
+    if not isinstance(block, Mapping):
+        return False
+    return block.get("type") not in (None, "text", "reasoning.text", "reasoning.summary") or any(
+        value is not None and value != ""
+        for key, value in block.items()
+        if key not in {"type", "text", "summary", "index"}
+    )
 
 
 def reasoning_text_from_response(payload: Mapping[str, Any]) -> str:

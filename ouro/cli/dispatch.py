@@ -609,6 +609,10 @@ def _provider_endpoint_command(
             changes["reasoning"] = reasoning
         if hasattr(args, "max_output_tokens"):
             changes["max_output_tokens"] = args.max_output_tokens
+        if hasattr(args, "reasoning_text_field"):
+            changes["reasoning_text_field"] = (
+                None if args.reasoning_text_field == "none" else args.reasoning_text_field
+            )
         if args.endpoint_command == "add":
             return create_provider_endpoint(
                 args.provider_id,

@@ -208,10 +208,12 @@ def responses_input(
                 raise OpenAIResponsesError("duplicate_tool_call")
             items.extend(replay)
         else:
-            if message.content or not message.tool_calls:
-                content: str | list[dict[str, Any]] = message.text_content
-                if has_image:
-                    content = _input_content(message)
+            if message.content or message.reasoning_content or not message.tool_calls:
+                content: str | list[dict[str, Any]] = (
+                    _input_content(message)
+                    if has_image
+                    else message.reasoning_context_text + message.text_content
+                )
                 items.append({"role": message.role, "content": content})
             for call in message.tool_calls:
                 items.append(

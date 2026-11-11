@@ -819,10 +819,14 @@ class ProviderConfigManager:
         supports_streaming: bool | None = None,
         supports_structured_output: bool | None = None,
         reasoning: EndpointReasoningConfig | None = None,
+        reasoning_text_field: Literal["reasoning_content", "reasoning"] | None = None,
         request_options: Mapping[str, Any] | None = None,
         make_default: bool = False,
     ) -> ProviderEndpointConfig:
-        changes: EndpointChanges = {"model_id": model_id}
+        changes: EndpointChanges = {
+            "model_id": model_id,
+            "reasoning_text_field": reasoning_text_field,
+        }
         if display_name is not None:
             changes["display_name"] = display_name
         if base_url is not None:

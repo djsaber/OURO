@@ -47,6 +47,7 @@ def runtime_options_from_config(
         supports_streaming=endpoint.supports_streaming,
         supports_structured_output=endpoint.supports_structured_output,
         reasoning=endpoint.reasoning,
+        reasoning_text_field=endpoint.reasoning_text_field,
         retry_policy=provider.retry_policy,
         headers=dict(provider.headers),
         extra={**provider.extra, **endpoint.request_options},
@@ -126,6 +127,11 @@ def merge_runtime_options(
             else base.supports_structured_output
         ),
         reasoning=override.reasoning if override.reasoning is not None else base.reasoning,
+        reasoning_text_field=(
+            override.reasoning_text_field
+            if "reasoning_text_field" in override.model_fields_set
+            else base.reasoning_text_field
+        ),
         reasoning_request=(
             override.reasoning_request
             if override.reasoning_request is not None

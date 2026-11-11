@@ -644,6 +644,7 @@ async def test_anthropic_stream_preserves_signed_thinking_for_same_route_only() 
     provider.transport = replay_transport
     matching = MessageRecord.text(session_id="ses_1", role="assistant", text="checking").model_copy(
         update={
+            "reasoning_content": "check",
             "provider_continuation": continuation,
             "tool_calls": [
                 ToolCallRequest(id="call_1", name="Read", arguments={"path": "README.md"})
@@ -669,7 +670,11 @@ async def test_anthropic_stream_preserves_signed_thinking_for_same_route_only() 
     matching_content = replay_transport.requests[0]["payload"]["messages"][0]["content"]
     mismatched_content = replay_transport.requests[1]["payload"]["messages"][0]["content"]
     assert matching_content == native_content
-    assert all(block.get("type") != "thinking" for block in mismatched_content)
+    assert mismatched_content == [
+        {"type": "text", "text": "[Assistant reasoning]\ncheck\n[End assistant reasoning]\n\n"},
+        native_content[1],
+        native_content[3],
+    ]
     assert transport.requests[0]["payload"]["stream"] is True
 
 

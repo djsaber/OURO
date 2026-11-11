@@ -552,6 +552,7 @@ def create_provider_endpoint(
     supports_streaming: bool | None = None,
     supports_structured_output: bool | None = None,
     reasoning: EndpointReasoningConfig | None = None,
+    reasoning_text_field: Literal["reasoning_content", "reasoning"] | None = None,
     request_options: Mapping[str, Any] | None = None,
     make_default: bool = False,
     json_mode: bool = False,
@@ -573,6 +574,7 @@ def create_provider_endpoint(
             supports_streaming=supports_streaming,
             supports_structured_output=supports_structured_output,
             reasoning=reasoning,
+            reasoning_text_field=reasoning_text_field,
             request_options=request_options,
             make_default=make_default,
         )

@@ -15,13 +15,16 @@ from dev.probes.codex_responses import RESPONSES_URL
 from ouro.auth.contracts import AuthError, CredentialGrant, CredentialRecord
 from ouro.auth.drivers.openai_codex import OpenAICodexDriver
 from ouro.auth.request_auth import RequestAuthSnapshot
+from ouro.core.adapter import RuntimeAdapter
+from ouro.core.cancellation import AbortSignal
+from ouro.core.context import ContextView, ProviderContext
 from ouro.core.messages import ModelMessage, ToolResultReference
+from ouro.core.model_execution import ModelExecutionEvent, execute_model_request
 from ouro.core.provider import ModelMetadata, ProviderRetryPolicy
-from ouro.core.tools import ToolCallRequest
+from ouro.core.request_context import ProviderRequestContext
 from ouro.providers.authentication import ProviderRequestPolicy
 from ouro.providers.http_transport import HttpxProviderHTTPTransport, ProviderTransportError
 from ouro.providers.openai_responses.adapter import OpenAIResponsesProvider
-from ouro.providers.openai_responses.codec import tool_arguments
 
 CODEX_REQUEST_POLICY = ProviderRequestPolicy(
     billing_mode="subscription",
@@ -187,7 +190,7 @@ async def _request(
         "canonical_event_counts": counts,
     }
     observations.append(report)
-    tools = None
+    tools = []
     provider.request_options = {}
     if tool_round is not None:
         tools = [
@@ -206,51 +209,41 @@ async def _request(
             "tool_choice": {"type": "function", "name": "ouro_probe_echo"},
             "parallel_tool_calls": False,
         }
-    text = ""
-    artifact = None
-    done = False
-    async with aclosing(
-        provider.stream(
-            model=model,
-            system_prompt="Follow the user's verification instructions precisely.",
-            messages=history,
-            tools=tools,
-        )
-    ) as events:
-        async for event in events:
-            counts[event.type] = counts.get(event.type, 0) + 1
-            if event.type == "error":
-                report["request_error"] = dict(transport.request_error)
-                raise ProbeError(
-                    event.error_code or "adapter_request_failed", status=transport.status
-                )
-            if event.type == "text_delta":
-                text += event.text or ""
-            elif event.type == "continuation":
-                artifact = event.continuation
-            elif event.type == "done":
-                done = True
-                if event.usage is None:
-                    raise ProbeError("missing_usage")
-                report["usage"] = event.usage.model_dump(exclude_none=True)
-    if not done or artifact is None:
-        raise ProbeError("missing_continuation")
-    items = artifact.blocks[0]["items"]
+
+    async def observe(output: ModelExecutionEvent) -> None:
+        kind = output.event.type
+        counts[kind] = counts.get(kind, 0) + 1
+
+    response = await execute_model_request(
+        RuntimeAdapter(provider, model),
+        ContextView(
+            provider_context=ProviderContext(
+                system_prompt="Follow the user's verification instructions precisely.",
+                messages=history,
+                tools=tools,
+            )
+        ),
+        request_context=ProviderRequestContext(),
+        signal=AbortSignal(),
+        on_event=observe,
+    )
+    if response.error is not None:
+        report["request_error"] = dict(transport.request_error)
+        raise ProbeError(response.error_code or "adapter_request_failed", status=transport.status)
+    if response.usage is None:
+        raise ProbeError("missing_usage")
+    report["usage"] = response.usage.model_dump(exclude_none=True)
+    artifact = response.continuation
+    items = artifact.blocks[0]["items"] if artifact is not None else []
     report.update(
-        text_characters=len(text),
+        text_characters=len(response.text),
         encrypted_reasoning=any(
             item.get("type") == "reasoning" and bool(item.get("encrypted_content"))
             for item in items
         ),
         item_types=[item["type"] for item in items],
     )
-    calls = [
-        ToolCallRequest(
-            id=item["call_id"], name=item["name"], arguments=tool_arguments(item["arguments"])
-        )
-        for item in items
-        if item["type"] == "function_call"
-    ]
+    calls = response.tool_calls
     if tool_round is not None:
         if len(calls) != 1 or calls[0].name != "ouro_probe_echo":
             raise ProbeError("unexpected_tool_identity")
@@ -261,11 +254,15 @@ async def _request(
             raise ProbeError("unexpected_tool_arguments")
     else:
         marker = "OURO_OK" if scenario == "adapter_text" else "OURO_TOOLS_OK"
-        if calls or re.search(r"(?<!\w)" + marker + r"(?!\w)", text) is None:
+        if calls or re.search(r"(?<!\w)" + marker + r"(?!\w)", response.text) is None:
             raise ProbeError("unexpected_text_result")
     report["validated"] = True
-    return ModelMessage.text(role="assistant", text=text).model_copy(
-        update={"tool_calls": calls, "provider_continuation": artifact}
+    return ModelMessage.text(role="assistant", text=response.text).model_copy(
+        update={
+            "reasoning_content": response.reasoning,
+            "tool_calls": list(calls),
+            "provider_continuation": artifact,
+        }
     )
 
 

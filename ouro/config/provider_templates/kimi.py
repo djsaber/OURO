@@ -13,7 +13,6 @@ _KIMI_K3_REASONING = openai_chat_completions_effort_reasoning(
     activation="always_on",
     supported_efforts=("low", "high", "max"),
     default=ReasoningRequest(mode="enabled", effort="max"),
-    text_field="reasoning_content",
 )
 
 
@@ -40,6 +39,7 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 supports_streaming=True,
                 supports_structured_output=True,
                 reasoning=_KIMI_K3_REASONING,
+                reasoning_text_field="reasoning_content",
             )
             for model_id, display_name in (
                 ("kimi-k3.1-pro", "Kimi K3.1 Pro"),
@@ -49,6 +49,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         ),
         documentation_url="https://platform.kimi.ai/docs/models",
         verified_on=_VERIFIED_ON,
-        revision=10,
+        revision=11,
     ),
 )

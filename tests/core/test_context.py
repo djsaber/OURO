@@ -451,3 +451,19 @@ def test_message_token_estimate_includes_provider_continuation() -> None:
     )
 
     assert estimate_message_tokens(with_continuation) > estimate_message_tokens(plain) + 200
+
+
+def test_reasoning_budget_covers_portable_text_when_native_state_is_smaller() -> None:
+    message = MessageRecord(
+        session_id="session",
+        role="assistant",
+        reasoning_content="A long visible analysis. " * 1000,
+        provider_continuation=ProviderContinuationArtifact(
+            provider_id="source",
+            protocol="openai-responses",
+            model_id="model",
+            blocks=({"encrypted_content": "opaque"},),
+        ),
+    )
+    portable = message.model_copy(update={"provider_continuation": None})
+    assert estimate_message_tokens(message) >= estimate_message_tokens(portable)

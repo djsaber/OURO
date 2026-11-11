@@ -121,7 +121,8 @@ def test_default_reuse_distinguishes_projected_message_members(removed):
     assert projected.metrics.estimated_input_tokens < full.metrics.estimated_input_tokens
 
 
-def test_reasoning_uses_reference_estimates_without_remeasuring_retained_text(monkeypatch):
+@pytest.mark.parametrize("native", [False, True])
+def test_reasoning_uses_reference_estimates_without_remeasuring_retained_text(monkeypatch, native):
     measured = []
     estimate = contexts._estimate_visible_message_tokens
 
@@ -132,7 +133,17 @@ def test_reasoning_uses_reference_estimates_without_remeasuring_retained_text(mo
     monkeypatch.setattr(contexts, "_estimate_visible_message_tokens", count)
     builder = contexts.ContextBuilder()
     source = MessageRecord(
-        session_id="session", role="assistant", reasoning_content="thought " * 4096
+        session_id="session",
+        role="assistant",
+        reasoning_content="thought " * 4096,
+        provider_continuation=ProviderContinuationArtifact(
+            provider_id="provider",
+            protocol="protocol",
+            model_id="model",
+            blocks=({"opaque": "native data " * 4096},),
+        )
+        if native
+        else None,
     )
     first = build(builder, [source])
     second = build(builder, [source])

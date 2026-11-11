@@ -457,7 +457,10 @@ async def test_model_switch_after_failure_preserves_completed_tool_frames(
         saved = app.runtime.store.load_session(session_id).messages
         source_message = next(m for m in saved if m.tool_calls)
         event_cursor = len(recorded_events(session_id))
-        assert source_message.provider_continuation.protocol == source_protocol
+        if source_protocol == "openai-chat-completions":
+            assert source_message.provider_continuation is None
+        else:
+            assert source_message.provider_continuation.protocol == source_protocol
         app.runtime.switch_session_model(session_id, target.key)
 
     async with build() as app:
@@ -477,7 +480,8 @@ async def test_model_switch_after_failure_preserves_completed_tool_frames(
         first_target = requests[2][0]
         assert first_target["model"] == "summary"
         assert not output_items(first_target)
-        assert "source-private-reasoning" not in json.dumps(first_target)
+        assert source_message.reasoning_content in json.dumps(first_target)
+        assert "[Assistant reasoning]" in json.dumps(first_target)
         assert "opaque-ciphertext" not in json.dumps(first_target)
         assert [
             i["call_id"] for i in first_target["input"] if i.get("type") == "function_call"

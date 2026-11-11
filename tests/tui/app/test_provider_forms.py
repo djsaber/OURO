@@ -28,6 +28,31 @@ from tests.tui.helpers import wait_for_screen as _wait_for_screen
 from tests.tui.helpers import wait_until as _wait_until
 
 
+def test_endpoint_history_field_is_independent_of_generation_editor(tmp_path):
+    configuration = ConfigurationFacade(tmp_path)
+    provider_id = configuration.add_provider(
+        display_name="Gateway",
+        provider_type="custom",
+        protocol="openai-chat-completions",
+        base_url="https://example.test",
+    ).changed_provider_id
+    endpoint_id = configuration.add_endpoint(
+        provider_id, model="model", reasoning_text_field="reasoning"
+    ).changed_endpoint_id
+    screen = EndpointConfigurationScreen(
+        configuration.provider(provider_id), configuration.endpoint(provider_id, endpoint_id)
+    )
+    screen._values["endpoint-reasoning-config"] = reasoning_effort_preset(
+        "thinking-toggle"
+    ).model_dump_json()
+    assert screen._draft().reasoning_text_field == "reasoning"
+    screen._values["endpoint-reasoning-field"] = ""
+    assert screen._draft().reasoning_text_field is None
+    screen._values["endpoint-reasoning-field"] = "unknown"
+    with pytest.raises(ValueError, match="History reasoning field"):
+        screen._draft()
+
+
 @pytest.mark.asyncio
 async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_draft(
     tmp_path: Path,
@@ -63,6 +88,7 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
             "BASIC",
             "BASIC",
             "BASIC",
+            "ADVANCED",
             "ADVANCED",
             "ADVANCED",
             "ADVANCED",

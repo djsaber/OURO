@@ -70,8 +70,9 @@ uv run --frozen python -m dev.probes.openai_codex --live --method browser --mode
 
 `--adapter` 仍是内存实验，不注册产品、不读取或保存凭据文件。认证头由正式 OpenAI driver 编码；
 探针通过通用 RequestAuthenticator 注入快照，最终目标固定为订阅 Responses 地址，不增加任何生产品牌分支。
-此模式先用登录材料取得文本与完整 continuation，再显式刷新一次，随后通过同一个 adapter 重放首轮
-完整内容，执行两轮固定 echo 工具及最终文本确认。四个请求均使用正式 codec、SSE 解码、scope 检查与关闭路径。
+此模式先用登录材料取得文本及响应包含的原生续接附件，再显式刷新一次，随后通过同一个 adapter 续接首轮会话，
+执行两轮固定 echo 工具及最终文本确认。文本、可读思考和工具调用由运行时的规范事件组装逻辑提供。
+有原生续接附件时，适配器按兼容性规则回传。四个请求均使用正式 codec、SSE 解码、scope 检查与关闭路径。
 
 `--max-output-tokens` 仅用于 `--adapter`，省略时沿用 8192；正整数值按正式 ModelMetadata 校验。
 此 Codex 集成接受没有请求级输出硬上限的限制：通过注入的服务策略声明 supports_output_limit=false，
@@ -91,9 +92,9 @@ HTTP 400/422 的场景还包含 request_error：只提取白名单内的 paramet
 
 摘要中 request_path=production_adapter 标识实际路径，max_output_tokens 记录本地输出预算，
 output_limit_enforced=false 表示该服务请求没有设置输出硬上限。
-responses 使用 canonical_event_counts（正式 adapter 事件计数），并记录实际 canonical usage、项目类型、
+responses 使用 canonical_event_counts（规范事件计数），并记录实际 canonical usage、原生附件的项目类型（无附件时为空）、
 文本字符数与验证结果；不会输出文本、完整 items、工具参数、账户 scope 或 Token。
-全部通过后，最后场景的 scope_stable_after_refresh=true 表示前后认证 scope 一致且重放通过。
+全部通过后，最后场景的 scope_stable_after_refresh=true 表示前后认证 scope 一致且会话续接通过。
 encrypted_reasoning_replayed 仅在首轮确实返回加密 reasoning 并跨刷新重放成功时为 true；false 不代表该能力已验收。
 
 真实浏览器登录须由用户完成；离线测试只证明程序编排和边界行为。验证范围限定于明确的账户、模型、

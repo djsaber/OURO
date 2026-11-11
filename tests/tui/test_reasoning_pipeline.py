@@ -63,6 +63,7 @@ async def test_max_effort_response_reaches_persisted_conversation_history(
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
         provider = OpenAIChatCompletionsProvider(
             base_url="https://example.test",
+            reasoning_text_field="reasoning_content",
             provider_id="test",
             transport=HttpxProviderHTTPTransport(client=client),
             reasoning_encoder=ReasoningPayloadEncoder(reasoning.profile),
@@ -90,7 +91,9 @@ async def test_max_effort_response_reaches_persisted_conversation_history(
             snapshot = store.load_session(result.session.session_id)
             assistant = snapshot.messages[-1]
             assert assistant.reasoning_content == "Checking the evidence."
-            assert assistant.provider_continuation is not None
+            assert (assistant.provider_continuation is not None) == (
+                reasoning_field == "reasoning_details"
+            )
             header = runtime.observation_snapshot(snapshot.session.session_id).current_request
             assert header is not None
             assert header.response_message_id == assistant.message_id

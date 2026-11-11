@@ -14,19 +14,19 @@ from ouro.config.provider_templates import get_provider_template
 from ouro.core.errors import ConfigError
 
 
-def test_template_update_applies_text_field_and_keeps_unconfigured_profiles_compact(tmp_path):
+def test_template_update_applies_history_field_and_omits_unconfigured_field(tmp_path):
     endpoint = _endpoint("primary")
     endpoint.reasoning = reasoning_effort_preset("thinking-toggle")
-    assert "text_field" not in endpoint.model_dump()["reasoning"]["profile"]
+    assert "reasoning_text_field" not in endpoint.model_dump()
     original = _template(1, endpoint)
     latest = original.model_copy(deep=True, update={"revision": 2})
-    latest.endpoints[0].reasoning.profile.text_field = "reasoning_content"
+    latest.endpoints[0].reasoning_text_field = "reasoning_content"
     manager = ProviderConfigManager(tmp_path)
     provider = manager.create_from_template(original)
     updated = manager.update_from_template(latest, provider_id=provider.provider_id)
     assert updated.updated_endpoints == (provider.default_endpoint,)
     reloaded = manager.get_provider(provider.provider_id)
-    assert reloaded.endpoints[0].reasoning.profile.text_field == "reasoning_content"
+    assert reloaded.endpoints[0].reasoning_text_field == "reasoning_content"
 
 
 def _endpoint(
@@ -289,8 +289,8 @@ def test_go_template_update_moves_route_and_removes_retired_endpoint(tmp_path) -
     assert updated.base_url == "https://opencode.ai/inference/go/openai/v1"
     assert updated.default_endpoint == provider.default_endpoint
     endpoint = updated.endpoint(updated.default_endpoint)
-    assert endpoint is not None and endpoint.reasoning.profile is not None
-    assert endpoint.reasoning.profile.text_field == "reasoning_content"
+    assert endpoint is not None
+    assert endpoint.reasoning_text_field == "reasoning_content"
 
 
 def test_update_requires_template_provenance_without_rewriting_provider(tmp_path) -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Unpack
+from typing import Any, Literal, Unpack
 
 from ouro.application.configuration.views import (
     compaction_view,
@@ -669,6 +669,7 @@ class ConfigurationFacade:
         supports_streaming: bool | None = None,
         supports_structured_output: bool | None = None,
         reasoning: EndpointReasoningConfig | None = None,
+        reasoning_text_field: Literal["reasoning_content", "reasoning"] | None = None,
         request_options: Mapping[str, Any] | None = None,
         make_default: bool = False,
     ) -> ProviderEndpointCatalogView:
@@ -688,6 +689,7 @@ class ConfigurationFacade:
             supports_streaming=supports_streaming,
             supports_structured_output=supports_structured_output,
             reasoning=reasoning,
+            reasoning_text_field=reasoning_text_field,
             request_options=request_options,
             make_default=make_default,
         )

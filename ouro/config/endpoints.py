@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
@@ -37,6 +37,7 @@ _ENDPOINT_FIELDS = frozenset(
         "supports_streaming",
         "supports_structured_output",
         "reasoning",
+        "reasoning_text_field",
         "request_options",
         "metadata",
     }
@@ -60,6 +61,7 @@ class EndpointChanges(TypedDict, total=False):
     supports_streaming: bool
     supports_structured_output: bool
     reasoning: EndpointReasoningConfig
+    reasoning_text_field: Literal["reasoning_content", "reasoning"] | None
     request_options: Mapping[str, Any]
 
 
@@ -83,6 +85,9 @@ class ProviderEndpointConfig(OuroModel):
     supports_streaming: bool = True
     supports_structured_output: bool = True
     reasoning: EndpointReasoningConfig = Field(default_factory=EndpointReasoningConfig)
+    reasoning_text_field: Literal["reasoning_content", "reasoning"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     request_options: Metadata = MetadataField
     metadata: Metadata = MetadataField
 
@@ -157,6 +162,7 @@ def endpoint_config_from_mapping(
         supports_streaming=raw.get("supports_streaming", True),
         supports_structured_output=raw.get("supports_structured_output", True),
         reasoning=EndpointReasoningConfig.model_validate(raw.get("reasoning") or {}),
+        reasoning_text_field=raw.get("reasoning_text_field"),
         request_options=dict(raw.get("request_options") or {}),
         metadata=dict(raw.get("metadata") or {}),
     )
@@ -177,6 +183,8 @@ def endpoint_config_to_raw(endpoint: ProviderEndpointConfig) -> dict[str, Any]:
     }
     if endpoint.display_name:
         raw["display_name"] = endpoint.display_name
+    if endpoint.reasoning_text_field is not None:
+        raw["reasoning_text_field"] = endpoint.reasoning_text_field
     if endpoint.base_url:
         raw["base_url"] = endpoint.base_url
     if endpoint.api_path:

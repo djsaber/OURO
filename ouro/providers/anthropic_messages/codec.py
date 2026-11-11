@@ -164,7 +164,6 @@ def _message_to_anthropic(
         }
 
     role = "assistant" if message.role == "assistant" else "user"
-    content = _message_content(message, supports_image_input=supports_image_input)
     if role == "assistant":
         continuation = message.provider_continuation
         if continuation is not None and continuation.matches(
@@ -183,6 +182,10 @@ def _message_to_anthropic(
             ]:
                 raise ValueError("Anthropic continuation does not match tool calls")
             return {"role": role, "content": deepcopy(native["content"])}
+    content = _message_content(message, supports_image_input=supports_image_input)
+    if message.reasoning_content:
+        content.insert(0, {"type": "text", "text": message.reasoning_context_text})
+    if role == "assistant":
         content.extend(
             {
                 "type": "tool_use",

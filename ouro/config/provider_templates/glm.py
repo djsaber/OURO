@@ -11,14 +11,12 @@ _VERIFIED_ON = "2026-11-11"
 
 _GLM_REASONING = toggle_reasoning(
     name="glm-thinking-toggle",
-    text_field="reasoning_content",
     enabled={"thinking": {"type": "enabled", "clear_thinking": False}},
     disabled={"thinking": {"type": "disabled"}},
 )
 
 _GLM_53_REASONING = mapped_reasoning(
     name="glm-5.3-thinking-effort",
-    text_field="reasoning_content",
     activation="always_on",
     supported_efforts=("low", "high", "max"),
     default=ReasoningRequest(mode="enabled", effort="max"),
@@ -36,7 +34,6 @@ _GLM_53_REASONING = mapped_reasoning(
 
 _GLM_53_FLASH_REASONING = mapped_reasoning(
     name="glm-5.3-flash-thinking-effort",
-    text_field="reasoning_content",
     activation="always_on",
     supported_efforts=("low", "high", "max"),
     default=ReasoningRequest(mode="enabled", effort="max"),
@@ -78,6 +75,7 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 supports_streaming=True,
                 supports_structured_output=True,
                 reasoning=_GLM_53_REASONING,
+                reasoning_text_field="reasoning_content",
             ),
             ProviderEndpointConfig(
                 endpoint_id="glm-5.3-flash",
@@ -89,6 +87,7 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 supports_streaming=True,
                 supports_structured_output=True,
                 reasoning=_GLM_53_FLASH_REASONING,
+                reasoning_text_field="reasoning_content",
             ),
             ProviderEndpointConfig(
                 endpoint_id="glm-5.2",
@@ -100,6 +99,7 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 supports_streaming=True,
                 supports_structured_output=True,
                 reasoning=_GLM_REASONING,
+                reasoning_text_field="reasoning_content",
             ),
             ProviderEndpointConfig(
                 endpoint_id="glm-5-turbo",
@@ -111,6 +111,7 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 supports_streaming=True,
                 supports_structured_output=True,
                 reasoning=_GLM_REASONING,
+                reasoning_text_field="reasoning_content",
             ),
             ProviderEndpointConfig(
                 endpoint_id="glm-5v-turbo",
@@ -122,10 +123,11 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
                 supports_streaming=True,
                 supports_structured_output=False,
                 reasoning=_GLM_REASONING,
+                reasoning_text_field="reasoning_content",
             ),
         ),
         documentation_url="https://docs.bigmodel.cn/cn/guide/start/model-overview",
         verified_on=_VERIFIED_ON,
-        revision=10,
+        revision=11,
     ),
 )

@@ -9,6 +9,68 @@ from ouro.cli.main import main
 from ouro.config import ProviderConfigManager, ProviderRuntimeOptions
 
 
+def test_history_reasoning_field_can_be_set_preserved_and_cleared(tmp_path, capsys):
+    facade = ConfigurationFacade(tmp_path)
+    provider_id = facade.add_provider(
+        display_name="Gateway",
+        provider_type="custom",
+        protocol="openai-chat-completions",
+        base_url="https://example.test",
+    ).changed_provider_id
+    common = ["--home", str(tmp_path), "--json"]
+    assert (
+        main(
+            [
+                "provider",
+                "endpoint",
+                "add",
+                provider_id,
+                "--model",
+                "model",
+                "--reasoning-text-field",
+                "reasoning",
+                *common,
+            ]
+        )
+        == 0
+    )
+    endpoint_id = json.loads(capsys.readouterr().out)["endpoint"]["endpoint_id"]
+    assert facade.endpoint(provider_id, endpoint_id).reasoning_text_field == "reasoning"
+    assert (
+        main(
+            [
+                "provider",
+                "endpoint",
+                "update",
+                provider_id,
+                endpoint_id,
+                "--reasoning-preset",
+                "thinking-toggle",
+                *common,
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert facade.endpoint(provider_id, endpoint_id).reasoning_text_field == "reasoning"
+    assert (
+        main(
+            [
+                "provider",
+                "endpoint",
+                "update",
+                provider_id,
+                endpoint_id,
+                "--reasoning-text-field",
+                "none",
+                *common,
+            ]
+        )
+        == 0
+    )
+    assert facade.endpoint(provider_id, endpoint_id).reasoning_text_field is None
+
+
 def test_endpoint_media_flags_persist_and_update_independently(tmp_path, capsys):
     facade = ConfigurationFacade(tmp_path)
     provider_id = facade.add_provider(

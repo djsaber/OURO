@@ -11,7 +11,6 @@ from ouro.config import EndpointReasoningConfig, openai_chat_completions_effort_
 from ouro.core.messages import (
     ImageContent,
     MessageRecord,
-    ProviderContinuationArtifact,
     TextContent,
     ToolResultReference,
 )
@@ -1140,12 +1139,10 @@ async def test_chat_completions_emits_reasoning_delta_from_response() -> None:
     assert [event.type for event in events] == [
         "reasoning_delta",
         "text_delta",
-        "continuation",
         "done",
     ]
     assert events[0].reasoning_content == "Let me compute 2 + 2."
     assert events[1].text == "The answer is 4."
-    assert events[-2].continuation.blocks == ({"reasoning_content": "Let me compute 2 + 2."},)
 
 
 @pytest.mark.asyncio
@@ -1180,7 +1177,6 @@ async def test_chat_completions_emits_reasoning_delta_from_stream_chunks() -> No
         "reasoning_delta",
         "reasoning_delta",
         "text_delta",
-        "continuation",
         "done",
     ]
     assert [event.reasoning_content for event in events[:2]] == ["Thinking", "..."]
@@ -1207,6 +1203,7 @@ async def test_reasoning_response_and_replay_are_independent_of_request_controls
         base_url="https://example.test",
         transport=transport,
         reasoning_encoder=ReasoningPayloadEncoder(reasoning.profile),
+        reasoning_text_field="reasoning_content",
     )
     model = ModelMetadata(
         provider_id=provider.provider_id,
@@ -1218,7 +1215,6 @@ async def test_reasoning_response_and_replay_are_independent_of_request_controls
     assert [event.type for event in events] == [
         "reasoning_delta",
         "text_delta",
-        "continuation",
         "done",
     ]
     assert events[0].reasoning_content == response["reasoning_content"]
@@ -1229,9 +1225,9 @@ async def test_reasoning_response_and_replay_are_independent_of_request_controls
         session_id="ses_1",
         role="assistant",
         content=[TextContent(text="4")],
-        provider_continuation=events[2].continuation,
+        reasoning_content=response["reasoning_content"],
     )
-    # Changing request controls must not discard the previous response's native state.
+    # Generation controls do not select or rename historical reasoning.
     model = model.model_copy(
         update={
             "reasoning": EndpointReasoningConfig().capability,
@@ -1279,7 +1275,6 @@ async def test_chat_completions_reasoning_only_response_is_not_empty() -> None:
 
     assert [event.type for event in events] == [
         "reasoning_delta",
-        "continuation",
         "done",
     ]
     assert events[0].reasoning_content == "Only reasoning, no content."
@@ -1332,11 +1327,8 @@ async def test_openai_chat_completions_preserves_reasoning_for_display_and_tool_
     assert [event.type for event in events] == [
         "reasoning_delta",
         "tool_call_delta",
-        "continuation",
         "done",
     ]
-    assert events[-2].continuation is not None
-    assert events[-2].continuation.blocks == ({"reasoning_content": "I should inspect the file."},)
 
 
 @pytest.mark.asyncio
@@ -1376,7 +1368,6 @@ async def test_chat_completions_emits_reasoning_delta_from_bare_reasoning_field(
     assert [event.type for event in events] == [
         "reasoning_delta",
         "text_delta",
-        "continuation",
         "done",
     ]
     assert events[0].reasoning_content == "Let me compute 2 + 2."
@@ -1418,11 +1409,9 @@ async def test_chat_completions_extracts_bare_reasoning_block_array() -> None:
     assert [event.type for event in events] == [
         "reasoning_delta",
         "text_delta",
-        "continuation",
         "done",
     ]
     assert events[0].reasoning_content == "chunk one chunk two"
-    assert events[-2].continuation.blocks == ({"reasoning": [{"text": "chunk one "}, "chunk two"]},)
 
 
 @pytest.mark.asyncio
@@ -1461,7 +1450,6 @@ async def test_chat_completions_prefers_reasoning_content_over_bare_reasoning() 
     assert [event.type for event in events] == [
         "reasoning_delta",
         "text_delta",
-        "continuation",
         "done",
     ]
     assert events[0].reasoning_content == "fallback thinking"
@@ -1498,12 +1486,10 @@ async def test_chat_completions_emits_bare_reasoning_stream_delta() -> None:
         "reasoning_delta",
         "reasoning_delta",
         "text_delta",
-        "continuation",
         "done",
     ]
     assert [event.reasoning_content for event in events[:2]] == ["Thinking", "..."]
     assert events[2].text == "Done"
-    assert events[-2].continuation.blocks == ({"reasoning": "Thinking..."},)
 
 
 @pytest.mark.asyncio
@@ -1550,92 +1536,8 @@ async def test_openai_chat_completions_preserves_bare_reasoning_for_tool_continu
     assert [event.type for event in events] == [
         "reasoning_delta",
         "tool_call_delta",
-        "continuation",
         "done",
     ]
-    assert events[2].continuation is not None
-    assert events[2].continuation.blocks == ({"reasoning": "I should inspect the file."},)
-
-
-@pytest.mark.asyncio
-async def test_chat_completions_sends_reasoning_content_in_history() -> None:
-    transport = FakeTransport({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
-    provider = OpenAIChatCompletionsProvider(
-        base_url="https://example.test/v1",
-        api_key="secret",
-        transport=transport,
-    )
-    assistant = MessageRecord.text(
-        session_id="ses_1", role="assistant", text="The file contains a readme."
-    ).model_copy(
-        update={
-            "reasoning_content": "I need to read the file.",
-            "provider_continuation": ProviderContinuationArtifact(
-                provider_id="openai-chat-completions",
-                protocol="openai-chat-completions",
-                model_id="glm-test",
-                blocks=({"reasoning_content": "I need to read the file."},),
-            ),
-        }
-    )
-    events = [
-        event
-        async for event in provider.stream(
-            model=ModelMetadata(
-                model_id="glm-test",
-                provider_id="glm",
-                reasoning=_OPENAI_REASONING.capability,
-            ),
-            messages=[
-                MessageRecord.text(session_id="ses_1", role="user", text="read"),
-                assistant,
-                MessageRecord.text(session_id="ses_1", role="user", text="Explain it."),
-            ],
-        )
-    ]
-
-    assert [event.type for event in events] == ["text_delta", "done"]
-    assistant_message = transport.requests[0]["payload"]["messages"][1]
-    assert assistant_message["role"] == "assistant"
-    assert assistant_message["reasoning_content"] == "I need to read the file."
-    assert "tool_calls" not in assistant_message
-
-
-@pytest.mark.asyncio
-async def test_chat_completions_does_not_replay_cross_route_continuation() -> None:
-    transport = FakeTransport({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
-    provider = OpenAIChatCompletionsProvider(
-        base_url="https://example.test/v1",
-        transport=transport,
-    )
-    assistant = MessageRecord.text(
-        session_id="ses_1", role="assistant", text="prior answer"
-    ).model_copy(
-        update={
-            "reasoning_content": "private prior reasoning",
-            "provider_continuation": ProviderContinuationArtifact(
-                provider_id="openai-chat-completions",
-                protocol="openai-chat-completions",
-                model_id="different-model",
-                blocks=({"reasoning_content": "private prior reasoning"},),
-            ),
-        }
-    )
-
-    events = [
-        event
-        async for event in provider.stream(
-            model=ModelMetadata(
-                model_id="glm-test",
-                provider_id="glm",
-                reasoning=_OPENAI_REASONING.capability,
-            ),
-            messages=[assistant],
-        )
-    ]
-
-    assert [event.type for event in events] == ["text_delta", "done"]
-    assert "reasoning_content" not in transport.requests[0]["payload"]["messages"][0]
 
 
 @pytest.mark.asyncio
