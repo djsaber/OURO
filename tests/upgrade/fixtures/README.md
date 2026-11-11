@@ -29,6 +29,16 @@ and idempotence. The old template file is outside offline upgrade scope; the
 template reader backs it up and materializes the current catalog.
 No credentials are resolved and no user data is included.
 
+`records/providers-reasoning-text.json` and
+`records/provider-templates-reasoning-text.json` are synthetic outputs of the
+unmodified provider manager and template store at `2f565af`. They contain a
+generation profile with effort and summary controls, a text-only profile, and
+an endpoint edited after its template binding was recorded. Both text field
+names, a fake inline credential and opaque metadata are included. Tests cover
+field relocation, profile retirement, binding ownership, startup recovery,
+backup restoration and idempotence. The schema 6 template catalog exercises
+the template reader's independent backup and materialization contract.
+
 `records/output-budget.json` is serialized by the unmodified models at `af353d1`.
 It contains synthetic ContextSnapshot 4, Compaction 1, model request and compaction
 completion events, and a historical commit receipt with embedded events. The request

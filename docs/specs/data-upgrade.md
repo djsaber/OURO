@@ -109,10 +109,12 @@ completed_at 对应 provider_done_at，缺少完成事实时保持未结算。
 移入 target；执行归属同步迁入 agent target。无插件所有者时 owner_id 为 null，result 为 null，
 cancel_requested 为 false。任务、执行、revision、日程、历史链与防重标记保持不变。
 
-提供方配置通过有序结构规则转换 supports_vision、reasoning.default_effort 和 profile.variants。
+提供方配置通过有序结构规则转换 supports_vision、reasoning.default_effort、profile.variants 和 profile.text_field。
 旧 default_effort 合入 default.effort，明确选择 effort 的 default 模式转为 enabled。
+reasoning.profile.text_field 移至端点的 reasoning_text_field；仅声明文本字段的空生成预设置为 null，
+非空 effort、summary 映射与默认值保持原样。显式 null 的文本字段按未配置处理。
 两个旧默认 effort 不一致、混用新旧字段或未知原生字段均拒绝。原生映射和开放内容原样保留，
-不推断摘要能力、不刷新认证。与 v0.3.0 保存基线一致的端点更新绑定指纹，已修改实例保留旧基线。
+不推断摘要能力、不刷新认证。与源结构保存基线一致的端点更新绑定指纹，已修改实例保留旧基线。
 模板文件由模板加载流程管理，不参与离线事务。
 
 ## 失败与恢复

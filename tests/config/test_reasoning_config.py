@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from ouro.config import (
     EndpointReasoningConfig,
@@ -16,6 +17,18 @@ from ouro.config.provider_models import validate_reasoning_protocol_compatibilit
 from ouro.core.provider import ModelMetadata
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest, resolve_reasoning
 from ouro.providers.reasoning import ReasoningPayloadEncoder
+
+
+@pytest.mark.parametrize("path", [(), ("capability",), ("profile",)])
+def test_reasoning_contract_rejects_undeclared_fields(path):
+    raw = reasoning_effort_preset("thinking-toggle").model_dump()
+    target = raw[path[0]] if path else raw
+    target["undeclared_field"] = None
+    with pytest.raises(ValidationError) as error:
+        EndpointReasoningConfig.model_validate(raw)
+    assert [(item["loc"], item["type"]) for item in error.value.errors()] == [
+        ((*path, "undeclared_field"), "extra_forbidden")
+    ]
 
 
 @pytest.mark.parametrize("field", ["reasoning_content", "reasoning"])

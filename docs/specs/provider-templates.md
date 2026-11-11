@@ -41,7 +41,7 @@
 
 ```json
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "templates": {
     "openai": {
       "template_id": "openai",
@@ -87,7 +87,7 @@
 
 ## 版本模型
 
-结构版本为 6。模板包含 Provider 与 Endpoint 展示名，不包含实例 Provider ID。
+结构版本为 7。模板包含 Provider 与 Endpoint 展示名，不包含实例 Provider ID。
 端点 reasoning 分别声明 effort 与 summary 请求控制及原生映射，默认偏好统一保存在 capability.default。
 思考正文解析与原生续接由协议适配器负责。Chat Completions 端点可通过
 `reasoning_text_field` 声明回传历史思考文本的字段，该声明独立于思考开关和档位。
@@ -126,8 +126,8 @@ managed 引用属于实例，创建/显式替换时生成。模板业务指纹�
 校验结果通过明确渠道反馈（CLI 输出、TUI 提示、日志），指明具体 `template_id` 与字段，保证用户
 可自助定位与修复。
 
-模板加载不触发离线数据升级。当前结构下的旧 reasoning 字段作为条目校验失败处理，保留原条目并报告；
-其他条目继续加载。文件级加载失败按内联回退处理。
+模板条目按当前字段定义校验。条目校验失败时保留原条目并报告，其他条目继续加载。
+文件级加载失败按内联回退处理。
 
 ## 修改感知
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from ouro.core.base import OuroModel
 
@@ -45,6 +45,8 @@ class ReasoningRequest(OuroModel):
 
 class ReasoningCapability(OuroModel):
     """Declared request controls and defaults for an endpoint."""
+
+    model_config = ConfigDict(extra="forbid")
 
     activation: ReasoningActivation = "unsupported"
     supported_efforts: tuple[ReasoningEffort, ...] = Field(default_factory=tuple)

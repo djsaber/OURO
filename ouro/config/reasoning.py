@@ -5,7 +5,6 @@ from collections.abc import Mapping
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ouro.core.base import Metadata, OuroModel
-from ouro.core.errors import UnsupportedConfigVersionError
 from ouro.core.reasoning import (
     REASONING_EFFORTS,
     ReasoningActivation,
@@ -97,22 +96,10 @@ class ReasoningProfileConfig(OuroModel):
 class EndpointReasoningConfig(OuroModel):
     """Endpoint reasoning contract plus its deterministic native encoding profile."""
 
+    model_config = ConfigDict(extra="forbid")
+
     capability: ReasoningCapability = Field(default_factory=ReasoningCapability)
     profile: ReasoningProfileConfig | None = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _require_current_format(cls, value: object) -> object:
-        if isinstance(value, Mapping):
-            capability, profile = value.get("capability"), value.get("profile")
-            if (
-                isinstance(capability, Mapping)
-                and {"default_effort", "output", "continuation"}.intersection(capability)
-            ) or (isinstance(profile, Mapping) and "variants" in profile):
-                raise UnsupportedConfigVersionError(
-                    "unsupported reasoning configuration format; run ouro-upgrade"
-                )
-        return value
 
     @model_validator(mode="after")
     def _validate_profile_coverage(self) -> EndpointReasoningConfig:

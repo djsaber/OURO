@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from ouro.config.provider_templates import get_provider_template
 from ouro.config.providers.codec import provider_config_from_mapping
@@ -15,7 +16,7 @@ from ouro.config.providers.template_store import (
     template_fingerprint,
 )
 from ouro.config.reasoning import EndpointReasoningConfig
-from ouro.core.errors import ConfigError, UnsupportedDataVersionError
+from ouro.core.errors import ConfigError, InvalidConfigDataError
 from ouro.core.provider import ModelMetadata
 from ouro.core.reasoning import ReasoningRequest
 from ouro.providers.reasoning import ReasoningPayloadEncoder
@@ -42,18 +43,123 @@ def provider_home(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_legacy_provider_config_is_a_recoverable_version_error(provider_home: Path) -> None:
-    with pytest.raises(ConfigError) as error:
+@pytest.fixture
+def text_field_home(tmp_path: Path) -> Path:
+    (tmp_path / "config").mkdir()
+    for name in ("providers", "provider-templates"):
+        (tmp_path / f"config/{name}.json").write_bytes(
+            (FIXTURES / f"records/{name}-reasoning-text.json").read_bytes()
+        )
+    return tmp_path
+
+
+def test_reasoning_text_upgrade_preserves_controls_and_binding_ownership(text_field_home):
+    path = text_field_home / "config/providers.json"
+    original_bytes = path.read_bytes()
+    before = json.loads(original_bytes)
+    provider_id = before["providers"]["default"]
+    original = before["providers"]["items"][provider_id]
+    templates_path = text_field_home / "config/provider-templates.json"
+    original_templates = templates_path.read_bytes()
+    with pytest.raises(InvalidConfigDataError):
+        ProviderConfigManager(text_field_home).snapshot()
+    assert upgrade(text_field_home, check=True)["status"] == "upgrade_required"
+    assert path.read_bytes() == original_bytes
+    assert templates_path.read_bytes() == original_templates
+    report = upgrade(text_field_home)
+    assert report["status"] == "upgraded"
+    assert report["files"] == ["config/providers.json"]
+    assert (text_field_home / report["backup"] / "0").read_bytes() == original_bytes
+    converted = json.loads(path.read_text("utf-8"))["providers"]["items"][provider_id]
+    parsed = provider_config_from_mapping(provider_id, converted)
+    expected = copy.deepcopy(original)
+    for endpoint in expected["endpoints"].values():
+        profile = endpoint["reasoning"]["profile"]
+        endpoint["reasoning_text_field"] = profile.pop("text_field")
+        if endpoint["model_id"] == "text-only":
+            endpoint["reasoning"]["profile"] = None
+    for binding in expected["template"]["endpoints"]:
+        endpoint = parsed.endpoint(binding["configured_endpoint_id"])
+        business = endpoint.model_dump(mode="json")
+        business["endpoint_id"] = binding["template_endpoint_id"]
+        fingerprint = template_fingerprint(business)
+        assert binding["fingerprint"] != fingerprint
+        if endpoint.model_id != "customized":
+            binding["fingerprint"] = fingerprint
+    assert converted == expected
+    snapshot = ProviderConfigManager(text_field_home).snapshot(include_builtin=False)
+    assert snapshot.default_provider_id == provider_id
+    upgraded = hashes(text_field_home)
+    assert upgrade(text_field_home)["status"] == "current"
+    assert hashes(text_field_home) == upgraded
+    # Template structure is owned by its loader, outside the offline transaction.
+    assert templates_path.read_bytes() == original_templates
+    assert ProviderTemplateStore(text_field_home).catalog().entries
+    assert json.loads(templates_path.read_text("utf-8"))["schema_version"] == SCHEMA_VERSION
+    backup = next(templates_path.parent.glob("provider-templates.backup-v6-*.json"))
+    assert backup.read_bytes() == original_templates
+
+
+@pytest.mark.parametrize("field", [None, "reasoning", "reasoning_content"])
+def test_reasoning_text_field_values_preserve_generation_profile(text_field_home, field):
+    raw = json.loads((text_field_home / "config/providers.json").read_text("utf-8"))
+    provider = raw["providers"]["items"][raw["providers"]["default"]]
+    endpoint_id, endpoint = next(
+        (key, value)
+        for key, value in provider["endpoints"].items()
+        if value["model_id"] == "controls"
+    )
+    endpoint["reasoning"]["profile"]["text_field"] = field
+    before = copy.deepcopy(raw)
+    result = configuration.convert_providers(raw)
+    converted = result["providers"]["items"][raw["providers"]["default"]]["endpoints"][endpoint_id]
+    assert converted.get("reasoning_text_field") == field
+    profile = endpoint["reasoning"]["profile"]
+    assert converted["reasoning"]["profile"] == {
+        key: value for key, value in profile.items() if key != "text_field"
+    }
+    assert raw == before
+    assert configuration.convert_providers(result) == result
+
+
+@pytest.mark.parametrize("damage", ["mixed", "field", "profile", "controls", "protocol"])
+def test_invalid_reasoning_text_config_prevents_writes(text_field_home, damage):
+    path = text_field_home / "config/providers.json"
+    raw = json.loads(path.read_text("utf-8"))
+    provider = raw["providers"]["items"][raw["providers"]["default"]]
+    endpoint = next(e for e in provider["endpoints"].values() if e["model_id"] == "text-only")
+    profile = endpoint["reasoning"]["profile"]
+    if damage == "mixed":
+        endpoint["reasoning_text_field"] = profile["text_field"]
+    elif damage == "field":
+        profile["text_field"] = "fixture-not-a-real-secret"
+    elif damage == "profile":
+        profile["unknown"] = "fixture-not-a-real-secret"
+    elif damage == "controls":
+        profile["effort"] = []
+    else:
+        provider["protocol"] = "openai-responses"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    before = hashes(text_field_home)
+    with pytest.raises(UpgradeError) as error:
+        upgrade(text_field_home)
+    assert "fixture-not-a-real-secret" not in str(error.value)
+    assert hashes(text_field_home) == before
+    assert not (text_field_home / ".upgrade/in-progress.json").exists()
+
+
+def test_provider_readers_reject_config_outside_current_schema(provider_home: Path) -> None:
+    with pytest.raises(InvalidConfigDataError) as error:
         ProviderConfigManager(provider_home).snapshot()
-    assert isinstance(error.value, UnsupportedDataVersionError)
+    assert "ouro-upgrade" not in str(error.value)
     raw = json.loads((provider_home / "config/providers.json").read_text("utf-8"))
-    with pytest.raises(UnsupportedDataVersionError):
+    with pytest.raises(ConfigError):
         provider_config_from_mapping(
             "reasoning_fixture", raw["providers"]["items"]["reasoning_fixture"]
         )
-    # Even an otherwise valid unsupported capability must not silently lose a legacy field.
-    with pytest.raises(UnsupportedDataVersionError):
+    with pytest.raises(ValidationError) as validation:
         EndpointReasoningConfig.model_validate({"capability": {"default_effort": None}})
+    assert validation.value.errors()[0]["type"] == "extra_forbidden"
     templates_path = provider_home / "config/provider-templates.json"
     templates = json.loads(templates_path.read_text("utf-8"))
     before = templates_path.read_bytes()
@@ -213,7 +319,9 @@ def test_invalid_provider_config_prevents_writes_without_exposing_secrets(
         assert not (provider_home / ".upgrade/in-progress.json").exists()
 
 
-def test_interrupted_provider_upgrade_restores_original_bytes(provider_home, monkeypatch) -> None:
+@pytest.mark.parametrize("home_fixture", ["provider_home", "text_field_home"])
+def test_interrupted_provider_upgrade_restores_original_bytes(request, home_fixture, monkeypatch):
+    provider_home = request.getfixturevalue(home_fixture)
     before = hashes(provider_home)
     original = workspace.install
 
@@ -282,7 +390,7 @@ def test_removing_response_controls_preserves_endpoint_binding_ownership(tmp_pat
         if modified:
             endpoint["context_window"] += 1
     original = copy.deepcopy(raw)
-    with pytest.raises(UnsupportedDataVersionError):
+    with pytest.raises(ConfigError):
         provider_config_from_mapping(created.provider_id, provider)
     converted = configuration.convert_providers(raw)
     assert raw == original
@@ -304,17 +412,25 @@ def test_removing_response_controls_preserves_endpoint_binding_ownership(tmp_pat
         )
 
 
-async def test_tui_routes_legacy_config_to_offline_upgrade(provider_home: Path) -> None:
+@pytest.mark.parametrize("home_fixture", ["provider_home", "text_field_home"])
+async def test_tui_recovers_provider_config_after_current_schema_validation(request, home_fixture):
+    provider_home = request.getfixturevalue(home_fixture)
+    default_provider_id = json.loads((provider_home / "config/providers.json").read_text("utf-8"))[
+        "providers"
+    ]["default"]
     app = OuroTuiApp(home=provider_home)
     async with app.run_test(size=(100, 32)):
         await wait_until(lambda: app.startup_data_error is not None)
-    assert isinstance(app.startup_data_error, UnsupportedDataVersionError)
+    assert isinstance(app.startup_data_error, InvalidConfigDataError)
+    assert "ouro-upgrade" not in str(app.startup_data_error)
     recovery = DataRecoveryApp(
         home=provider_home, error=str(app.startup_data_error), auto_upgrade=True
     )
     async with recovery.run_test(size=(100, 32)):
         await wait_until(lambda: recovery.return_value == "upgraded")
-    assert ProviderConfigManager(provider_home).snapshot().default_provider_id == "provider_fixture"
+    assert (
+        ProviderConfigManager(provider_home).snapshot().default_provider_id == default_provider_id
+    )
 
 
 def test_unversioned_configuration_can_compose_structural_transitions(monkeypatch) -> None:

@@ -11,6 +11,7 @@ from ouro.config.endpoints import ProviderEndpointConfig
 from ouro.config.provider_models import BUILTIN_FAUX_PROVIDER_ID
 from ouro.config.providers.codec import provider_config_from_mapping
 from ouro.config.providers.template_store import template_fingerprint
+from ouro.config.reasoning import ReasoningProfileConfig
 from ouro.core.errors import ConfigError
 from ouro_upgrade.agents import upgrade_definition, upgrade_spawn_policy
 from ouro_upgrade.errors import UpgradeDataError, require
@@ -85,10 +86,33 @@ def _reasoning_controls(endpoint: dict[str, Any]) -> None:
     capability.pop("continuation", None)
 
 
+def _reasoning_text_field(endpoint: dict[str, Any]) -> None:
+    reasoning = endpoint.get("reasoning", {})
+    profile = reasoning.get("profile")
+    if profile is None or "text_field" not in profile:
+        return
+    require(
+        "reasoning_text_field" not in endpoint,
+        _PATH,
+        "mixed historical and current reasoning text fields",
+    )
+    field = profile.pop("text_field")
+    require(
+        field in (None, "reasoning_content", "reasoning"), _PATH, "invalid reasoning text field"
+    )
+    if field is not None:
+        endpoint["reasoning_text_field"] = field
+        if not profile.get("effort") and not profile.get("summary"):
+            # Validate before retiring the profile so malformed controls are not discarded.
+            ReasoningProfileConfig.model_validate(profile)
+            reasoning["profile"] = None
+
+
 # Unversioned formats use ordered, explicitly recognized structural transitions.
 ENDPOINT_STEPS: tuple[Callable[[dict[str, Any]], None], ...] = (
     _vision_capabilities,
     _reasoning_controls,
+    _reasoning_text_field,
 )
 
 
@@ -106,24 +130,33 @@ def _previous_endpoint_fingerprint(
     for field in ("output", "continuation"):
         if historical or field in source_capability:
             capability[field] = source_capability.get(field, "none")
-    if not historical:
-        return template_fingerprint(business)
-    capability.pop("supported_summaries")
-    default = source_capability.get("default") or {}
-    capability["default"] = {
-        "mode": default.get("mode", "default"),
-        "effort": default.get("effort"),
-    }
-    effort = source_capability.get("default_effort") or default.get("effort")
-    if effort is None and len(capability["supported_efforts"]) == 1:
-        effort = capability["supported_efforts"][0]
-    if effort is not None:
-        capability["default_effort"] = effort
-    if profile is not None and "variants" in profile:
-        business["reasoning"]["profile"] = {
-            "name": profile["name"].strip(),
-            "variants": profile["variants"],
+    if historical:
+        capability.pop("supported_summaries")
+        default = source_capability.get("default") or {}
+        capability["default"] = {
+            "mode": default.get("mode", "default"),
+            "effort": default.get("effort"),
         }
+        effort = source_capability.get("default_effort") or default.get("effort")
+        if effort is None and len(capability["supported_efforts"]) == 1:
+            effort = capability["supported_efforts"][0]
+        if effort is not None:
+            capability["default_effort"] = effort
+        if profile is not None and "variants" in profile:
+            business["reasoning"]["profile"] = {
+                "name": profile["name"].strip(),
+                "variants": profile["variants"],
+            }
+    if profile is not None and "text_field" in profile:
+        business.pop("reasoning_text_field", None)
+        if business["reasoning"]["profile"] is None:
+            business["reasoning"]["profile"] = {
+                "name": profile["name"].strip(),
+                "effort": {},
+                "summary": {},
+            }
+        if profile["text_field"] is not None:
+            business["reasoning"]["profile"]["text_field"] = profile["text_field"]
     return template_fingerprint(business)
 
 
@@ -158,12 +191,14 @@ def convert_providers(raw: dict[str, Any]) -> dict[str, Any]:
     items = _object(section.get("items", {}))
     for provider_id, raw_provider in items.items():
         provider = _object(raw_provider)
-        for raw_endpoint in _object(provider.get("endpoints", {})).values():
-            endpoint = _object(raw_endpoint)
-            for step in ENDPOINT_STEPS:
-                step(endpoint)
         try:
+            for raw_endpoint in _object(provider.get("endpoints", {})).values():
+                endpoint = _object(raw_endpoint)
+                for step in ENDPOINT_STEPS:
+                    step(endpoint)
             parsed = provider_config_from_mapping(provider_id, provider)
+        except UpgradeDataError:
+            raise
         except ConfigError, TypeError, ValueError:
             # Codec validation errors can include inline credentials or header values.
             raise UpgradeDataError(f"{_PATH}: invalid provider configuration") from None

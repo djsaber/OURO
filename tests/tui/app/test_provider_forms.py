@@ -143,7 +143,7 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
 
         for invalid, error in (
             ("[]", "JSON object"),
-            ('{"capability":{"default_effort":null}}', "run ouro-upgrade"),
+            ('{"capability":{"undeclared_field":null}}', "Extra inputs are not permitted"),
         ):
             screen._values["endpoint-reasoning-config"] = invalid
             screen._choices = screen._endpoint_choices()

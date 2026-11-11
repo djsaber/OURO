@@ -1,0 +1,200 @@
+{
+  "providers": {
+    "default": "provider_b8cc4420fbeb474ab20086ca852a1661",
+    "items": {
+      "provider_b8cc4420fbeb474ab20086ca852a1661": {
+        "api_path": "/chat/completions",
+        "base_url": "https://fixture.invalid/v1",
+        "credential_ref": {
+          "type": "inline",
+          "value": "fixture-not-a-real-secret"
+        },
+        "default_endpoint": "endpoint_1b48854b3aaf488192ee8f5989efcea9",
+        "display_name": "Synthetic reasoning text",
+        "enabled": true,
+        "endpoints": {
+          "endpoint_1b48854b3aaf488192ee8f5989efcea9": {
+            "context_window": 32000,
+            "max_output_tokens": null,
+            "metadata": {
+              "opaque": {
+                "profile": {
+                  "text_field": "do-not-convert"
+                }
+              }
+            },
+            "model_id": "controls",
+            "reasoning": {
+              "capability": {
+                "activation": "toggle",
+                "default": {
+                  "effort": "high",
+                  "mode": "enabled",
+                  "summary": "auto"
+                },
+                "supported_efforts": [
+                  "low",
+                  "high"
+                ],
+                "supported_summaries": [
+                  "auto"
+                ]
+              },
+              "profile": {
+                "effort": {
+                  "disabled": {
+                    "reasoning_effort": "none"
+                  },
+                  "enabled": {
+                    "reasoning_effort": "high"
+                  },
+                  "high": {
+                    "reasoning_effort": "high"
+                  },
+                  "low": {
+                    "reasoning_effort": "low"
+                  }
+                },
+                "name": "fixture-controls",
+                "summary": {
+                  "auto": {
+                    "summary_mode": "auto"
+                  }
+                },
+                "text_field": "reasoning_content"
+              }
+            },
+            "supports_audio_input": false,
+            "supports_image_input": false,
+            "supports_streaming": true,
+            "supports_structured_output": true,
+            "supports_tools": true,
+            "supports_video_input": false
+          },
+          "endpoint_62a5af1d415d4714b1ba8f2c8e72f15c": {
+            "context_window": 32000,
+            "max_output_tokens": null,
+            "metadata": {
+              "opaque": {
+                "profile": {
+                  "text_field": "do-not-convert"
+                }
+              }
+            },
+            "model_id": "text-only",
+            "reasoning": {
+              "capability": {
+                "activation": "unsupported",
+                "default": {
+                  "mode": "default"
+                },
+                "supported_efforts": [],
+                "supported_summaries": []
+              },
+              "profile": {
+                "effort": {},
+                "name": "fixture-text",
+                "summary": {},
+                "text_field": "reasoning"
+              }
+            },
+            "supports_audio_input": false,
+            "supports_image_input": false,
+            "supports_streaming": true,
+            "supports_structured_output": true,
+            "supports_tools": true,
+            "supports_video_input": false
+          },
+          "endpoint_e174796a211f4470aa739f0f6ef0e66a": {
+            "context_window": 48000,
+            "max_output_tokens": null,
+            "metadata": {
+              "opaque": {
+                "profile": {
+                  "text_field": "do-not-convert"
+                }
+              }
+            },
+            "model_id": "customized",
+            "reasoning": {
+              "capability": {
+                "activation": "toggle",
+                "default": {
+                  "effort": "high",
+                  "mode": "enabled",
+                  "summary": "auto"
+                },
+                "supported_efforts": [
+                  "low",
+                  "high"
+                ],
+                "supported_summaries": [
+                  "auto"
+                ]
+              },
+              "profile": {
+                "effort": {
+                  "disabled": {
+                    "reasoning_effort": "none"
+                  },
+                  "enabled": {
+                    "reasoning_effort": "high"
+                  },
+                  "high": {
+                    "reasoning_effort": "high"
+                  },
+                  "low": {
+                    "reasoning_effort": "low"
+                  }
+                },
+                "name": "fixture-controls",
+                "summary": {
+                  "auto": {
+                    "summary_mode": "auto"
+                  }
+                },
+                "text_field": "reasoning_content"
+              }
+            },
+            "supports_audio_input": false,
+            "supports_image_input": false,
+            "supports_streaming": true,
+            "supports_structured_output": true,
+            "supports_tools": true,
+            "supports_video_input": false
+          }
+        },
+        "protocol": "openai-chat-completions",
+        "provider_type": "custom",
+        "template": {
+          "api_path": "/chat/completions",
+          "auth_driver": "static",
+          "base_url": "https://fixture.invalid/v1",
+          "credential_env": null,
+          "default_endpoint": "controls",
+          "endpoints": [
+            {
+              "configured_endpoint_id": "endpoint_1b48854b3aaf488192ee8f5989efcea9",
+              "fingerprint": "sha256:af6b2922adf56a0028b8fed47a65324cee32540f68b0e276c4ebbde8006bc050",
+              "template_endpoint_id": "controls"
+            },
+            {
+              "configured_endpoint_id": "endpoint_62a5af1d415d4714b1ba8f2c8e72f15c",
+              "fingerprint": "sha256:d12f7cadd3ff55a108c5a8e7834364ad8352d505b3c3f0a149c25e53b70765b2",
+              "template_endpoint_id": "text-only"
+            },
+            {
+              "configured_endpoint_id": "endpoint_e174796a211f4470aa739f0f6ef0e66a",
+              "fingerprint": "sha256:aa1e5fceaefb91253846de185c140653b48070ac80c8de15b958751e640f7852",
+              "template_endpoint_id": "customized"
+            }
+          ],
+          "origin": "inline",
+          "revision": 1,
+          "template_id": "reasoning-text-fixture"
+        },
+        "timeout_seconds": 60.0
+      }
+    }
+  }
+}

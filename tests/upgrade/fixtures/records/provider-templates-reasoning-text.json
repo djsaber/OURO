@@ -1,0 +1,199 @@
+{
+  "schema_version": 6,
+  "templates": {
+    "reasoning-text-fixture": {
+      "api_path": "/chat/completions",
+      "auth_driver": "static",
+      "base_url": "https://fixture.invalid/v1",
+      "credential_env": null,
+      "default_endpoint": "controls",
+      "description": "Synthetic configuration for offline conversion tests.",
+      "display_name": "Synthetic reasoning text",
+      "documentation_url": "https://fixture.invalid/docs",
+      "endpoints": [
+        {
+          "api_path": null,
+          "base_url": null,
+          "context_window": 32000,
+          "display_name": null,
+          "endpoint_id": "controls",
+          "max_output_tokens": null,
+          "metadata": {
+            "opaque": {
+              "profile": {
+                "text_field": "do-not-convert"
+              }
+            }
+          },
+          "model_id": "controls",
+          "reasoning": {
+            "capability": {
+              "activation": "toggle",
+              "default": {
+                "effort": "high",
+                "mode": "enabled",
+                "summary": "auto"
+              },
+              "supported_efforts": [
+                "low",
+                "high"
+              ],
+              "supported_summaries": [
+                "auto"
+              ]
+            },
+            "profile": {
+              "effort": {
+                "disabled": {
+                  "reasoning_effort": "none"
+                },
+                "enabled": {
+                  "reasoning_effort": "high"
+                },
+                "high": {
+                  "reasoning_effort": "high"
+                },
+                "low": {
+                  "reasoning_effort": "low"
+                }
+              },
+              "name": "fixture-controls",
+              "summary": {
+                "auto": {
+                  "summary_mode": "auto"
+                }
+              },
+              "text_field": "reasoning_content"
+            }
+          },
+          "request_options": {},
+          "supports_audio_input": false,
+          "supports_image_input": false,
+          "supports_streaming": true,
+          "supports_structured_output": true,
+          "supports_tools": true,
+          "supports_video_input": false,
+          "temperature": null
+        },
+        {
+          "api_path": null,
+          "base_url": null,
+          "context_window": 32000,
+          "display_name": null,
+          "endpoint_id": "text-only",
+          "max_output_tokens": null,
+          "metadata": {
+            "opaque": {
+              "profile": {
+                "text_field": "do-not-convert"
+              }
+            }
+          },
+          "model_id": "text-only",
+          "reasoning": {
+            "capability": {
+              "activation": "unsupported",
+              "default": {
+                "effort": null,
+                "mode": "default"
+              },
+              "supported_efforts": [],
+              "supported_summaries": []
+            },
+            "profile": {
+              "effort": {},
+              "name": "fixture-text",
+              "summary": {},
+              "text_field": "reasoning"
+            }
+          },
+          "request_options": {},
+          "supports_audio_input": false,
+          "supports_image_input": false,
+          "supports_streaming": true,
+          "supports_structured_output": true,
+          "supports_tools": true,
+          "supports_video_input": false,
+          "temperature": null
+        },
+        {
+          "api_path": null,
+          "base_url": null,
+          "context_window": 32000,
+          "display_name": null,
+          "endpoint_id": "customized",
+          "max_output_tokens": null,
+          "metadata": {
+            "opaque": {
+              "profile": {
+                "text_field": "do-not-convert"
+              }
+            }
+          },
+          "model_id": "customized",
+          "reasoning": {
+            "capability": {
+              "activation": "toggle",
+              "default": {
+                "effort": "high",
+                "mode": "enabled",
+                "summary": "auto"
+              },
+              "supported_efforts": [
+                "low",
+                "high"
+              ],
+              "supported_summaries": [
+                "auto"
+              ]
+            },
+            "profile": {
+              "effort": {
+                "disabled": {
+                  "reasoning_effort": "none"
+                },
+                "enabled": {
+                  "reasoning_effort": "high"
+                },
+                "high": {
+                  "reasoning_effort": "high"
+                },
+                "low": {
+                  "reasoning_effort": "low"
+                }
+              },
+              "name": "fixture-controls",
+              "summary": {
+                "auto": {
+                  "summary_mode": "auto"
+                }
+              },
+              "text_field": "reasoning_content"
+            }
+          },
+          "request_options": {},
+          "supports_audio_input": false,
+          "supports_image_input": false,
+          "supports_streaming": true,
+          "supports_structured_output": true,
+          "supports_tools": true,
+          "supports_video_input": false,
+          "temperature": null
+        }
+      ],
+      "headers": {},
+      "meta": {
+        "baseline_fingerprint": "sha256:52f385f401e7984d8a40e35b86c0cb00135eee97c9cdc45a535a5ec6b41d6011",
+        "baseline_revision": 1,
+        "deprecated": false,
+        "enabled": true,
+        "origin": "inline"
+      },
+      "protocol": "openai-chat-completions",
+      "provider_type": "custom",
+      "revision": 1,
+      "template_id": "reasoning-text-fixture",
+      "verified_on": "2026-11-11"
+    }
+  }
+}

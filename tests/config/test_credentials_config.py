@@ -16,7 +16,7 @@ from ouro.config import (
 )
 from ouro.config.endpoints import endpoint_config_from_mapping
 from ouro.config.provider_models import default_api_path
-from ouro.core.errors import ConfigError, CredentialError
+from ouro.core.errors import ConfigError, CredentialError, InvalidConfigDataError
 from ouro.core.provider import ProviderRetryPolicy
 from ouro.core.reasoning import ReasoningRequest, resolve_reasoning
 
@@ -341,6 +341,7 @@ def test_endpoint_config_rejects_noncanonical_fields(field) -> None:
     "raw",
     (
         {"provider": {}},
+        {"undeclared_field": {}},
         {"providers": {"items": []}},
         {"providers": {"items": {}, "unknown": True}},
         {
@@ -362,8 +363,10 @@ def test_provider_config_rejects_noncanonical_shapes(tmp_path, raw) -> None:
     config_dir.mkdir()
     (config_dir / "providers.json").write_text(json.dumps(raw), encoding="utf-8")
 
-    with pytest.raises(ConfigError, match="unsupported|must be an object"):
+    with pytest.raises(InvalidConfigDataError, match="unsupported|must be an object") as error:
         ProviderConfigManager(tmp_path).snapshot()
+    assert "ouro-upgrade" not in str(error.value)
+    assert json.loads((config_dir / "providers.json").read_text("utf-8")) == raw
 
 
 def test_provider_config_resolves_endpoint_capabilities(tmp_path) -> None:
@@ -636,7 +639,7 @@ def test_invalid_provider_registry_shapes_fail_visibly(tmp_path, providers_secti
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match="providers"):
+    with pytest.raises(InvalidConfigDataError, match="providers"):
         ProviderConfigManager(tmp_path).snapshot()
 
 
@@ -648,7 +651,7 @@ def test_unknown_explicit_default_provider_fails_visibly(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match="default provider not found"):
+    with pytest.raises(InvalidConfigDataError, match="default provider not found"):
         ProviderConfigManager(tmp_path).snapshot()
 
 

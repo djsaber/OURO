@@ -34,7 +34,7 @@ from ouro.config.providers.codec import provider_config_from_mapping, provider_c
 from ouro.config.providers.runtime import merge_runtime_options, runtime_options_from_config
 from ouro.config.reasoning import EndpointReasoningConfig
 from ouro.core.base import new_id
-from ouro.core.errors import ConfigError
+from ouro.core.errors import ConfigError, InvalidConfigDataError
 from ouro.core.provider import ProviderRetryPolicy
 
 
@@ -55,13 +55,16 @@ class ProviderConfigManager:
 
     def snapshot(self, *, include_builtin: bool = True) -> ProviderConfigSnapshot:
         raw = self.load_raw()
-        configured = self._configured_providers(raw)
-        default_provider_id = self._default_provider_id(raw, configured)
-        if (
-            default_provider_id != BUILTIN_FAUX_PROVIDER_ID
-            and default_provider_id not in configured
-        ):
-            raise ConfigError(f"default provider not found: {default_provider_id}")
+        try:
+            configured = self._configured_providers(raw)
+            default_provider_id = self._default_provider_id(raw, configured)
+            if (
+                default_provider_id != BUILTIN_FAUX_PROVIDER_ID
+                and default_provider_id not in configured
+            ):
+                raise ConfigError(f"default provider not found: {default_provider_id}")
+        except ConfigError as exc:
+            raise InvalidConfigDataError(str(exc)) from exc
         providers = dict(configured)
         if include_builtin:
             providers.setdefault(BUILTIN_FAUX_PROVIDER_ID, builtin_faux_provider())
@@ -1116,8 +1119,9 @@ class ProviderConfigManager:
 
     def _configured_providers(self, raw: Mapping[str, Any]) -> dict[str, ProviderConfig]:
         providers: dict[str, ProviderConfig] = {}
-        if "provider" in raw:
-            raise ConfigError("unsupported root config field provider; use providers")
+        unsupported = sorted(set(raw) - {"providers"})
+        if unsupported:
+            raise ConfigError(f"unsupported provider root config fields: {', '.join(unsupported)}")
         providers_section = raw.get("providers")
         if providers_section is not None and not isinstance(providers_section, Mapping):
             raise ConfigError("providers config must be an object")

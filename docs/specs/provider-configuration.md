@@ -6,6 +6,8 @@
 
 配置层负责读取、验证和持久化当前权威配置；Provider 层负责把已解析的运行参数适配到外部模型协议。
 会话模型选择属于 application，不属于 Provider adapter。
+配置校验只依据当前字段定义与约束，不识别历史格式。已保存的 Provider 配置不符合当前契约时，
+读取失败以 `InvalidConfigDataError` 表达；校验过程不转换数据。
 
 ## Provider 与 Endpoint
 
