@@ -1,0 +1,59 @@
+{
+  "schema_version": 2,
+  "revision": 7,
+  "entries": [
+    {
+      "definition": {
+        "schema_version": 1,
+        "name": "Reader",
+        "description": "Frozen prompt",
+        "system_prompt": "保留冻结指令。",
+        "tool_selection": {
+          "mode": "all",
+          "names": []
+        },
+        "model": null,
+        "agent_id": "reader",
+        "can_spawn": false,
+        "default_budget": {
+          "max_model_rounds": 12,
+          "max_input_tokens": null,
+          "max_output_tokens": null,
+          "max_elapsed_seconds": 30.0
+        },
+        "contract_hash": "sha256:a17b74f65674873ecbd203bab8a5b5054409b2b8710704ccaa6df5b303e81e32"
+      },
+      "effective_tools": [
+        {
+          "public_name": "Read",
+          "canonical_tool_id": "ouro.host/tools/Read",
+          "owner_id": null,
+          "execution_contract_hash": "read/1",
+          "source": "builtin",
+          "effect": "read_only",
+          "minimum_permission_mode": "approval"
+        }
+      ],
+      "missing_tool_names": []
+    }
+  ],
+  "spawn_policy": {
+    "allowed_agent_id_patterns": [
+      "*"
+    ],
+    "allowed_model_patterns": [
+      "*"
+    ],
+    "allowed_execution_modes": [
+      "sync",
+      "async"
+    ],
+    "allowed_lifecycle_bindings": [
+      "bound"
+    ],
+    "allow_write": true,
+    "allow_mcp": true
+  },
+  "created_at": "2026-11-07T00:00:00Z",
+  "contract_hash": "sha256:797ff77cfbde16ea4a589b63bc4b7906c1259b0567fd0de6a8b6df40b813b870"
+}

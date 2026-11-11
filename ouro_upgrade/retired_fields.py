@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Any
 
+from ouro_upgrade.agents import upgrade_definition, upgrade_spawn_policy
 from ouro_upgrade.errors import require
 
 _CONTROL_FIELDS = ("phase", "revision", "updated_at", "error")
@@ -15,9 +16,12 @@ def _controls(prefix: str) -> tuple[str, ...]:
 
 
 PATHS = {
+    "agent_definition": ("can_spawn",),
+    "agent_catalog": ("spawn_policy.allowed_lifecycle_bindings",),
     "session": ("title_locked", *_controls("controls")),
     "harness": _controls("state.controls"),
     "run": (
+        "continuation.controllers.*.builtin_contract_hash",
         *_controls("continuation.settlement_plan.harness.state.controls"),
         "continuation.settlement_plan.session_control_transitions.*.expected_activation_revision",
     ),
@@ -34,40 +38,46 @@ PATHS = {
 }
 
 
-def _members(value: Any, path: list[str]) -> Iterator[tuple[dict[str, Any], str]]:
+def members_at(value: Any, path: list[str]) -> Iterator[tuple[dict[str, Any], str]]:
     if value is None:
         return
     part, *rest = path
     if part == "*":
         for child in value:
-            yield from _members(child, rest)
+            yield from members_at(child, rest)
     elif part in value:
         if rest:
-            yield from _members(value[part], rest)
+            yield from members_at(value[part], rest)
         else:
             yield value, part
 
 
 def members(kind: str, value: dict[str, Any]) -> Iterator[tuple[dict[str, Any], str]]:
     for path in PATHS.get(kind, ()):
-        yield from _members(value, path.split("."))
+        yield from members_at(value, path.split("."))
 
 
-def sql_predicate(kind: str) -> str:
+def sql_predicate(kind: str, *, column: str = "payload", prefix: str = "$") -> str:
     conditions = []
     for path in PATHS.get(kind, ()):
         if ".*." in path:
-            prefix, suffix = path.split(".*.")
+            parent, suffix = path.split(".*.")
             conditions.append(
-                f"EXISTS (SELECT 1 FROM json_each(payload, '$.{prefix}') "
-                f"WHERE json_type(value, '$.{suffix}') IS NOT NULL)"
+                f"EXISTS (SELECT 1 FROM json_each({column}, '{prefix}.{parent}') AS retired "
+                f"WHERE json_type(retired.value, '$.{suffix}') IS NOT NULL)"
             )
         else:
-            conditions.append(f"json_type(payload, '$.{path}') IS NOT NULL")
+            conditions.append(f"json_type({column}, '{prefix}.{path}') IS NOT NULL")
     return " OR ".join(conditions)
 
 
 def retire(kind: str, value: dict[str, Any]) -> None:
+    if kind == "agent_definition":
+        upgrade_definition(value)
+        return
+    if kind == "agent_catalog":
+        upgrade_spawn_policy(value["spawn_policy"])
+        return
     if kind == "delegation":
         expected = {
             "agent_id": value["definition"]["agent_id"],

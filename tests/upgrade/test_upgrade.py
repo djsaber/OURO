@@ -17,7 +17,7 @@ from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro_upgrade import workspace
 from ouro_upgrade.engine import upgrade
 from ouro_upgrade.errors import UpgradeError
-from ouro_upgrade.records import loads
+from ouro_upgrade.json_codec import loads
 from ouro_upgrade.workspace import digest
 
 
@@ -190,6 +190,21 @@ def test_upgrade_imports_no_runtime_or_plugins() -> None:
                 "assert not any(k.startswith(('ouro.application.', 'ouro.plugins.', "
                 "'ouro.builtin_plugins.', 'ouro.tui.')) for k in sys.modules)"
             ),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_workspace_recovery_does_not_import_record_converters() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import ouro_upgrade.workspace; "
+            "assert 'ouro_upgrade.records' not in sys.modules; "
+            "assert 'ouro_upgrade.configuration' not in sys.modules",
         ],
         capture_output=True,
         text=True,

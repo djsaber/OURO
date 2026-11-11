@@ -20,7 +20,7 @@ from ouro.core.tools import (
     ToolResultValue,
 )
 from ouro_upgrade.errors import require
-from ouro_upgrade.records import _context_metrics, convert, validate
+from ouro_upgrade.records import _context_metrics, advance_record, convert, validate
 
 
 def messages_and_runs(
@@ -154,7 +154,8 @@ def messages_and_runs(
                     value["status"] = "recoverable"
                 states.append(validate(ToolCallState, state))
             value["active_tool_batch"] = None
-        run = validate(RunRecord, convert("run", value))
+        advance_record("run", value)
+        run = validate(RunRecord, value)
         if batch is not None:
             run.active_tool_batch = head
         runs.append(run)
@@ -230,6 +231,7 @@ def messages_and_runs(
                 "feedback_is_error": result.get("is_error", False),
             }
             # Published text is known; it does not prove an execution attempt or Outcome.
+        advance_record("message", value)
         messages.append(validate(MessageRecord, value))
     return messages, runs, [*calls.values(), *execution_facts], states
 
@@ -253,6 +255,7 @@ def compactions(raw_records, messages):
         )
         value.pop("source_digest", None)
         value.pop("prompt_hash", None)
+        advance_record("compaction", value)
         result.append(validate(CompactionRecord, value))
     return result
 
@@ -284,7 +287,7 @@ def context(raw):
 
 
 def session(raw, runs, messages, resources):
-    source = dict(raw)
+    source = deepcopy(raw)
     timestamp = (
         source.get("created_at")
         or source.get("updated_at")
@@ -302,17 +305,15 @@ def session(raw, runs, messages, resources):
     source.setdefault("message_count", len(messages))
     source.setdefault("status", "idle")
     source.setdefault("harness_version", "harness_upgrade")
-    value = convert("session", source)
-    value = {
-        **value,
-        "run_count": len(runs),
-        "resource_count": len(resources),
-        "message_count": len(messages),
-        "last_message_id": messages[-1].message_id if messages else None,
-    }
+    advance_record("session", source)
+    source.update(
+        run_count=len(runs),
+        resource_count=len(resources),
+        message_count=len(messages),
+        last_message_id=messages[-1].message_id if messages else None,
+    )
     if any(
-        run.run_id == value.get("active_run_id") and run.status == "recoverable" for run in runs
+        run.run_id == source.get("active_run_id") and run.status == "recoverable" for run in runs
     ):
-        value.update(status="idle", active_run_id=None)
-    record = validate(SessionRecord, value)
-    return record
+        source.update(status="idle", active_run_id=None)
+    return validate(SessionRecord, source)

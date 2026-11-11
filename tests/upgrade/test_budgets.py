@@ -11,7 +11,8 @@ from ouro.core.context import ContextMetrics
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro_upgrade.engine import upgrade
 from ouro_upgrade.errors import UpgradeError
-from ouro_upgrade.records import convert, loads
+from ouro_upgrade.json_codec import loads
+from ouro_upgrade.records import convert
 from tests.upgrade.conftest import FIXTURES
 from tests.upgrade.test_upgrade import hashes
 

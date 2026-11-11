@@ -16,8 +16,9 @@ from ouro.sessions.layout import DATA_LAYOUT_VERSION
 from ouro_upgrade import databases, session_records, workspace
 from ouro_upgrade.engine import upgrade
 from ouro_upgrade.errors import UpgradeError
-from ouro_upgrade.records import convert
+from ouro_upgrade.records import _catalog_hash, convert
 from ouro_upgrade.units import UpgradeUnit
+from tests.upgrade.conftest import FIXTURES
 from tests.upgrade.test_isolation import confirmed
 from tests.upgrade.test_steps import historical_agent_catalog
 from tests.upgrade.test_upgrade import hashes
@@ -319,44 +320,12 @@ def test_native_authority_upgrade_preserves_catalog_grants_from_existing_contain
 
 
 def _frozen_catalog():
-    import hashlib
-
-    from ouro.core.agents import AgentCatalogEntry, AgentCatalogSnapshot, AgentDefinition
-
-    catalog = AgentCatalogSnapshot(
-        entries=(
-            AgentCatalogEntry(
-                definition=AgentDefinition(
-                    agent_id="reader", name="Reader", description="Frozen prompt"
-                ),
-            ),
-        )
-    ).model_dump(mode="json")
-    definition = catalog["entries"][0]["definition"]
-    definition["can_spawn"] = False
-    payload = {key: value for key, value in definition.items() if key != "contract_hash"}
-    definition["contract_hash"] = (
-        "sha256:"
-        + hashlib.sha256(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-    )
-    catalog["spawn_policy"]["allowed_lifecycle_bindings"] = ["bound"]
-    payload = {
-        key: catalog[key] for key in ("schema_version", "revision", "entries", "spawn_policy")
-    }
-    catalog["contract_hash"] = (
-        "sha256:"
-        + hashlib.sha256(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-    )
-    return catalog
+    return json.loads((FIXTURES / "records/frozen-agent-catalog.json").read_text("utf-8"))
 
 
 @pytest.mark.parametrize("corrupt", [False, True])
 def test_current_container_upgrades_frozen_agents_and_isolates_invalid_contracts(
-    native_home, corrupt
+    native_home, corrupt, monkeypatch
 ):
     home, backend = native_home
     upgrade(home, session_backend=backend)
@@ -385,14 +354,98 @@ def test_current_container_upgrades_frozen_agents_and_isolates_invalid_contracts
         assert not path.exists()
         return
     assert report["status"] == "upgrade_required"
+    statements = []
+    connect = sqlite3.connect
+
+    def traced_connect(target, *args, **kwargs):
+        connection = connect(target, *args, **kwargs)
+        if str(target).endswith("data.sqlite3"):
+            connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(databases.sqlite3, "connect", traced_connect)
     assert upgrade(home, session_backend=backend)["status"] == "upgraded"
+    # The private copy selects changed rows once, without a separate existence scan.
+    assert sum(sql.startswith("SELECT rowid, payload FROM runs WHERE") for sql in statements) == 1
+    assert not any(sql.startswith("SELECT 1 FROM runs WHERE") for sql in statements)
     loaded = repository(home, backend).load_run(run["session_id"], run["run_id"])
     assert loaded.agent_catalog.entries[0].definition.description == "Frozen prompt"
     assert (
         loaded.agent_catalog.created_at.isoformat().replace("+00:00", "Z") == catalog["created_at"]
     )
     assert loaded.agent_catalog.contract_hash != catalog["contract_hash"]
+    definition = loaded.agent_catalog.entries[0].definition
+    assert definition.system_prompt == catalog["entries"][0]["definition"]["system_prompt"]
+    assert definition.default_budget.max_elapsed_seconds == 30
+    assert loaded.agent_catalog.entries[0].effective_tools[0].minimum_permission_mode == "approval"
+    monkeypatch.setattr(
+        databases.shutil, "copyfile", lambda *args: pytest.fail("copied current DB")
+    )
     assert upgrade(home, session_backend=backend)["status"] == "current"
+
+
+@pytest.mark.parametrize("kind", ["run", "delegation"])
+@pytest.mark.parametrize("version", [None, 2, True, 1.0])
+def test_native_scan_rejects_unsupported_frozen_definition_versions(native_home, kind, version):
+    from ouro.core.agents import AgentDefinition, DelegationRecord
+
+    home, backend = native_home
+    upgrade(home, session_backend=backend)
+    catalog = convert("agent_catalog", _frozen_catalog())
+    definition = catalog["entries"][0]["definition"]
+    if kind == "delegation":
+        value = DelegationRecord(
+            root_session_id="ses_fixture",
+            parent_session_id="ses_fixture",
+            parent_run_id="run_fixture",
+            idempotency_key="request",
+            task_description="Inspect",
+            prompt_digest="sha256:prompt",
+            definition=AgentDefinition.model_validate(definition),
+        ).model_dump(mode="json")
+        value["definition"] = definition
+    if version is None:
+        definition.pop("schema_version")
+    else:
+        definition["schema_version"] = version
+    catalog["contract_hash"] = _catalog_hash(catalog)
+    path = database(home, backend)
+    with closing(sqlite3.connect(path)) as connection:
+        if kind == "run":
+            value = json.loads(connection.execute("SELECT payload FROM runs LIMIT 1").fetchone()[0])
+            value["agent_catalog"] = catalog
+            connection.execute("UPDATE runs SET payload=?", (json.dumps(value),))
+        elif backend == "sqlite":
+            # Only the owned payload is needed by the offline version selector.
+            connection.execute(
+                "INSERT INTO delegations(delegation_id, root_session_id, parent_session_id, "
+                "parent_run_id, idempotency_key, spawn_state, revision, created_at, payload) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                tuple(
+                    value[key]
+                    for key in (
+                        "delegation_id",
+                        "root_session_id",
+                        "parent_session_id",
+                        "parent_run_id",
+                        "idempotency_key",
+                        "spawn_state",
+                        "revision",
+                        "created_at",
+                    )
+                )
+                + (json.dumps(value),),
+            )
+        else:
+            directory = path.parent / "delegations"
+            directory.mkdir(exist_ok=True)
+            (directory / f"{value['delegation_id']}.json").write_text(json.dumps(value), "utf-8")
+        connection.commit()
+    before = hashes(home)
+    report = upgrade(home, session_backend=backend, check=True, isolate_failures=True)
+    assert report["status"] == "partial"
+    assert "unsupported agent_definition version" in report["failures"][0]["error"]
+    assert hashes(home) == before
 
 
 def test_delegation_definition_uses_the_same_offline_conversion():
@@ -418,6 +471,63 @@ def test_delegation_definition_uses_the_same_offline_conversion():
     assert restored.definition.description == definition["description"]
     assert "can_spawn" in record["definition"]
     assert convert("delegation", result) is result
+
+
+def test_continuation_release_copy_is_retired_in_current_container(native_home):
+    from ouro.core.state import RunContinuationCheckpoint, RunContinuationControllerRef
+
+    home, backend = native_home
+    upgrade(home, session_backend=backend)
+    continuation = RunContinuationCheckpoint(
+        controllers=[
+            RunContinuationControllerRef(
+                plugin_id="example",
+                policy_id="boundary",
+                version="1",
+                plugin_class="builtin",
+                release_id="release",
+                generation_id="generation",
+                contract_hash="policy",
+                execution_contract_hash="execution",
+            )
+        ]
+    ).model_dump(mode="json")
+    continuation["controllers"][0]["builtin_contract_hash"] = "release"
+    with closing(sqlite3.connect(database(home, backend))) as connection:
+        run = json.loads(connection.execute("SELECT payload FROM runs LIMIT 1").fetchone()[0])
+        run["continuation"] = continuation
+        connection.execute(
+            "UPDATE runs SET payload=? WHERE run_id=?", (json.dumps(run), run["run_id"])
+        )
+        connection.commit()
+    assert upgrade(home, session_backend=backend)["status"] == "upgraded"
+    loaded = repository(home, backend).load_run(run["session_id"], run["run_id"])
+    continuation["controllers"][0].pop("builtin_contract_hash")
+    assert loaded.continuation.model_dump(mode="json") == continuation
+    assert upgrade(home, session_backend=backend)["status"] == "current"
+
+
+def test_failed_conversion_closes_cursor_before_workspace_cleanup(native_home, monkeypatch):
+    from ouro_upgrade import session_storage
+    from ouro_upgrade.errors import UpgradeDataError
+
+    home, backend = native_home
+    with closing(sqlite3.connect(database(home, backend))) as connection:
+        cursor = connection.execute("SELECT * FROM runs LIMIT 1")
+        row = list(cursor.fetchone())
+        names = [column[0] for column in cursor.description]
+        row[names.index("run_id")] = "run_second"
+        connection.execute(f"INSERT INTO runs VALUES ({','.join('?' for _ in row)})", row)
+        connection.commit()
+
+    def fail(*args):
+        raise UpgradeDataError("conversion failed with unread rows")
+
+    monkeypatch.setattr(session_storage, "convert", fail)
+    report = upgrade(home, session_backend=backend, isolate_failures=True)
+    assert report["status"] == "partial"
+    assert "conversion failed with unread rows" in report["failures"][0]["error"]
+    assert not list((home / ".upgrade").glob("*/scratch"))
 
 
 @pytest.mark.parametrize("invalid_phase", [False, True])

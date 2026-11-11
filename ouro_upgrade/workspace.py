@@ -18,8 +18,8 @@ from ouro.local_io import replace_path_with_retry, write_json_atomic
 from ouro.local_locks import FileAccessLock
 from ouro.local_permissions import reject_link, restrict_to_user
 from ouro_upgrade.errors import UpgradeError
+from ouro_upgrade.json_codec import loads
 from ouro_upgrade.progress import ProgressCallback, UpgradePhase, UpgradeProgress
-from ouro_upgrade.records import loads
 
 
 def digest(path: Path, *, sync: bool = False, directory: bool = False) -> str | None:

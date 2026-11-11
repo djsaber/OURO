@@ -18,8 +18,8 @@ from ouro.deployment import (
 from ouro_upgrade import configuration, databases, files, plugins
 from ouro_upgrade import sessions as session_upgrade
 from ouro_upgrade.errors import UpgradeError, require
+from ouro_upgrade.json_codec import loads
 from ouro_upgrade.progress import ProgressCallback
-from ouro_upgrade.records import loads
 from ouro_upgrade.units import UpgradeUnit, UpgradeUnits
 from ouro_upgrade.workspace import Workspace
 

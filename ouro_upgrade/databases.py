@@ -8,12 +8,25 @@ from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
 
-from ouro.billing.local import LocalUsageLedger
+from ouro.billing.local import (
+    _APPLICATION_ID as USAGE_APPLICATION_ID,
+)
+from ouro.billing.local import (
+    _SCHEMA_VERSION as USAGE_SCHEMA_VERSION,
+)
+from ouro.billing.local import (
+    LocalUsageLedger,
+)
 from ouro.billing.schema import USAGE_SCHEMA
 from ouro.core.billing import ProviderUsageEntry
 from ouro_upgrade.errors import UpgradeDataError, UpgradeError, require
-from ouro_upgrade.records import convert, convert_task, dumps, loads, validate
+from ouro_upgrade.json_codec import dumps, loads
+from ouro_upgrade.records import convert, convert_task, validate
+from ouro_upgrade.steps import UpgradeStep, plan
 from ouro_upgrade.workspace import Workspace
+
+# The task repository has no exported container-version constant.
+TASK_SCHEMA_VERSION = 3
 
 _IDENTITIES = {
     "task": ("task_id", "revision"),
@@ -131,35 +144,26 @@ def payloads(
     """Only internal table names enter SQL; preserve keys and sequence allocation."""
     changed = False
     query = f"SELECT rowid AS upgrade_rowid, * FROM {table}"
-    cursor = connection.execute(query)
-    while rows := cursor.fetchmany(128):
-        for row in rows:
-            raw = loads(row["payload"])
-            value = convert_task(kind, raw, version) if version else convert(kind, raw)
-            if value is not raw:
-                require(
-                    all(row[key] == value.get(key) for key in _IDENTITIES[kind]),
-                    table,
-                    "record projection identity mismatch",
-                )
-                connection.execute(
-                    f"UPDATE {table} SET payload=? WHERE rowid=?",
-                    (dumps(value), row["upgrade_rowid"]),
-                )
-                changed = True
+    with closing(connection.execute(query)) as cursor:
+        while rows := cursor.fetchmany(128):
+            for row in rows:
+                raw = loads(row["payload"])
+                value = convert_task(kind, raw, version) if version else convert(kind, raw)
+                if value is not raw:
+                    require(
+                        all(row[key] == value.get(key) for key in _IDENTITIES[kind]),
+                        table,
+                        "record projection identity mismatch",
+                    )
+                    connection.execute(
+                        f"UPDATE {table} SET payload=? WHERE rowid=?",
+                        (dumps(value), row["upgrade_rowid"]),
+                    )
+                    changed = True
     return changed
 
 
-def usage(connection: sqlite3.Connection) -> bool:
-    version = connection.execute("PRAGMA user_version").fetchone()[0]
-    require(version in (1, 2, 5), "usage", "unsupported database schema")
-    require(
-        connection.execute("PRAGMA application_id").fetchone()[0] == 0x4F555242,
-        "usage",
-        "unexpected database application id",
-    )
-    if version == 5:
-        return False
+def _usage_requests(connection: sqlite3.Connection) -> None:
     payloads(connection, "entry_records", "usage")
     payloads(connection, "events", "usage_event")
     # Preserve the effective ledger; derive raw request totals only from original reports.
@@ -172,33 +176,56 @@ def usage(connection: sqlite3.Connection) -> bool:
     connection.execute("ALTER TABLE entry_records DROP COLUMN source_event_id")
     for statement in USAGE_SCHEMA[4:]:
         connection.execute(statement)
-    for row in connection.execute("SELECT event_id, payload FROM events ORDER BY sequence"):
-        event = loads(row["payload"])
-        if event["event_type"] != "record":
-            continue
-        entry = validate(ProviderUsageEntry, event["entry"])
-        connection.execute(
-            "INSERT INTO raw_requests VALUES (?, ?)", (entry.entry_id, row["event_id"])
-        )
-        if entry.run_id is not None:
-            LocalUsageLedger._add_run_usage(connection, entry)
-    connection.execute("PRAGMA user_version=5")
-    return True
+    with closing(
+        connection.execute("SELECT event_id, payload FROM events ORDER BY sequence")
+    ) as rows:
+        for row in rows:
+            event = loads(row["payload"])
+            if event["event_type"] != "record":
+                continue
+            entry = validate(ProviderUsageEntry, event["entry"])
+            connection.execute(
+                "INSERT INTO raw_requests VALUES (?, ?)", (entry.entry_id, row["event_id"])
+            )
+            if entry.run_id is not None:
+                LocalUsageLedger._add_run_usage(connection, entry)
+
+
+def _task_owners(connection: sqlite3.Connection) -> None:
+    connection.execute("ALTER TABLE tasks ADD COLUMN owner_id TEXT")
+    connection.execute("CREATE INDEX tasks_owner ON tasks(owner_id, updated_at DESC, task_id)")
+
+
+USAGE_STEPS = {1: UpgradeStep(5, _usage_requests), 2: UpgradeStep(5, _usage_requests)}
+TASK_STEPS = {1: UpgradeStep(3, _task_owners)}
+
+
+def usage(connection: sqlite3.Connection) -> bool:
+    version = connection.execute("PRAGMA user_version").fetchone()[0]
+    require(
+        connection.execute("PRAGMA application_id").fetchone()[0] == USAGE_APPLICATION_ID,
+        "usage",
+        "unexpected database application id",
+    )
+    transitions = plan("usage SQLite", version, target=USAGE_SCHEMA_VERSION, steps=USAGE_STEPS)
+    for step in transitions:
+        step.transform(connection)
+    if transitions:
+        connection.execute(f"PRAGMA user_version={USAGE_SCHEMA_VERSION}")
+    return bool(transitions)
 
 
 def tasks(connection: sqlite3.Connection) -> bool:
     version = connection.execute("PRAGMA user_version").fetchone()[0]
-    require(version in (1, 3), "tasks", "expected database schema 1 or 3")
-    if version == 3:
+    transitions = plan("tasks SQLite", version, target=TASK_SCHEMA_VERSION, steps=TASK_STEPS)
+    if not transitions:
         return False
-    changed = payloads(connection, "tasks", "task", version=version)
-    changed = payloads(connection, "task_executions", "execution", version=version) or changed
-    if version == 1:
-        connection.execute("ALTER TABLE tasks ADD COLUMN owner_id TEXT")
-        connection.execute("CREATE INDEX tasks_owner ON tasks(owner_id, updated_at DESC, task_id)")
-        connection.execute("PRAGMA user_version=3")
-        changed = True
-    return changed
+    for step in transitions:
+        step.transform(connection)
+    payloads(connection, "tasks", "task", version=version)
+    payloads(connection, "task_executions", "execution", version=version)
+    connection.execute(f"PRAGMA user_version={TASK_SCHEMA_VERSION}")
+    return True
 
 
 def remove_database(work: Workspace, relative: str) -> None:
@@ -207,11 +234,11 @@ def remove_database(work: Workspace, relative: str) -> None:
 
 
 def current_tasks(connection: sqlite3.Connection) -> bool:
-    return connection.execute("PRAGMA user_version").fetchone()[0] == 3
+    return connection.execute("PRAGMA user_version").fetchone()[0] == TASK_SCHEMA_VERSION
 
 
 def current_usage(connection: sqlite3.Connection) -> bool:
     return (
-        connection.execute("PRAGMA user_version").fetchone()[0] == 5
-        and connection.execute("PRAGMA application_id").fetchone()[0] == 0x4F555242
+        connection.execute("PRAGMA user_version").fetchone()[0] == USAGE_SCHEMA_VERSION
+        and connection.execute("PRAGMA application_id").fetchone()[0] == USAGE_APPLICATION_ID
     )

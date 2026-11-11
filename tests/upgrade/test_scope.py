@@ -10,7 +10,7 @@ import pytest
 from ouro.core.resources import SessionResourceReference
 from ouro_upgrade.engine import upgrade
 from ouro_upgrade.errors import UpgradeError
-from ouro_upgrade.records import loads
+from ouro_upgrade.json_codec import loads
 from tests.upgrade.test_upgrade import hashes
 
 

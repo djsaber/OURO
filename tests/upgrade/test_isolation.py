@@ -12,7 +12,7 @@ from ouro.sessions import LocalSessionStore
 from ouro_upgrade import workspace
 from ouro_upgrade.engine import upgrade
 from ouro_upgrade.errors import UpgradeError
-from ouro_upgrade.records import loads
+from ouro_upgrade.json_codec import loads
 from ouro_upgrade.units import UpgradeUnit
 from tests.upgrade.test_upgrade import hashes
 

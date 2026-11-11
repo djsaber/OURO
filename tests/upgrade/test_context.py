@@ -15,7 +15,8 @@ from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro_upgrade import records
 from ouro_upgrade.engine import upgrade
 from ouro_upgrade.errors import UpgradeError
-from ouro_upgrade.records import convert, loads
+from ouro_upgrade.json_codec import loads
+from ouro_upgrade.records import convert
 from ouro_upgrade.steps import UpgradeStep
 from tests.upgrade.conftest import FIXTURES
 from tests.upgrade.test_upgrade import hashes

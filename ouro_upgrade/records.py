@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import math
 from collections.abc import Iterator
 from typing import Any
 
@@ -15,6 +14,7 @@ from ouro.automation.file_records import StoredExecution, StoredTask
 from ouro.core.agents import AgentCatalogSnapshot, AgentDefinition, DelegationRecord
 from ouro.core.base import VersionedOuroModel
 from ouro.core.billing import ProviderUsageEntry, UsageLedgerEvent
+from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextMetrics
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.harness import HarnessVersion
@@ -23,7 +23,6 @@ from ouro.core.resources import SessionResourceReference
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolCallState
 from ouro_upgrade import retired_fields
-from ouro_upgrade.agents import upgrade_definition, upgrade_spawn_policy
 from ouro_upgrade.errors import UpgradeDataError
 from ouro_upgrade.steps import UpgradeStep, advance
 
@@ -32,6 +31,7 @@ MODELS: dict[str, type[BaseModel]] = {
     "run": RunRecord,
     "message": MessageRecord,
     "context": ContextSnapshotRecord,
+    "compaction": CompactionRecord,
     "harness": HarnessVersion,
     "tool_state": ToolCallState,
     "delegation": DelegationRecord,
@@ -44,6 +44,13 @@ MODELS: dict[str, type[BaseModel]] = {
     "usage_event": UsageLedgerEvent,
 }
 
+NESTED_RECORDS = {
+    "run": (("agent_catalog", "agent_catalog"),),
+    "agent_catalog": (("entries.*.definition", "agent_definition"),),
+    "delegation": (("definition", "agent_definition"),),
+    "usage_event": (("entry", "usage"),),
+}
+
 _LEGACY_BUDGET_FIELDS = (
     "context_window_tokens",
     "reserved_output_tokens",
@@ -52,44 +59,6 @@ _LEGACY_BUDGET_FIELDS = (
     "estimated_utilization_ratio",
     "over_budget",
 )
-
-
-def loads(text: str) -> dict[str, Any]:
-    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in items:
-            if key in result:
-                raise UpgradeDataError("duplicate JSON key")
-            result[key] = value
-        return result
-
-    try:
-        value = json.loads(
-            text,
-            object_pairs_hook=pairs,
-            parse_constant=_invalid_constant,
-            parse_float=_finite_float,
-        )
-    except (ValueError, RecursionError) as exc:
-        raise UpgradeDataError("invalid JSON object") from exc
-    if not isinstance(value, dict):
-        raise UpgradeDataError("expected JSON object")
-    return value
-
-
-def _invalid_constant(_: str) -> None:
-    raise UpgradeDataError("non-finite JSON number")
-
-
-def _finite_float(text: str) -> float:
-    value = float(text)
-    if not math.isfinite(value):
-        raise UpgradeDataError("non-finite JSON number")
-    return value
-
-
-def dumps(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
 
 
 def validate[Model: BaseModel](model: type[Model], value: dict[str, Any]) -> Model:
@@ -370,15 +339,10 @@ def convert(kind: str, raw: dict[str, Any]) -> dict[str, Any]:
 
 def _nested(kind: str, value: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]]:
     """Visit only schema-owned records, never dictionaries containing opaque data."""
-    if kind == "run" and value.get("agent_catalog") is not None:
-        yield "agent_catalog", value["agent_catalog"]
-    elif kind == "agent_catalog":
-        for entry in value["entries"]:
-            yield "agent_definition", entry["definition"]
-    elif kind == "delegation":
-        yield "agent_definition", value["definition"]
-    if kind == "usage_event" and value.get("entry") is not None:
-        yield "usage", value["entry"]
+    for path, child in NESTED_RECORDS.get(kind, ()):
+        for owner, field in retired_fields.members_at(value, path.split(".")):
+            if owner[field] is not None:
+                yield child, owner[field]
 
 
 def _needs_upgrade(kind: str, value: dict[str, Any]) -> bool:
@@ -388,21 +352,19 @@ def _needs_upgrade(kind: str, value: dict[str, Any]) -> bool:
         return True
     if next(retired_fields.members(kind, value), None) is not None:
         return True
-    if kind == "agent_definition" and "can_spawn" in value:
-        return True
-    if kind == "agent_catalog" and "allowed_lifecycle_bindings" in value.get("spawn_policy", {}):
-        return True
     return any(_needs_upgrade(child, raw) for child, raw in _nested(kind, value))
 
 
-def _convert_nested(kind: str, value: dict[str, Any]) -> None:
-    for child, raw in _nested(kind, value):
-        _convert_owned(child, raw)
+def advance_record(kind: str, value: dict[str, Any]) -> None:
+    """Convert an owned graph in place; the caller validates its completed record."""
+    try:
+        if _needs_upgrade(kind, value):
+            _convert_owned(kind, value)
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise UpgradeDataError(f"incomplete historical {kind} structure") from exc
 
 
 def _convert_owned(kind: str, value: dict[str, Any]) -> None:
-    if not _needs_upgrade(kind, value):
-        return
     if kind == "agent_catalog" and value["contract_hash"] != _catalog_hash(value):
         raise UpgradeDataError("agent catalog contract hash does not match its content")
     # The outer conversion owns this subtree. Its final model validation checks
@@ -414,11 +376,10 @@ def _convert_owned(kind: str, value: dict[str, Any]) -> None:
         steps=VERSION_STEPS.get(kind, {}),
     )
     retired_fields.retire(kind, value)
-    _convert_nested(kind, value)
-    if kind == "agent_definition":
-        upgrade_definition(value)
-    elif kind == "agent_catalog":
-        upgrade_spawn_policy(value["spawn_policy"])
+    for child, raw in _nested(kind, value):
+        if _needs_upgrade(child, raw):
+            _convert_owned(child, raw)
+    if kind == "agent_catalog":
         value["contract_hash"] = _catalog_hash(value)
 
 

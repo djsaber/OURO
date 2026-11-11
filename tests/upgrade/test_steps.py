@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -16,10 +18,12 @@ from ouro.core.agents import (
 )
 from ouro.core.harness import HarnessVersion
 from ouro.core.state import RunRecord, SessionRecord
-from ouro_upgrade import records
+from ouro_upgrade import records, session_records
 from ouro_upgrade.errors import UpgradeError
-from ouro_upgrade.records import convert, loads
-from ouro_upgrade.steps import UpgradeStep, migrate
+from ouro_upgrade.json_codec import loads
+from ouro_upgrade.records import convert
+from ouro_upgrade.session_storage import record_predicate
+from ouro_upgrade.steps import UpgradeStep, advance
 from tests.upgrade.conftest import FIXTURES
 
 
@@ -52,7 +56,7 @@ def test_invalid_steps_fail_before_executing_a_transform(target: int) -> None:
         pytest.fail("invalid transition must not execute")
 
     with pytest.raises(UpgradeError, match="invalid fixture upgrade step"):
-        migrate(
+        advance(
             "fixture", {"schema_version": 2}, target=6, steps={2: UpgradeStep(target, unexpected)}
         )
 
@@ -63,7 +67,7 @@ def test_only_registered_source_versions_are_accepted(version: object) -> None:
         pytest.fail("unknown source must not execute")
 
     with pytest.raises(UpgradeError, match="unsupported fixture version"):
-        migrate(
+        advance(
             "fixture", {"schema_version": version}, target=6, steps={2: UpgradeStep(6, unexpected)}
         )
 
@@ -76,7 +80,7 @@ def test_missing_transition_does_not_mutate_input() -> None:
         value["metadata"]["changed"] = True
 
     with pytest.raises(UpgradeError, match="missing fixture upgrade step from version 5"):
-        migrate("fixture", raw, target=6, steps={2: UpgradeStep(5, from_v2)})
+        advance("fixture", raw, target=6, steps={2: UpgradeStep(5, from_v2)})
     assert raw == before
 
 
@@ -207,3 +211,105 @@ def test_session_upgrade_preserves_workspace_and_call_permissions():
     assert session.session_id == before["session_id"]
     assert "workspace_trusted" not in upgraded
     assert raw == before
+
+
+def test_historical_session_headers_validate_once_after_assembly(monkeypatch):
+    run = RunRecord(session_id="session").model_dump(mode="json")
+    catalog = loads((FIXTURES / "records/frozen-agent-catalog.json").read_text("utf-8"))
+    run.update(schema_version=5, agent_catalog=catalog)
+    session = SessionRecord(session_id="session").model_dump(mode="json")
+    session.update(schema_version=2, active_compaction_id=None)
+    session.pop("context_selection")
+    before = copy.deepcopy((run, session))
+    validated = []
+    original = records.validate
+
+    def track(model, value):
+        validated.append(model)
+        return original(model, value)
+
+    monkeypatch.setattr(records, "validate", track)
+    monkeypatch.setattr(session_records, "validate", track)
+    messages, runs, _, _ = session_records.messages_and_runs([], [run], 0)
+    result = session_records.session(session, runs, messages, [])
+    assert result.run_count == 1
+    assert runs[0].agent_catalog.resolve("reader").definition.agent_id == "reader"
+    assert validated.count(RunRecord) == validated.count(SessionRecord) == 1
+    assert (run, session) == before
+
+
+def test_native_selector_uses_registered_owned_paths(monkeypatch):
+    from ouro_upgrade import retired_fields
+
+    raw = RunRecord(session_id="session").model_dump(mode="json")
+    raw["agent_catalog"] = AgentCatalogSnapshot().model_dump(mode="json")
+    raw["agent_catalog"]["future_header"] = HarnessVersion(session_id="session").model_dump(
+        mode="json"
+    )
+    raw["agent_catalog"]["future_header"]["retired_marker"] = None
+    monkeypatch.setitem(
+        records.NESTED_RECORDS,
+        "agent_catalog",
+        (
+            *records.NESTED_RECORDS["agent_catalog"],
+            ("future_header", "harness"),
+        ),
+    )
+    monkeypatch.setitem(
+        retired_fields.PATHS,
+        "harness",
+        (
+            *retired_fields.PATHS["harness"],
+            "retired_marker",
+        ),
+    )
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.execute("CREATE TABLE records(payload TEXT)")
+        for expected in (True, False):
+            assert records._needs_upgrade("run", raw) is expected
+            connection.execute("DELETE FROM records")
+            connection.execute("INSERT INTO records VALUES (?)", (json.dumps(raw),))
+            selected = connection.execute(
+                f"SELECT 1 FROM records WHERE {record_predicate('run')}"
+            ).fetchone()
+            assert (selected is not None) is expected
+            raw["agent_catalog"]["future_header"].pop("retired_marker", None)
+
+
+@pytest.mark.parametrize("native_home", ["sqlite"], indirect=True)
+def test_native_schema_extension_requires_a_complete_path(native_home, monkeypatch):
+    from ouro_upgrade import session_storage, sessions
+    from ouro_upgrade.engine import upgrade
+    from tests.upgrade.test_native_sessions import database
+    from tests.upgrade.test_upgrade import hashes
+
+    home, backend = native_home
+    target = sessions.SQLITE_SCHEMA_VERSION
+    monkeypatch.setattr(sessions, "SQLITE_SCHEMA_VERSION", target + 1)
+    before = hashes(home)
+    with pytest.raises(UpgradeError, match="missing Session SQLite upgrade step"):
+        upgrade(home, session_backend=backend)
+    assert hashes(home) == before
+
+    def add_projection(connection):
+        connection.execute("CREATE TABLE future_projection(value TEXT)")
+
+    monkeypatch.setitem(
+        session_storage.SQLITE_STEPS, target, UpgradeStep(target + 1, add_projection)
+    )
+    assert upgrade(home, session_backend=backend)["status"] == "upgraded"
+    with closing(sqlite3.connect(database(home, backend))) as connection:
+        assert connection.execute(
+            "SELECT value FROM metadata WHERE key='sqlite_schema_version'"
+        ).fetchone()[0] == str(target + 1)
+        assert connection.execute("SELECT * FROM future_projection").fetchall() == []
+    assert upgrade(home, session_backend=backend)["status"] == "current"
+
+
+def test_task_container_target_matches_the_storage_writer(tmp_path):
+    from ouro.automation.sqlite import SQLiteTaskRepository
+    from ouro_upgrade.databases import TASK_SCHEMA_VERSION
+
+    SQLiteTaskRepository(tmp_path).initialize()
+    with closing(sqlite3.connect(tmp_path / "tasks.sqlite3")) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == TASK_SCHEMA_VERSION

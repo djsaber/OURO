@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from ouro.core.inputs import InputState
@@ -10,8 +11,10 @@ from ouro.sessions.sqlite_observation import OBSERVATION_SCHEMA
 from ouro_upgrade.databases import database
 from ouro_upgrade.errors import UpgradeDataError, require
 from ouro_upgrade.files import children, record
-from ouro_upgrade.records import MODELS, convert, dumps, loads, validate
+from ouro_upgrade.json_codec import dumps, loads
+from ouro_upgrade.records import MODELS, NESTED_RECORDS, convert, validate
 from ouro_upgrade.retired_fields import sql_predicate
+from ouro_upgrade.steps import UpgradeStep, plan
 from ouro_upgrade.workspace import Workspace
 
 
@@ -25,28 +28,62 @@ def observation_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(OBSERVATION_SCHEMA)
 
 
-def record_predicate(kind: str) -> str:
-    """Select headers requiring conversion without loading message or request bodies."""
-    version = "json_extract(payload, '$.schema_version') IS NOT ?"
-    retired = sql_predicate(kind)
-    if retired:
-        version += " OR " + retired
-    if kind == "run":
-        catalog_version = MODELS["agent_catalog"].model_fields["schema_version"].default
-        return (
-            version
-            + f""" OR (
-            json_type(payload, '$.agent_catalog') = 'object' AND (
-                json_extract(payload, '$.agent_catalog.schema_version') IS NOT {catalog_version}
-                OR json_type(payload, '$.agent_catalog.spawn_policy.allowed_lifecycle_bindings')
-                   IS NOT NULL
-                OR EXISTS (SELECT 1 FROM json_each(payload, '$.agent_catalog.entries')
-                           WHERE json_type(value, '$.definition.can_spawn') IS NOT NULL)
-            ))"""
+def _sqlite_observation(connection: sqlite3.Connection) -> None:
+    observation_schema(connection)
+    connection.execute("CREATE INDEX messages_sequence ON messages(session_id, sequence)")
+
+
+def _sqlite_catalog_authority(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        "UPDATE session_catalog SET payload=json_remove(payload, '$.workspace_trusted') "
+        "WHERE json_type(payload, '$.workspace_trusted') IS NOT NULL"
+    )
+
+
+SQLITE_STEPS = {
+    26: UpgradeStep(27, _sqlite_observation),
+    27: UpgradeStep(28, _sqlite_catalog_authority),
+}
+
+
+def sqlite_schema(connection: sqlite3.Connection, version: int, target: int) -> bool:
+    transitions = plan("Session SQLite", version, target=target, steps=SQLITE_STEPS)
+    for step in transitions:
+        step.transform(connection)
+    if transitions:
+        connection.execute(
+            "UPDATE metadata SET value=? WHERE key='sqlite_schema_version'", (str(target),)
         )
-    if kind == "delegation":
-        return version + " OR json_type(payload, '$.definition.can_spawn') IS NOT NULL"
-    return version
+    return bool(transitions)
+
+
+def record_predicate(kind: str, *, column: str = "payload", prefix: str = "$") -> str:
+    """Select the same owned versions and fields as the in-memory converter."""
+    target = MODELS[kind].model_fields["schema_version"].default
+    conditions = [
+        f"json_type({column}, '{prefix}.schema_version') IS NOT 'integer'",
+        f"json_extract({column}, '{prefix}.schema_version') IS NOT {target}",
+    ]
+    retired = sql_predicate(kind, column=column, prefix=prefix)
+    if retired:
+        conditions.append(retired)
+    for path, child in NESTED_RECORDS.get(kind, ()):
+        if ".*." in path:
+            parent, field = path.split(".*.")
+            alias = f"nested_{kind}"
+            predicate = record_predicate(child, column=f"{alias}.value", prefix=f"$.{field}")
+            conditions.append(
+                f"EXISTS (SELECT 1 FROM json_each({column}, '{prefix}.{parent}') AS {alias} "
+                f"WHERE {predicate})"
+            )
+        else:
+            nested_path = f"{prefix}.{path}"
+            predicate = record_predicate(child, column=column, prefix=nested_path)
+            conditions.append(
+                f"(json_type({column}, '{nested_path}') IS NOT NULL "
+                f"AND json_type({column}, '{nested_path}') != 'null' AND ({predicate}))"
+            )
+    return " OR ".join(conditions)
 
 
 def current_records(connection: sqlite3.Connection, *, include_delegations: bool = False) -> bool:
@@ -64,7 +101,6 @@ def current_records(connection: sqlite3.Connection, *, include_delegations: bool
     return all(
         connection.execute(
             f"SELECT 1 FROM {table} WHERE {record_predicate(kind)} LIMIT 1",
-            (MODELS[kind].model_fields["schema_version"].default,),
         ).fetchone()
         is None
         for table, kind in tables
@@ -77,26 +113,34 @@ def current_file(connection: sqlite3.Connection) -> bool:
     ).fetchone() is not None and current_records(connection)
 
 
-def authority_records(connection: sqlite3.Connection, *, include_delegations: bool = False) -> None:
+def authority_records(connection: sqlite3.Connection, *, include_delegations: bool = False) -> bool:
+    changed = False
     tables = [("sessions", "session"), ("runs", "run"), ("tool_call_states", "tool_state")]
     if include_delegations:
         tables.extend((("delegations", "delegation"), ("harness_versions", "harness")))
     for table, kind in tables:
-        rows = connection.execute(
-            f"SELECT rowid, payload FROM {table} WHERE {record_predicate(kind)}",
-            (MODELS[kind].model_fields["schema_version"].default,),
-        )
-        for identity, payload in rows:
-            value = convert(kind, loads(payload))
+        with closing(
             connection.execute(
-                f"UPDATE {table} SET payload=? WHERE rowid=?", (dumps(value), identity)
+                f"SELECT rowid, payload FROM {table} WHERE {record_predicate(kind)}",
             )
+        ) as rows:
+            for identity, payload in rows:
+                raw = loads(payload)
+                value = convert(kind, raw)
+                if value is raw:
+                    continue
+                connection.execute(
+                    f"UPDATE {table} SET payload=? WHERE rowid=?", (dumps(value), identity)
+                )
+                changed = True
 
     if include_delegations:
-        connection.execute(
+        updated = connection.execute(
             "UPDATE session_catalog SET payload=json_remove(payload, '$.title_locked') "
             "WHERE json_type(payload, '$.title_locked') IS NOT NULL"
-        )
+        ).rowcount
+        changed = bool(updated) or changed
+    return changed
 
 
 def file_session(work: Workspace, directory: Path) -> None:
@@ -107,14 +151,13 @@ def file_session(work: Workspace, directory: Path) -> None:
         )
 
     def transform(connection: sqlite3.Connection) -> bool:
-        if current_file(connection):
-            return False
-        if (
+        changed = (
             connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_revisions'"
             ).fetchone()
             is None
-        ):
+        )
+        if changed:
             connection.execute(
                 "CREATE TABLE input_states (session_id TEXT NOT NULL, input_id TEXT NOT NULL, "
                 "payload TEXT NOT NULL, PRIMARY KEY(session_id, input_id), "
@@ -137,8 +180,7 @@ def file_session(work: Workspace, directory: Path) -> None:
                     (state.session_id, state.input_id, payload),
                 )
                 work.stage(name, None)
-        authority_records(connection)
-        return True
+        return authority_records(connection) or changed
 
     database(
         work,

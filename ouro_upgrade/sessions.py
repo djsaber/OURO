@@ -36,9 +36,13 @@ from ouro_upgrade import session_records, session_storage
 from ouro_upgrade.delegations import resolve_file_parents, save_delegation
 from ouro_upgrade.errors import UpgradeDataError, require
 from ouro_upgrade.files import children, decode, read_json
-from ouro_upgrade.records import convert, loads, validate
+from ouro_upgrade.json_codec import loads
+from ouro_upgrade.records import convert, validate
 from ouro_upgrade.units import UpgradeUnit, UpgradeUnits
 from ouro_upgrade.workspace import Workspace
+
+# Source container families select a reader, independently of the target writer.
+FILE_LAYOUTS = {9: "records", 41: "native", 42: "native", 43: "native"}
 
 
 def write(
@@ -240,8 +244,13 @@ def files(work: Workspace, units: UpgradeUnits) -> None:
         return
     layout = read_json(work, "layout.json")
     version = layout.get("data_layout_version")
+    family = (
+        ("native" if version == DATA_LAYOUT_VERSION else FILE_LAYOUTS.get(version))
+        if type(version) is int
+        else None
+    )
     require(
-        type(version) is int and version in (9, 41, 42, DATA_LAYOUT_VERSION),
+        type(version) is int and family is not None,
         "layout",
         "unsupported Session layout",
     )
@@ -250,7 +259,7 @@ def files(work: Workspace, units: UpgradeUnits) -> None:
 
     previous = (
         read_json(work, "sessions/index.json")
-        if version != 9 and work.path("sessions/index.json").exists()
+        if family == "native" and work.path("sessions/index.json").exists()
         else {"sessions": []}
     )
     current_entries = (
@@ -260,7 +269,7 @@ def files(work: Workspace, units: UpgradeUnits) -> None:
                 {**previous, "data_layout_version": DATA_LAYOUT_VERSION}
             ).sessions
         }
-        if version != 9
+        if family == "native"
         else {}
     )
     failures = len(units.failures)
@@ -295,7 +304,7 @@ def files(work: Workspace, units: UpgradeUnits) -> None:
             )
         work.progress("sessions", number, len(directories))
     # Keep the home gated until every native container supports the current reader.
-    if version in (41, 42) and len(units.failures) > failures:
+    if family == "native" and version != DATA_LAYOUT_VERSION and len(units.failures) > failures:
         return
     index = SessionIndex(sessions=sort_catalog_entries(entries)).model_dump(mode="json")
     if index["sessions"] != previous["sessions"] or version != DATA_LAYOUT_VERSION:
@@ -309,29 +318,13 @@ def sqlite(connection: sqlite3.Connection, units: UpgradeUnits) -> bool | Path:
         "SELECT value FROM metadata WHERE key='sqlite_schema_version'"
     ).fetchone()
     require(
-        version is not None and version[0] in ("7", "26", "27", str(SQLITE_SCHEMA_VERSION)),
+        version is not None and isinstance(version[0], str) and version[0].isdecimal(),
         "sessions",
         "unsupported SQLite schema",
     )
-    if version[0] == str(SQLITE_SCHEMA_VERSION):
-        if session_storage.current_records(connection, include_delegations=True):
-            return False
-        session_storage.authority_records(connection, include_delegations=True)
-        return True
-    if version[0] in ("26", "27"):
-        if version[0] == "26":
-            session_storage.observation_schema(connection)
-            connection.execute("CREATE INDEX messages_sequence ON messages(session_id, sequence)")
-        session_storage.authority_records(connection, include_delegations=True)
-        connection.execute(
-            "UPDATE session_catalog SET payload=json_remove(payload, '$.workspace_trusted') "
-            "WHERE json_type(payload, '$.workspace_trusted') IS NOT NULL"
-        )
-        connection.execute(
-            "UPDATE metadata SET value=? WHERE key='sqlite_schema_version'",
-            (str(SQLITE_SCHEMA_VERSION),),
-        )
-        return True
+    if version[0] != "7":
+        changed = session_storage.sqlite_schema(connection, int(version[0]), SQLITE_SCHEMA_VERSION)
+        return session_storage.authority_records(connection, include_delegations=True) or changed
     work = units.work
     target = work.temporary()
     store = SQLiteSessionStore(target)
@@ -370,8 +363,9 @@ def sqlite(connection: sqlite3.Connection, units: UpgradeUnits) -> bool | Path:
                 "INSERT INTO session_catalog VALUES (?, ?)", (identity, entry.model_dump_json())
             )
             work.progress("sessions", number, len(identities))
-        for row in connection.execute("SELECT payload FROM delegations"):
-            save_delegation(output, loads(row[0]))
+        with closing(connection.execute("SELECT payload FROM delegations")) as rows:
+            for row in rows:
+                save_delegation(output, loads(row[0]))
         output.commit()
         output.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         output.execute("PRAGMA journal_mode=DELETE")

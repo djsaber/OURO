@@ -53,6 +53,13 @@ composition tests use synthetic models and fields confined to tests. They verify
 that extending the registered steps retains existing conversion paths, rejects
 gaps or invalid transitions, and preserves source inputs and opaque content.
 
+`records/frozen-agent-catalog.json` is synthetic `AgentCatalogSnapshot` writer
+output from `45ee210c`. It includes a frozen definition, spawn policy, tool grant,
+Unicode instructions and a finite budget, with their original contract hashes.
+Tests load it through both native backends and the historical Run pipeline,
+verify current-reader compatibility and preservation, and reject invalid inner
+versions and changed contracts. No user data is included.
+
 `files/` contains layout 9, Session 2, Run 2, Message 3, ContextSnapshot 4,
 SessionCommitResult 1, HarnessVersion 1, file tasks 1 and usage SQLite 1.
 `sqlite/` contains session schema 7, task schema 1 and usage schema 1 as SQL dumps;

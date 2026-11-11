@@ -10,7 +10,8 @@ from typing import Any
 from ouro.automation.file_records import StoredTask, TaskFileIndex, TaskIndexEntry
 from ouro.local_permissions import reject_link
 from ouro_upgrade.errors import UpgradeDataError, UpgradeError, require
-from ouro_upgrade.records import VERSION_STEPS, convert, loads, validate
+from ouro_upgrade.json_codec import loads
+from ouro_upgrade.records import VERSION_STEPS, convert, validate
 from ouro_upgrade.units import UpgradeUnit, UpgradeUnits
 from ouro_upgrade.workspace import Workspace
 
