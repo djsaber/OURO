@@ -12,6 +12,7 @@ from ouro.application.observations.activity import (
     overlay_request_activity,
     overlay_run_activity,
     reduce_runtime_activity,
+    terminal_run_status,
 )
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
@@ -51,6 +52,7 @@ class ProjectionUpdate:
     reasoning_duration_seconds: float | None = None
     pending_interaction: PendingInteraction | None = None
     interaction_changed: bool = False
+    run_finished: bool = False
     diagnostic: str | None = None
 
 
@@ -223,6 +225,7 @@ class SessionContentProjection:
         elif event.sequence <= self._last_sequence:
             return None
         self.activity = reduce_runtime_activity(self.activity, event)
+        run_finished = terminal_run_status(event) is not None
 
         payload = event.payload
         assistant_delta = ""
@@ -324,12 +327,7 @@ class SessionContentProjection:
                 del self._pending_interactions[key]
             if removed:
                 interaction_changed = True
-        elif event.event_type in {
-            "run_abort_requested",
-            "run_completed",
-            "run_aborted",
-            "run_failed",
-        }:
+        elif run_finished or event.event_type == "run_abort_requested":
             reasoning_duration_seconds = self._finish_reasoning(event.created_at)
             if self._pending_interactions:
                 self._pending_interactions.clear()
@@ -353,6 +351,7 @@ class SessionContentProjection:
             reasoning_duration_seconds=reasoning_duration_seconds,
             pending_interaction=self.pending_interaction,
             interaction_changed=interaction_changed,
+            run_finished=run_finished,
             diagnostic=diagnostic,
         )
 

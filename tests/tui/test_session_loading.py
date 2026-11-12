@@ -22,6 +22,7 @@ from tests.tui.helpers import (
     wait_for_history_render,
     wait_for_menu_action,
     wait_for_screen,
+    wait_until,
 )
 
 
@@ -105,6 +106,14 @@ async def test_tui_restores_history_and_observation_without_the_old_model(
                 observation.subscription.close()
 
             await app._select_model("faux/default")
+            await wait_until(
+                lambda: (
+                    app._reasoning_state is not None
+                    and app._reasoning_state.model.key == "faux/default"
+                ),
+                pilot,
+                description="replacement model status",
+            )
             assert app._active_model == ""
             assert app._reasoning_state is not None
             assert application.runtime.sessions.open(session_id).session.current_model == (

@@ -152,7 +152,13 @@ async def test_tui_changes_model_and_approval_while_the_session_is_running(tmp_p
             await app._set_approval_mode("auto")
             persisted = application.runtime.store.load_session_record(session_id)
             assert persisted.approval_mode == "auto"
-            assert "auto" in app.query_one(StatusLine).query_one(ActivityIndicator).render().plain
+            await _wait_until(
+                lambda: (
+                    "auto" in app.query_one(StatusLine).query_one(ActivityIndicator).render().plain
+                ),
+                pilot,
+                description="updated approval status during streaming",
+            )
         finally:
             provider.release.set()
         await _wait_until(
@@ -188,7 +194,7 @@ async def test_runtime_tool_event_does_not_query_session_controls(
         await pilot.pause()
 
         statuses.assert_not_awaited()
-        assert app._session_controls_refresh_task is None
+        assert app._session_status_refresh_task is None
         assert app.query_one(ActivityIndicator)._session_control_labels == ("Control",)
 
 
@@ -220,11 +226,11 @@ async def test_session_control_refresh_coalesces_requests_and_discards_stale_ses
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
-        app._schedule_session_controls_refresh()
+        app._schedule_session_status_refresh()
         await asyncio.wait_for(entered.wait(), timeout=1)
-        app._schedule_session_controls_refresh()
-        app._schedule_session_controls_refresh()
-        task = app._session_controls_refresh_task
+        app._schedule_session_status_refresh()
+        app._schedule_session_status_refresh()
+        task = app._session_status_refresh_task
         assert task is not None
         app._controller._session_id = second.session_id
         app._projection = TuiSessionProjection(second.session_id)

@@ -12,6 +12,7 @@ from textual.widgets import Static
 from ouro.application.contracts.agents import AgentTreeNode
 from ouro.application.contracts.sessions import SessionContextStatus
 from ouro.core.context import ContextMetrics
+from ouro.core.context_budget import ContextBudget
 from ouro.tui.state import format_compact_count
 from ouro.tui.theme import theme_for
 from ouro.tui.view_models import TuiApprovalPreset
@@ -25,6 +26,7 @@ class StatusLine(Horizontal):
         super().__init__()
         self._context_metrics: ContextMetrics | None = None
         self._context_width = 0
+        self._context_budget: ContextBudget | None = None
 
     def compose(self) -> ComposeResult:
         yield ActivityIndicator()
@@ -67,11 +69,19 @@ class StatusLine(Horizontal):
         self._context_metrics = metrics
         self._render_context()
 
+    def set_context_budget(self, budget: ContextBudget | None) -> None:
+        if budget == self._context_budget:
+            return
+        self._context_budget = budget
+        self._render_context()
+
     def refresh_theme(self) -> None:
         self._render_context()
 
     def _render_context(self) -> None:
         metrics = self._context_metrics
+        if metrics is not None and self._context_budget is not None:
+            metrics = metrics.with_budget(self._context_budget)
         theme = theme_for(self)
         if metrics is None:
             content = Text()

@@ -15,9 +15,11 @@ from ouro.application.observations.activity import (
     reduce_runtime_activity,
     runtime_activity_changed,
 )
+from ouro.application.observations.content import SessionContentProjection
 from ouro.core.context import ContextMetrics
 from ouro.core.context_budget import ContextBudget
 from ouro.core.events import EventRecord
+from ouro.core.session_observation import SessionObservationPosition
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest, ToolResult
@@ -763,3 +765,34 @@ def test_activity_comparison_reuses_unchanged_tool_results_without_serializing(m
     assert not runtime_activity_changed(previous, previous.model_copy(update={"sequence": 2}))
     assert not runtime_activity_changed(previous, previous.model_copy(deep=True))
     assert runtime_activity_changed(previous, previous.model_copy(update={"tool_calls": ()}))
+
+
+@pytest.mark.parametrize("event_type", ["run_failed", "run_status_changed"])
+def test_terminal_activity_accepts_lifecycle_updates_but_ignores_late_content(event_type):
+    activity = reduce_runtime_activity(
+        queued_runtime_activity("ses_1"),
+        _event(1, "tool_call_started", {"tool_call_id": "call", "tool_name": "Read"}),
+    )
+    activity = reduce_runtime_activity(activity, _event(2, "run_paused"))
+    activity = reduce_runtime_activity(activity, _event(3, event_type, {"to_status": "failed"}))
+    assert activity.tool_calls[0].status == "failed"
+    assert activity.status == "failed"
+    assert activity.activity == "failed"
+    for sequence, late_type in enumerate(
+        ("model_text_delta", "tool_call_started", "tool_batch_started"), start=4
+    ):
+        activity = reduce_runtime_activity(activity, _event(sequence, late_type))
+        assert activity.status == "failed"
+        assert activity.activity == "failed"
+
+
+@pytest.mark.parametrize("event_type", ["run_failed", "run_status_changed"])
+def test_content_projection_signals_only_run_completion(event_type):
+    projection = SessionContentProjection("ses_1")
+    finished = projection.apply(_event(1, event_type, {"to_status": "failed"}))
+    assert finished is not None and finished.run_finished
+    unrelated = _event(2, "session_control_transition")
+    unrelated.position = SessionObservationPosition(revision=2)
+    update = projection.apply(unrelated)
+    assert update is not None and not update.run_finished
+    assert update.activity.status == "failed"

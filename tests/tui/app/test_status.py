@@ -112,13 +112,16 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
             metrics=ContextMetrics(
                 estimated_input_tokens=48000,
                 estimated_fixed_tokens=1000,
-                budget=ContextBudget(context_window=128000, max_output_tokens=8000),
+                budget=ContextBudget(context_window=256000, max_output_tokens=16000),
             ),
             # Provider usage can exclude cached input and therefore is not
             # the current prepared context size shown by /context.
             provider_reported_input_tokens=800,
         )
         status_line.set_context(context_status)
+        # Display capacity belongs to the selected model, independently of the
+        # recorded request and provider-reported usage.
+        status_line.set_context_budget(ContextBudget(context_window=128000, max_output_tokens=8000))
 
         context_detail = status_line.query_one("#context-detail", Static)
         context = context_detail.render()
@@ -127,7 +130,7 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
         at_warning_boundary = ContextMetrics(
             estimated_input_tokens=96000,
             estimated_fixed_tokens=1000,
-            budget=ContextBudget(context_window=128000, max_output_tokens=8000),
+            budget=ContextBudget(context_window=256000, max_output_tokens=16000),
         )
         status_line.set_context(context_status.model_copy(update={"metrics": at_warning_boundary}))
         boundary = context_detail.render()
@@ -136,7 +139,7 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
         above_warning_boundary = ContextMetrics(
             estimated_input_tokens=97200,
             estimated_fixed_tokens=1000,
-            budget=ContextBudget(context_window=128000, max_output_tokens=8000),
+            budget=ContextBudget(context_window=256000, max_output_tokens=16000),
         )
         status_line.set_context(
             context_status.model_copy(update={"metrics": above_warning_boundary})
@@ -411,7 +414,7 @@ async def test_status_line_projects_arbitrary_session_control_label_first(
 
 
 @pytest.mark.asyncio
-async def test_model_switch_keeps_context_usage_and_updates_model_capacity(
+async def test_configuration_refresh_projects_capacity_without_changing_usage(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -440,26 +443,27 @@ async def test_model_switch_keeps_context_usage_and_updates_model_capacity(
             update={"context_window": 256_000, "max_output_tokens": 16_000}
         )
 
-        async def select_model(_selector: str) -> AvailableModel:
-            return selected
+        state = await app._controller.session_reasoning()
 
-        monkeypatch.setattr(app._controller, "select_model", select_model)
-        await app._select_model(selected.key)
+        async def session_reasoning() -> ModelReasoningState:
+            return state.model_copy(update={"model": selected})
 
-        after = projection.activity.effective_context_metrics
-        assert after is not None
-        assert after.estimated_input_tokens == before.estimated_input_tokens
-        assert after.estimated_fixed_tokens == before.estimated_fixed_tokens
-        assert after.estimator_id == before.estimator_id
-        assert after.context_window_tokens == 256_000
-        assert after.reserved_output_tokens == 16_000
-        assert after.input_budget_tokens == 240_000
+        monkeypatch.setattr(app._controller, "session_reasoning", session_reasoning)
+        app._configuration_status_changed()
+        task = app._session_status_refresh_task
+        assert task is not None
+        await task
+
+        assert projection.activity.effective_context_metrics == before
         status_line = app.query_one(StatusLine)
-        assert status_line._context_metrics == after
-        assert status_line.query_one("#context-detail", Static).render().plain
+        assert status_line._context_metrics == before
+        assert status_line._context_budget == selected.context_budget
+        rendered = status_line.query_one("#context-detail", Static).render().plain
+        assert rendered
 
         app._sync_activity(projection.activity)
-        assert status_line._context_metrics == after
+        assert status_line._context_metrics == before
+        assert status_line.query_one("#context-detail", Static).render().plain == rendered
 
 
 @pytest.mark.asyncio

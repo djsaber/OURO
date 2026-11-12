@@ -46,6 +46,7 @@ from ouro.tui.conversation.messages import (
     ToolNavigationRequested,
 )
 from ouro.tui.selection import RangeSelectionOnly
+from ouro.tui.state import RunPresentation
 from ouro.tui.theme import TuiTheme, theme_for
 
 _LOAD_CHUNK_ENTRIES = 50
@@ -147,6 +148,7 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         self._trace_collapsed_by_run: dict[str, bool] = {}
         self._trace_run_by_entry: dict[int, str] = {}
         self._trace_summary_indexes: dict[str, int] = {}
+        self._run_entry_indexes: dict[str, int] = {}
         self._open_trace_entries: dict[str, list[int]] = {}
         self._visibility_pending = False
         self._prepared_reasoning: dict[int, ReasoningLayout] = {}
@@ -404,6 +406,7 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         self._trace_collapsed_by_run = {}
         self._trace_run_by_entry = {}
         self._trace_summary_indexes = {}
+        self._run_entry_indexes = {}
         self._open_trace_entries = {}
         self._visibility_pending = False
         self._line_cache.clear()
@@ -696,6 +699,22 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
     ) -> RuntimeToolCallActivity | None:
         index = self._tool_entry_indexes.get((run_id, batch_id, tool_call_id))
         return self._entries[index].tool if index is not None else None
+
+    @property
+    def presented_run_ids(self) -> frozenset[str]:
+        return frozenset(self._run_entry_indexes)
+
+    def update_run(self, run: RunPresentation) -> bool:
+        """Reconcile an existing summary without changing its history boundary."""
+        index = self._run_entry_indexes.get(run.run_id)
+        if index is None:
+            return False
+        entry = self._entries[index]
+        if entry.run != run:
+            self._entries[index] = replace(entry, run=run)
+            if not self._rerender_entry(index):
+                self._render_entries()
+        return True
 
     def update_tools(
         self,
@@ -1232,6 +1251,7 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         previous = self._trace_run_by_entry
         self._trace_run_by_entry = {}
         self._trace_summary_indexes = {}
+        self._run_entry_indexes = {}
         self._open_trace_entries = {}
         for index, entry in enumerate(self._entries):
             self._track_trace_entry(index, entry)
@@ -1242,6 +1262,8 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         run_id = entry.run_id
         if run_id is None:
             return
+        if entry.kind == "run":
+            self._run_entry_indexes[run_id] = index
         if entry.kind in {"assistant", "tool"}:
             self._open_trace_entries.setdefault(run_id, []).append(index)
         elif (

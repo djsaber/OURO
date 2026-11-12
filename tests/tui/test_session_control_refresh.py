@@ -181,8 +181,8 @@ async def test_pending_status_read_cannot_overwrite_reopened_session(tmp_path, m
     async with run_ready_app(app) as pilot:
         await app._open_session(session.session_id)
         monkeypatch.setattr(app._controller, "session_control_statuses", delayed_statuses)
-        app._schedule_session_controls_refresh()
-        task = app._session_controls_refresh_task
+        app._schedule_session_status_refresh()
+        task = app._session_status_refresh_task
         try:
             await wait_for_events(
                 entered, pilot=pilot, description="pending status read before reopening session"
@@ -223,7 +223,7 @@ async def test_control_refresh_reads_only_changed_harness_facts(tmp_path, monkey
                     facts=facts,
                 )
             )
-            task = app._session_controls_refresh_task
+            task = app._session_status_refresh_task
             if task is not None:
                 await task
         await pilot.pause()
@@ -305,16 +305,16 @@ async def test_fact_refresh_burst_coalesces_without_blocking_presentation(tmp_pa
         try:
             await apply_version(1)
             await wait_for_events(entered, pilot=pilot, description="blocked control read")
-            task = app._session_controls_refresh_task
+            task = app._session_status_refresh_task
             async with asyncio.timeout(5):
                 for version in range(2, 34):
                     await apply_version(version)
-                    assert app._session_controls_refresh_task is task
+                    assert app._session_status_refresh_task is task
             assert reads == 1
             assert app._active_title == "Title 33"
         finally:
             release.set()
-            task = app._session_controls_refresh_task
+            task = app._session_status_refresh_task
             if task is not None:
                 await task
         assert reads == 2

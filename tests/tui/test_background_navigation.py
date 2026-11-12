@@ -498,14 +498,14 @@ async def test_two_owned_sessions_keep_streaming_across_welcome_and_reentry(
         assert app._projection.activity.status == "running"
         entered, release = asyncio.Event(), asyncio.Event()
         conversation = app.query_one(ConversationView)
-        add_summary = conversation.add_run_summary
+        add_summary = conversation.sync_run_summary
 
         async def held_summary(*args, **kwargs):
             entered.set()
             await release.wait()
             return await add_summary(*args, **kwargs)
 
-        monkeypatch.setattr(conversation, "add_run_summary", held_summary)
+        monkeypatch.setattr(conversation, "sync_run_summary", held_summary)
         try:
             provider.finish("Alpha")
             await asyncio.wait_for(alpha_worker.wait(), 60)

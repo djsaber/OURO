@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import replace
-from functools import partial
+from functools import partial, wraps
 from pathlib import Path
-from typing import cast
+from typing import Any, Concatenate, cast
 
 from pydantic import JsonValue
 
@@ -159,6 +159,23 @@ _CHILD_CONTROL_EVENT_TYPES = frozenset(
 )
 
 
+def publishes_status[**P, R](
+    operation: Callable[Concatenate[TuiController, P], Coroutine[Any, Any, R]],
+) -> Callable[Concatenate[TuiController, P], Coroutine[Any, Any, R]]:
+    """Invalidate Host status when a configuration command settles."""
+
+    @wraps(operation)
+    async def wrapped(self: TuiController, *args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            return await operation(self, *args, **kwargs)
+        finally:
+            # A failed command may still have committed part of its work.
+            if self._publish_status_changed is not None:
+                self._publish_status_changed()
+
+    return wrapped
+
+
 class TuiController:
     """Translate TUI intents to the public LocalApplication boundary."""
 
@@ -176,7 +193,9 @@ class TuiController:
         application: LocalApplication | None = None,
         configuration: ConfigurationFacade | None = None,
         close_application: bool = True,
+        publish_status_changed: Callable[[], None] | None = None,
     ) -> None:
+        self._publish_status_changed = publish_status_changed
         self._publish_event = publish_event
         self._publish_lifecycle = publish_lifecycle
         self._home = home
@@ -953,6 +972,7 @@ class TuiController:
         catalog = await asyncio.to_thread(configuration.provider_template_catalog)
         return tuple(catalog.templates)
 
+    @publishes_status
     async def add_provider(self, draft: TuiProviderConfiguration) -> ProviderView:
         return await asyncio.to_thread(self._add_provider, draft)
 
@@ -979,6 +999,7 @@ class TuiController:
             provider for provider in catalog.providers if provider.provider_id == provider_id
         )
 
+    @publishes_status
     async def update_provider(
         self,
         provider_id: str,
@@ -986,6 +1007,7 @@ class TuiController:
     ) -> ProviderView:
         return await asyncio.to_thread(self._update_provider, provider_id, draft)
 
+    @publishes_status
     async def update_provider_template(self, provider_id: str) -> ProviderCatalogView:
         configuration = self._require_configuration()
         return await asyncio.to_thread(configuration.update_provider, provider_id)
@@ -1024,6 +1046,7 @@ class TuiController:
             provider for provider in catalog.providers if provider.provider_id == provider_id
         )
 
+    @publishes_status
     async def set_provider_enabled(self, provider_id: str, *, enabled: bool) -> ProviderView:
         configuration = self._require_configuration()
 
@@ -1033,6 +1056,7 @@ class TuiController:
 
         return await asyncio.to_thread(update)
 
+    @publishes_status
     async def remove_provider(self, provider_id: str) -> None:
         configuration = self._require_configuration()
         await asyncio.to_thread(configuration.remove_provider, provider_id)
@@ -1041,6 +1065,7 @@ class TuiController:
         configuration = self._require_configuration()
         return await asyncio.to_thread(configuration.endpoint_catalog, provider_id)
 
+    @publishes_status
     async def add_endpoint(
         self,
         provider_id: str,
@@ -1048,6 +1073,7 @@ class TuiController:
     ) -> ProviderEndpointView:
         return await asyncio.to_thread(self._add_endpoint, provider_id, draft)
 
+    @publishes_status
     async def update_endpoint(
         self,
         provider_id: str,
@@ -1113,6 +1139,7 @@ class TuiController:
             endpoint for endpoint in catalog.endpoints if endpoint.endpoint_id == endpoint_id
         )
 
+    @publishes_status
     async def use_endpoint(self, provider_id: str, endpoint_id: str) -> ProviderEndpointView:
         configuration = self._require_configuration()
 
@@ -1122,6 +1149,7 @@ class TuiController:
 
         return await asyncio.to_thread(use)
 
+    @publishes_status
     async def remove_endpoint(self, provider_id: str, endpoint_id: str) -> None:
         configuration = self._require_configuration()
         await asyncio.to_thread(configuration.remove_endpoint, provider_id, endpoint_id)
@@ -1184,6 +1212,7 @@ class TuiController:
             )
         return tuple(items)
 
+    @publishes_status
     async def set_tool_permission(
         self,
         tool_name: str,
@@ -1223,6 +1252,7 @@ class TuiController:
     async def prompt_configuration(self) -> SystemPromptConfigView:
         return await asyncio.to_thread(self._require_configuration().system_prompt)
 
+    @publishes_status
     async def save_prompt(
         self,
         kind: PromptKind,
@@ -1239,6 +1269,7 @@ class TuiController:
             expected_revision=expected_revision,
         )
 
+    @publishes_status
     async def remove_prompt(
         self, kind: PromptKind, entry_id: str, *, expected_revision: int
     ) -> SystemPromptConfigView:
@@ -1249,6 +1280,7 @@ class TuiController:
             expected_revision=expected_revision,
         )
 
+    @publishes_status
     async def set_prompt_enabled(
         self, kind: PromptKind, entry_id: str, enabled: bool, *, expected_revision: int
     ) -> SystemPromptConfigView:
@@ -1260,6 +1292,7 @@ class TuiController:
             expected_revision=expected_revision,
         )
 
+    @publishes_status
     async def move_prompt(
         self, kind: PromptKind, entry_id: str, position: int, *, expected_revision: int
     ) -> SystemPromptConfigView:
@@ -1271,6 +1304,7 @@ class TuiController:
             expected_revision=expected_revision,
         )
 
+    @publishes_status
     async def update_tool_execution(
         self,
         draft: TuiToolExecutionConfiguration,
@@ -1287,6 +1321,7 @@ class TuiController:
         configuration = self._require_configuration()
         return await asyncio.to_thread(configuration.agent_runtime_config)
 
+    @publishes_status
     async def update_agent_runtime(
         self,
         draft: TuiAgentRuntimeConfiguration,
@@ -1331,6 +1366,7 @@ class TuiController:
         with self._application.agent_definition_services() as services:
             return services.definitions.tool_options(services.tools)
 
+    @publishes_status
     async def create_agent_definition(
         self,
         draft: TuiAgentDefinitionConfiguration,
@@ -1344,6 +1380,7 @@ class TuiController:
             None,
         )
 
+    @publishes_status
     async def update_agent_definition(
         self,
         agent_id: str,
@@ -1382,6 +1419,7 @@ class TuiController:
                 expected_revision=expected_revision,
             )
 
+    @publishes_status
     async def set_agent_definition_enabled(
         self, agent_id: str, *, enabled: bool, expected_revision: int
     ) -> AgentDefinitionCatalogView:
@@ -1399,6 +1437,7 @@ class TuiController:
                 agent_id, enabled=enabled, expected_revision=expected_revision, tools=services.tools
             )
 
+    @publishes_status
     async def delete_agent_definition(
         self,
         agent_id: str,
@@ -1433,6 +1472,7 @@ class TuiController:
         configuration = self._require_configuration()
         return await asyncio.to_thread(configuration.mcp_server, server_id)
 
+    @publishes_status
     async def set_mcp_enabled(
         self,
         server_id: str,
@@ -1470,6 +1510,7 @@ class TuiController:
             raise
         return saved
 
+    @publishes_status
     async def save_mcp_configuration(
         self,
         draft: TuiMCPServerConfiguration,
@@ -1539,6 +1580,7 @@ class TuiController:
         assert config is not None
         return saved, config
 
+    @publishes_status
     async def remove_mcp_configuration(self, server_id: str) -> None:
         configuration = self._require_configuration()
         await asyncio.to_thread(configuration.remove_mcp_server, server_id)
@@ -1551,27 +1593,32 @@ class TuiController:
         assert self._application is not None
         return tuple(self._mcp_status(record) for record in self._application.mcp_runtime_servers())
 
+    @publishes_status
     async def start_mcp_server(self, server_id: str) -> McpServerStatus:
         self._runtime()
         assert self._application is not None
         return self._mcp_status(await self._application.start_mcp_server(server_id))
 
+    @publishes_status
     async def stop_mcp_server(self, server_id: str) -> McpServerStatus:
         self._runtime()
         assert self._application is not None
         return self._mcp_status(await self._application.stop_mcp_server(server_id))
 
+    @publishes_status
     async def restart_mcp_server(self, server_id: str) -> McpServerStatus:
         self._runtime()
         assert self._application is not None
         return self._mcp_status(await self._application.restart_mcp_server(server_id))
 
+    @publishes_status
     async def refresh_mcp_tools(self, server_id: str) -> McpServerStatus:
         self._runtime()
         assert self._application is not None
         record = await self._application.refresh_mcp_server_tools(server_id)
         return self._mcp_status(record)
 
+    @publishes_status
     async def transfer_data(self, request: DataTransferRequest) -> DataTransferResult:
         self._runtime()
         assert self._application is not None
@@ -1610,6 +1657,7 @@ class TuiController:
         configuration = self._require_configuration()
         return await asyncio.to_thread(configuration.skill_policy)
 
+    @publishes_status
     async def update_skill_discovery(
         self,
         *,
@@ -1638,6 +1686,7 @@ class TuiController:
             raise
         return saved
 
+    @publishes_status
     async def install_skills(
         self,
         draft: TuiSkillInstallConfiguration,
@@ -1653,14 +1702,17 @@ class TuiController:
             ref=draft.ref,
         )
 
+    @publishes_status
     async def update_skill(self, name: str) -> SkillManagementView:
         configuration = self._require_configuration()
         return await asyncio.to_thread(configuration.update_skill, name)
 
+    @publishes_status
     async def remove_skill(self, name: str) -> SkillManagementView:
         configuration = self._require_configuration()
         return await asyncio.to_thread(configuration.remove_skill, name)
 
+    @publishes_status
     async def set_skill_enabled(
         self,
         name: str,
@@ -1731,6 +1783,7 @@ class TuiController:
     def compaction_strategies(self) -> tuple[str, ...]:
         return tuple(item.strategy_id for item in self._runtime().compaction_strategies.list())
 
+    @publishes_status
     async def save_compaction_configuration(
         self,
         draft: TuiCompactionConfiguration,
@@ -1787,6 +1840,7 @@ class TuiController:
             raise RuntimeError("plugin management is unavailable")
         return await asyncio.to_thread(application.plugins.show, plugin_id)
 
+    @publishes_status
     async def install_plugin(
         self,
         draft: TuiPluginInstallConfiguration,
@@ -1822,6 +1876,7 @@ class TuiController:
             raise RuntimeError("plugin management is unavailable")
         return await asyncio.to_thread(application.plugins.preview_configuration, candidate)
 
+    @publishes_status
     async def configure_plugin(
         self,
         candidate: PluginConfigurationCandidate,
@@ -1846,6 +1901,7 @@ class TuiController:
             raise RuntimeError("plugin management is unavailable")
         return await asyncio.to_thread(application.plugins.check, plugin_id)
 
+    @publishes_status
     async def select_plugin_install(
         self,
         plugin_id: str,
@@ -1856,12 +1912,14 @@ class TuiController:
             raise RuntimeError("plugin management is unavailable")
         return await application.plugins.select(plugin_id, package_digest)
 
+    @publishes_status
     async def remove_plugin(self, plugin_id: str) -> PluginActionResult:
         application = self._application
         if application is None or application.plugins is None:
             raise RuntimeError("plugin management is unavailable")
         return await application.plugins.remove(plugin_id)
 
+    @publishes_status
     async def _plugin_operation(self, action: str, plugin_id: str) -> PluginActionResult:
         application = self._application
         if application is None or application.plugins is None:
@@ -1976,6 +2034,7 @@ class TuiController:
             )
         )
 
+    @publishes_status
     async def select_model(self, selector: str) -> AvailableModel:
         """Select a Session model and reset reasoning only when the route changes.
 
@@ -2049,6 +2108,7 @@ class TuiController:
             interaction_mode = session.interaction_mode
         return _approval_preset(approval_mode, interaction_mode)
 
+    @publishes_status
     async def set_session_approval_preset(
         self,
         preset: TuiApprovalPreset,
@@ -2092,6 +2152,7 @@ class TuiController:
 
         return await asyncio.to_thread(resolve)
 
+    @publishes_status
     async def set_session_reasoning(
         self,
         reasoning_request: ReasoningRequest,

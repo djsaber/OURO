@@ -467,6 +467,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             interaction_mode=interaction_mode,
             application=application,
             close_application=close_application,
+            publish_status_changed=self._configuration_status_changed,
         )
         self.startup_data_error: PersistenceError | None = None
         self._resume_session_id = resume_session_id
@@ -517,9 +518,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._runtime_events_worker: Worker[None] | None = None
         self._runtime_event_flush_lock = asyncio.Lock()
         self._runtime_event_apply_lock = asyncio.Lock()
-        self._session_controls_refresh_requested = False
-        self._session_controls_harness_version: str | None = None
-        self._session_controls_refresh_task: asyncio.Task[None] | None = None
+        self._session_status_refresh_requested = False
+        self._session_status_harness_version: str | None = None
+        self._session_status_refresh_task: asyncio.Task[None] | None = None
         self._queued_inputs_lock = asyncio.Lock()
         self._mcp_status_timer: Timer | None = None
         self._input_surface: WelcomePanel | None = None
@@ -665,9 +666,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     async def on_unmount(self) -> None:
         self._begin_host_close()
-        if self._session_controls_refresh_task is not None:
+        if self._session_status_refresh_task is not None:
             await asyncio.gather(
-                self._session_controls_refresh_task,
+                self._session_status_refresh_task,
                 return_exceptions=True,
             )
         await self._draft_persistence.wait()
@@ -705,9 +706,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._agent_tree_subscription = None
         self._agent_nodes.clear()
         self._runtime_events_frame_scheduled = False
-        self._session_controls_refresh_requested = False
-        if self._session_controls_refresh_task is not None:
-            self._session_controls_refresh_task.cancel()
+        self._session_status_refresh_requested = False
+        if self._session_status_refresh_task is not None:
+            self._session_status_refresh_task.cancel()
         if self._mcp_status_timer is not None:
             self._mcp_status_timer.stop()
             self._mcp_status_timer = None
@@ -793,6 +794,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if not self._surface_available():
             return
         self._reasoning_state = state
+        self._active_model = _status_model_label(state.model)
+        status_line = self.query_one(StatusLine)
+        status_line.set_model(self._active_model)
+        status_line.set_context_budget(state.model.context_budget)
         if state.capability.activation == "unsupported" or state.effective.mode != "enabled":
             value, peak = None, False
         else:
@@ -801,63 +806,84 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self.query_one(StatusLine).set_reasoning(value, peak=peak)
 
     async def _refresh_reasoning_indicator(self) -> None:
-        """Refresh the status line thinking level after a model or session change."""
-        self._reasoning_state = None
+        """Resolve configuration off the UI loop and apply only to its owning view."""
+        revision = self._controller.selection_revision
+        session_id = self._controller.session_id
+        view_revision = self._view_revision
         try:
             state = await self._controller.session_reasoning()
-        except Exception:  # noqa: BLE001 - reasoning is optional status, not a blocker.
-            if self._surface_available():
-                self.query_one(StatusLine).set_reasoning(None)
+        except ConfigError:
+            state = None
+        if (
+            not self._surface_available()
+            or revision != self._controller.selection_revision
+            or view_revision != self._view_revision
+            or session_id != self._controller.session_id
+            or self._session_status_refresh_requested
+        ):
             return
-        if not self._surface_available():
-            return
-        self._apply_reasoning_state(state)
-
-    async def _refresh_session_controls(self) -> None:
-        """Project the current durable harness state onto the status line."""
-
-        if self._host_closing or not self.query(StatusLine):
-            return
-        if self._visible_read_only:
+        if state is None:
+            self._reasoning_state = None
             status_line = self.query_one(StatusLine)
-            status_line.set_subagent(self._visible_agent)
-            status_line.set_session_controls(())
+            status_line.set_reasoning(None)
+            status_line.set_context_budget(None)
+        else:
+            self._apply_reasoning_state(state)
+
+    def _configuration_status_changed(self) -> None:
+        if self._host_closing:
             return
-        session_id = self._controller.session_id
+        self._schedule_session_status_refresh()
+        self._start_welcome_status_refresh()
+
+    async def _refresh_session_status(self) -> None:
+        """Project current configuration without reloading conversation history."""
+        if self._host_closing or not self.query(StatusLine) or self._visible_read_only:
+            return
         revision = self._controller.selection_revision
+        session_id = self._controller.session_id
+        view_revision = self._view_revision
         try:
-            statuses = await self._controller.session_control_statuses()
-        except Exception:  # noqa: BLE001 - status projection must not interrupt the Session.
+            await self._refresh_reasoning_indicator()
+            statuses, approval = await asyncio.gather(
+                self._controller.session_control_statuses(),
+                self._controller.session_approval_preset(),
+            )
+        except Exception:  # noqa: BLE001 - isolate a failed status read from execution.
+            logging.getLogger(__name__).exception("Could not refresh session status")
             return
         if (
             not self._surface_available()
             or self._visible_read_only
-            or self._controller.session_id != session_id
             or self._controller.selection_revision != revision
+            or self._view_revision != view_revision
+            or session_id != self._controller.session_id
+            or self._session_status_refresh_requested
         ):
             return
         status_line = self.query_one(StatusLine)
         status_line.set_subagent(None)
+        status_line.set_approval_mode(approval)
         status_line.set_session_controls(tuple(status.label for status in statuses))
 
-    def _schedule_session_controls_refresh(self) -> None:
+    def _schedule_session_status_refresh(self) -> None:
         if self._host_closing or self._visible_read_only:
             return
-        self._session_controls_refresh_requested = True
-        task = self._session_controls_refresh_task
+        self._session_status_refresh_requested = True
+        task = self._session_status_refresh_task
         if task is None or task.done():
-            self._session_controls_refresh_task = asyncio.create_task(
-                self._drain_session_controls_refresh(),
-                name="tui-session-controls-refresh",
+            self._session_status_refresh_task = asyncio.create_task(
+                self._drain_session_status_refresh(),
+                name="tui-session-status-refresh",
             )
 
-    async def _drain_session_controls_refresh(self) -> None:
+    async def _drain_session_status_refresh(self) -> None:
         try:
-            while self._session_controls_refresh_requested and not self._host_closing:
-                self._session_controls_refresh_requested = False
-                await self._refresh_session_controls()
+            while self._session_status_refresh_requested and not self._host_closing:
+                self._session_status_refresh_requested = False
+                await self._refresh_session_status()
         finally:
-            self._session_controls_refresh_task = None
+            self._session_status_refresh_task = None
 
     def _publish_control_event(self, event: EventRecord) -> None:
         """Refresh child interactions without admitting another body delivery path."""
@@ -1209,9 +1235,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if not self._visible_read_only and self._active_title != facts.session.title:
             self._active_title = facts.session.title
             self.query_one(BrandHeader).set_context(session_title=self._active_title)
-        if facts.session.harness_version != self._session_controls_harness_version:
-            self._session_controls_harness_version = facts.session.harness_version
-            self._schedule_session_controls_refresh()
+        if facts.session.harness_version != self._session_status_harness_version:
+            self._session_status_harness_version = facts.session.harness_version
+            self._schedule_session_status_refresh()
         conversation = self.query_one(ConversationView)
         self._history_run_ids.update(message.run_id for message in batch.messages if message.run_id)
         boundaries = sorted(
@@ -1243,7 +1269,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 record = boundaries[boundary_index][2]
                 boundary_index += 1
                 if isinstance(record, RunRecord):
-                    await conversation.add_run_summary(
+                    await conversation.sync_run_summary(
                         project_run_presentation(record, models=self._models)
                     )
                 else:
@@ -1466,10 +1492,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 await append_stream("assistant", update.assistant_delta)
             if update.diagnostic:
                 diagnostics.append(update.diagnostic)
-            if event.event_type in {"run_completed", "run_aborted", "run_failed", "run_paused"}:
+            if update.run_finished:
                 await flush_stream()
                 await flush_tools()
-                await self._append_run_summary(event, model=projection.model)
+                await self._sync_run_summary_from_event(event, model=projection.model)
 
         await flush_stream()
         await flush_tools()
@@ -1499,7 +1525,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         for diagnostic in diagnostics:
             self.notify(diagnostic, severity="error", markup=False)
 
-    async def _append_run_summary(self, event: EventRecord, *, model: str | None) -> None:
+    async def _sync_run_summary_from_event(self, event: EventRecord, *, model: str | None) -> None:
         if event.run_id is None:
             return
         try:
@@ -1514,7 +1540,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         presentation = project_run_presentation(run, models=self._models)
         if presentation.model == "unknown model" and model is not None:
             presentation = replace(presentation, model=model)
-        await self.query_one(ConversationView).add_run_summary(presentation)
+        await self.query_one(ConversationView).sync_run_summary(presentation)
 
     def on_composer_submitted(self, message: Composer.Submitted) -> None:
         self._close_attachment_menu()
@@ -3129,7 +3155,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
         def submitted() -> None:
             if revision == self._controller.selection_revision:
-                self._schedule_session_controls_refresh()
+                self._schedule_session_status_refresh()
                 session_id = self._controller.session_id
                 if session_id is not None:
                     _worker: Worker[None] = self.run_worker(
@@ -4011,7 +4037,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     # projected by the previous Session before yielding while its history
                     # is mounted; the new projection will restore its own pending request.
                     self._visible_read_only = read_only
-                    self._session_controls_harness_version = session.harness_version
+                    self._session_status_harness_version = session.harness_version
                     self._visible_agent = agent
                     composer.set_class(read_only, "read-only-session")
                     self.query_one(SubagentNavigationPanel).set_current_session(session.session_id)
@@ -4075,6 +4101,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     )
                     status_line = self.query_one(StatusLine)
                     status_line.set_model(self._active_model)
+                    status_line.set_context_budget(
+                        loaded.reasoning_state.model.context_budget
+                        if loaded.reasoning_state is not None
+                        else None
+                    )
                     status_line.set_subagent(agent if read_only else None)
                     status_line.set_session_controls(
                         ()
@@ -4551,27 +4582,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.notify(str(exc), severity="error", markup=False)
             return
         self._remember_draft_configuration()
-        self._active_model = _status_model_label(model)
-        status_line = self.query_one(StatusLine)
-        status_line.set_model(self._active_model)
-        await self._refresh_reasoning_indicator()
-        projection = self._projection
-        metrics = None
-        if projection is not None:
-            metrics = projection.activity.effective_context_metrics
-            if metrics is not None:
-                metrics = metrics.with_budget(model.context_budget)
-                projection.activity = projection.activity.model_copy(
-                    update={"effective_context_metrics": metrics}
-                )
-        status_line.set_context_metrics(metrics)
         if applies_to_next_request:
-            reasoning = (
-                f"{self._tui_theme.inline_separator}{_format_reasoning_state(self._reasoning_state)}"
-                if self._reasoning_state is not None
-                else ""
-            )
-            self.notify(f"Model: {self._active_model}{reasoning} (next request)")
+            self.notify(f"Model: {_status_model_label(model)} (next request)")
 
     def action_approval_settings(self) -> None:
         if self._visible_read_only:
@@ -4618,7 +4630,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.notify(str(exc), severity="error", markup=False)
             return
         self._remember_draft_configuration()
-        self.query_one(StatusLine).set_approval_mode(mode)
         if applies_to_next_approval:
             self.notify(f"Approval: {mode} (next approval)")
 
@@ -4685,12 +4696,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         try:
             current = await self._controller.session_reasoning()
             request = reasoning_request(value, current.requested)
-            state = await self._controller.set_session_reasoning(request)
+            await self._controller.set_session_reasoning(request)
         except Exception as exc:  # noqa: BLE001 - Runtime owns capability validation.
             self.notify(str(exc), severity="error", markup=False)
             return
         self._remember_draft_configuration()
-        self._apply_reasoning_state(state)
 
     def action_actions(self) -> None:
         self._request_menu_navigation(_MENU_ACTIONS)

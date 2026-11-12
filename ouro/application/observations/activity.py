@@ -38,6 +38,12 @@ _TERMINAL_ACTIVITY: dict[str, RuntimeActivity] = {
     "paused": "paused",
     "recoverable": "recoverable",
 }
+_TERMINAL_RUN_EVENTS: dict[str, SupervisorRunStatus] = {
+    "run_completed": "completed",
+    "run_aborted": "aborted",
+    "run_failed": "failed",
+    "run_paused": "paused",
+}
 _TERMINAL_TOOL_STATUSES = frozenset(
     {"rejected", "completed", "failed", "aborted", "unknown_outcome"}
 )
@@ -119,6 +125,31 @@ def project_runtime_activity_state(
     return activity
 
 
+def terminal_run_status(event: EventRecord) -> SupervisorRunStatus | None:
+    """Interpret lifecycle completion independently of its notification spelling."""
+    status = _TERMINAL_RUN_EVENTS.get(event.event_type)
+    if event.event_type == "run_status_changed":
+        status = _supervisor_status(event.payload.get("to_status", event.payload.get("status")))
+    return status if status in _TERMINAL_ACTIVITY else None
+
+
+def _terminal_activity_fields(
+    status: SupervisorRunStatus,
+    tools: tuple[RuntimeToolCallActivity, ...],
+    ended_at: datetime | None,
+) -> dict[str, Any]:
+    if status in {"failed", "aborted", "recoverable"}:
+        tools = _mark_unsettled_tool_calls(
+            tools, "unknown_outcome" if status == "recoverable" else status, ended_at=ended_at
+        )
+    return {
+        "status": status,
+        "activity": _TERMINAL_ACTIVITY[status],
+        "compaction_id": None,
+        "tool_calls": tools,
+    }
+
+
 def reduce_runtime_activity(
     current: RuntimeActivitySnapshot,
     event: EventRecord,
@@ -135,7 +166,11 @@ def reduce_runtime_activity(
             activity="idle",
         )
     resumed = event.event_type == "run_status_changed" and event.payload.get("resumed") is True
-    if current.status in _TERMINAL_ACTIVITY and event.event_type != "run_started" and not resumed:
+    if current.status in _TERMINAL_ACTIVITY and event.event_type not in {
+        "run_started",
+        "run_status_changed",
+        *_TERMINAL_RUN_EVENTS,
+    }:
         return current.model_copy(update={"sequence": max(current.sequence, event.sequence)})
 
     payload = event.payload
@@ -150,7 +185,12 @@ def reduce_runtime_activity(
         updates["turn_id"] = turn_id
 
     event_type = event.event_type
-    if event_type == "run_started" or resumed:
+    terminal_status = terminal_run_status(event)
+    if terminal_status is not None:
+        updates.update(
+            _terminal_activity_fields(terminal_status, current.tool_calls, event.created_at)
+        )
+    elif event_type == "run_started" or resumed:
         updates.update(_run_reset("running", "preparing_model"))
         updates["run_phase"] = "model_streaming"
     elif event_type == "run_abort_requested":
@@ -273,8 +313,6 @@ def reduce_runtime_activity(
                 updates["batch_phase"] = (
                     "awaiting_child" if run_status == "waiting_child" else "awaiting_interaction"
                 )
-            elif run_status in _TERMINAL_ACTIVITY:
-                updates["activity"] = _TERMINAL_ACTIVITY[run_status]
     elif event_type == "tool_batch_started":
         updates.update(
             activity="executing_tools",
@@ -354,28 +392,6 @@ def reduce_runtime_activity(
             updates["effective_context_metrics"] = metrics
     elif event_type == "compaction_failed":
         updates["compaction_id"] = None
-    elif event_type in {
-        "run_completed",
-        "run_aborted",
-        "run_failed",
-        "run_paused",
-    }:
-        terminal_status = {
-            "run_completed": "completed",
-            "run_aborted": "aborted",
-            "run_failed": "failed",
-            "run_paused": "paused",
-        }[event_type]
-        updates.update(status=terminal_status, activity=terminal_status, compaction_id=None)
-        if event_type == "run_aborted":
-            updates["tool_calls"] = _mark_unsettled_tool_calls(
-                current.tool_calls, "aborted", ended_at=event.created_at
-            )
-        elif event_type == "run_failed":
-            updates["tool_calls"] = _mark_unsettled_tool_calls(
-                current.tool_calls, "failed", ended_at=event.created_at
-            )
-
     return current.model_copy(update=updates)
 
 
@@ -455,16 +471,7 @@ def overlay_run_activity(
     elif run.status in {"waiting_approval", "waiting_user", "waiting_child"}:
         updates["activity"] = run.status
     elif run.status in _TERMINAL_ACTIVITY:
-        updates["activity"] = _TERMINAL_ACTIVITY[run.status]
-        if run.status in {"failed", "aborted", "recoverable"}:
-            # Retained batches are recovery checkpoints, not still-running work.
-            # Preserve committed outcomes while settling the visible remainder.
-            status: RuntimeToolCallStatus = (
-                "unknown_outcome" if run.status == "recoverable" else run.status
-            )
-            updates["tool_calls"] = _mark_unsettled_tool_calls(
-                updates["tool_calls"], status, ended_at=run.ended_at
-            )
+        updates.update(_terminal_activity_fields(run.status, updates["tool_calls"], run.ended_at))
     elif run.phase == "tool_preflight":
         updates["activity"] = "preparing_tools"
     elif run.phase == "human_interaction":

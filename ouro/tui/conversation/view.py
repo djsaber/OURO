@@ -106,7 +106,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         self._assistant: AssistantTurn | None = None
         self._tools: dict[str, ToolActivityRow] = {}
         self._current_run_id: str | None = None
-        self._presented_run_ids: set[str] = set()
         self._presented_compaction_ids: set[str] = set()
 
     def compose(self) -> ComposeResult:
@@ -143,8 +142,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             self._restore_scroll_y(self.scroll_y + message.line_delta)
 
     def prepend_transcript(self, prepared: PreparedTranscript) -> None:
-        entries, run_ids = prepared
-        self._presented_run_ids.update(run_ids)
+        entries, _ = prepared
         self._presented_compaction_ids.update(
             entry.compaction.compaction_id
             for entry in entries
@@ -237,7 +235,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         self._assistant = None
         self._tools.clear()
         self._current_run_id = None
-        self._presented_run_ids.clear()
         self._presented_compaction_ids.clear()
         self.anchor()
 
@@ -379,11 +376,9 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         self._assistant = None
         self._tools.clear()
         self._current_run_id = None
-        self._presented_run_ids.clear()
         self._presented_compaction_ids.clear()
 
-        transcript, presented_run_ids = prepared
-        self._presented_run_ids.update(presented_run_ids)
+        transcript, _ = prepared
         self._presented_compaction_ids.update(
             entry.compaction.compaction_id
             for entry in transcript
@@ -422,7 +417,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
 
     @property
     def presented_run_ids(self) -> frozenset[str]:
-        return frozenset(self._presented_run_ids)
+        return self._history.presented_run_ids
 
     def scroll_to_user_turn(self, index: int) -> None:
         historical_lines = self._history.user_lines
@@ -558,14 +553,15 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
     def begin_model_request(self, *, run_id: str | None) -> None:
         self._current_run_id = run_id
 
-    async def add_run_summary(self, run: RunPresentation) -> None:
-        if run.duration_seconds is None or run.run_id in self._presented_run_ids:
+    async def sync_run_summary(self, run: RunPresentation) -> None:
+        if run.duration_seconds is None:
             return
-        await self._dismiss_welcome()
         if self._assistant is not None and self._assistant.run_id == run.run_id:
             await self.finish_assistant()
+        if self._history.update_run(run):
+            return
+        await self._dismiss_welcome()
         self._history.append(TranscriptEntry(kind="run", run_id=run.run_id, run=run))
-        self._presented_run_ids.add(run.run_id)
 
     async def sync_tools(self, tools: tuple[RuntimeToolCallActivity, ...]) -> None:
         tools = tuple(tool for tool in tools if tool.tool_name)

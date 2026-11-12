@@ -4,11 +4,15 @@ import asyncio
 
 import pytest
 
+from ouro.core.events import EventRecord
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
+from ouro.core.session_commits import SessionCommit
 from ouro.providers import FauxProvider
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.conversation.history import ConversationHistory
-from tests.tui.helpers import run_ready_app
+from ouro.tui.conversation.view import ConversationView
+from ouro.tui.widgets.activity import ActivityIndicator
+from tests.tui.helpers import run_ready_app, wait_for_history_render, wait_until
 from tests.tui.test_tasks import streaming_application
 
 
@@ -135,3 +139,62 @@ async def test_observer_keeps_each_run_summary_before_the_next_runs_content(tmp_
             assert first_summary < second_content
     finally:
         await owner.close()
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+@pytest.mark.parametrize("delivery", ["event", "facts"])
+async def test_run_status_reconciles_existing_summary_without_reloading(
+    tmp_path, backend, delivery
+):
+    application = streaming_application(tmp_path, FauxProvider(), backend=backend)
+    await application.start()
+    try:
+        result = await application.runtime.run("A saved answer")
+        store = application.runtime.store
+        paused = result.run.model_copy(update={"status": "paused"})
+        store.save_run(paused)
+        app = OuroTuiApp(application=application, resume_session_id=result.session.session_id)
+        async with run_ready_app(app, size=(100, 30)) as pilot:
+            await wait_for_history_render(pilot)
+            assert summaries(app)[0].status == "paused"
+            history = app.query_one(ConversationHistory)
+            original_entries = history.entries
+            failed = paused.model_copy(update={"status": "failed", "error": "Execution failed"})
+            committed = store.commit_session(
+                SessionCommit(
+                    before=store.load_session_record(result.session.session_id),
+                    runs=(failed,),
+                    events=(
+                        EventRecord(
+                            session_id=result.session.session_id,
+                            run_id=failed.run_id,
+                            event_type="run_status_changed",
+                            payload={"from_status": "paused", "to_status": "failed"},
+                        ),
+                    ),
+                )
+            )
+            if delivery == "event":
+                await application.runtime.event_recorder.publish_committed(committed.events)
+            await wait_until(
+                lambda: (
+                    summaries(app)[0].status == "failed"
+                    and app._projection is not None
+                    and app._projection.activity.status == "failed"
+                ),
+                pilot,
+                description="reconciled failed run",
+            )
+            await wait_for_history_render(pilot)
+            assert app.query_one(ConversationHistory) is history
+            assert len(summaries(app)) == 1
+            assert summaries(app)[0].error == "Execution failed"
+            assert "Failed" in app.query_one(ActivityIndicator).render().plain
+            assert [entry for entry in history.entries if entry.kind != "run"] == [
+                entry for entry in original_entries if entry.kind != "run"
+            ]
+            # Duplicate delivery preserves the one summary at its original boundary.
+            await app.query_one(ConversationView).sync_run_summary(summaries(app)[0])
+            assert len(history.entries) == len(original_entries)
+    finally:
+        await application.close()

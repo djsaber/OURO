@@ -202,7 +202,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             == provider.child_prefixes["first child task"]
         )
         assert app.query_one(BrandHeader)._session_detail == first.task_description
-        await app._refresh_session_controls()
+        await app._refresh_session_status()
         composer = app.query_one(Composer)
         assert composer.disabled is True
         assert composer.text == ""

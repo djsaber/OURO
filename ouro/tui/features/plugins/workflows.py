@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
 from dataclasses import replace
 from typing import cast
@@ -15,9 +14,8 @@ from ouro.tui.features.providers.workflows import ProviderConfigurationWorkflows
 from ouro.tui.menus.choice import ChoiceScreen, loading_menu
 from ouro.tui.menus.confirmation import ConfirmationScreen
 from ouro.tui.menus.models import Choice
-from ouro.tui.status import project_plugin_system_status
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
-from ouro.tui.view_models import TuiPluginInstallConfiguration, TuiSystemStatus
+from ouro.tui.view_models import TuiPluginInstallConfiguration
 
 _CONTRIBUTION_LABELS = {
     "tools": "tool",
@@ -42,8 +40,6 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
     """Project application-owned plugin management into shared TUI menus."""
 
     _controller: TuiController
-    _system_status: TuiSystemStatus
-    _refresh_session_controls: Callable[[], Awaitable[None]]
 
     async def _choose_plugins(
         self,
@@ -191,7 +187,6 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         except Exception as exc:  # noqa: BLE001
             self.notify(str(exc), severity="error", markup=False)
             return
-        await self._refresh_plugin_system_status()
         suffix = "installed" if result.changed else "already installed"
         self.notify(
             theme_for(self).inline_separator.join(
@@ -243,7 +238,6 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 "; ".join(item.message for item in applied.diagnostics) or applied.status,
                 error=applied.status == "failed",
             )
-        await self._refresh_plugin_system_status()
 
     async def _set_plugin_enabled(self, plugin_id: str, *, enabled: bool) -> bool:
         operation = self._controller.enable_plugin if enabled else self._controller.disable_plugin
@@ -252,8 +246,6 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return False
-        await self._refresh_plugin_system_status()
-        await self._refresh_session_controls()
         return True
 
     async def _check_plugin(self, plugin_id: str) -> None:
@@ -289,8 +281,6 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        await self._refresh_plugin_system_status()
-        await self._refresh_session_controls()
 
     async def _choose_plugin_install(
         self,
@@ -322,8 +312,6 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             except Exception as exc:  # noqa: BLE001
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
                 return None
-            await self._refresh_plugin_system_status()
-            await self._refresh_session_controls()
             return tuple(
                 replace(
                     choice,
@@ -399,8 +387,6 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        await self._refresh_plugin_system_status()
-        await self._refresh_session_controls()
         if menu is not None:
             with loading_menu(self):
                 choices = _plugin_choices(await self._controller.plugins(), theme=theme_for(self))
@@ -411,19 +397,6 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 initial_value=plugin_id,
             ):
                 menu.dismiss(None)
-
-    async def _refresh_plugin_system_status(self) -> None:
-        plugins = await self._controller.plugins()
-        skill_names = await self._controller.runtime_skill_names()
-        self._system_status = project_plugin_system_status(
-            replace(
-                self._system_status,
-                skill_count=len(skill_names),
-                skill_names=skill_names,
-            ),
-            plugins,
-        )
-        self.query_one(ConversationView).set_system_status(self._system_status)
 
 
 def _plugin_choices(

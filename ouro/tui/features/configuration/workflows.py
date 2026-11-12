@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from functools import partial
 from typing import cast
 
@@ -962,7 +962,6 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
                 return None
-            await self._refresh_skill_system_status()
             return _skill_source_choices(policy, theme=theme_for(self))
 
         choices = _skill_source_choices(policy, theme=theme_for(self))
@@ -1312,17 +1311,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return False
-        await self._refresh_skill_system_status()
         return True
-
-    async def _refresh_skill_system_status(self) -> None:
-        skill_names = await self._controller.runtime_skill_names()
-        self._system_status = replace(
-            self._system_status,
-            skill_count=len(skill_names),
-            skill_names=skill_names,
-        )
-        self.query_one(ConversationView).set_system_status(self._system_status)
 
     async def _validate_skill(self, name: str) -> None:
         try:

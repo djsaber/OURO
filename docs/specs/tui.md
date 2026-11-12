@@ -374,6 +374,10 @@ Windows 输出适配器在 Textual 的 flush 边界合并画面片段，复用�
 
 `/compact` 调用现有 compaction 用例；TUI 不自行选取消息或生成摘要。上下文详情读取最近一次真实 Provider
 请求快照，不重新运行 Context Provider，也不从消息历史猜测请求内容。
+状态栏的用量保留实际请求或压缩记录中的估算值；模型可解析时，额度与占比使用当前模型配置。
+模型、推理与审批设置以及配置命令结束后，当前页面异步刷新状态；运行中的请求仍遵循其已捕获的配置。
+配置刷新不重载对话正文，不改变滚动、输入或焦点。欢迎页可见时同步刷新系统摘要。
+
 
 Actions/设置界面覆盖主题、显示偏好、输入草稿、排队输入、压缩、工具执行、Agent definition 与派遣
 策略、Provider/Endpoint、MCP、插件、Skills 及来源。编辑使用 Configuration/Application 命令的 revision 与
