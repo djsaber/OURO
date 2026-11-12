@@ -239,6 +239,8 @@ composer 支持多行编辑、历史、命令补全和运行中排队：
 
 直接用户输入必须保持 `role=user`、`scaffold=false` 和用户 provenance。命令只负责选择 Application 动作；
 有效命令不得作为普通用户消息误提交；无法匹配的命令或固定参数作为原始正文发送。
+Enter 与 Ctrl+G 提交同一份完整输入，仅指定不同交付模式；正文、技能引用、文件引用和上传附件均可混排或单独提交。
+TUI 负责选择、编辑与恢复输入元素，Application 负责解析技能、接受输入和准备文件内容。
 排队输入使用 Application 的 durable queue、消费模式和去重语义。
 Application 提供待处理输入及其正在等待的活动 Run，TUI 据此区分发送准备和运行中追加。
 空闲会话提交期间保持输入焦点，以状态栏表达等待调度；消息在 canonical 消费提交后进入正文。

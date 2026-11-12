@@ -142,11 +142,10 @@ class QueuedInput(OuroModel):
             and not self.attachments
         ):
             raise ValueError("queued input requires a prompt or skill activation")
-        if self.skill_activations:
-            if self.source != "user" or self.role != "user" or self.scaffold:
-                raise ValueError("skill activation is only valid on direct user input")
-            if self.mode != "follow_up":
-                raise ValueError("skill activation cannot steer an active run")
+        if self.skill_activations and (
+            self.source != "user" or self.role != "user" or self.scaffold
+        ):
+            raise ValueError("skill activation is only valid on direct user input")
         return self
 
 

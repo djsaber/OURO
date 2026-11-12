@@ -5,9 +5,10 @@ import base64
 
 import pytest
 
+from ouro.application.inputs.skills import SkillInvocationRequest
 from ouro.core.compaction import conversation_turns
 from ouro.core.errors import ResourceNotFoundError
-from ouro.core.input_content import InputAttachment
+from ouro.core.input_content import InputAttachment, InputFile, InputFileReference
 from ouro.core.messages import ImageContent, MessageRecord
 from ouro.core.session_commits import SessionCommitConflict
 from tests.application.helpers import wait_for_input_settlement
@@ -57,7 +58,15 @@ async def test_input_is_atomic_and_snapshot_keeps_its_projection(tmp_path, backe
 
 
 @pytest.mark.parametrize("mode", ["follow_up", "steer"])
-async def test_active_run_can_import_and_consume_one_attachment_unit(tmp_path, mode):
+@pytest.mark.parametrize("with_references", [False, True])
+async def test_active_run_consumes_files_and_skills_as_one_input(tmp_path, mode, with_references):
+    if with_references:
+        skill = tmp_path / "skills" / "reviewer" / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text(
+            "---\nname: reviewer\ndescription: Review files.\n---\nReview all supplied material.\n",
+            encoding="utf-8",
+        )
     provider = TurnGateProvider()
     app = application_at(tmp_path, provider)
     runtime = app.runtime
@@ -69,16 +78,27 @@ async def test_active_run_can_import_and_consume_one_attachment_unit(tmp_path, m
         path.write_text("queued material", encoding="utf-8")
         ref = runtime.resources.import_resource(session.session_id, path).resource.resource_id
         item = InputAttachment(resource_id=ref, name=path.name, text_offset=4)
+        attachments: tuple[InputFile, ...] = (item,)
+        invocations: tuple[SkillInvocationRequest, ...] = ()
+        if with_references:
+            reference = tmp_path / "reference.txt"
+            reference.write_text("referenced material", encoding="utf-8")
+            attachments += (
+                InputFileReference(name=reference.name, path=str(reference), text_offset=4),
+            )
+            invocations = (SkillInvocationRequest(name="reviewer", arguments="next"),)
         accepted = []
         await runtime.run(
             "next",
             session_id=session.session_id,
             queue_mode=mode,
-            attachments=(item,),
+            attachments=attachments,
+            skill_invocations=invocations,
             on_input_accepted=lambda: accepted.append(True),
         )
         queued = runtime.pending_user_inputs(session.session_id)
-        assert len(queued) == 1 and queued[0].attachments == (item,)
+        assert len(queued) == 1 and queued[0].attachments == attachments
+        assert [skill.name for skill in queued[0].skills] == [skill.name for skill in invocations]
         assert accepted == [True]
     finally:
         provider.release_first.set()
@@ -92,8 +112,15 @@ async def test_active_run_can_import_and_consume_one_attachment_unit(tmp_path, m
         index for index, message in enumerate(messages) if message.semantic_tag == "attachments"
     )
     assert messages[index + 1].text_content == "next"
-    assert messages[index + 1].input_attachments == (item,)
+    assert messages[index + 1].input_attachments == attachments
     assert messages[index].sequence + 1 == messages[index + 1].sequence
+    assert messages[index].input_id == messages[index + 1].input_id == queued[0].queue_id
+    assert (messages[index + 1].run_id == messages[0].run_id) == (mode == "steer")
+    assert "queued material" in messages[index].text_content
+    if with_references:
+        assert "referenced material" in messages[index].text_content
+        assert [skill.name for skill in messages[index + 1].skill_activations] == ["reviewer"]
+        assert "Review all supplied material." in provider.contexts[-1][-1].text_content
     assert not runtime.pending_user_inputs(session.session_id)
     await app.close()
 

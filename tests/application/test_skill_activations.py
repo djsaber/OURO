@@ -5,9 +5,11 @@ from pathlib import Path
 
 import pytest
 
+from ouro.application.inputs.requests import UserInputRequest
 from ouro.application.inputs.skills import SkillActivationService, SkillInvocationRequest
 from ouro.application.runtime.configuration import RuntimeConfigurationResolver
 from ouro.application.runtime.service import RuntimeService
+from ouro.config.queued_inputs import QueuedInputConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import PromptRejectedError, SkillActivationError
 from ouro.core.messages import ModelMessage, SkillActivationContent
@@ -76,6 +78,7 @@ def _runtime(
     *,
     policies=None,
     skill_catalog_resolver=None,
+    queued_input_config=None,
 ):
     store = LocalSessionStore(tmp_path / "sessions")
     store.initialize()
@@ -89,6 +92,7 @@ def _runtime(
         skills=metadata if isinstance(metadata, tuple) else (metadata,),
         skill_catalog_resolver=skill_catalog_resolver,
         prompt_policies=policies,
+        queued_input_config=queued_input_config,
     )
 
 
@@ -302,7 +306,10 @@ async def test_runtime_allows_argumentless_skill_and_uses_skill_title(tmp_path) 
 
 
 @pytest.mark.asyncio
-async def test_queued_skill_activation_uses_the_instructions_frozen_at_acceptance(tmp_path) -> None:
+@pytest.mark.parametrize("mode", ("follow_up", "steer"))
+async def test_queued_skill_activation_uses_the_instructions_frozen_at_acceptance(
+    tmp_path, mode
+) -> None:
     root = tmp_path / "skills" / "reviewer"
     _write_skill(root, body="Original queued instructions.")
     original_document = (root / "SKILL.md").read_text(encoding="utf-8")
@@ -317,6 +324,7 @@ async def test_queued_skill_activation_uses_the_instructions_frozen_at_acceptanc
         "",
         session_id=session.session_id,
         skill_invocation=SkillInvocationRequest(name="reviewer"),
+        queue_mode=mode,
     )
     pending = runtime.pending_user_inputs(session.session_id)
     assert len(pending) == 1
@@ -326,7 +334,9 @@ async def test_queued_skill_activation_uses_the_instructions_frozen_at_acceptanc
     await active
 
     assert any(
-        event.event_type == "follow_up_input_queued" for event in run_events(runtime.store, queued)
+        event.event_type
+        == ("follow_up_input_queued" if mode == "follow_up" else "steering_input_queued")
+        for event in run_events(runtime.store, queued)
     )
     assert len(provider.calls) == 2
     second_input = provider.calls[1][-1].text_content
@@ -336,6 +346,7 @@ async def test_queued_skill_activation_uses_the_instructions_frozen_at_acceptanc
     activation_messages = [message for message in snapshot.messages if message.skill_activations]
     assert len(activation_messages) == 1
     assert activation_messages[0].skill_activations[0].instructions == original_document
+    assert len(snapshot.runs) == (2 if mode == "follow_up" else 1)
 
 
 @pytest.mark.parametrize("reject_second", (False, True))
@@ -374,27 +385,42 @@ async def test_multiple_skills_are_accepted_as_one_input_after_all_policies_allo
     assert seen == ["reviewer", "writer"]
 
 
-async def test_multiple_queued_skills_remain_one_input_with_frozen_instructions(tmp_path):
+@pytest.mark.parametrize("mode", ("follow_up", "steer"))
+@pytest.mark.parametrize("consumption_mode", ("one_by_one", "all_at_once"))
+async def test_queued_skills_and_text_share_consumption_boundaries(
+    tmp_path, mode, consumption_mode
+):
     originals = []
     for name in ("reviewer", "writer"):
         _write_skill(tmp_path / "skills" / name, name=name, body=f"Original {name}.")
         originals.append((tmp_path / "skills" / name / "SKILL.md").read_text(encoding="utf-8"))
     provider = CapturingProvider(block_first=True)
-    runtime = _runtime(tmp_path, provider, tuple(SkillLoader(tmp_path / "skills").load_metadata()))
+    runtime = _runtime(
+        tmp_path,
+        provider,
+        tuple(SkillLoader(tmp_path / "skills").load_metadata()),
+        queued_input_config=QueuedInputConfig(consumption_mode=consumption_mode),
+    )
     session = runtime.create_session(title="Multi skill queue")
     active = asyncio.create_task(runtime.run("First task", session_id=session.session_id))
     try:
         await asyncio.wait_for(provider.started.wait(), timeout=5)
-        await runtime.run(
-            "",
-            session_id=session.session_id,
-            skill_invocations=(
-                SkillInvocationRequest(name="reviewer"),
-                SkillInvocationRequest(name="writer"),
-            ),
+        await runtime.accept_user_input(
+            UserInputRequest(
+                prompt="",
+                session_id=session.session_id,
+                queue_mode=mode,
+                skill_invocations=(
+                    SkillInvocationRequest(name="reviewer"),
+                    SkillInvocationRequest(name="writer"),
+                ),
+            )
+        )
+        await runtime.accept_user_input(
+            UserInputRequest(prompt="Then explain.", session_id=session.session_id, queue_mode=mode)
         )
         pending = runtime.pending_user_inputs(session.session_id)
-        assert len(pending) == 1
+        assert len(pending) == 2
         assert [item.name for item in pending[0].skills] == ["reviewer", "writer"]
         for name in ("reviewer", "writer"):
             _write_skill(tmp_path / "skills" / name, name=name, body=f"Changed {name}.")
@@ -405,4 +431,10 @@ async def test_multiple_queued_skills_remain_one_input_with_frozen_instructions(
     activated = [item for item in snapshot.messages if item.skill_activations]
     assert len(activated) == 1 and not activated[0].scaffold
     assert [item.instructions for item in activated[0].skill_activations] == originals
-    assert len(provider.calls) == 2
+    expected_calls = 2 if consumption_mode == "all_at_once" else 3
+    assert len(provider.calls) == expected_calls
+    assert len(snapshot.runs) == (expected_calls if mode == "follow_up" else 1)
+    inputs = [item for item in snapshot.messages if item.role == "user"]
+    assert [item.text_content for item in inputs] == ["First task", "", "Then explain."]
+    assert inputs[1].input_id != inputs[2].input_id
+    assert not snapshot.session.pending_input_ids

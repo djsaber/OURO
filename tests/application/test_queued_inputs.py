@@ -237,7 +237,8 @@ def test_queue_cancels_only_the_selected_direct_user_input(tmp_path, backend: st
     assert remaining == [host_input]
 
 
-def test_queue_persists_argumentless_user_skill_activation_and_rejects_steering(tmp_path) -> None:
+@pytest.mark.parametrize("mode", ("follow_up", "steer"))
+def test_queue_persists_argumentless_user_skill_activation(tmp_path, mode) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Skill queue")
@@ -257,6 +258,7 @@ def test_queue_persists_argumentless_user_skill_activation_and_rejects_steering(
         prompt="",
         skill_activations=(activation,),
         title=None,
+        mode=mode,
         role="user",
         scaffold=False,
     )
@@ -265,16 +267,7 @@ def test_queue_persists_argumentless_user_skill_activation_and_rejects_steering(
     assert queued.skill_activations == (activation,)
     assert restored is not None
     assert restored.skill_activations == (activation,)
-    with pytest.raises(ValidationError, match="cannot steer"):
-        queue.enqueue(
-            snapshot=store.load_session(session.session_id),
-            prompt="task",
-            skill_activations=(activation,),
-            title=None,
-            mode="steer",
-            role="user",
-            scaffold=False,
-        )
+    assert restored.mode == mode
 
 
 def test_host_queued_input_requires_and_preserves_source_attribution(tmp_path) -> None:

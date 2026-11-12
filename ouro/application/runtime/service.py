@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING
@@ -1623,8 +1623,6 @@ class RuntimeService:
             raise ValueError("run input requires a prompt or skill invocation")
         if skill_invocations and _input_attribution is not None:
             raise ValueError("skill invocation is only valid on direct user input")
-        if skill_invocations and queue_mode != "follow_up":
-            raise ValueError("skill invocation cannot steer an active run")
         if isinstance(_input_attribution, DelegatedTaskInput) and _prepared_run is None:
             raise ValueError("delegated task input requires a prepared child run")
         if _prepared_run is not None:
@@ -2043,18 +2041,13 @@ class RuntimeService:
                     continuation_request=_continuation_request,
                 )
             else:
-                input_messages = []
-                for item in pending_inputs:
-                    input_messages.extend(
-                        await run_blocking(
-                            self._create_session_input_messages,
-                            session=session,
-                            run=run,
-                            item=item,
-                            sequence=session.message_count + len(input_messages) + 1,
-                            is_queued=False,
-                        )
-                    )
+                input_messages = await run_blocking(
+                    self._prepare_input_messages,
+                    session=session,
+                    run=run,
+                    inputs=pending_inputs,
+                    is_queued=False,
+                )
                 session, run, committed_events = await run_blocking(
                     self.run_lifecycle.start,
                     session=session,
@@ -2856,8 +2849,8 @@ class RuntimeService:
         source = _attributed_input_source(attribution) if attribution is not None else "user"
         role = _input_role(attribution)
         scaffold = _input_scaffold(attribution)
-        if skill_invocations and (source != "user" or mode != "follow_up"):
-            raise ValueError("skill invocation requires direct follow-up user input")
+        if skill_invocations and source != "user":
+            raise ValueError("skill invocation is only valid on direct user input")
         queue_id = (
             attribution.queue_id
             if isinstance(attribution, HostSessionInput) and attribution.queue_id is not None
@@ -3125,25 +3118,14 @@ class RuntimeService:
         first = pending_units[0][0]
         compatible_units: list[tuple[QueuedInput, ...]] = []
         for unit in pending_units:
-            item = unit[0]
-            if any(member.driver != first.driver for member in unit):
-                break
-            if first.prompt_policy_checked:
-                matches = all(self._can_group_queued_inputs(first, member) for member in unit)
-            else:
-                matches = not item.prompt_policy_checked
-            if not matches:
+            if any(
+                member.driver != first.driver
+                or member.prompt_policy_checked != first.prompt_policy_checked
+                for member in unit
+            ):
                 break
             compatible_units.append(unit)
         return [item for unit in compatible_units for item in unit]
-
-    @staticmethod
-    def _can_group_queued_inputs(first: QueuedInput, item: QueuedInput) -> bool:
-        if first.driver != item.driver:
-            return False
-        if first.skill_activations or item.skill_activations:
-            return first.queue_id == item.queue_id
-        return item.prompt_policy_checked == first.prompt_policy_checked
 
     def _select_input_driver(self, driver_id: str | None) -> RunDriverBinding | None:
         if driver_id is None:
@@ -3374,7 +3356,29 @@ class RuntimeService:
         self.store.refresh_catalog(session_id)
         return session
 
-    def _create_session_input_messages(
+    def _prepare_input_messages(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        inputs: Sequence[QueuedInput],
+        is_queued: bool,
+    ) -> list[MessageRecord]:
+        """Project complete inputs in order, independently of their delivery boundary."""
+        messages: list[MessageRecord] = []
+        for item in inputs:
+            messages.extend(
+                self._prepare_input(
+                    session=session,
+                    run=run,
+                    item=item,
+                    sequence=session.message_count + len(messages) + 1,
+                    is_queued=is_queued,
+                )
+            )
+        return messages
+
+    def _prepare_input(
         self,
         *,
         session: SessionRecord,
@@ -3383,6 +3387,7 @@ class RuntimeService:
         sequence: int,
         is_queued: bool,
     ) -> list[MessageRecord]:
+        """Materialize one complete input as an indivisible message unit."""
         metadata: dict[str, object] = {
             "session_input_source": item.source,
             "session_input_mode": item.mode,
@@ -3478,17 +3483,9 @@ class RuntimeService:
             latest_session = self.store.load_session_record(session.session_id)
             if not self.queued_inputs.matches_pending(latest_session, inputs):
                 raise _QueuedInputSelectionChanged
-            messages: list[MessageRecord] = []
-            for item in inputs:
-                messages.extend(
-                    self._create_session_input_messages(
-                        session=latest_session,
-                        run=run,
-                        item=item,
-                        sequence=latest_session.message_count + len(messages) + 1,
-                        is_queued=True,
-                    )
-                )
+            messages = self._prepare_input_messages(
+                session=latest_session, run=run, inputs=inputs, is_queued=True
+            )
             started_session, started_run, events = self.run_lifecycle.start(
                 session=latest_session,
                 run=run,
@@ -3514,17 +3511,9 @@ class RuntimeService:
             latest = self.store.load_session_record(session.session_id)
             if not self.queued_inputs.matches_pending(latest, inputs):
                 return [], ()
-            messages: list[MessageRecord] = []
-            for item in inputs:
-                messages.extend(
-                    self._create_session_input_messages(
-                        session=latest,
-                        run=run,
-                        item=item,
-                        sequence=latest.message_count + len(messages) + 1,
-                        is_queued=True,
-                    )
-                )
+            messages = self._prepare_input_messages(
+                session=latest, run=run, inputs=inputs, is_queued=True
+            )
             events = self.run_lifecycle.append_messages(
                 session=latest,
                 run=run,

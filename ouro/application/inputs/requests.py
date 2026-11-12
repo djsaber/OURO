@@ -53,8 +53,6 @@ class UserInputRequest(ApplicationDTO):
         ):
             raise ValueError("run input requires a prompt or skill invocation")
         if self.skill_invocations:
-            if self.queue_mode != "follow_up":
-                raise ValueError("skill invocation cannot steer an active run")
             if any(item.arguments != self.prompt for item in self.skill_invocations):
                 raise ValueError("prompt must match the skill invocation arguments")
             if len({item.name for item in self.skill_invocations}) != len(self.skill_invocations):

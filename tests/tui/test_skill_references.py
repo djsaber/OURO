@@ -147,8 +147,9 @@ async def test_skill_menu_loading_keeps_composer_responsive_and_discards_closed_
         assert not app.query_one(CommandPopup).display
 
 
+@pytest.mark.parametrize("submit_key", ("enter", "ctrl+g"))
 async def test_mixed_references_survive_restart_and_form_one_complete_attachment_scaffold(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, submit_key
 ):
     app = OuroTuiApp(application=application_with_skills(tmp_path))
     async with run_ready_app(app) as pilot:
@@ -178,7 +179,7 @@ async def test_mixed_references_survive_restart_and_form_one_complete_attachment
     async with run_ready_app(restarted) as pilot:
         composer = restarted.query_one(Composer)
         assert composer.input_content == original and composer.text == display
-        await pilot.press("enter")
+        await pilot.press(submit_key)
         if workers := [w for w in restarted.workers if w.group == "run"]:
             await asyncio.wait_for(restarted.workers.wait_for_complete(workers), timeout=10)
         await pilot.pause()
