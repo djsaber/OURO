@@ -73,7 +73,7 @@ class WelcomeStyle:
     """A page factory with stable metadata and an optional dependency check.
 
     The check returns an unavailability reason, or None when usable. It runs
-    once per App, shared by styles using the same check. Factories load optional
+    on demand once per App, shared by styles using the same check. Factories load optional
     renderers only when selected; metadata remains usable without them.
     """
 

@@ -2,7 +2,6 @@
 
 import asyncio
 import os
-from contextlib import contextmanager
 from io import StringIO
 from threading import Event, current_thread
 from threading import enumerate as threads
@@ -13,13 +12,10 @@ from textual.app import App
 from textual.drivers.headless_driver import HeadlessDriver
 from textual.widgets import Static
 
-from ouro.core.errors import UnsupportedDataVersionError
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.entry import run_tui
 from ouro.tui.startup import TerminalStartup
 from ouro.tui.startup_driver import startup_driver
 from ouro.tui.startup_screen import StartupScreen
-from ouro_upgrade.workspace import Workspace
 from tests.tui.helpers import two_route_application
 
 
@@ -141,36 +137,3 @@ async def test_startup_exit_keeps_feedback_visible_until_owned_construction_sett
         await asyncio.wait_for(cancelled.wait(), 5)
     assert application._closed
     assert app.return_value == 0
-
-
-def test_recovery_releases_home_and_restarts_once_without_resuming_selection(tmp_path, monkeypatch):
-    calls = []
-
-    class Host:
-        startup_data_error = UnsupportedDataVersionError("old data")
-        tui_theme = None
-
-        def __init__(self, **kwargs):
-            calls.append(("host", kwargs["resume_session_id"]))
-
-        def run(self):
-            return 1
-
-    class Recovery:
-        def __init__(self, **kwargs):
-            calls.append(("recovery", kwargs["auto_upgrade"]))
-
-        def run(self):
-            with Workspace(tmp_path, check_only=True):
-                pass
-            return "upgraded" if len(calls) == 2 else None
-
-    @contextmanager
-    def guard(**_):
-        yield
-
-    monkeypatch.setattr("ouro.tui.startup.tui_terminal_guard", guard)
-    monkeypatch.setattr("ouro.tui.app.OuroTuiApp", Host)
-    monkeypatch.setattr("ouro.tui.recovery.DataRecoveryApp", Recovery)
-    assert run_tui(home=tmp_path, resume_session_id="saved") == 1
-    assert calls == [("host", "saved"), ("recovery", True), ("host", None), ("recovery", False)]

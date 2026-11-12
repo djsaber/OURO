@@ -287,11 +287,22 @@ class TuiController:
         self._draft_workspace = runtime.default_workspace
         if self._configuration is None and runtime.environment.home is not None:
             self._configuration = ConfigurationFacade(runtime.environment.home)
-        models, current_model, usage = await asyncio.gather(
-            self.models(), self.default_model(), self.usage_summary()
+        models_task = asyncio.create_task(self.models())
+        model_task = asyncio.create_task(self.default_model())
+        usage_task = asyncio.create_task(self.usage_summary())
+        skills_task = asyncio.create_task(runtime.available_skills())
+        tasks_task = asyncio.create_task(self.task_status())
+        # Settle all bootstrap readers before a failure can hand the home to maintenance.
+        await asyncio.gather(
+            models_task, model_task, usage_task, skills_task, tasks_task, return_exceptions=True
         )
+        models, current_model, usage = (
+            models_task.result(),
+            model_task.result(),
+            usage_task.result(),
+        )
+        skills, (counts, error) = skills_task.result(), tasks_task.result()
         mcp_servers = self.mcp_servers()
-        skills = await self._runtime().available_skills()
         status = await asyncio.to_thread(
             self._project_system_status, models, usage, mcp_servers, skills
         )
@@ -301,7 +312,7 @@ class TuiController:
             sessions=(),
             startup_report=self._application.startup_report,
             mcp_servers=mcp_servers,
-            system_status=await self._with_task_status(status),
+            system_status=replace(status, task_counts=counts, task_error=error),
         )
 
     async def system_status(self) -> TuiSystemStatus:

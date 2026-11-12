@@ -13,15 +13,6 @@ from ouro.config import QueuedInputConsumptionMode
 from ouro.core.tools import PermissionMode
 from ouro.tui.controller import TuiController
 from ouro.tui.conversation.view import ConversationView
-from ouro.tui.features.configuration.agents import (
-    AgentDefinitionConfigurationScreen,
-    AgentDispatchPolicyScreen,
-    agent_definition_status,
-)
-from ouro.tui.features.configuration.compaction import CompactionConfigurationScreen
-from ouro.tui.features.configuration.mcp import MCPConfigurationScreen
-from ouro.tui.features.configuration.skills import SkillInstallScreen
-from ouro.tui.features.configuration.tools import ToolExecutionConfigurationScreen
 from ouro.tui.features.prompts.workflows import PromptWorkflows
 from ouro.tui.features.providers.model_menus import model_selection_label
 from ouro.tui.menus.choice import ChoiceScreen, loading_menu
@@ -237,6 +228,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         )
 
     async def _configure_compaction(self, *, menu: ChoiceScreen | None = None) -> None:
+        from ouro.tui.features.configuration.compaction import CompactionConfigurationScreen
+
         try:
             config = await self._controller.compaction_configuration()
             models = await self._controller.models()
@@ -375,6 +368,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         await self.push_screen_wait(screen)
 
     async def _configure_tool_execution(self, *, menu: ChoiceScreen | None = None) -> None:
+        from ouro.tui.features.configuration.tools import ToolExecutionConfigurationScreen
+
         try:
             current = await self._controller.tool_execution_configuration()
         except Exception as exc:  # noqa: BLE001
@@ -395,6 +390,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         self.notify(f"Tool execution saved: {updated.mode} (next tool batch)")
 
     async def _configure_agent_policy(self, *, menu: ChoiceScreen | None = None) -> None:
+        from ouro.tui.features.configuration.agents import AgentDispatchPolicyScreen
+
         try:
             current = await self._controller.agent_runtime_configuration()
             models = await self._controller.models()
@@ -540,6 +537,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         )
 
     async def _create_agent_definition(self, *, menu: ChoiceScreen | None = None) -> None:
+        from ouro.tui.features.configuration.agents import AgentDefinitionConfigurationScreen
+
         try:
             catalog = await self._controller.agent_definition_catalog()
             tools = await self._controller.agent_definition_tools()
@@ -575,6 +574,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         expected_revision: int,
         menu: ChoiceScreen | None = None,
     ) -> AgentDefinitionCatalogView | None:
+        from ouro.tui.features.configuration.agents import AgentDefinitionConfigurationScreen
+
         try:
             existing = await self._controller.agent_definition(agent_id)
             tools = await self._controller.agent_definition_tools()
@@ -825,6 +826,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         *,
         menu: ChoiceScreen | None = None,
     ) -> MCPServerConfigView | None:
+        from ouro.tui.features.configuration.mcp import MCPConfigurationScreen
+
         screen = MCPConfigurationScreen(existing, theme=theme_for(self))
         draft = await (
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
@@ -1289,6 +1292,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             await self._remove_skill(name)
 
     async def _install_skill(self, *, menu: ChoiceScreen | None = None) -> None:
+        from ouro.tui.features.configuration.skills import SkillInstallScreen
+
         screen = SkillInstallScreen()
         draft = await (
             menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
@@ -1418,6 +1423,8 @@ def _agent_definition_choices(
     *,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> tuple[Choice, ...]:
+    from ouro.tui.features.configuration.agents import agent_definition_status
+
     return tuple(
         Choice(
             definition.agent_id,

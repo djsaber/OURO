@@ -48,10 +48,10 @@ def test_default_command_starts_tui_with_host_options(monkeypatch, tmp_path) -> 
 
 
 def test_interrupt_before_textual_takes_over_exits_without_traceback(monkeypatch, capsys) -> None:
-    def interrupt():
+    def interrupt(**_):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("ouro.cli.parser.build_parser", interrupt)
+    monkeypatch.setattr("ouro.tui.entry.run_tui", interrupt)
     assert main([]) == 130
     assert capsys.readouterr().err == ""
 

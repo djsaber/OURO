@@ -31,58 +31,18 @@ def run_tui(
     """Run the full-screen Textual Host and return its process exit code."""
 
     with nullcontext(startup) if startup is not None else TerminalStartup() as feedback:
-        from ouro.core.errors import (
-            InvalidConfigDataError,
-            PersistenceError,
-            UnsupportedDataVersionError,
-        )
-        from ouro.deployment import access_home, resolve_home
         from ouro.tui.app import OuroTuiApp
 
-        root = resolve_home(home)
-        attempted_upgrade = False
-        while True:
-            recovery_theme = theme
-            try:
-                with access_home(root):
-                    app = OuroTuiApp(
-                        home=root,
-                        system_prompt=system_prompt,
-                        session_backend=session_backend,
-                        task_backend=task_backend,
-                        approval_mode=approval_mode,
-                        interaction_mode=interaction_mode,
-                        resume_session_id=resume_session_id,
-                        theme=theme,
-                        welcome_packages=welcome_packages,
-                        startup=feedback,
-                    )
-                    result = app.run()
-                    failure = app.startup_data_error
-                    if failure is None:
-                        return result if isinstance(result, int) else 0
-                    recovery_theme = app.tui_theme
-            except PersistenceError as exc:
-                failure = exc
-            # run() has unmounted the Host and closed its services before the
-            # independent recovery App can acquire exclusive home access.
-            from ouro.tui.recovery import DataRecoveryApp
-
-            feedback.stop()
-            recovery = DataRecoveryApp(
-                home=root,
-                error=str(failure),
-                auto_upgrade=isinstance(
-                    failure, (UnsupportedDataVersionError, InvalidConfigDataError)
-                )
-                and not attempted_upgrade,
-                session_backend=session_backend,
-                task_backend=task_backend,
-                theme=recovery_theme,
-            ).run()
-            if recovery != "upgraded":
-                return 1
-            attempted_upgrade = True
-            feedback.start()
-            # Return to the homepage; the previous selection may no longer exist.
-            resume_session_id = None
+        result = OuroTuiApp(
+            home=home,
+            system_prompt=system_prompt,
+            session_backend=session_backend,
+            task_backend=task_backend,
+            approval_mode=approval_mode,
+            interaction_mode=interaction_mode,
+            resume_session_id=resume_session_id,
+            theme=theme,
+            welcome_packages=welcome_packages,
+            startup=feedback,
+        ).run()
+        return result if isinstance(result, int) else 0

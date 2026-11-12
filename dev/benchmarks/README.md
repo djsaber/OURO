@@ -101,15 +101,19 @@ Session 和 Task 使用同一个 `--backend` 选择，必须与样本对应；�
 数据域阶段包含产物写入与同步；`prepare` 是发布清单准备，`verify_source` 是修改集合复核与原文件同步，
 `publish` 包含原文件移入备份和新文件安装，`finalize` 是报告与清理。`--check` 不进入这些发布阶段。
 
-## 导入与首屏就绪
+## TUI 启动
 
 ```powershell
 uv run --frozen python -m dev.benchmarks.startup --repeat 5
 ```
 
-每次使用新 Python 进程与临时 home，显式导入 CLI 和完整 TUI App，在 120×40 headless 窗口等待启动 worker
-完成并确认 Composer 可用。输出导入、从导入开始到首屏就绪、进程与关闭总耗时；`--root` 可指定待测 checkout。
-这是进程冷启动，不清空操作系统文件缓存，不包括真实终端 paint 或首次 MCP 连接。
+每个样本使用新 Python 进程和临时空 home，在 120×40 headless 窗口分别记录模块导入、App 构造、
+Application 构造与启动、controller bootstrap、输入可交互及其后首帧刷新；`--root` 可指定待测 checkout。
+`bootstrap_ms` 包含 Application 构造和启动；`mount_to_interactive_ms` 包含 bootstrap，
+并与 Textual 挂载、布局交叠，子阶段不能直接相加。
+`interactive_ms` 以输入已启用并获得焦点为终点，`headless_ready_ms` 还等待主页刷新；
+`process_and_shutdown_ms` 包含进程创建和退出收尾。不清空操作系统文件缓存，
+不包括真实终端绘制或首次 MCP 连接；无界面刷新不等于真实终端绘制时间。
 
 ## 会话管线与 TUI
 

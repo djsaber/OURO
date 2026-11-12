@@ -13,7 +13,7 @@ import ouro.tui.welcome_packages as theme_packages
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.surface import WelcomePanel
 from ouro.tui.preferences import TuiPreferencesStore
-from ouro.tui.welcome import WELCOME_STYLES, ThemePackage, unavailable_styles
+from ouro.tui.welcome import WELCOME_STYLES, ThemePackage, WelcomeRequirements
 from tests.tui.helpers import run_ready_app, two_route_application
 
 
@@ -26,6 +26,7 @@ def test_tui_import_and_basic_page_do_not_require_extensions(block_extension):
             textwrap.dedent(f"""
             import importlib.abc
             import sys
+            import tempfile
 
             blocked = {{"numpy", "ouro_tui_themes"}} if {block_extension!r} else {{"numpy"}}
 
@@ -44,6 +45,10 @@ def test_tui_import_and_basic_page_do_not_require_extensions(block_extension):
             assert WELCOME_STYLES["basic"].create() is not None
             assert "numpy" not in sys.modules
             assert not any(name.startswith("ouro_tui_themes") for name in sys.modules)
+            with tempfile.TemporaryDirectory() as home:
+                app = OuroTuiApp(home=home)
+                assert app._welcome_style.style_id == "basic"
+                assert "numpy" not in sys.modules
         """),
         ],
         capture_output=True,
@@ -110,10 +115,13 @@ def test_shared_requirements_are_checked_once_and_do_not_change_known_identities
     first = replace(WELCOME_STYLES["basic"], style_id="first", check_requirements=missing)
     second = replace(first, style_id="second")
     styles = {style.style_id: style for style in (WELCOME_STYLES["basic"], first, second)}
-    assert unavailable_styles(styles) == {
-        "first": "optional renderer missing",
-        "second": "optional renderer missing",
-    }
+    requirements = WelcomeRequirements()
+    assert calls == []
+    assert requirements.reason(styles["basic"]) is None
+    assert calls == []
+    assert requirements.reason(first) == "optional renderer missing"
+    assert requirements.reason(second) == "optional renderer missing"
+    requirements.check_all(styles.values())
     assert calls == [True]
     assert tuple(styles) == ("basic", "first", "second")
 
@@ -143,3 +151,21 @@ async def test_installing_theme_dependencies_does_not_change_the_default(tmp_pat
     async with run_ready_app(app):
         assert app.query_one(WelcomePanel).welcome_style.style_id == "basic"
         assert app._preferences.welcome_style == "basic"
+
+
+def test_basic_startup_does_not_probe_unselected_theme_dependencies(tmp_path):
+    calls = []
+
+    def check():
+        calls.append(True)
+        return None
+
+    style = replace(WELCOME_STYLES["basic"], style_id="optional", check_requirements=check)
+    package = ThemePackage("optional", "Optional", "Optional themes.", "Tests", (style,))
+    app = OuroTuiApp(home=tmp_path, welcome_packages=(package,))
+    assert app._welcome_style.style_id == "basic"
+    assert calls == []
+    assert any(choice.value == "welcome-package:optional" for choice in app._theme_choices())
+    assert calls == [True]
+    app._theme_choices()
+    assert calls == [True]

@@ -25,19 +25,23 @@ def welcome_catalog(packages: Iterable[ThemePackage] = ()) -> Mapping[str, Welco
     return MappingProxyType(catalog)
 
 
-def unavailable_styles(styles: Mapping[str, WelcomeStyle]) -> Mapping[str, str]:
-    """Evaluate each shared dependency check once for this App's catalog."""
-    checks: dict[Callable[[], str | None], str | None] = {}
-    unavailable = {}
-    for identity, style in styles.items():
+class WelcomeRequirements:
+    """Check optional dependencies on demand, sharing results within one App."""
+
+    def __init__(self) -> None:
+        self._results: dict[Callable[[], str | None], str | None] = {}
+
+    def reason(self, style: WelcomeStyle) -> str | None:
         check = style.check_requirements
         if check is None:
-            continue
-        if check not in checks:
-            checks[check] = check()
-        if reason := checks[check]:
-            unavailable[identity] = reason
-    return MappingProxyType(unavailable)
+            return None
+        if check not in self._results:
+            self._results[check] = check()
+        return self._results[check]
+
+    def check_all(self, styles: Iterable[WelcomeStyle]) -> None:
+        for style in styles:
+            self.reason(style)
 
 
 __all__ = [
@@ -47,5 +51,5 @@ __all__ = [
     "ThemePackage",
     "WelcomePage",
     "welcome_catalog",
-    "unavailable_styles",
+    "WelcomeRequirements",
 ]

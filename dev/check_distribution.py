@@ -15,6 +15,7 @@ from packaging.requirements import Requirement
 
 import ouro
 from ouro.tui.app import OuroTuiApp
+from ouro.tui.composer.input import Composer
 from ouro.tui.composer.surface import WelcomePanel
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 
@@ -29,7 +30,8 @@ async def check_tui(*, themes: bool) -> None:
                 if worker.name == "tui-start":
                     await worker.wait()
             await pilot.pause()
-            assert app.startup_data_error is None
+            assert not app.query_one(Composer).disabled
+            assert app.focused is app.query_one(Composer)
             assert app._preferences_error is None
             host = app.query_one(WelcomePanel)
             assert host.welcome_style.style_id == ("event-horizon" if themes else "basic")
@@ -43,7 +45,11 @@ async def check_tui(*, themes: bool) -> None:
                 if themes
                 else {"basic"}
             )
-            actual = set(app._welcome_styles) - set(app._unavailable_welcome_styles)
+            actual = {
+                identity
+                for identity in app._welcome_styles
+                if app._welcome_style_unavailable_reason(identity) is None
+            }
             assert actual == expected, actual
             assert {
                 choice.value for choice in app._theme_choices() if choice.group == "Welcome style"

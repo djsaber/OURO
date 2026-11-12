@@ -11,7 +11,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 from weakref import ReferenceType, ref
 
 from pydantic import JsonValue
@@ -48,14 +48,20 @@ from ouro.core.approvals import SessionApprovalMode
 from ouro.core.attachment_input import editable_input_content
 from ouro.core.base import new_id
 from ouro.core.callbacks import run_blocking
-from ouro.core.errors import ConfigError, OuroError, PersistenceError, UnsupportedDataVersionError
+from ouro.core.errors import (
+    ConfigError,
+    InvalidConfigDataError,
+    OuroError,
+    PersistenceError,
+    UnsupportedDataVersionError,
+)
 from ouro.core.events import EventRecord
 from ouro.core.input_content import InputContent, InputFile, InputSkillReference
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import REASONING_EFFORTS, ReasoningRequest
 from ouro.core.state import DEFAULT_SESSION_TITLE, RunRecord
-from ouro.deployment import SessionBackend, TaskBackend
+from ouro.deployment import SessionBackend, TaskBackend, access_home, resolve_home
 from ouro.local_application import LocalApplication
 from ouro.tui.commands import (
     REFERENCE_COMMANDS,
@@ -163,14 +169,17 @@ from ouro.tui.welcome import (
     DEFAULT_WELCOME_STYLE,
     WELCOME_STYLES,
     ThemePackage,
+    WelcomeRequirements,
     WelcomeStyle,
-    unavailable_styles,
     welcome_catalog,
 )
 from ouro.tui.welcome_packages import load_theme_packages
 from ouro.tui.widgets.activity import ActivityIndicator
 from ouro.tui.widgets.brand import BrandHeader
 from ouro.tui.widgets.status import StatusLine
+
+if TYPE_CHECKING:
+    from ouro.tui.recovery import DataRecoveryScreen
 
 _LOG = logging.getLogger(__name__)
 
@@ -418,9 +427,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         packages, self._welcome_package_error = load_theme_packages()
         self._welcome_packages = (*packages, *welcome_packages)
         self._welcome_styles = welcome_catalog(self._welcome_packages)
-        self._unavailable_welcome_styles = unavailable_styles(self._welcome_styles)
-        for reason in dict.fromkeys(self._unavailable_welcome_styles.values()):
-            _LOG.info("Welcome styles unavailable: %s", reason)
+        self._welcome_requirements = WelcomeRequirements()
         self._preferences_store = TuiPreferencesStore(preference_home)
         self._preferences_error: str | None = None
         try:
@@ -456,20 +463,28 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         super().__init__()
         self._startup_screen = StartupScreen()
         self.console.push_theme(self._tui_theme.rich_theme())
-        self._controller = TuiController(
+        self._home = resolve_home(preference_home)
+        self._controller_factory = partial(
+            TuiController,
             self._publish_control_event,
             self._publish_lifecycle_status,
-            home=home,
+            home=self._home,
             system_prompt=system_prompt,
             session_backend=session_backend,
             task_backend=task_backend,
             approval_mode=approval_mode,
             interaction_mode=interaction_mode,
-            application=application,
-            close_application=close_application,
             publish_status_changed=self._configuration_status_changed,
         )
-        self.startup_data_error: PersistenceError | None = None
+        self._controller = self._controller_factory(
+            application=application, close_application=close_application
+        )
+        self._session_backend = session_backend
+        self._task_backend = task_backend
+        self._home_access = ExitStack()
+        self._owns_application = close_application
+        self._starting = True
+        self._recovery_screen: DataRecoveryScreen | None = None
         self._resume_session_id = resume_session_id
         self._projection: TuiSessionProjection | None = None
         self._activity_override: str | None = None
@@ -665,6 +680,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.notify(self._input_drafts_error, severity="warning", markup=False)
 
     async def on_unmount(self) -> None:
+        try:
+            await self._close_host()
+        finally:
+            self._home_access.close()
+
+    async def _close_host(self) -> None:
         self._begin_host_close()
         if self._session_status_refresh_task is not None:
             await asyncio.gather(
@@ -715,12 +736,45 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self.workers.cancel_all()
 
     async def _start(self) -> None:
-        await self._startup_screen.wait_for_refresh()
-        try:
-            await self._start_application()
-        except PersistenceError as exc:
-            self.startup_data_error = exc
-            self.exit(1)
+        attempted_upgrade = False
+        while True:
+            try:
+                self._home_access.enter_context(access_home(self._home))
+                await self._start_application()
+                return
+            except PersistenceError as exc:
+                if not self._owns_application:
+                    self._startup_screen.show_error(str(exc))
+                    return
+                # Offline maintenance must never overlap runtime work or its home lease.
+                await self._draft_persistence.wait()
+                await self._controller.close()
+                self._home_access.close()
+                from ouro.tui.recovery import DataRecoveryScreen
+
+                if self._recovery_screen is None:
+                    self._recovery_screen = DataRecoveryScreen(
+                        home=self._home,
+                        session_backend=self._session_backend,
+                        task_backend=self._task_backend,
+                    )
+                    await self.switch_screen(self._recovery_screen)
+                if self._host_closing:
+                    return
+                recovered = await self._recovery_screen.recover(
+                    str(exc),
+                    auto_upgrade=isinstance(
+                        exc, (UnsupportedDataVersionError, InvalidConfigDataError)
+                    )
+                    and not attempted_upgrade,
+                )
+                if not recovered:
+                    self.exit(1)
+                    return
+                attempted_upgrade = True
+                self._recovery_screen.show_starting()
+                self._controller = self._controller_factory()
+                self._resume_session_id = None
 
     async def _start_application(self) -> None:
         session_load_error: tuple[str, Exception] | None = None
@@ -730,7 +784,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             raise
         except Exception as exc:  # noqa: BLE001 - surface boundary failures in the Host.
             if self._surface_available():
-                self._startup_screen.show_error(f"OURO could not start: {exc}")
+                surface = self._recovery_screen or self._startup_screen
+                surface.show_error(f"OURO could not start: {exc}")
             return
         if not self._surface_available():
             return
@@ -748,10 +803,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.notify(str(exc), severity="warning", markup=False)
         self._apply_bootstrap(bootstrap)
         self._apply_system_status(bootstrap)
-        self.set_interval(2.0, self._sync_task_status)
         if bootstrap.system_status.workspace is not None:
             await self._remember_workspace(bootstrap.system_status.workspace)
-        await self._refresh_reasoning_indicator()
         if self._resume_session_id is not None:
             try:
                 await self._open_session(self._resume_session_id)
@@ -762,7 +815,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 session_load_error = (self._resume_session_id, exc)
         else:
             await self._show_welcome(refresh_status=False)
-        await self._refresh_approval_indicator()
+        if self._projection is None:
+            await self._refresh_reasoning_indicator()
+            await self._refresh_approval_indicator()
+        self.set_interval(2.0, self._sync_task_status)
         if bootstrap.mcp_servers and self._mcp_status_timer is not None:
             self._mcp_status_timer.resume()
         composer = self.query_one(Composer)
@@ -770,6 +826,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             composer.display = True
             composer.disabled = self._visible_read_only
             await self.pop_screen()
+            self._starting = False
             if not self._visible_read_only:
                 composer.focus()
         if session_load_error is not None:
@@ -5024,6 +5081,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         return ""
 
     async def _choose_theme(self, *, menu: ChoiceScreen | None = None) -> None:
+        with loading_menu(self):
+            await run_blocking(self._welcome_requirements.check_all, self._welcome_styles.values())
         selected_theme_id = self._pending_tui_theme_id or self._tui_theme.theme_id
         selected_level = self._theme_choice_saturation_level(selected_theme_id)
         selected_style = self._welcome_style.style_id
@@ -5164,7 +5223,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     ),
                 )
                 for style in package.themes
-                if style.style_id not in self._unavailable_welcome_styles
+                if self._welcome_style_unavailable_reason(style.style_id) is None
             )
 
         async def refresh() -> tuple[Choice, ...]:
@@ -5203,7 +5262,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if identity not in self._welcome_styles:
             detail = self._welcome_package_error or "Install or register its welcome style package."
             return f"Unknown welcome style {identity!r}. {detail}"
-        return self._unavailable_welcome_styles.get(identity)
+        return self._welcome_requirements.reason(self._welcome_styles[identity])
 
     async def _set_welcome_style(self, value: str) -> bool:
         if reason := self._welcome_style_unavailable_reason(value):
@@ -5381,7 +5440,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             available = tuple(
                 style
                 for style in package.themes
-                if style.style_id not in self._unavailable_welcome_styles
+                if self._welcome_style_unavailable_reason(style.style_id) is None
             )
             if not available:
                 continue
@@ -5653,7 +5712,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         )
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if isinstance(self.screen, StartupScreen):
+        if self._starting:
             return action == "quit"
         # Tab owns focus navigation; disable Textual's inherited reverse-focus action.
         if action == "focus_previous":
@@ -5677,13 +5736,17 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._abort_run()
 
     async def action_quit(self) -> None:
-        if isinstance(self.screen, StartupScreen):
+        if self._starting:
+            if self._recovery_screen is not None and self._recovery_screen.recovering:
+                await self._recovery_screen.action_cancel()
+                return
             if self._host_closing:
                 return
-            self._startup_screen.show_exiting()
+            surface = self._recovery_screen or self._startup_screen
+            surface.show_exiting()
             workers = tuple(self.workers)
             self._begin_host_close()
-            await self._startup_screen.wait_for_refresh()
+            await surface.wait_for_refresh()
             await asyncio.gather(*(worker.wait() for worker in workers), return_exceptions=True)
         self.exit(0)
 

@@ -159,8 +159,6 @@ def test_run_tui_sets_title_before_starting_textual(
             calls.append("guard:exit")
 
     class FakeApp:
-        startup_data_error = None
-
         def __init__(self, **_kwargs: object) -> None:
             calls.append("app")
 

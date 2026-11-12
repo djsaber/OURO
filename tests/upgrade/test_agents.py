@@ -10,7 +10,6 @@ from ouro.config.agents import AgentDefinitionsConfigManager
 from ouro.core.agents import AgentDefinition
 from ouro.core.errors import InvalidConfigDataError
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.recovery import DataRecoveryApp
 from ouro_upgrade.configuration import convert_agents
 from ouro_upgrade.engine import upgrade
 from ouro_upgrade.errors import UpgradeDataError
@@ -131,13 +130,8 @@ def test_invalid_agents_are_isolated_and_deleted_only_when_selected(agent_home, 
 async def test_agent_startup_routes_to_offline_recovery(agent_home):
     app = OuroTuiApp(home=agent_home)
     async with app.run_test(size=(100, 32)):
-        await wait_until(lambda: app.startup_data_error is not None)
-    assert isinstance(app.startup_data_error, InvalidConfigDataError)
-    recovery = DataRecoveryApp(
-        home=agent_home, error=str(app.startup_data_error), auto_upgrade=True
-    )
-    async with recovery.run_test(size=(100, 32)):
-        await wait_until(lambda: recovery.return_value == "upgraded")
+        await wait_until(lambda: not app._starting)
+        assert app._recovery_screen is not None
     assert (
         AgentDefinitionsConfigManager(agent_home).snapshot().definitions[0].agent_id == "researcher"
     )

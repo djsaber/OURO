@@ -21,12 +21,18 @@ def _main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     with TerminalStartup(enabled=not arguments) as startup:
         from ouro.cli.errors import error_exit_code
-        from ouro.cli.parser import build_parser
         from ouro.core.errors import OuroError
         from ouro.deployment import access_home
 
-        args = build_parser().parse_args(arguments)
+        args = None
         try:
+            if not arguments:
+                from ouro.tui.entry import run_tui
+
+                return run_tui(startup=startup)
+            from ouro.cli.parser import build_parser
+
+            args = build_parser().parse_args(arguments)
             _validate_host_options(args)
             if args.command is None:
                 from ouro.tui.entry import run_tui

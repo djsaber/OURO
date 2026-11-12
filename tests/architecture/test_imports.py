@@ -6,7 +6,7 @@ import sys
 import pytest
 
 
-def test_default_cli_paints_before_loading_parser_and_application():
+def test_default_cli_paints_before_tui_without_loading_command_parser():
     subprocess.run(
         [
             sys.executable,
@@ -43,9 +43,10 @@ TerminalStartup._draw = first_frame
 class StopStartup(Exception): pass
 load = builtins.__import__
 def importing(name, *args, **kwargs):
-    if name == 'ouro.cli.parser':
+    if name == 'ouro.tui.entry':
         assert painted
         assert 'ouro.cli.dispatch' not in sys.modules
+        assert 'ouro.cli.parser' not in sys.modules
         raise StopStartup()
     return load(name, *args, **kwargs)
 builtins.__import__ = importing
@@ -54,7 +55,7 @@ try:
 except StopStartup:
     pass
 else:
-    raise AssertionError('parser boundary was not reached')
+    raise AssertionError('TUI boundary was not reached')
 assert not any(t.name == 'ouro-startup' for t in threading.enumerate())
 assert output.getvalue().endswith('\\x1b[?25h')
 """,
@@ -95,6 +96,26 @@ def test_startup_and_tool_registration_do_not_load_pillow(setup):
             "-c",
             f"{setup}; import sys; "
             "assert not any(name == 'PIL' or name.startswith('PIL.') for name in sys.modules)",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def test_tui_startup_does_not_load_unopened_configuration_editors():
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import sys
+import ouro.tui.app
+for name in ("agents", "compaction", "mcp", "skills", "tools"):
+    assert "ouro.tui.features.configuration." + name not in sys.modules, name
+assert "ouro_upgrade.engine" not in sys.modules
+""",
         ],
         check=True,
         capture_output=True,

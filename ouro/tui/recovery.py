@@ -1,4 +1,4 @@
-"""An offline recovery surface, entered only after the runtime Host has closed."""
+"""Offline data recovery presentation; the caller owns runtime and home access."""
 
 from __future__ import annotations
 
@@ -6,28 +6,25 @@ import asyncio
 from collections.abc import Callable
 from pathlib import Path
 from threading import Lock
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 from rich.text import Text
-from textual.app import App, ComposeResult
+from textual import events, on
+from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.messages import Prune
 from textual.widgets import OptionList, Static
-from textual.worker import Worker
 
 from ouro.core.errors import OuroError
 from ouro.deployment import SessionBackend, TaskBackend
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.confirmation import ConfirmationScreen
-from ouro.tui.menus.models import Choice, ChoiceCancelHandler, ChoiceSelectionHandler
-from ouro.tui.menus.styles import MENU_CSS
-from ouro.tui.preferences import TuiPreferencesStore
-from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES, TuiTheme, theme_for
+from ouro.tui.menus.models import Choice
+from ouro.tui.theme import theme_for
 from ouro_upgrade.engine import pending_operation, upgrade
 from ouro_upgrade.errors import UpgradeError
 from ouro_upgrade.progress import UpgradePhase, UpgradeProgress
 from ouro_upgrade.units import UpgradeFailure, UpgradeUnit
-
-type RecoveryResult = Literal["upgraded"]
 
 _PHASE_LABELS: dict[UpgradePhase, str] = {
     "configuration": "Checking and upgrading configuration",
@@ -44,7 +41,7 @@ _PHASE_LABELS: dict[UpgradePhase, str] = {
 }
 
 _RECOVERY_CSS = """
-    Screen, ModalScreen {
+    DataRecoveryScreen, _DiscardScreen {
         background: $ouro-background;
         color: $ouro-text-primary;
     }
@@ -68,31 +65,6 @@ _RECOVERY_CSS = """
 """
 
 
-class _RecoveryScreen(ChoiceScreen):
-    """Use the shared menu navigation with a wrapping home/status header."""
-
-    def __init__(
-        self, home: Path, *, on_select: ChoiceSelectionHandler, on_cancel: ChoiceCancelHandler
-    ) -> None:
-        super().__init__(
-            title="OURO DATA UPGRADE",
-            placeholder="",
-            choices=(),
-            on_select=on_select,
-            on_cancel=on_cancel,
-            interaction_hint="↑/↓ move · Enter select · Esc exit",
-        )
-        self._home = home
-
-    def _context_widgets(self) -> ComposeResult:
-        yield Static(Text(str(self._home)), id="recovery-home")
-        yield Static(id="recovery-status")
-
-    def on_mount(self) -> None:
-        super().on_mount()
-        self.query_one("#choice-list", OptionList).focus()
-
-
 def _unit_label(unit: UpgradeUnit) -> str:
     labels = {
         "session": "Session",
@@ -107,6 +79,8 @@ def _unit_label(unit: UpgradeUnit) -> str:
 
 class _DiscardScreen(ConfirmationScreen):
     """Show the identified deletion boundaries; successful data stays in place."""
+
+    DEFAULT_CSS = _RECOVERY_CSS
 
     def __init__(self, home: Path, units: tuple[UpgradeUnit, ...]) -> None:
         super().__init__(
@@ -131,76 +105,97 @@ class _DiscardScreen(ConfirmationScreen):
         )
 
 
-class DataRecoveryApp(App[RecoveryResult]):
+class DataRecoveryScreen(ChoiceScreen):
     """Present progress and explicit failure recovery without constructing Runtime."""
 
-    TITLE = "OURO"
-    ENABLE_COMMAND_PALETTE = False
-    CSS = MENU_CSS + _RECOVERY_CSS
-    BINDINGS = [Binding("ctrl+q,ctrl+c", "quit", "Quit", show=False, priority=True)]
+    DEFAULT_CSS = _RECOVERY_CSS
+    BINDINGS = [Binding("ctrl+q,ctrl+c", "app.quit", "Quit", show=False, priority=True)]
 
     def __init__(
         self,
         *,
         home: Path,
-        error: str,
-        auto_upgrade: bool,
         session_backend: SessionBackend | None = None,
         task_backend: TaskBackend | None = None,
-        theme: TuiTheme | None = None,
     ) -> None:
         self.home = home
-        self._error = error
-        self._auto_upgrade = auto_upgrade
         self._session_backend = session_backend
         self._task_backend = task_backend
-        if theme is None:
-            try:
-                preferences = TuiPreferencesStore(home).load()
-                theme = TUI_THEMES[preferences.theme].at_saturation_level(
-                    preferences.theme_saturation_level
-                )
-            except OuroError:
-                # Broken presentation preferences must not prevent recovery.
-                theme = DEFAULT_TUI_THEME
-        self.tui_theme = theme
         self._failures: tuple[UpgradeFailure, ...] = ()
         self._busy = False
         self._operation: asyncio.Task[dict[str, object]] | None = None
         self._progress_lock = Lock()
         self._latest_progress: UpgradeProgress | None = None
         self._displayed_progress: UpgradeProgress | None = None
-        super().__init__()
-        self.console.push_theme(self.tui_theme.rich_theme())
-        self._menu = _RecoveryScreen(
-            home,
+        self._completion: asyncio.Future[bool] | None = None
+        super().__init__(
+            title="OURO DATA UPGRADE",
+            placeholder="",
+            choices=(),
             on_select=self._select,
             on_cancel=self._cancel,
+            interaction_hint="↑/↓ move · Enter select · Esc exit",
         )
 
-    def get_css_variables(self) -> dict[str, str]:
-        return {**super().get_css_variables(), **self.tui_theme.css_variables()}
+    def _context_widgets(self) -> ComposeResult:
+        yield Static(Text(str(self.home)), id="recovery-home")
+        yield Static(id="recovery-status")
 
-    async def on_mount(self) -> None:
-        await self.push_screen(self._menu)
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.query_one("#choice-list", OptionList).focus()
         self._progress_timer = self.set_interval(0.1, self._refresh_progress, pause=True)
-        if self._auto_upgrade:
-            _worker: Worker[None] = self.run_worker(self._upgrade(), name="data-upgrade")
-        else:
-            self._show_failure(self._error)
 
-    async def on_unmount(self) -> None:
+    async def recover(self, error: str, *, auto_upgrade: bool) -> bool:
+        """Wait for recovery, retaining this surface until the caller is ready."""
+        self._completion = asyncio.get_running_loop().create_future()
+        self._busy = False
+        await self.wait_for_refresh()
+        if auto_upgrade:
+            self.run_worker(self._upgrade(), name="data-upgrade")
+        else:
+            self._show_failure(error)
+        return await self._completion
+
+    @property
+    def recovering(self) -> bool:
+        return self._completion is not None and not self._completion.done()
+
+    def show_error(self, message: str) -> None:
+        self._busy = False
+        self._status(message, failed=True)
+        self.update_choices((Choice("exit", "Exit"),))
+
+    def show_exiting(self) -> None:
+        self._status("Exiting…")
+        self.update_choices(())
+
+    def show_starting(self) -> None:
+        self._busy = True
+        self._status("Data is ready. Starting OURO…")
+        self.update_choices((Choice("progress", "Starting…", loading=True, disabled=True),))
+        self.query_one("#choice-hint", Static).update("Please wait…")
+
+    async def on_prune(self, event: Prune) -> None:
+        if self._completion is not None and not self._completion.done():
+            self._completion.cancel()
+        await super().on_prune(event)
+
+    @on(events.Unmount)
+    async def _wait_for_operation(self) -> None:
         # Thread work cannot be cancelled safely. Even external App shutdown must
         # finish it before another Host may start using this home.
         if self._operation is not None:
             await asyncio.gather(self._operation, return_exceptions=True)
 
     def _status(self, message: str, *, failed: bool = False) -> None:
-        self._menu.query_one("#recovery-status", Static).update(
-            Text(message, style=self.tui_theme.failure if failed else self.tui_theme.text_primary)
+        self.query_one("#recovery-status", Static).update(
+            Text(message, style=theme_for(self).failure if failed else theme_for(self).text_primary)
         )
 
     def _show_failure(self, error: str) -> None:
+        if not self.recovering:
+            return
         pending = pending_operation(self.home)
         if pending == "reset":
             error = "An earlier full reset was interrupted. Manual recovery is required."
@@ -226,29 +221,27 @@ class DataRecoveryApp(App[RecoveryResult]):
                         "discard",
                         "Delete failed data and retry",
                         "Review failed units before deletion. Successful data is kept.",
-                        accent=self.tui_theme.danger,
+                        accent=theme_for(self).danger,
                         destructive=True,
                     )
                 )
         choices.append(Choice("exit", "Exit", "Keep data for manual recovery."))
-        self._menu.update_choices(
-            tuple(choices), preferred_value="exit", title="OURO DATA RECOVERY"
-        )
-        self._menu.query_one("#choice-hint", Static).update("↑/↓ move · Enter select · Esc exit")
-        self._menu.query_one("#choice-list", OptionList).focus()
+        self.update_choices(tuple(choices), preferred_value="exit", title="OURO DATA RECOVERY")
+        self.query_one("#choice-hint", Static).update("↑/↓ move · Enter select · Esc exit")
+        self.query_one("#choice-list", OptionList).focus()
 
     async def _select(self, selected: str) -> None:
         if self._busy:
             return
         if selected == "exit":
-            self.exit()
+            self._cancel()
         elif selected == "restore":
             await self._upgrade(restore=True)
         elif selected == "retry":
             await self._upgrade()
         elif selected == "discard":
             units = tuple(failure.unit for failure in self._failures if failure.discardable)
-            confirmation = await self._menu.open_child(_DiscardScreen(self.home, units))
+            confirmation = await self.open_child(_DiscardScreen(self.home, units))
             if ConfirmationScreen.confirmed(confirmation):
                 await self._upgrade(discard=frozenset(units))
 
@@ -279,11 +272,11 @@ class DataRecoveryApp(App[RecoveryResult]):
             self._latest_progress = None
         self._displayed_progress = None
         self._status("Preparing data. Keep this terminal open until the operation finishes.")
-        self._menu.update_choices(
+        self.update_choices(
             (Choice("progress", "Starting…", loading=True, disabled=True),),
             title="OURO DATA UPGRADE",
         )
-        self._menu.query_one("#choice-hint", Static).update("Please wait…")
+        self.query_one("#choice-hint", Static).update("Please wait…")
         self._progress_timer.resume()
         self._operation = asyncio.create_task(asyncio.to_thread(operation))
         try:
@@ -302,7 +295,7 @@ class DataRecoveryApp(App[RecoveryResult]):
                     "Some data could not be upgraded. Successful upgrades are saved."
                 )
             else:
-                self.exit("upgraded")
+                self._finish(True)
         finally:
             self._progress_timer.pause()
             self._busy = False
@@ -321,12 +314,16 @@ class DataRecoveryApp(App[RecoveryResult]):
         label = _PHASE_LABELS[progress.phase]
         if progress.total is not None:
             label += f" ({progress.completed}/{progress.total})"
-        self._menu.update_choices((Choice("progress", label, loading=True, disabled=True),))
+        self.update_choices((Choice("progress", label, loading=True, disabled=True),))
+
+    def _finish(self, upgraded: bool) -> None:
+        if self._completion is not None and not self._completion.done():
+            self._completion.set_result(upgraded)
 
     def _cancel(self) -> bool:
         if not self._busy:
-            self.exit()
+            if self.recovering:
+                self._finish(False)
+            else:
+                self.app.exit(1)
         return True
-
-    async def action_quit(self) -> None:
-        self._cancel()
