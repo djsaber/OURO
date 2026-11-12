@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-import ouro.plugins.worker.codec as worker_module
 from ouro.core.harness import HarnessState
 from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.plugins.harness_calls import PluginStateView
@@ -160,41 +159,48 @@ async def test_worker_input_request_and_output_remain_distinct(worker, kind):
     )
 
 
-@pytest.mark.parametrize("kind", ["context", "command", "tool", "tool_resume", "continuation"])
-async def test_worker_reuses_decoded_fragments_inputs_and_transitions(worker, monkeypatch, kind):
+async def test_worker_decodes_nested_command_values_and_defaults(worker):
     invoke, _ = worker
-    decoded = {name: [] for name in ("context_fragment", "session_inputs", "control_transitions")}
+    output = await invoke(
+        "command",
+        {
+            "session_inputs": [{"prompt": "one"}],
+            "session_input_batches": [{"inputs": [{"prompt": "two"}], "coalesce_key": "batch"}],
+            "session_control_transitions": [{"action": "acquire", "controller_id": "mode"}],
+        },
+    )
+    assert output.session_inputs == (sdk.SessionInput(prompt="one"),)
+    assert output.session_input_batches == (
+        sdk.SessionInputBatch(inputs=(sdk.SessionInput(prompt="two"),), coalesce_key="batch"),
+    )
+    assert output.session_control_transitions == (
+        sdk.SessionControlTransition(action="acquire", controller_id="mode"),
+    )
 
-    def observe(name):
-        original = getattr(worker_module, f"_worker_{name}")
 
-        def decode(raw):
-            value = original(raw)
-            decoded[name].append(value)
-            return value
-
-        monkeypatch.setattr(worker_module, f"_worker_{name}", decode)
-
-    for name in decoded:
-        observe(name)
-    if kind == "context":
-        output = await invoke(kind, {"fragments": [{"text": "context"}]})
-        assert len(decoded["context_fragment"]) == 1
-        assert output.fragments[0] is decoded["context_fragment"][0]
-    else:
-        payload = {"session_control_transitions": [{"action": "acquire", "controller_id": "mode"}]}
-        if kind == "command":
-            payload.update(
-                session_inputs=[{"prompt": "one"}],
-                session_input_batches=[{"inputs": [{"prompt": "two"}], "coalesce_key": "batch"}],
-            )
-        output = await invoke(kind, payload)
-        assert len(decoded["control_transitions"]) == 1
-        assert output.session_control_transitions is decoded["control_transitions"][0]
-        if kind == "command":
-            assert len(decoded["session_inputs"]) == 2
-            assert output.session_inputs is decoded["session_inputs"][0]
-            assert output.session_input_batches[0].inputs is decoded["session_inputs"][1]
+@pytest.mark.parametrize("kind", ["tool", "tool_resume", "command", "continuation"])
+async def test_worker_preserves_control_payloads_and_native_defaults(worker, kind):
+    invoke, _ = worker
+    payload = {"items": [None, False, 3, 2.5, "text", {"nested": []}]}
+    output = await invoke(
+        kind,
+        {
+            "session_control_transitions": [
+                {"action": "acquire", "controller_id": "mode", "payload": payload},
+                {
+                    "action": "replace",
+                    "controller_id": "mode",
+                    "replace_activation_ids": ["activation"],
+                },
+            ]
+        },
+    )
+    assert output.session_control_transitions == (
+        sdk.SessionControlTransition(action="acquire", controller_id="mode", payload=payload),
+        sdk.SessionControlTransition(
+            action="replace", controller_id="mode", replace_activation_ids=("activation",)
+        ),
+    )
 
 
 @pytest.mark.parametrize(
@@ -269,9 +275,9 @@ async def test_worker_decodes_command_run_action(worker, action):
         },
     ],
 )
-async def test_invalid_batch_keeps_sdk_value_error_and_does_not_stage_state(worker, view, payload):
+async def test_invalid_batch_reports_protocol_error_and_does_not_stage_state(worker, view, payload):
     invoke, _ = worker
-    with pytest.raises(ValueError, match="batch"):
+    with pytest.raises(WorkerProtocolError, match="batch"):
         await invoke(
             "command",
             {**payload, "session_state": {"state_schema_version": 1, "payload": "bad"}},

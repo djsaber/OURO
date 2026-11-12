@@ -517,7 +517,6 @@ class FileSessionCommits:
     def commit_outcome(
         self, outcome: ToolOutcomeRecord, resources: tuple[SessionResourceReference, ...] = ()
     ) -> ToolOutcomeRecord:
-        outcome = ToolOutcomeRecord.model_validate(outcome.model_dump())
         proposed = ToolCallFacts(outcomes=(outcome,))
         with self.connect(outcome.session_id, mode="rw") as connection:
             prepared = proposed.prepare(

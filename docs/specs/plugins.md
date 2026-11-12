@@ -361,6 +361,15 @@ Worker 返回的 contribution 必须是 Manifest 静态声明集合的子集；�
 
 调用响应由对应方法的解码器同时校验并构造最终 SDK 输出，handler 直接返回该对象。
 片段、Session 输入、批次与控制转换在同一次响应中只解码一次；Tool call/resume 共享结果解码契约。
+
+Host 缓存针对 SDK dataclass 的原生类型适配器，由类型声明提供默认值和嵌套结构；解析错误与 SDK 构造约束错误
+统一报告为 Worker 协议错误，并在暂存 Session 状态前拒绝响应。控制提案按 dataclass 声明构造，
+其不透明 payload 沿用传输层解析的 JSON 值；控制语义和 payload 验证由共享的 SDK 到 core 边界负责。
+固定结构的 `SessionInput`、`SessionInputBatch`、`ContextFragment` 与 `SessionControlTransition` 使用冻结的
+slots dataclass；字段反射、导出和替换使用 `dataclasses.fields`、`asdict` 与 `replace`。
+消息 scaffold 与工具错误标志必须是布尔值，消息语义标签、非空输入及批次约束保持各自的领域语义。
+Host 的类型化 RPC 输出使用原生序列化处理器转换为 JSON 值。
+Provider 输出从 SDK 事件属性直接验证为核心事件；不透明 continuation 块在交付前取得独立副本。
 外部类型、默认值、互斥输出和语义约束仍在 worker 边界检查，SDK 到 core 的转换保留各层职责。
 
 ## 8. Plugin API

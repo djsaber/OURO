@@ -157,7 +157,7 @@ class ToolResultProposals(OuroModel):
     def from_result(cls, result: ToolResult) -> ToolResultProposals | None:
         if not (result.harness_change or result.session_control_transitions):
             return None
-        return cls.model_validate(result.model_dump(include=set(cls.model_fields)))
+        return cls.model_validate(result, from_attributes=True)
 
 
 class ToolCallState(VersionedOuroModel):

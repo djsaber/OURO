@@ -172,7 +172,7 @@ class ToolInvocation(ToolInvocationBinding):
 class ToolResultValue(OuroModel):
     """An observed value; accepting it does not apply any business proposal."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", revalidate_instances="subclass-instances")
 
     tool_call_id: str
     tool_name: str
@@ -184,6 +184,14 @@ class ToolResultValue(OuroModel):
     ended_at: datetime | None = None
     exit_code: int | None = None
     metadata: Metadata = MetadataField
+
+    def observation(self) -> ToolResultValue:
+        """Borrow the typed observation independently of execution proposals.
+
+        The executor owns the returned graph; storage encodes its snapshot before
+        returning. Subclass projection validates fields without serializing bodies.
+        """
+        return ToolResultValue.model_validate(self, extra="ignore")
 
     @property
     def content_blocks(self) -> list[ContentPart]:

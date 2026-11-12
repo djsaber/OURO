@@ -332,7 +332,6 @@ class SQLiteSessionCommits:
         return result
 
     def commit_outcome(self, outcome: ToolOutcomeRecord) -> ToolOutcomeRecord:
-        outcome = ToolOutcomeRecord.model_validate(outcome.model_dump())
         proposed = ToolCallFacts(outcomes=(outcome,))
         prepared = proposed.prepare(
             session_id=outcome.session_id,

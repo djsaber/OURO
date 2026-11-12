@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextvars import ContextVar
-from dataclasses import asdict
 
 from pydantic import TypeAdapter
+from pydantic_core import to_jsonable_python
 
 from ouro.plugins.worker.services import WorkerRequests
 from ouro.sdk.plugins.providers import (
@@ -31,7 +31,9 @@ class WorkerProviderBridge:
             token = _OUTPUT.set(output)
             try:
                 await self.client.request(
-                    "providers.stream", {"id": identity, "request": asdict(request)}, timeout=0
+                    "providers.stream",
+                    {"id": identity, "request": to_jsonable_python(request)},
+                    timeout=0,
                 )
             finally:
                 _OUTPUT.reset(token)
@@ -39,7 +41,9 @@ class WorkerProviderBridge:
         async def check(request: ProviderRequest) -> ProviderCheck:
             return _CHECK.validate_python(
                 await self.client.request(
-                    "providers.check", {"id": identity, "request": asdict(request)}, timeout=0
+                    "providers.check",
+                    {"id": identity, "request": to_jsonable_python(request)},
+                    timeout=0,
                 )
             )
 

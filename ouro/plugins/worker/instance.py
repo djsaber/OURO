@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable, Mapping
 from contextlib import suppress
-from dataclasses import asdict
 from pathlib import Path
 from time import monotonic
 from typing import Any
+
+from pydantic_core import to_jsonable_python
 
 from ouro.core.callbacks import CallbackCancelled
 from ouro.plugins.installation.package import PLUGIN_API_VERSION
@@ -124,7 +125,10 @@ class WorkerPluginInstance:
             workspace = params.get("workspace")
             if workspace is not None and not isinstance(workspace, str):
                 raise ValueError("workspace must be a string or null")
-            return [asdict(item) for item in await self.environment.agent_instructions(workspace)]
+            return [
+                to_jsonable_python(item)
+                for item in await self.environment.agent_instructions(workspace)
+            ]
         if method == "processes.run" and self.process_bridge is not None:
             return await self.process_bridge.run(params)
         if self.service_bridge is not None:

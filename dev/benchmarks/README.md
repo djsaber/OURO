@@ -311,8 +311,8 @@ uv run --frozen python dev/benchmarks/plugin_commands.py --repeat 3
 uv run --frozen python dev/benchmarks/plugin_commands.py --mode tui --store-delay-ms 5 --repeat 3
 ```
 
-Worker 基准通过真实 handler 测量合成响应解码、构造次数及独立内存峰值；transport 不启动插件进程，
-因此不代表 IPC 或插件执行成本。
+Worker 基准通过真实 handler 测量合成响应解码耗时、Python 分配峰值及输出摘要，包含单输入和控制 payload
+随数据量增长的场景；transport 不启动插件进程，因此不代表 IPC、进程 RSS 或插件执行成本。
 
 命令基准临时安装真实 SDK 插件，覆盖查询、预建会话、输出后创建会话及已有 120 条历史的会话。
 `--mode application|tui|all` 分别测 Application 命令用例与 headless TUI；输入批次由合成 Provider 和工具完成。

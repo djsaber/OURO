@@ -89,7 +89,7 @@ class RunRecoveryService:
                 update={
                     "status": "failed",
                     "result": feedback.materialize(
-                        ToolResult.model_validate(observed.model_dump())
+                        ToolResult.model_validate(observed, from_attributes=True)
                     ),
                     "feedback": feedback,
                 }

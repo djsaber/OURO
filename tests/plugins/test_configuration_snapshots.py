@@ -5,12 +5,38 @@ import json
 
 import pytest
 
+from ouro.application.contracts.plugin_configuration import PluginConfigurationCandidate
 from ouro.application.plugins.service import PluginService
 from ouro.plugins.installation.installer import PluginInstaller
 from ouro.plugins.installation.store import PluginPackageStore
 from ouro.plugins.lifecycle.readiness import configuration_errors
 from ouro.plugins.models import PluginConfigurationRevision, create_configuration_revision
 from tests.plugins.test_plugin_system import _runtime, _write_native_plugin
+
+
+def test_configuration_candidate_owns_its_nested_values():
+    values = {"groups": [{"enabled": True}]}
+    candidate = PluginConfigurationCandidate(
+        plugin_id="test",
+        package_digest="digest",
+        expected_configuration_revision_id="revision",
+        values=values,
+        credential_refs={},
+    )
+    values["groups"][0]["enabled"] = False
+    assert candidate.values == {"groups": [{"enabled": True}]}
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), (1, 2)])
+def test_configuration_candidate_requires_finite_json_values(value):
+    with pytest.raises(ValueError):
+        PluginConfigurationCandidate(
+            plugin_id="test",
+            package_digest="digest",
+            expected_configuration_revision_id="revision",
+            values={"nested": [value]},
+            credential_refs={},
+        )
 
 
 def test_revision_detaches_and_freezes_nested_values_but_serializes_as_json():

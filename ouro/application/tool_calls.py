@@ -1001,9 +1001,7 @@ class ToolCallCoordinator:
                 if observed.result is not None and context.on_late_result is not None:
                     await context.on_late_result(
                         invocation,
-                        ToolResultValue.model_validate(
-                            observed.result.model_dump(include=set(ToolResultValue.model_fields))
-                        ),
+                        observed.result.observation(),
                     )
             if isinstance(exc, ToolExecutionInterrupted) and exc.propagate_cancel:
                 raise asyncio.CancelledError from None

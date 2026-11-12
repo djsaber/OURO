@@ -20,27 +20,6 @@ _SENSITIVE_PUBLIC_KEYS = frozenset(
         "secret",
     }
 )
-_ENDPOINT_FIELDS = frozenset(
-    {
-        "display_name",
-        "model_id",
-        "base_url",
-        "api_path",
-        "temperature",
-        "context_window",
-        "max_output_tokens",
-        "supports_tools",
-        "supports_image_input",
-        "supports_audio_input",
-        "supports_video_input",
-        "supports_streaming",
-        "supports_structured_output",
-        "reasoning",
-        "reasoning_text_field",
-        "request_options",
-        "metadata",
-    }
-)
 
 
 class EndpointChanges(TypedDict, total=False):
@@ -67,7 +46,7 @@ class EndpointChanges(TypedDict, total=False):
 class ProviderEndpointConfig(OuroModel):
     """Configuration and capabilities for one callable model endpoint."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     endpoint_id: str = Field(default_factory=lambda: new_id("endpoint"))
     display_name: str | None = None
@@ -124,6 +103,11 @@ class ProviderEndpointConfig(OuroModel):
             return None
         return normalized if normalized.startswith("/") else f"/{normalized}"
 
+    @field_validator("reasoning", "request_options", "metadata", mode="before")
+    @classmethod
+    def _optional_section(cls, value: object) -> object:
+        return {} if value is None else value
+
     @model_validator(mode="after")
     def _validate_capabilities(self) -> ProviderEndpointConfig:
         ContextBudget(context_window=self.context_window, max_output_tokens=self.max_output_tokens)
@@ -135,61 +119,18 @@ def endpoint_config_from_mapping(
     endpoint_id: str,
     raw: Mapping[str, Any],
 ) -> ProviderEndpointConfig:
-    unsupported = sorted(set(raw) - _ENDPOINT_FIELDS)
-    if unsupported:
-        raise ValueError(f"unsupported endpoint config fields: {', '.join(unsupported)}")
-    model_id = _optional_str(raw.get("model_id"))
-    if model_id is None:
-        raise ValueError(f"endpoint config is missing model_id: {endpoint_id}")
-    return ProviderEndpointConfig(
-        endpoint_id=endpoint_id,
-        display_name=_optional_str(raw.get("display_name")),
-        model_id=model_id,
-        base_url=_optional_str(raw.get("base_url")),
-        api_path=_optional_str(raw.get("api_path")),
-        temperature=raw.get("temperature"),
-        context_window=raw.get("context_window", 1_000_000),
-        max_output_tokens=raw.get("max_output_tokens"),
-        supports_tools=raw.get("supports_tools", True),
-        supports_image_input=raw.get("supports_image_input", False),
-        supports_audio_input=raw.get("supports_audio_input", False),
-        supports_video_input=raw.get("supports_video_input", False),
-        supports_streaming=raw.get("supports_streaming", True),
-        supports_structured_output=raw.get("supports_structured_output", True),
-        reasoning=EndpointReasoningConfig.model_validate(raw.get("reasoning") or {}),
-        reasoning_text_field=raw.get("reasoning_text_field"),
-        request_options=dict(raw.get("request_options") or {}),
-        metadata=dict(raw.get("metadata") or {}),
-    )
+    if "endpoint_id" in raw:
+        raise ValueError("endpoint_id belongs to the endpoint mapping key")
+    return ProviderEndpointConfig.model_validate({**raw, "endpoint_id": endpoint_id})
 
 
 def endpoint_config_to_raw(endpoint: ProviderEndpointConfig) -> dict[str, Any]:
-    raw: dict[str, Any] = {
-        "model_id": endpoint.model_id,
-        "context_window": endpoint.context_window,
-        "max_output_tokens": endpoint.max_output_tokens,
-        "supports_tools": endpoint.supports_tools,
-        "supports_image_input": endpoint.supports_image_input,
-        "supports_audio_input": endpoint.supports_audio_input,
-        "supports_video_input": endpoint.supports_video_input,
-        "supports_streaming": endpoint.supports_streaming,
-        "supports_structured_output": endpoint.supports_structured_output,
-        "reasoning": endpoint.reasoning.model_dump(mode="json", exclude_none=True),
-    }
-    if endpoint.display_name:
-        raw["display_name"] = endpoint.display_name
-    if endpoint.reasoning_text_field is not None:
-        raw["reasoning_text_field"] = endpoint.reasoning_text_field
-    if endpoint.base_url:
-        raw["base_url"] = endpoint.base_url
-    if endpoint.api_path:
-        raw["api_path"] = endpoint.api_path
-    if endpoint.temperature is not None:
-        raw["temperature"] = endpoint.temperature
-    if endpoint.request_options:
-        raw["request_options"] = endpoint.request_options
-    if endpoint.metadata:
-        raw["metadata"] = endpoint.metadata
+    raw = endpoint.model_dump(
+        exclude_none=True,
+        exclude={"endpoint_id"}
+        | {name for name in ("request_options", "metadata") if not getattr(endpoint, name)},
+    )
+    raw["max_output_tokens"] = endpoint.max_output_tokens
     return raw
 
 
@@ -210,12 +151,6 @@ def redact_sensitive_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
         )
         for key, item in value.items()
     }
-
-
-def _optional_str(value: object) -> str | None:
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None
 
 
 def _redact_public_value(value: object) -> object:

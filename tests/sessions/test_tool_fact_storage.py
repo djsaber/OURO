@@ -117,6 +117,17 @@ def commit(store, session, *, call_states=(), **changes):
     )
 
 
+def test_committed_outcome_is_independent_of_the_callers_mutable_value(store):
+    session, _, call, start, outcome = facts(store)
+    outcome.value.structured = {"items": [1]}
+    commit(store, session, calls=(call,), starts=(start,))
+    store.commit_tool_outcome(outcome)
+    outcome.value.structured["items"].append(2)
+    assert store.load_tool_outcome(session.session_id, call.identity, 1).value.structured == {
+        "items": [1]
+    }
+
+
 @pytest.mark.parametrize("role", ["assistant", "tool_result"])
 def test_reference_commit_does_not_project_owned_tool_content(store, monkeypatch, role):
     session, run, call, start, outcome = facts(store)

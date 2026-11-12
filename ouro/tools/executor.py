@@ -21,7 +21,6 @@ from ouro.core.tool_policies import ToolPolicyMode
 from ouro.core.tools import (
     PermissionMode,
     ToolDefinition,
-    ToolResultValue,
     tool_definition_contract_hash,
 )
 from ouro.tools.base import (
@@ -310,9 +309,7 @@ async def _record_late_result(
     if value.tool_call_id != invocation.tool_call_id or value.tool_name != invocation.tool_name:
         raise ValueError("late tool result identity does not match its invocation")
     result = _validated_tool_result(invocation, value, context)
-    observed = ToolResultValue.model_validate(
-        result.model_dump(include=set(ToolResultValue.model_fields))
-    )
+    observed = result.observation()
     await context.on_late_result(invocation, observed)
 
 
@@ -390,6 +387,8 @@ def _validated_tool_result(
             error_type="ToolResultContractError",
             error_message="tool result identity does not match the current invocation",
         )
+    # Detach once from the callback before asynchronous settlement owns this value.
+    value = ToolResult.model_validate(value.model_dump())
     content, truncated = limit_result_content(
         value.content,
         text_limit=context.max_output_chars,

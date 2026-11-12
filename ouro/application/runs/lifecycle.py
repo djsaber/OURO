@@ -485,9 +485,7 @@ class RunLifecycle:
             if self._validate_resource_refs is None:
                 raise ValueError("tool result resources require a ResourceService")
             self._validate_resource_refs(invocation.session_id, result.resource_refs)
-        value = ToolResultValue.model_validate(
-            result.model_dump(include=set(ToolResultValue.model_fields))
-        )
+        value = result.observation()
         previous = self.store.load_tool_outcome(invocation.session_id, identity, attempt)
         if previous is not None:
             if not previous.value.same_observation(value):

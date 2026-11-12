@@ -233,7 +233,7 @@ def test_provider_config_manager_rejects_user_configured_provider_id(tmp_path) -
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match="unsupported provider config fields: provider_id"):
+    with pytest.raises(ConfigError, match="provider_id"):
         ProviderConfigManager(tmp_path).snapshot()
 
 
@@ -256,7 +256,7 @@ def test_provider_config_manager_requires_display_name(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match="missing display_name"):
+    with pytest.raises(ConfigError, match="display_name"):
         ProviderConfigManager(tmp_path).snapshot()
 
 
@@ -280,7 +280,7 @@ def test_provider_config_rejects_noncanonical_provider_type(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match="unsupported provider type"):
+    with pytest.raises(ConfigError, match="provider_type"):
         ProviderConfigManager(tmp_path).snapshot()
 
 
@@ -303,7 +303,7 @@ def test_provider_config_requires_explicit_protocol_without_legacy_inference(tmp
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match="unsupported provider protocol: None"):
+    with pytest.raises(ConfigError, match="protocol"):
         ProviderConfigManager(tmp_path).snapshot()
 
 
@@ -333,8 +333,14 @@ def test_provider_type_protocol_combinations_are_validated() -> None:
     ),
 )
 def test_endpoint_config_rejects_noncanonical_fields(field) -> None:
-    with pytest.raises(ValueError, match="unsupported endpoint config fields"):
+    with pytest.raises(ValueError, match=field):
         endpoint_config_from_mapping("chat", {"model_id": "model", field: "value"})
+
+
+def test_endpoint_validation_does_not_disclose_unknown_values():
+    with pytest.raises(ValueError, match="api_key") as error:
+        endpoint_config_from_mapping("chat", {"model_id": "model", "api_key": "private-value"})
+    assert "private-value" not in str(error.value)
 
 
 @pytest.mark.parametrize(
@@ -363,7 +369,9 @@ def test_provider_config_rejects_noncanonical_shapes(tmp_path, raw) -> None:
     config_dir.mkdir()
     (config_dir / "providers.json").write_text(json.dumps(raw), encoding="utf-8")
 
-    with pytest.raises(InvalidConfigDataError, match="unsupported|must be an object") as error:
+    with pytest.raises(
+        InvalidConfigDataError, match="unsupported|must be an object|extra_forbidden"
+    ) as error:
         ProviderConfigManager(tmp_path).snapshot()
     assert "ouro-upgrade" not in str(error.value)
     assert json.loads((config_dir / "providers.json").read_text("utf-8")) == raw

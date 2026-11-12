@@ -7,6 +7,7 @@ from ouro.sdk.plugins.models import ModelInput, ModelRequest, ModelUsage
 from ouro.sdk.plugins.providers import (
     ProviderCheck,
     ProviderCompletion,
+    ProviderContinuation,
     ProviderContribution,
     ProviderEvent,
     ProviderRetryNotice,
@@ -19,6 +20,17 @@ from ouro.sdk.plugins.worker_providers import WorkerProviders
 
 
 async def stream(request, output):
+    if request.model.model_id == "continuation":
+        blocks = ({"state": {"items": [1]}},)
+        await output(
+            ProviderEvent(
+                "continuation",
+                continuation=ProviderContinuation("provider", "opaque", "model", blocks),
+            )
+        )
+        blocks[0]["state"]["items"].append(2)
+        await output(ProviderEvent("done", completion=ProviderCompletion("stop")))
+        return
     if request.model.model_id == "diagnostics":
         await output(
             ProviderEvent(

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol, Self
 
 from pydantic import TypeAdapter
@@ -210,7 +210,10 @@ class PluginProvider:
                     raise RuntimeError("Provider output belongs to a finished request")
                 if not isinstance(value, sdk.ProviderEvent):
                     raise TypeError("Provider output must be ProviderEvent")
-                event = ProviderStreamEvent.model_validate(asdict(value))
+                event = ProviderStreamEvent.model_validate(value, from_attributes=True)
+                if event.continuation is not None:
+                    # Opaque protocol blocks may contain nested mutable provider data.
+                    event.continuation = event.continuation.model_copy(deep=True)
                 if event.error is not None:
                     event.error = redactor.redact(event.error)
                 if event.error_code is not None:

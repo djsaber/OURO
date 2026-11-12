@@ -21,7 +21,7 @@ from ouro.core.tool_facts import (
     ToolFactConflict,
     ToolOutcomeRecord,
 )
-from ouro.core.tools import ToolInvocation, ToolInvocationBinding, ToolResult, ToolResultValue
+from ouro.core.tools import ToolInvocation, ToolInvocationBinding, ToolResult
 from ouro.sessions.base import SessionRepository
 
 
@@ -115,8 +115,8 @@ def load_batch_call(
             raise PersistenceError(str(exc)) from exc
         result = ToolResult.model_validate(
             {
-                **outcome.value.model_dump(),
-                **(state.proposals.model_dump() if state.proposals is not None else {}),
+                **dict(outcome.value),
+                **(dict(state.proposals) if state.proposals is not None else {}),
             }
         )
         if feedback is not None:
@@ -226,9 +226,7 @@ def prepare_batch_changes(
         outcome_attempt = previous.outcome_attempt if previous is not None else None
         proposals = None
         if item.result is not None and item.status != "unknown_outcome":
-            value = ToolResultValue.model_validate(
-                item.result.model_dump(exclude=set(ToolResultProposals.model_fields))
-            )
+            value = item.result.observation()
             outcome = store.load_tool_outcome(run.session_id, identity, attempt)
             if outcome is None:
                 if item.feedback is not None:

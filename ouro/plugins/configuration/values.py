@@ -1,35 +1,32 @@
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping
 from types import MappingProxyType
+from typing import cast
+
+from pydantic import ConfigDict, JsonValue, TypeAdapter, ValidationError
+
+_VALUES = TypeAdapter(dict[str, JsonValue], config=ConfigDict(strict=True, allow_inf_nan=False))
+_JSON: TypeAdapter[JsonValue] = TypeAdapter(
+    JsonValue, config=ConfigDict(strict=True, allow_inf_nan=False)
+)
 
 
 def copy_json(value: object) -> object:
-    """Copy JSON data without coercing keys, tuples, or non-finite numbers."""
-
-    if value is None or type(value) in {str, bool, int}:
-        return value
-    if type(value) is float and math.isfinite(value):
-        return value
-    if isinstance(value, dict):
-        if any(not isinstance(key, str) for key in value):
-            raise ValueError("Configuration object keys must be strings")
-        return {key: copy_json(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [copy_json(item) for item in value]
-    raise ValueError("Configuration must contain only finite JSON values")
+    """Validate and detach one finite JSON value."""
+    try:
+        return _JSON.validate_python(value)
+    except ValidationError:
+        raise ValueError("Configuration must contain only finite JSON values") from None
 
 
 def copy_configuration_values(value: object) -> dict[str, object]:
-    if not isinstance(value, dict):
-        raise ValueError("Plugin configuration must be an object")
     try:
-        copied = copy_json(value)
-    except RecursionError:
-        raise ValueError("Configuration must be a finite JSON document") from None
-    assert isinstance(copied, dict)
-    return copied
+        return cast(dict[str, object], _VALUES.validate_python(value))
+    except ValidationError:
+        raise ValueError(
+            "Configuration must be an object containing only finite JSON values"
+        ) from None
 
 
 def freeze_configuration(values: Mapping[str, object]) -> Mapping[str, object]:

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import asdict
 
 from pydantic import JsonValue, TypeAdapter
+from pydantic_core import to_jsonable_python
 
 from ouro.plugins.worker.services import WorkerRequests
 from ouro.sdk.plugins import run_drivers as sdk
@@ -37,7 +37,7 @@ class WorkerDriverBridge:
                     "id": driver_id,
                     "session_id": context.session_id,
                     "run_id": context.run_id,
-                    "resume": asdict(resume) if resume is not None else None,
+                    "resume": to_jsonable_python(resume) if resume is not None else None,
                 },
                 timeout=0,
             )
@@ -58,7 +58,7 @@ class WorkerDriverBridge:
         if method == "run.inputs.consume":
             if self.inputs is None:
                 raise RuntimeError("native Run inputs are unavailable")
-            return [asdict(item) for item in await self.inputs.consume()]
+            return [to_jsonable_python(item) for item in await self.inputs.consume()]
         if self.models is None or self.tools is None:
             raise RuntimeError("native Run ports are unavailable")
         if method == "run.models.request":
@@ -71,13 +71,13 @@ class WorkerDriverBridge:
                 )
             ):
                 raise ValueError("invalid model request")
-            return asdict(
+            return to_jsonable_python(
                 await self.models.request(
                     prompt=prompt, tools=tuple(tools) if tools is not None else None
                 )
             )
         if method == "run.tools.execute":
-            return asdict(
+            return to_jsonable_python(
                 await self.tools.execute(
                     _CALLS.validate_python(params["calls"]),
                     checkpoint=_CHECKPOINT.validate_python(params["checkpoint"]),
@@ -87,7 +87,7 @@ class WorkerDriverBridge:
             identity = params.get("response_id")
             if not isinstance(identity, str):
                 raise ValueError("response_id must be a string")
-            return asdict(
+            return to_jsonable_python(
                 await self.tools.execute_model_response(
                     identity, checkpoint=_CHECKPOINT.validate_python(params["checkpoint"])
                 )

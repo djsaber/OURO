@@ -191,6 +191,19 @@ async def test_disable_stops_stream_and_cached_route_cannot_call_removed_provide
         await anext(provider.stream(model=model, messages=[]))
 
 
+async def test_provider_cannot_mutate_an_emitted_continuation(system):
+    app, _ = system
+    events = [
+        event
+        async for event in app.runtime.adapter.provider.stream(
+            model=app.runtime.adapter.model.model_copy(update={"model_id": "continuation"}),
+            messages=[],
+        )
+    ]
+    assert events[0].continuation.blocks == ({"state": {"items": [1]}},)
+    assert events[-1].completion.finish_reason == "stop"
+
+
 async def test_upgrade_keeps_inflight_generation_until_stream_close_and_rebinds_cached_route(
     system,
 ):

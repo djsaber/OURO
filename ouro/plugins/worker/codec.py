@@ -3,11 +3,25 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import fields
 from typing import Any
+
+from pydantic import TypeAdapter, ValidationError
 
 from ouro.core.message_semantics import validate_semantic_tag
 from ouro.plugins.tool_content import decode_worker_content
 from ouro.sdk.plugins import v5 as sdk
+
+_TOOL = TypeAdapter(sdk.ToolOutput)
+_CONTEXT = TypeAdapter(sdk.ContextOutput)
+_COMMAND = TypeAdapter(sdk.CommandOutput)
+_CONTROLLER = TypeAdapter(sdk.SessionControllerOutput)
+_COMPACTION = TypeAdapter(sdk.CompactionOutput)
+_CONTINUATION = TypeAdapter(sdk.ContinuationDecision)
+_TOOL_POLICY = TypeAdapter(sdk.ToolPolicyDecision)
+_PROMPT_POLICY = TypeAdapter(sdk.PromptPolicyDecision)
+_TURN_POLICY = TypeAdapter(sdk.TurnPolicyDecision)
+_CONTROL_FIELDS = frozenset(field.name for field in fields(sdk.SessionControlTransition))
 
 
 class WorkerProtocolError(RuntimeError):
@@ -168,8 +182,7 @@ def _decode_worker_tool(
     result: dict[str, Any], method: str
 ) -> sdk.ToolOutput | sdk.ToolInputRequest:
     if "input_request" in result:
-        output_fields = {"content", "structured", "resource_refs", "is_error"}
-        if output_fields.intersection(result):
+        if {"content", "structured", "resource_refs", "is_error"}.intersection(result):
             raise WorkerProtocolError(
                 f"worker {method} cannot return input_request together with tool output"
             )
@@ -180,15 +193,17 @@ def _decode_worker_tool(
         raise WorkerProtocolError(
             f"worker {method} content must be text or typed content parts"
         ) from None
-    _require_optional_type(result, "structured", dict, method)
-    _require_string_list(result, "resource_refs", method)
-    _require_optional_type(result, "is_error", bool, method)
-    return sdk.ToolOutput(
-        content=content,
-        structured=_object_value(result.get("structured", {})),
-        resource_refs=tuple(result.get("resource_refs", [])),
-        is_error=result.get("is_error", False),
-        session_control_transitions=_worker_control_transitions(result),
+    if not isinstance(result.get("is_error", False), bool):
+        raise WorkerProtocolError(f"worker {method} is_error must be a boolean")
+    if result.get("session_control_transitions"):
+        result = {**result, "session_control_transitions": _worker_control_transitions(result)}
+    return _decode(
+        _TOOL,
+        {
+            **result,
+            "content": content,
+        },
+        method,
     )
 
 
@@ -198,125 +213,75 @@ def _decode_worker_observer(result: dict[str, Any], method: str) -> None:
 
 
 def _decode_worker_context(result: dict[str, Any], method: str) -> sdk.ContextOutput:
-    fragments = result.get("fragments", [])
-    if not isinstance(fragments, list):
-        raise WorkerProtocolError(f"worker {method} fragments must be a list")
-    return sdk.ContextOutput(fragments=tuple(_worker_context_fragment(item) for item in fragments))
+    output = _decode(_CONTEXT, result, method)
+    for fragment in result.get("fragments", ()):
+        if isinstance(fragment, dict):
+            if not fragment["text"]:
+                raise WorkerProtocolError("worker context fragment text must not be empty")
+            if "scaffold" in fragment:
+                _worker_scaffold(fragment["scaffold"])
+            if "semantic_tag" in fragment:
+                _worker_semantic_tag(fragment["semantic_tag"])
+    return output
 
 
 def _decode_worker_command(result: dict[str, Any], method: str) -> sdk.CommandOutput:
-    _require_optional_type(result, "output", str, method)
-    _require_optional_type(result, "data", dict, method)
-    run_action = result.get("run_action")
-    if run_action not in (None, "stop", "continue"):
-        raise WorkerProtocolError(f"worker {method} run_action must be stop or continue")
-    return sdk.CommandOutput(
-        output=result.get("output", ""),
-        data=_object_value(result.get("data", {})),
-        run_action=run_action,
-        session_inputs=_worker_session_inputs(result),
-        session_input_batches=_worker_session_input_batches(result),
-        session_control_transitions=_worker_control_transitions(result),
-    )
+    if result.get("session_control_transitions"):
+        result = {**result, "session_control_transitions": _worker_control_transitions(result)}
+    output = _decode(_COMMAND, result, method)
+    if output.session_inputs:
+        _validate_session_inputs(result["session_inputs"])
+    for batch in result.get("session_input_batches", ()):
+        _validate_session_inputs(batch["inputs"])
+    return output
 
 
 def _decode_worker_session_controller(
     result: dict[str, Any], method: str
 ) -> sdk.SessionControllerOutput:
-    _require_optional_type(result, "output", str, method)
-    _require_optional_type(result, "data", dict, method)
-    _require_optional_type(result, "usage_scope", str, method, allow_none=True)
-    return sdk.SessionControllerOutput(
-        output=result.get("output", ""),
-        data=_object_value(result.get("data", {})),
-        usage_scope=result.get("usage_scope"),
-    )
+    return _decode(_CONTROLLER, result, method)
 
 
 def _decode_worker_compaction(result: dict[str, Any], method: str) -> sdk.CompactionOutput:
-    _require_optional_type(result, "summary", str, method)
     usage = result.get("usage", {})
     if not isinstance(usage, dict) or any(
         isinstance(value, bool) or not isinstance(value, (int, float)) for value in usage.values()
     ):
         raise WorkerProtocolError(f"worker {method} usage must be numeric")
-    return sdk.CompactionOutput(
-        summary=result.get("summary", ""), usage={str(key): value for key, value in usage.items()}
-    )
+    return _decode(_COMPACTION, result, method)
 
 
 def _decode_worker_continuation(result: dict[str, Any], method: str) -> sdk.ContinuationDecision:
-    action = result.get("action", "ignore")
-    if action not in {"ignore", "continue", "complete", "pause", "fail"}:
-        raise WorkerProtocolError(f"worker continuation action is invalid: {action}")
-    mode = result.get("mode", "follow_up")
-    if mode not in {"follow_up", "steer"}:
-        raise WorkerProtocolError(f"worker continuation mode is invalid: {mode}")
-    _require_optional_type(result, "prompt", str, method, allow_none=True)
-    _require_optional_type(result, "title", str, method, allow_none=True)
-    _require_optional_type(result, "role", str, method, allow_none=True)
-    _require_optional_type(result, "semantic_tag", str, method, allow_none=True)
-    _require_optional_type(result, "coalesce_key", str, method, allow_none=True)
-    _require_optional_type(result, "reason", str, method, allow_none=True)
-    return sdk.ContinuationDecision(
-        action=action,
-        prompt=result.get("prompt"),
-        mode=mode,
-        title=result.get("title"),
-        role=_worker_session_input_role(result.get("role", "user")),
-        scaffold=_worker_scaffold(result.get("scaffold", True)),
-        semantic_tag=_worker_semantic_tag(result.get("semantic_tag")),
-        coalesce_key=result.get("coalesce_key"),
-        reason=result.get("reason"),
-        session_control_transitions=_worker_control_transitions(result),
-    )
+    if "scaffold" in result:
+        _worker_scaffold(result["scaffold"])
+    if result.get("session_control_transitions"):
+        result = {**result, "session_control_transitions": _worker_control_transitions(result)}
+    decision = _decode(_CONTINUATION, result, method)
+    _worker_semantic_tag(decision.semantic_tag)
+    return decision
 
 
 def _decode_worker_tool_policy(result: dict[str, Any], method: str) -> sdk.ToolPolicyDecision:
-    action = result.get("action", "ignore")
-    if action not in {"ignore", "require_approval", "deny"}:
-        raise WorkerProtocolError(f"worker tool policy action is invalid: {action}")
-    _require_optional_type(result, "reason", str, method, allow_none=True)
-    return sdk.ToolPolicyDecision(action=action, reason=result.get("reason"))
+    return _decode(_TOOL_POLICY, result, method)
 
 
 def _decode_worker_prompt_policy(result: dict[str, Any], method: str) -> sdk.PromptPolicyDecision:
-    action = result.get("action", "allow")
-    if action not in {"allow", "deny"}:
-        raise WorkerProtocolError(f"worker prompt policy action is invalid: {action}")
-    _require_optional_type(result, "reason", str, method, allow_none=True)
-    return sdk.PromptPolicyDecision(action=action, reason=result.get("reason"))
+    return _decode(_PROMPT_POLICY, result, method)
 
 
 def _decode_worker_turn_policy(result: dict[str, Any], method: str) -> sdk.TurnPolicyDecision:
-    action = result.get("action", "allow")
-    if action not in {"allow", "continue"}:
-        raise WorkerProtocolError(f"worker turn policy action is invalid: {action}")
-    _require_optional_type(result, "feedback", str, method, allow_none=True)
-    return sdk.TurnPolicyDecision(action=action, feedback=result.get("feedback"))
+    return _decode(_TURN_POLICY, result, method)
 
 
-def _require_optional_type(
-    result: dict[str, Any],
-    field: str,
-    expected: type[object],
-    method: str,
-    *,
-    allow_none: bool = False,
-) -> None:
-    if field not in result:
-        return
-    value = result[field]
-    if allow_none and value is None:
-        return
-    if not isinstance(value, expected) or (expected is int and isinstance(value, bool)):
-        raise WorkerProtocolError(f"worker {method} {field} must be {expected.__name__}")
-
-
-def _require_string_list(result: dict[str, Any], field: str, method: str) -> None:
-    value = result.get(field, [])
-    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-        raise WorkerProtocolError(f"worker {method} {field} must be a string array")
+def _decode[T](adapter: TypeAdapter[T], raw: object, method: str) -> T:
+    try:
+        return adapter.validator.validate_python(raw)
+    except ValidationError as exc:
+        details = "; ".join(
+            f"{'.'.join(map(str, error['loc']))}: {error['msg']}"
+            for error in exc.errors(include_input=False, include_url=False)
+        )
+        raise WorkerProtocolError(f"worker {method}: {details}") from None
 
 
 def _object_value(raw: object) -> dict[str, object]:
@@ -325,72 +290,38 @@ def _object_value(raw: object) -> dict[str, object]:
     return {str(key): value for key, value in raw.items()}
 
 
-def _worker_session_inputs(raw: dict[str, Any]) -> tuple[sdk.SessionInput, ...]:
-    values = raw.get("session_inputs", [])
+def _worker_control_transitions(result: dict[str, Any]) -> tuple[sdk.SessionControlTransition, ...]:
+    """Construct SDK intents without rewalking transport-owned JSON payloads.
+
+    The shared SDK-to-core boundary owns control semantics and payload validation.
+    """
+    values = result["session_control_transitions"]
     if not isinstance(values, list):
-        raise WorkerProtocolError("worker session_inputs result must be a list")
-    inputs: list[sdk.SessionInput] = []
+        raise WorkerProtocolError("worker session_control_transitions must be a list")
+    transitions = []
     for value in values:
         if not isinstance(value, dict):
-            raise WorkerProtocolError("worker session input must be an object")
-        prompt = value.get("prompt")
-        mode = value.get("mode", "follow_up")
-        title = value.get("title")
-        role = value.get("role", "user")
-        scaffold = _worker_scaffold(value.get("scaffold", True))
-        semantic_tag = _worker_semantic_tag(value.get("semantic_tag"))
-        driver_id = value.get("driver_id")
-        if driver_id is not None and not isinstance(driver_id, str):
-            raise WorkerProtocolError("worker session input Driver must be a string")
-        if not isinstance(prompt, str) or not prompt.strip():
+            raise WorkerProtocolError("worker session control transition must be an object")
+        fields = {key: item for key, item in value.items() if key in _CONTROL_FIELDS}
+        try:
+            if "replace_activation_ids" in fields:
+                fields["replace_activation_ids"] = tuple(fields["replace_activation_ids"])
+            transitions.append(sdk.SessionControlTransition(**fields))
+        except (TypeError, ValueError) as exc:
+            raise WorkerProtocolError(
+                f"worker session control transition is invalid: {exc}"
+            ) from exc
+    return tuple(transitions)
+
+
+def _validate_session_inputs(values: list[dict[str, Any]]) -> None:
+    for item in values:
+        if not item["prompt"].strip():
             raise WorkerProtocolError("worker session input prompt must not be empty")
-        if mode not in {"follow_up", "steer"}:
-            raise WorkerProtocolError(f"worker session input mode is invalid: {mode}")
-        if title is not None and not isinstance(title, str):
-            raise WorkerProtocolError("worker session input title must be a string")
-        role = _worker_session_input_role(role)
-        inputs.append(
-            sdk.SessionInput(
-                prompt=prompt,
-                mode=mode,
-                title=title,
-                role=role,
-                scaffold=scaffold,
-                semantic_tag=semantic_tag,
-                driver_id=driver_id,
-            )
-        )
-    return tuple(inputs)
-
-
-def _worker_session_input_batches(
-    raw: dict[str, Any],
-) -> tuple[sdk.SessionInputBatch, ...]:
-    values = raw.get("session_input_batches", [])
-    if not isinstance(values, list):
-        raise WorkerProtocolError("worker session_input_batches result must be a list")
-    batches: list[sdk.SessionInputBatch] = []
-    for value in values:
-        if not isinstance(value, dict):
-            raise WorkerProtocolError("worker session input batch must be an object")
-        coalesce_key = value.get("coalesce_key")
-        if coalesce_key is not None and (
-            not isinstance(coalesce_key, str) or not coalesce_key.strip()
-        ):
-            raise WorkerProtocolError("worker session input batch coalesce_key must not be empty")
-        batches.append(
-            sdk.SessionInputBatch(
-                inputs=_worker_session_inputs({"session_inputs": value.get("inputs", [])}),
-                coalesce_key=coalesce_key,
-            )
-        )
-    return tuple(batches)
-
-
-def _worker_session_input_role(value: object) -> sdk.SessionInputRole:
-    if value not in {"system", "user", "assistant", "tool_result"}:
-        raise WorkerProtocolError(f"worker session input role is invalid: {value}")
-    return value
+        if "scaffold" in item:
+            _worker_scaffold(item["scaffold"])
+        if "semantic_tag" in item:
+            _worker_semantic_tag(item["semantic_tag"])
 
 
 def _worker_scaffold(value: object) -> bool:
@@ -408,61 +339,3 @@ def _worker_semantic_tag(value: object) -> str | None:
         return validate_semantic_tag(value)
     except ValueError as exc:
         raise WorkerProtocolError(f"worker message semantic_tag is invalid: {exc}") from exc
-
-
-def _worker_control_transitions(
-    raw: dict[str, Any],
-) -> tuple[sdk.SessionControlTransition, ...]:
-    values = raw.get("session_control_transitions", [])
-    if not isinstance(values, list):
-        raise WorkerProtocolError("worker session_control_transitions result must be a list")
-    transitions: list[sdk.SessionControlTransition] = []
-    for value in values:
-        if not isinstance(value, dict):
-            raise WorkerProtocolError("worker session control transition must be an object")
-        try:
-            transitions.append(
-                sdk.SessionControlTransition(
-                    action=value["action"],
-                    controller_id=value.get("controller_id"),
-                    activation_id=value.get("activation_id"),
-                    replace_activation_ids=tuple(value.get("replace_activation_ids", [])),
-                    expected_session_revision=value.get("expected_session_revision"),
-                    payload=value.get("payload"),
-                    reason=value.get("reason"),
-                )
-            )
-        except (KeyError, TypeError, ValueError) as exc:
-            raise WorkerProtocolError(
-                f"worker session control transition is invalid: {exc}"
-            ) from exc
-    return tuple(transitions)
-
-
-def _worker_context_fragment(raw: object) -> str | sdk.ContextFragment:
-    if isinstance(raw, str):
-        return raw
-    if not isinstance(raw, dict):
-        raise WorkerProtocolError("worker context fragment must be a string or object")
-    text = raw.get("text")
-    persistence = raw.get("persistence", "ephemeral")
-    target = raw.get("target", "message")
-    role = _worker_session_input_role(raw.get("role", "user"))
-    scaffold = _worker_scaffold(raw.get("scaffold", True))
-    semantic_tag = _worker_semantic_tag(raw.get("semantic_tag"))
-    if not isinstance(text, str) or not text:
-        raise WorkerProtocolError("worker context fragment text must not be empty")
-    if persistence not in {"ephemeral", "message"}:
-        raise WorkerProtocolError(
-            "worker context fragment persistence must be ephemeral or message"
-        )
-    if target not in {"message", "system_prompt"}:
-        raise WorkerProtocolError("worker context fragment target is invalid")
-    return sdk.ContextFragment(
-        text=text,
-        persistence=persistence,
-        target=target,
-        role=role,
-        scaffold=scaffold,
-        semantic_tag=semantic_tag,
-    )

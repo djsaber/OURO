@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from typing import Literal, cast
 
-from pydantic import ConfigDict, Field, JsonValue, field_validator
+from pydantic import ConfigDict, Field, JsonValue
 
 from ouro.core.base import OuroModel
 from ouro.plugins.configuration.schema import ConfigurationIssue as ConfigurationIssue
-from ouro.plugins.configuration.values import copy_configuration_values
 from ouro.plugins.credentials import InlinePluginCredential as InlinePluginCredential
 from ouro.plugins.credentials import PluginCredentialBinding
 from ouro.plugins.credentials import parse_credential_bindings as parse_credential_bindings
@@ -24,18 +23,15 @@ class PluginCredentialSlotView(OuroModel):
 
 
 class PluginConfigurationCandidate(OuroModel):
-    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True, strict=True)
+    model_config = ConfigDict(
+        extra="forbid", hide_input_in_errors=True, strict=True, allow_inf_nan=False
+    )
 
     plugin_id: str
     package_digest: str
     expected_configuration_revision_id: str
     values: dict[str, JsonValue]
     credential_refs: dict[str, PluginCredentialBinding]
-
-    @field_validator("values", mode="before")
-    @classmethod
-    def _copy_values(cls, value: object) -> dict[str, object]:
-        return copy_configuration_values(value)
 
 
 class PluginConfigurationView(OuroModel):

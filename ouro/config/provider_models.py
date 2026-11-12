@@ -483,7 +483,7 @@ class ProviderTemplateBinding(OuroModel):
 class ProviderConfig(OuroModel):
     """Supplier-level product identity, protocol, connection, and endpoints."""
 
-    model_config = ConfigDict(hide_input_in_errors=True)
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     provider_id: str = Field(default_factory=lambda: new_id("provider"))
     display_name: str
@@ -536,6 +536,16 @@ class ProviderConfig(OuroModel):
         if isinstance(value, str) or value is None:
             return CredentialRef.parse(value)
         return value
+
+    @field_validator("default_endpoint")
+    @classmethod
+    def _normalize_default_endpoint(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
+
+    @field_validator("retry_policy", "extra", mode="before")
+    @classmethod
+    def _optional_section(cls, value: object) -> object:
+        return {} if value is None else value
 
     @model_validator(mode="after")
     def _validate_provider(self) -> ProviderConfig:

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, cast
-
-from pydantic import ValidationError
+from typing import Any
 
 from ouro.config.credentials import CredentialRef
 from ouro.config.endpoints import (
@@ -15,36 +13,11 @@ from ouro.config.endpoints import (
 )
 from ouro.config.provider_headers import public_provider_headers
 from ouro.config.provider_models import (
-    SUPPORTED_PROVIDER_TYPES,
     ProviderConfig,
-    ProviderProtocol,
-    ProviderTemplateBinding,
-    ProviderType,
     normalize_provider_config,
-    validate_provider_protocol,
 )
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ProviderRetryPolicy
-
-_PROVIDER_FIELDS = frozenset(
-    {
-        "provider_type",
-        "protocol",
-        "auth_driver",
-        "display_name",
-        "credential_ref",
-        "default_endpoint",
-        "endpoints",
-        "base_url",
-        "api_path",
-        "enabled",
-        "timeout_seconds",
-        "retry_policy",
-        "provider_options",
-        "headers",
-        "template",
-    }
-)
 
 
 def provider_config_to_public_dict(
@@ -95,31 +68,17 @@ def provider_config_from_mapping(
 ) -> ProviderConfig:
     """Decode the current nested provider/endpoint shape."""
 
-    unsupported = sorted(set(raw) - _PROVIDER_FIELDS)
-    if unsupported:
-        raise ConfigError(f"unsupported provider config fields: {', '.join(unsupported)}")
-
+    if "provider_id" in raw or "extra" in raw:
+        raise ConfigError("provider_id belongs to the mapping key; options use provider_options")
+    values = dict(raw)
+    if "provider_options" in values:
+        values["extra"] = values.pop("provider_options")
     try:
-        provider = ProviderConfig(
-            provider_id=provider_id,
-            display_name=_required_str(raw.get("display_name"), "display_name"),
-            provider_type=_provider_type(raw.get("provider_type")),
-            protocol=_provider_protocol(raw.get("protocol")),
-            auth_driver=raw.get("auth_driver", "static"),
-            credential_ref=_credential_ref_from_mapping(raw),
-            default_endpoint=_optional_str(raw.get("default_endpoint")),
-            endpoints=_endpoints_from_mapping(raw),
-            base_url=_optional_str(raw.get("base_url")),
-            api_path=_optional_str(raw.get("api_path")),
-            enabled=raw.get("enabled", True),
-            timeout_seconds=raw.get("timeout_seconds", 60.0),
-            retry_policy=ProviderRetryPolicy.model_validate(raw.get("retry_policy") or {}),
-            extra=dict(raw.get("provider_options") or {}),
-            headers=raw.get("headers", {}),
-            template=_template_binding_from_mapping(raw.get("template")),
+        provider = ProviderConfig.model_validate(
+            {**values, "provider_id": provider_id, "endpoints": _endpoints_from_mapping(raw)},
         )
         return normalize_provider_config(provider)
-    except (TypeError, ValueError, ValidationError) as exc:
+    except (TypeError, ValueError) as exc:
         raise ConfigError(f"invalid provider config {provider_id}: {exc}") from exc
 
 
@@ -174,18 +133,6 @@ def _endpoints_from_mapping(raw: Mapping[str, Any]) -> tuple[ProviderEndpointCon
     return tuple(endpoints[key] for key in sorted(endpoints))
 
 
-def _credential_ref_from_mapping(raw: Mapping[str, Any]) -> CredentialRef:
-    credential_ref = raw.get("credential_ref")
-    if isinstance(credential_ref, str) or credential_ref is None:
-        if credential_ref is not None:
-            return CredentialRef.parse(credential_ref)
-    elif isinstance(credential_ref, Mapping):
-        return CredentialRef.model_validate(dict(credential_ref))
-    if credential_ref is not None:
-        return CredentialRef.model_validate(credential_ref)
-    return CredentialRef()
-
-
 def _credential_ref_to_raw(ref: CredentialRef) -> str | dict[str, str]:
     if ref.type == "env":
         return f"env:{ref.name}"
@@ -195,36 +142,3 @@ def _credential_ref_to_raw(ref: CredentialRef) -> str | dict[str, str]:
         assert ref.name is not None
         return {"type": "managed", "name": ref.name}
     return "none"
-
-
-def _template_binding_from_mapping(raw: object) -> ProviderTemplateBinding | None:
-    if raw is None:
-        return None
-    if not isinstance(raw, Mapping):
-        raise ValueError("provider template binding must be an object")
-    return ProviderTemplateBinding.model_validate(dict(raw))
-
-
-def _optional_str(value: object) -> str | None:
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None
-
-
-def _required_str(value: object, field: str) -> str:
-    normalized = _optional_str(value)
-    if normalized is None:
-        raise ValueError(f"provider config is missing {field}")
-    return normalized
-
-
-def _provider_type(value: object) -> ProviderType:
-    if value in SUPPORTED_PROVIDER_TYPES:
-        return cast(ProviderType, value)
-    raise ValueError(f"unsupported provider type: {value}")
-
-
-def _provider_protocol(value: object) -> ProviderProtocol:
-    if isinstance(value, str):
-        return validate_provider_protocol(value)
-    raise ValueError(f"unsupported provider protocol: {value}")

@@ -44,7 +44,7 @@ from ouro.core.provider import (
 )
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy
-from ouro.core.session_controls import AttributedSessionInput
+from ouro.core.session_controls import AttributedSessionInput, SessionControlTransitionRequest
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest, ToolInvocation
@@ -1156,7 +1156,9 @@ async def test_runtime_observes_tool_arguments_live_and_persists_only_complete_c
 
         assert result.run.status == "waiting_approval"
         assert result.run.active_tool_batch is not None
-        assert load_tool_batch(store, result.run).calls[0].request.arguments == {
+        completed_batch = load_tool_batch(store, result.run)
+        assert completed_batch is not None
+        assert completed_batch.calls[0].request.arguments == {
             "path": "out.txt",
             "content": "hello",
         }
@@ -1433,7 +1435,7 @@ async def test_runtime_reconciles_failed_tool_exchange_before_next_run(tmp_path)
         }
     )
     batch = ToolCallBatchRecord(
-        turn_id=assistant.turn_id,
+        turn_id="turn_failed",
         assistant_message_id=assistant.message_id,
         calls=[ToolBatchCall(request=request, status="ready")],
     )
@@ -1468,8 +1470,12 @@ async def test_runtime_reconciles_failed_tool_exchange_before_next_run(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_runtime_commits_checkpointed_tool_result_during_recovery(tmp_path) -> None:
-    store = LocalSessionStore(tmp_path)
+@pytest.mark.parametrize("store_type", [LocalSessionStore, SQLiteSessionStore])
+@pytest.mark.parametrize("pending_controls", [False, True])
+async def test_runtime_commits_checkpointed_tool_result_during_recovery(
+    tmp_path, store_type, pending_controls
+) -> None:
+    store = store_type(tmp_path / "sessions.db" if store_type is SQLiteSessionStore else tmp_path)
     store.initialize()
     session = SessionRecord(title="Recover checkpoint", status="running")
     request = ToolCallRequest(id="call_reused", name="Read", arguments={"path": "note.txt"})
@@ -1477,6 +1483,12 @@ async def test_runtime_commits_checkpointed_tool_result_during_recovery(tmp_path
         tool_call_id=request.id,
         tool_name=request.name,
         content="checkpointed content",
+        structured={"items": [1]},
+        session_control_transitions=[
+            SessionControlTransitionRequest(action="acquire", controller_id="mode")
+        ]
+        if pending_controls
+        else [],
     )
     assistant = MessageRecord.text(
         session_id=session.session_id,
@@ -1531,13 +1543,27 @@ async def test_runtime_commits_checkpointed_tool_result_during_recovery(tmp_path
     snapshot = store.load_session(session.session_id)
     recovered_run = next(run for run in snapshot.runs if run.run_id == interrupted.run_id)
 
-    assert snapshot.messages[1].text_content == "checkpointed content"
+    assert snapshot.messages[1].text_content.startswith("checkpointed content")
     assert recovered_run.active_tool_batch is not None
-    assert load_tool_batch(store, recovered_run).calls[0].status == "completed"
-    assert (
-        load_tool_batch(store, recovered_run).calls[0].result_message_id
-        == snapshot.messages[1].message_id
+    recovered_batch = load_tool_batch(store, recovered_run)
+    assert recovered_batch is not None
+    recovered_call = recovered_batch.calls[0]
+    assert recovered_call.status == ("failed" if pending_controls else "completed")
+    assert recovered_call.result_message_id == snapshot.messages[1].message_id
+    assert recovered_call.result is not None
+    assert recovered_call.result.session_control_transitions == []
+    assert snapshot.session.controls.activations == []
+    if pending_controls:
+        assert recovered_call.feedback is not None
+        assert recovered_call.feedback.error_type == "ToolBusinessEffectsNotApplied"
+    else:
+        assert snapshot.messages[1].text_content == "checkpointed content"
+    stored = store.load_tool_outcome(
+        session.session_id, batch.head().identity(interrupted.run_id, request.id), 1
     )
+    assert stored.value.content == "checkpointed content"
+    assert stored.value.structured == {"items": [1]}
+    await runtime.close()
 
 
 def test_runtime_rejects_checkpointed_result_for_different_tool_call(tmp_path) -> None:
@@ -2283,10 +2309,10 @@ async def test_runtime_drains_queued_follow_up_after_active_run_completes(tmp_pa
             "Second prompt",
             "second",
         ]
-        queued = store.load_input(
+        queued_input = store.load_input(
             queued_snapshot.session.session_id, queued_snapshot.session.pending_input_ids[0]
         )
-        assert queued is not None and queued.item.prompt == "Second prompt"
+        assert queued_input is not None and queued_input.item.prompt == "Second prompt"
         assert runtime.pending_user_inputs(session.session_id) == ()
 
 
@@ -2447,9 +2473,12 @@ async def test_runtime_records_provider_usage(tmp_path) -> None:
     result = await runtime.run("Say hi")
     snapshot = store.load_session(result.session.session_id)
 
+    assert result.usage is not None
     assert result.usage["input_tokens"] == 3
     assert result.usage["output_tokens"] == 2
-    assert runtime.usage.run_usage(result.session.session_id, result.run.run_id).input_tokens == 3
+    assert runtime.usage is not None
+    run_usage = runtime.usage.run_usage(result.session.session_id, result.run.run_id)
+    assert run_usage is not None and run_usage.input_tokens == 3
     assert "usage" not in snapshot.runs[0].model_dump()
     assert "model_message_completed" in [
         event.event_type for event in recorded_events(snapshot.session.session_id)
@@ -2915,10 +2944,9 @@ async def test_runtime_aborts_active_approved_command_tool(tmp_path) -> None:
             if event.event_type == "tool_call_completed"
         )
         assert snapshot.runs[0].active_tool_batch is not None
-        assert (
-            completed_event.payload["status"]
-            == load_tool_batch(store, snapshot.runs[0]).calls[0].status
-        )
+        aborted_batch = load_tool_batch(store, snapshot.runs[0])
+        assert aborted_batch is not None
+        assert completed_event.payload["status"] == aborted_batch.calls[0].status
         assert snapshot.session.message_count == len(snapshot.messages)
         assert snapshot.runs[0].active_tool_batch is not None
         assert snapshot.runs[0].active_tool_batch.phase == "aborted"

@@ -16,12 +16,10 @@ import platform
 import sys
 import tempfile
 import tracemalloc
-from contextlib import ExitStack
 from dataclasses import asdict
 from pathlib import Path
 from statistics import median
 from time import perf_counter_ns
-from unittest.mock import patch
 
 
 async def measure(args):
@@ -39,7 +37,7 @@ async def measure(args):
         "command": sdk.CommandCall("command", session_id="session"),
         "tool": sdk.ToolCall("call", "session", "run", "echo", {}),
         "continuation": sdk.RunOutcome("session", "run", "completed", "user"),
-        "compaction": sdk.CompactionCall("session", "run", "", (), 100, 20),
+        "compaction": sdk.CompactionCall("session", "run", "", ()),
     }
     with tempfile.TemporaryDirectory(prefix="ouro-worker-results-") as directory:
         instance = WorkerPluginInstance(
@@ -55,29 +53,62 @@ async def measure(args):
         for count in (1, 64, 512):
             inputs = [{"prompt": f"input {i}", "semantic_tag": "context"} for i in range(count)]
             transitions = [{"action": "acquire", "controller_id": f"mode{i}"} for i in range(count)]
-            payloads = {
-                "context": {
-                    "fragments": [
-                        {"text": f"context {i}", "semantic_tag": "context"} for i in range(count)
-                    ]
-                },
-                "command": {
-                    "session_inputs": inputs,
-                    "session_input_batches": [{"inputs": inputs, "coalesce_key": "batch"}],
-                    "session_control_transitions": transitions,
-                },
-                "tool": {"content": "done", "session_control_transitions": transitions},
-                "continuation": {
-                    "action": "continue",
-                    "prompt": "next",
-                    "session_control_transitions": transitions,
-                },
-                "compaction": {
-                    "summary": "summary",
-                    "usage": {f"tokens{i}": i for i in range(count)},
-                },
-            }
-            for kind, payload in payloads.items():
+            payloads = [
+                (
+                    "context",
+                    "context",
+                    {
+                        "fragments": [
+                            {"text": f"context {i}", "semantic_tag": "context"}
+                            for i in range(count)
+                        ]
+                    },
+                ),
+                (
+                    "command",
+                    "command",
+                    {
+                        "session_inputs": inputs,
+                        "session_input_batches": [{"inputs": inputs, "coalesce_key": "batch"}],
+                        "session_control_transitions": transitions,
+                    },
+                ),
+                ("command_input", "command", {"session_inputs": inputs}),
+                (
+                    "control_payload",
+                    "command",
+                    {
+                        "session_control_transitions": [
+                            {
+                                "action": "acquire",
+                                "controller_id": "mode",
+                                "payload": {
+                                    "items": [{"n": i, "text": "x" * 64} for i in range(count)]
+                                },
+                            }
+                        ],
+                    },
+                ),
+                ("tool", "tool", {"content": "done", "session_control_transitions": transitions}),
+                (
+                    "continuation",
+                    "continuation",
+                    {
+                        "action": "continue",
+                        "prompt": "next",
+                        "session_control_transitions": transitions,
+                    },
+                ),
+                (
+                    "compaction",
+                    "compaction",
+                    {
+                        "summary": "summary",
+                        "usage": {f"tokens{i}": i for i in range(count)},
+                    },
+                ),
+            ]
+            for workload, kind, payload in payloads:
                 encoded = json.dumps(payload)
                 handler = getattr(instance, f"_{kind}_handler")("example")
                 call = calls[kind]
@@ -91,6 +122,7 @@ async def measure(args):
                         payload=payload,
                         *,
                         timeout=None,
+                        retain_result_on_cancel=False,
                     ):
                         return json.loads(encoded) if transport == "json" else dict(payload)
 
@@ -111,20 +143,7 @@ async def measure(args):
                         peaks.append(tracemalloc.get_traced_memory()[1])
                         tracemalloc.stop()
 
-                    # Counts are measured separately so spies do not distort timings.
-                    with ExitStack() as stack:
-                        constructors = {
-                            name: stack.enter_context(
-                                patch.object(sdk, name, wraps=getattr(sdk, name))
-                            )
-                            for name in (
-                                "ContextFragment",
-                                "SessionInput",
-                                "SessionInputBatch",
-                                "SessionControlTransition",
-                            )
-                        }
-                        output = await handler(call)
+                    output = await handler(call)
                     digest = hashlib.sha256(
                         json.dumps(asdict(output), sort_keys=True).encode()
                     ).hexdigest()
@@ -135,15 +154,13 @@ async def measure(args):
                                 "platform": platform.platform(),
                                 "python": platform.python_version(),
                                 "kind": kind,
+                                "workload": workload,
                                 "items": count,
                                 "transport": transport,
                                 "wire_bytes": len(encoded.encode()),
                                 "median_ms": median(samples),
                                 "samples_ms": samples,
                                 "peak_bytes": peaks,
-                                "constructors": {
-                                    name: spy.call_count for name, spy in constructors.items()
-                                },
                                 "output_digest": digest,
                             }
                         ),

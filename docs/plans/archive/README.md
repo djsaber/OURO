@@ -5,6 +5,7 @@
 
 | 日期 | 记录 |
 |---|---|
+| 2026-11-13 | [数据模型与转换边界：设计与验收](2026-11-13-data-models.md) |
 | 2026-11-05 | [上下文准备与压缩策略：设计与验收](2026-11-05-context-preparation-boundary.md) |
 | 2026-11-05 | [上下文与协议边界：设计与验收](2026-11-05-context-protocol-boundaries.md) |
 | 2026-10-30 | [会话事实存储与增量观察改进计划](2026-10-30-session-observation-without-event-log.md) |

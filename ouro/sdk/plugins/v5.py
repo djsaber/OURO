@@ -266,7 +266,7 @@ ToolResumeHandler = (
 )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SessionInput:
     """Request a provenance-bearing input through the Host runtime.
 
@@ -288,7 +288,7 @@ class SessionInput:
             raise ValueError("Driver selection requires a nonempty identity and follow-up input")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SessionInputBatch:
     """Submit one non-empty, ordered group of inputs as a single delivery unit.
 
@@ -669,7 +669,7 @@ class SessionControlClaim:
     access: SessionControlAccess = "exclusive"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SessionControlTransition:
     action: SessionControlTransitionAction
     controller_id: str | None = None
@@ -732,7 +732,7 @@ class ContextOutput:
     fragments: tuple[str | ContextFragment, ...] = ()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ContextFragment:
     """Model context supplied for one request or persisted as a canonical message.
 
@@ -780,7 +780,7 @@ class CompactionCall:
 
 @dataclass(frozen=True)
 class CompactionOutput:
-    summary: str
+    summary: str = ""
     usage: Mapping[str, int | float] = field(default_factory=dict)
 
 

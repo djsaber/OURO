@@ -155,7 +155,7 @@ class ToolOutcomeRecord(VersionedOuroModel):
                 raise ValueError(
                     "pending business proposals must be accepted separately from Outcome content"
                 )
-            return value.model_dump(exclude={"harness_change", "session_control_transitions"})
+            return value.observation()
         return value
 
     @model_validator(mode="after")

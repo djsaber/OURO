@@ -5,6 +5,9 @@ import pytest
 from ouro.core.agents import AgentControlRequest
 from ouro.core.cancellation import AbortSignal
 from ouro.core.interactions import AnswerResolution
+from ouro.core.messages import TextContent
+from ouro.core.session_controls import SessionControlTransitionRequest
+from ouro.core.tools import ToolResultValue
 from ouro.tools import (
     Tool,
     ToolDefinition,
@@ -87,6 +90,39 @@ async def test_handler_failure_keeps_its_operation_specific_message(stage):
     assert outcome.status == "completed"
     assert outcome.result.is_error
     assert outcome.result.content == f"Tool Probe {action}: [ValueError] synthetic failure"
+
+
+@pytest.mark.parametrize("stage", ["execute", "resume"])
+async def test_executor_owns_result_and_proposals_after_callback(stage):
+    returned = ToolResult(
+        tool_call_id="call",
+        tool_name="Probe",
+        content=[TextContent(text="answer")],
+        structured={"items": [1]},
+        metadata={"labels": ["original"]},
+        session_control_transitions=[
+            SessionControlTransitionRequest(
+                action="acquire", controller_id="mode", payload={"items": [1]}
+            )
+        ],
+    )
+
+    async def handler(invocation, *args):
+        return returned
+
+    outcome = await invoke(stage, handler)
+    returned.content[0].text = "changed"
+    returned.structured["items"].append(2)
+    returned.metadata["labels"].append("changed")
+    returned.session_control_transitions[0].payload["items"].append(2)
+
+    observed = outcome.result.observation()
+    assert type(observed) is ToolResultValue
+    assert observed.text_content == "answer"
+    assert observed.structured == {"items": [1]}
+    assert observed.metadata == {"labels": ["original"]}
+    assert "session_control_transitions" not in observed.model_dump()
+    assert outcome.result.session_control_transitions[0].payload == {"items": [1]}
 
 
 @pytest.mark.parametrize("stage", ["execute", "resume"])

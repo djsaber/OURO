@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import asdict
 
 from pydantic import TypeAdapter
+from pydantic_core import to_jsonable_python
 
 from ouro.plugins.worker.services import WorkerRequests
 from ouro.sdk.plugins.models import ModelOutput, ModelRequest, PluginModels
@@ -25,11 +25,11 @@ class WorkerModelBridge:
         async def output(item: ModelOutput) -> None:
             await self.client.request(
                 "models.output",
-                {"handler_id": handler_id, "output": asdict(item)},
+                {"handler_id": handler_id, "output": to_jsonable_python(item)},
                 timeout=0,
             )
 
-        return asdict(
+        return to_jsonable_python(
             await self.models.generate(
                 request, on_output=output if handler_id is not None else None
             )

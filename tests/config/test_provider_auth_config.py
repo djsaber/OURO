@@ -269,7 +269,7 @@ def test_config_codec_rejects_mismatched_driver_and_reference(fixture_product, d
 
 
 def test_service_policy_cannot_be_user_configured(fixture_product):
-    with pytest.raises(ConfigError, match="unsupported provider config fields"):
+    with pytest.raises(ConfigError, match="service_policy"):
         provider_config_from_mapping(
             "fixture",
             {
