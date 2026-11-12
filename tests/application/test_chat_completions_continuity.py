@@ -65,7 +65,7 @@ async def test_model_switch_after_restart_preserves_reasoning_and_completed_tool
             assert assistants[0][text_field] == "Inspect first."
             assert len(assistants) == (1 if resume_tools else 2)
             if not resume_tools:
-                assert text_field not in assistants[1]
+                assert assistants[1][text_field] == ""
             assert all("reasoning_details" not in m for m in assistants)
             other_field = "reasoning" if text_field == "reasoning_content" else "reasoning_content"
             assert all(other_field not in m for m in assistants)

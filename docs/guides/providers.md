@@ -181,7 +181,8 @@ reasoning_content、reasoning 与 reasoning_details 扩展，Responses 与 Messa
 这段内容表示先前助手的推理记录，不代表已经确认的结论或已经执行的操作。
 
 Chat Completions 端点的 `reasoning_text_field` 声明历史思考文本的字段：`reasoning_content` 或 `reasoning`。
-它位于端点顶层，与 `reasoning` 生成配置并列。null 或未设置时使用上述历史推理文字；空思考不添加字段。
+它位于端点顶层，与 `reasoning` 生成配置并列。没有可用原生续接时，每条助手消息都携带声明的字段，
+没有思考文本时值为空字符串。null 或未设置时仅将非空思考作为上述历史推理文字提供。
 该设置不改变本次思考生成，也不控制响应读取。端点配置片段：
 
 ```json

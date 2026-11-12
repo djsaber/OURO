@@ -1541,12 +1541,13 @@ async def test_openai_chat_completions_preserves_bare_reasoning_for_tool_continu
 
 
 @pytest.mark.asyncio
-async def test_chat_completions_omits_empty_reasoning_content_for_tool_calls() -> None:
+@pytest.mark.parametrize("field", [None, "reasoning_content", "reasoning"])
+async def test_empty_reasoning_tool_history_uses_target_field(field) -> None:
     transport = FakeTransport({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
     provider = OpenAIChatCompletionsProvider(
         base_url="https://example.test/v1",
-        api_key="secret",
         transport=transport,
+        reasoning_text_field=field,
     )
     assistant = MessageRecord.text(session_id="ses_1", role="assistant", text="").model_copy(
         update={
@@ -1559,22 +1560,47 @@ async def test_chat_completions_omits_empty_reasoning_content_for_tool_calls() -
             ],
         }
     )
+    result = MessageRecord.text(
+        session_id="ses_1", role="tool_result", text="File contents."
+    ).model_copy(
+        update={"tool_result": ToolResultReference(tool_call_id="call_1", tool_name="Read")}
+    )
+    history = [
+        MessageRecord.text(session_id="ses_1", role="user", text="read"),
+        assistant,
+        result,
+    ]
+    history = [MessageRecord.model_validate_json(m.model_dump_json()) for m in history]
+    before = [m.model_dump_json() for m in history]
 
     events = [
         event
         async for event in provider.stream(
-            model=ModelMetadata(model_id="glm-test", provider_id="glm"),
-            messages=[
-                MessageRecord.text(session_id="ses_1", role="user", text="read"),
-                assistant,
-            ],
+            model=ModelMetadata(model_id="target-model", provider_id="target"),
+            messages=history,
+            tools=[{"name": "Read", "parameters_schema": {"type": "object"}}],
         )
     ]
 
     assert [event.type for event in events] == ["text_delta", "done"]
-    assistant_message = transport.requests[0]["payload"]["messages"][1]
-    assert assistant_message["role"] == "assistant"
-    assert "reasoning_content" not in assistant_message
+    sent = transport.requests[0]["payload"]["messages"]
+    assert sent == [
+        {"role": "user", "content": "read"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "Read", "arguments": '{"path": "README.md"}'},
+                }
+            ],
+            **({field: ""} if field is not None else {}),
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "File contents."},
+    ]
+    assert [m.model_dump_json() for m in history] == before
 
 
 @pytest.mark.asyncio

@@ -116,7 +116,7 @@ def _message_to_chat_completions(
     if wire_role == "assistant":
         if native:
             converted.update(native)
-        elif reasoning_text_field is not None and message.reasoning_content:
+        elif reasoning_text_field is not None:
             converted[reasoning_text_field] = message.reasoning_content
         elif message.reasoning_content:
             converted["content"] = message.reasoning_context_text + converted["content"]

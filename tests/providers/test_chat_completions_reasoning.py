@@ -49,7 +49,11 @@ async def test_target_text_field_encodes_canonical_text_without_replaying_foreig
             "role": "assistant",
             "content": "[Assistant reasoning]\noriginal text\n[End assistant reasoning]\n\n",
         }
-    assert sent[1] == {"role": "assistant", "content": "answer without reasoning"}
+    assert sent[1] == {
+        "role": "assistant",
+        "content": "answer without reasoning",
+        **({field: ""} if field is not None else {}),
+    }
     assert artifact.blocks[0]["reasoning_details"][0]["data"] == "opaque"
 
 

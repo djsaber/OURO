@@ -65,7 +65,7 @@ API Key 必须与模板所选平台、区域匹配。MiniMax 使用中国站，�
 
 `context_window` 用于上下文规划；`max_output_tokens` 是可空的请求输出上限。Chat Completions 与 Responses 模板默认不配置上限；Messages 模板保留显式有限值以满足协议必填字段。表中的“不限制”表示空值，不建模服务端输出额度。Codex 订阅的有限配置仅用于本地规划。
 表中的思考默认值对应 `reasoning.capability.default`；effort 为开启思考时可选的等级。
-配置了 `reasoning_text_field` 的 Chat Completions 端点在没有可用原生续接时用该字段发送已选入上下文的非空思考文本，包括切换模型后继续会话的请求。
+配置了 `reasoning_text_field` 的 Chat Completions 端点在没有可用原生续接时用该字段发送上下文中每条 assistant 消息的思考文本，空思考显式编码为空字符串，包括切换模型后继续会话的请求。
 
 ## OpenAI API 与订阅
 

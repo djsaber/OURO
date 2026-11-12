@@ -242,8 +242,9 @@ Profile 禁止覆盖 model、messages、tools、token limit、stream、system �
 
 Endpoint 的 `reasoning_text_field` 取 `reasoning_content`、`reasoning` 或 null，仅用于 Chat Completions。
 它与 `reasoning` 并列，声明目标端点接收历史思考文字的字段，与本轮生成的启停、等级和摘要独立。
-没有可用原生续接时，非空规范思考按该字段发送；null 使用带 `[Assistant reasoning]` 和
-`[End assistant reasoning]` 标记的历史推理文字，置于对应 assistant 正文之前。空思考不添加字段或标记。
+没有可用原生续接时，每条 assistant 消息的规范思考按该字段发送，空思考显式编码为空字符串。
+null 使用带 `[Assistant reasoning]` 和 `[End assistant reasoning]` 标记的非空历史推理文字，
+置于对应 assistant 正文之前；空思考不添加标记。编码不修改会话事实、正文或工具调用关系。
 响应字段名不决定下一次请求字段名，纯文本不需要来源匹配；字段名只来自目标端点声明。
 CLI `provider endpoint add/update --reasoning-text-field reasoning_content|reasoning|none` 和
 TUI 的 History reasoning field 编辑这一声明。none 或空值使用历史推理文字。

@@ -82,7 +82,7 @@ async def test_go_template_reaches_its_protocol_with_session_headers(
         assert "enable_thinking" not in body
         if protocol == "openai-chat-completions":
             assert body["messages"][1]["reasoning_content"] == "Check the existing tests first."
-            assert "reasoning_content" not in body["messages"][3]
+            assert body["messages"][3]["reasoning_content"] == ""
     assert saved.headers == {"x-opencode-session": ContextHeaderValue(key="session.id")}
 
 
