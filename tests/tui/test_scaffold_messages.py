@@ -183,7 +183,7 @@ async def test_settings_toggle_refreshes_visible_session_and_survives_navigation
             }
         await choose_menu(pilot, "Display", title="DISPLAY")
         menu = app.screen
-        assert menu._choices[1].trailing_badge == "Hidden"
+        assert menu._choices[1].enabled_state is False
         await choose_menu(pilot, "Scaffold messages")
         await wait_until(
             lambda: any(entry.scaffold for entry in history.entries),

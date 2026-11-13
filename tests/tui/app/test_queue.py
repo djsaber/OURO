@@ -519,7 +519,8 @@ async def test_queued_input_delivery_uses_shared_settings_menu_and_persists_mode
         assert screen._choices[0].marker == DEFAULT_TUI_THEME.selected_choice_marker
         assert screen._choices[1].marker == ""
 
-        screen.query_one("#choice-filter", Input).value = "All at once"
+        assert not screen.query_one("#choice-filter", Input).display
+        await pilot.press("down")
         await pilot.pause()
         await pilot.press("enter")
         await wait_for_menu_action(pilot, screen)

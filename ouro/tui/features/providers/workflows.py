@@ -250,7 +250,7 @@ class ProviderConfigurationWorkflows(App[int]):
 
             menu.push_page(
                 title=theme_for(self).inline_separator.join(("PROVIDER", provider.display_name)),
-                placeholder="Choose an action…",
+                placeholder=None,
                 choices=choices,
                 on_select=select_action,
                 on_refresh=refresh_provider_actions,
@@ -259,7 +259,7 @@ class ProviderConfigurationWorkflows(App[int]):
         selected = await self.push_screen_wait(
             ChoiceScreen(
                 title=theme_for(self).inline_separator.join(("PROVIDER", provider.display_name)),
-                placeholder="Choose an action…",
+                placeholder=None,
                 choices=choices,
             )
         )
@@ -725,7 +725,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 title=theme_for(self).inline_separator.join(
                     ("ENDPOINT", endpoint.display_name or endpoint.model_id)
                 ),
-                placeholder="Choose an action…",
+                placeholder=None,
                 choices=choices,
                 on_select=select_action,
                 on_refresh=refresh_endpoint_actions,
@@ -736,7 +736,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 title=theme_for(self).inline_separator.join(
                     ("ENDPOINT", endpoint.display_name or endpoint.model_id)
                 ),
-                placeholder="Choose an action…",
+                placeholder=None,
                 choices=choices,
             )
         )
@@ -835,7 +835,7 @@ def _provider_choice(
     return Choice(
         provider.provider_id,
         provider.display_name,
-        accent=None if provider.enabled else theme.text_lowlight,
+        enabled_state=provider.enabled,
         trailing=provider.provider_type,
         trailing_badge="default" if provider.default else "",
     )

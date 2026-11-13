@@ -16,7 +16,7 @@ from ouro.application.contracts.configuration import AgentRuntimeConfigView
 from ouro.application.contracts.models import AvailableModel
 from ouro.core.agents import AgentDefinitionContent, ExecutionMode, ToolSelection
 from ouro.core.model_selection import DEFAULT_MODEL
-from ouro.tui.features.configuration.values import _RUNTIME_MODEL, _enabled_label, _toggle_member
+from ouro.tui.features.configuration.values import _RUNTIME_MODEL, _toggle_member
 from ouro.tui.features.providers.model_menus import (
     UNAVAILABLE_MODEL_LABEL,
     model_choices,
@@ -30,13 +30,12 @@ from ouro.tui.view_models import TuiAgentDefinitionConfiguration, TuiAgentRuntim
 
 
 def agent_definition_status(definition: AgentDefinitionView, *, theme: TuiTheme) -> str:
-    status = "Enabled" if definition.enabled else "Disabled"
     labels = []
     if definition.enabled and not definition.allowed_by_policy:
         labels.append("Restricted by policy")
     if definition.compatibility == "unavailable":
         labels.append("Tools unavailable")
-    return theme.inline_separator.join((*labels, status))
+    return theme.inline_separator.join(labels)
 
 
 class AgentDispatchPolicyScreen(EditableChoiceScreen):
@@ -71,7 +70,7 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
         }
         super().__init__(
             title="SUBAGENT PERMISSIONS",
-            placeholder="Search subagent permissions…",
+            placeholder=None,
             choices=self._policy_choices(),
             on_save=self._save_field,
         )
@@ -163,9 +162,6 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
     def _policy_choices(self) -> tuple[Choice, ...]:
         error = self._validation_error()
 
-        def state(field: str) -> str:
-            return _enabled_label(self._toggles[field])
-
         return (
             Choice(
                 "agent-policy-models",
@@ -176,13 +172,13 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
             Choice(
                 "agent-policy-sync",
                 "Wait for results",
-                trailing_badge=state("agent-policy-sync"),
+                enabled_state=self._toggles["agent-policy-sync"],
                 group="EXECUTION",
             ),
             Choice(
                 "agent-policy-async",
                 "Run in background",
-                trailing_badge=state("agent-policy-async"),
+                enabled_state=self._toggles["agent-policy-async"],
                 group="EXECUTION",
             ),
             Choice(
@@ -202,13 +198,13 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
             Choice(
                 "agent-policy-write",
                 "Write tools",
-                trailing_badge=state("agent-policy-write"),
+                enabled_state=self._toggles["agent-policy-write"],
                 group="CAPABILITIES",
             ),
             Choice(
                 "agent-policy-mcp",
                 "MCP tools",
-                trailing_badge=state("agent-policy-mcp"),
+                enabled_state=self._toggles["agent-policy-mcp"],
                 group="CAPABILITIES",
             ),
             Choice(

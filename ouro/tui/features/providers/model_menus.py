@@ -82,6 +82,7 @@ def reasoning_choices(
         Choice(
             value,
             THINKING_LABELS[value],
+            enabled_state=value != "disabled",
             marker=theme.selected_choice_marker if value == selected else "",
             trailing="current" if value == selected else "",
             group="EFFORT" if capability.supported_summaries else "",

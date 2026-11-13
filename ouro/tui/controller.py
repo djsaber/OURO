@@ -39,7 +39,6 @@ from ouro.application.contracts.configuration import (
     SkillCatalogView,
     SkillManagementView,
     SkillPolicyView,
-    SkillValidationView,
     SkillView,
     SystemPromptConfigView,
     ToolExecutionConfigView,
@@ -1769,14 +1768,6 @@ class TuiController:
         assert self._application is not None
         await self._application.refresh_skills(skills)
 
-    async def validate_skill(self, name: str) -> SkillValidationView:
-        return await asyncio.to_thread(self._validate_skill, name)
-
-    def _validate_skill(self, name: str) -> SkillValidationView:
-        configuration = self._require_configuration()
-        skill = configuration.skill(name).skill
-        return configuration.validate_skills(skill.location)
-
     async def compaction_configuration(self) -> CompactionConfigView:
         configuration = self._require_configuration()
         return await asyncio.to_thread(configuration.compaction_config)
@@ -1909,12 +1900,6 @@ class TuiController:
 
     async def restart_plugin(self, plugin_id: str) -> PluginActionResult:
         return await self._plugin_operation("restart", plugin_id)
-
-    async def check_plugin(self, plugin_id: str) -> PluginActionResult:
-        application = self._application
-        if application is None or application.plugins is None:
-            raise RuntimeError("plugin management is unavailable")
-        return await asyncio.to_thread(application.plugins.check, plugin_id)
 
     @publishes_status
     async def select_plugin_install(

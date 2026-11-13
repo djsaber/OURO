@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+from base64 import b64encode
 from collections.abc import Sequence
 from contextlib import nullcontext
 from pathlib import Path
@@ -51,6 +52,7 @@ from ouro.plugins.dependencies import (
     desired_dependant_closure,
     resolve_plugin_dependencies,
 )
+from ouro.plugins.installation.icons import read_plugin_icon
 from ouro.plugins.installation.installer import PluginInstaller
 from ouro.plugins.installation.paths import PluginPackageError
 from ouro.plugins.installation.scaffold import create_plugin_scaffold
@@ -825,6 +827,11 @@ class PluginService:
         return PluginSummary(
             plugin_id=installed.plugin_id,
             name=installed.manifest.name,
+            author=installed.manifest.author,
+            icon=_icon_data_url(
+                self.store.package_path(installed.plugin_id, installed.package_digest),
+                installed.manifest.icon,
+            ),
             version=installed.version,
             package_digest=installed.package_digest,
             status=self._status(record, state=state),
@@ -841,6 +848,8 @@ class PluginService:
         return PluginSummary(
             plugin_id=definition.plugin_id,
             name=definition.manifest.name,
+            author=definition.manifest.author,
+            icon=_icon_data_url(definition.root, definition.manifest.icon),
             version=definition.version,
             status=self._builtin_status(definition, state),
             runtime_kind=definition.manifest.runtime.kind,
@@ -939,6 +948,11 @@ class PluginService:
         return PluginInstallView(
             plugin_id=installed.plugin_id,
             name=installed.manifest.name,
+            author=installed.manifest.author,
+            icon=_icon_data_url(
+                self.store.package_path(installed.plugin_id, installed.package_digest),
+                installed.manifest.icon,
+            ),
             version=installed.version,
             package_digest=installed.package_digest,
             runtime_kind=installed.manifest.runtime.kind,
@@ -1093,6 +1107,14 @@ class PluginService:
                             owner,
                         )
         return references
+
+
+def _icon_data_url(root: Path, icon: str | None) -> str | None:
+    try:
+        content = read_plugin_icon(root, icon)
+    except OSError, ValueError:
+        return None
+    return f"data:image/png;base64,{b64encode(content).decode('ascii')}" if content else None
 
 
 def _require_selected(record: PluginRecord) -> InstalledPlugin:

@@ -38,6 +38,17 @@ uv run --frozen ouro plugin purge-data dev.example.plugin --home ./.ouro-dev
 Host 的相关资源退出；仍有占用或可恢复工作的引用时，清理会拒绝。它不删除 Session 历史、Task 记录、用量、
 制品或其他插件的数据，也不会为执行清理启动插件。
 
+插件可以随包附带可选图标，无需启用即可展示。`plugin list --json`、`plugin show <id> --json` 的
+`icon` 字段直接包含 PNG data URL；详情中的安装版本条目也携带各自的图标。未提供、无法读取、非 PNG 或
+超过 512 KiB 内嵌上限时省略该字段，不影响安装。图形客户端在缺省或图片加载失败时使用默认图标。
+终端文本列表保持原有显示方式。作者声明方法见
+[插件开发指南](../development/plugin-development.md#插件图标)。
+
+插件还可声明可选作者信息。`plugin list --json` 和 `plugin show <id> --json` 中的 `author` 对象
+包含作者或团队的 `name`，以及可选主页 `url`；详情的安装版本条目保留各自的作者信息。未声明时省略，
+不影响插件使用。此信息由插件作者自行填写，不代表平台认证。声明方法见
+[插件作者](../development/plugin-development.md#插件作者)。
+
 ## 配置插件
 
 TUI 的 Plugins 菜单中，插件操作提供 **Settings**。普通字段使用现有输入与选择控件；复杂字段以 JSON

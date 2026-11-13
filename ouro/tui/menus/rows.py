@@ -114,12 +114,13 @@ def _choice_option(
         )
         return Option(row, id=choice.value, disabled=choice.disabled)
 
-    label = Text(overflow="ellipsis", no_wrap=True)
+    state_style = theme.text_lowlight if choice.enabled_state is False else ""
+    label = Text(overflow="fold" if choice.wrap else "ellipsis", no_wrap=not choice.wrap)
     marker = theme.spinner_frames[spinner_frame] if choice.loading else choice.marker
     markers = tuple(value for value in (choice.selection_marker, marker) if value)
     if markers:
         label.append(f"{' '.join(markers)} ", style=f"bold {group_accent}")
-    label.append(label_text(choice.label, theme=theme, style=choice.accent or ""))
+    label.append(label_text(choice.label, theme=theme, style=state_style or choice.accent or ""))
     if choice.trailing or choice.trailing_badge:
         row = cast(_ChoiceRowTable, _ChoiceRowTable.grid(expand=True, padding=0))
         # Let Rich shrink the wider content column first; the Text cells keep

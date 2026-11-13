@@ -43,7 +43,7 @@ class ProviderAuthenticationScreen(ChoiceScreen):
             title=theme.inline_separator.join(
                 ("AUTHENTICATION", _provider_label(provider_id, provider_names))
             ),
-            placeholder="Choose an authentication action…",
+            placeholder=None,
             choices=(),
             on_select=self._select_authentication,
             on_refresh=self._authentication_choices,
@@ -145,7 +145,7 @@ class ProviderLoginScreen(ChoiceScreen):
         self.result: LoginOperation | None = None
         super().__init__(
             title=theme.inline_separator.join(("SIGN IN", provider_name)),
-            placeholder="Authorization actions…",
+            placeholder=None,
             choices=(
                 Choice("waiting", "Starting authorization…", loading=True, disabled=True),
                 Choice("cancel", "Cancel sign-in"),
@@ -196,7 +196,7 @@ class ProviderLoginScreen(ChoiceScreen):
             # A filter for an earlier action must not hide the new challenge or result.
             self.replace_page(
                 title=self._title,
-                placeholder="Authorization actions…",
+                placeholder=None,
                 choices=choices,
                 on_select=self._select_login_action,
             )

@@ -69,8 +69,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "+ mcp",
             "Skill sources",
             "Manage skills",
-            "Install skill",
-            "Check skill",
+            "+ skill",
             "Keyboard help",
         ]
         assert [choice.group for choice in action_choices] == [
@@ -82,7 +81,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             *("Tools",) * 2,
             *("Subagents",) * 3,
             *("MCPs",) * 2,
-            *("Skills",) * 4,
+            *("Skills",) * 3,
             "Support",
         ]
         assert "Configuration" not in {choice.group for choice in action_choices}

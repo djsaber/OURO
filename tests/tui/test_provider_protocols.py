@@ -42,13 +42,18 @@ async def test_endpoint_media_toggles_use_shared_configuration_validation(tmp_pa
         app.push_screen(screen)
         await pilot.pause()
         choices = {choice.value: choice for choice in screen._choices}
-        for kind, noun in (("image", "images"), ("audio", "audio"), ("video", "video")):
+        for kind in ("image", "audio", "video"):
             choice = choices[f"endpoint-{kind}-input"]
             assert choice.label == f"{kind.title()} input"
-            assert choice.description == f"Accept {noun} as model input."
+            assert choice.enabled_state is False
+            assert not choice.disabled
         await screen._save_field("endpoint-model-id", "av")
         await select_choice(app, pilot, "endpoint-audio-input")
         await select_choice(app, pilot, "endpoint-video-input")
+        choices = {choice.value: choice for choice in screen._choices}
+        assert choices["endpoint-audio-input"].enabled_state is True
+        assert choices["endpoint-video-input"].enabled_state is True
+        assert choices["endpoint-image-input"].enabled_state is False
         saved = await app._controller.add_endpoint(provider_id, screen._draft())
         assert (
             saved.supports_audio_input

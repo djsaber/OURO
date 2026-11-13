@@ -9,7 +9,7 @@ from ouro.core.base import OuroModel
 from ouro.core.session_controls import AttributedSessionInputBatch
 from ouro.core.state import SessionContinuationRequest
 from ouro.plugins.credentials import PluginCredentialBinding
-from ouro.plugins.manifest import PluginRuntimeKind, PluginStatus
+from ouro.plugins.manifest import PluginAuthor, PluginRuntimeKind, PluginStatus
 from ouro.plugins.models import PluginClass, PluginDiagnostic
 
 
@@ -22,6 +22,8 @@ class PluginProvenanceView(OuroModel):
 class PluginInstallView(OuroModel):
     plugin_id: str
     name: str
+    author: PluginAuthor | None = None
+    icon: str | None = Field(default=None, description="PNG data URL, or null when unavailable")
     version: str
     package_digest: str
     runtime_kind: PluginRuntimeKind
@@ -33,6 +35,8 @@ class PluginInstallView(OuroModel):
 class PluginSummary(OuroModel):
     plugin_id: str
     name: str
+    author: PluginAuthor | None = None
+    icon: str | None = Field(default=None, description="PNG data URL, or null when unavailable")
     version: str
     package_digest: str | None = None
     status: PluginStatus

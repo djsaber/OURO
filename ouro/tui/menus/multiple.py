@@ -29,10 +29,10 @@ class MultiChoiceScreen(ChoiceScreen):
     """Keep a filtered selection set while Enter confirms one or many choices."""
 
     DEFAULT_HINT = DEFAULT_TUI_THEME.inline_separator.join(
-        ("↑/↓ move", "←/→ group", "Space toggle", "Enter confirm", "Esc close")
+        ("↑/↓ move", "←/→ group", "Space toggle", "Ctrl+A all", "Enter confirm", "Esc close")
     )
     BACK_HINT = DEFAULT_TUI_THEME.inline_separator.join(
-        ("↑/↓ move", "←/→ group", "Space toggle", "Enter confirm", "Esc back")
+        ("↑/↓ move", "←/→ group", "Space toggle", "Ctrl+A all", "Enter confirm", "Esc back")
     )
     CONFIRM_HINT = DEFAULT_TUI_THEME.inline_separator.join(
         ("↑/↓ move", "Enter select", "Esc cancel")
@@ -44,6 +44,7 @@ class MultiChoiceScreen(ChoiceScreen):
         Binding("left", "previous_group", "Previous group", show=False, priority=True),
         Binding("right", "next_group", "Next group", show=False, priority=True),
         Binding("space", "toggle_choice", "Toggle", show=False, priority=True),
+        Binding("ctrl+a", "toggle_all", "Select / clear all", show=False, priority=True),
         Binding("enter", "accept_choice", "Confirm", show=False, priority=True),
         Binding("escape", "cancel", "Close", show=False),
     ]
@@ -52,7 +53,7 @@ class MultiChoiceScreen(ChoiceScreen):
         self,
         *,
         title: str,
-        placeholder: str,
+        placeholder: str | None,
         choices: tuple[Choice, ...],
         on_confirm: MultiChoiceConfirmationHandler,
         selected_marker: str,
@@ -111,7 +112,7 @@ class MultiChoiceScreen(ChoiceScreen):
 
     def _filter_input(self) -> Input:
         return _MultiChoiceFilterInput(
-            placeholder=self._placeholder,
+            placeholder=self._placeholder or "",
             id="choice-filter",
             select_on_focus=False,
         )
@@ -138,6 +139,27 @@ class MultiChoiceScreen(ChoiceScreen):
         options.replace_option_prompt_at_index(
             option_index,
             prompt,
+        )
+
+    def action_toggle_all(self) -> None:
+        """Toggle selectable filtered rows without changing selections outside the filter."""
+
+        if self._confirmation_values:
+            return
+        options = self.query_one("#choice-list", OptionList)
+        visible = {
+            str(option.id)
+            for option in options.options
+            if option.id is not None and not option.disabled
+        }
+        if not visible:
+            return
+        if visible <= self._selected:
+            self._selected.difference_update(visible)
+        else:
+            self._selected.update(visible)
+        self.update_choices(
+            self._project_markers(self._choices), preferred_value=self._highlighted_value()
         )
 
     async def _select_choice(self, highlighted: str) -> None:
@@ -194,7 +216,9 @@ class MultiChoiceScreen(ChoiceScreen):
         )
         self._show_hint(self.CONFIRM_HINT)
         filter_input.value = ""
+        self._set_filter_visible(False)
         self._refresh_options(needle="", preferred_value="__multi_cancel__")
+        self._focus_menu()
 
     def _leave_confirmation(self, choices: tuple[Choice, ...]) -> None:
         self._confirmation_values = ()
@@ -206,6 +230,7 @@ class MultiChoiceScreen(ChoiceScreen):
         )
         self._show_hint()
         filter_input = self.query_one("#choice-filter", Input)
+        self._set_filter_visible(self._placeholder is not None)
         filter_input.value = self._catalog_filter
         self._refresh_options(
             needle=self._catalog_filter,
@@ -213,6 +238,7 @@ class MultiChoiceScreen(ChoiceScreen):
         )
         self._catalog_choices = ()
         self._catalog_filter = ""
+        self._focus_menu()
 
     def _highlighted_value(self) -> str | None:
         options = self.query_one("#choice-list", OptionList)

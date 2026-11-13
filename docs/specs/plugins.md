@@ -172,6 +172,23 @@ User plugin：
 `PluginService.show` 的安装列表按 SemVer 与 package digest 降序返回；排序规则由应用层拥有，CLI/TUI
 直接消费 DTO，不导入插件内部版本解析器。
 
+Manifest 可选 `icon` 为以 `./` 开头、相对于插件根目录的包内图片路径。安装只校验路径和通用包约束，
+不增加图标尺寸、帧数或解码要求。推荐使用小体积的 256 × 256 PNG。图标文件参与现有 package digest，
+不增加独立资源版本或持久化图片副本。
+
+`PluginSummary`、`PluginDetail` 与 `PluginInstallView` 的可选 `icon` 直接携带 PNG data URL，
+无独立图标查询接口。列表和详情使用 selected 包的图标，各安装条目使用各自包的图标；builtin 从其 definition
+root 读取。查询不 import 或启动插件，不要求启用或完成配置。为控制内嵌响应体积，单个图标最多读取
+512 KiB 加一个判定字节；未声明、文件不可读、超过 512 KiB 或不具有 PNG 文件签名时返回 `null`，
+不因此拒绝安装。Host 不解码图片，客户端在资源缺省或加载失败时显示默认图标；这不放宽激活时的包完整性
+校验。CLI/TUI 可忽略此展示字段。
+
+Manifest 可选 `author` 对象声明作者信息：`name` 为非空白字符串，`url` 为可选字符串；`author`
+省略或为 `null` 均合法。该信息仅供展示，不参与权限、认证或依赖判定，也不触发 URL 访问。
+`PluginSummary`、`PluginDetail`、`PluginInstallView` 直接携带可选 `author`，无需独立接口。
+列表和详情来自 selected 包，安装条目来自各自包，builtin 来自 definition；未声明时为 `null`。
+作者为包内自述，不等同于市场发布账号或平台认证。作者字段随 Manifest 参与既有包版本生命周期。
+
 ### 5.3 Persistent 与 observed state
 
 持久化只保存事实和用户意图：

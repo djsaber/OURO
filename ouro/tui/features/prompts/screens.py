@@ -34,7 +34,8 @@ def prompt_choices(config: PromptConfig) -> tuple[Choice, ...]:
                 Choice(
                     f"{kind}:{entry.id}",
                     prompt_label(entry),
-                    trailing=f"{index} · {'Enabled' if entry.enabled else 'Disabled'}",
+                    enabled_state=entry.enabled,
+                    trailing=str(index),
                     group=group,
                     group_trailing=group_trailing,
                 )
@@ -53,7 +54,7 @@ class PromptEntryScreen(MultilineEditableChoiceScreen):
         self._enabled = entry.enabled if entry else False
         super().__init__(
             title=f"{'EDIT' if entry else 'ADD'} {PROMPT_GROUP_LABELS[kind]}",
-            placeholder="Filter prompt fields…",
+            placeholder=None,
             choices=self._field_choices(),
             on_save=self._save_field,
         )
@@ -106,7 +107,7 @@ class PromptEntryScreen(MultilineEditableChoiceScreen):
             Choice(
                 "enabled",
                 "Status",
-                trailing_badge="Enabled" if self._enabled else "Disabled",
+                enabled_state=self._enabled,
                 description="Enabling overrides OURO's default system prompt."
                 if self._kind == "replacement" and self._enabled
                 else "",

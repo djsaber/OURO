@@ -27,7 +27,7 @@ class ConfirmationScreen(ChoiceScreen):
     ) -> None:
         super().__init__(
             title=f"CONFIRM {title}",
-            placeholder="Choose an action…",
+            placeholder=None,
             choices=(
                 Choice("__confirmation_cancel__", "Cancel"),
                 Choice(self.CONFIRM_VALUE, confirm_label, description=message, destructive=True),

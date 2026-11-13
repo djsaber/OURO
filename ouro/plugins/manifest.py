@@ -501,12 +501,19 @@ class ServiceExportSpec(OuroModel):
         return value
 
 
+class PluginAuthor(OuroModel):
+    name: str = Field(min_length=1, pattern=r"\S")
+    url: str | None = None
+
+
 class PluginManifest(OuroModel):
     schema_version: Literal[3] = 3
     plugin_id: str
     name: str = Field(min_length=1, max_length=120)
     version: str
     description: str = Field(default="", max_length=1000)
+    icon: str | None = None
+    author: PluginAuthor | None = None
     namespace: str
     engines: PluginEngines
     runtime: PluginRuntimeSpec = Field(default_factory=PluginRuntimeSpec)

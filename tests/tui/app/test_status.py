@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import OptionList, Static
 
 import ouro.tui.app as tui_app_module
 import ouro.tui.conversation.history_rendering as conversation_history
@@ -43,7 +43,7 @@ from tests.tui.app.support import (
     _thinking_application,
     _wait_for_active_session,
 )
-from tests.tui.helpers import command_popup_text, run_ready_app
+from tests.tui.helpers import choose_menu, command_popup_text, run_ready_app
 from tests.tui.helpers import wait_for_screen as _wait_for_screen
 from tests.tui.helpers import wait_for_worker_group as _wait_for_worker_group
 from tests.tui.helpers import wait_until as _wait_until
@@ -631,8 +631,7 @@ async def test_thinking_modal_remains_available_during_an_active_run(tmp_path: P
 
         app.action_thinking_settings()
         await _wait_for_screen(app, ChoiceScreen, title="MODEL THINKING")
-        app.screen.query_one("#choice-filter", Input).value = "high"
-        await pilot.press("enter")
+        await choose_menu(pilot, "High")
         await _wait_for_worker_group(app, pilot, group="navigation")
 
         reasoning = await app._controller.session_reasoning()

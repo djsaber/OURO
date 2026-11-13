@@ -104,7 +104,7 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
             )
         super().__init__(
             title="EDIT TASK" if config else "CREATE TASK",
-            placeholder="Search task settings…",
+            placeholder=None,
             choices=self._task_choices(),
             on_save=self._save_field,
         )
@@ -167,7 +167,7 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
             value = await self.open_child(
                 ChoiceScreen(
                     title=TOOL_APPROVAL_LABEL.upper(),
-                    placeholder="Choose when to ask for approval…",
+                    placeholder=None,
                     choices=approval_choices(
                         TUI_APPROVAL_PRESETS, selected=self._values[selected], theme=theme_for(self)
                     ),
@@ -192,7 +192,7 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
             value = await self.open_child(
                 ChoiceScreen(
                     title=MODEL_THINKING_LABEL.upper(),
-                    placeholder="Choose thinking settings…",
+                    placeholder=None,
                     choices=choices,
                     initial_value=current,
                 )
@@ -210,7 +210,7 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
             value = await self.open_child(
                 ChoiceScreen(
                     title=f"TASK {selected.upper()}",
-                    placeholder="Choose…",
+                    placeholder=None,
                     choices=tuple(
                         Choice(
                             key,
@@ -399,7 +399,11 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
             elif key == "frequency":
                 display = FREQUENCY_LABELS[value]
             elif key == "reasoning":
-                display = THINKING_LABELS[self._reasoning_value()]
+                display = (
+                    ""
+                    if self._reasoning_value() in {"enabled", "disabled"}
+                    else THINKING_LABELS[self._reasoning_value()]
+                )
             elif key == "session":
                 display = "New each time" if value == "new" else "Reuse one session"
             rows.append(
@@ -407,6 +411,9 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
                     key,
                     label,
                     trailing=display,
+                    enabled_state=False
+                    if key == "reasoning" and self._reasoning_value() == "disabled"
+                    else None,
                     group=group,
                     edit_value=value if key not in pickers else None,
                     edit_placeholder=f"Enter {label.lower()}",

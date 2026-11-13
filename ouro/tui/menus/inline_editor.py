@@ -27,7 +27,7 @@ class MultilineEditableChoiceScreen(EditableChoiceScreen):
         self,
         *,
         title: str,
-        placeholder: str,
+        placeholder: str | None,
         choices: tuple[Choice, ...],
         on_save: ChoiceEditHandler,
     ) -> None:

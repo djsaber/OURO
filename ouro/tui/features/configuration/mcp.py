@@ -7,7 +7,6 @@ from typing import cast
 from ouro.application.contracts.configuration import MCPServerConfigView, MCPTransportInput
 from ouro.core.tools import PermissionMode, ToolEffect
 from ouro.tui.features.configuration.values import (
-    _enabled_label,
     _non_negative_int,
     _optional_json_mapping,
     _optional_json_string_list,
@@ -71,7 +70,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
         }
         super().__init__(
             title="EDIT MCP" if existing is not None else "ADD MCP",
-            placeholder="Filter MCP settings…",
+            placeholder=None,
             choices=self._mcp_choices(),
             on_save=self._save_field,
         )
@@ -297,19 +296,19 @@ class MCPConfigurationScreen(EditableChoiceScreen):
             Choice(
                 "mcp-enabled",
                 "Enabled",
-                trailing_badge=_enabled_label(self._toggles["mcp-enabled"]),
+                enabled_state=self._toggles["mcp-enabled"],
                 group="CONNECTION SETTINGS",
             ),
             Choice(
                 "mcp-auto-start",
                 "Auto start",
-                trailing_badge=_enabled_label(self._toggles["mcp-auto-start"]),
+                enabled_state=self._toggles["mcp-auto-start"],
                 group="CONNECTION SETTINGS",
             ),
             Choice(
                 "mcp-auto-reconnect",
                 "Auto reconnect",
-                trailing_badge=_enabled_label(self._toggles["mcp-auto-reconnect"]),
+                enabled_state=self._toggles["mcp-auto-reconnect"],
                 group="CONNECTION SETTINGS",
             ),
             Choice(

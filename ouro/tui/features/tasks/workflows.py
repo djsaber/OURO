@@ -42,9 +42,7 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
                     description=_task_schedule_label(task, theme_for(self)),
                     trailing=TASK_STATUS_LABELS[task.status],
                     group="TASKS",
-                    accent=None
-                    if task.status in {"waiting", "running"}
-                    else theme_for(self).text_lowlight,
+                    enabled_state=task.enabled,
                 )
                 for task in records
             ]
@@ -213,7 +211,7 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
             title=theme_for(self).section_separator.join(
                 ("TASK", task.configuration.display_title)
             ),
-            placeholder="Choose an action…",
+            placeholder=None,
             choices=await choices(),
             on_select=select,
             on_refresh=choices,
@@ -244,7 +242,7 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
                 request = execution.target.request
                 menu.push_page(
                     title="TASK EXECUTION",
-                    placeholder="Execution details",
+                    placeholder=None,
                     choices=(
                         Choice(
                             "service",

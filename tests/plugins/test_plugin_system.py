@@ -1144,6 +1144,7 @@ async def test_declarative_skill_is_projected_into_immutable_catalog(tmp_path, m
     assert Path(skill.location).read_text(encoding="utf-8").endswith("Instructions.\n")
     assert skill.extensions["ouro"] == {
         "plugin_id": "dev.ouro.echo",
+        "plugin_name": "Echo",
         "plugin_class": "user",
         "release_id": snapshot.generations[0].release_id,
         "package_digest": snapshot.generations[0].package_digest,

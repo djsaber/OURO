@@ -80,9 +80,7 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         assert not list(screen.query("#model-provider"))
         assert not list(screen.query("Button"))
         assert not list(screen.query("Checkbox"))
-        assert screen.query_one("#choice-filter", Input).placeholder == (
-            "Filter endpoint settings…"
-        )
+        assert not screen.query_one("#choice-filter", Input).display
         assert [choice.group for choice in screen._choices] == [
             "BASIC",
             "BASIC",
@@ -411,9 +409,7 @@ async def test_provider_configuration_uses_shared_grouped_inline_menu(
         assert isinstance(screen, EditableChoiceScreen)
         assert not list(screen.query("Button"))
         assert not list(screen.query("Checkbox"))
-        assert screen.query_one("#choice-filter", Input).placeholder == (
-            "Filter provider settings…"
-        )
+        assert not screen.query_one("#choice-filter", Input).display
         options = screen.query_one("#choice-list", OptionList)
         assert [(choice.value, choice.group) for choice in screen._choices] == [
             ("provider-credential", "BASIC"),

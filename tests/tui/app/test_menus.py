@@ -471,7 +471,8 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
             choice for choice in plugin_screen._choices if choice.value == "dev.ouro.agent_context"
         )
         assert agent_context.label == "Agent Context"
-        assert agent_context.trailing == "v1.0.0 • active"
+        assert agent_context.description == "dev.ouro.agent_context"
+        assert agent_context.trailing == "v1.0.0"
         assert agent_context.marker == ""
 
         plugin_screen.query_one("#choice-filter", Input).value = "Agent Context"
@@ -479,16 +480,19 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Agent Context")
         assert app.screen is plugin_screen
+        assert not plugin_screen.query_one("#choice-filter", Input).display
         description = plugin_screen.query_one("#choice-description", Static)
         detail = await app._controller.plugin("dev.ouro.agent_context")
-        assert description.display and str(description.content) == detail.description
+        assert description.display
+        assert str(description.content) == f"{detail.description}\n\nv1.0.0 • By ouro"
+        assert description.size.height >= 4
+        assert plugin_screen.query_one(OptionList).region.y == description.region.bottom + 1
         assert [
             (choice.label, choice.group, choice.trailing) for choice in plugin_screen._choices
         ] == [
             ("agent-instructions", "CONTRIBUTIONS", "context"),
             ("runtime-facts", "CONTRIBUTIONS", "context"),
             ("Disable", "ACTIONS", "active"),
-            ("Check", "ACTIONS", ""),
             ("Restart", "ACTIONS", ""),
         ]
         assert (
@@ -500,15 +504,12 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Agent Context")
         assert app.screen is plugin_screen
         await _wait_until(
-            lambda: any(
-                choice.value == "enable" and choice.trailing == "disabled"
-                for choice in plugin_screen._choices
-            ),
+            lambda: any(choice.value == "enable" for choice in plugin_screen._choices),
             pilot,
             description="disabled plugin actions",
         )
         lifecycle = {choice.value: choice for choice in plugin_screen._choices}
-        assert lifecycle["enable"].trailing == "disabled"
+        assert lifecycle["enable"].trailing == ""
         assert lifecycle["restart"].disabled is True
         assert "Agent Context" not in app._system_status.plugin_active_names
 
@@ -518,7 +519,7 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         refreshed = next(
             choice for choice in plugin_screen._choices if choice.value == "dev.ouro.agent_context"
         )
-        assert refreshed.trailing == "v1.0.0 • disabled"
+        assert refreshed.trailing == "v1.0.0"
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Agent Context")
         options = plugin_screen.query_one("#choice-list", OptionList)
@@ -551,7 +552,7 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
             choice for choice in plugin_screen._choices if choice.value == "dev.ouro.agent_context"
         )
         assert refreshed.marker == ""
-        assert refreshed.trailing == "v1.0.0 • active"
+        assert refreshed.trailing == "v1.0.0"
 
 
 @pytest.mark.asyncio
@@ -618,8 +619,8 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
         assert (
             next(
                 choice for choice in app.screen._choices if choice.value == saved.server_id
-            ).trailing
-            == "disabled"
+            ).enabled_state
+            is False
         )
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="MCP • local")

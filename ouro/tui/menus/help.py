@@ -15,7 +15,7 @@ _HELP_SHORTCUTS = (
     ("Alt+P", "plugins", "Ctrl+P", "actions"),
     ("F1", "help", "Alt+Home / Alt+End", "conversation top / bottom"),
     ("Alt+PageUp", "previous user message", "Alt+PageDown", "next user message / bottom"),
-    ("Ctrl+← / Ctrl+→", "move by word", "Ctrl+A", "select all input"),
+    ("Ctrl+← / Ctrl+→", "move by word", "Ctrl+A", "select input / toggle all filtered choices"),
     ("Ctrl+Home / Ctrl+End", "input start / end", "Ctrl+C", "copy selection / stop task"),
     ("Ctrl+X / Ctrl+V", "cut / paste", "Ctrl+Z / Ctrl+Y", "undo / redo in composer"),
     ("Tab", "focus / switch menu domain", "Space", "toggle multi-selection"),

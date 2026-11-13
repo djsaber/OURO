@@ -25,7 +25,7 @@ class ToolExecutionConfigurationScreen(EditableChoiceScreen):
         }
         super().__init__(
             title="TOOL EXECUTION LIMITS",
-            placeholder="Search tool settings…",
+            placeholder=None,
             choices=self._tool_execution_choices(),
             on_save=self._save_field,
         )

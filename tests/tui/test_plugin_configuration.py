@@ -156,7 +156,7 @@ def test_configuration_rows_hide_absent_values_and_keep_explicit_empty_values(tm
     choices = {choice.value: choice for choice in screen._configuration_choices()}
     assert choices[field_ids["name"]].trailing == '""'
     assert choices[field_ids["nullable"]].trailing == "null"
-    assert choices[field_ids["toggle"]].trailing_badge == "Disabled"
+    assert choices[field_ids["toggle"]].enabled_state is False
     assert choices[field_ids["mapping"]].trailing == "{}"
     assert choices["credential:key"].trailing == DEFAULT_TUI_THEME.mask_character * 5 + " [ENV]"
     for name in ("name", "nullable", "mapping", "count"):
@@ -392,4 +392,4 @@ async def test_boolean_setting_toggles_in_place_with_status_badge(tmp_path):
             assert app.screen is screen
             assert screen._draft.values["toggle"] is enabled
             row = next(choice for choice in screen._choices if choice.value == field_id)
-            assert row.trailing_badge == ("Enabled" if enabled else "Disabled")
+            assert row.enabled_state is enabled

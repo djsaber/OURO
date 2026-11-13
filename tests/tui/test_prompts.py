@@ -28,7 +28,8 @@ async def test_prompt_editor_requires_content_and_preserves_multiline_and_cancel
         await pilot.pause()
         assert form.query_one(OptionList).get_option("save").disabled
         assert all(choice.value != "id" for choice in form._choices)
-        form.query_one(Input).value = "Content"
+        assert not form.query_one(Input).display
+        form.query_one(OptionList).highlighted = form.query_one(OptionList).get_option_index("text")
         await pilot.pause()
         await pilot.press("enter", "a", "ctrl+enter", "b", "enter")
         assert form._values["text"] == "a\nb"
@@ -40,7 +41,7 @@ async def test_prompt_editor_requires_content_and_preserves_multiline_and_cancel
         await pilot.pause()
         await pilot.press("escape")
         assert form._values["text"] == "a\nb"
-        form.query_one(Input).value = "Save"
+        form.query_one(OptionList).highlighted = form.query_one(OptionList).get_option_index("save")
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
@@ -136,8 +137,8 @@ async def test_prompt_creation_and_stale_editor_do_not_overwrite_other_changes(t
         assert (
             next(
                 choice for choice in app.screen._choices if choice.value == "enabled"
-            ).trailing_badge
-            == "Enabled"
+            ).enabled_state
+            is True
         )
         await choose("Save", title="PERSONAL PROMPTS")
         await wait_for_menu_action(pilot, menu)

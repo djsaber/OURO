@@ -15,8 +15,9 @@ from ouro.tui.theme import DEFAULT_TUI_THEME
 from tests.tui.helpers import resize_terminal, wait_for_menu_action
 
 
+@pytest.mark.parametrize("placeholder", (None, "Filter…"))
 @pytest.mark.parametrize("action", ("type", "cancel", "close"))
-async def test_pending_inline_save_preserves_new_edits_and_respects_close(action):
+async def test_pending_inline_save_preserves_new_edits_and_respects_close(action, placeholder):
     entered, release = asyncio.Event(), asyncio.Event()
     choices = (Choice("name", "Name", edit_value=""),)
 
@@ -26,7 +27,7 @@ async def test_pending_inline_save_preserves_new_edits_and_respects_close(action
         return (replace(choices[0], edit_value=value),)
 
     form = EditableChoiceScreen(
-        title="SETTINGS", placeholder="Filter…", choices=choices, on_save=save
+        title="SETTINGS", placeholder=placeholder, choices=choices, on_save=save
     )
     app = App()
     async with app.run_test() as pilot:

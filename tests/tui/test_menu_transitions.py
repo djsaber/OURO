@@ -279,7 +279,7 @@ async def test_plugin_catalog_wait_has_feedback_and_respects_menu_close(
         ("Subagent permissions", "SUBAGENT PERMISSIONS"),
         ("+ subagent", "CREATE SUBAGENT"),
         ("+ mcp", "ADD MCP"),
-        ("Install skill", "INSTALL SKILL"),
+        ("+ skill", "INSTALL SKILL"),
     ],
 )
 async def test_child_return_preserves_parent_menu_state(
@@ -349,7 +349,8 @@ async def test_nested_child_return_after_resize_preserves_menu_state(
         await _wait_for_screen(app, ChoiceScreen, title="CONTEXT COMPACTION")
         await pilot.pause()
         assert app.screen is parent
-        assert options.has_focus if accept else parent.query_one(Input).has_focus
+        assert options.has_focus
+        assert not parent.query_one(Input).display
         assert options.get_option_at_index(options.highlighted).id == "compaction-model"
 
 
@@ -399,3 +400,56 @@ async def test_child_open_and_return_preserve_parent_scroll_and_selection(
         assert options.highlighted == selected
         assert options.scroll_y == scroll_y
         assert parent.query_one(Input).has_focus
+
+
+async def test_fixed_menu_restores_search_and_focus_across_navigation():
+    app = App()
+    menu = ChoiceScreen(
+        title="ITEMS", placeholder="Filter…", choices=(Choice("one", "One"), Choice("two", "Two"))
+    )
+    async with app.run_test() as pilot:
+        await app.push_screen(menu)
+        await pilot.press(*"One")
+        menu.push_page(
+            title="ACTIONS",
+            placeholder=None,
+            choices=(Choice("first", "First", group="A"), Choice("last", "Last", group="B")),
+        )
+        await pilot.pause()
+        search = menu.query_one(Input)
+        options = menu.query_one(OptionList)
+        assert not search.display and app.focused is options
+        await pilot.press(*"garbage")
+        assert search.value == "" and options.get_option_index("last") > 0
+        await pilot.press("right")
+        assert menu._selected_value() == "last"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert search.display and search.value == "One" and app.focused is search
+        assert menu._selected_value() == "one"
+        menu.switch_page(
+            navigation_id="help",
+            title="FIXED",
+            placeholder=None,
+            choices=(Choice("close", "Close"),),
+        )
+        await pilot.pause()
+        assert not search.display and search.value == "" and app.focused is options
+
+
+async def test_fixed_menu_recovers_focus_after_child_and_can_select():
+    app = App()
+    menu = ChoiceScreen(title="ACTIONS", placeholder=None, choices=(Choice("open", "Open"),))
+    child = ChoiceScreen(title="CHILD", placeholder=None, choices=(Choice("close", "Close"),))
+    async with app.run_test() as pilot:
+        await app.push_screen(menu)
+        worker = app.run_worker(menu.open_child(child))
+        await pilot.pause()
+        await pilot.press("escape")
+        await worker.wait()
+        await pilot.pause()
+        assert app.screen is menu
+        assert app.focused is menu.query_one(OptionList)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen is not menu

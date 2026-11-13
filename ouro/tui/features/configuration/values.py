@@ -35,10 +35,6 @@ def _optional_json_string_list(raw: str, label: str) -> list[str] | None:
     return value
 
 
-def _enabled_label(enabled: bool) -> str:
-    return "On" if enabled else "Off"
-
-
 def _toggle_member(values: set[str], value: str) -> None:
     if value in values:
         values.remove(value)

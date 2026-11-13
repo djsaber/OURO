@@ -536,7 +536,9 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
         assert current.marker == DEFAULT_TUI_THEME.selected_choice_marker
         assert current.trailing == "Ask for approval"
         assert all(choice.trailing != "current" for choice in app.screen._choices)
-        app.screen.query_one("#choice-filter", Input).value = "auto"
+        assert not app.screen.query_one("#choice-filter", Input).display
+        options = app.screen.query_one(OptionList)
+        options.highlighted = options.get_option_index("auto")
         await pilot.pause()
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="TOOL PERMISSIONS")
@@ -560,7 +562,9 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
         assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
         assert "default" in {choice.value for choice in app.screen._choices}
         assert "inherit" not in {choice.value for choice in app.screen._choices}
-        app.screen.query_one("#choice-filter", Input).value = "default"
+        assert not app.screen.query_one("#choice-filter", Input).display
+        options = app.screen.query_one(OptionList)
+        options.highlighted = options.get_option_index("default")
         await pilot.pause()
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="TOOL PERMISSIONS")

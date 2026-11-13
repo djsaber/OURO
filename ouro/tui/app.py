@@ -3793,7 +3793,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     *(("Tab switch sessions",) if operation != "delete" else ()),
                     "↑/↓ move",
                     "←/→ group",
-                    *(("Space toggle",) if operation in {"archive", "delete"} else ()),
+                    *(("Space toggle", "Ctrl+A all") if operation in {"archive", "delete"} else ()),
                     f"Enter {action}",
                     "Esc back",
                 )
@@ -4424,7 +4424,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     ) -> ChoiceScreen:
         return ChoiceScreen(
             title="SESSION LOAD FAILED",
-            placeholder="Press Enter to close…",
+            placeholder=None,
             choices=(
                 Choice(
                     "close",
@@ -4715,7 +4715,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         selected = await self.push_screen_wait(
             ChoiceScreen(
                 title=TOOL_APPROVAL_LABEL.upper(),
-                placeholder="Choose when to ask for approval…",
+                placeholder=None,
                 choices=choices,
             )
         )
@@ -4787,7 +4787,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         selected = await self.push_screen_wait(
             ChoiceScreen(
                 title=MODEL_THINKING_LABEL.upper(),
-                placeholder="Choose thinking settings…",
+                placeholder=None,
                 choices=choices,
             )
         )
@@ -4987,11 +4987,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     Choice(
                         _INPUT_DRAFT_MEMORY_ACTION,
                         "Remember drafts",
-                        trailing_badge=(
-                            "Enabled"
-                            if self._preferences.input_draft_memory_enabled
-                            else "Disabled"
-                        ),
+                        enabled_state=self._preferences.input_draft_memory_enabled,
                         group="Settings",
                     ),
                     Choice(
@@ -5333,7 +5329,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _choose_display(self, *, menu: ChoiceScreen) -> None:
         def choices() -> tuple[Choice, ...]:
             return tuple(
-                Choice(value, label, trailing_badge="Shown" if shown else "Hidden")
+                Choice(value, label, enabled_state=shown)
                 for value, label, shown in (
                     ("thinking", "Thinking", self._preferences.reasoning_expanded),
                     ("scaffold", "Scaffold messages", self._preferences.show_scaffold_messages),
@@ -5362,7 +5358,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
         menu.push_page(
             title="DISPLAY",
-            placeholder="Select an item to show or hide…",
+            placeholder=None,
             choices=choices(),
             on_select=select,
         )
@@ -5431,7 +5427,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
         menu.push_page(
             title="SESSION GROUPING",
-            placeholder="Choose session grouping…",
+            placeholder=None,
             choices=grouping_choices(),
             initial_value=self._preferences.session_grouping,
             on_select=select_grouping,

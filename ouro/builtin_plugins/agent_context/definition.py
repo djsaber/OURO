@@ -13,6 +13,7 @@ AGENT_CONTEXT_PLUGIN = BuiltinPluginDefinition(
             "schema_version": 3,
             "plugin_id": "dev.ouro.agent_context",
             "name": "Agent Context",
+            "author": {"name": "ouro"},
             "version": "1.0.0",
             "description": (
                 "Injects hierarchical AGENTS.md instructions and request-time runtime facts "

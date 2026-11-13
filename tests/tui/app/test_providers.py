@@ -353,16 +353,14 @@ async def test_default_provider_and_endpoint_show_badges_and_disable_deletion(
         assert option.disabled is True
         remove = next(choice for choice in app.screen._choices if choice.value == "remove")
         assert remove.disabled is True
-        assert app.screen.query_one("#choice-list", OptionList).get_option("remove").disabled
-        app.screen.query_one("#choice-filter", Input).value = "Delete"
-        await pilot.pause()
-        assert app.screen.query_one(OptionList).highlighted is None
-        await pilot.press("enter")
-        assert app.screen.query_one("#choice-title", Static).render().plain == "PROVIDER • Primary"
-        app.screen.query_one("#choice-filter", Input).value = "Endpoints"
-        await pilot.pause()
-        await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="ENDPOINTS • Primary")
+        options = app.screen.query_one("#choice-list", OptionList)
+        assert options.get_option("remove").disabled
+        for value in ("toggle", "remove"):
+            options.highlighted = options.get_option_index(value)
+            options.focus()
+            await pilot.press("enter")
+            assert app.screen.page_title == "PROVIDER • Primary"
+        await choose_menu(pilot, "Endpoints", title="ENDPOINTS • Primary")
         endpoint = next(choice for choice in app.screen._choices if choice.label == "Chat")
         assert endpoint.marker == ""
         assert endpoint.trailing_badge == "default"
@@ -370,12 +368,14 @@ async def test_default_provider_and_endpoint_show_badges_and_disable_deletion(
         await _wait_for_screen(app, ChoiceScreen, title="ENDPOINT • Chat")
         remove = next(choice for choice in app.screen._choices if choice.value == "remove")
         assert remove.disabled is True
-        assert app.screen.query_one("#choice-list", OptionList).get_option("remove").disabled
-        app.screen.query_one("#choice-filter", Input).value = "Delete"
-        await pilot.pause()
-        assert app.screen.query_one(OptionList).highlighted is None
+        options = app.screen.query_one("#choice-list", OptionList)
+        assert options.get_option("remove").disabled
+        options.highlighted = options.get_option_index("remove")
+        options.focus()
         await pilot.press("enter")
-        assert app.screen.query_one("#choice-title", Static).render().plain == "ENDPOINT • Chat"
+        assert app.screen.page_title == "ENDPOINT • Chat"
+        assert configuration.provider(provider_id).enabled
+        assert configuration.provider(provider_id).endpoint_count == 1
 
 
 @pytest.mark.parametrize(
@@ -522,9 +522,7 @@ async def test_provider_deletions_use_shared_menu_confirmation(
         remove = next(choice for choice in app.screen._choices if choice.value == "remove")
         assert remove.label == "Delete"
         assert remove.destructive
-        app.screen.query_one("#choice-filter", Input).value = "Delete"
-        await pilot.pause()
-        await pilot.press("enter")
+        await choose_menu(pilot, "Delete")
         await _wait_for_screen(app, ConfirmationScreen, title=confirm_title)
 
         assert isinstance(app.screen, ConfirmationScreen)
@@ -644,10 +642,7 @@ async def test_endpoint_management_returns_to_catalog_after_deletion(tmp_path: P
         await pilot.pause()
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="PROVIDER • Custom")
-        app.screen.query_one("#choice-filter", Input).value = "Endpoints"
-        await pilot.pause()
-        await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="ENDPOINTS • Custom")
+        await choose_menu(pilot, "Endpoints", title="ENDPOINTS • Custom")
 
         assert [choice.label for choice in app.screen._choices] == [
             "中文",

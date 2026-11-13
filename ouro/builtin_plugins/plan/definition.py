@@ -17,6 +17,7 @@ PLAN_PLUGIN = BuiltinPluginDefinition(
             "schema_version": 3,
             "plugin_id": "dev.ouro.plan",
             "name": "Plan",
+            "author": {"name": "ouro"},
             "version": "1.0.0",
             "description": "Implements plan mode as composable OURO harness contributions.",
             "namespace": "plan",

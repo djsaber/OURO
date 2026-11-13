@@ -15,7 +15,7 @@ from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
 from ouro.tui.composer.popup import CommandPopup
 from ouro.tui.features.configuration.skills import SkillInstallScreen
-from ouro.tui.features.configuration.workflows import _skill_choice
+from ouro.tui.features.configuration.workflows import _skill_choice, _skill_choices
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.editable import EditableChoiceScreen
 from ouro.tui.view_models import TuiPluginInstallConfiguration
@@ -26,7 +26,15 @@ from tests.tui.helpers import wait_for_worker_group as _wait_for_worker_group
 from tests.tui.helpers import wait_until as _wait_until
 
 
-def test_plugin_skill_choice_is_visible_but_not_selectable() -> None:
+@pytest.mark.parametrize(
+    ("owner", "label"),
+    [
+        ({"plugin_id": "dev.ouro.calendar", "plugin_name": "Calendar"}, "Calendar • plugin"),
+        ({"plugin_id": "dev.ouro.calendar"}, "dev.ouro.calendar • plugin"),
+        ({}, "plugin"),
+    ],
+)
+def test_plugin_skill_choice_links_to_its_source(owner, label) -> None:
     choice = _skill_choice(
         SkillView(
             name="calendar",
@@ -35,16 +43,48 @@ def test_plugin_skill_choice_is_visible_but_not_selectable() -> None:
             source="plugin",
             origin="plugin",
             enabled=True,
-            extensions={"ouro": {"plugin_id": "dev.ouro.calendar"}},
+            extensions={"ouro": owner},
         )
     )
 
-    assert choice.disabled is True
-    assert choice.trailing == "plugin • enabled"
+    assert choice.disabled is False
+    assert choice.trailing == label
+
+
+def test_skill_catalog_sorts_by_source_without_groups_or_status_labels() -> None:
+    def skill(name: str, origin: str, source: str = "user", **kwargs) -> SkillView:
+        return SkillView(
+            name=name,
+            description="",
+            location=f"/{name}/SKILL.md",
+            origin=origin,
+            source=source,
+            enabled=True,
+            **kwargs,
+        )
+
+    choices = _skill_choices(
+        [
+            skill("z", "ouro"),
+            skill("plugin-b", "plugin", "plugin", extensions={"ouro": {"plugin_id": "b"}}),
+            skill("a", "codex"),
+            skill("b", "ouro"),
+            skill("plugin-a", "plugin", "plugin", extensions={"ouro": {"plugin_id": "a"}}),
+        ]
+    )
+    assert [c.value for c in choices] == ["a", "b", "z", "plugin-a", "plugin-b"]
+    assert [c.trailing for c in choices] == [
+        "codex • user",
+        "ouro • user",
+        "ouro • user",
+        "a • plugin",
+        "b • plugin",
+    ]
+    assert all(not c.group and not c.disabled for c in choices)
 
 
 @pytest.mark.asyncio
-async def test_skill_actions_open_operation_specific_skill_selection(tmp_path: Path) -> None:
+async def test_skill_actions_open_skill_catalog(tmp_path: Path) -> None:
     skill_dir = tmp_path / "skills" / "demo"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
@@ -56,13 +96,13 @@ async def test_skill_actions_open_operation_specific_skill_selection(tmp_path: P
     async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
-        await choose_menu(pilot, "Check skill", title="CHECK SKILL")
+        await choose_menu(pilot, "Manage skills", title="SKILLS")
 
         assert isinstance(app.screen, ChoiceScreen)
-        assert app.screen.query_one("#choice-title", Static).render().plain == "CHECK SKILL"
+        assert app.screen.query_one("#choice-title", Static).render().plain == "SKILLS"
         assert [choice.value for choice in app.screen._choices] == ["demo"]
         assert app.screen._choices[0].description == ""
-        assert app.screen._choices[0].trailing == "ouro • user • enabled"
+        assert app.screen._choices[0].trailing == "ouro • user"
 
 
 @pytest.mark.asyncio
@@ -100,34 +140,37 @@ async def test_skill_directory_sources_use_shared_menu_and_persist_toggles(tmp_p
             "ouro.workspace",
         ]
         assert [choice.group for choice in action_screen._choices] == [
-            "FOLDERS",
-            *("USER FOLDERS",) * 5,
-            *("WORKSPACE FOLDERS",) * 5,
+            "GENERAL",
+            *("USER",) * 5,
+            *("WORKSPACE",) * 5,
         ]
         assert [choice.label for choice in action_screen._choices[1:]] == [
-            "agents • user",
-            "claude • user",
-            "copilot • user",
-            "codex • user",
-            "ouro • user",
-            "agents • workspace",
-            "claude • workspace",
-            "github • workspace",
-            "codex • workspace",
-            "ouro • workspace",
+            "agents",
+            "claude",
+            "copilot",
+            "codex",
+            "ouro",
+            "agents",
+            "claude",
+            "github",
+            "codex",
+            "ouro",
         ]
-        assert all(choice.trailing == "enabled" for choice in action_screen._choices)
+        assert all(choice.enabled_state is True for choice in action_screen._choices)
         assert "plugin" not in {choice.value for choice in action_screen._choices}
 
-        action_screen.query_one("#choice-filter", Input).value = "ouro • user"
+        assert not action_screen.query_one("#choice-filter", Input).display
+        assert "Enter toggle" in action_screen.query_one("#choice-hint", Static).render().plain
+        options = action_screen.query_one(OptionList)
+        options.highlighted = options.get_option_index("ouro.user")
         await pilot.pause()
         await pilot.press("enter")
         await _wait_until(
             lambda: (
                 next(
                     choice for choice in action_screen._choices if choice.value == "ouro.user"
-                ).trailing
-                == "disabled"
+                ).enabled_state
+                is False
             ),
             pilot,
             description="skill source update",
@@ -139,19 +182,19 @@ async def test_skill_directory_sources_use_shared_menu_and_persist_toggles(tmp_p
         assert (
             next(
                 choice for choice in action_screen._choices if choice.value == "ouro.user"
-            ).trailing
-            == "disabled"
+            ).enabled_state
+            is False
         )
 
-        action_screen.query_one("#choice-filter", Input).value = "Find skills in folders"
+        options.highlighted = options.get_option_index("discovery")
         await pilot.pause()
         await pilot.press("enter")
         await _wait_until(
             lambda: (
                 next(
                     choice for choice in action_screen._choices if choice.value == "discovery"
-                ).trailing
-                == "disabled"
+                ).enabled_state
+                is False
             ),
             pilot,
             description="skill discovery update",
@@ -163,13 +206,13 @@ async def test_skill_directory_sources_use_shared_menu_and_persist_toggles(tmp_p
         assert (
             next(
                 choice for choice in action_screen._choices if choice.value == "discovery"
-            ).trailing
-            == "disabled"
+            ).enabled_state
+            is False
         )
 
 
 @pytest.mark.asyncio
-async def test_skill_menu_loads_live_plugin_skill_as_disabled_choice(
+async def test_skill_menu_opens_live_plugin_details(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "skill-plugin"
@@ -207,8 +250,24 @@ async def test_skill_menu_loads_live_plugin_skill_as_disabled_choice(
         assert isinstance(app.screen, ChoiceScreen)
         assert app.screen.query_one("#choice-title", Static).render().plain == "SKILLS"
         assert [choice.value for choice in app.screen._choices] == ["calendar"]
-        assert app.screen._choices[0].disabled is True
-        assert app.screen._choices[0].trailing == "plugin • enabled"
+        assert app.screen._choices[0].disabled is False
+        assert app.screen._choices[0].trailing == "TUI Skill • plugin"
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • TUI Skill")
+        assert any(c.value == "contribution:skills:calendar" for c in app.screen._choices)
+        await choose_menu(pilot, "Disable")
+        await _wait_until(
+            lambda: any(c.value == "enable" for c in app.screen._choices),
+            pilot,
+            description="plugin disabled from skills",
+        )
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="SKILLS")
+        await _wait_until(
+            lambda: not any(c.value == "calendar" for c in app.screen._choices),
+            pilot,
+            description="plugin contributions removed from skill catalog",
+        )
 
 
 @pytest.mark.asyncio
@@ -229,44 +288,59 @@ async def test_skill_disable_action_is_owned_by_skill_submenu(tmp_path: Path) ->
         await _wait_for_screen(app, ChoiceScreen, title="SKILL • demo")
 
         assert app.screen.query_one("#choice-title", Static).render().plain == "SKILL • demo"
-        assert {choice.value for choice in app.screen._choices} == {"disable", "validate"}
-        assert app.screen._choices[0].label == "Disable"
+        assert {choice.value for choice in app.screen._choices} == {
+            "disable",
+            "source",
+            "location",
+        }
+        assert app.screen._choices[-1].label == "Disable"
+        description = app.screen.query_one("#choice-description", Static).render().plain
+        assert "Demo skill." in description
+        details = {choice.value: choice for choice in app.screen._choices}
+        assert details["source"].trailing == "ouro • user"
+        assert details["location"].label == str(skill_dir / "SKILL.md")
+        assert details["location"].disabled
 
         options = app.screen.query_one("#choice-list", OptionList)
         options.focus()
         await pilot.press("enter")
         await _wait_until(
-            lambda: app.screen._choices[0].value == "enable",
+            lambda: app.screen._choices[-1].value == "enable",
             pilot,
             description="skill disable completion",
         )
         assert await app._controller.runtime_skill_names() == ()
-        assert app.screen._choices[0].label == "Enable"
-        assert {choice.value for choice in app.screen._choices} == {"enable", "validate"}
+        assert app.screen._choices[-1].label == "Enable"
+        assert {choice.value for choice in app.screen._choices} == {
+            "enable",
+            "source",
+            "location",
+        }
 
         await pilot.press("escape")
         await pilot.pause()
         assert (
             next(choice for choice in app.screen._choices if choice.value == "demo").trailing
-            == "ouro • user • disabled"
+            == "ouro • user"
         )
+        disabled = next(c for c in app.screen._choices if c.value == "demo")
+        assert not disabled.disabled
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="SKILL • demo")
-        options = app.screen.query_one("#choice-list", OptionList)
-        await pilot.click(options, offset=(4, 0))
+        await choose_menu(pilot, "Enable")
         await _wait_until(
-            lambda: app.screen._choices[0].value == "disable",
+            lambda: app.screen._choices[-1].value == "disable",
             pilot,
             description="skill enable completion",
         )
         assert await app._controller.runtime_skill_names() == ("demo",)
-        assert app.screen._choices[0].label == "Disable"
+        assert app.screen._choices[-1].label == "Disable"
 
         await pilot.press("escape")
         await pilot.pause()
         assert (
             next(choice for choice in app.screen._choices if choice.value == "demo").trailing
-            == "ouro • user • enabled"
+            == "ouro • user"
         )
         await pilot.press("escape")
 
@@ -287,17 +361,18 @@ async def test_skill_install_uses_shared_grouped_inline_menu(tmp_path: Path) -> 
         assert not list(screen.query("Checkbox"))
         assert not list(screen.query("Select"))
         assert [choice.group for choice in screen._choices] == [
-            "SOURCE",
-            "DESTINATION",
-            "SELECTION",
-            "SELECTION",
-            "VERSION",
-            "OPTIONS",
+            *("OPTIONS",) * 6,
             "ACTIONS",
         ]
         install = next(choice for choice in screen._choices if choice.value == "skill-install")
         assert install.disabled is True
         assert install.trailing == "Source is required"
+
+        screen._refresh("skill-source")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert screen._editor_placeholder() == "Local path or github:owner/repo"
+        await pilot.press("escape")
 
         screen._values["skill-source"] = "github:openai/example"
         screen._refresh("skill-scope")

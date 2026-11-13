@@ -11,7 +11,7 @@ from threading import Event
 from rich.text import Text
 from textual.app import App
 from textual.geometry import Size
-from textual.widgets import Input
+from textual.widgets import Input, OptionList
 from textual.worker import Worker
 
 from ouro.application.contracts.models import AvailableModel
@@ -254,16 +254,31 @@ async def resize_terminal(pilot, width: int, height: int, *, timeout: float = 15
         ) from None
 
 
-async def choose_menu(pilot, label: str, *, title: str | None = None) -> None:
-    """Filter and accept a choice, optionally awaiting the resulting page.
+async def choose_menu(
+    pilot, label: str, *, title: str | None = None, identity: str | None = None
+) -> None:
+    """Select a menu choice, optionally awaiting the resulting page.
 
     A reused ChoiceScreen can still show the old page while selection I/O runs.
     Supply its destination title, or explicitly await the business outcome at
     the call site; draining UI messages alone does not complete that operation.
     """
 
-    pilot.app.screen.query_one("#choice-filter", Input).value = label
-    await pilot.pause()
+    menu = pilot.app.screen
+    search = menu.query_one("#choice-filter", Input)
+    if search.display:
+        search.value = label
+        await pilot.pause()
+    elif identity is None:
+        identity = next(
+            choice.value
+            for choice in menu._choices
+            if not choice.disabled and menu._matches_filter(choice, label.casefold())
+        )
+    if identity is not None:
+        options = menu.query_one(OptionList)
+        options.highlighted = options.get_option_index(identity)
+        options.focus()
     await pilot.press("enter")
     if title is not None:
         await wait_for_screen(pilot.app, ChoiceScreen, title=title)

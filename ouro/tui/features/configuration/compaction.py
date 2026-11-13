@@ -10,7 +10,6 @@ from ouro.tui.features.configuration.values import (
     _NO_FALLBACK,
     _REASONING_REQUESTS,
     _RUNTIME_MODEL,
-    _enabled_label,
     _optional_bounded_float,
     _optional_positive_int,
     _optional_text,
@@ -88,7 +87,7 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
         self._auto_enabled = bool(policy["auto_enabled"])
         super().__init__(
             title="CONTEXT COMPACTION",
-            placeholder="Search compaction settings…",
+            placeholder=None,
             choices=self._compaction_choices(),
             on_save=self._save_field,
         )
@@ -265,7 +264,7 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
             Choice(
                 "compaction-auto",
                 "Automatic compaction",
-                trailing_badge=_enabled_label(self._auto_enabled),
+                enabled_state=self._auto_enabled,
                 group="STRATEGY",
             ),
             Choice(
@@ -308,9 +307,12 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
             Choice(
                 "compaction-reasoning",
                 "Thinking",
+                enabled_state=False if self._values["compaction-reasoning"] == "disabled" else None,
                 trailing=(
                     "Unsupported"
                     if reasoning_disabled
+                    else ""
+                    if self._values["compaction-reasoning"] in {"enabled", "disabled"}
                     else THINKING_LABELS[self._values["compaction-reasoning"]]
                 ),
                 group="MODEL",

@@ -109,6 +109,8 @@ def validate_manifest_compatibility(manifest: PluginManifest) -> None:
 
 def validate_manifest_paths(root: Path, manifest: PluginManifest) -> ConfigurationSchema | None:
     paths: list[tuple[str, bool]] = []
+    if manifest.icon is not None:
+        paths.append((manifest.icon, False))
     if manifest.configuration is not None and manifest.configuration.schema_path is not None:
         paths.append((manifest.configuration.schema_path, False))
     paths.extend((item.path, True) for item in manifest.contributes.skills)

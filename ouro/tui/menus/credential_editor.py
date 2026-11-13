@@ -32,7 +32,7 @@ class CredentialEditableChoiceScreen(EditableChoiceScreen):
         self,
         *,
         title: str,
-        placeholder: str,
+        placeholder: str | None,
         choices: tuple[Choice, ...],
         on_save: ChoiceEditHandler,
         on_tab: ChoiceTabHandler | None = None,

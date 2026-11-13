@@ -48,7 +48,7 @@ class _ChoicePage:
     retain_for_switching: bool
     title: str
     description: str
-    placeholder: str
+    placeholder: str | None
     choices: tuple[Choice, ...]
     initial_value: str | None
     filter_value: str
@@ -65,7 +65,7 @@ class _ChoicePage:
 class ChoiceScreen(ModalScreen[str | None]):
     MIN_LIST_HEIGHT = 5
     MAX_LIST_HEIGHT = 20
-    # Fixed title, filter, and hint rows surrounding the scrollable list.
+    # Title, optional filter, and hint rows surrounding the scrollable list.
     MENU_CHROME_HEIGHT = 7
     DEFAULT_HINT = DEFAULT_TUI_THEME.inline_separator.join(
         ("↑/↓ move", "←/→ group", "Enter select", "Esc close")
@@ -88,7 +88,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self,
         *,
         title: str,
-        placeholder: str,
+        placeholder: str | None,
         choices: tuple[Choice, ...],
         description: str = "",
         initial_value: str | None = None,
@@ -164,8 +164,11 @@ class ChoiceScreen(ModalScreen[str | None]):
             description.display = bool(description_height)
             yield description
             yield from self._context_widgets()
-            yield self._filter_input()
+            filter_input = self._filter_input()
+            filter_input.display = self._placeholder is not None
+            yield filter_input
             choice_list = self._choice_list()
+            choice_list.styles.margin = (int(self._placeholder is None), 0, 0, 0)
             choice_list.styles.max_height = self._responsive_list_height(self.app.size.height)
             yield choice_list
             yield Static(self._resolved_hint(), id="choice-hint")
@@ -176,11 +179,24 @@ class ChoiceScreen(ModalScreen[str | None]):
         return ()
 
     def _filter_input(self) -> Input:
+        """A None page placeholder disables search and gives focus to the choices."""
+
         return TuiInput(
-            placeholder=self._placeholder,
+            placeholder=self._placeholder or "",
             id="choice-filter",
             select_on_focus=False,
         )
+
+    def _set_filter_visible(self, visible: bool) -> None:
+        self.query_one("#choice-filter", Input).display = visible
+        self.query_one("#choice-list", OptionList).styles.margin = (int(not visible), 0, 0, 0)
+
+    def _focus_menu(self) -> None:
+        filter_input = self.query_one("#choice-filter", Input)
+        if filter_input.display:
+            filter_input.focus()
+        else:
+            self.query_one("#choice-list", OptionList).focus()
 
     def _choice_list(self) -> OptionList:
         """Build the menu body; specialized screens can replace it without copying the frame."""
@@ -231,7 +247,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             self, self._on_current_screen_changed, immediate=True
         )
         self._sync_loading_timer()
-        self.query_one("#choice-filter", Input).focus()
+        self._focus_menu()
         options = self.query_one("#choice-list", OptionList)
         if options.option_count:
             options.highlighted = self._highlight_index(
@@ -244,9 +260,16 @@ class ChoiceScreen(ModalScreen[str | None]):
 
         self._update_description(self._description)
 
+    @property
+    def _menu_chrome_height(self) -> int:
+        return self.MENU_CHROME_HEIGHT - (2 if self._placeholder is None else 0)
+
     def _description_height(self, viewport_height: int) -> int:
         return (
-            min(3, max(0, viewport_height - self.MENU_CHROME_HEIGHT - self.MIN_LIST_HEIGHT))
+            min(
+                3 + self._description.count("\n"),
+                max(0, viewport_height - self._menu_chrome_height - self.MIN_LIST_HEIGHT),
+            )
             if self._description
             else 0
         )
@@ -254,7 +277,7 @@ class ChoiceScreen(ModalScreen[str | None]):
     def _responsive_list_height(self, viewport_height: int) -> int:
         responsive_panel_height = viewport_height * 4 // 5
         description_height = self._description_height(viewport_height)
-        list_height = responsive_panel_height - self.MENU_CHROME_HEIGHT - description_height
+        list_height = responsive_panel_height - self._menu_chrome_height - description_height
         return max(
             self.MIN_LIST_HEIGHT, min(self.MAX_LIST_HEIGHT - description_height, list_height)
         )
@@ -281,7 +304,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self,
         *,
         title: str,
-        placeholder: str,
+        placeholder: str | None,
         choices: tuple[Choice, ...],
         description: str = "",
         initial_value: str | None = None,
@@ -320,20 +343,23 @@ class ChoiceScreen(ModalScreen[str | None]):
         self.query_one("#choice-title", Static).update(label_text(title, theme=theme_for(self)))
         self._update_description(description)
         filter_input = self.query_one("#choice-filter", Input)
-        filter_input.placeholder = placeholder
+        filter_input.placeholder = placeholder or ""
+        self._set_filter_visible(placeholder is not None)
+        if placeholder is None:
+            filter_value = ""
         with self.prevent(Input.Changed):
             filter_input.value = filter_value
         filter_input.cursor_position = len(filter_value)
         self._refresh_options(needle=filter_value, preferred_value=initial_value)
         self._show_hint(interaction_hint)
-        filter_input.focus()
+        self._focus_menu()
 
     def switch_page(
         self,
         *,
         navigation_id: MenuDestination,
         title: str,
-        placeholder: str,
+        placeholder: str | None,
         choices: tuple[Choice, ...],
         description: str = "",
         initial_value: str | None = None,
@@ -383,7 +409,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self,
         *,
         title: str,
-        placeholder: str,
+        placeholder: str | None,
         choices: tuple[Choice, ...],
         description: str = "",
         initial_value: str | None = None,
@@ -469,6 +495,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         choices: tuple[Choice, ...],
         *,
         initial_value: str | None = None,
+        description: str | None = None,
     ) -> bool:
         """Refresh the immediate parent snapshot retained for backward navigation."""
 
@@ -478,6 +505,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._page_stack[-1] = replace(
             parent,
             choices=choices,
+            description=description if description is not None else parent.description,
             initial_value=initial_value if initial_value is not None else parent.initial_value,
         )
         return True
@@ -641,7 +669,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self.refresh(layout=True)
         # Returning to the parent owns this focus change; the child result may select another
         # control before the next frame, so do not defer it past that result.
-        self.query_one("#choice-filter", Input).focus()
+        self._focus_menu()
 
     def _page(self) -> _ChoicePage:
         return _ChoicePage(
@@ -672,7 +700,8 @@ class ChoiceScreen(ModalScreen[str | None]):
         return str(option.id) if option.id is not None else None
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        self._refresh_options(needle=event.value, preferred_value=None)
+        if event.input.display:
+            self._refresh_options(needle=event.value, preferred_value=None)
 
     def _refresh_options(
         self,

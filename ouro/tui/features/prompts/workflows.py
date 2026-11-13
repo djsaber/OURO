@@ -102,7 +102,7 @@ class PromptWorkflows(DataTransferWorkflows):
 
             screen.push_page(
                 title=f"PROMPT · {prompt_label(entry)}",
-                placeholder="Choose an action…",
+                placeholder=None,
                 choices=(
                     Choice("edit", "Edit"),
                     Choice(

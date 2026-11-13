@@ -14,7 +14,7 @@ class PluginInstallScreen(EditableChoiceScreen):
         self._values = {"source": "", "ref": "", "subdirectory": ""}
         super().__init__(
             title="INSTALL PLUGIN",
-            placeholder="Filter plugin install settings…",
+            placeholder=None,
             choices=self._plugin_install_choices(),
             on_save=self._save_field,
         )

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import partial
 from typing import cast
@@ -72,8 +72,7 @@ SYSTEM_SETTING_ACTIONS = (
     SystemSettingAction("mcp.add", "+ mcp", "MCPs"),
     SystemSettingAction("skills.sources", "Skill sources", "Skills"),
     SystemSettingAction("skills.list", "Manage skills", "Skills"),
-    SystemSettingAction("skills.install", "Install skill", "Skills"),
-    SystemSettingAction("skills.validate", "Check skill", "Skills"),
+    SystemSettingAction("skills.install", "+ skill", "Skills"),
 )
 
 _QUEUED_INPUT_CONSUMPTION_LABELS: dict[QueuedInputConsumptionMode, str] = {
@@ -213,7 +212,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         if menu is not None:
             menu.push_page(
                 title="QUEUED MESSAGES",
-                placeholder="Choose how to process waiting messages…",
+                placeholder=None,
                 choices=choices(config.consumption_mode),
                 initial_value=config.consumption_mode,
                 on_select=select_mode,
@@ -222,7 +221,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         await self.push_screen_wait(
             ChoiceScreen(
                 title="QUEUED MESSAGES",
-                placeholder="Choose how to process waiting messages…",
+                placeholder=None,
                 choices=choices(config.consumption_mode),
                 initial_value=config.consumption_mode,
                 on_select=select_mode,
@@ -312,7 +311,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 current = tool.permission_override or "default"
                 screen.replace_page(
                     title=f"TOOL PERMISSION{theme_for(self).inline_separator}{tool.display_name}",
-                    placeholder="Choose a permission…",
+                    placeholder=None,
                     choices=_tool_permission_choices(
                         current,
                         default_permission=tool.inherited_permission,
@@ -523,7 +522,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 if not definition.allowed_by_policy
                 else ""
             ),
-            placeholder="Choose an action…",
+            placeholder=None,
             choices=(
                 Choice("edit", "Edit", disabled=not definition.editable),
                 Choice("toggle", "Disable" if definition.enabled else "Enable"),
@@ -801,7 +800,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
 
             menu.push_page(
                 title=f"MCP{theme_for(self).inline_separator}{config.name}",
-                placeholder="Choose an action…",
+                placeholder=None,
                 choices=actions,
                 on_select=select_action,
                 on_refresh=refresh_mcp_actions,
@@ -810,7 +809,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         selected = await self.push_screen_wait(
             ChoiceScreen(
                 title=f"MCP{theme_for(self).inline_separator}{config.name}",
-                placeholder="Choose an action…",
+                placeholder=None,
                 choices=actions,
             )
         )
@@ -948,7 +947,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
                 return None
-            return _skill_source_choices(policy, theme=theme_for(self))
+            return _skill_source_choices(policy)
 
         async def toggle_source(source_id: str) -> tuple[Choice, ...] | None:
             nonlocal policy
@@ -970,25 +969,35 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
                 return None
-            return _skill_source_choices(policy, theme=theme_for(self))
+            return _skill_source_choices(policy)
 
-        choices = _skill_source_choices(policy, theme=theme_for(self))
+        choices = _skill_source_choices(policy)
+        hint = theme_for(self).inline_separator.join(
+            (
+                "↑/↓ move",
+                "←/→ group",
+                "Enter toggle",
+                "Esc back" if menu is not None else "Esc close",
+            )
+        )
         if menu is not None:
             menu.push_page(
                 title="SKILL SOURCES",
-                placeholder="Filter skill sources…",
+                placeholder=None,
                 choices=choices,
                 on_select=toggle_source,
                 on_refresh=refresh_sources,
+                interaction_hint=hint,
             )
             return
         await self.push_screen_wait(
             ChoiceScreen(
                 title="SKILL SOURCES",
-                placeholder="Filter skill sources…",
+                placeholder=None,
                 choices=choices,
                 on_select=toggle_source,
                 on_refresh=refresh_sources,
+                interaction_hint=hint,
             )
         )
 
@@ -1009,7 +1018,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         if menu is not None and (not menu.is_attached or menu.page_revision != revision):
             return
         if selector is None:
-            choices = tuple(_skill_choice(skill, theme=theme_for(self)) for skill in catalog.skills)
+            choices = _skill_choices(catalog.skills, theme=theme_for(self))
             skill_menu: ChoiceScreen
             skills = {skill.name: skill for skill in catalog.skills}
 
@@ -1022,9 +1031,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                     return None
                 skills.clear()
                 skills.update({skill.name: skill for skill in refreshed.skills})
-                return tuple(
-                    _skill_choice(skill, theme=theme_for(self)) for skill in refreshed.skills
-                )
+                return _skill_choices(refreshed.skills, theme=theme_for(self))
 
             async def select_skill(name: str) -> tuple[Choice, ...] | None:
                 if name not in skills:
@@ -1068,7 +1075,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         *,
         menu: ChoiceScreen | None = None,
     ) -> None:
-        if action not in {"toggle", "validate", "update", "remove"}:
+        if action not in {"toggle", "update", "remove"}:
             await self.query_one(ConversationView).add_notice(
                 f"Unknown skill action: {action}",
                 error=True,
@@ -1089,7 +1096,6 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             return
         action_label = {
             "toggle": "ENABLE OR DISABLE",
-            "validate": "CHECK",
             "update": "UPDATE",
             "remove": "DELETE",
         }[action]
@@ -1156,9 +1162,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
 
             async def select_skill(name: str) -> tuple[Choice, ...] | None:
                 skill = skills[name]
-                if action == "validate":
-                    await self._validate_skill(skill.name)
-                elif action == "update":
+                if action == "update":
                     await self._update_skill(skill.name)
                 else:
                     await self._remove_skill(skill.name, menu=menu)
@@ -1182,9 +1186,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         if selected is None:
             return
         skill = next(item for item in candidates if item.name == selected)
-        if action == "validate":
-            await self._validate_skill(skill.name)
-        elif action == "update":
+        if action == "update":
             await self._update_skill(skill.name)
         else:
             await self._remove_skill(skill.name)
@@ -1213,10 +1215,10 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             return
         plugin_id = _plugin_skill_owner(skill)
         if plugin_id is not None:
-            self.notify(f"Skill {name} is managed by plugin {plugin_id}")
+            await self._manage_plugin(plugin_id, menu=menu)
             return
 
-        actions = _skill_management_choices(skill)
+        actions = _skill_management_choices(skill, theme=theme_for(self))
         if menu is not None:
 
             async def refresh_skill_actions() -> tuple[Choice, ...] | None:
@@ -1234,7 +1236,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 if refreshed is None:
                     return ()
                 skill = refreshed
-                return _skill_management_choices(skill)
+                return _skill_management_choices(skill, theme=theme_for(self))
 
             async def select_action(selected: str) -> tuple[Choice, ...] | None:
                 nonlocal skill
@@ -1258,14 +1260,10 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                         return None
                     skill = refreshed
                     menu.update_parent_choices(
-                        tuple(
-                            _skill_choice(item, theme=theme_for(self)) for item in catalog.skills
-                        ),
+                        _skill_choices(catalog.skills, theme=theme_for(self)),
                         initial_value=name,
                     )
-                    return _skill_management_choices(skill)
-                elif selected == "validate":
-                    await self._validate_skill(name)
+                    return _skill_management_choices(skill, theme=theme_for(self))
                 elif selected == "update":
                     await self._update_skill(name)
                 elif selected == "remove":
@@ -1274,7 +1272,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
 
             menu.push_page(
                 title=f"SKILL{theme_for(self).inline_separator}{name}",
-                placeholder="Choose an action…",
+                description=skill.description,
+                placeholder=None,
                 choices=actions,
                 on_select=select_action,
                 on_refresh=refresh_skill_actions,
@@ -1283,14 +1282,13 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         selected = await self.push_screen_wait(
             ChoiceScreen(
                 title=f"SKILL{theme_for(self).inline_separator}{name}",
-                placeholder="Choose an action…",
+                description=skill.description,
+                placeholder=None,
                 choices=actions,
             )
         )
         if selected in {"enable", "disable"}:
             await self._set_skill_enabled(name, enabled=selected == "enable")
-        elif selected == "validate":
-            await self._validate_skill(name)
         elif selected == "update":
             await self._update_skill(name)
         elif selected == "remove":
@@ -1313,7 +1311,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         names = ", ".join(item.name for item in result.skills) or "none"
-        self.notify(f"Skills installed: {names} (next restart)")
+        self.notify(f"Skills installed: {names}")
 
     async def _set_skill_enabled(self, name: str, *, enabled: bool) -> bool:
         try:
@@ -1322,22 +1320,6 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return False
         return True
-
-    async def _validate_skill(self, name: str) -> None:
-        try:
-            with loading_menu(self, "validate"):
-                result = await self._controller.validate_skill(name)
-        except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
-            return
-        if result.valid:
-            self.notify(f"Skill check passed: {name}")
-            return
-        messages = "; ".join(item.message for item in result.diagnostics) or "invalid skill"
-        await self.query_one(ConversationView).add_notice(
-            f"Skill check failed: {name}{theme_for(self).inline_separator}{messages}",
-            error=True,
-        )
 
     async def _update_skill(self, name: str) -> None:
         try:
@@ -1431,6 +1413,7 @@ def _agent_definition_choices(
             definition.name,
             group="BUILT-IN" if definition.source == "builtin" else "USER",
             trailing=agent_definition_status(definition, theme=theme),
+            enabled_state=definition.enabled,
         )
         for definition in sorted_agent_definitions(definitions)
     )
@@ -1478,16 +1461,10 @@ def _tool_labels(
     return f"{permission}{availability}"
 
 
-def _mcp_labels(
-    config: MCPServerConfigView,
-    status: McpServerStatus | None,
-    *,
-    theme: TuiTheme = DEFAULT_TUI_THEME,
-) -> str:
-    runtime = status.status if status is not None else "next restart"
-    if config.enabled or runtime == "disabled":
-        return runtime
-    return theme.inline_separator.join(("disabled", runtime))
+def _mcp_labels(status: McpServerStatus | None) -> str:
+    if status is None:
+        return "next restart"
+    return "" if status.status == "disabled" else status.status
 
 
 def _mcp_choices(
@@ -1500,8 +1477,9 @@ def _mcp_choices(
         Choice(
             config.server_id,
             config.name,
+            enabled_state=config.enabled,
             group=config.transport.upper(),
-            trailing=_mcp_labels(config, runtime.get(config.server_id), theme=theme),
+            trailing=_mcp_labels(runtime.get(config.server_id)),
             loading=_mcp_status_is_loading(runtime.get(config.server_id)),
         )
         for config in sorted(
@@ -1578,54 +1556,71 @@ def _skill_choice(
     *,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> Choice:
-    plugin_id = _plugin_skill_owner(skill)
-    source_label = (
-        "plugin"
-        if skill.source == "plugin"
-        else theme.inline_separator.join((skill.origin, skill.source))
-    )
     return Choice(
         skill.name,
         skill.name,
-        trailing=theme.inline_separator.join(
-            (source_label, "enabled" if skill.enabled else "disabled")
-        ),
-        disabled=plugin_id is not None,
+        trailing=_skill_source_label(skill, theme=theme),
+        enabled_state=skill.enabled,
     )
 
 
-def _skill_source_choices(
-    policy: SkillPolicyView,
-    *,
-    theme: TuiTheme = DEFAULT_TUI_THEME,
+def _skill_source_label(skill: SkillView, *, theme: TuiTheme) -> str:
+    if skill.source == "plugin":
+        owner = skill.extensions.get("ouro")
+        name = owner.get("plugin_name") if isinstance(owner, dict) else None
+        if not isinstance(name, str) or not name:
+            name = _plugin_skill_owner(skill)
+        return theme.inline_separator.join((name, "plugin")) if name else "plugin"
+    return theme.inline_separator.join((skill.origin, skill.source))
+
+
+def _skill_choices(
+    skills: Iterable[SkillView], *, theme: TuiTheme = DEFAULT_TUI_THEME
 ) -> tuple[Choice, ...]:
+    return tuple(
+        _skill_choice(skill, theme=theme)
+        for skill in sorted(
+            skills,
+            key=lambda skill: (
+                skill.source == "plugin",
+                _skill_source_label(skill, theme=theme).casefold(),
+                display_sort_key(skill.name, fallback=skill.name),
+            ),
+        )
+    )
+
+
+def _skill_source_choices(policy: SkillPolicyView) -> tuple[Choice, ...]:
     choices = [
         Choice(
             "discovery",
-            "Find skills in folders",
-            trailing="enabled" if policy.enabled else "disabled",
-            group="FOLDERS",
+            "Discover skills in folders",
+            enabled_state=policy.enabled,
+            group="GENERAL",
         )
     ]
     choices.extend(
         Choice(
             source.source_id,
-            theme.inline_separator.join((source.origin, source.scope)),
-            trailing="enabled" if source.enabled else "disabled",
-            group=f"{source.scope.upper()} FOLDERS",
+            source.origin,
+            enabled_state=source.enabled,
+            group=source.scope.upper(),
         )
         for source in policy.sources
     )
     return tuple(choices)
 
 
-def _skill_management_choices(skill: SkillView) -> tuple[Choice, ...]:
+def _skill_management_choices(
+    skill: SkillView, *, theme: TuiTheme = DEFAULT_TUI_THEME
+) -> tuple[Choice, ...]:
     return (
+        Choice("source", "Source", trailing=_skill_source_label(skill, theme=theme), disabled=True),
+        Choice("location", skill.location, disabled=True, wrap=True),
         Choice(
             "disable" if skill.enabled else "enable",
             "Disable" if skill.enabled else "Enable",
         ),
-        Choice("validate", "Check skill"),
     )
 
 

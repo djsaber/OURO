@@ -393,19 +393,17 @@ async def test_display_menu_toggles_thinking_in_place(
         await choose_menu(pilot, "Display", title="DISPLAY")
         menu = app.screen
         assert isinstance(menu, ChoiceScreen)
-        assert [(choice.label, choice.trailing_badge) for choice in menu._choices] == [
-            ("Thinking", "Hidden"),
-            ("Scaffold messages", "Hidden"),
-            ("Execution traces", "Hidden"),
+        assert [(choice.label, choice.enabled_state) for choice in menu._choices] == [
+            ("Thinking", False),
+            ("Scaffold messages", False),
+            ("Execution traces", False),
         ]
         for shown in (True, False):
             await choose_menu(pilot, "Thinking")
             await _wait_until(
-                lambda expected=shown: (
-                    menu._choices[0].trailing_badge == ("Shown" if expected else "Hidden")
-                ),
+                lambda expected=shown: menu._choices[0].enabled_state is expected,
                 pilot,
-                description="thinking display saved and badge refreshed",
+                description="thinking display saved and state refreshed",
             )
             assert app.screen is menu
             assert menu.page_title == "DISPLAY"
@@ -435,19 +433,19 @@ async def test_action_menu_toggles_input_draft_memory_and_clears_disabled_state(
         menu = app.screen
         assert isinstance(menu, ChoiceScreen)
 
-        def draft_badge():
+        def draft_enabled():
             return next(
-                choice.trailing_badge
+                choice.enabled_state
                 for choice in menu._choices
                 if choice.label == "Remember drafts"
             )
 
-        assert draft_badge() == "Enabled"
+        assert draft_enabled() is True
         await choose_menu(pilot, "Remember drafts")
         await _wait_until(
-            lambda: drafts.load() == TuiInputDrafts() and draft_badge() == "Disabled",
+            lambda: drafts.load() == TuiInputDrafts() and draft_enabled() is False,
             pilot,
-            description="disabled draft memory and refreshed badge",
+            description="disabled draft memory and refreshed state",
         )
         assert app.screen is menu
         assert menu.page_title == "ACTIONS"
@@ -457,8 +455,7 @@ async def test_action_menu_toggles_input_draft_memory_and_clears_disabled_state(
         await choose_menu(pilot, "Remember drafts")
         await _wait_until(
             lambda: (
-                drafts.load().draft_for(None) == "remember this draft"
-                and draft_badge() == "Enabled"
+                drafts.load().draft_for(None) == "remember this draft" and draft_enabled() is True
             ),
             pilot,
             description="re-enabled draft memory",

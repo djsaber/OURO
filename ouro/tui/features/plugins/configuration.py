@@ -255,7 +255,6 @@ class PluginConfigurationScreen(CredentialEditableChoiceScreen):
             if field.is_toggle:
                 if isinstance(value, bool):
                     trailing = ""
-                    badge = "Enabled" if value else "Disabled"
                 elif not present and not field.required:
                     badge = "Default"
             choices.append(
@@ -264,6 +263,7 @@ class PluginConfigurationScreen(CredentialEditableChoiceScreen):
                     field.title,
                     trailing=trailing,
                     trailing_badge=badge,
+                    enabled_state=value if field.is_toggle and isinstance(value, bool) else None,
                     group="SETTINGS",
                     edit_value=None
                     if field.kind == "select"
@@ -293,14 +293,6 @@ class PluginConfigurationScreen(CredentialEditableChoiceScreen):
             field_id = f"credential:{slot.slot}"
             edit = self._credential_value(field_id)
             assert edit is not None
-            trailing = json_text(value) if present else ""
-            badge = "required" if field.required and not present else ""
-            if field.is_toggle:
-                if isinstance(value, bool):
-                    trailing = ""
-                    badge = "Enabled" if value else "Disabled"
-                elif not present and not field.required:
-                    badge = "Default"
             choices.append(
                 Choice(
                     field_id,

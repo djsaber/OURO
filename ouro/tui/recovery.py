@@ -60,7 +60,6 @@ _RECOVERY_CSS = """
     #choice-title, #choice-filter, .grouped-menu-list, #choice-hint {
         border: none;
     }
-    #choice-filter { display: none; }
     #choice-list { min-height: 1; padding: 1 2; }
     #recovery-home, #recovery-status {
         height: auto;
@@ -137,7 +136,7 @@ class DataRecoveryScreen(ChoiceScreen):
         self._completion: asyncio.Future[bool] | None = None
         super().__init__(
             title="OURO DATA UPGRADE",
-            placeholder="",
+            placeholder=None,
             choices=(),
             on_select=self._select,
             on_cancel=self._cancel,

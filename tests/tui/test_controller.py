@@ -1166,9 +1166,6 @@ async def test_controller_manages_plugins_through_local_application_boundary(
         assert detail.desired_enabled is True
         assert detail.configuration_supported is False
 
-        checked = await controller.check_plugin("dev.ouro.agent_context")
-        assert checked.status == "active"
-
         with pytest.raises(Exception, match="does not exist|not found|No such file"):
             await controller.install_plugin(
                 TuiPluginInstallConfiguration(source=str(tmp_path / "missing-plugin"))
@@ -1418,7 +1415,7 @@ async def test_controller_hot_updates_mcp_tool_policy_without_reconfiguring_conn
 
 
 @pytest.mark.asyncio
-async def test_controller_manages_discovered_skill_policy_and_validation(tmp_path: Path) -> None:
+async def test_controller_manages_discovered_skill_policy(tmp_path: Path) -> None:
     skill_dir = tmp_path / "skills" / "demo"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
@@ -1439,7 +1436,6 @@ async def test_controller_manages_discovered_skill_policy_and_validation(tmp_pat
             item for item in (await controller.skill_catalog()).skills if item.name == "demo"
         )
         assert skill.enabled is True
-        assert (await controller.validate_skill("demo")).valid is True
 
         await controller.set_skill_enabled("demo", enabled=False)
         disabled = next(
@@ -1587,6 +1583,7 @@ async def test_controller_skill_catalog_tracks_live_plugin_skills(tmp_path: Path
         assert plugin_skill.source == "plugin"
         assert plugin_skill.origin == "plugin"
         assert plugin_skill.extensions["ouro"]["plugin_id"] == installed.plugin_id
+        assert plugin_skill.extensions["ouro"]["plugin_name"] == "TUI Skill"
         assert (await controller.system_status()).skill_names == ("calendar",)
 
         with pytest.raises(ConfigError, match="managed through its owning plugin"):

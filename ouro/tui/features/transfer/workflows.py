@@ -77,7 +77,7 @@ class DataTransferScreen(ChoiceScreen):
         self._on_submit = on_submit
         super().__init__(
             title="EXPORT CURRENT SESSION" if current_session_id else f"{action.upper()} DATA",
-            placeholder="Search transfer settings…",
+            placeholder=None,
             choices=self._transfer_choices(),
             on_refresh=self._current_choices,
         )
@@ -145,7 +145,7 @@ class DataTransferScreen(ChoiceScreen):
         value = await self.open_child(
             ChoiceScreen(
                 title="TRANSFER SCOPE",
-                placeholder="Choose scope…",
+                placeholder=None,
                 choices=(Choice("all", "All"), Choice("selected", "Choose specific items")),
                 initial_value="selected" if self._identities else "all",
             )
@@ -333,7 +333,7 @@ class DataTransferWorkflows(TaskManagementWorkflows):
 
             picker.push_page(
                 title=f"{action.upper()} DATA",
-                placeholder="Choose data…",
+                placeholder=None,
                 choices=tuple(Choice(kind, TRANSFER_KIND_LABELS[kind]) for kind in DATA_KINDS),
                 on_select=select_kind,
             )
@@ -343,14 +343,14 @@ class DataTransferWorkflows(TaskManagementWorkflows):
             picker = menu
             picker.push_page(
                 title="MANAGE DATA",
-                placeholder="Choose an operation…",
+                placeholder=None,
                 choices=choices,
                 on_select=select_action,
             )
         else:
             picker = ChoiceScreen(
                 title="MANAGE DATA",
-                placeholder="Choose an operation…",
+                placeholder=None,
                 choices=choices,
                 on_select=select_action,
             )

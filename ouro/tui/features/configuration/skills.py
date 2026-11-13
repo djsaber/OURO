@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import cast
 
 from ouro.application.contracts.configuration import SkillInstallScopeInput
-from ouro.tui.features.configuration.values import _enabled_label
 from ouro.tui.menus.editable import EditableChoiceScreen
 from ouro.tui.menus.models import Choice
 from ouro.tui.view_models import TuiSkillInstallConfiguration
@@ -24,7 +23,7 @@ class SkillInstallScreen(EditableChoiceScreen):
         self._toggles = {"skill-install-all": False, "skill-force": False}
         super().__init__(
             title="INSTALL SKILL",
-            placeholder="Filter skill settings…",
+            placeholder=None,
             choices=self._skill_choices(),
             on_save=self._save_field,
         )
@@ -64,7 +63,7 @@ class SkillInstallScreen(EditableChoiceScreen):
         if not source:
             raise ValueError("Source is required")
         if selector is not None and install_all:
-            raise ValueError("Choose skill names or Install all, not both")
+            raise ValueError("Choose a skill name or Install all, not both")
         return TuiSkillInstallConfiguration(
             source=source,
             scope=cast(SkillInstallScopeInput, self._values["skill-scope"]),
@@ -88,36 +87,37 @@ class SkillInstallScreen(EditableChoiceScreen):
                 "skill-source",
                 "Source",
                 trailing=self._values["skill-source"] or "Required",
-                group="SOURCE",
+                group="OPTIONS",
                 edit_value=self._values["skill-source"],
+                edit_placeholder="Local path or github:owner/repo",
             ),
-            Choice(
-                "skill-scope", "Scope", trailing=self._values["skill-scope"], group="DESTINATION"
-            ),
+            Choice("skill-scope", "Scope", trailing=self._values["skill-scope"], group="OPTIONS"),
             Choice(
                 "skill-selector",
-                "Skill names",
-                trailing=self._values["skill-selector"] or "All available skills",
-                group="SELECTION",
+                "Skill name",
+                trailing=self._values["skill-selector"] or "Choose one or Install all",
+                group="OPTIONS",
                 edit_value=self._values["skill-selector"],
+                edit_placeholder="skill-name",
             ),
             Choice(
                 "skill-install-all",
                 "Install all",
-                trailing_badge=_enabled_label(self._toggles["skill-install-all"]),
-                group="SELECTION",
+                enabled_state=self._toggles["skill-install-all"],
+                group="OPTIONS",
             ),
             Choice(
                 "skill-ref",
                 "Branch, tag or commit",
                 trailing=self._values["skill-ref"] or "Default",
-                group="VERSION",
+                group="OPTIONS",
                 edit_value=self._values["skill-ref"],
+                edit_placeholder="main, v1.0.0 or commit SHA",
             ),
             Choice(
                 "skill-force",
                 "Replace existing",
-                trailing_badge=_enabled_label(self._toggles["skill-force"]),
+                enabled_state=self._toggles["skill-force"],
                 group="OPTIONS",
             ),
             Choice(

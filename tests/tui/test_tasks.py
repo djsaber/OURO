@@ -36,6 +36,7 @@ from ouro.tui.theme import theme_for
 from ouro.tui.view_models import TuiSystemStatus
 from tests.tui.app.support import _application
 from tests.tui.helpers import (
+    choose_menu,
     release_on_exit,
     run_ready_app,
     wait_for_events,
@@ -46,12 +47,7 @@ from tests.tui.helpers import wait_for_screen as _wait_for_screen
 
 
 async def choose(pilot, app, value, *, identity=None):
-    app.screen.query_one("#choice-filter", Input).value = value
-    await pilot.pause()
-    if identity is not None:
-        options = app.screen.query_one("#choice-list", OptionList)
-        options.highlighted = options.get_option_index(identity)
-    await pilot.press("enter")
+    await choose_menu(pilot, value, identity=identity)
     await pilot.pause()
 
 

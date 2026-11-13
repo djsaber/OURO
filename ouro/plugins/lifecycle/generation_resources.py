@@ -110,6 +110,7 @@ class PluginSkillResourceAdapter:
                             **skill.extensions,
                             "ouro": {
                                 "plugin_id": request.candidate.plugin_id,
+                                "plugin_name": request.candidate.manifest.name,
                                 "plugin_class": request.candidate.plugin_class,
                                 "release_id": request.candidate.release_id,
                                 "package_digest": request.candidate.package_digest,

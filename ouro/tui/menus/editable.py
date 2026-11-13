@@ -63,7 +63,7 @@ class EditableChoiceScreen(ChoiceScreen):
         self,
         *,
         title: str,
-        placeholder: str,
+        placeholder: str | None,
         choices: tuple[Choice, ...],
         on_save: ChoiceEditHandler,
         on_tab: ChoiceTabHandler | None = None,

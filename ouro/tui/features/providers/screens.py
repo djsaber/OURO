@@ -152,7 +152,7 @@ class ProviderConfigurationScreen(CredentialEditableChoiceScreen):
         }
         super().__init__(
             title="EDIT PROVIDER" if existing is not None else "ADD PROVIDER",
-            placeholder="Filter provider settings…",
+            placeholder=None,
             choices=self._provider_choices(),
             on_save=self._save_field,
         )
@@ -434,7 +434,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
         }
         super().__init__(
             title="EDIT ENDPOINT" if existing is not None else "ADD ENDPOINT",
-            placeholder="Filter endpoint settings…",
+            placeholder=None,
             choices=self._endpoint_choices(),
             on_save=self._save_field,
         )
@@ -459,7 +459,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
         selected = await self.open_child(
             ChoiceScreen(
                 title="EFFORT",
-                placeholder="Search effort presets…",
+                placeholder=None,
                 choices=self._reasoning_effort_choices(),
                 initial_value=self._reasoning_effort_preset_name(),
             )
@@ -530,7 +530,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
         selected = await self.open_child(
             ChoiceScreen(
                 title="SUMMARY",
-                placeholder="Search summary presets…",
+                placeholder=None,
                 choices=tuple(choices),
                 initial_value=next((choice.value for choice in choices if choice.marker), None),
             )
@@ -673,9 +673,6 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
         error = self._validation_error()
         summary_label = self._reasoning_summary_label()
 
-        def state(field: str) -> str:
-            return "Enabled" if self._capabilities[field] else "Disabled"
-
         return (
             *_service_notice_choices(self._provider.notice),
             Choice(
@@ -709,40 +706,37 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             Choice(
                 "endpoint-tools",
                 "Tools",
-                trailing_badge=state("endpoint-tools"),
+                enabled_state=self._capabilities["endpoint-tools"],
                 group="ADVANCED",
             ),
             Choice(
                 "endpoint-image-input",
                 "Image input",
-                trailing_badge=state("endpoint-image-input"),
-                description="Accept images as model input.",
+                enabled_state=self._capabilities["endpoint-image-input"],
                 group="ADVANCED",
             ),
             Choice(
                 "endpoint-audio-input",
                 "Audio input",
-                trailing_badge=state("endpoint-audio-input"),
-                description="Accept audio as model input.",
+                enabled_state=self._capabilities["endpoint-audio-input"],
                 group="ADVANCED",
             ),
             Choice(
                 "endpoint-video-input",
                 "Video input",
-                trailing_badge=state("endpoint-video-input"),
-                description="Accept video as model input.",
+                enabled_state=self._capabilities["endpoint-video-input"],
                 group="ADVANCED",
             ),
             Choice(
                 "endpoint-streaming",
                 "Streaming",
-                trailing_badge=state("endpoint-streaming"),
+                enabled_state=self._capabilities["endpoint-streaming"],
                 group="ADVANCED",
             ),
             Choice(
                 "endpoint-structured-output",
                 "Structured output",
-                trailing_badge=state("endpoint-structured-output"),
+                enabled_state=self._capabilities["endpoint-structured-output"],
                 group="ADVANCED",
             ),
             Choice(
