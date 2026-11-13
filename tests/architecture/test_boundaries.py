@@ -472,6 +472,23 @@ def test_application_contracts_do_not_depend_on_application_services() -> None:
             )
 
 
+def test_observation_services_do_not_depend_on_host_rendering() -> None:
+    paths = [
+        *(APPLICATION_DIR / "observations").rglob("*.py"),
+        *(APPLICATION_DIR / "contracts").rglob("*.py"),
+        *(APPLICATION_DIR / "tasks").rglob("*.py"),
+        *(PROJECT_ROOT / "ouro" / "automation").rglob("*.py"),
+        *(PROJECT_ROOT / "ouro" / "mcp").rglob("*.py"),
+        PROJECT_ROOT / "ouro" / "local_application.py",
+    ]
+    for path in paths:
+        for module in _imported_modules(ast.parse(path.read_text(encoding="utf-8"))):
+            assert not module.startswith(("ouro.tui", "ouro.cli", "textual", "rich")), (
+                path,
+                module,
+            )
+
+
 def test_welcome_and_view_records_do_not_depend_on_the_controller() -> None:
     tui = PROJECT_ROOT / "ouro" / "tui"
     paths = [tui / "view_models.py", *(tui / "welcome").rglob("*.py")]

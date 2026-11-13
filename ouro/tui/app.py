@@ -6,7 +6,7 @@ import logging
 import sys
 from collections import Counter, OrderedDict
 from collections.abc import Sequence
-from contextlib import ExitStack
+from contextlib import ExitStack, aclosing
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from functools import partial
@@ -23,13 +23,12 @@ from textual.driver import Driver
 from textual.geometry import Size
 from textual.message import Message
 from textual.screen import Screen
-from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Input, TextArea
 from textual.worker import Worker, get_current_worker
 
 from ouro.application.agents.tree import AgentTreeSubscription
-from ouro.application.contracts.agents import AgentTreeNode
+from ouro.application.contracts.agents import AgentInteractionView, AgentTreeNode
 from ouro.application.contracts.execution import RuntimeActivitySnapshot, RuntimeToolCallActivity
 from ouro.application.contracts.models import AvailableModel, ModelReasoningState
 from ouro.application.contracts.sessions import (
@@ -220,7 +219,6 @@ class HistoryLoadRequest:
     navigate_to: str | None = None
 
 
-_MCP_STATUS_SYNC_INTERVAL_SECONDS = 0.25
 _AGENT_SWITCH_DEBOUNCE_SECONDS = 0.1
 _RUNTIME_EVENT_APPLY_MAX = 64
 _SESSION_HISTORY_CACHE_SIZE = 3
@@ -510,6 +508,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._history_request: HistoryLoadRequest | None = None
         self._history_load_failed = False
         self._interaction: PendingInteraction | None = None
+        self._agent_interactions: tuple[AgentInteractionView, ...] = ()
+        self._agent_interactions_projection: TuiSessionProjection | None = None
+        self._interaction_refresh_requested = False
+        self._interaction_refresh_task: asyncio.Task[None] | None = None
         self._models: tuple[AvailableModel, ...] = ()
         self._model_menu_loading = False
         self._composer_submission_lock = asyncio.Lock()
@@ -537,7 +539,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._session_status_harness_version: str | None = None
         self._session_status_refresh_task: asyncio.Task[None] | None = None
         self._queued_inputs_lock = asyncio.Lock()
-        self._mcp_status_timer: Timer | None = None
+        self._task_status_lock = asyncio.Lock()
         self._input_surface: WelcomePanel | None = None
         self._draft_persistence = InputDraftPersistence(
             input_draft_store,
@@ -659,11 +661,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         composer.set_suggestion_resolver(lambda: self._command_suggestion(composer, popup))
         composer.set_command_matcher(lambda: self._matches_command(composer))
         composer.disabled = True
-        self._mcp_status_timer = self.set_interval(
-            _MCP_STATUS_SYNC_INTERVAL_SECONDS,
-            self._sync_mcp_status,
-            pause=True,
-        )
         _worker: Worker[None] = self.run_worker(self._start, name="tui-start", exclusive=True)
         if self._preferences_error is not None:
             self.notify(self._preferences_error, severity="warning")
@@ -687,6 +684,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     async def _close_host(self) -> None:
         self._begin_host_close()
+        await asyncio.gather(
+            *(worker.wait() for worker in self.workers if worker.group == "mcp-status"),
+            return_exceptions=True,
+        )
+        if self._interaction_refresh_task is not None:
+            await asyncio.gather(self._interaction_refresh_task, return_exceptions=True)
         if self._session_status_refresh_task is not None:
             await asyncio.gather(
                 self._session_status_refresh_task,
@@ -730,9 +733,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._session_status_refresh_requested = False
         if self._session_status_refresh_task is not None:
             self._session_status_refresh_task.cancel()
-        if self._mcp_status_timer is not None:
-            self._mcp_status_timer.stop()
-            self._mcp_status_timer = None
+        if self._interaction_refresh_task is not None:
+            self._interaction_refresh_task.cancel()
         self.workers.cancel_all()
 
     async def _start(self) -> None:
@@ -818,9 +820,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._projection is None:
             await self._refresh_reasoning_indicator()
             await self._refresh_approval_indicator()
-        self.set_interval(2.0, self._sync_task_status)
-        if bootstrap.mcp_servers and self._mcp_status_timer is not None:
-            self._mcp_status_timer.resume()
+        _mcp_worker: Worker[None] = self.run_worker(self._watch_mcp_status, group="mcp-status")
         composer = self.query_one(Composer)
         with self.batch_update():
             composer.display = True
@@ -944,13 +944,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     def _publish_control_event(self, event: EventRecord) -> None:
         """Refresh child interactions without admitting another body delivery path."""
-        if self._host_closing or self._visible_read_only:
-            return
-        _worker: Worker[PendingInteraction | None] = self.run_worker(
-            partial(self._refresh_interaction, refresh_agents=True),
-            group="child-interactions",
-            exclusive=True,
-        )
+        self._request_agent_interactions()
 
     def _queue_runtime_event(self, event: EventRecord) -> None:
         self._pending_runtime_events.append(event)
@@ -1115,7 +1109,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     snapshot = notification.snapshot
                     nodes = snapshot.nodes
                     root_activity = snapshot.root_activity
+                    previous_interactions = {
+                        key: node.pending_interactions
+                        for key, node in self._agent_nodes.items()
+                        if node.pending_interactions
+                    }
                     self._agent_nodes = {node.delegation_id: node for node in nodes}
+                    if previous_interactions != {
+                        node.delegation_id: node.pending_interactions
+                        for node in nodes
+                        if node.pending_interactions
+                    }:
+                        self._request_agent_interactions()
                 else:
                     continue
                 self._agent_root_status = (
@@ -1223,6 +1228,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     def _set_welcome_system_status(self, status: TuiSystemStatus) -> None:
         self.query_one(WelcomePanel).set_system_status(status)
+
+    async def _watch_mcp_status(self) -> None:
+        async with aclosing(self._controller.mcp_changes()) as changes:
+            async for _ in changes:
+                if self._host_closing:
+                    return
+                self._sync_mcp_status()
 
     def _sync_mcp_status(self) -> None:
         """Refresh the visible summary from the process-owned live MCP records."""
@@ -2668,14 +2680,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return None
         projection = self._projection
         primary = projection.pending_interaction if projection else None
-        current_is_agent = self._interaction is not None and self._interaction.is_subagent
+        if refresh_agents:
+            self._request_agent_interactions()
         agent_interactions = (
-            await self._controller.agent_interactions()
-            if primary is None and (refresh_agents or current_is_agent)
-            else ()
+            self._agent_interactions if self._agent_interactions_projection is projection else ()
         )
-        if self._host_closing or not self.query(Composer) or self._projection is not projection:
-            return None
         interaction = primary or (
             project_agent_interaction(agent_interactions[0]) if agent_interactions else None
         )
@@ -2689,6 +2698,40 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 )
             self._sync_input_state(interaction)
         return interaction
+
+    def _request_agent_interactions(self) -> None:
+        if self._host_closing or self._visible_read_only:
+            return
+        self._interaction_refresh_requested = True
+        if self._interaction_refresh_task is None:
+            self._interaction_refresh_task = asyncio.create_task(
+                self._drain_agent_interactions(), name="tui-agent-interactions"
+            )
+
+    async def _drain_agent_interactions(self) -> None:
+        try:
+            while self._interaction_refresh_requested and not self._host_closing:
+                self._interaction_refresh_requested = False
+                projection = self._projection
+                revision = self._controller.selection_revision
+                try:
+                    interactions = await self._controller.agent_interactions()
+                except Exception:
+                    _LOG.exception("Could not refresh agent interactions")
+                    continue
+                if (
+                    self._host_closing
+                    or self._visible_read_only
+                    or projection is not self._projection
+                    or revision != self._controller.selection_revision
+                    or self._interaction_refresh_requested
+                ):
+                    continue
+                self._agent_interactions = interactions
+                self._agent_interactions_projection = projection
+                await self._refresh_interaction()
+        finally:
+            self._interaction_refresh_task = None
 
     def _pending_approval_count(self, interaction: PendingInteraction) -> int:
         projection = self._projection
@@ -3696,12 +3739,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _sync_task_status(self) -> None:
         if not self._surface_available():
             return
-        counts, error = await self._controller.task_status()
-        if self._host_closing:
-            return
-        if counts != self._system_status.task_counts or error != self._system_status.task_error:
-            self._system_status = replace(self._system_status, task_counts=counts, task_error=error)
-            self.query_one(ConversationView).set_system_status(self._system_status)
+        async with self._task_status_lock:
+            counts, error = await self._controller.task_status()
+            if self._host_closing:
+                return
+            if counts != self._system_status.task_counts or error != self._system_status.task_error:
+                self._system_status = replace(
+                    self._system_status, task_counts=counts, task_error=error
+                )
+                self.query_one(ConversationView).set_system_status(self._system_status)
 
     async def _choose_session(
         self,

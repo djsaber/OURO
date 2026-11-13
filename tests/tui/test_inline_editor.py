@@ -12,7 +12,7 @@ from ouro.tui.menus.editable import EditableChoiceScreen
 from ouro.tui.menus.inline_editor import MultilineEditableChoiceScreen, multiline_edit_prompt
 from ouro.tui.menus.models import Choice
 from ouro.tui.theme import DEFAULT_TUI_THEME
-from tests.tui.helpers import resize_terminal
+from tests.tui.helpers import resize_terminal, wait_for_menu_action
 
 
 @pytest.mark.parametrize("action", ("type", "cancel", "close"))
@@ -44,7 +44,7 @@ async def test_pending_inline_save_preserves_new_edits_and_respects_close(action
                 assert app.screen is not form
         finally:
             release.set()
-        await app.workers.wait_for_complete()
+        await wait_for_menu_action(pilot, form)
         await pilot.pause()
         if action == "close":
             assert app.screen is not form

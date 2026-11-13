@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Event
@@ -12,6 +12,7 @@ from rich.text import Text
 from textual.app import App
 from textual.geometry import Size
 from textual.widgets import Input
+from textual.worker import Worker
 
 from ouro.application.contracts.models import AvailableModel
 from ouro.application.models.catalog import close_runtime_adapters
@@ -146,11 +147,34 @@ async def wait_for_worker_group(app: App, pilot, *, group: str, timeout: float =
         async with asyncio.timeout(timeout):
             await pilot._wait_for_screen()
             workers = tuple(worker for worker in app.workers if worker.group == group)
-            await asyncio.gather(*(worker.wait() for worker in workers))
+            await wait_for_workers(app, workers, timeout=timeout)
             await pilot._wait_for_screen()
     except TimeoutError:
         raise AssertionError(
             f"Timed out waiting for worker group {group!r}; {surface_state(app)}"
+        ) from None
+
+
+async def wait_for_workers(app: App, workers: Iterable[Worker], *, timeout: float = 60.0) -> None:
+    """Observe an explicit finite set, including the valid empty set.
+
+    Textual's wait_for_complete treats an empty collection as all app workers.
+    Observe terminal state before retrieving results so a timeout neither cancels
+    application work nor gets swallowed by Worker.wait's cancellation handling.
+    The app remains responsible for cancelling its workers during shutdown.
+    """
+
+    selected = tuple(workers)
+    try:
+        async with asyncio.timeout(timeout):
+            while any(not worker.is_finished for worker in selected):
+                await asyncio.sleep(0.01)
+            for worker in selected:
+                await worker.wait()
+    except TimeoutError:
+        pending = [(worker.name, worker.group) for worker in selected if not worker.is_finished]
+        raise AssertionError(
+            f"Timed out waiting for workers {pending!r}; {surface_state(app)}"
         ) from None
 
 
@@ -266,9 +290,9 @@ async def run_ready_app(app, **options):
     """
 
     async with app.run_test(**options) as pilot:
-        for worker in tuple(app.workers):
-            if worker.name == "tui-start":
-                await worker.wait()
+        await wait_for_workers(
+            app, (worker for worker in app.workers if worker.name == "tui-start")
+        )
         await pilot.pause()
         yield pilot
 

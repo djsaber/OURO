@@ -304,12 +304,6 @@ def test_runtime_activity_promotes_bounded_streaming_tool_state_into_the_final_c
     assert partial.status == "streaming"
     assert partial.tool_name == "Wr"
     assert partial.argument_stream_tail is None
-    failed_before_arguments = reduce_runtime_activity(
-        activity,
-        _event(3, "run_failed", {"error": "provider stream failed"}),
-    )
-    assert failed_before_arguments.tool_calls[0].status == "failed"
-    assert failed_before_arguments.tool_calls[0].argument_stream_tail is None
 
     long_tail = "x" * 1_024
     for sequence, payload in (
@@ -366,6 +360,24 @@ def test_runtime_activity_promotes_bounded_streaming_tool_state_into_the_final_c
     assert running.argument_stream_tail is None
     assert running.arguments == {"path": "out.txt", "content": long_tail}
     assert running.started_at is not None
+
+
+@pytest.mark.parametrize("status", ["failed", "aborted", "recoverable", "paused", "completed"])
+@pytest.mark.parametrize("abort_requested", [False, True])
+def test_terminal_activity_discards_unaccepted_tool_previews(status, abort_requested):
+    activity = reduce_runtime_activity(
+        queued_runtime_activity("ses_1"),
+        _event(1, "model_tool_call_delta", {"index": 0, "name_delta": "Read"}),
+    )
+    if abort_requested:
+        activity = reduce_runtime_activity(activity, _event(2, "run_abort_requested"))
+        assert activity.status == "cancelling"
+        assert activity.tool_calls[0].status == "streaming"
+    activity = reduce_runtime_activity(
+        activity, _event(3, "run_status_changed", {"to_status": status})
+    )
+    assert activity.status == status
+    assert activity.tool_calls == ()
 
 
 def test_runtime_activity_tracks_provider_retry_attempts_per_model_request() -> None:

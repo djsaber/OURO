@@ -38,6 +38,12 @@ TUI 应用集成测试按场景放在 `tests/tui/app/`，共用应用构造与�
 `pilot.pause()` 只适合等待消息处理，不代表应用 worker、线程或持久化操作已经结束。
 页面切换使用 `tests/tui/helpers.py` 的 `wait_for_screen`；提交和后台状态使用 `wait_until`
 等待具体结果。计时上限是挂起保护，不是响应速度要求；超时应报告页面、焦点和 worker 状态。
+普通 Host 测试通过 `run_ready_app` 等待启动；有限操作按职责使用 `wait_for_worker_group`，
+已持有 worker 引用时使用 `wait_for_workers`。不要等待整个 worker 管理器：系统状态、会话等
+订阅会持续到 Host 关闭。Textual 的 `wait_for_complete` 还会把显式空列表解释为全部 worker，
+因此已完成并移出管理器的操作也可能触发无限等待；测试辅助函数将空集合视为已完成，超时报告
+待完成操作而不取消其执行。子菜单成为 `app.screen` 早于挂载完成，直接调用选择方法前同样要
+等待 `wait_for_screen`，否则选择可能被尚未就绪的菜单忽略，父操作会一直等待子菜单返回。
 已有完成 Future、队列或 Event 时优先等待它们；否则按条件轮询，满足条件立即继续。
 轮询间隔只负责让出事件循环，不作为操作必定完成的依据，也不重复提交业务动作。
 

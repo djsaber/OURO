@@ -176,11 +176,10 @@ class WelcomeSystem(WelcomeInformation):
             self._spinner_timer.stop()
             self._spinner_timer = None
         theme = theme_for(self)
-        if self._status.mcp_connecting_count and len(theme.spinner_frames) > 1:
+        if self.is_attached and self._status.mcp_connecting_count and len(theme.spinner_frames) > 1:
             if self._spinner_timer is None:
                 self._spinner_timer = self.set_interval(
-                    theme.spinner_interval_seconds,
-                    self._advance_mcp_spinner,
+                    theme.spinner_interval_seconds, self._advance_mcp_spinner
                 )
         else:
             if self._spinner_timer is not None:
@@ -197,8 +196,7 @@ class WelcomeSystem(WelcomeInformation):
         label = Text()
         if self._status.mcp_connecting_count:
             label.append(
-                f"{theme.spinner_frames[self._spinner_frame]} ",
-                style=f"bold {theme.accent}",
+                f"{theme.spinner_frames[self._spinner_frame]} ", style=f"bold {theme.accent}"
             )
         label.append("MCP")
         self._mcp_label.update(label)

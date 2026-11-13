@@ -18,7 +18,7 @@ from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
 from ouro.tui.conversation.history import ConversationHistory
 from ouro.tui.conversation.view import ConversationView
-from tests.tui.helpers import release_on_exit, run_ready_app, wait_until
+from tests.tui.helpers import release_on_exit, run_ready_app, wait_for_workers, wait_until
 from tests.tui.test_background_navigation import NavigationProvider
 from tests.tui.test_tasks import streaming_application
 
@@ -509,8 +509,8 @@ async def test_failed_selection_releases_inflight_history_request(tmp_path, monk
         with pytest.raises(SessionNotFoundError):
             await app._open_session("missing-session")
         release.set()
-        await app.workers.wait_for_complete(
-            [worker for worker in app.workers if worker.name == "_load_earlier_history"]
+        await wait_for_workers(
+            app, [worker for worker in app.workers if worker.name == "_load_earlier_history"]
         )
         assert not app._history_loading
         app._request_earlier_history()
@@ -641,8 +641,8 @@ async def test_history_reset_stops_the_previous_navigation_request(tmp_path, mon
             )
         finally:
             release.set()
-        await app.workers.wait_for_complete(
-            [worker for worker in app.workers if worker.group == "earlier-history"]
+        await wait_for_workers(
+            app, [worker for worker in app.workers if worker.group == "earlier-history"]
         )
         await wait_for_render()
         assert len(history.entries) == 200

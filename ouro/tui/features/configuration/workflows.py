@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from typing import cast
@@ -20,7 +21,6 @@ from ouro.tui.menus.confirmation import ConfirmationScreen
 from ouro.tui.menus.labels import PERMISSION_LABELS
 from ouro.tui.menus.models import Choice
 from ouro.tui.menus.sorting import display_sort_key, sorted_agent_definitions
-from ouro.tui.status import project_mcp_system_status
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 from ouro.tui.view_models import (
     McpServerStatus,
@@ -108,6 +108,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
 
     _controller: TuiController
     _system_status: TuiSystemStatus
+
+    _sync_mcp_status: Callable[[], None]
 
     @work(exclusive=True, group="navigation")
     async def _run_system_setting(
@@ -640,6 +642,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         async def refresh_servers() -> tuple[Choice, ...] | None:
             try:
                 configs = await self._controller.mcp_configurations()
+                self._sync_mcp_status()
                 runtime = {item.server_id: item for item in self._controller.mcp_servers()}
             except Exception as exc:  # noqa: BLE001
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
@@ -682,6 +685,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
     ) -> None:
         try:
             config = await self._controller.mcp_configuration(server_id)
+            self._sync_mcp_status()
             status = next(
                 (item for item in self._controller.mcp_servers() if item.server_id == server_id),
                 None,
@@ -699,6 +703,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 nonlocal config, status
                 try:
                     config = await self._controller.mcp_configuration(server_id)
+                    self._sync_mcp_status()
                     status = next(
                         (
                             item
@@ -840,7 +845,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return None
-        self._refresh_mcp_system_status()
+        self._sync_mcp_status()
         self.notify(
             f"MCP configuration saved: {saved.name}{theme_for(self).inline_separator}"
             "tool policy active; restart for connection changes"
@@ -882,7 +887,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return None
-        self._refresh_mcp_system_status()
+        self._sync_mcp_status()
         if status.status == "failed":
             self.notify(
                 f"MCP {status.name}: {status.status}{theme_for(self).inline_separator}"
@@ -912,7 +917,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return False
-        self._refresh_mcp_system_status()
+        self._sync_mcp_status()
         self.notify(f"MCP deleted: {config.name} (next restart)")
         return True
 
@@ -922,7 +927,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return False
-        self._refresh_mcp_system_status()
+        self._sync_mcp_status()
         return True
 
     async def _configure_skill_sources(
@@ -1366,11 +1371,6 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         self.notify(f"Skill deleted: {name} (next restart)")
-
-    def _refresh_mcp_system_status(self) -> None:
-        runtime = self._controller.mcp_servers()
-        self._system_status = project_mcp_system_status(self._system_status, runtime)
-        self.query_one(ConversationView).set_system_status(self._system_status)
 
 
 def _tool_choices(

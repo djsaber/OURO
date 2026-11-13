@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass, field
 
 import pytest
@@ -147,6 +147,26 @@ async def test_default_factory_load_is_lazy_and_off_the_event_loop(monkeypatch):
     finally:
         await manager.close()
     assert factory.close_count == 1
+
+
+async def test_server_changes_coalesce_and_subscribers_close_independently():
+    manager = MCPManager()
+    async with aclosing(manager.server_changes()) as first:
+        async with aclosing(manager.server_changes()) as second:
+            await anext(first)
+            await anext(second)
+            manager.configure(_config())
+            manager.configure(_config(name="Renamed"))
+            await asyncio.wait_for(asyncio.gather(anext(first), anext(second)), 1)
+            assert manager.get("fs").config.name == "Renamed"
+            assert all(not wake.is_set() for wake in manager._server_listeners)
+            manager.configure(_config(name="Renamed"))
+            assert all(not wake.is_set() for wake in manager._server_listeners)
+        assert len(manager._server_listeners) == 1
+        await manager.remove("fs")
+        await asyncio.wait_for(anext(first), 1)
+        assert manager.list() == []
+    assert not manager._server_listeners
 
 
 async def test_stop_during_default_factory_load_does_not_open_transport(monkeypatch):

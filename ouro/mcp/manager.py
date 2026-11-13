@@ -4,7 +4,7 @@ import asyncio
 import builtins
 import os
 from collections import deque
-from collections.abc import Callable, Iterable
+from collections.abc import AsyncGenerator, Callable, Iterable
 from contextlib import suppress
 from dataclasses import dataclass, field
 
@@ -72,6 +72,28 @@ class MCPManager:
         self._resolve_credential = resolve_credential or _default_credential_resolver
         self._diagnostics: dict[str, deque[MCPDiagnostic]] = {}
         self._diagnostic_limit = diagnostic_limit
+        self._server_listeners: set[asyncio.Event] = set()
+
+    async def server_changes(self) -> AsyncGenerator[None]:
+        """Invalidate server-record queries on this loop, including an initial read.
+
+        Each consumer coalesces changes independently and closes its iterator when
+        finished. Notifications describe current state, not every transition.
+        """
+        wake = asyncio.Event()
+        self._server_listeners.add(wake)
+        wake.set()
+        try:
+            while True:
+                await wake.wait()
+                wake.clear()
+                yield None
+        finally:
+            self._server_listeners.remove(wake)
+
+    def _notify_server_changes(self) -> None:
+        for wake in self._server_listeners:
+            wake.set()
 
     async def __aenter__(self) -> MCPManager:
         await self.start_auto()
@@ -89,6 +111,8 @@ class MCPManager:
         self._servers[config.server_id] = record
         self._locks.setdefault(config.server_id, asyncio.Lock())
         self._diagnostics.setdefault(config.server_id, deque(maxlen=self._diagnostic_limit))
+        if record != current:
+            self._notify_server_changes()
         return record
 
     def configure_many(self, configs: Iterable[MCPServerConfig]) -> builtins.list[MCPServerRecord]:
@@ -271,6 +295,7 @@ class MCPManager:
         self._runtimes.pop(server_id, None)
         self._locks.pop(server_id, None)
         self._diagnostics.pop(server_id, None)
+        self._notify_server_changes()
         return record
 
     async def close(self) -> None:
@@ -561,8 +586,11 @@ class MCPManager:
         return redact_text(message)
 
     def _update(self, server_id: str, **changes: object) -> MCPServerRecord:
-        record = self.get(server_id).model_copy(update=changes)
+        previous = self.get(server_id)
+        record = previous.model_copy(update=changes)
         self._servers[server_id] = record
+        if record != previous:
+            self._notify_server_changes()
         return record
 
 

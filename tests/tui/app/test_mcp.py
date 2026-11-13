@@ -35,7 +35,10 @@ from tests.tui.helpers import wait_until as _wait_until
 
 
 @pytest.mark.asyncio
-async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path) -> None:
+@pytest.mark.parametrize("configured_at_start", [True, False])
+async def test_mcp_connection_progress_updates_without_page_refresh(
+    tmp_path: Path, configured_at_start: bool
+) -> None:
     application = _application(tmp_path)
     session = LiveMcpSession()
     factory = LiveMcpFactory(session)
@@ -43,16 +46,16 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
         registry=application.runtime.tools,
         client_factory=factory,
     )
-    manager.configure(
-        MCPServerConfig(
-            server_id="live",
-            name="Live MCP",
-            command="unused-in-test",
-            auto_start=True,
-            auto_reconnect=False,
-            health_check_interval_seconds=60,
-        )
+    config = MCPServerConfig(
+        server_id="live",
+        name="Live MCP",
+        command="unused-in-test",
+        auto_start=True,
+        auto_reconnect=False,
+        health_check_interval_seconds=60,
     )
+    if configured_at_start:
+        manager.configure(config)
     application.mcp = MCPRuntimeResource(manager)
     app = OuroTuiApp(application=application)
 
@@ -60,15 +63,23 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
         run_ready_app(app, size=(100, 32)) as pilot,
         release_on_exit(session.initialize_gate),
     ):
+        if not configured_at_start:
+            manager.configure(config)
+            await manager.start_background("live")
         welcome = await _wait_for_welcome_render(app, pilot, contains="connecting")
         assert not isinstance(app.screen, StartupScreen)
         assert not session.initialize_gate.is_set()
         await pilot.press("h", "i")
         assert app.query_one(Composer).text == "hi"
         mcp_label = welcome.query_one("#welcome-mcp-label", Static)
-        connecting_label = mcp_label.render().plain
-        assert connecting_label.endswith(" MCP")
-        assert connecting_label[0] in DEFAULT_TUI_THEME.spinner_frames
+        assert mcp_label.render().plain.endswith(" MCP")
+        assert mcp_label.render().plain[0] in DEFAULT_TUI_THEME.spinner_frames
+        frame = welcome.page._system._spinner_frame
+        await _wait_until(
+            lambda: welcome.page._system._spinner_frame != frame,
+            pilot,
+            description="MCP loading animation",
+        )
         starting_status = welcome.page._system._mcp.render()
         assert "0/1 connected • 0 tool(s) • 1 connecting" in starting_status.plain
 
@@ -80,6 +91,7 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
         )
         connected_status = welcome.page._system._mcp.render()
         assert mcp_label.render().plain == "MCP"
+        assert welcome.page._system._spinner_timer is None
         assert "1/1 connected • 1 tool(s)" in connected_status.plain
         assert "live__search" in application.runtime.tools.names()
 
@@ -88,7 +100,7 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
         await _wait_until(
             lambda: "1/1 connected • 2 tool(s)" in welcome.page._system._mcp.render().plain,
             pilot,
-            description="refreshed MCP tools",
+            description="MCP tool discovery",
         )
         assert "1/1 connected • 2 tool(s)" in welcome.page._system._mcp.render().plain
         assert {"live__fetch", "live__search"}.issubset(application.runtime.tools.names())
@@ -105,7 +117,7 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
         assert mcp_label.render().plain == "MCP"
         assert "live__search" not in application.runtime.tools.names()
 
-    assert app._mcp_status_timer is None
+    assert not manager._server_listeners
 
 
 async def _open_mcp_management(app: OuroTuiApp, pilot: Pilot, action: str) -> ChoiceScreen:

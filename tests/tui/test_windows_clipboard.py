@@ -10,7 +10,7 @@ import pytest
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
 from ouro.tui.composer.input import Composer
-from tests.tui.helpers import run_ready_app
+from tests.tui.helpers import run_ready_app, wait_for_workers
 from tests.tui.test_history_commands import application_at
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Native Windows file clipboard")
@@ -95,14 +95,11 @@ async def test_right_click_files_use_normal_upload_on_both_pages(
         composer = app.query_one(Composer)
         composer.load_text("draft")
         await pilot.click(composer, offset=(2, 0), button=3)
-        # Textual treats an empty collection as "wait for every worker", including observers.
-        if workers := [
-            w for w in app.workers if w.group in {"composer-clipboard", "attachment-import"}
-        ]:
-            await app.workers.wait_for_complete(workers)
+        await wait_for_workers(
+            app, [w for w in app.workers if w.group in {"composer-clipboard", "attachment-import"}]
+        )
         await pilot.pause()
-        if workers := [w for w in app.workers if w.group == "attachment-import"]:
-            await app.workers.wait_for_complete(workers)
+        await wait_for_workers(app, [w for w in app.workers if w.group == "attachment-import"])
         content = composer.input_content
         assert content.text == "draft"
         assert [item.name for item in content.attachments] == [path.name for path in paths]

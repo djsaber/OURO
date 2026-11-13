@@ -48,7 +48,6 @@ Windows Terminal/PowerShell 与 POSIX 终端分别覆盖以下场景，每场景
 | 文件 catalog 分片或索引 | 现实目录大小下单体 JSON 刷新持续超预算 | 先合并刷新，保持 canonical 恢复与跨进程一致性 |
 | 文件锁 deadline | live holder 等待构成可复现的操作阻塞 | 明确 holder/operation 诊断与失败语义，保持原子提交 |
 | SQLite Compaction 索引 | 查询计划证明 Session 范围扫描主导耗时 | 真实数据分布验证索引收益与写入成本 |
-| MCP 状态刷新调整 | 空闲唤醒或状态同步 IO 有可测成本 | 保持连接健康、诊断和重连可见性 |
 
 缓存须覆盖模型切换、插件代次、资源引用、分支、压缩、失败恢复、并发及淘汰测试；日志不能复制消息、图片或凭据。
 不因合成极端样本默认引入额外 DTO、后台服务、工作流或 renderer。

@@ -25,7 +25,13 @@ from ouro.tui.features.transfer.workflows import DataTransferScreen
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.multiple import MultiChoiceScreen
 from tests.tool_batches import seed_tool_messages
-from tests.tui.helpers import run_ready_app, wait_for_menu_action, wait_for_screen, wait_until
+from tests.tui.helpers import (
+    run_ready_app,
+    wait_for_menu_action,
+    wait_for_screen,
+    wait_for_worker_group,
+    wait_until,
+)
 
 
 def test_transfer_command_only_exports_current_session_without_arguments():
@@ -42,11 +48,7 @@ def test_transfer_command_only_exports_current_session_without_arguments():
 async def test_tui_data_form_and_command_use_application_service(tmp_path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
     app = OuroTuiApp(home=tmp_path / "home")
-    async with app.run_test(size=(100, 35)) as pilot:
-        async with asyncio.timeout(10):
-            while app._controller._application is None:
-                await pilot.pause()
-        await app.workers.wait_for_complete()
+    async with run_ready_app(app, size=(100, 35)) as pilot:
         await _open_data_menu(app, pilot, "export", "providers")
         async with asyncio.timeout(5):
             while not isinstance(app.screen, DataTransferScreen):
@@ -61,7 +63,7 @@ async def test_tui_data_form_and_command_use_application_service(tmp_path, capsy
         archive = screen._path
         assert archive is not None and archive.parent == tmp_path
         await screen._select_choice("submit")
-        await app.workers.wait_for_complete()
+        await wait_for_worker_group(app, pilot, group="data-transfer-operation")
         assert read_archive(archive, "providers").manifest.kind == "providers"
         # The same archive goes through the CLI import boundary and TUI import service.
         assert (
@@ -139,11 +141,7 @@ async def test_imported_history_opens_with_missing_dependencies_in_live_sqlite_h
         DataTransferRequest(action="export", kind="sessions", path=archive)
     )
     app = OuroTuiApp(home=target, session_backend="sqlite")
-    async with app.run_test(size=(100, 35)) as pilot:
-        async with asyncio.timeout(10):
-            while app._controller._application is None:
-                await pilot.pause()
-        await app.workers.wait_for_complete()
+    async with run_ready_app(app, size=(100, 35)):
         result = await app._controller.transfer_data(
             DataTransferRequest(action="import", kind="sessions", path=archive)
         )
@@ -232,11 +230,7 @@ async def test_tui_exports_personal_prompt_configuration(tmp_path, monkeypatch):
         expected_revision=0,
     )
     app = OuroTuiApp(home=home)
-    async with app.run_test(size=(100, 35)) as pilot:
-        async with asyncio.timeout(10):
-            while app._controller._application is None:
-                await pilot.pause()
-        await app.workers.wait_for_complete()
+    async with run_ready_app(app, size=(100, 35)) as pilot:
         await _open_data_menu(app, pilot, "export", "prompts")
         form = app.screen
         assert isinstance(form, DataTransferScreen)
@@ -244,7 +238,7 @@ async def test_tui_exports_personal_prompt_configuration(tmp_path, monkeypatch):
             "Personal prompt configuration"
         )
         await _choose_menu_row(app, pilot, "submit")
-        await app.workers.wait_for_complete()
+        await wait_for_worker_group(app, pilot, group="data-transfer-operation")
         assert form._path is not None
         payload = read_archive(form._path, "prompts").manifest.data
         assert payload["prompts"]["additions"][0]["text"] == "Keep answers concise"
@@ -267,11 +261,7 @@ async def test_session_import_selection_uses_archive_titles_and_file_browser(
     )
     target = tmp_path / "target"
     app = OuroTuiApp(home=target)
-    async with app.run_test(size=(100, 35)) as pilot:
-        async with asyncio.timeout(10):
-            while app._controller._application is None:
-                await pilot.pause()
-        await app.workers.wait_for_complete()
+    async with run_ready_app(app, size=(100, 35)) as pilot:
         await _open_data_menu(app, pilot, "import")
         await pilot.pause()
         form = app.screen
@@ -284,7 +274,8 @@ async def test_session_import_selection_uses_archive_titles_and_file_browser(
         await _choose_menu_row(app, pilot, "file:all sessions.zip")
         assert app.screen is form
         assert form._path == archive
-        await app.workers.wait_for_complete()
+        await wait_for_menu_action(pilot, form)
+        await wait_for_worker_group(app, pilot, group="archive-inspection")
         assert form._kind == "sessions"
         await _choose_menu_row(app, pilot, "selection")
         assert isinstance(app.screen, ChoiceScreen)
@@ -314,7 +305,7 @@ async def test_session_import_selection_uses_archive_titles_and_file_browser(
         assert app.screen is form
         assert next(row for row in form._choices if row.value == "replace").trailing_badge == "Skip"
         await _choose_menu_row(app, pilot, "submit")
-        await app.workers.wait_for_complete()
+        await wait_for_worker_group(app, pilot, group="data-transfer-operation")
         assert {
             record.session_id
             for record in build_local_session_services(target)._store.list_sessions()
@@ -347,7 +338,7 @@ async def test_export_picker_uses_default_filename_and_cancel_keeps_settings(tmp
         assert app.screen is form
         assert form._path == tmp_path / "backups" / original.name
         await _choose_menu_row(app, pilot, "submit")
-        await app.workers.wait_for_complete()
+        await wait_for_worker_group(app, pilot, group="data-transfer-operation")
         assert read_archive(form._path, "providers").manifest.kind == "providers"
 
 
@@ -372,11 +363,7 @@ async def test_transfer_progress_stays_in_menu_and_outlives_picker(
         return await original(request)
 
     monkeypatch.setattr(app._controller, "transfer_data", delayed)
-    async with app.run_test(size=(100, 35)) as pilot:
-        async with asyncio.timeout(10):
-            while app._controller._application is None:
-                await pilot.pause()
-        await app.workers.wait_for_complete()
+    async with run_ready_app(app, size=(100, 35)) as pilot:
         monkeypatch.setattr(
             app, "notify", lambda message, **kwargs: notices.append((message, kwargs))
         )
@@ -408,7 +395,7 @@ async def test_transfer_progress_stays_in_menu_and_outlives_picker(
             assert any(row.loading for row in reopened._choices)
         finally:
             release.set()
-        await app.workers.wait_for_complete()
+        await wait_for_worker_group(app, pilot, group="data-transfer-operation")
         assert app.screen is reopened
         assert not any(row.loading for row in reopened._choices)
         if fail_first:
@@ -416,7 +403,7 @@ async def test_transfer_progress_stays_in_menu_and_outlives_picker(
             assert notices[-1][1]["title"] == "Export failed"
             assert notices[-1][1]["severity"] == "error"
             await _choose_menu_row(app, pilot, "submit")
-            await app.workers.wait_for_complete()
+            await wait_for_worker_group(app, pilot, group="data-transfer-operation")
             assert len(calls) == 2
         assert any(row.value == "result:0" for row in reopened._choices)
         assert len(notices) == (2 if fail_first else 1)
@@ -436,11 +423,7 @@ async def test_export_command_pins_current_session_and_rejects_empty_or_argument
     services.sessions.create(session_id="ses_current", title="Current")
     services.sessions.create(session_id="ses_other", title="Other")
     app = OuroTuiApp(home=home)
-    async with app.run_test(size=(100, 35)) as pilot:
-        async with asyncio.timeout(10):
-            while app._controller._application is None:
-                await pilot.pause()
-        await app.workers.wait_for_complete()
+    async with run_ready_app(app, size=(100, 35)) as pilot:
         welcome = app.screen
         await app._dispatch_command("/export")
         await pilot.pause()
@@ -471,11 +454,7 @@ async def test_export_command_pins_current_session_and_rejects_empty_or_argument
 @pytest.mark.asyncio
 async def test_data_menu_returns_through_pages_without_changing_conversation(tmp_path):
     app = OuroTuiApp(home=tmp_path / "home")
-    async with app.run_test(size=(100, 35)) as pilot:
-        async with asyncio.timeout(10):
-            while app._controller._application is None:
-                await pilot.pause()
-        await app.workers.wait_for_complete()
+    async with run_ready_app(app, size=(100, 35)) as pilot:
         await _open_data_menu(app, pilot, "export", "skills")
         await pilot.press("escape")
         await wait_for_screen(app, ChoiceScreen, title="EXPORT DATA")
@@ -503,11 +482,7 @@ async def test_export_session_selection_displays_identity_as_trailing_label(tmp_
     services.sessions.create(session_id="ses_alpha", title="Conversation")
     services.sessions.create(session_id="ses_beta", title="Conversation")
     app = OuroTuiApp(home=home)
-    async with app.run_test(size=(100, 35)) as pilot:
-        async with asyncio.timeout(10):
-            while app._controller._application is None:
-                await pilot.pause()
-        await app.workers.wait_for_complete()
+    async with run_ready_app(app, size=(100, 35)) as pilot:
         await _open_data_menu(app, pilot, "export", "sessions")
         form = app.screen
         await _choose_menu_row(app, pilot, "selection")
@@ -529,7 +504,7 @@ async def test_export_session_selection_displays_identity_as_trailing_label(tmp_
         )
         assert form._identities == ("ses_beta",)
         await _choose_menu_row(app, pilot, "submit")
-        await app.workers.wait_for_complete()
+        await wait_for_worker_group(app, pilot, group="data-transfer-operation")
         assert app._data_transfer_progress.result.count == 1
 
 
@@ -549,18 +524,15 @@ async def test_import_detects_file_type_resets_options_and_recovers_from_invalid
     transfer.transfer(DataTransferRequest(action="export", kind="sessions", path=sessions))
     invalid.write_bytes(b"not an archive")
     app = OuroTuiApp(home=tmp_path / "target")
-    async with app.run_test(size=(100, 35)) as pilot:
-        async with asyncio.timeout(10):
-            while app._controller._application is None:
-                await pilot.pause()
-        await app.workers.wait_for_complete()
+    async with run_ready_app(app, size=(100, 35)) as pilot:
         await _open_data_menu(app, pilot, "import")
         form = app.screen
 
         async def choose_file(path):
             await _choose_menu_row(app, pilot, "path")
             await _choose_menu_row(app, pilot, f"file:{path.name}")
-            await app.workers.wait_for_complete()
+            await wait_for_menu_action(pilot, form)
+            await wait_for_worker_group(app, pilot, group="archive-inspection")
 
         await choose_file(config)
         assert form._kind == "providers"
@@ -582,7 +554,7 @@ async def test_import_detects_file_type_resets_options_and_recovers_from_invalid
         await choose_file(invalid)
         assert form._kind == "providers" and form._archive_error is None
         await _choose_menu_row(app, pilot, "submit")
-        await app.workers.wait_for_complete()
+        await wait_for_worker_group(app, pilot, group="data-transfer-operation")
         assert app._data_transfer_progress.result.kind == "providers"
         assert (tmp_path / "target" / "config" / "providers.json").is_file()
 
@@ -607,11 +579,7 @@ async def test_archive_detection_keeps_navigation_responsive_and_discards_replac
         return await identify(path)
 
     monkeypatch.setattr(app._controller, "data_archive_kind", delayed)
-    async with app.run_test(size=(100, 35)) as pilot:
-        async with asyncio.timeout(10):
-            while app._controller._application is None:
-                await pilot.pause()
-        await app.workers.wait_for_complete()
+    async with run_ready_app(app, size=(100, 35)) as pilot:
         await _open_data_menu(app, pilot, "import")
         form = app.screen
         try:
@@ -622,7 +590,8 @@ async def test_archive_detection_keeps_navigation_responsive_and_discards_replac
             assert next(row for row in form._choices if row.value == "submit").disabled
             await _choose_menu_row(app, pilot, "path")
             await _choose_menu_row(app, pilot, "file:two.zip")
-            await app.workers.wait_for_complete()
+            await wait_for_menu_action(pilot, form)
+            await wait_for_worker_group(app, pilot, group="archive-inspection")
             assert form._kind == "mcp"
             assert form._request().path == second
             assert not any(row.loading for row in form._choices)
@@ -658,11 +627,7 @@ async def test_selection_loading_can_be_cancelled_without_reopening_picker(
         monkeypatch.setattr(app._controller, "data_transfer_items", delayed)
     else:
         monkeypatch.setattr(ArchivePathScreen, "_path_choices", delayed)
-    async with app.run_test(size=(100, 35)) as pilot:
-        async with asyncio.timeout(10):
-            while app._controller._application is None:
-                await pilot.pause()
-        await app.workers.wait_for_complete()
+    async with run_ready_app(app, size=(100, 35)) as pilot:
         await _open_data_menu(app, pilot, "export", "sessions")
         form = app.screen
         await _choose_menu_row(app, pilot, picker)
@@ -676,7 +641,8 @@ async def test_selection_loading_can_be_cancelled_without_reopening_picker(
         menu = app.screen
         assert menu is not form
         release.set()
-        await app.workers.wait_for_complete()
+        await wait_for_menu_action(pilot, form)
+        await wait_for_worker_group(app, pilot, group="transfer-selection")
         await pilot.pause()
         assert app.screen is menu
 
@@ -693,16 +659,13 @@ async def test_import_form_applies_existing_session_policy(tmp_path, monkeypatch
         DataTransferRequest(action="export", kind="sessions", path=archive)
     )
     app = OuroTuiApp(home=target)
-    async with app.run_test(size=(100, 35)) as pilot:
-        async with asyncio.timeout(10):
-            while app._controller._application is None:
-                await pilot.pause()
-        await app.workers.wait_for_complete()
+    async with run_ready_app(app, size=(100, 35)) as pilot:
         await _open_data_menu(app, pilot, "import")
         form = app.screen
         await _choose_menu_row(app, pilot, "path")
         await _choose_menu_row(app, pilot, "file:sessions.zip")
-        await app.workers.wait_for_complete()
+        await wait_for_menu_action(pilot, form)
+        await wait_for_worker_group(app, pilot, group="archive-inspection")
         assert next(row for row in form._choices if row.value == "replace").trailing_badge == "Skip"
         if replace:
             await _choose_menu_row(app, pilot, "replace")
@@ -711,7 +674,7 @@ async def test_import_form_applies_existing_session_policy(tmp_path, monkeypatch
                 == "Replace"
             )
         await _choose_menu_row(app, pilot, "submit")
-        await app.workers.wait_for_complete()
+        await wait_for_worker_group(app, pilot, group="data-transfer-operation")
         result = app._data_transfer_progress.result
         assert result is not None
         assert (result.count, result.skipped, result.replaced) == (

@@ -564,15 +564,28 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         self._history.append(TranscriptEntry(kind="run", run_id=run.run_id, run=run))
 
     async def sync_tools(self, tools: tuple[RuntimeToolCallActivity, ...]) -> None:
+        """Reconcile the complete current tool batch, including an empty snapshot."""
         tools = tuple(tool for tool in tools if tool.tool_name)
-        if not tools:
+        if not tools and not self._tools:
             return
-        await self._dismiss_welcome()
         historical_tool_ids = self._history.update_tools(
             tools,
             run_id=self._current_run_id,
         )
         self._adopt_streaming_tool_rows(tools)
+        current_tools = {tool.tool_call_id: tool for tool in tools}
+        retired = tuple(
+            row
+            for identity, row in self._tools.items()
+            if (tool := current_tools.get(identity)) is None
+            or row.run_id != self._current_run_id
+            or row.tool.batch_id != tool.batch_id
+        )
+        if retired:
+            await self._retire_tools(retired)
+        if not tools:
+            return
+        await self._dismiss_welcome()
         has_new_tool = any(
             tool.tool_call_id not in historical_tool_ids and tool.tool_call_id not in self._tools
             for tool in tools
@@ -599,19 +612,28 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         # by one would move a later-completing row ahead of an earlier active row
         # because the immutable history always precedes the live widget region.
         if self._tools and all(is_terminal_tool(row.tool) for row in self._tools.values()):
-            terminal_rows = tuple(self._tools.values())
-            self._history.append_many(
-                TranscriptEntry(
-                    kind="tool",
-                    run_id=row.run_id,
-                    tool=row.tool,
-                    agent=row.agent,
-                )
-                for row in terminal_rows
+            await self._retire_tools(tuple(self._tools.values()))
+
+    async def _retire_tools(self, rows: tuple[ToolActivityRow, ...]) -> None:
+        """Release live surfaces after their committed content is ready in history."""
+        entries = tuple(
+            TranscriptEntry(
+                kind="tool",
+                run_id=row.run_id,
+                tool=row.tool
+                if is_terminal_tool(row.tool)
+                else row.tool.model_copy(update={"status": "unknown_outcome"}),
+                agent=row.agent,
             )
+            for row in rows
+            if row.tool.status != "streaming"
+        )
+        if entries:
+            self._history.append_many(entries)
             await self._history.wait_until_rendered()
-            self._tools.clear()
-            await asyncio.shield(self._transcript.remove_children(terminal_rows))
+        for row in rows:
+            del self._tools[row.tool_call_id]
+        await asyncio.shield(self._transcript.remove_children(rows))
 
     async def apply_tool_result(self, message: MessageRecord) -> None:
         result = message.tool_result
@@ -619,6 +641,8 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             return
         batch_id = message.outcome_ref.identity.batch_id if message.outcome_ref else None
         row = self._tools.get(result.tool_call_id)
+        if row is not None and (row.run_id != message.run_id or row.tool.batch_id != batch_id):
+            row = None
         tool = (
             row.tool
             if row is not None
@@ -630,17 +654,19 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         )
         if tool is not None:
             timing = message.tool_execution
-            await self.sync_tools(
-                (
-                    tool.model_copy(
-                        update={
-                            "status": "failed" if result.is_error else "completed",
-                            "started_at": timing.started_at if timing else tool.started_at,
-                            "ended_at": timing.ended_at if timing else message.created_at,
-                        }
-                    ),
-                )
+            updated = tool.model_copy(
+                update={
+                    "status": "failed" if result.is_error else "completed",
+                    "started_at": timing.started_at if timing else tool.started_at,
+                    "ended_at": timing.ended_at if timing else message.created_at,
+                }
             )
+            if row is None:
+                self._history.update_tools((updated,), run_id=message.run_id)
+            else:
+                await self.sync_tools(
+                    tuple(updated if item is row else item.tool for item in self._tools.values())
+                )
 
     def _adopt_streaming_tool_rows(
         self,
@@ -651,7 +677,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         provisional_by_index = {
             row.tool.source_index: tool_call_id
             for tool_call_id, row in self._tools.items()
-            if row.tool.status == "streaming"
+            if row.tool.status == "streaming" and row.run_id == self._current_run_id
         }
         for tool in tools:
             if tool.tool_call_id in self._tools:

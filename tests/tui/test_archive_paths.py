@@ -66,8 +66,7 @@ async def test_invalid_path_warns_and_preserves_editor_until_corrected(
     async with app.run_test(size=(100, 30)) as pilot:
         screen = ArchivePathScreen(directory=tmp_path, filename="original.zip")
         await screen.prepare()
-        app.push_screen(screen)
-        await app.workers.wait_for_complete()
+        await app.push_screen(screen)
         await pilot.pause()
         options = screen.query_one(OptionList)
         options.highlighted = options.get_option_index(field)
@@ -111,8 +110,7 @@ async def test_folder_access_error_warns_and_allows_cancel(tmp_path, monkeypatch
     async with app.run_test(size=(100, 30)) as pilot:
         screen = ArchivePathScreen(directory=tmp_path, filename=None)
         await screen.prepare()
-        app.push_screen(screen)
-        await app.workers.wait_for_complete()
+        await app.push_screen(screen)
         await pilot.pause()
         original = Path.is_dir
 

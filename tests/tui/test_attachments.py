@@ -33,6 +33,7 @@ from tests.tui.helpers import (
     run_ready_app,
     wait_for_events,
     wait_for_worker_group,
+    wait_for_workers,
 )
 from tests.tui.test_history_commands import application_at
 
@@ -226,9 +227,7 @@ async def test_unreadable_directory_retains_listing_filter_and_selection(tmp_pat
     async with run_ready_app(app) as pilot:
         app._active_workspace = str(tmp_path)
         await pilot.press("@", *"file", "enter")
-        await app.workers.wait_for_complete(
-            [w for w in app.workers if w.group == "attachment-directory"]
-        )
+        await wait_for_workers(app, [w for w in app.workers if w.group == "attachment-directory"])
         picker = app._attachment_picker
         picker.toggle(str(path))
         composer = app.query_one(Composer)
@@ -262,14 +261,19 @@ async def test_welcome_upload_stays_in_draft_until_message_is_sent(tmp_path, sou
         composer = app.query_one(Composer)
         if source == "picker":
             await pilot.press("@", *"file", "enter")
-            await app.workers.wait_for_complete(
-                [w for w in app.workers if w.group == "attachment-directory"]
+            await wait_for_workers(
+                app, [w for w in app.workers if w.group == "attachment-directory"]
             )
             composer.set_attachment_query(path.name)
             await pilot.pause()
             await pilot.press("enter")
-            await app.workers.wait_for_complete(
-                [w for w in app.workers if w.group in {"attachment-import", "attachment-reference"}]
+            await wait_for_workers(
+                app,
+                [
+                    w
+                    for w in app.workers
+                    if w.group in {"attachment-import", "attachment-reference"}
+                ],
             )
         else:
             await app._attach_files(str(path)).wait()
@@ -285,8 +289,7 @@ async def test_welcome_upload_stays_in_draft_until_message_is_sent(tmp_path, sou
             assert session_id is None
             assert composer.input_content.attachments[0].kind == "reference"
         await pilot.press("enter")
-        if workers := [w for w in app.workers if w.group == "run"]:
-            await asyncio.wait_for(app.workers.wait_for_complete(workers), timeout=10)
+        await wait_for_workers(app, [w for w in app.workers if w.group == "run"], timeout=10)
         await pilot.pause()
         assert not app.query_one(WelcomePanel).has_class("welcome-page")
         assert not app.query_one(ConversationView).showing_welcome
@@ -310,9 +313,7 @@ async def test_picker_retains_multiselection_across_directories_and_confirms_dir
         screen = app.screen
         composer = app.query_one(Composer)
         await pilot.press("@", *"file", "enter")
-        await app.workers.wait_for_complete(
-            [w for w in app.workers if w.group == "attachment-directory"]
-        )
+        await wait_for_workers(app, [w for w in app.workers if w.group == "attachment-directory"])
         await pilot.pause()
         popup = app.query_one(CommandPopup)
         assert app.screen is screen and app.focused is composer
@@ -345,9 +346,7 @@ async def test_picker_retains_multiselection_across_directories_and_confirms_dir
         await pilot.press("space")
         assert picker.selected == [one]
         await pilot.press("enter")
-        await app.workers.wait_for_complete(
-            [w for w in app.workers if w.group == "attachment-directory"]
-        )
+        await wait_for_workers(app, [w for w in app.workers if w.group == "attachment-directory"])
         assert picker.directory == child
         composer.set_attachment_query("two.txt")
         await pilot.pause()
@@ -356,15 +355,14 @@ async def test_picker_retains_multiselection_across_directories_and_confirms_dir
         composer.set_attachment_query("")
         await pilot.pause()
         await pilot.press("up", "enter")
-        await app.workers.wait_for_complete(
-            [w for w in app.workers if w.group == "attachment-directory"]
-        )
+        await wait_for_workers(app, [w for w in app.workers if w.group == "attachment-directory"])
         assert picker.directory == tmp_path and picker.selected == [one, two]
         composer.set_attachment_query("one.txt")
         await pilot.pause()
         await pilot.press("enter")
-        await app.workers.wait_for_complete(
-            [w for w in app.workers if w.group in {"attachment-import", "attachment-reference"}]
+        await wait_for_workers(
+            app,
+            [w for w in app.workers if w.group in {"attachment-import", "attachment-reference"}],
         )
         await pilot.pause()
         assert [item.name for item in composer.input_content.attachments] == [one.name, two.name]
@@ -460,8 +458,9 @@ async def test_composer_at_and_plain_paste_do_not_confuse_attachment_identity(
             composer.load_input(content)
             composer.move_cursor((0, position))
             await pilot.press("@", *"file", "enter")
-            if workers := [w for w in app.workers if w.group == "attachment-directory"]:
-                await app.workers.wait_for_complete(workers)
+            await wait_for_workers(
+                app, [w for w in app.workers if w.group == "attachment-directory"]
+            )
             await pilot.press(*"missing text")
             await pilot.pause()
             assert app.query_one(CommandPopup).display
@@ -511,8 +510,7 @@ async def test_accepted_input_is_not_restored_when_rendering_fails(tmp_path, mon
         monkeypatch.setattr(app, "_apply_runtime_event_batch", fail)
         await pilot.press("enter")
         await pilot.pause()
-        if workers := [w for w in app.workers if w.group == "run"]:
-            await asyncio.wait_for(app.workers.wait_for_complete(workers), timeout=10)
+        await wait_for_workers(app, [w for w in app.workers if w.group == "run"], timeout=10)
         assert app.query_one(Composer).input_content.is_empty
         assert (
             application.runtime.store.load_session(session.session_id).messages[0].input_attachments
@@ -548,8 +546,8 @@ async def test_submit_preflight_restores_original_session_after_navigation(tmp_p
             app.query_one(Composer).load_text("second draft")
         finally:
             release.set()
-        await app.workers.wait_for_complete(
-            [worker for worker in app.workers if worker.group == "composer-input"]
+        await wait_for_workers(
+            app, [worker for worker in app.workers if worker.group == "composer-input"]
         )
         assert app.query_one(Composer).input_content == InputContent(text="second draft")
         assert app._input_drafts.content_for(first.session_id) == content
@@ -753,8 +751,7 @@ async def test_terminal_file_paste_uploads_and_submits_on_both_pages(tmp_path, e
         for event in parser.feed(f"\x1b[200~{path}\x1b[201~"):
             app.post_message(event)
         await pilot.pause()
-        if workers := [w for w in app.workers if w.group == "attachment-import"]:
-            await app.workers.wait_for_complete(workers)
+        await wait_for_workers(app, [w for w in app.workers if w.group == "attachment-import"])
         content = composer.input_content
         assert content.text == "before after"
         assert len(content.attachments) == 1
@@ -769,8 +766,7 @@ async def test_terminal_file_paste_uploads_and_submits_on_both_pages(tmp_path, e
         uploaded = runtime.resources.directory_for(identity) / attachment.name
         path.unlink()
         await pilot.press("enter")
-        if workers := [w for w in app.workers if w.group == "run"]:
-            await asyncio.wait_for(app.workers.wait_for_complete(workers), timeout=10)
+        await wait_for_workers(app, [w for w in app.workers if w.group == "run"], timeout=10)
         await pilot.pause()
         assert app._controller.session_id == identity
         snapshot = runtime.store.load_session(identity)
@@ -803,8 +799,7 @@ async def test_long_text_paste_uploads_and_restores_on_both_pages(tmp_path, exis
             composer._clipboard_reader = lambda: text
             await composer._paste_system_clipboard().wait()
         await pilot.pause()
-        if workers := [w for w in app.workers if w.group == "attachment-import"]:
-            await app.workers.wait_for_complete(workers)
+        await wait_for_workers(app, [w for w in app.workers if w.group == "attachment-import"])
         content = composer.input_content
         assert content.text == "before after"
         assert len(content.attachments) == 1
@@ -852,8 +847,7 @@ async def test_each_long_paste_uses_an_independent_named_attachment(tmp_path):
         for _ in range(2):
             app.post_message(events.Paste(text))
             await pilot.pause()
-            if workers := [w for w in app.workers if w.group == "attachment-import"]:
-                await app.workers.wait_for_complete(workers)
+            await wait_for_workers(app, [w for w in app.workers if w.group == "attachment-import"])
         items = app.query_one(Composer).input_content.attachments
         assert len(items) == 2
         assert items[0].name != items[1].name
@@ -876,8 +870,7 @@ async def test_long_paste_import_failure_preserves_draft_and_releases_source(tmp
         composer.load_text("keep this")
         app.post_message(events.Paste("x" * 4001))
         await pilot.pause()
-        if workers := [w for w in app.workers if w.group == "attachment-import"]:
-            await app.workers.wait_for_complete(workers)
+        await wait_for_workers(app, [w for w in app.workers if w.group == "attachment-import"])
         assert composer.input_content == InputContent(text="keep this")
         assert not composer.import_pending
         assert application.runtime.store.list_sessions() == []
@@ -981,8 +974,7 @@ async def test_inline_picker_cancel_preserves_draft_cursor_and_narrow_layout(tmp
         composer.move_cursor((0, 0))
         original, selection = composer.input_content, composer.selection
         await pilot.press("@", *"file", "enter")
-        if workers := [w for w in app.workers if w.group == "attachment-directory"]:
-            await app.workers.wait_for_complete(workers)
+        await wait_for_workers(app, [w for w in app.workers if w.group == "attachment-directory"])
         await pilot.pause()
         popup = app.query_one(CommandPopup)
         assert app.focused is composer and popup.display

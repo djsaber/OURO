@@ -247,7 +247,7 @@ async def test_task_menu_saves_multiline_instructions_and_pauses_schedule(tmp_pa
         await choose(pilot, app, "Summarize")
         await choose(pilot, app, "Pause")
         assert not (await application.tasks.get(task.task_id)).enabled
-        await app._sync_task_status()
+        await wait_for_menu_action(pilot, app.screen)
         assert app._system_status.task_counts.paused == 1
         await pilot.press("escape", "escape", "escape")
         rendered = str(app.query_one("#welcome-task-counts", Static).content)
@@ -269,6 +269,8 @@ async def test_task_delete_and_status_actions_stay_on_shared_menu(tmp_path):
                 ),
             )
         )
+        await pilot.pause()
+        assert app._system_status.task_counts.waiting == 0
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         await choose(pilot, app, "Update status")
@@ -306,6 +308,36 @@ async def test_task_delete_and_status_actions_stay_on_shared_menu(tmp_path):
         assert not await application.tasks.list()
         assert app._system_status.task_counts.waiting == 0
         assert app.screen._choices[0].label == "No tasks yet"
+
+
+async def test_task_queries_refresh_on_page_entry_and_explicit_refresh(tmp_path):
+    application = _application(tmp_path)
+    app = OuroTuiApp(application=application)
+    async with run_ready_app(app, size=(100, 34)) as pilot:
+        task = await application.tasks.create(
+            TaskConfiguration(
+                schedule=TaskSchedule(
+                    frequency="daily", starts_at=datetime.now(UTC) + timedelta(days=1)
+                ),
+                target=AgentTaskTarget(
+                    prompt="Review task",
+                    workspace=str(tmp_path),
+                    model=(await app._controller.models())[0].key,
+                ),
+            )
+        )
+        await pilot.press("ctrl+t")
+        await _wait_for_screen(app, ChoiceScreen, title="Tasks")
+        assert app._system_status.task_counts.waiting == 1
+        menu = app.screen
+        before = menu._choices
+        await application.tasks.set_enabled(task.task_id, False, expected_revision=task.revision)
+        await pilot.pause()
+        assert menu._choices == before
+        assert app._system_status.task_counts.paused == 0
+        await menu.refresh_choices()
+        assert app._system_status.task_counts.paused == 1
+        assert next(row for row in menu._choices if row.value == task.task_id).trailing == "Paused"
 
 
 async def test_task_list_keeps_inactive_tasks_selectable(tmp_path, monkeypatch):

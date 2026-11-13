@@ -12,7 +12,7 @@ from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.confirmation import ConfirmationScreen
 from ouro.tui.menus.models import Choice
 from tests.tui.app.support import _application
-from tests.tui.helpers import run_ready_app
+from tests.tui.helpers import run_ready_app, wait_for_workers
 from tests.tui.helpers import wait_for_screen as _wait_for_screen
 
 
@@ -116,8 +116,8 @@ async def test_plugin_delete_animates_and_does_not_navigate_after_leaving(
                     await pilot.press(*"Example")
         finally:
             release.set()
-        await app.workers.wait_for_complete(
-            [worker for worker in app.workers if worker.group.startswith("choice-")]
+        await wait_for_workers(
+            app, [worker for worker in app.workers if worker.group.startswith("choice-")]
         )
         await pilot.pause()
         if leave == "close":

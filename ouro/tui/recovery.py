@@ -12,6 +12,7 @@ from rich.text import Text
 from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.message import Message
 from textual.messages import Prune
 from textual.widgets import OptionList, Static
 
@@ -25,6 +26,11 @@ from ouro_upgrade.engine import pending_operation, upgrade
 from ouro_upgrade.errors import UpgradeError
 from ouro_upgrade.progress import UpgradePhase, UpgradeProgress
 from ouro_upgrade.units import UpgradeFailure, UpgradeUnit
+
+
+class _ProgressReady(Message):
+    """The maintenance worker has published a newer progress value."""
+
 
 _PHASE_LABELS: dict[UpgradePhase, str] = {
     "configuration": "Checking and upgrading configuration",
@@ -126,6 +132,7 @@ class DataRecoveryScreen(ChoiceScreen):
         self._operation: asyncio.Task[dict[str, object]] | None = None
         self._progress_lock = Lock()
         self._latest_progress: UpgradeProgress | None = None
+        self._progress_pending = False
         self._displayed_progress: UpgradeProgress | None = None
         self._completion: asyncio.Future[bool] | None = None
         super().__init__(
@@ -144,7 +151,6 @@ class DataRecoveryScreen(ChoiceScreen):
     def on_mount(self) -> None:
         super().on_mount()
         self.query_one("#choice-list", OptionList).focus()
-        self._progress_timer = self.set_interval(0.1, self._refresh_progress, pause=True)
 
     async def recover(self, error: str, *, auto_upgrade: bool) -> bool:
         """Wait for recovery, retaining this surface until the caller is ready."""
@@ -277,7 +283,6 @@ class DataRecoveryScreen(ChoiceScreen):
             title="OURO DATA UPGRADE",
         )
         self.query_one("#choice-hint", Static).update("Please wait…")
-        self._progress_timer.resume()
         self._operation = asyncio.create_task(asyncio.to_thread(operation))
         try:
             report = await asyncio.shield(self._operation)
@@ -297,18 +302,23 @@ class DataRecoveryScreen(ChoiceScreen):
             else:
                 self._finish(True)
         finally:
-            self._progress_timer.pause()
             self._busy = False
 
     def _receive_progress(self, progress: UpgradeProgress) -> None:
         # Coalesce worker updates so large homes cannot flood the UI message queue.
         with self._progress_lock:
             self._latest_progress = progress
+            if self._progress_pending:
+                return
+            self._progress_pending = True
+        self.post_message(_ProgressReady())
 
+    @on(_ProgressReady)
     def _refresh_progress(self) -> None:
         with self._progress_lock:
             progress = self._latest_progress
-        if progress is None or progress == self._displayed_progress:
+            self._progress_pending = False
+        if not self._busy or progress is None or progress == self._displayed_progress:
             return
         self._displayed_progress = progress
         label = _PHASE_LABELS[progress.phase]

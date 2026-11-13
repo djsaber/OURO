@@ -10,7 +10,7 @@ from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.attachment_picker import AttachmentEntry, AttachmentPicker
 from ouro.tui.composer.input import Composer
 from ouro.tui.composer.popup import CommandPopup
-from tests.tui.helpers import command_popup_text, resize_terminal, run_ready_app
+from tests.tui.helpers import command_popup_text, resize_terminal, run_ready_app, wait_for_workers
 from tests.tui.test_history_commands import application_at
 
 
@@ -24,8 +24,8 @@ async def test_large_file_menu_drains_arrow_bursts_then_filters_and_selects(tmp_
         app._active_workspace = str(tmp_path)
         composer = app.query_one(Composer)
         await pilot.press("@", *"file", "enter")
-        await app.workers.wait_for_complete(
-            [worker for worker in app.workers if worker.group == "attachment-directory"]
+        await wait_for_workers(
+            app, [worker for worker in app.workers if worker.group == "attachment-directory"]
         )
         await pilot.pause()
         popup = app.query_one(CommandPopup)
@@ -65,8 +65,9 @@ async def test_reference_heading_and_count_stay_visible_while_scrolling_and_filt
         app._active_workspace = str(tmp_path)
         composer = app.query_one(Composer)
         await pilot.press("@", *kind, "enter")
-        if workers := [worker for worker in app.workers if worker.group == "attachment-directory"]:
-            await app.workers.wait_for_complete(workers)
+        await wait_for_workers(
+            app, [worker for worker in app.workers if worker.group == "attachment-directory"]
+        )
         composer.set_attachment_query("item")
         await pilot.pause()
         popup = app.query_one(CommandPopup)
@@ -99,8 +100,9 @@ async def test_reference_heading_and_count_stay_visible_while_scrolling_and_filt
         assert popup.selected_argument is None
         assert composer.draft_content.is_empty
         await pilot.press("enter")
-        if workers := [worker for worker in app.workers if worker.group == "attachment-reference"]:
-            await app.workers.wait_for_complete(workers)
+        await wait_for_workers(
+            app, [worker for worker in app.workers if worker.group == "attachment-reference"]
+        )
         content = composer.input_content
         assert len(content.elements) == 1 and content.text == ""
         assert composer.text == ("@item-00.txt " if kind == "file" else "@item-00 ")

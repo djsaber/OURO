@@ -87,6 +87,12 @@ configured/disabled
   接收端留给 SDK 对象析构器回收；
 - `MCPRuntimeResource` 是 MCPManager 到 RuntimeSupervisor 通用受管资源协议的适配器。
 
+LocalApplication 通过 `mcp_runtime_servers()` 提供当前运行快照，通过 `mcp_runtime_changes()` 转交
+`MCPManager.server_changes()` 的异步失效通知。配置、连接状态、工具列表或 server 移除改变运行记录时，
+Manager 在所属事件循环上唤醒消费者；不监听配置文件。每个订阅者收到首次通知，并独立合并连续变化，
+随后查询当前记录。该接口不保证交付每次状态转换，消费者结束时负责关闭迭代器。
+连接维护和工具发现由 MCP owner 管理，其运行不依赖消费者；通知不包含界面或动画规则。
+
 ## Host 装配
 
 `MCPRuntimeResource.from_config(root, registry)` 是配置到运行时的权威装配入口：读取 `mcp.servers`，把所有

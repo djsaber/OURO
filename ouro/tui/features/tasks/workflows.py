@@ -34,6 +34,7 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
 
         async def choices() -> tuple[Choice, ...]:
             records = await self._controller.tasks(offset=offset)
+            await self._sync_task_status()
             rows = [
                 Choice(
                     task.task_id,
@@ -129,6 +130,7 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
             if draft is None:
                 return
             await self._controller.save_task(cast(TaskConfiguration, draft), existing=task)
+            await self._sync_task_status()
             self.notify("Task saved")
         except Exception as exc:
             self.notify(str(exc), severity="error", markup=False)
@@ -153,6 +155,7 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
         async def choices() -> tuple[Choice, ...]:
             nonlocal task
             task = await self._controller.task(task_id)
+            await self._sync_task_status()
             return (
                 Choice(
                     "status",

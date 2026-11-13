@@ -71,6 +71,8 @@ class ToolActivityRow(RangeSelectionOnly, Static):
         self._tool = tool
         self._agent = agent
         self._frame = 0
+        self._prepared_text: tuple[Text, Text] | None = None
+        self._prepared_theme: TuiTheme | None = None
         self._timer: Timer | None = None
         self._render_tool()
 
@@ -87,6 +89,7 @@ class ToolActivityRow(RangeSelectionOnly, Static):
         if tool == self._tool:
             return
         self._tool = tool
+        self._prepared_text = None
         self.tool_call_id = tool.tool_call_id
         clickable = _tool_is_clickable(tool, run_id=self.run_id)
         if clickable != self._clickable:
@@ -99,6 +102,7 @@ class ToolActivityRow(RangeSelectionOnly, Static):
         if agent == self._agent:
             return
         self._agent = agent
+        self._prepared_text = None
         self._render_tool()
 
     @property
@@ -158,12 +162,16 @@ class ToolActivityRow(RangeSelectionOnly, Static):
             event.stop()
 
     def _render_tool(self, *, layout: bool = True) -> None:
+        theme = theme_for(self)
+        if self._prepared_text is None or self._prepared_theme != theme:
+            self._prepared_text = _prepare_tool_text(self._tool, theme=theme, agent=self._agent)
+            self._prepared_theme = theme
         self.update(
-            _tool_activity_text(
+            _render_tool_text(
                 self._tool,
+                self._prepared_text,
                 frame=self._frame,
-                theme=theme_for(self),
-                agent=self._agent,
+                theme=theme,
                 highlighted=self._hovered,
             ),
             layout=layout,
@@ -179,13 +187,25 @@ def _tool_activity_text(
     highlighted: bool = False,
 ) -> Text:
     """Render one tool state without coupling it to a mounted widget."""
+    return _render_tool_text(
+        tool,
+        _prepare_tool_text(tool, theme=theme, agent=agent),
+        frame=frame,
+        theme=theme,
+        highlighted=highlighted,
+    )
+
+
+def _prepare_tool_text(
+    tool: RuntimeToolCallActivity,
+    *,
+    theme: TuiTheme,
+    agent: AgentTreeNode | None,
+) -> tuple[Text, Text]:
+    """Prepare data-dependent text once per activity, agent or theme change."""
 
     if tool.status == "streaming":
         text = Text(no_wrap=True, overflow="ellipsis")
-        text.append(
-            f"{theme.spinner_frames[frame % len(theme.spinner_frames)]} ",
-            style=theme.accent,
-        )
         text.append(tool.tool_name, style=theme.text_lowlight)
         if tool.argument_stream_tail is not None:
             text.append(
@@ -196,7 +216,7 @@ def _tool_activity_text(
                 _tool_argument_stream_window(tool.argument_stream_tail),
                 style=theme.text_lowlight,
             )
-        return text
+        return text, Text()
 
     presentation = present_tool(tool, theme=theme)
     is_spawn_agent = tool.tool_name.casefold() == "spawnagent"
@@ -208,11 +228,6 @@ def _tool_activity_text(
         subagent is not None and subagent.status in _FAILED_SUBAGENT_STATUSES
     )
     text = Text(no_wrap=True, overflow="ellipsis")
-    if tool.status in _ACTIVE_TOOL_STATUSES:
-        text.append(
-            f"{theme.spinner_frames[frame % len(theme.spinner_frames)]} ",
-            style=theme.accent,
-        )
     text.append(
         label_text(title, theme=theme, style=theme.failure if failed else theme.text_lowlight)
     )
@@ -233,13 +248,8 @@ def _tool_activity_text(
             f"  {status_label}",
             style=(theme.failure if status_label == "failed" else theme.text_lowlight),
         )
-    elapsed = _tool_elapsed_seconds(tool)
-    elapsed_label = format_duration(elapsed) if elapsed is not None else None
-    if elapsed_label is not None and elapsed_label != "0ms":
-        text.append(
-            f"{theme.inline_separator}{elapsed_label}",
-            style=theme.text_lowlight,
-        )
+    header = text
+    text = Text(no_wrap=True, overflow="ellipsis")
     line_styles: dict[ToolLineState, str] = {
         "pending": theme.text_lowlight,
         "active": theme.accent,
@@ -261,9 +271,33 @@ def _tool_activity_text(
         _append_subagent_activity(text, subagent, theme=theme)
     elif is_spawn_agent:
         _append_subagent_preview(text, tool, theme=theme)
-    if highlighted:
-        text = theme.highlight_text(text)
-    return text
+    return header, text
+
+
+def _render_tool_text(
+    tool: RuntimeToolCallActivity,
+    prepared: tuple[Text, Text],
+    *,
+    frame: int,
+    theme: TuiTheme,
+    highlighted: bool,
+) -> Text:
+    text = Text(no_wrap=True, overflow="ellipsis")
+    if tool.status in _ACTIVE_TOOL_STATUSES:
+        text.append(
+            f"{theme.spinner_frames[frame % len(theme.spinner_frames)]} ",
+            style=theme.accent,
+        )
+    text.append_text(prepared[0])
+    elapsed = _tool_elapsed_seconds(tool)
+    elapsed_label = format_duration(elapsed) if elapsed is not None else None
+    if elapsed_label is not None and elapsed_label != "0ms":
+        text.append(
+            f"{theme.inline_separator}{elapsed_label}",
+            style=theme.text_lowlight,
+        )
+    text.append_text(prepared[1])
+    return theme.highlight_text(text) if highlighted else text
 
 
 def _tool_argument_stream_window(value: str) -> str:

@@ -24,7 +24,7 @@ from ouro.tui.menus.sessions import _session_choices
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.theme import TUI_THEMES
 from tests.tui.app.support import _application
-from tests.tui.helpers import choose_menu, run_ready_app, wait_for_history_render
+from tests.tui.helpers import choose_menu, run_ready_app, wait_for_history_render, wait_for_workers
 from tests.tui.helpers import wait_for_screen as _wait_for_screen
 from tests.tui.helpers import wait_until as _wait_until
 
@@ -109,8 +109,8 @@ async def test_thought_display_command_applies_to_history_and_live_output_and_pe
         assert app.query_one(AssistantTurn).tail.text == "Live final answer"
 
         app._request_tui_theme("blossom")
-        await app.workers.wait_for_complete(
-            [worker for worker in app.workers if worker.name == "tui-theme-switch"]
+        await wait_for_workers(
+            app, [worker for worker in app.workers if worker.name == "tui-theme-switch"]
         )
         assert preferences.load() == TuiPreferences(
             theme="blossom",

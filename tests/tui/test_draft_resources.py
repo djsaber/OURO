@@ -12,7 +12,13 @@ from ouro.tui.composer.drafts import TuiInputDrafts, TuiInputDraftStore, TuiPend
 from ouro.tui.composer.input import Composer
 from ouro.tui.composer.recovery import recover_input_drafts
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
-from tests.tui.helpers import release_on_exit, run_ready_app, wait_for_worker_group, wait_until
+from tests.tui.helpers import (
+    release_on_exit,
+    run_ready_app,
+    wait_for_worker_group,
+    wait_for_workers,
+    wait_until,
+)
 from tests.tui.test_history_commands import application_at
 
 
@@ -64,7 +70,7 @@ async def test_both_pages_restore_upload_and_reference_then_submit(
         await pilot.press("enter")
         workers = [w for w in restarted.workers if w.group == "run"]
         if workers:
-            await asyncio.wait_for(restarted.workers.wait_for_complete(workers), 10)
+            await wait_for_workers(restarted, workers, timeout=10)
         assert restarted._controller.session_id == identity
         snapshot = restarted_application.runtime.store.load_session(identity)
         assert snapshot.runs[-1].status == "completed"
@@ -233,7 +239,7 @@ async def test_navigation_during_submission_save_retains_original_target(tmp_pat
             release.set()
             workers = [w for w in app.workers if w.group == "run"]
             if workers:
-                await asyncio.wait_for(app.workers.wait_for_complete(workers), 10)
+                await wait_for_workers(app, workers, timeout=10)
         assert app._input_drafts.welcome.text == "welcome submission"
         assert application.runtime.store.load_session(other.session_id).messages == []
         assert len(application.runtime.store.list_sessions()) == 1

@@ -357,6 +357,11 @@ class LocalApplication:
     def mcp_runtime_servers(self) -> tuple[MCPRuntimeServerView, ...]:
         return tuple(_mcp_runtime_server_view(record) for record in self.mcp.records)
 
+    def mcp_runtime_changes(self) -> AsyncGenerator[None]:
+        """Observe invalidations of the process-owned MCP runtime records."""
+
+        return self.mcp.manager.server_changes()
+
     async def start_mcp_server(self, server_id: str) -> MCPRuntimeServerView:
         return _mcp_runtime_server_view(await self.mcp.start_server(server_id))
 

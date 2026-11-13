@@ -12,7 +12,7 @@ from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.drafts import TuiInputDraftStore
 from ouro.tui.composer.input import Composer
 from ouro.tui.composer.popup import CommandPopup
-from tests.tui.helpers import run_ready_app, wait_for_worker_group
+from tests.tui.helpers import run_ready_app, wait_for_worker_group, wait_for_workers
 from tests.tui.test_history_commands import application_at
 
 
@@ -90,7 +90,7 @@ async def test_skill_menu_discovers_external_install_and_filters_without_rescann
         composer = app.query_one(Composer)
         await pilot.press("@", *"skill", "enter")
         workers = [worker for worker in app.workers if worker.group == "skill-options"]
-        await app.workers.wait_for_complete(workers)
+        await wait_for_workers(app, workers)
         await pilot.pause()
         assert [item.value for item in app._skill_picker.options] == ["reviewer"]
         assert len(reads) == 1
@@ -103,8 +103,7 @@ async def test_skill_menu_discovers_external_install_and_filters_without_rescann
             encoding="utf-8",
         )
         await pilot.press("enter")
-        if workers := [worker for worker in app.workers if worker.group == "run"]:
-            await app.workers.wait_for_complete(workers)
+        await wait_for_workers(app, [worker for worker in app.workers if worker.group == "run"])
         snapshot = application.runtime.store.load_session(app._controller.session_id)
         activation = next(item for item in snapshot.messages if item.skill_activations)
         assert activation.skill_activations[0].instructions == installed.read_text(encoding="utf-8")
@@ -141,7 +140,7 @@ async def test_skill_menu_loading_keeps_composer_responsive_and_discards_closed_
         finally:
             release.set()
             workers = [worker for worker in app.workers if worker.group == "skill-options"]
-            await app.workers.wait_for_complete(workers)
+            await wait_for_workers(app, workers)
         assert app._skill_picker is None
         assert composer.text == "draft"
         assert not app.query_one(CommandPopup).display
@@ -180,8 +179,9 @@ async def test_mixed_references_survive_restart_and_form_one_complete_attachment
         composer = restarted.query_one(Composer)
         assert composer.input_content == original and composer.text == display
         await pilot.press(submit_key)
-        if workers := [w for w in restarted.workers if w.group == "run"]:
-            await asyncio.wait_for(restarted.workers.wait_for_complete(workers), timeout=10)
+        await wait_for_workers(
+            restarted, [w for w in restarted.workers if w.group == "run"], timeout=10
+        )
         await pilot.pause()
         assert not errors
         snapshot = application.runtime.store.load_session(restarted._controller.session_id)
@@ -231,8 +231,7 @@ async def test_rejected_skill_submission_restores_all_elements(tmp_path):
         )
         original = composer.input_content
         await pilot.press("enter")
-        if workers := [w for w in app.workers if w.group == "run"]:
-            await asyncio.wait_for(app.workers.wait_for_complete(workers), timeout=10)
+        await wait_for_workers(app, [w for w in app.workers if w.group == "run"], timeout=10)
         await pilot.pause()
         assert composer.input_content == original
         assert app._controller.session_id is None

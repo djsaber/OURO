@@ -56,6 +56,11 @@ Host 以 `(parent_session_id, parent_run_id, parent_batch_id, parent_tool_call_i
 `RuntimeToolCallActivity.batch_id` 在正式调用时来自原生批次；尚未形成 Call 的参数流投影没有批次身份。
 历史条目更新、可变条目排除和委派关联使用相同的完整身份。
 
+工具参数流片段不构成正式 Call，也没有执行结果。在正式调用接续前，片段保持 `streaming` 身份；
+取消请求不赋予片段工具执行状态，Run 到达终态时片段退出当前活动集合。事件处理与事实快照遵循同一语义。
+Application 只提供活动投影，不决定 Host 是否保留展示记录、如何排版或何时释放组件。
+Host 的展示副本不写回 Run、Call 或持久消息。
+
 工具活动从已加载的 Call Start 投影开始时间；存在 Outcome 时使用其执行起止时间。
 `tool_call_completed` 通知携带同一执行计时，事件处理和快照投影均以此为准，结果消息保留相同值。
 计时不依赖 Host 是否观察到开始事件，也不以通知创建或送达时间代替工具结束时间。

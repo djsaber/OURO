@@ -14,7 +14,14 @@ from ouro.tui.menus.models import Choice
 from ouro.tui.menus.multiple import MultiChoiceScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME
 from tests.tui.app.support import _application
-from tests.tui.helpers import resize_terminal, run_ready_app, wait_until
+from tests.tui.helpers import (
+    resize_terminal,
+    run_ready_app,
+    wait_for_menu_action,
+    wait_for_worker_group,
+    wait_for_workers,
+    wait_until,
+)
 from tests.tui.helpers import wait_for_screen as _wait_for_screen
 
 
@@ -71,7 +78,7 @@ async def test_waiting_choice_animates_without_blocking_filter_navigation_or_clo
                 assert app.screen is not screen
         finally:
             release.set()
-        await app.workers.wait_for_complete()
+        await wait_for_menu_action(pilot, screen)
         await pilot.pause()
         if not close:
             assert screen.query_one(Input).value == ("Other" if filter_active else "")
@@ -123,7 +130,9 @@ async def test_page_refresh_wait_keeps_filter_and_close_responsive(operation):
             assert app.screen is not screen
         finally:
             release.set()
-        await app.workers.wait_for_complete()
+        await wait_for_worker_group(
+            app, pilot, group="choice-return" if operation == "back" else "choice-domain"
+        )
         assert app.screen is not screen
 
 
@@ -157,7 +166,7 @@ async def test_pending_multichoice_confirmation_respects_back_and_close(close):
                 assert app.screen is not screen
         finally:
             release.set()
-        await app.workers.wait_for_complete()
+        await wait_for_menu_action(pilot, screen)
         await pilot.pause()
         if not close:
             assert screen.query_one(Input).value == "Remaining"
@@ -241,12 +250,13 @@ async def test_plugin_catalog_wait_has_feedback_and_respects_menu_close(
                 assert app.screen is not menu
         finally:
             release.set()
-        await app.workers.wait_for_complete(
+        await wait_for_workers(
+            app,
             [
                 worker
                 for worker in app.workers
                 if worker.group == "navigation" or worker.group.startswith("choice-")
-            ]
+            ],
         )
         await pilot.pause()
         if close:

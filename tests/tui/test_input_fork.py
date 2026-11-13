@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from html import escape
 
 import pytest
@@ -15,7 +14,7 @@ from ouro.core.input_content import (
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
 from tests.application.test_skill_activations import CapturingProvider
-from tests.tui.helpers import run_ready_app
+from tests.tui.helpers import run_ready_app, wait_for_workers
 from tests.tui.test_history_commands import application_at
 
 
@@ -99,8 +98,7 @@ async def test_fork_and_undo_restore_complete_input_without_reupload(
 
         for attempt in range(3):
             await pilot.press("enter")
-            if workers := [w for w in app.workers if w.group == "run"]:
-                await asyncio.wait_for(app.workers.wait_for_complete(workers), timeout=10)
+            await wait_for_workers(app, [w for w in app.workers if w.group == "run"], timeout=10)
             await pilot.pause()
             sent = "\n".join(m.text_content for m in provider.calls[-1])
             for path in upload_paths:

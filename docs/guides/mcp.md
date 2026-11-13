@@ -41,7 +41,8 @@ stdio 与 HTTP/SSE 之间切换时，CLI 会原子移除旧 transport 的不兼�
 stdio 中 `credential_refs` 的 key 是注入子进程的环境变量名；HTTP/SSE 中则是请求 header 名。环境变量的
 值应包含完整 header 值，例如 `MCP_AUTHORIZATION="Bearer ..."`。MCP 状态由单一连接 owner 实时维护为
 `starting`、`connected`、`reconnecting`、`failed` 或 `stopped`；运行中 Host 的 MCP 状态查询读取同一实时记录。
-TUI 会在自身生命周期内同步该内存快照，实时更新连接中、已连接、失败和当前可用工具数量。
+TUI 首页摘要随运行状态自动更新连接信息和当前可用工具数量；连接和重连期间显示加载动画，
+连接成功或失败后停止动画，无需重新进入页面。
 单个 MCP 连接失败不会进入同步启动失败，也不会阻止没有依赖该 server 的普通 Run。`inline:` 引用会以明文保存在
 本地配置中，公开 CLI 输出统一显示为
 `inline:***`，因此生产配置应优先使用 `env:`。

@@ -76,6 +76,27 @@ async def test_progress_animates_and_cannot_be_cancelled_mid_write(tmp_path, mon
         release.set()
 
 
+async def test_progress_coalesces_and_does_not_replace_operation_result(tmp_path, monkeypatch):
+    app = RecoveryHost(home=tmp_path, error="old schema", auto_upgrade=False)
+    async with app.run_test(size=(100, 32)):
+        screen = app.recovery
+        messages = []
+        with monkeypatch.context() as patch:
+            patch.setattr(screen, "post_message", messages.append)
+            screen._busy = True
+            for completed in range(1000):
+                screen._receive_progress(UpgradeProgress("publish", completed, 1000))
+            assert len(messages) == 1
+            screen._refresh_progress()
+            assert screen._choices[0].label == "Writing upgraded files (999/1000)"
+            screen._busy = False
+            screen._show_failure("Operation failed")
+            result = screen._choices
+            screen._receive_progress(UpgradeProgress("publish", 1000, 1000))
+            screen._refresh_progress()
+            assert screen._choices == result
+
+
 async def test_unsupported_upgrade_preserves_data_and_offers_safe_default(
     historical_home,
 ) -> None:

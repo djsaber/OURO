@@ -23,6 +23,7 @@ from ouro.tui.menus.confirmation import ConfirmationScreen
 from ouro.tui.menus.editable import EditableChoiceScreen
 from ouro.tui.theme import DEFAULT_TUI_THEME
 from tests.plugins.test_plugin_system import _write_native_plugin
+from tests.tui.helpers import wait_for_menu_action, wait_for_screen, wait_for_workers
 from tests.tui.test_choice_menu_performance import ChoiceApp
 
 
@@ -116,10 +117,10 @@ async def test_common_controls_complex_json_and_unknown_fields_round_trip(tmp_pa
         mapping = next(choice for choice in screen._choices if choice.value == field_ids["mapping"])
         assert mapping.edit_lines == 1 and '{"sample":4}' in mapping.edit_placeholder
         worker = app.run_worker(screen._select_choice(field_ids["choice"]))
-        await pilot.pause()
+        await wait_for_screen(app, ChoiceScreen, title=screen._fields[field_ids["choice"]].title)
         assert isinstance(app.screen, ChoiceScreen) and app.screen is not screen
         await app.screen._select_choice("2")
-        await worker.wait()
+        await wait_for_workers(app, [worker])
         assert screen._draft.values["choice"] == {"key": 1}
         await screen._save_field(
             "values-json", '{"count":3,"extension":{"keep":[1,false]},"choice":{"key":1}}'
@@ -201,7 +202,7 @@ async def test_plugin_credential_validation_preserves_pending_edits(tmp_path, ac
                 assert "saved" not in options.get_option("credential:key").prompt.plain
         finally:
             release.set()
-        await app.workers.wait_for_complete()
+        await wait_for_menu_action(pilot, screen)
         await pilot.pause()
         if action == "close":
             assert app.screen is not screen
@@ -328,7 +329,7 @@ async def test_plugin_json_editing_stays_single_line_and_preserves_full_values(t
 async def test_validation_and_conflict_keep_draft_until_explicit_reload(tmp_path):
     screen, service = _screen(tmp_path)
     app = ChoiceApp()
-    async with app.run_test(size=(80, 28)) as pilot:
+    async with app.run_test(size=(80, 28)):
         await app.push_screen(screen)
         count_id = next(key for key, field in screen._fields.items() if field.key == "count")
         await screen._save_field(count_id, "0")
@@ -349,14 +350,14 @@ async def test_validation_and_conflict_keep_draft_until_explicit_reload(tmp_path
         assert app.screen is screen and screen._draft.values["count"] == 4
         assert screen._issues[-1].code == "configuration_conflict"
         worker = app.run_worker(screen._select_choice("reload"))
-        await pilot.pause()
+        await wait_for_screen(app, ConfirmationScreen, title="CONFIRM RELOAD CONFIGURATION")
         await app.screen._select_choice("__confirmation_cancel__")
-        await worker.wait()
+        await wait_for_workers(app, [worker])
         assert screen._draft.values["count"] == 4
         worker = app.run_worker(screen._select_choice("reload"))
-        await pilot.pause()
+        await wait_for_screen(app, ConfirmationScreen, title="CONFIRM RELOAD CONFIGURATION")
         await app.screen._select_choice(ConfirmationScreen.CONFIRM_VALUE)
-        await worker.wait()
+        await wait_for_workers(app, [worker])
         assert screen._draft.values["count"] == 6
         assert (
             screen._draft.expected_configuration_revision_id

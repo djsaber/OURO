@@ -42,6 +42,10 @@ class RuntimeToolCallActivity(ApplicationDTO):
     ``status`` owns the lifecycle; ``argument_stream_tail`` is bounded preview
     content retained only while the call is ``streaming``. Canonical calls use
     ``arguments`` instead.
+
+    Stream fragments have no execution outcome. Until a canonical call replaces
+    them, they remain ``streaming`` even during cancellation and leave the current
+    activity when the Run reaches a terminal state.
     """
 
     run_id: str | None = None

@@ -138,6 +138,8 @@ def _terminal_activity_fields(
     tools: tuple[RuntimeToolCallActivity, ...],
     ended_at: datetime | None,
 ) -> dict[str, Any]:
+    # Stream fragments are previews, not accepted calls with an execution outcome.
+    tools = tuple(tool for tool in tools if tool.status != "streaming")
     if status in {"failed", "aborted", "recoverable"}:
         tools = _mark_unsettled_tool_calls(
             tools, "unknown_outcome" if status == "recoverable" else status, ended_at=ended_at
@@ -719,7 +721,7 @@ def _mark_unsettled_tool_calls(
 ) -> tuple[RuntimeToolCallActivity, ...]:
     return tuple(
         item
-        if item.status in _TERMINAL_TOOL_STATUSES
+        if item.status in _TERMINAL_TOOL_STATUSES or item.status == "streaming"
         else item.model_copy(
             update={
                 "status": status,

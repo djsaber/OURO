@@ -27,7 +27,7 @@ from ouro.tui.composer.input import Composer
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from tests.run_facts import run_events
-from tests.tui.helpers import run_ready_app
+from tests.tui.helpers import run_ready_app, wait_for_workers
 
 
 def application_at(tmp_path, provider=None, *, backend="files", skills=None):
@@ -107,7 +107,7 @@ async def test_undo_skill_and_attachment_survive_navigation_restart_and_submissi
         async with asyncio.timeout(10):
             workers = tuple(w for w in restarted.workers if w.group == "run")
             if workers:
-                await restarted.workers.wait_for_complete(workers)
+                await wait_for_workers(restarted, workers)
         messages = restarted_application.runtime.store.load_messages_tail(session.session_id)
         user = next(
             message for message in messages if message.role == "user" and not message.scaffold
@@ -128,7 +128,7 @@ async def command(app, pilot, value, *, attachments=(), skills=()):
     async with asyncio.timeout(10):
         startup = tuple(worker for worker in app.workers if worker.name == "tui-start")
         if startup:
-            await app.workers.wait_for_complete(startup)
+            await wait_for_workers(app, startup)
     composer = app.query_one(Composer)
     # Runtime admission may precede the new session surface becoming editable.
     async with asyncio.timeout(10):
@@ -154,7 +154,7 @@ async def command(app, pilot, value, *, attachments=(), skills=()):
     async with asyncio.timeout(10):
         workers = tuple(worker for worker in app.workers if worker.group == "session-history")
         if workers:
-            await app.workers.wait_for_complete(workers)
+            await wait_for_workers(app, workers)
     await pilot.pause()
 
 
@@ -191,7 +191,7 @@ async def test_failed_undo_and_submit_keep_text_and_resources(tmp_path, monkeypa
         async with asyncio.timeout(10):
             workers = tuple(w for w in app.workers if w.group == "run")
             if workers:
-                await app.workers.wait_for_complete(workers)
+                await wait_for_workers(app, workers)
         assert app.query_one(Composer).input_content.text == "edited draft"
         assert app._input_drafts.resources_for(first.session.session_id) == ("res_selected",)
     stored = TuiInputDraftStore(tmp_path).load()
@@ -219,7 +219,7 @@ async def test_undo_returns_latest_user_message_to_composer_and_edit_stays_in_se
         async with asyncio.timeout(10):
             workers = tuple(w for w in app.workers if w.group == "run")
             if workers:
-                await app.workers.wait_for_complete(workers)
+                await wait_for_workers(app, workers)
         messages = application.runtime.store.load_session(first.session.session_id).messages
         assert [message.text_content for message in messages if message.role == "user"] == [
             "first question",
@@ -337,7 +337,7 @@ async def test_abort_undo_edit_resubmit_and_restart_in_tui(tmp_path, backend, ed
         async with asyncio.timeout(10):
             workers = tuple(w for w in app.workers if w.group == "run")
             if workers:
-                await app.workers.wait_for_complete(workers)
+                await wait_for_workers(app, workers)
         await pilot.pause()
         assert app._controller.session_id == session_id
         assert app._projection.activity.status == "completed"

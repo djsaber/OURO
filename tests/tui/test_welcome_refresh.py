@@ -13,7 +13,7 @@ from ouro.tui.composer.input import Composer
 from ouro.tui.composer.surface import WelcomePanel
 from ouro.tui.conversation.view import ConversationView
 from tests.tui.app.support import _application
-from tests.tui.helpers import run_ready_app
+from tests.tui.helpers import run_ready_app, wait_for_workers
 
 
 def application_with_session(tmp_path):
@@ -27,7 +27,7 @@ def application_with_session(tmp_path):
 
 async def wait_for_status_refresh(app):
     workers = [worker for worker in app.workers if worker.group == "welcome-status"]
-    await asyncio.wait_for(app.workers.wait_for_complete(workers), 3)
+    await wait_for_workers(app, workers, timeout=3)
 
 
 async def test_welcome_is_visible_and_editable_before_status_read_finishes(tmp_path, monkeypatch):

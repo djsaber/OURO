@@ -12,7 +12,13 @@ from ouro.tui.composer.input import Composer
 from ouro.tui.composer.popup import CommandPopup
 from ouro.tui.composer.surface import WelcomePanel
 from ouro.tui.welcome import welcome_catalog
-from tests.tui.helpers import resize_terminal, run_ready_app, two_route_application, wait_until
+from tests.tui.helpers import (
+    resize_terminal,
+    run_ready_app,
+    two_route_application,
+    wait_for_workers,
+    wait_until,
+)
 
 WELCOME_STYLES = welcome_catalog(PACKAGES)
 
@@ -29,8 +35,9 @@ async def test_welcome_menu_stays_attached_above_input_across_terminal_heights(t
         popup = app.query_one(CommandPopup)
         input_region = composer.region
         await pilot.press(*keys)
-        if workers := [worker for worker in app.workers if worker.group == "attachment-directory"]:
-            await app.workers.wait_for_complete(workers)
+        await wait_for_workers(
+            app, [worker for worker in app.workers if worker.group == "attachment-directory"]
+        )
         await pilot.pause()
         assert composer.region == input_region
 

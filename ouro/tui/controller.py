@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import AsyncGenerator, Callable, Coroutine, Mapping
 from dataclasses import replace
 from functools import partial, wraps
 from pathlib import Path
@@ -1478,6 +1478,10 @@ class TuiController:
     async def mcp_configurations(self) -> tuple[MCPServerConfigView, ...]:
         configuration = self._require_configuration()
         return await asyncio.to_thread(lambda: tuple(configuration.mcp_catalog().servers))
+
+    def mcp_changes(self) -> AsyncGenerator[None]:
+        assert self._application is not None
+        return self._application.mcp_runtime_changes()
 
     async def mcp_configuration(self, server_id: str) -> MCPServerConfigView:
         configuration = self._require_configuration()

@@ -36,7 +36,12 @@ from tests.tui.app.support import (
     _wait_for_active_session,
 )
 from tests.tui.app.test_navigation import _scrollable_messages
-from tests.tui.helpers import resize_terminal, run_ready_app, wait_for_history_render
+from tests.tui.helpers import (
+    resize_terminal,
+    run_ready_app,
+    wait_for_history_render,
+    wait_for_workers,
+)
 from tests.tui.helpers import wait_for_worker_group as _wait_for_worker_group
 from tests.tui.helpers import wait_until as _wait_until
 
@@ -540,8 +545,8 @@ async def test_model_catalog_wait_keeps_composer_responsive(
                 assert not popup.display
         finally:
             release.set()
-        await app.workers.wait_for_complete(
-            [worker for worker in app.workers if worker.group == "model-menu"]
+        await wait_for_workers(
+            app, [worker for worker in app.workers if worker.group == "model-menu"]
         )
         await pilot.pause()
         assert not popup._loading and popup._spinner_timer is None
