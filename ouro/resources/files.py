@@ -9,9 +9,86 @@ from collections.abc import Iterable
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from ouro.core.errors import ResourceIntegrityError, UnsafeResourcePathError
-from ouro.core.resources import ResourceRecord
+from ouro.core.errors import (
+    PersistenceError,
+    ResourceIntegrityError,
+    UnsafeResourcePathError,
+    UnsupportedMediaTypeError,
+)
+from ouro.core.resources import ResourceRecord, ResourceSource
 from ouro.local_io import replace_path_with_retry
+from ouro.local_locks import FileMutationLock
+
+
+def create_resource(
+    root: Path,
+    session_id: str,
+    chunks: Iterable[bytes],
+    *,
+    source: ResourceSource,
+    media_type: str,
+    max_bytes: int | None = None,
+    internal: bool = False,
+) -> ResourceRecord:
+    """Publish a new named resource from file chunks or already observed bytes."""
+    if re.fullmatch(r"[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+", media_type) is None:
+        raise UnsupportedMediaTypeError("resource media_type must use type/subtype syntax")
+    directory = session_resource_directory(root, session_id)
+    lock = FileMutationLock(root / "locks" / "resources" / f"{session_id}.lock")
+    if not lock.acquire(timeout=5):
+        raise PersistenceError("Session resource directory remained busy")
+    temporary = None
+    try:
+        staging = directory.parent / ".staging"
+        for path in (directory, staging):
+            if any(p.is_symlink() or p.is_junction() for p in (path, *path.absolute().parents)):
+                raise UnsafeResourcePathError("resource directory contains a symbolic link")
+        directory.mkdir(parents=True, exist_ok=True)
+        staging.mkdir(exist_ok=True)
+        filename = _available_name(directory, source.name)
+        digest, size = hashlib.sha256(), 0
+        with NamedTemporaryFile(dir=staging, delete=False) as target:
+            temporary = Path(target.name)
+            for chunk in chunks:
+                size += len(chunk)
+                if max_bytes is not None and size > max_bytes:
+                    raise ValueError(f"resource exceeds maximum size of {max_bytes} bytes")
+                digest.update(chunk)
+                target.write(chunk)
+            target.flush()
+            os.fsync(target.fileno())
+        record = ResourceRecord(
+            filename=filename,
+            digest=f"sha256:{digest.hexdigest()}",
+            size=size,
+            media_type=media_type,
+            source=source,
+            internal=internal,
+        )
+        replace_path_with_retry(temporary, checked_file(directory, record))
+        return record
+    finally:
+        try:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        finally:
+            lock.release()
+
+
+def _available_name(directory: Path, name: str) -> str:
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).rstrip(" .") or "file"
+    if re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?", safe):
+        safe = "_" + safe
+    suffix = Path(safe).suffix
+    stem = safe[: -len(suffix)] if suffix else safe
+    with os.scandir(directory) as entries:
+        existing = {entry.name.casefold() for entry in entries}
+    candidate = safe
+    index = 2
+    while candidate.casefold() in existing:
+        candidate = f"{stem} ({index}){suffix}"
+        index += 1
+    return candidate
 
 
 def read_resource_content(directory: Path, record: ResourceRecord) -> bytes:

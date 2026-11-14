@@ -30,9 +30,11 @@ class ResourceStore(Protocol):
         max_bytes: int,
     ) -> ResourceRecord: ...
 
-    def import_contents(
-        self, session_id: str, items: Iterable[tuple[ResourceRecord, bytes]]
-    ) -> None: ...
+    def import_bytes(
+        self, session_id: str, content: bytes, *, source: ResourceSource, media_type: str
+    ) -> ResourceRecord:
+        """Save an internal observation through the ordinary resource creation boundary."""
+        ...
 
     def directory_for(self, session_id: str) -> Path: ...
 

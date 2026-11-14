@@ -42,7 +42,7 @@ from ouro.core.message_statistics import RunMessageCounts, RunResultReferences
 from ouro.core.messages import MessageFact, MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.provider import ProviderRetryNotice
-from ouro.core.resources import ResourceRecord, SessionResourceReference
+from ouro.core.resources import ResourceRecord, ResourceSource, SessionResourceReference
 from ouro.core.response_drafts import ResponseDraftChunk, ResponseDraftPage
 from ouro.core.session_commits import (
     SessionCommit,
@@ -62,6 +62,7 @@ from ouro.core.tool_facts import (
 )
 from ouro.local_locks import FileMutationLock, is_lock_held
 from ouro.resources.files import (
+    create_resource,
     read_resource_content,
     require_published_resource,
     session_resource_directory,
@@ -515,12 +516,19 @@ class SQLiteSessionStore:
         def read(identity: str) -> bytes:
             return self._read_media(outcome.session_id, identity)
 
-        def publish(record: SessionResourceReference, content: bytes) -> None:
-            write_resource_contents(
-                session_resource_directory(self.database.parent, outcome.session_id),
-                ((record, content),),
+        def publish(source: ResourceSource, media_type: str, content: bytes) -> ResourceRecord:
+            record = create_resource(
+                self.database.parent,
+                outcome.session_id,
+                (content,),
+                source=source,
+                media_type=media_type,
+                internal=True,
             )
-            self.attach_resource_reference(outcome.session_id, record)
+            self.attach_resource_reference(
+                outcome.session_id, SessionResourceReference(**record.model_dump())
+            )
+            return record
 
         value = materialize_outcome_media(outcome, read)
         assert value is not None

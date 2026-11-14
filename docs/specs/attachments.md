@@ -190,10 +190,10 @@ ContextBuilder 对每个原生媒体块使用 2048 的本地 token 规划估值�
 识别检查图片签名、RIFF/WAVE、ID3/MPEG Layer III 与 MP4 ftyp 容器品牌；音频专用 M4A/M4B 品牌不作为视频发送，
 未知格式或仅有匹配后缀的内容保留为引用。容器识别不保证内部流可解码，服务端解码失败按普通请求错误报告。
 识别得到的类型用于媒体块及文件说明，不由文件名覆盖。图片、音频、视频分别用标准 `ImageContent`、
-`AudioContent`、`VideoContent` 保存 URI 与媒体类型；Provider adapter 负责原生协议编码，具体协议范围见
+`AudioContent`、`VideoContent` 持久保存资源引用与媒体类型，查询或请求时物化 URI；Provider adapter 负责原生协议编码，具体协议范围见
 [输入模态契约](provider-configuration.md#输入模态契约)。
 
-图片骨架的相关字段如下；省略其他消息字段，`<图片字节的 Base64>` 是示意占位值：
+图片骨架的持久字段如下；省略其他消息字段，资源 ID 为示意值：
 
 ```json
 {
@@ -207,7 +207,8 @@ ContextBuilder 对每个原生媒体块使用 2048 的本地 token 规划估值�
     },
     {
       "type": "image",
-      "uri": "data:image/png;base64,<图片字节的 Base64>",
+      "uri": "",
+      "resource_id": "res_0123456789abcdef0123456789abcdef",
       "media_type": "image/png"
     },
     {
@@ -218,9 +219,10 @@ ContextBuilder 对每个原生媒体块使用 2048 的本地 token 规划估值�
 }
 ```
 
-文字块保存说明；媒体块保存当时实际输入的字节。音频块的 `type` 为 `audio`，视频块为 `video`，
-`uri` 分别采用 `data:audio/wav;base64,...`、`data:audio/mpeg;base64,...` 或 `data:video/mp4;base64,...`。
-不自动生成 OCR、转写或音视频摘要。Base64 是持久化与传输表示，不作为普通文本交给模型阅读。
+文字块保存说明；媒体块引用保存当时实际输入字节的会话资源，上传媒体复用已有副本。
+原路径媒体使用同一资源创建流程保存原始字节，保留原文件名及扩展名，同名冲突分配编号；内部资源不加入附件列表。
+音频块的 `type` 为 `audio`，视频块为 `video`。查询或请求需要媒体内容时按资源引用展开为对应的 Base64 data URI。
+不自动生成 OCR、转写或音视频摘要。Base64 用于媒体内容的物化与传输，不作为普通文本交给模型阅读。
 原路径媒体按同样方式保存已经输入的内容，源文件后来删除也不会改变这条历史消息。
 未提供原生媒体时没有媒体块，只保存元信息、路径及原因；上传原件仍由会话附件目录持有。
 

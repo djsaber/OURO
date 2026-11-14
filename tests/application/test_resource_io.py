@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
 from ouro.core.errors import ResourceIntegrityError
 from ouro.core.resources import ResourceRecord, ResourceSource
 from ouro.resources import LocalResourceStore
+from ouro.resources.files import write_resource_contents
 
 
 def _store(tmp_path, *contents):
@@ -24,7 +27,7 @@ def _store(tmp_path, *contents):
         )
         for index, content in enumerate(contents)
     ]
-    store.import_contents("ses_test", zip(records, contents, strict=True))
+    write_resource_contents(store.directory_for("ses_test"), zip(records, contents, strict=True))
     return store, records
 
 
@@ -68,7 +71,7 @@ def test_export_failure_preserves_destination_and_cleans_temp(tmp_path, damage):
 
 def test_delete_batch_preserves_unselected_files_and_other_sessions(tmp_path):
     store, records = _store(tmp_path, b"first", b"second", b"retained")
-    store.import_contents("ses_other", ((records[0], b"first"),))
+    write_resource_contents(store.directory_for("ses_other"), ((records[0], b"first"),))
     assert store.delete_resources("ses_test", (records[0], records[1], records[0])) == [
         r.resource_id for r in records[:2]
     ]
@@ -170,3 +173,107 @@ def test_resource_metadata_is_immutable_and_copies_preserve_validity(tmp_path):
     renamed = record.model_copy(update={"filename": "other.txt"})
     assert renamed.filename == "other.txt"
     assert store.load_content("ses_test", record) == b"first"
+
+
+def test_upload_and_observation_share_collision_safe_names_under_concurrent_creation(tmp_path):
+    store = LocalResourceStore(tmp_path / "home")
+    original = tmp_path / "截图.png"
+    original.write_bytes(b"original bytes")
+    source = ResourceSource(name=original.name)
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        uploaded = executor.submit(
+            store.import_file,
+            "ses_test",
+            original,
+            source=source,
+            media_type="image/png",
+            max_bytes=1024,
+        )
+        observations = [
+            executor.submit(
+                store.import_bytes,
+                "ses_test",
+                content,
+                source=source,
+                media_type="image/png",
+            )
+            for content in (b"observation one", b"observation two", b"observation three")
+        ]
+        records = [uploaded.result(), *(future.result() for future in observations)]
+
+    assert {record.filename for record in records} == {
+        "截图.png",
+        "截图 (2).png",
+        "截图 (3).png",
+        "截图 (4).png",
+    }
+    assert len({record.resource_id for record in records}) == 4
+    assert [store.load_content("ses_test", record) for record in records] == [
+        b"original bytes",
+        b"observation one",
+        b"observation two",
+        b"observation three",
+    ]
+    assert [record.internal for record in records] == [False, True, True, True]
+
+
+@pytest.mark.parametrize(
+    "name,media_type",
+    [
+        ("tool-media", "image/jpeg"),
+        ("tool-media", "audio/mpeg"),
+        ("original.custom", "image/unknown"),
+        ("e\u0301.txt", "text/plain"),
+        ("report.original-extension-longer-than-twenty-four", "image/jpeg"),
+        ("资料" * 30 + ".txt", "text/plain"),
+    ],
+)
+def test_observation_preserves_source_name_without_inferring_a_suffix(tmp_path, media_type, name):
+    store = LocalResourceStore(tmp_path / "home")
+    source = ResourceSource(kind="tool", name=name)
+    record = store.import_bytes("ses_test", b"observed", source=source, media_type=media_type)
+    assert record.filename == name
+    assert record.source == source
+    assert store.path_for("ses_test", record).read_bytes() == b"observed"
+
+
+@pytest.mark.parametrize("origin", ["upload", "observation"])
+@pytest.mark.parametrize("failure", ["fsync", "replace_path_with_retry"])
+def test_new_resource_publication_failure_cleans_staging_and_allows_retry(
+    tmp_path, monkeypatch, origin, failure
+):
+    import ouro.resources.files as files
+
+    store = LocalResourceStore(tmp_path / "home")
+    original = tmp_path / "image.png"
+    original.write_bytes(b"observed bytes")
+    source = ResourceSource(name=original.name)
+
+    def save():
+        if origin == "upload":
+            return store.import_file(
+                "ses_test", original, source=source, media_type="image/png", max_bytes=1024
+            )
+        return store.import_bytes(
+            "ses_test", original.read_bytes(), source=source, media_type="image/png"
+        )
+
+    directory = store.directory_for("ses_test")
+    staging = directory.parent / ".staging"
+
+    def fail(*args):
+        raise OSError("injected publication failure")
+
+    with monkeypatch.context() as patch:
+        if failure == "fsync":
+            patch.setattr(files, "os", Mock(wraps=files.os, fsync=fail))
+        else:
+            patch.setattr(files, failure, fail)
+        with pytest.raises(OSError, match="injected publication"):
+            save()
+    assert list(directory.iterdir()) == []
+    assert list(staging.iterdir()) == []
+    record = save()
+    assert record.filename == original.name
+    assert store.load_content("ses_test", record) == original.read_bytes()

@@ -81,6 +81,7 @@ def test_tool_media_is_one_owned_resource_for_both_outcome_commit_paths(
     assert blocks[0].uri == uri
     records = store.load_resource_references(session.session_id)
     assert len(records) == 1 and records[0].internal
+    assert records[0].filename == "tool-media"
     assert blocks[0].resource_id == records[0].resource_id
     root = store.root if isinstance(store, LocalSessionStore) else store.database.parent
     resources = LocalResourceStore(root)

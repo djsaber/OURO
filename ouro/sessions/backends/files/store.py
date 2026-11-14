@@ -43,7 +43,7 @@ from ouro.core.message_statistics import RunMessageCounts, RunResultReferences
 from ouro.core.messages import MessageFact, MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.provider import ProviderRetryNotice
-from ouro.core.resources import ResourceRecord, SessionResourceReference
+from ouro.core.resources import ResourceRecord, ResourceSource, SessionResourceReference
 from ouro.core.response_drafts import ResponseDraftChunk, ResponseDraftPage
 from ouro.core.session_commits import (
     SessionCommit,
@@ -72,6 +72,7 @@ from ouro.local_io import (
 )
 from ouro.local_locks import is_lock_held
 from ouro.resources.files import (
+    create_resource,
     read_resource_content,
     require_published_resource,
     write_resource_contents,
@@ -242,9 +243,17 @@ class LocalSessionStore:
             def read(identity: str) -> bytes:
                 return self._messages.media(connection, directory, identity)
 
-            def publish(record: SessionResourceReference, content: bytes) -> None:
-                write_resource_contents(directory / "resources" / "files", ((record, content),))
-                resources.append(record)
+            def publish(source: ResourceSource, media_type: str, content: bytes) -> ResourceRecord:
+                record = create_resource(
+                    self.root,
+                    outcome.session_id,
+                    (content,),
+                    source=source,
+                    media_type=media_type,
+                    internal=True,
+                )
+                resources.append(SessionResourceReference(**record.model_dump()))
+                return record
 
             value = materialize_outcome_media(outcome, read)
             assert value is not None

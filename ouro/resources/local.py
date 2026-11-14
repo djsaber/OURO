@@ -3,9 +3,7 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 import os
-import re
 import shutil
-import unicodedata
 from collections.abc import Iterable
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -15,16 +13,14 @@ from ouro.core.errors import (
     PersistenceError,
     ResourceIntegrityError,
     UnsafeResourcePathError,
-    UnsupportedMediaTypeError,
 )
 from ouro.core.resources import ResourceRecord, ResourceSource, SessionResourceReference
 from ouro.local_io import replace_path_with_retry
-from ouro.local_locks import FileMutationLock
 from ouro.resources.files import (
     checked_file,
+    create_resource,
     session_resource_directory,
     verify_resource_files,
-    write_resource_contents,
 )
 from ouro.resources.prepared import (
     load_prepared_resources,
@@ -81,61 +77,28 @@ class LocalResourceStore:
         media_type: str,
         max_bytes: int,
     ) -> ResourceRecord:
-        if re.fullmatch(r"[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+", media_type) is None:
-            raise UnsupportedMediaTypeError("resource media_type must use type/subtype syntax")
         source_path = self._safe_import_path(source_path)
-        directory = session_resource_directory(self.root, session_id)
-        lock = FileMutationLock(self.root / "locks" / "resources" / f"{session_id}.lock")
-        if not lock.acquire(timeout=5):
-            raise PersistenceError("Session resource directory remained busy")
-        try:
-            if _path_contains_symlink(directory):
-                raise UnsafeResourcePathError("resource directory contains a symbolic link")
-            directory.mkdir(parents=True, exist_ok=True)
-            filename = _available_name(directory, source.name)
-            staging = directory.parent / ".staging"
-            if _path_contains_symlink(staging):
-                raise UnsafeResourcePathError("resource staging contains a symbolic link")
-            staging.mkdir(exist_ok=True)
-            digest = hashlib.sha256()
-            size = 0
-            with NamedTemporaryFile(dir=staging, delete=False) as target:
-                temporary = Path(target.name)
-                try:
-                    with source_path.open("rb") as original:
-                        while chunk := original.read(_CHUNK_SIZE):
-                            size += len(chunk)
-                            if size > max_bytes:
-                                raise ValueError(
-                                    f"resource exceeds maximum size of {max_bytes} bytes"
-                                )
-                            digest.update(chunk)
-                            target.write(chunk)
-                    target.flush()
-                    os.fsync(target.fileno())
-                except BaseException:
-                    target.close()
-                    temporary.unlink(missing_ok=True)
-                    raise
-            try:
-                record = ResourceRecord(
-                    filename=filename,
-                    digest=f"sha256:{digest.hexdigest()}",
-                    size=size,
-                    media_type=media_type,
-                    source=source,
-                )
-                replace_path_with_retry(temporary, self.path_for(session_id, record))
-                return record
-            finally:
-                temporary.unlink(missing_ok=True)
-        finally:
-            lock.release()
+        with source_path.open("rb") as original:
+            return create_resource(
+                self.root,
+                session_id,
+                iter(lambda: original.read(_CHUNK_SIZE), b""),
+                source=source,
+                media_type=media_type,
+                max_bytes=max_bytes,
+            )
 
-    def import_contents(
-        self, session_id: str, items: Iterable[tuple[ResourceRecord, bytes]]
-    ) -> None:
-        write_resource_contents(session_resource_directory(self.root, session_id), items)
+    def import_bytes(
+        self, session_id: str, content: bytes, *, source: ResourceSource, media_type: str
+    ) -> ResourceRecord:
+        return create_resource(
+            self.root,
+            session_id,
+            (content,),
+            source=source,
+            media_type=media_type,
+            internal=True,
+        )
 
     def load_content(
         self, session_id: str, record: ResourceRecord, *, max_bytes: int | None = None
@@ -217,31 +180,3 @@ class LocalResourceStore:
         if not resolved.is_file():
             raise UnsafeResourcePathError(f"resource source is not a regular file: {path}")
         return resolved
-
-
-def _available_name(directory: Path, name: str) -> str:
-    safe = (
-        re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", unicodedata.normalize("NFC", name)).rstrip(" .")
-        or "file"
-    )
-    if re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?", safe):
-        safe = "_" + safe
-    original_suffix = Path(safe).suffix
-    suffix = original_suffix[:24]
-    stem = safe[: -len(original_suffix)] if original_suffix else safe
-    stem = stem.encode("utf-8")[:160].decode("utf-8", errors="ignore")
-    existing = {path.name.casefold() for path in directory.iterdir()}
-    candidate = stem + suffix
-    index = 2
-    while candidate.casefold() in existing:
-        candidate = f"{stem} ({index}){suffix}"
-        index += 1
-    return candidate
-
-
-def _path_contains_symlink(path: Path) -> bool:
-    absolute = path.absolute()
-    return any(
-        candidate.is_symlink() or candidate.is_junction()
-        for candidate in (absolute, *absolute.parents)
-    )

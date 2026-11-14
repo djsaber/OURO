@@ -3,18 +3,16 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 from collections.abc import Callable, Iterable
 
-from ouro.core.base import new_id
 from ouro.core.content import MediaContent, media_data_uri, media_reference, media_resource_ids
 from ouro.core.context_snapshots import ContextSnapshotRecord, RequestManifestRecord
 from ouro.core.errors import PersistenceError
 from ouro.core.messages import ContentBlock, MessageRecord, ModelMessage
-from ouro.core.resources import ResourceSource, SessionResourceReference
+from ouro.core.resources import ResourceRecord, ResourceSource
 from ouro.core.tool_facts import ToolFactConflict, ToolOutcomeRecord
 
-ResourcePublisher = Callable[[SessionResourceReference, bytes], None]
+ResourcePublisher = Callable[[ResourceSource, str, bytes], ResourceRecord]
 
 
 def capture_media(
@@ -24,17 +22,7 @@ def capture_media(
         return block
     prefix, content = decoded
     media_type = block.media_type or prefix[5:].partition(";")[0] or "application/octet-stream"
-    identity = new_id("res")
-    record = SessionResourceReference(
-        resource_id=identity,
-        filename=identity,
-        digest=f"sha256:{hashlib.sha256(content).hexdigest()}",
-        media_type=media_type,
-        size=len(content),
-        source=source,
-        internal=True,
-    )
-    publish(record, content)
+    record = publish(source, media_type, content)
     return block.model_copy(
         update={
             "resource_id": record.resource_id,

@@ -143,6 +143,13 @@ async def test_media_observation_survives_source_removal_model_switch_and_reopen
         observed = runtime.store.load_session(session.session_id).messages[0]
         media = next(part for part in observed.content if isinstance(part, MediaContent))
         assert media.type == kind and base64.b64decode(media.uri.partition(",")[2]) == raw
+        owned = runtime.store.load_resource_reference(session.session_id, media.resource_id)
+        assert owned.filename == name
+        assert owned.internal is (source_kind == "reference")
+        assert (
+            runtime.resources.resource_path(session.session_id, owned.resource_id).read_bytes()
+            == raw
+        )
         saved = runtime.sessions.context(session.session_id)
         snapshot = runtime.store.load_latest_context(session.session_id)
         assert getattr(snapshot, f"supports_{kind}_input") is True

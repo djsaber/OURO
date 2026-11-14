@@ -304,9 +304,14 @@ class ResourceService:
     def _capture_media(self, session_id: str, name: str, media: MediaContent) -> MediaContent:
         """Publish observed workspace bytes before the message can reference them."""
 
-        def publish(record: SessionResourceReference, content: bytes) -> None:
-            self._store.import_contents(session_id, ((record, content),))
-            self._sessions.attach_resource_reference(session_id, record)
+        def publish(source: ResourceSource, media_type: str, content: bytes) -> ResourceRecord:
+            record = self._store.import_bytes(
+                session_id, content, source=source, media_type=media_type
+            )
+            self._sessions.attach_resource_reference(
+                session_id, SessionResourceReference(**record.model_dump())
+            )
+            return record
 
         return capture_media(media, source=ResourceSource(name=name), publish=publish)
 

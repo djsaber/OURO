@@ -27,6 +27,7 @@ from ouro.core.observers import ObserverRegistry
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolResult
 from ouro.resources import LocalResourceStore
+from ouro.resources.files import write_resource_contents
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from tests.providers.test_tool_result_content import encode
 from tests.session_storage import session_connection
@@ -40,7 +41,9 @@ def test_file_batch_failure_keeps_only_verified_published_files(tmp_path):
     first = resource_record(content=b"first", filename="first.txt")
     second = resource_record(content=b"second", filename="second.txt")
     with pytest.raises(ResourceIntegrityError):
-        store.import_contents("ses_test", ((first, b"first"), (second, b"bad")))
+        write_resource_contents(
+            store.directory_for("ses_test"), ((first, b"first"), (second, b"bad"))
+        )
     assert store.load_content("ses_test", first) == b"first"
     assert not store.path_for("ses_test", second).exists()
     assert list(store.directory_for("ses_test").iterdir()) == [store.path_for("ses_test", first)]
@@ -51,13 +54,14 @@ def test_file_batch_checks_existing_and_incoming_content(tmp_path):
 
     store = LocalResourceStore(tmp_path)
     record = resource_record(content=b"verified")
-    store.import_contents("ses_test", ((record, b"verified"),))
+    directory = store.directory_for("ses_test")
+    write_resource_contents(directory, ((record, b"verified"),))
     with pytest.raises(ResourceIntegrityError):
-        store.import_contents("ses_test", ((record, b"modified"),))
+        write_resource_contents(directory, ((record, b"modified"),))
     assert store.load_content("ses_test", record) == b"verified"
     store.path_for("ses_test", record).write_bytes(b"corrupt")
     with pytest.raises(ResourceIntegrityError):
-        store.import_contents("ses_test", ((record, b"verified"),))
+        write_resource_contents(directory, ((record, b"verified"),))
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
