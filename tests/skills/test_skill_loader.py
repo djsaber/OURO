@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from ouro.config.skills import SkillConfig
 from ouro.core.errors import ConfigError
 from ouro.prompts import render_agent_skills_prompt
 from ouro.skills import (
@@ -245,12 +246,14 @@ def test_central_config_controls_paths_and_disabled_skills(tmp_path) -> None:
     assert [skill.name for skill in skills] == ["shared"]
 
 
-def test_scoped_sources_distinguish_ouro_from_other_hosts(tmp_path) -> None:
+def test_scoped_sources_distinguish_ouro_from_other_hosts(tmp_path, user_profile) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     _write_skill(home / "skills" / "ouro-skill", "ouro-skill", "OURO guidance.")
-    _write_skill(home / ".codex" / "skills" / "codex-skill", "codex-skill", "Codex guidance.")
+    _write_skill(
+        user_profile / ".codex" / "skills" / "codex-skill", "codex-skill", "Codex guidance."
+    )
     _write_skill(
         workspace / ".codex" / "skills" / "workspace-skill",
         "workspace-skill",
@@ -313,11 +316,12 @@ def test_removed_coarse_scan_fields_fail_with_migration_guidance(tmp_path) -> No
 
 def test_discovery_scans_cross_client_locations_and_renders_standard_catalog(
     tmp_path,
+    user_profile,
 ) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    _write_skill(home / ".agents" / "skills" / "pdf", "pdf", "Extract PDF text.")
+    _write_skill(user_profile / ".agents" / "skills" / "pdf", "pdf", "Extract PDF text.")
     _write_skill(
         workspace / ".claude" / "skills" / "xlsx",
         "xlsx",
@@ -336,7 +340,7 @@ def test_discovery_scans_cross_client_locations_and_renders_standard_catalog(
     assert [skill.name for skill in catalog.skills] == ["manual-only", "pdf", "xlsx"]
     assert "<name>pdf</name>" in prompt
     assert "<description>Extract PDF text.</description>" in prompt
-    assert f"<location>{home / '.agents/skills/pdf/SKILL.md'}</location>" in prompt
+    assert f"<location>{user_profile / '.agents/skills/pdf/SKILL.md'}</location>" in prompt
     assert "<name>xlsx</name>" in prompt
     assert f"<location>{workspace / '.claude/skills/xlsx/SKILL.md'}</location>" in prompt
     assert "manual-only" not in prompt
@@ -344,17 +348,18 @@ def test_discovery_scans_cross_client_locations_and_renders_standard_catalog(
 
 def test_default_roots_include_native_and_community_conventions(tmp_path) -> None:
     home = tmp_path / "home"
+    profile = tmp_path / "explicit-profile"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    roots = default_skill_roots(home=home, cwd=workspace)
+    roots = default_skill_roots(home=home, cwd=workspace, user_home=profile)
     paths = {root.path for root in roots}
 
     assert (home / "skills").resolve() in paths
-    assert (home / ".agents" / "skills").resolve() in paths
-    assert (home / ".claude" / "skills").resolve() in paths
-    assert (home / ".copilot" / "skills").resolve() in paths
-    assert (home / ".codex" / "skills").resolve() in paths
+    assert (profile / ".agents" / "skills").resolve() in paths
+    assert (profile / ".claude" / "skills").resolve() in paths
+    assert (profile / ".copilot" / "skills").resolve() in paths
+    assert (profile / ".codex" / "skills").resolve() in paths
     assert (workspace / ".agents" / "skills").resolve() in paths
     assert (workspace / ".claude" / "skills").resolve() in paths
     assert (workspace / ".github" / "skills").resolve() in paths
@@ -375,15 +380,44 @@ def test_default_roots_include_native_and_community_conventions(tmp_path) -> Non
     assert all(root.enabled for root in roots)
 
 
-def test_default_skill_roots_follow_ouro_home_env(tmp_path, monkeypatch) -> None:
+def test_ouro_home_env_preserves_other_hosts_user_roots(
+    tmp_path, monkeypatch, user_profile
+) -> None:
     home = tmp_path / "env-home"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     monkeypatch.setenv("OURO_HOME", str(home))
 
-    roots = default_skill_roots(cwd=workspace, user_home=tmp_path / "profile")
+    roots = default_skill_roots(cwd=workspace)
 
     assert (home / "skills").resolve() in {root.path for root in roots}
+    user_roots = {root.origin: root.path for root in roots if root.source == "user"}
+    assert user_roots == {
+        "ouro": (home / "skills").resolve(),
+        **{
+            origin: (user_profile / f".{origin}" / "skills").resolve()
+            for origin in ("agents", "claude", "copilot", "codex")
+        },
+    }
+    assert roots == default_skill_roots(home=home, cwd=workspace)
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_user_root_keeps_scope_when_home_is_inside_workspace(tmp_path, enabled) -> None:
+    workspace = tmp_path / "workspace"
+    home = workspace / ".ouro"
+    _write_skill(home / "skills" / "review", "review", "Personal review.")
+    config = SkillConfig(disabled_sources=set() if enabled else {"ouro.user"})
+
+    roots = default_skill_roots(home=home, cwd=workspace, config=config)
+    catalog = skill_catalog_from_roots(roots)
+
+    root = next(root for root in roots if root.path == (home / "skills").resolve())
+    assert root.source_id == "ouro.user"
+    assert root.enabled is enabled
+    assert [(skill.name, skill.source) for skill in catalog.skills] == (
+        [("review", "user")] if enabled else []
+    )
 
 
 def _write_skill(

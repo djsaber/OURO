@@ -84,14 +84,23 @@ def test_skill_catalog_sorts_by_source_without_groups_or_status_labels() -> None
 
 
 @pytest.mark.asyncio
-async def test_skill_actions_open_skill_catalog(tmp_path: Path) -> None:
-    skill_dir = tmp_path / "skills" / "demo"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\nname: demo\ndescription: Demo skill.\n---\n\nUse the demo workflow.\n",
-        encoding="utf-8",
-    )
-    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+@pytest.mark.parametrize("isolated", [False, True])
+async def test_skill_actions_open_skill_catalog(
+    tmp_path: Path, user_profile: Path, monkeypatch, isolated
+) -> None:
+    home = tmp_path / "home" if isolated else user_profile / ".ouro"
+    for name, skill_dir in (
+        ("demo", home / "skills" / "demo"),
+        ("codex", user_profile / ".codex" / "skills" / "codex"),
+        ("claude", user_profile / ".claude" / "skills" / "claude"),
+    ):
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: Demo skill.\n---\n\nUse the demo workflow.\n",
+            encoding="utf-8",
+        )
+    monkeypatch.chdir(user_profile)
+    app = OuroTuiApp(home=home, application=_application(home))
 
     async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.press("ctrl+p")
@@ -100,9 +109,13 @@ async def test_skill_actions_open_skill_catalog(tmp_path: Path) -> None:
 
         assert isinstance(app.screen, ChoiceScreen)
         assert app.screen.query_one("#choice-title", Static).render().plain == "SKILLS"
-        assert [choice.value for choice in app.screen._choices] == ["demo"]
+        assert [choice.value for choice in app.screen._choices] == ["claude", "codex", "demo"]
         assert app.screen._choices[0].description == ""
-        assert app.screen._choices[0].trailing == "ouro • user"
+        assert [choice.trailing for choice in app.screen._choices] == [
+            "claude • user",
+            "codex • user",
+            "ouro • user",
+        ]
 
 
 @pytest.mark.asyncio

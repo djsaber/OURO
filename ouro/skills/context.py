@@ -125,7 +125,9 @@ def default_skill_roots(
 ) -> list[SkillRoot]:
     ouro_home = _ouro_home(home)
     workspace = Path(cwd) if cwd is not None else Path.cwd()
-    profile_home = _profile_home(home=home, ouro_home=ouro_home, user_home=user_home)
+    profile_home = (
+        (Path(user_home) if user_home is not None else Path.home()).expanduser().resolve()
+    )
     config = config or SkillConfigManager(ouro_home).snapshot().config
 
     user_roots = [
@@ -135,6 +137,8 @@ def default_skill_roots(
         _native_root(profile_home / ".codex" / "skills", "user", "codex", config),
         _native_root(ouro_home / "skills", "user", "ouro", config),
     ]
+    user_paths = {root.path.resolve() for root in user_roots}
+    user_paths.add((Path.home() / ".ouro" / "skills").resolve())
 
     workspace_roots = [
         _native_root(workspace / ".agents" / "skills", "workspace", "agents", config),
@@ -143,6 +147,9 @@ def default_skill_roots(
         _native_root(workspace / ".codex" / "skills", "workspace", "codex", config),
         _native_root(workspace / ".ouro" / "skills", "workspace", "ouro", config),
     ]
+    # User directories retain their scope even when cwd exposes them as workspace roots.
+    # This also keeps a custom OURO home from rediscovering ~/.ouro/skills.
+    workspace_roots = [root for root in workspace_roots if root.path.resolve() not in user_paths]
 
     for item in config.paths:
         base = workspace if item.source == "workspace" else ouro_home
@@ -169,20 +176,6 @@ def _ouro_home(home: str | Path | None) -> Path:
         .expanduser()
         .resolve()
     )
-
-
-def _profile_home(
-    *,
-    home: str | Path | None,
-    ouro_home: Path,
-    user_home: str | Path | None,
-) -> Path:
-    if user_home is not None:
-        return Path(user_home).expanduser().resolve()
-    default_ouro_home = (Path.home() / ".ouro").resolve()
-    if home is None or ouro_home == default_ouro_home:
-        return Path.home().resolve()
-    return ouro_home
 
 
 def _dedupe_roots(candidates: list[SkillRoot]) -> list[SkillRoot]:

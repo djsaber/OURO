@@ -38,6 +38,11 @@ workspace 外继续搜索。该机制只接受 `AGENTS.md`，不会把产品私�
 
 Skills 使用标准 `SKILL.md` YAML frontmatter。用户级原生目录是 `OURO_HOME/skills`，工作区原生目录是
 `./.ouro/skills`；也可扫描 `.agents`、`.claude`、`.github`、`.copilot` 和 `.codex` 的 Skills 目录。
+`--home` 优先于环境变量 `OURO_HOME`，默认目录为 `<user-home>/.ouro`。自定义 home 只切换 OURO 的
+用户技能目录；Codex、Claude 等仍从系统用户主目录下的各自目录发现。默认 OURO 用户目录不会因启动目录
+恰好是系统用户主目录而作为工作区来源加载。同一路径同时属于用户目录和工作区候选目录时，保留用户作用域。
+需要额外共享目录时使用 `skills.paths`；完整路径规则见[Skills 发现规格](../specs/skills.md#skills-发现)。
+
 目录来源按 Host 与作用域使用稳定 id，例如 `ouro.user`、`ouro.workspace`、`codex.user` 和
 `codex.workspace`。所有来源默认启用，可通过 `ouro config skills --disable-source <id>` 独立关闭；
 TUI 的 `Actions > Skill sources` 提供相同的总开关与逐源开关，并即时刷新当前 Runtime；

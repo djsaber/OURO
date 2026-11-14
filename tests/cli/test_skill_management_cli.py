@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from ouro.cli.main import main
 
 
@@ -87,6 +89,30 @@ def test_install_cli_requires_skill_selection_for_collections(tmp_path, capsys) 
     assert code == 1
     assert payload["status"] == "failed"
     assert "use --skill NAME or --all" in payload["error"]
+
+
+@pytest.mark.parametrize("isolated", [False, True])
+def test_skill_cli_respects_user_scope_from_profile_directory(
+    tmp_path, monkeypatch, capsys, isolated
+) -> None:
+    profile = tmp_path / "profile"
+    default_home = profile / ".ouro"
+    home = tmp_path / "isolated" if isolated else default_home
+    _write_skill(default_home / "skills" / "original", "original", "Personal skill.")
+    for origin in ("agents", "claude", "codex", "copilot"):
+        _write_skill(profile / f".{origin}" / "skills" / origin, origin, "Shared user skill.")
+    _write_skill(home / "skills" / "selected", "selected", "Selected home skill.")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: profile))
+    monkeypatch.chdir(profile)
+
+    assert main(["skills", "list", "--home", str(home), "--json"]) == 0
+    listed = json.loads(capsys.readouterr().out)
+
+    expected = ["agents", "claude", "codex", "copilot"]
+    expected.extend(["selected"] if isolated else ["original", "selected"])
+    assert [(skill["name"], skill["source"]) for skill in listed["skills"]] == [
+        (name, "user") for name in expected
+    ]
 
 
 def _write_skill(root: Path, name: str, description: str, body: str = "Instructions.") -> None:

@@ -1,8 +1,19 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from ouro.auth.drivers.openai_callback import CallbackReceiver
+
+
+@pytest.fixture(autouse=True)
+def user_profile(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Discover user resources from a test profile, independent of the developer's home."""
+    profile = tmp_path_factory.mktemp("user-profile")
+    monkeypatch.setenv("HOME", str(profile))
+    monkeypatch.setenv("USERPROFILE", str(profile))
+    return profile
 
 
 @pytest.fixture

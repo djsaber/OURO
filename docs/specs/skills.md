@@ -20,13 +20,23 @@
 用户级 root：
 
 - `OURO_HOME/skills`；
-- 用户 profile 下 `.agents`、`.claude`、`.copilot`、`.codex` 的 skills 目录。
+- 系统用户主目录下 `.agents`、`.claude`、`.copilot`、`.codex` 的 skills 目录。
+
+`OURO_HOME` 按显式 `home`（CLI 的 `--home`）、环境变量 `OURO_HOME`、`<user-home>/.ouro` 的顺序解析。
+该选择只决定 OURO 原生用户技能目录，不改变其他 Host 的用户技能目录。发现 API 的显式 `user_home`
+可单独指定其他 Host 的用户主目录；默认使用系统用户主目录，与 OURO home 独立。
 
 工作区 root：
 
 - `.ouro/skills`；
-- `.agents`、`.claude`、`.github`、`.codex` 的 skills 目录；
-- 当前配置中显式 paths。
+- `.agents`、`.claude`、`.github`、`.codex` 的 skills 目录。
+
+固定用户目录具有用户作用域：工作区候选路径若与当前固定用户目录或默认 OURO 用户目录重合，
+不作为 workspace 来源扫描。关闭用户来源或切换 OURO home 后，这些目录也不会通过工作区扫描重新进入目录。
+路径比较使用规范化绝对路径。
+
+显式 `skills.paths` 按各自的 `source` 归入 user 或 workspace；相对路径分别以 `OURO_HOME` 或当前 workspace
+为基准，绝对路径直接使用。需要共享其他环境的技能时，可通过这些显式路径配置。
 
 固定目录来源同时记录 Host origin 与 scope，并使用 `<origin>.<scope>` 稳定 id。当前 id 为：
 

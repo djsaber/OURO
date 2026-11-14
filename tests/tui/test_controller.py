@@ -1453,9 +1453,11 @@ async def test_controller_manages_discovered_skill_policy(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_controller_updates_skill_directory_sources_and_live_runtime(tmp_path: Path) -> None:
+async def test_controller_updates_skill_directory_sources_and_live_runtime(
+    tmp_path: Path, user_profile: Path
+) -> None:
     ouro_skill = tmp_path / "skills" / "ouro-skill"
-    codex_skill = tmp_path / ".codex" / "skills" / "codex-skill"
+    codex_skill = user_profile / ".codex" / "skills" / "codex-skill"
     ouro_skill.mkdir(parents=True)
     codex_skill.mkdir(parents=True)
     (ouro_skill / "SKILL.md").write_text(
