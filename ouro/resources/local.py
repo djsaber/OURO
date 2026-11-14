@@ -176,8 +176,7 @@ class LocalResourceStore:
     def export_file(
         self, session_id: str, record: ResourceRecord, destination: Path, *, overwrite: bool
     ) -> Path:
-        if _path_contains_symlink(destination):
-            raise UnsafeResourcePathError("cannot export through symbolic links")
+        destination = destination.resolve()
         if destination.exists() and not overwrite:
             raise FileExistsError(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -214,8 +213,6 @@ class LocalResourceStore:
 
     @staticmethod
     def _safe_import_path(path: Path) -> Path:
-        if _path_contains_symlink(path):
-            raise UnsafeResourcePathError(f"symbolic links cannot be imported: {path}")
         resolved = path.resolve(strict=True)
         if not resolved.is_file():
             raise UnsafeResourcePathError(f"resource source is not a regular file: {path}")

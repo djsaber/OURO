@@ -506,7 +506,7 @@ def test_trashing_session_retains_owned_files_with_its_metadata(
     assert next(trash.rglob("trash.txt")).read_bytes() == b"trash"
 
 
-def test_symbolic_link_import_is_rejected_when_platform_supports_links(tmp_path) -> None:
+def test_explicit_file_link_import_and_export_follow_the_target(tmp_path) -> None:
     _, _, resources, session_service = _services(tmp_path)
     session = session_service.create(title="Links").session
     target = tmp_path / "target.txt"
@@ -517,8 +517,62 @@ def test_symbolic_link_import_is_rejected_when_platform_supports_links(tmp_path)
     except OSError:
         pytest.skip("symbolic links are unavailable")
 
+    imported = resources.import_resource(session.session_id, link).resource
+    assert imported.source.name == "link.txt"
+    copied = resources.resource_path(session.session_id, imported.resource_id)
+    assert copied.read_bytes() == b"target"
+    target.write_bytes(b"changed")
+    assert copied.read_bytes() == b"target"
+    with pytest.raises(FileExistsError):
+        resources.export_resource(session.session_id, imported.resource_id, link)
+    resources.export_resource(session.session_id, imported.resource_id, link, overwrite=True)
+    assert link.is_symlink()
+    assert target.read_bytes() == b"target"
+
+
+@pytest.mark.parametrize("kind", ["symlink", "junction"])
+def test_explicit_directory_links_allow_file_import_and_export(tmp_path, kind):
+    import sys
+
+    target, link = tmp_path / "target", tmp_path / "link"
+    target.mkdir()
+    if kind == "junction":
+        if sys.platform != "win32":
+            pytest.skip("junctions require Windows")
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except OSError:
+            pytest.skip("symbolic links are unavailable")
+    _, _, resources, sessions = _services(tmp_path / "home")
+    session_id = sessions.create().session.session_id
+    (target / "source.txt").write_bytes(b"input")
+    imported = resources.import_resource(session_id, link / "source.txt").resource
+    resources.export_resource(session_id, imported.resource_id, link / "output.txt")
+    assert (target / "output.txt").read_bytes() == b"input"
+    with pytest.raises(FileExistsError):
+        resources.export_resource(session_id, imported.resource_id, link / "output.txt")
+    with pytest.raises(UnsafeResourcePathError, match="regular file"):
+        resources.import_resource(session_id, link)
+
+
+def test_managed_resource_files_cannot_redirect_to_external_links(tmp_path):
+    _, _, resources, sessions = _services(tmp_path / "home")
+    session_id = sessions.create().session.session_id
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"input")
+    imported = resources.import_resource(session_id, source).resource
+    managed = resources.resource_path(session_id, imported.resource_id)
+    managed.unlink()
+    try:
+        managed.symlink_to(source)
+    except OSError:
+        pytest.skip("symbolic links are unavailable")
     with pytest.raises(UnsafeResourcePathError, match="symbolic links"):
-        resources.import_resource(session.session_id, link)
+        resources.resource_path(session_id, imported.resource_id)
 
 
 def test_tool_resource_refs_are_validated_before_canonical_message_commit(tmp_path) -> None:

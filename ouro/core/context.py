@@ -39,7 +39,7 @@ class ContextMetrics(OuroModel):
     estimated_fixed_tokens: int = Field(ge=0)
     budget: ContextBudget | None = None
     estimator_id: str = "builtin.conservative"
-    estimator_version: str = "3"
+    estimator_version: str = "4"
 
     @model_validator(mode="after")
     def _validate_measurement(self) -> ContextMetrics:
@@ -388,9 +388,16 @@ def _estimate_visible_message_tokens(
 
 
 def _estimate_tool_tokens(tool: dict[str, Any], estimator: TokenEstimator) -> int:
+    # Execution/provenance fields remain available to Provider integrations, but
+    # only the model-facing declaration consumes the shared tool input budget.
     return estimator(
         json.dumps(
-            {key: value for key, value in tool.items() if value is not None},
+            {
+                "name": tool["name"],
+                "description": tool.get("description") or "",
+                "parameters_schema": tool.get("parameters_schema")
+                or {"type": "object", "properties": {}},
+            },
             ensure_ascii=False,
             separators=(",", ":"),
         )

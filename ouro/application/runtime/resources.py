@@ -11,11 +11,12 @@ from ouro.core.agents import (
     EffectiveToolRef,
 )
 from ouro.core.run_budget import RunBudgetPolicy
+from ouro.tools.builtin.agents import agent_control_tools
+from ouro.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from ouro.application.tool_calls import ToolCallCoordinator
     from ouro.plugins.catalog.snapshot import ExtensionCatalogLease
-    from ouro.tools.registry import ToolRegistry
 
 
 @dataclass
@@ -24,11 +25,24 @@ class RunResources:
     host_tools: ToolRegistry | None = None
     controller_ids: frozenset[str] = frozenset()
     agent_catalog: AgentCatalogSnapshot | None = None
+    agent_tools: ToolRegistry | None = None
     tool_names: frozenset[str] | None = None
     tool_refs: tuple[EffectiveToolRef, ...] = ()
     agent_prompt: str = ""
     budget: RunBudgetPolicy | None = None
     tool_calls: ToolCallCoordinator | None = None
+
+    def bind_agent_catalog(self, catalog: AgentCatalogSnapshot) -> None:
+        """Own the validated control tools for this decision's declared capabilities."""
+        if (
+            self.agent_catalog is not None
+            and self.agent_catalog.contract_hash == catalog.contract_hash
+        ):
+            return
+        tools = ToolRegistry()
+        tools.replace((), agent_control_tools(catalog))
+        tools.freeze()
+        self.agent_catalog, self.agent_tools = catalog, tools
 
     def bind_delegation(self, relation: DelegationRecord | None) -> None:
         self.tool_names = (

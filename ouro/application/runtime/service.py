@@ -181,7 +181,6 @@ from ouro.prompts import DEFAULT_SYSTEM_PROMPT, render_agent_skills_prompt
 from ouro.sessions import RuntimeSessionSnapshot, SessionStore
 from ouro.skills import SkillMetadata
 from ouro.tools import ToolExecutor, ToolRegistry, ToolResult
-from ouro.tools.builtin.agents import agent_control_tools
 
 if TYPE_CHECKING:
     from ouro.application.resources import ResourceService
@@ -522,10 +521,10 @@ class RuntimeService:
                     AgentDefinitionService.tool_reference(selected, definition)
                 )
             )
-        catalog = resources.agent_catalog if resources is not None else None
-        if catalog is None or self._agent_controls is None:
+        controls = resources.agent_tools if resources is not None else None
+        if controls is None:
             return selected
-        return selected.overlay(agent_control_tools(catalog))
+        return selected.overlay(controls)
 
     def _context_providers_for_run(self, run_id: str) -> ContextProviderRegistry:
         snapshot = self._extension_snapshot_for_run(run_id)
@@ -4369,7 +4368,8 @@ class RuntimeService:
                 if self._agent_controls is not None:
                     catalog = self._agent_controls.constrain_catalog(catalog)
                 update["agent_catalog"] = catalog
-                resources.agent_catalog = catalog
+                if self._agent_controls is not None:
+                    resources.bind_agent_catalog(catalog)
             updated = latest.model_copy(update=update)
             self.store.save_run(updated)
             return updated
@@ -4562,8 +4562,8 @@ class RuntimeService:
             AgentRecoveryService(self.store).load_run_delegation, session, run
         )
         resources.bind_delegation(relation)
-        if run.agent_catalog is not None:
-            resources.agent_catalog = run.agent_catalog
+        if run.agent_catalog is not None and self._agent_controls is not None:
+            resources.bind_agent_catalog(run.agent_catalog)
         if resources.snapshot is not None or resources.host_tools is not None:
             return
         await self._synchronize_extensions()

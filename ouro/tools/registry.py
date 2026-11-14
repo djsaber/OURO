@@ -154,23 +154,16 @@ class ToolRegistry:
         selected.freeze()
         return selected
 
-    def overlay(self, tools: Iterable[Tool]) -> ToolRegistry:
-        """Return a frozen per-Run view with product-owned dynamic tools."""
-
-        additions = list(tools)
-        names = [tool.definition.name for tool in additions]
-        if len(names) != len(set(names)):
-            raise ValueError("tool overlay contains duplicate names")
-        for tool in additions:
-            _validate_tool(tool)
-        conflicts = sorted(set(names).intersection(self._tools))
+    def overlay(self, tools: ToolRegistry) -> ToolRegistry:
+        """Combine already registered tools without repeating admission validation."""
+        conflicts = sorted(tools._tools.keys() & self._tools.keys())
         if conflicts:
             raise ValueError(
                 "tool overlay conflicts with registered tools: " + ", ".join(conflicts)
             )
         overlaid = ToolRegistry()
-        overlaid._tools = {**self._tools, **{tool.definition.name: tool for tool in additions}}
-        overlaid._owners = dict(self._owners)
+        overlaid._tools = {**self._tools, **tools._tools}
+        overlaid._owners = {**self._owners, **tools._owners}
         overlaid._active_controller_ids = self._active_controller_ids
         overlaid.freeze()
         return overlaid

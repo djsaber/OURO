@@ -137,6 +137,8 @@ Provider 和工具执行中的 `AbortSignal.is_aborted()` 是高频同步检查�
 - signal 激活时先执行一次 worker-side durable read，关闭 `run_started` 与 signal 建立之间的竞态；后续 Run mutation
   必须从 latest Run 派生，不能用旧快照覆盖 `abort_requested`；
 - 跨进程 abort 由后台 poller 最多每 50 ms 读取一次 durable Run，再桥接到本地 signal；
+- 轮询通过原生数据库在 canonical Run payload 内判断取消标记与终态，仅命中取消时向应用层返回并解析完整 Run；
+  普通轮询不构造 Agent Catalog、校验其哈希或读取 Session 正文。SQLite 仍需解析该条 JSON，不承诺与 payload 大小无关；
 - durable poll 和 settlement 检查在 worker 上运行，signal 检查不得读 Store；
 - Run 结束必须取消并等待 poller，不能留下后台任务或未观察异常。
 

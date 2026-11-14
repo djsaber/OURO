@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from ouro.core.context import ContextBuilder, estimate_message_tokens, estimate_text_tokens
@@ -58,8 +60,11 @@ def test_context_projects_batch_contract_without_changing_registered_tools(descr
     definitions = [exclusive, sequential]
     original = [tool.model_dump() for tool in definitions]
     contract_hash = tool_definition_contract_hash(exclusive)
-    original_cost = sum(len(tool.model_dump_json(exclude_none=True)) for tool in definitions)
     builder = ContextBuilder(token_estimator=len)
+    original_cost = builder.build(
+        messages=[],
+        tools=[tool.model_copy(update={"batch_behavior": "compatible"}) for tool in definitions],
+    ).metrics.estimated_input_tokens
 
     context = builder.build(
         messages=[], tools=definitions, budget=ContextBudget(context_window=original_cost)
@@ -75,7 +80,18 @@ def test_context_projects_batch_contract_without_changing_registered_tools(descr
     assert [tool.model_dump() for tool in definitions] == original
     assert tool_definition_contract_hash(exclusive) == contract_hash
     assert context.metrics.estimated_fixed_tokens == sum(
-        len(ToolDefinition.model_validate(tool).model_dump_json(exclude_none=True))
+        len(
+            json.dumps(
+                {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters_schema": tool["parameters_schema"]
+                    or {"type": "object", "properties": {}},
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
         for tool in context.provider_context.tools
     )
     assert context.metrics.over_budget is True

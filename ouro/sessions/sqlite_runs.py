@@ -30,6 +30,19 @@ def read_pending_runs(
     return runs
 
 
+def read_run_abort(
+    connection: sqlite3.Connection, session_id: str, run_id: str
+) -> RunRecord | None:
+    """Materialize a Run only when its canonical payload reports cancellation."""
+    row = connection.execute(
+        "SELECT payload FROM runs WHERE session_id = ? AND run_id = ? "
+        "AND (json_extract(payload, '$.abort_requested') = 1 "
+        "OR json_extract(payload, '$.status') = 'aborted')",
+        (session_id, run_id),
+    ).fetchone()
+    return _decode_run(row[0], session_id, run_id) if row is not None else None
+
+
 def read_runs(connection: sqlite3.Connection, session_id: str) -> list[RunRecord]:
     return [
         _decode_run(row[1], session_id, row[0])

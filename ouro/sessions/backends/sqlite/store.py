@@ -121,6 +121,7 @@ from ouro.sessions.sqlite_runs import (
     read_pending_runs,
     read_request_counts,
     read_run,
+    read_run_abort,
     write_run,
 )
 from ouro.sessions.sqlite_sessions import read_session
@@ -1567,6 +1568,10 @@ class SQLiteSessionStore:
     def load_run(self, session_id: str, run_id: str) -> RunRecord:
         with self._read_connection() as connection:
             return read_run(connection, session_id, run_id)
+
+    def load_run_abort(self, session_id: str, run_id: str) -> RunRecord | None:
+        with self._read_connection() as connection:
+            return read_run_abort(connection, session_id, run_id)
 
     def load_run_request_counts(self, session_id: str) -> tuple[RunRequestCounts, ...]:
         with self._read_connection() as connection:

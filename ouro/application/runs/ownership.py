@@ -193,10 +193,10 @@ class RunExecutionOwnership:
         run_id: str,
     ) -> tuple[SessionRecord, RunRecord] | None:
         try:
-            run = self.store.load_run(session_id, run_id)
+            run = self.store.load_run_abort(session_id, run_id)
         except Exception:  # noqa: BLE001 - abort polling must not break active runs.
             return None
-        if run.status != "aborted" and not run.abort_requested:
+        if run is None:
             return None
         try:
             return self.store.load_session_record(session_id), run

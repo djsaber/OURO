@@ -7,6 +7,15 @@
 ## 长 Run、慢查询与取消
 
 ```powershell
+uv run --frozen python -m dev.benchmarks.runtime_boundaries --repeat 30
+```
+
+该局部基准分别测量两后端的取消轮询读取、已绑定目录的工具视图，以及带不同内部 metadata 体积的工具上下文准备。
+取消样本固定一个 Run，独立增加 Agent 目录及工具引用数量；执行锁保留原生连接，构造、首次绑定和清理不计时。
+输出全部样本、中位数、Run payload 字节数和输入估算。它不包含网络、真实终端、线程切换或冷磁盘成本，
+也不将数据库内部 JSON 条件读取描述为恒定成本。
+
+```powershell
 uv run --frozen python -m dev.benchmarks.long_run_growth --rounds 8 64 --repeat 3
 uv run --frozen python -m dev.benchmarks.long_run_growth --rounds 8 64 --repeat 1 --slow-reader
 uv run --frozen python -m dev.benchmarks.long_run_growth --rounds 8 --repeat 1 --slow-reader --abort-at 4

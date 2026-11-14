@@ -12,6 +12,9 @@
 `ToolDefinition` 描述：name、description、参数 schema、结果 schema、权限模式、来源和 metadata。
 `canonical_id` 表达稳定工具身份；Host 工具未指定时使用 `ouro.host/tools/<name>`，插件工具由贡献准备边界赋值。
 持久执行契约包含身份、输入输出与执行策略；工具说明、显示名称和 metadata 不参与定义摘要。
+定义摘要用于审批等待和恢复调用时核对执行契约，避免以改变后的输入、结果形状或执行策略解释已接受的调用。
+`result_schema` 声明可供 Driver、插件等消费方使用的结构化结果契约，参与定义摘要；框架在注册时校验 schema 定义，
+执行结果边界校验身份及统一 ToolResult 结构，不额外按每个工具的 result_schema 验证返回值。
 插件拥有发布与依赖的解释，执行器只比较所绑定的工具身份、贡献契约与执行契约。
 同一工具能力的不同执行语义通过可选 `execution_variant` 声明；它参与执行契约，不改变规范身份或授权范围。
 `ToolCallRequest` 保存 Provider 调用身份、参数和原始顺序。`ToolInvocation` 增加 Session/Run 上下文。

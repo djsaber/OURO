@@ -12,6 +12,33 @@ from ouro.core.messages import MessageRecord, ProviderContinuationArtifact, Text
 from ouro.core.tools import ToolCallRequest, ToolDefinition
 
 
+def test_tool_budget_ignores_internal_fields_without_changing_provider_contract():
+    from ouro.providers.openai_responses.codec import responses_tools
+
+    definition = ToolDefinition(
+        name="Echo", description="Echo text", parameters_schema={"type": "object"}
+    )
+    changed = definition.model_copy(
+        update={
+            "metadata": {"audit_detail": "x" * 32768},
+            "permission_mode": "approval",
+            "result_schema": {"description": "y" * 32768},
+        }
+    )
+    builder = contexts.ContextBuilder()
+    before = builder.build(
+        messages=[], tools=[definition], budget=ContextBudget(context_window=4096)
+    )
+    after = builder.build(messages=[], tools=[changed], budget=ContextBudget(context_window=4096))
+    assert responses_tools(before.provider_context.tools) == responses_tools(
+        after.provider_context.tools
+    )
+    assert before.metrics == after.metrics
+    assert not after.metrics.over_budget
+    assert after.provider_context.tools[0]["metadata"] == changed.metadata
+    assert after.manifest.tools == after.provider_context.tools
+
+
 def build(builder, messages, **kwargs):
     return builder.build(messages=messages, source_messages=messages, tools=[], **kwargs)
 

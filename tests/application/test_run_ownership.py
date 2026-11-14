@@ -11,6 +11,59 @@ from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_abort_poll_only_materializes_cancelled_runs(tmp_path, backend, monkeypatch):
+    import ouro.sessions.sqlite_runs as records
+
+    def open_store():
+        store = (
+            LocalSessionStore(tmp_path)
+            if backend == "files"
+            else SQLiteSessionStore(tmp_path / "sessions.db")
+        )
+        store.initialize()
+        return store
+
+    store, other = open_store(), open_store()
+    session = SessionRecord()
+    store.create_session(session)
+    run = RunRecord(
+        session_id=session.session_id, status="running", metadata={"large": "x" * 32768}
+    )
+    store.save_run(run)
+    decoded = []
+    decode = records._decode_run
+
+    def record_decode(*args):
+        decoded.append(args[2])
+        return decode(*args)
+
+    monkeypatch.setattr(records, "_decode_run", record_decode)
+    ownership = RunExecutionOwnership(store)
+    signal = await ownership.activate_signal(session.session_id, run.run_id)
+    try:
+        assert not signal.is_aborted()
+        for _ in range(5):
+            assert ownership.abort_state(session.session_id, run.run_id) is None
+        assert decoded == []
+        other.save_run(run.model_copy(update={"abort_requested": True}))
+        async with asyncio.timeout(10):
+            await signal.wait()
+        assert decoded == [run.run_id]
+        assert ownership.aborted_result(
+            session_id=session.session_id, run_id=run.run_id, final_text="", had_tool_error=False
+        ).run.abort_requested
+    finally:
+        await ownership.release_signal(run.run_id, signal)
+    # Startup must also observe an already settled cancellation with no pending flag.
+    other.save_run(run.model_copy(update={"status": "aborted"}))
+    signal = await ownership.activate_signal(session.session_id, run.run_id)
+    try:
+        assert signal.is_aborted()
+    finally:
+        await ownership.release_signal(run.run_id, signal)
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
 @pytest.mark.parametrize("status", ["waiting_approval", "waiting_user", "waiting_child"])
 async def test_parked_run_handoff_waits_for_another_host_to_release(
     tmp_path, backend, status, monkeypatch
@@ -207,13 +260,13 @@ async def test_abort_signal_checks_never_read_durable_state_on_the_event_loop(
     ownership = RunExecutionOwnership(store)
     loop_thread = get_ident()
     load_threads: list[int] = []
-    original_load_run = store.load_run
+    original_load_run = store.load_run_abort
 
-    def recording_load_run(session_id: str, run_id: str) -> RunRecord:
+    def recording_load_run(session_id: str, run_id: str) -> RunRecord | None:
         load_threads.append(get_ident())
         return original_load_run(session_id, run_id)
 
-    monkeypatch.setattr(store, "load_run", recording_load_run)
+    monkeypatch.setattr(store, "load_run_abort", recording_load_run)
     signal = await ownership.activate_signal(session.session_id, run.run_id)
 
     for _ in range(100):

@@ -85,7 +85,7 @@ def test_terminal_tool_result_without_start_has_zero_duration() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("plugin", [False, True])
-@pytest.mark.parametrize("change", ["presentation", "identity", "parameters"])
+@pytest.mark.parametrize("change", ["presentation", "identity", "parameters", "result"])
 async def test_pending_tool_checks_execution_semantics_before_calling_handler(plugin, change):
     definition = ToolDefinition(
         name="pending",
@@ -113,6 +113,8 @@ async def test_pending_tool_checks_execution_semantics_before_calling_handler(pl
         definition.metadata = {"generation_id": "another-process"}
     elif change == "identity":
         definition.canonical_id = "another/tools/pending"
+    elif change == "result":
+        definition.result_schema = {"type": "object", "required": ["value"]}
     else:
         definition.parameters_schema = {"type": "object", "required": ["value"]}
     if plugin:

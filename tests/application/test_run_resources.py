@@ -14,7 +14,7 @@ import pytest
 from ouro.application.runs.lifecycle import reserve_run
 from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
-from ouro.core.agents import AgentCatalogSnapshot
+from ouro.core.agents import AgentCatalogEntry, AgentCatalogSnapshot, AgentDefinition
 from ouro.core.errors import PersistenceError
 from ouro.core.observers import ContextPreparedObservation
 from ouro.core.provider import ModelMetadata
@@ -25,6 +25,58 @@ from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
 from tests.agent_facts import seed_delegation
+
+
+async def test_decision_tools_are_reused_and_rebound_with_their_catalog(
+    runtime, tmp_path, monkeypatch
+):
+    import ouro.tools.registry as registries
+    from ouro.local_application import LocalApplication
+
+    app, _, _ = runtime
+    async with LocalApplication.from_runtime(app, home=tmp_path):
+        checked = []
+        validate = registries.validate_tool_definition
+
+        def record_validation(definition):
+            checked.append(definition.name)
+            validate(definition)
+
+        monkeypatch.setattr(registries, "validate_tool_definition", record_validation)
+
+        def catalog(agent_id):
+            return AgentCatalogSnapshot(
+                entries=(
+                    AgentCatalogEntry(
+                        definition=AgentDefinition(
+                            agent_id=agent_id, name=agent_id, description="Read evidence"
+                        )
+                    ),
+                )
+            )
+
+        run = RunRecord(
+            session_id="session", status="waiting_approval", agent_catalog=catalog("first")
+        )
+        await app._ensure_extension_snapshot(run)
+        first = app._tools_for_run(run.run_id).get("SpawnAgent").definition
+        for _ in range(5):
+            reloaded = RunRecord.model_validate_json(run.model_dump_json())
+            await app._ensure_extension_snapshot(reloaded)
+            assert app._tools_for_run(run.run_id).get("SpawnAgent").definition is first
+        assert checked.count("SpawnAgent") == 1
+        assert checked.count("SendAgentMessage") == 1
+        assert checked.count("InterruptAgent") == 1
+        changed = run.model_copy(update={"agent_catalog": catalog("second")})
+        await app._ensure_extension_snapshot(changed)
+        second = app._tools_for_run(run.run_id).get("SpawnAgent").definition
+        assert second is not first
+        assert first.parameters_schema["properties"]["agent_id"]["oneOf"][0]["const"] == "first"
+        assert second.parameters_schema["properties"]["agent_id"]["oneOf"][0]["const"] == "second"
+        app._finish_run_observers(changed)
+        assert run.run_id not in app._run_resources
+        await app._ensure_extension_snapshot(changed)
+        assert app._tools_for_run(run.run_id).get("SpawnAgent").definition is not second
 
 
 def test_headless_runtime_completes_and_closes_with_tui_imports_blocked():

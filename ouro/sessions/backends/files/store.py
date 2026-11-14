@@ -138,7 +138,13 @@ from ouro.sessions.sqlite_requests import (
     read_request_header,
     write_header,
 )
-from ouro.sessions.sqlite_runs import read_pending_runs, read_request_counts, read_run, read_runs
+from ouro.sessions.sqlite_runs import (
+    read_pending_runs,
+    read_request_counts,
+    read_run,
+    read_run_abort,
+    read_runs,
+)
 from ouro.sessions.sqlite_sessions import read_session, require_session, write_session
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
@@ -1375,6 +1381,10 @@ class LocalSessionStore:
     def load_run(self, session_id: str, run_id: str) -> RunRecord:
         with self.session_read(session_id) as reader:
             return read_run(reader.connection(), session_id, run_id)
+
+    def load_run_abort(self, session_id: str, run_id: str) -> RunRecord | None:
+        with self.session_read(session_id) as reader:
+            return read_run_abort(reader.connection(), session_id, run_id)
 
     def list_sessions(self) -> list[SessionRecord]:
         sessions = []

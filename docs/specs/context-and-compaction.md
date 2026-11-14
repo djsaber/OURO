@@ -51,7 +51,9 @@ Context Provider 和投影。Core 的摘要投影接收已经选定的尾部，�
 `ContextBuilder` 接收注册工具定义，根据 `batch_behavior="exclusive"` 为请求副本的 description 追加统一的
 单独调用约束，说明混合调用会在执行前整批拒绝。其他工具的描述保持原样；`execution_mode` 是宿主调度设置，
 不生成额外模型指令。投影不修改注册定义、参数 schema 或执行契约哈希。
-`ContextView.provider_context.tools` 保存已呈现的工具定义，token 估算、Provider 请求和请求记录使用同一份内容。
+`ContextView.provider_context.tools` 保存已呈现的完整工具定义，Provider 扩展与请求记录使用同一份内容。
+共享 token 估算只读取其中的名称、呈现后的描述和参数 schema；权限、执行策略、结果 schema 与 provenance metadata
+不计入模型输入预算。估算器 `builtin.conservative` 的版本为 4，仍是协议无关的近似，不代表供应商实际计量。
 OpenAI Chat Completions、OpenAI Responses 与 Anthropic Messages 均由公共上下文路径取得描述，codec 只转换协议格式，
 不生成调用规则。工具目录中的结构化契约保持原样。
 
