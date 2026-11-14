@@ -185,7 +185,6 @@ class PluginConfigurationService:
             raise RuntimeError(
                 "Cannot apply configuration to an enabled selected plugin without its runtime."
             )
-        self.store.verify_package(candidate.plugin_id, candidate.package_digest)
         revision = create_configuration_revision(
             values=cast(dict[str, object], preview.candidate.values),
             credential_refs=preview.candidate.credential_refs,

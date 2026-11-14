@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from zipfile import ZipFile
@@ -320,7 +321,8 @@ def test_session_round_trip_across_backends_with_attachments(
     assert len(imported.sessions.catalog().entries) == 2
 
 
-def test_session_attachment_import_keeps_complete_named_files(tmp_path):
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+def test_session_attachment_import_keeps_complete_named_files(tmp_path, monkeypatch, backend):
     source, target = tmp_path / "source", tmp_path / "target"
     services = build_local_session_services(source)
     session, _ = _create_session(services._store)
@@ -333,8 +335,20 @@ def test_session_attachment_import_keeps_complete_named_files(tmp_path):
         expected.append(content)
     archive = tmp_path / "sessions.zip"
     transfer(source, "export", "sessions", archive)
-    transfer(target, "import", "sessions", archive)
-    imported = build_local_session_services(target)
+    digest = hashlib.sha256
+    hashes = []
+
+    def count_hashes(*args, **kwargs):
+        hashes.append(None)
+        return digest(*args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(hashlib, "sha256", count_hashes)
+        transfer(target, "import", "sessions", archive, backend=backend)
+    # The archive checks all entries, including skipped Sessions. Publication
+    # checks supplied bytes once and does not reread the newly written files.
+    assert len(hashes) == 2 * len(expected)
+    imported = build_local_session_services(target, session_backend=backend)
     records = imported._store.load_resource_references(session.session_id)
     assert len(records) == len(expected)
     store = LocalResourceStore(target)

@@ -15,8 +15,8 @@ from ouro.core.errors import PersistenceError
 from ouro.local_locks import FileAccessLock, FileMutationLock
 from ouro.local_permissions import restrict_to_user
 from ouro.plugins.installation.package import (
+    PackageLimits,
     ValidatedPluginPackage,
-    compute_tree_digest,
     validate_package_tree,
 )
 from ouro.plugins.installation.paths import ignore_plugin_caches
@@ -81,8 +81,7 @@ class PluginPackageStore:
         if not package.is_dir():
             raise PluginStoreError(f"plugin package is missing: {plugin_id}@{package_digest}")
         try:
-            validate_package_tree(package)
-            actual = compute_tree_digest(package)
+            _, _, actual = validate_package_tree(package)
         except (OSError, ValueError) as exc:
             raise PluginStoreError(
                 f"immutable plugin store is invalid for {plugin_id}: {exc}"
@@ -96,7 +95,14 @@ class PluginPackageStore:
         target = self.package_path(package.manifest.plugin_id, package.package_digest)
         with self.plugin_lock(package.manifest.plugin_id):
             if target.exists():
-                actual = compute_tree_digest(target)
+                _, _, actual = validate_package_tree(
+                    target,
+                    limits=PackageLimits(
+                        max_files=package.file_count,
+                        max_file_bytes=package.total_bytes,
+                        max_total_bytes=package.total_bytes,
+                    ),
+                )
                 if actual != package.package_digest:
                     raise PluginStoreError(
                         f"immutable plugin store is corrupted for {package.manifest.plugin_id}"
@@ -174,7 +180,8 @@ class PluginPackageStore:
             current = self.read_state()
             proposed = operation(current.model_copy(deep=True))
             updated = PluginStateDocument.model_validate(proposed.model_dump(mode="python"))
-            self._commit_state_unlocked(current, updated)
+            if updated != current:
+                self._commit_state_unlocked(current, updated)
             return updated
 
     def commit_candidate_state(

@@ -53,8 +53,11 @@ def checked_file(directory: Path, record: ResourceRecord) -> Path:
 def write_resource_contents(
     directory: Path,
     items: Iterable[tuple[ResourceRecord, bytes]],
+    *,
+    references: Iterable[ResourceRecord] = (),
 ) -> None:
-    """Publish bytes before canonical references; failures may leave unreferenced files."""
+    """Publish bytes and verify the reference closure before metadata is committed."""
+    published: set[tuple[str, int, str]] = set()
     for record, content in items:
         if (
             len(content) != record.size
@@ -66,6 +69,7 @@ def write_resource_contents(
         if path.exists():
             if path.read_bytes() != content:
                 raise ResourceIntegrityError(f"resource file collision: {record.filename}")
+            published.add((record.filename, record.size, record.digest))
             continue
         with NamedTemporaryFile(dir=directory, delete=False) as stream:
             temporary = Path(stream.name)
@@ -81,17 +85,17 @@ def write_resource_contents(
             replace_path_with_retry(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
+        published.add((record.filename, record.size, record.digest))
 
-
-def verify_resource_files(directory: Path, records: Iterable[ResourceRecord]) -> None:
-    """Require a complete, unambiguous file closure before publishing Session metadata."""
     names: set[str] = set()
     identities: set[str] = set()
-    for record in records:
+    for record in references:
         if record.filename.casefold() in names or record.resource_id in identities:
             raise ResourceIntegrityError("duplicate Session resource name or identity")
         names.add(record.filename.casefold())
         identities.add(record.resource_id)
+        if (record.filename, record.size, record.digest) in published:
+            continue
         path = checked_file(directory, record)
         digest, size = hashlib.sha256(), 0
         try:
@@ -103,3 +107,8 @@ def verify_resource_files(directory: Path, records: Iterable[ResourceRecord]) ->
             raise ResourceIntegrityError(f"resource file unavailable: {path}") from exc
         if size != record.size or f"sha256:{digest.hexdigest()}" != record.digest:
             raise ResourceIntegrityError(f"resource integrity mismatch: {path}")
+
+
+def verify_resource_files(directory: Path, records: Iterable[ResourceRecord]) -> None:
+    """Verify existing files without publishing new content."""
+    write_resource_contents(directory, (), references=records)

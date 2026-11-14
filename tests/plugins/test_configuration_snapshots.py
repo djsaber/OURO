@@ -92,7 +92,9 @@ def test_install_materializes_defaults_once_and_retains_incomplete_initial_value
         installed, activation, store.package_path(installed.plugin_id, installed.package_digest)
     )
     assert not activation.desired_enabled
+    stamp = store.state_stamp()
     assert PluginInstaller(store).install(source).already_installed
+    assert store.state_stamp() == stamp
     assert store.read_state().plugins[installed.plugin_id].activation == activation
 
 

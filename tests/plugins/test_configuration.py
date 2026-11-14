@@ -13,7 +13,7 @@ from ouro.plugins.installation.package import validate_plugin_package
 from ouro.plugins.installation.paths import PluginPackageError
 from ouro.plugins.installation.store import PluginPackageStore
 from ouro.plugins.manifest import PluginManifest
-from tests.plugins.test_plugin_system import _write_native_plugin
+from tests.plugins.test_plugin_system import _runtime, _write_native_plugin
 
 
 def test_credential_only_definition_validates_metadata_and_binding_requirements(tmp_path):
@@ -86,6 +86,33 @@ def test_package_validation_checks_schema_without_importing_plugin_code(tmp_path
         validate_plugin_package(source)
 
 
+def test_package_validation_traverses_the_tree_once(tmp_path, monkeypatch):
+    _write_native_plugin(tmp_path / "package")
+    entries = package_module._tree_entries
+    traversals = []
+
+    def counted_entries(root):
+        traversals.append(root)
+        return entries(root)
+
+    monkeypatch.setattr(package_module, "_tree_entries", counted_entries)
+    package = validate_plugin_package(tmp_path / "package")
+    assert package.file_count == 1
+    assert traversals == [package.root]
+
+
+def test_reinstall_uses_the_validated_package_size_limits(tmp_path, monkeypatch):
+    source = tmp_path / "package"
+    _write_native_plugin(source)
+    limits = package_module.PackageLimits()
+    monkeypatch.setattr(package_module, "PackageLimits", lambda: type(limits)(max_file_bytes=1))
+    installer = PluginInstaller(PluginPackageStore(tmp_path / "home"), limits=limits)
+    installed = installer.install(source)
+    repeated = installer.install(source)
+    assert repeated.already_installed
+    assert repeated.installed.package_digest == installed.installed.package_digest
+
+
 def test_plugin_using_configuration_contract_can_require_its_api_version(tmp_path, monkeypatch):
     _write_native_plugin(
         tmp_path / "package",
@@ -95,3 +122,34 @@ def test_plugin_using_configuration_contract_can_require_its_api_version(tmp_pat
     monkeypatch.setattr(package_module, "PLUGIN_API_VERSION", "3.0.0")
     with pytest.raises(PluginPackageError, match="API is incompatible"):
         validate_plugin_package(tmp_path / "package")
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_configuration_checks_package_content_only_when_loading(
+    tmp_path, monkeypatch, enabled
+):
+    source = tmp_path / "package"
+    _write_native_plugin(source, extra={"configuration": {"schema": "./config.json"}})
+    (source / "config.json").write_text('{"type":"object"}', encoding="utf-8")
+    runtime, *_ = _runtime(tmp_path / "home")
+    service = PluginService(runtime.store, runtime=runtime)
+    service.install(source)
+    try:
+        if enabled:
+            await service.enable("dev.ouro.echo")
+        verified = []
+        verify = runtime.store.verify_package
+
+        def counted_verify(plugin_id, digest):
+            verified.append((plugin_id, digest))
+            return verify(plugin_id, digest)
+
+        monkeypatch.setattr(runtime.store, "verify_package", counted_verify)
+        result = await service.configure(
+            service.configuration("dev.ouro.echo").candidate(values={"value": 1})
+        )
+        assert len(verified) == int(enabled)
+        assert result.outcome == ("published" if enabled else "saved")
+        assert service.configuration("dev.ouro.echo").values == {"value": 1}
+    finally:
+        await runtime.close()

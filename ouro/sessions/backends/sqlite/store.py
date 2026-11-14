@@ -65,7 +65,6 @@ from ouro.resources.files import (
     read_resource_content,
     require_published_resource,
     session_resource_directory,
-    verify_resource_files,
     write_resource_contents,
 )
 from ouro.resources.media import (
@@ -852,12 +851,8 @@ class SQLiteSessionStore:
                 write_resource_contents(
                     session_resource_directory(self.database.parent, session.session_id),
                     resource_contents,
+                    references=resource_references or () if not prepared_resources else (),
                 )
-                if not prepared_resources:
-                    verify_resource_files(
-                        session_resource_directory(self.database.parent, session.session_id),
-                        resource_references or (),
-                    )
                 for reference in resource_references or ():
                     sqlite_resources.attach_reference(connection, session.session_id, reference)
             except sqlite3.IntegrityError as exc:

@@ -74,7 +74,6 @@ from ouro.local_locks import is_lock_held
 from ouro.resources.files import (
     read_resource_content,
     require_published_resource,
-    verify_resource_files,
     write_resource_contents,
 )
 from ouro.resources.media import (
@@ -625,11 +624,11 @@ class LocalSessionStore:
                     )
             if len({message.message_id for message in messages}) != len(messages):
                 raise PersistenceError("Session snapshot contains duplicate message identities")
-            write_resource_contents(staging_dir / "resources" / "files", resource_contents)
-            if not prepared_resources:
-                verify_resource_files(
-                    staging_dir / "resources" / "files", resource_references or ()
-                )
+            write_resource_contents(
+                staging_dir / "resources" / "files",
+                resource_contents,
+                references=resource_references or () if not prepared_resources else (),
+            )
             if latest_manifest is not None:
                 content_path = request_input_path(staging_dir, latest_manifest.context_id)
                 content_path.parent.mkdir(exist_ok=True)

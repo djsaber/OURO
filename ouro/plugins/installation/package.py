@@ -63,7 +63,7 @@ def validate_plugin_package(
     if not package_root.is_dir():
         raise PluginPackageError(f"plugin package is not a directory: {package_root}")
     manifest = load_plugin_manifest(package_root)
-    file_count, total_bytes = validate_package_tree(package_root, limits=limits)
+    file_count, total_bytes, digest = validate_package_tree(package_root, limits=limits)
     configuration_schema = validate_manifest_paths(package_root, manifest)
     if manifest.contributes.mcp_servers:
         # Local import keeps package-path primitives below the MCP adapter while
@@ -76,7 +76,7 @@ def validate_plugin_package(
     return ValidatedPluginPackage(
         root=package_root,
         manifest=manifest,
-        package_digest=compute_tree_digest(package_root),
+        package_digest=digest,
         file_count=file_count,
         total_bytes=total_bytes,
         configuration_schema=configuration_schema,
@@ -161,8 +161,10 @@ def validate_package_tree(
     root: Path,
     *,
     limits: PackageLimits | None = None,
-) -> tuple[int, int]:
+) -> tuple[int, int, str]:
+    """Validate and identify the same package tree in one traversal."""
     effective = limits or PackageLimits()
+    digest = hashlib.sha256()
     file_count = 0
     total_bytes = 0
     portable_identities: dict[str, str] = {}
@@ -182,7 +184,9 @@ def validate_package_tree(
         if any(part in _REJECTED_PARTS for part in relative.parts):
             raise PluginPackageError(f"package contains rejected path: {relative.as_posix()}")
         _assert_plain_path(path, root=root)
+        encoded_path = display.encode("utf-8")
         if path.is_dir():
+            digest.update(b"D\0" + encoded_path + b"\0")
             continue
         if not path.is_file():
             raise PluginPackageError(f"package contains unsupported entry: {relative.as_posix()}")
@@ -195,23 +199,12 @@ def validate_package_tree(
             raise PluginPackageError("plugin package exceeds file count limit")
         if total_bytes > effective.max_total_bytes:
             raise PluginPackageError("plugin package exceeds total size limit")
-    return file_count, total_bytes
-
-
-def compute_tree_digest(root: Path) -> str:
-    digest = hashlib.sha256()
-    for path in _tree_entries(root):
-        relative = path.relative_to(root).as_posix().encode("utf-8")
-        if path.is_dir():
-            digest.update(b"D\0" + relative + b"\0")
-            continue
-        size = path.stat().st_size
-        digest.update(b"F\0" + relative + b"\0" + str(size).encode("ascii") + b"\0")
+        digest.update(b"F\0" + encoded_path + b"\0" + str(size).encode("ascii") + b"\0")
         with path.open("rb") as stream:
             while chunk := stream.read(1024 * 1024):
                 digest.update(chunk)
         digest.update(b"\0")
-    return digest.hexdigest()
+    return file_count, total_bytes, digest.hexdigest()
 
 
 def _tree_entries(root: Path) -> list[Path]:

@@ -24,7 +24,7 @@ from ouro.core.errors import (
 )
 from ouro.core.messages import ImageContent, MessageRecord, ModelMessage, ToolResultReference
 from ouro.core.observers import ObserverRegistry
-from ouro.core.state import RunRecord
+from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolResult
 from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
@@ -58,6 +58,28 @@ def test_file_batch_checks_existing_and_incoming_content(tmp_path):
     store.path_for("ses_test", record).write_bytes(b"corrupt")
     with pytest.raises(ResourceIntegrityError):
         store.import_contents("ses_test", ((record, b"verified"),))
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+@pytest.mark.parametrize("invalid", ["missing", "mismatched", "duplicate"])
+def test_snapshot_checks_resource_closure_before_publication(tmp_path, backend, invalid):
+    from tests.resource_fixtures import resource_record
+
+    sessions, _, _, _ = _services(tmp_path, backend=backend)
+    session = SessionRecord()
+    record = resource_record(content=b"data")
+    references = [record]
+    if invalid == "missing":
+        references.append(resource_record(content=b"missing", filename="missing.txt"))
+    elif invalid == "mismatched":
+        references = [record.model_copy(update={"digest": "sha256:" + "0" * 64})]
+    else:
+        references.append(record)
+    with pytest.raises(ResourceIntegrityError):
+        sessions.create_session_snapshot(
+            session, [], references, resource_contents=((record, b"data"),)
+        )
+    assert sessions.list_sessions() == []
 
 
 def _services(tmp_path, *, max_bytes=1024 * 1024, backend="files"):
