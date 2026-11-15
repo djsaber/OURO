@@ -7,7 +7,7 @@ import pytest
 
 from ouro.application.contracts.execution import ShutdownPolicy
 from ouro.application.runtime.service import RuntimeService
-from ouro.application.supervisor import RuntimeSupervisor
+from ouro.application.supervisor import RuntimeSupervisor, _ConsumeInputs
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import AgentCatalogSnapshot
 from ouro.core.errors import PersistenceError, SessionBusyError
@@ -764,7 +764,7 @@ async def test_host_input_accepted_during_execution_release_gets_scheduled(
 
     async def dispatch(job, **kwargs):
         nonlocal failed
-        if transient_failure and job.consume_pending and not failed:
+        if transient_failure and isinstance(job.operation, _ConsumeInputs) and not failed:
             failed = True
             raise PersistenceError("temporary dispatch failure")
         return await enqueue(job, **kwargs)

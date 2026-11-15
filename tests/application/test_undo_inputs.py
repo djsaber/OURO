@@ -18,6 +18,7 @@ from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry
 from tests.harness_state import replace_harness_state
+from tests.input_facts import queued_input
 
 
 @pytest.fixture(params=["files", "sqlite"])
@@ -39,12 +40,12 @@ async def runtime(tmp_path, request):
 
 def enqueue(runtime, session_id, prompt, **kwargs):
     return runtime.queued_inputs.enqueue(
-        snapshot=runtime.store.load_runtime_session(session_id),
-        prompt=prompt,
-        title=None,
-        role="user",
-        scaffold=False,
-        **kwargs,
+        session_id=session_id,
+        item=queued_input(
+            runtime.store.load_runtime_session(session_id).session,
+            prompt=prompt,
+            **kwargs,
+        ),
     )[1]
 
 

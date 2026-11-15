@@ -25,7 +25,6 @@ from ouro.core.tasks import (
     TaskConfiguration,
     TaskSchedule,
 )
-from ouro.plugins.contributions.preparation import ContributionCoordinator
 from ouro.plugins.installation.store import PluginPackageStore
 from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.providers import FauxProvider
@@ -98,7 +97,8 @@ async def host(tmp_path, request, kind):
     )
     plugins = PluginRuntimeResource(
         PluginPackageStore(tmp_path / "home"),
-        ContributionCoordinator(tools=tools, observers=ObserverRegistry()),
+        tools=tools,
+        observers=ObserverRegistry(),
     )
     service = PluginService(plugins.store, runtime=plugins)
     service.install(package(tmp_path, kind))

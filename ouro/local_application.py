@@ -80,7 +80,6 @@ from ouro.local_configuration import (
 )
 from ouro.local_providers import build_plugin_provider, unavailable_provider_binding
 from ouro.mcp import MCPRuntimeResource, MCPServerConfig, MCPServerRecord
-from ouro.plugins.contributions.preparation import ContributionCoordinator
 from ouro.plugins.installation.store import PluginPackageStore
 from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.plugins.providers import ProviderBinder, ProviderBinding
@@ -848,17 +847,15 @@ def _build_local_plugin_runtime(
     commands = PluginCommandRegistry()
     runtime = PluginRuntimeResource(
         store,
-        ContributionCoordinator(
-            tools=tools,
-            observers=observers,
-            context_providers=context_providers,
-            commands=commands,
-            compaction=compaction,
-            continuations=continuations,
-            prompt_policies=prompt_policies,
-            turn_policies=turn_policies,
-            tool_policies=tool_policies,
-        ),
+        tools=tools,
+        observers=observers,
+        context_providers=context_providers,
+        commands=commands,
+        compaction=compaction,
+        continuations=continuations,
+        prompt_policies=prompt_policies,
+        turn_policies=turn_policies,
+        tool_policies=tool_policies,
         credential_resolver=resolve_plugin_credential,
         builtin_plugins=LOCAL_BUILTIN_PLUGINS,
         base_skills=skills,

@@ -7,7 +7,6 @@ import pytest
 from ouro.application.plugins.service import PluginService
 from ouro.core.observers import ObserverRegistry
 from ouro.plugins.builtin import BuiltinPluginDefinition, BuiltinPluginRegistry
-from ouro.plugins.contributions.preparation import ContributionCoordinator
 from ouro.plugins.dependencies import BuiltinPluginContract, plan_desired_plugin_activation
 from ouro.plugins.installation.store import PluginPackageStore
 from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
@@ -82,9 +81,9 @@ def graph_runtime(tmp_path, dependencies, *, fail=None, phase="prepare", on_prep
         )
     runtime = PluginRuntimeResource(
         PluginPackageStore(tmp_path / "home"),
-        ContributionCoordinator(
-            tools=ToolRegistry(), observers=ObserverRegistry(), commands=PluginCommandRegistry()
-        ),
+        tools=ToolRegistry(),
+        observers=ObserverRegistry(),
+        commands=PluginCommandRegistry(),
         builtin_plugins=BuiltinPluginRegistry(definitions),
     )
     return runtime, events

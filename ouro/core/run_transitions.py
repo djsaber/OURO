@@ -100,3 +100,22 @@ def plan_run_transition(
         }
     )
     return RunSessionTransitionPlan(run=next_run, session=projected_session)
+
+
+def prepare_run_continuation(run: RunRecord) -> RunRecord:
+    """Clear attempt-local terminal state while retaining execution checkpoints."""
+    metadata = dict(run.metadata)
+    metadata.pop("pause", None)
+    metadata.pop("abort_reason", None)
+    return run.model_copy(
+        update={
+            "ended_at": None,
+            "error": None,
+            "error_code": None,
+            "abort_requested": False,
+            "pending_approval_id": None,
+            "phase": "model_streaming",
+            "continuation": None,
+            "metadata": metadata,
+        }
+    )

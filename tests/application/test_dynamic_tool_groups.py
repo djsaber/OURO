@@ -56,7 +56,7 @@ async def test_model_decision_keeps_original_tools_and_next_decision_sees_new_gr
     )
     runtime = RuntimeService(
         store=store,
-        tools=plugins.coordinator.tools,
+        tools=plugins.tools,
         adapter=RuntimeAdapter(provider, ModelMetadata(model_id="faux", provider_id="faux")),
     )
     runtime.bind_extensions(catalog=plugins)
@@ -103,7 +103,7 @@ async def test_approval_restart_requires_original_dynamic_tool_revision(
         plugins = make_runtime(tmp_path, instances)
         runtime = RuntimeService(
             store=store,
-            tools=plugins.coordinator.tools,
+            tools=plugins.tools,
             adapter=RuntimeAdapter(provider, ModelMetadata(model_id="faux", provider_id="faux")),
             permission_overrides={"discovered": "approval"},
         )

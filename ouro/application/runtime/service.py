@@ -141,6 +141,7 @@ from ouro.core.redaction import redact_text
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy, RunPauseReason
 from ouro.core.run_drivers import DEFAULT_DRIVER_ID, DriverInputDelivery, RunDriverBinding
+from ouro.core.run_transitions import prepare_run_continuation
 from ouro.core.session_commits import SessionCommitConflict
 from ouro.core.session_controls import (
     AttributedSessionControlTransition,
@@ -495,28 +496,13 @@ class RuntimeService:
         return retained.value, retained.close
 
     def _tools_for_run(self, run_id: str) -> ToolRegistry:
+        def active_controller_ids() -> set[str]:
+            return self._active_controller_ids_for_run(run_id)
+
         resources = self._run_resources.get(run_id)
-        snapshot = resources.snapshot if resources is not None else None
-        registry = snapshot.tools if snapshot is not None else self.tools
-        if snapshot is None and resources is not None and resources.host_tools is not None:
-            registry = resources.host_tools
-        scoped = registry.scoped(lambda: self._active_controller_ids_for_run(run_id))
-        cap = resources.tool_names if resources is not None else None
-        selected = scoped if cap is None else scoped.selected(cap.intersection(scoped.names()))
-        if resources is not None and resources.tool_refs:
-            ceilings = {reference.public_name: reference for reference in resources.tool_refs}
-            selected = selected.selected(
-                definition.name
-                for definition in selected.definitions()
-                if definition.name in ceilings
-                and ceilings[definition.name].permits(
-                    AgentDefinitionService.tool_reference(selected, definition)
-                )
-            )
-        controls = resources.agent_tools if resources is not None else None
-        if controls is None:
-            return selected
-        return selected.overlay(controls)
+        if resources is None:
+            return self.tools.scoped(active_controller_ids)
+        return resources.select_tools(self.tools, active_controller_ids)
 
     def _context_providers_for_run(self, run_id: str) -> ContextProviderRegistry:
         snapshot = self._extension_snapshot_for_run(run_id)
@@ -2043,22 +2029,7 @@ class RuntimeService:
                     snapshot, run_ids=frozenset({run.run_id})
                 )
                 run = await run_blocking(continuable_run, self.store, snapshot)
-            metadata = dict(run.metadata)
-            metadata.pop("pause", None)
-            metadata.pop("abort_reason", None)
-            run = run.model_copy(
-                update={
-                    "ended_at": None,
-                    "error": None,
-                    "error_code": None,
-                    "abort_requested": False,
-                    "pending_approval_id": None,
-                    "active_tool_batch": run.active_tool_batch,
-                    "phase": "model_streaming",
-                    "continuation": None,
-                    "metadata": metadata,
-                }
-            )
+            run = prepare_run_continuation(run)
             session, run, committed_events = await run_blocking(
                 self.run_lifecycle.start,
                 session=snapshot.session,
@@ -2666,87 +2637,42 @@ class RuntimeService:
             if isinstance(attribution, HostSessionInput) and attribution.queue_id is not None
             else input_id or new_id("queued")
         )
-        prompt_policy_checked = source == "user"
-        prospective_run_id: str | None = None
-        extension_snapshot: RuntimeCapabilities | None = None
-        extension_catalog_id: str | None = None
-        extension_generations: tuple[dict[str, object], ...] = ()
+        prospective: RunRecord | None = None
         resolved_skill_activations: tuple[SkillActivationContent, ...] = ()
-        if prompt_policy_checked:
-            child_run = active_run if snapshot.session.session_kind == "subagent" else None
-            if snapshot.session.session_kind == "subagent" and child_run is None:
-                raise PersistenceError("Child prompt binding requires an active delegated Run")
-            prospective = RunRecord(
-                session_id=snapshot.session.session_id,
-                history_epoch=snapshot.session.history_epoch,
-                status="running",
-                origin=source,
-                driver=driver or RunDriverBinding(),
-                parent_run_id=child_run.parent_run_id if child_run is not None else None,
-                initiator_id=child_run.initiator_id if child_run is not None else None,
-                metadata=(
-                    {
-                        name: child_run.metadata[name]
-                        for name in (
-                            "root_session_id",
-                            "delegation_id",
-                            "agent_id",
-                            "agent_definition_contract_hash",
-                        )
-                    }
-                    if child_run is not None
-                    else {}
-                ),
-            )
-            prospective_run_id = prospective.run_id
-            prospective = await self._attach_extension_snapshot(prospective)
-            try:
+        try:
+            if source == "user":
+                child_run = active_run if snapshot.session.session_kind == "subagent" else None
+                if snapshot.session.session_kind == "subagent" and child_run is None:
+                    raise PersistenceError("Child prompt binding requires an active delegated Run")
+                prospective = RunRecord(
+                    session_id=snapshot.session.session_id,
+                    history_epoch=snapshot.session.history_epoch,
+                    status="running",
+                    origin=source,
+                    driver=driver or RunDriverBinding(),
+                    parent_run_id=child_run.parent_run_id if child_run is not None else None,
+                    initiator_id=child_run.initiator_id if child_run is not None else None,
+                    metadata=(
+                        {
+                            name: child_run.metadata[name]
+                            for name in (
+                                "root_session_id",
+                                "delegation_id",
+                                "agent_id",
+                                "agent_definition_contract_hash",
+                            )
+                        }
+                        if child_run is not None
+                        else {}
+                    ),
+                )
+                prospective = await self._attach_extension_snapshot(prospective)
                 resolved_skill_activations = await self._resolve_skill_activations_for_run(
                     prospective.run_id, skill_invocations
                 )
-                await self._evaluate_prompt_policies(
-                    session=snapshot.session,
-                    run=prospective,
-                    inputs=[
-                        QueuedInput(
-                            queue_id=queue_id,
-                            prompt=prompt,
-                            driver=driver,
-                            skill_activations=resolved_skill_activations,
-                            title=title,
-                            mode=mode,
-                            resource_refs=resource_refs,
-                            attachments=attachments,
-                            queued_at=utc_now(),
-                            source=source,
-                            role=role,
-                            scaffold=scaffold,
-                            semantic_tag=(
-                                attribution.semantic_tag if attribution is not None else None
-                            ),
-                            delegation_id=(
-                                attribution.delegation_id
-                                if isinstance(attribution, DelegatedTaskInput)
-                                else None
-                            ),
-                        )
-                    ],
-                    catalog_snapshot=extension_snapshot,
-                )
-                extension_snapshot = self._detach_extension_snapshot(prospective.run_id)
-                if extension_snapshot is not None:
-                    extension_catalog_id = extension_snapshot.catalog_id
-                    extension_generations = tuple(extension_snapshot.generation_metadata())
-            except BaseException:
-                self._release_run_resources(prospective.run_id)
-                if extension_snapshot is not None:
-                    extension_snapshot.close()
-                raise
-        try:
-            session, queued_input, _, events = await run_blocking(
-                self.queued_inputs.enqueue,
-                snapshot=snapshot,
-                session_settings=session_settings,
+            queued_input = QueuedInput(
+                history_epoch=snapshot.session.history_epoch,
+                queued_at=utc_now(),
                 prompt=prompt,
                 skill_activations=resolved_skill_activations,
                 driver=driver,
@@ -2798,17 +2724,40 @@ class RuntimeService:
                     isinstance(attribution, HostSessionInput)
                     and attribution.history_epoch is not None
                 ),
-                prompt_policy_checked=prompt_policy_checked,
-                prospective_run_id=prospective_run_id,
-                extension_catalog_id=extension_catalog_id,
-                extension_generations=extension_generations,
             )
-        except BaseException:
-            if extension_snapshot is not None:
-                extension_snapshot.close()
-            raise
-        if extension_snapshot is not None:
-            extension_snapshot.close()
+            if prospective is not None:
+                await self._evaluate_prompt_policies(
+                    session=snapshot.session,
+                    run=prospective,
+                    inputs=[queued_input],
+                )
+                extension_snapshot = self._extension_snapshot_for_run(prospective.run_id)
+                queued_input = queued_input.model_copy(
+                    update={
+                        "queued_at": utc_now(),
+                        "prompt_policy_checked": True,
+                        "prospective_run_id": prospective.run_id,
+                        "extension_catalog_id": (
+                            extension_snapshot.catalog_id
+                            if extension_snapshot is not None
+                            else None
+                        ),
+                        "extension_generations": (
+                            tuple(extension_snapshot.generation_metadata())
+                            if extension_snapshot is not None
+                            else ()
+                        ),
+                    }
+                )
+            session, queued_input, _, events = await run_blocking(
+                self.queued_inputs.enqueue,
+                session_id=snapshot.session.session_id,
+                item=queued_input,
+                session_settings=session_settings,
+            )
+        finally:
+            if prospective is not None:
+                self._release_run_resources(prospective.run_id)
         if on_input_accepted is not None:
             on_input_accepted()
         await self.event_recorder.publish_committed(events)
@@ -3334,7 +3283,6 @@ class RuntimeService:
             session_id,
             recover=True,
         )
-        session = snapshot.session
         run = (
             await run_blocking(self.store.load_run, session_id, run_id)
             if run_id
@@ -3342,22 +3290,12 @@ class RuntimeService:
         )
         if run.status != "waiting_approval":
             raise ValueError(f"run is not waiting for approval: {run.status}")
-        batch = await run_blocking(load_tool_batch, self.store, run)
-        if batch is None:
+        if run.active_tool_batch is None:
             raise ValueError("run has no active tool batch")
         resolved_approval_id = approval_id or run.pending_approval_id
         if resolved_approval_id is None:
             raise ValueError("run has no pending approval")
-        run_lock = await self.run_ownership.acquire_parked(
-            session.session_id,
-            run.run_id,
-            expected_status="waiting_approval",
-        )
-        if run_lock is None:
-            raise SessionBusyError(f"run is already active: {run.run_id}")
-        try:
-            session = await run_blocking(self.store.load_session_record, session_id)
-            run = await run_blocking(self.store.load_run, session_id, run.run_id)
+        async with self.run_ownership.parked_run(run) as (session, run):
             if run.status != "waiting_approval":
                 raise ValueError(f"run is not waiting for approval: {run.status}")
             batch = await run_blocking(load_tool_batch, self.store, run)
@@ -3399,12 +3337,10 @@ class RuntimeService:
                 )
             )
             session, run, batch, committed_events = await run_blocking(
-                self.run_lifecycle.save_batch_state,
+                self.run_lifecycle.save_resolved_batch,
                 session=session,
                 run=run,
                 batch=batch,
-                status=suspension.status if suspension is not None else "running",
-                phase=suspension.run_phase if suspension is not None else "tool_execution",
                 events=tuple(pending_events),
             )
             await self.event_recorder.publish_committed(committed_events)
@@ -3419,8 +3355,6 @@ class RuntimeService:
                     batch=batch,
                     sequence=sequence,
                 )
-        finally:
-            await self.run_ownership.release(run.run_id, run_lock)
         # Execution release precedes scheduling the Session's next input unit.
         return await self._finalize_run_boundary(result)
 
@@ -3431,31 +3365,13 @@ class RuntimeService:
         run_id: str,
         answer: JsonValue,
     ) -> RunResult:
-        snapshot = await run_blocking(
-            self._load_runtime_snapshot,
-            session_id,
-            recover=True,
-        )
-        session = snapshot.session
+        await run_blocking(self.session_recovery.recover_runtime, session_id)
         run = await run_blocking(self.store.load_run, session_id, run_id)
         if run.status != "waiting_user":
             raise ValueError(f"run is not waiting for user input: {run.status}")
-        batch = await run_blocking(load_tool_batch, self.store, run)
-        if batch is None:
+        if run.active_tool_batch is None:
             raise ValueError("run has no active tool batch")
-        waiting_call = next((call for call in batch.calls if call.status == "waiting_user"), None)
-        if waiting_call is None:
-            raise ValueError("run has no tool call waiting for user input")
-        run_lock = await self.run_ownership.acquire_parked(
-            session.session_id,
-            run.run_id,
-            expected_status="waiting_user",
-        )
-        if run_lock is None:
-            raise SessionBusyError(f"run is already active: {run.run_id}")
-        try:
-            session = await run_blocking(self.store.load_session_record, session_id)
-            run = await run_blocking(self.store.load_run, session_id, run.run_id)
+        async with self.run_ownership.parked_run(run) as (session, run):
             if run.status != "waiting_user":
                 raise ValueError(f"run is not waiting for user input: {run.status}")
             batch = await run_blocking(load_tool_batch, self.store, run)
@@ -3486,7 +3402,6 @@ class RuntimeService:
                 harness=answer_harness,
                 workspace=session.workspace,
             )
-            suspension = tool_batch_suspension(batch)
             pending_events: list[EventRecord] = []
             resolved_call = next(
                 call for call in batch.calls if call.request.id == waiting_call.request.id
@@ -3529,14 +3444,12 @@ class RuntimeService:
                     )
                 )
             session, run, batch, committed_events = await run_blocking(
-                self.run_lifecycle.save_batch_state,
+                self.run_lifecycle.save_resolved_batch,
                 session=session,
                 run=run,
                 batch=batch,
                 harness=answer_harness,
                 events=tuple(pending_events),
-                status=suspension.status if suspension is not None else "running",
-                phase=suspension.run_phase if suspension is not None else "tool_execution",
             )
             await self.event_recorder.publish_committed(committed_events)
             if committed_events:
@@ -3548,8 +3461,6 @@ class RuntimeService:
                 batch=batch,
                 sequence=sequence,
             )
-        finally:
-            await self.run_ownership.release(run.run_id, run_lock)
         # Keep the same post-lock Run boundary as normal runs and approval
         # recovery; a follow-up must acquire a fresh Session run lock.
         return await self._finalize_run_boundary(result)
@@ -3572,16 +3483,7 @@ class RuntimeService:
         run = await run_blocking(self.store.load_run, session_id, run_id)
         if run.status != "waiting_child":
             raise ValueError(f"run is not waiting for a child: {run.status}")
-        run_lock = await self.run_ownership.acquire_parked(
-            session_id,
-            run_id,
-            expected_status="waiting_child",
-        )
-        if run_lock is None:
-            raise SessionBusyError(f"run is already active: {run_id}")
-        try:
-            session = await run_blocking(self.store.load_session_record, session_id)
-            run = await run_blocking(self.store.load_run, session_id, run_id)
+        async with self.run_ownership.parked_run(run) as (session, run):
             if run.status != "waiting_child" or run.active_tool_batch is None:
                 raise ValueError("parent Run no longer has a durable child wait")
             if run.active_tool_batch.batch_id != identity.batch_id:
@@ -3657,12 +3559,10 @@ class RuntimeService:
                 )
             )
             session, run, batch, committed_events = await run_blocking(
-                self.run_lifecycle.save_batch_state,
+                self.run_lifecycle.save_resolved_batch,
                 session=session,
                 run=run,
                 batch=batch,
-                status="running",
-                phase="tool_execution",
                 changed_call_ids=frozenset({tool_call_id}),
                 events=tuple(pending_events),
             )
@@ -3675,8 +3575,6 @@ class RuntimeService:
                 batch=batch,
                 sequence=sequence,
             )
-        finally:
-            await self.run_ownership.release(run.run_id, run_lock)
         return await self._finalize_run_boundary(resumed)
 
     async def _continue_resolved_batch(
@@ -3689,21 +3587,6 @@ class RuntimeService:
     ) -> RunResult:
         suspension = tool_batch_suspension(batch)
         if suspension is not None:
-            batch = batch.model_copy(
-                update={"phase": suspension.batch_phase, "updated_at": utc_now()}
-            )
-            session, run, batch, committed_events = await run_blocking(
-                self.run_lifecycle.save_batch_state,
-                session=session,
-                run=run,
-                batch=batch,
-                status=suspension.status,
-                phase=suspension.run_phase,
-            )
-            await self.event_recorder.publish_committed(committed_events)
-            if committed_events:
-                sequence = committed_events[-1].sequence
-            assert batch is not None
             if suspension.status == "waiting_child":
                 if self._agent_controls is None or suspension.call.agent_wait is None:
                     raise RuntimeError("Agent control executor is unavailable")

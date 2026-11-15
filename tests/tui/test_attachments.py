@@ -28,6 +28,7 @@ from ouro.tui.composer.surface import WelcomePanel
 from ouro.tui.conversation.transcript import project_transcript_entries
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.theme import DEFAULT_TUI_THEME
+from tests.input_facts import queued_input
 from tests.tui.helpers import (
     command_popup_text,
     run_ready_app,
@@ -392,14 +393,13 @@ async def test_import_queue_cancel_and_draft_restart_restore_exact_input(tmp_pat
         snapshot = runtime.store.load_session(session_id)
         assert not snapshot.runs and not snapshot.messages
         _, queued, _, _ = runtime.queued_inputs.enqueue(
-            snapshot=snapshot,
-            prompt=content.text,
-            attachments=content.attachments,
-            resource_refs=content.resource_refs,
-            mode="follow_up",
-            title=None,
-            role="user",
-            scaffold=False,
+            session_id=snapshot.session.session_id,
+            item=queued_input(
+                snapshot.session,
+                prompt=content.text,
+                attachments=content.attachments,
+                resource_refs=content.resource_refs,
+            ),
         )
         composer.load_text("new draft")
         await app._sync_queued_inputs()

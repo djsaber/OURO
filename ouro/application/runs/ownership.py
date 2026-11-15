@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import AbortSignal, settle_owned_tasks
+from ouro.core.errors import SessionBusyError
 from ouro.core.results import RunResult
 from ouro.core.session_ports import SessionLock, SessionStore
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, RunStatus, SessionRecord
@@ -106,6 +109,23 @@ class RunExecutionOwnership:
             if run.status != expected_status or remaining <= 0:
                 return None
             await asyncio.sleep(min(0.05, remaining))
+
+    @asynccontextmanager
+    async def parked_run(self, run: RunRecord) -> AsyncIterator[tuple[SessionRecord, RunRecord]]:
+        """Own an interaction attempt and read its authoritative state under the lock."""
+        lock = await self.acquire_parked(
+            run.session_id,
+            run.run_id,
+            expected_status=run.status,
+        )
+        if lock is None:
+            raise SessionBusyError(f"run is already active: {run.run_id}")
+        try:
+            session = await run_blocking(self.store.load_session_record, run.session_id)
+            latest = await run_blocking(self.store.load_run, run.session_id, run.run_id)
+            yield session, latest
+        finally:
+            await self.release(run.run_id, lock)
 
     async def wait_for_abort_settlement(
         self,

@@ -19,7 +19,6 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import AgentDefinition, ToolSelection
 from ouro.core.observers import ObserverRegistry
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
-from ouro.plugins.contributions.preparation import ContributionCoordinator
 from ouro.plugins.installation.store import PluginPackageStore
 from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.providers import FauxProvider
@@ -108,7 +107,8 @@ def assemble(tmp_path, store, provider, calls):
         )
     plugins = PluginRuntimeResource(
         PluginPackageStore(tmp_path / "home"),
-        ContributionCoordinator(tools=tools, observers=ObserverRegistry()),
+        tools=tools,
+        observers=ObserverRegistry(),
     )
     plugin_service = PluginService(plugins.store, runtime=plugins, session_store=store)
     runtime = RuntimeService(

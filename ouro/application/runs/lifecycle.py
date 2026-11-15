@@ -48,6 +48,7 @@ from ouro.core.state import (
     SessionContinuationRequest,
     SessionRecord,
 )
+from ouro.core.tool_batch_transitions import tool_batch_suspension
 from ouro.core.tool_batches import ToolCallBatchRecord, ToolCallState, ToolResultProposals
 from ouro.core.tool_facts import (
     ToolCallFacts,
@@ -795,6 +796,33 @@ class RunLifecycle:
                 checkpoint=checkpoint.payload,
                 results=tuple(call.result for call in batch.calls if call.result is not None),
             )
+
+    def save_resolved_batch(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        batch: ToolCallBatchRecord,
+        harness: HarnessCallSnapshot | None = None,
+        changed_call_ids: frozenset[str] | None = None,
+        events: tuple[EventRecord, ...] = (),
+    ) -> tuple[SessionRecord, RunRecord, ToolCallBatchRecord, tuple[EventRecord, ...]]:
+        """Publish an interaction result and its next execution boundary together."""
+        suspension = tool_batch_suspension(batch)
+        if suspension is not None:
+            batch = batch.model_copy(
+                update={"phase": suspension.batch_phase, "updated_at": utc_now()}
+            )
+        return self.save_batch_state(
+            session=session,
+            run=run,
+            batch=batch,
+            harness=harness,
+            changed_call_ids=changed_call_ids,
+            events=events,
+            status=suspension.status if suspension is not None else "running",
+            phase=suspension.run_phase if suspension is not None else "tool_execution",
+        )
 
     def save_batch_state(
         self,

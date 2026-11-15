@@ -5,12 +5,16 @@ from collections.abc import Awaitable, Callable, Mapping
 
 from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.application.contracts.configuration import (
+    CompactionConfigInput,
+    CompactionConfigView,
     MCPServerConfigInput,
     MCPServerConfigView,
     SkillManagementView,
     SkillPolicyView,
 )
+from ouro.application.models.catalog import RuntimeAdapterCatalog
 from ouro.core.errors import ConfigError
+from ouro.core.reasoning import resolve_reasoning
 from ouro.mcp.models import MCPServerConfig
 from ouro.skills.models import SkillMetadata
 
@@ -30,6 +34,28 @@ class LiveConfigurationService:
         self._reconcile_mcp = reconcile_mcp
         self._refresh_skills = refresh_skills
         self._available_skills = available_skills
+
+    async def save_compaction(
+        self, draft: CompactionConfigInput, *, models: RuntimeAdapterCatalog
+    ) -> CompactionConfigView:
+        """Validate the live selection before publishing the persisted configuration."""
+
+        def save() -> CompactionConfigView:
+            model = None
+            if draft.use_default_model:
+                model = models.configured_default_model()
+            elif draft.provider_id is not None and draft.endpoint_id is not None:
+                model = models.resolve(f"{draft.provider_id}/{draft.endpoint_id}")
+            if model is not None:
+                models.adapter_for(model.key)
+                if draft.reasoning is not None:
+                    try:
+                        resolve_reasoning(model.reasoning, draft.reasoning)
+                    except ValueError as exc:
+                        raise ConfigError(f"invalid compaction reasoning override: {exc}") from exc
+            return self.configuration.save_compaction(draft)
+
+        return await asyncio.to_thread(save)
 
     async def set_mcp_enabled(
         self,

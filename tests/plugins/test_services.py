@@ -10,7 +10,6 @@ from ouro.core.callbacks import CallbackCancelled
 from ouro.core.observers import ObserverRegistry
 from ouro.plugins.builtin import BuiltinPluginDefinition, BuiltinPluginRegistry
 from ouro.plugins.catalog.gates import PluginGenerationUnavailableError
-from ouro.plugins.contributions.preparation import ContributionCoordinator
 from ouro.plugins.installation.store import PluginPackageStore
 from ouro.plugins.invocation import plugin_invocation
 from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
@@ -154,7 +153,8 @@ async def service_runtime(tmp_path):
     )
     runtime = PluginRuntimeResource(
         PluginPackageStore(tmp_path / "home"),
-        ContributionCoordinator(tools=ToolRegistry(), observers=ObserverRegistry()),
+        tools=ToolRegistry(),
+        observers=ObserverRegistry(),
         builtin_plugins=registry,
     )
     try:

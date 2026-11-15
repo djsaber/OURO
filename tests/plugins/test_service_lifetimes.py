@@ -9,7 +9,6 @@ import pytest
 
 from ouro.application.plugins.service import PluginService
 from ouro.core.observers import ObserverRegistry
-from ouro.plugins.contributions.preparation import ContributionCoordinator
 from ouro.plugins.installation.store import PluginPackageStore
 from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.tools import ToolRegistry
@@ -23,7 +22,8 @@ UNRELATED = "test.lifetime.unrelated"
 async def service_graph(tmp_path, request):
     runtime = PluginRuntimeResource(
         PluginPackageStore(tmp_path / "home"),
-        ContributionCoordinator(tools=ToolRegistry(), observers=ObserverRegistry()),
+        tools=ToolRegistry(),
+        observers=ObserverRegistry(),
     )
     service = PluginService(runtime.store, runtime=runtime)
     for identity, dependencies in (

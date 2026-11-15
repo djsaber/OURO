@@ -26,6 +26,8 @@ OURO 的主包与升级包位于仓库根目录下的 `ouro/` 与 `ouro_upgrade/
 | `application/supervisor.py`、`tool_calls.py` 等独立模块 | 任务调度、工具批次事务和各自的资源协作单元 |
 
 RunLifecycle 拥有持久转换，Supervisor 拥有会话调度、执行队列和执行许可，Runtime 拥有单次运行协作。
+Supervisor 的每个任务持有一种类型明确的执行操作；输入、继续、预留 Run、审批、回答和子任务恢复各自携带
+所需参数，任务对象只维护共有的调度、完成与取消状态。Core 的运行转换函数拥有续接时的状态准备规则。
 模型请求派发记录、Run 预算写入和已请求中止的状态结算归 RunLifecycle；Runtime 负责调用时机、
 资源收尾与提交后的事件发布，避免两个服务分别维护同一类持久转换。
 Runtime 通过装配的窄回调报告会话推进机会，不引用具体调度器或 Host。调度按当前队列事实安排执行，
@@ -45,8 +47,12 @@ Provider 构造参数统一使用 `config/provider_models.py` 的 ProviderRuntim
 `application/configuration/live.py` 拥有配置保存、运行生效和失败补偿的完整流程。LocalApplication
 将 MCP 协调、Skills 刷新和当前技能查询绑定到该用例。TUI 转换表单并呈现结果；离线 CLI 使用
 ConfigurationFacade 修改配置，不启动运行环境。配置管理器拥有原子写入与锁边界。
+压缩配置的在线保存由 LiveConfigurationService 解析所选模型的运行适配器并校验推理选项，再调用 ConfigurationFacade
+保存持久配置。运行目录可以由嵌入宿主注入，其模型能力与磁盘配置各自保留约束；TUI 只转换表单和路由格式。
 
-输入队列直接消费已验证的请求，处理接受、顺序和替换；用户、任务、Agent 及插件入口拥有各自的身份和调度规则。
+单条输入以完整的 QueuedInput 交给队列，队列负责受理事务、顺序和替换；
+用户、任务、Agent 及插件入口拥有各自的身份和调度规则。Runtime 为待入队用户输入构造一次意图，
+完成策略检查后附上检查凭据并提交；检查所用的扩展租约覆盖受理提交，在提交结束时释放。
 插件命令的输入与 Harness 变更在同一事务中提交，保证整批操作的原子性。
 
 用户输入约束由 `UserInputRequest` 表达。`RuntimeService.run` 与 Supervisor 受理共用该请求和新会话输入准备；
@@ -57,6 +63,8 @@ ConfigurationFacade 修改配置，不启动运行环境。配置管理器拥有
 执行边界统一处理锁竞争时的排队、锁内重读、输入消费和 Run 收尾，执行入口分别管理用户请求、已受理输入和锁预留。
 
 Runtime 通过 `RuntimeExtensions` 获取当前能力，通过 `RuntimeCapabilities` 持有一次决策的租约。
+RunResources 拥有单次 Run 的工具选择：控制器可见范围、派遣能力上限与 Agent 控制工具在此组合。
+控制器查询仍随 Run 所有权动态读取，释放运行资源后不保留控制器授权。
 `PluginRuntimeResource` 与 `ExtensionCatalogLease` 分别实现这两个契约，插件层拥有代次资源及安装、激活和候选发布状态。
 默认 Driver 通过 RuntimeExtensions 的原生 `driver_scope` 进入扩展调用作用域，插件宿主负责 SDK 转换、
 身份、授权和退出失效；插件 Driver 的适配 handler 拥有自己的作用域。Runtime 不引用插件实现或 SDK 类型。
@@ -75,7 +83,10 @@ ToolCallCoordinator 与 RunLifecycle 负责结果事实、控制变更和批次�
 控制状态快照与续接检查点显式接收调用方取得的 SessionControlState，读取时机与事务边界由调用方控制。
 Core 的 `SessionControlState.run_snapshot` 定义控制快照表示，`RunRecord` 提供控制归属和预算的按需读取。
 预算的持久表示由领域统一解释，运行配置、子任务约束及查询展示各自选择所需策略。
-审批、问答和子任务等待的恢复在取得执行锁后重新读取 Session 和目标 Run；Run 选择与恢复使用 RuntimeSessionSnapshot。
+审批、问答和子任务等待通过 RunExecutionOwnership 的停驻执行作用域取得锁、重读 Session 和目标 Run，
+并在离开作用域时释放执行权；完整工具批次只在锁内读取。Run 选择与恢复使用 RuntimeSessionSnapshot。
+交互结果与其下一执行边界由 RunLifecycle 一次提交，包含回答或审批事实、批次等待阶段及对应事件。
+Runtime 消费该提交结果继续执行或保持等待，释放锁后再推进会话调度。
 
 会话观察为当前执行提供连续的输出、工具状态和待处理交互。任务清单与统计通过查询取得当前快照，
 Host 在页面进入、相关操作完成或显式刷新时读取。MCPManager 在进程内运行记录变化时通知消费者，
@@ -127,9 +138,9 @@ Controller 或 Textual；提交取消时保护已有保存任务，关闭时等�
 `installation/paths.py`，包校验和 MCP 声明处理共用它。`contributions/inventory.py` 保留显式、
 封闭的贡献类型清单与注册顺序；增加贡献类型需要同时接入声明、准备、投影和协议适配。
 
-ContributionCoordinator 编排准备过程；`preparation_rules.py` 依据 Manifest、owner 和贡献值完成校验与绑定，
-不持有 Coordinator、运行候选对象或 Catalog。静态贡献与动态工具组复用这些规则，准备适配器只接收
-准备上下文和结果构建器。Worker 适配器仅在类型检查时引用实例类型；清单按需加载，轻量启动无需载入整套适配器。
+`prepare_contributions` 编排准备过程，宿主注册表由 PluginRuntimeResource 持有。
+`preparation_rules.py` 依据 Manifest、owner 和贡献值完成校验与绑定；静态贡献与动态工具组复用这些规则，
+准备适配器只接收准备上下文和结果构建器。Worker 适配器仅在类型检查时引用实例类型；清单按需加载，轻量启动无需载入整套适配器。
 循环依赖检查覆盖函数内导入。清单完整性和生命周期匹配由开发测试验证；插件输入、执行契约及资源校验在对应运行边界执行。
 SDK 与内置插件具有独立边界；装配和加载边界提供插件发布身份，插件层统一准备工具身份、执行契约与依赖指纹，
 调用与恢复逻辑不按插件来源区分规则。

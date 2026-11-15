@@ -11,7 +11,6 @@ import pytest
 from ouro.application.plugins.service import PluginService
 from ouro.core.observers import ContextPreparedObservation, ObserverRegistry
 from ouro.plugins.builtin import BuiltinPluginDefinition, BuiltinPluginRegistry
-from ouro.plugins.contributions.preparation import ContributionCoordinator
 from ouro.plugins.installation.store import PluginPackageStore
 from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.plugins.manifest import PluginManifest
@@ -65,9 +64,9 @@ def create_runtime(
     )
     return PluginRuntimeResource(
         PluginPackageStore(tmp_path / "home"),
-        ContributionCoordinator(
-            tools=ToolRegistry(), observers=ObserverRegistry(), commands=PluginCommandRegistry()
-        ),
+        tools=ToolRegistry(),
+        observers=ObserverRegistry(),
+        commands=PluginCommandRegistry(),
         builtin_plugins=BuiltinPluginRegistry((definition,)),
         stop_timeout_seconds=0.2,
     )

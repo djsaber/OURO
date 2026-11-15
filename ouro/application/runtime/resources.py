@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ouro.application.agents.definitions import AgentDefinitionService
 from ouro.core.agents import (
     AgentCatalogSnapshot,
     DelegationRecord,
@@ -31,6 +33,34 @@ class RunResources:
     agent_prompt: str = ""
     budget: RunBudgetPolicy | None = None
     tool_calls: ToolCallCoordinator | None = None
+
+    def select_tools(
+        self,
+        host_tools: ToolRegistry,
+        active_controller_ids: Callable[[], set[str]],
+    ) -> ToolRegistry:
+        """Apply this Run's controller scope, delegation ceiling and Agent controls."""
+        if self.snapshot is not None:
+            registry = self.snapshot.tools
+        else:
+            registry = self.host_tools if self.host_tools is not None else host_tools
+        scoped = registry.scoped(active_controller_ids)
+        selected = (
+            scoped
+            if self.tool_names is None
+            else scoped.selected(self.tool_names.intersection(scoped.names()))
+        )
+        if self.tool_refs:
+            ceilings = {reference.public_name: reference for reference in self.tool_refs}
+            selected = selected.selected(
+                definition.name
+                for definition in selected.definitions()
+                if definition.name in ceilings
+                and ceilings[definition.name].permits(
+                    AgentDefinitionService.tool_reference(selected, definition)
+                )
+            )
+        return selected.overlay(self.agent_tools) if self.agent_tools is not None else selected
 
     def bind_agent_catalog(self, catalog: AgentCatalogSnapshot) -> None:
         """Own the validated control tools for this decision's declared capabilities."""

@@ -53,7 +53,7 @@ from ouro.plugins.contributions.models import (
     PluginContributions,
     PreparedContributionSet,
 )
-from ouro.plugins.contributions.preparation import ContributionCoordinator
+from ouro.plugins.contributions.preparation import prepare_contributions
 from ouro.plugins.credentials import parse_credential_bindings
 from ouro.plugins.dependencies import (
     PluginDependencyError,
@@ -150,14 +150,12 @@ def _runtime(
     tool_policies = ToolPolicyRegistry()
     runtime = PluginRuntimeResource(
         PluginPackageStore(home),
-        ContributionCoordinator(
-            tools=tools,
-            observers=observers,
-            commands=commands,
-            compaction=compaction,
-            continuations=continuations,
-            tool_policies=tool_policies,
-        ),
+        tools=tools,
+        observers=observers,
+        commands=commands,
+        compaction=compaction,
+        continuations=continuations,
+        tool_policies=tool_policies,
         builtin_plugins=builtin_plugins,
         base_skills=base_skills,
     )
@@ -1450,11 +1448,7 @@ def test_candidate_catalog_failure_does_not_mutate_host_registries(tmp_path) -> 
             handler=lambda _request: "builtin conflict",
         )
     )
-    coordinator = ContributionCoordinator(
-        tools=tools,
-        observers=ObserverRegistry(),
-        commands=commands,
-    )
+    observers = ObserverRegistry()
     generation = PluginGenerationRecord(
         generation_id="plg_test",
         plugin_id=installed.plugin_id,
@@ -1465,7 +1459,7 @@ def test_candidate_catalog_failure_does_not_mutate_host_registries(tmp_path) -> 
         dependency_lock_fingerprint="2" * 64,
         plugin_api_version="2.0.0",
     )
-    prepared = coordinator.prepare(
+    prepared = prepare_contributions(
         _user_candidate(installed, source),
         generation,
         PluginContributions(
@@ -1484,7 +1478,7 @@ def test_candidate_catalog_failure_does_not_mutate_host_registries(tmp_path) -> 
 
     base = ExtensionCatalogBase.capture(
         tools=tools,
-        observers=coordinator.observers,
+        observers=observers,
         commands=commands,
         compaction=None,
         continuations=None,

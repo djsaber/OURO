@@ -12,6 +12,7 @@ from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.drafts import TuiInputDraftStore
 from ouro.tui.composer.input import Composer
 from ouro.tui.composer.popup import CommandPopup
+from tests.input_facts import queued_input
 from tests.tui.helpers import run_ready_app, wait_for_worker_group, wait_for_workers
 from tests.tui.test_history_commands import application_at
 
@@ -263,13 +264,13 @@ async def test_unqueue_restores_multiple_skills_and_files_after_an_existing_draf
             for item in original.skills
         )
         _, queued, _, _ = runtime.queued_inputs.enqueue(
-            snapshot=runtime.store.load_runtime_session(session.session_id),
-            prompt=original.text,
-            skill_activations=activations,
-            attachments=original.attachments,
-            title=None,
-            role="user",
-            scaffold=False,
+            session_id=session.session_id,
+            item=queued_input(
+                runtime.store.load_runtime_session(session.session_id).session,
+                prompt=original.text,
+                skill_activations=activations,
+                attachments=original.attachments,
+            ),
         )
         composer.load_text("draft")
         await pilot.pause()

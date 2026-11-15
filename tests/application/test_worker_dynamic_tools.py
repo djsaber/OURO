@@ -10,7 +10,6 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.observers import ObserverRegistry
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.tools import ToolCallRequest
-from ouro.plugins.contributions.preparation import ContributionCoordinator
 from ouro.plugins.installation.store import PluginPackageStore
 from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.providers import FauxProvider
@@ -25,7 +24,8 @@ def host(tmp_path, store, provider, *, approval=False):
     tools = ToolRegistry()
     plugins = PluginRuntimeResource(
         PluginPackageStore(tmp_path / "home"),
-        ContributionCoordinator(tools=tools, observers=ObserverRegistry()),
+        tools=tools,
+        observers=ObserverRegistry(),
     )
     service = PluginService(plugins.store, runtime=plugins, session_store=store)
     runtime = RuntimeService(

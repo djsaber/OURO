@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -1672,24 +1673,29 @@ async def test_controller_persists_complete_compaction_options_and_requires_sess
 
     try:
         model = (await controller.models())[0]
-        saved = await controller.save_compaction_configuration(
-            TuiCompactionConfiguration(
-                strategy_id="builtin.llm_summary",
-                fallback_strategy_id=None,
-                auto_enabled=False,
-                trigger_ratio=0.7,
-                target_ratio=0.2,
-                model_key=model.key,
-                temperature=0.1,
-                max_output_tokens=1024,
-                reasoning=ReasoningRequest(mode="disabled"),
-            )
+        draft = TuiCompactionConfiguration(
+            strategy_id="builtin.llm_summary",
+            fallback_strategy_id=None,
+            auto_enabled=False,
+            trigger_ratio=0.7,
+            target_ratio=0.2,
+            model_key=model.key,
+            temperature=0.1,
+            max_output_tokens=1024,
+            reasoning=ReasoningRequest(mode="disabled"),
         )
+        saved = await controller.save_compaction_configuration(draft)
 
         assert saved.policy["auto_enabled"] is False
         assert saved.model.provider_id == model.provider_id
         assert saved.model.endpoint_id == model.endpoint_id
         assert saved.model.reasoning == ReasoningRequest(mode="disabled")
+        before = configuration.compaction_config()
+        with pytest.raises(ConfigError, match="invalid compaction reasoning override"):
+            await controller.save_compaction_configuration(
+                replace(draft, reasoning=ReasoningRequest(mode="enabled", effort="medium"))
+            )
+        assert configuration.compaction_config() == before
         with pytest.raises(RuntimeError, match="no active session"):
             await controller.compact()
     finally:

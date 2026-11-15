@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Final, Protocol
+from typing import Final, Protocol, assert_never
 
 from pydantic import JsonValue
 
@@ -74,26 +74,68 @@ class RuntimeManagedResource(Protocol):
     async def close(self) -> None: ...
 
 
+@dataclass(frozen=True)
+class _RunInput:
+    prompt: str
+    title: str | None
+
+
+@dataclass(frozen=True)
+class _ContinueRun:
+    run_id: str
+    history_epoch: int
+
+
+@dataclass(frozen=True)
+class _PreparedRun:
+    run: RunRecord
+    session_input: HostSessionInput | DelegatedTaskInput
+
+
+@dataclass(frozen=True)
+class _ConsumeInputs:
+    history_epoch: int
+
+
+@dataclass(frozen=True)
+class _ResolveApproval:
+    run_id: str
+    approval_id: str
+    approved: bool
+    reason: str
+    arguments_override: dict[str, object] | None
+
+
+@dataclass(frozen=True)
+class _AnswerUser:
+    run_id: str
+    answer: JsonValue
+
+
+@dataclass(frozen=True)
+class _ResumeAgentWait:
+    identity: ToolCallIdentity
+    resolution: AgentWaitResolution
+
+
+type _RunOperation = (
+    _RunInput
+    | _ContinueRun
+    | _PreparedRun
+    | _ConsumeInputs
+    | _ResolveApproval
+    | _AnswerUser
+    | _ResumeAgentWait
+)
+
+
 @dataclass
 class _RunJob:
     handle: RunHandle
-    prompt: str
-    title: str | None
+    operation: _RunOperation
     background: bool = False
-    prepared_run: RunRecord | None = None
     reservation: RunReservation | None = None
-    continue_existing: bool = False
     history_epoch: int | None = None
-    session_input: HostSessionInput | DelegatedTaskInput | None = None
-    consume_pending: bool = False
-    agent_wait_resolution: AgentWaitResolution | None = None
-    agent_wait_identity: ToolCallIdentity | None = None
-    interaction_kind: str | None = None
-    approval_id: str | None = None
-    approval_decision: bool | None = None
-    approval_reason: str = "User rejected"
-    approval_arguments: dict[str, object] | None = None
-    user_answer: JsonValue = None
     done: asyncio.Event = field(default_factory=asyncio.Event)
     result: RunResult | None = None
     error: Exception | None = None
@@ -413,7 +455,7 @@ class RuntimeSupervisor:
             raise SessionBusyError(f"session already has an active run: {session_id}")
 
         handle = RunHandle(session_id=session_id)
-        job = _RunJob(handle=handle, prompt=prompt, title=title)
+        job = _RunJob(handle=handle, operation=_RunInput(prompt, title))
         await self._enqueue_job(job)
         return handle
 
@@ -445,10 +487,7 @@ class RuntimeSupervisor:
             await self._enqueue_job(
                 _RunJob(
                     handle=handle,
-                    prompt="",
-                    title=None,
-                    history_epoch=snapshot.session.history_epoch,
-                    consume_pending=True,
+                    operation=_ConsumeInputs(snapshot.session.history_epoch),
                 )
             )
             return handle
@@ -458,10 +497,7 @@ class RuntimeSupervisor:
         await self._enqueue_job(
             _RunJob(
                 handle=handle,
-                prompt="",
-                title=None,
-                continue_existing=True,
-                history_epoch=snapshot.session.history_epoch,
+                operation=_ContinueRun(run.run_id, snapshot.session.history_epoch),
             ),
             run_id=run.run_id,
         )
@@ -501,10 +537,7 @@ class RuntimeSupervisor:
         handle = RunHandle(session_id=session_id)
         job = _RunJob(
             handle=handle,
-            prompt=session_input.prompt,
-            title=session_input.title,
-            prepared_run=run,
-            session_input=session_input,
+            operation=_PreparedRun(run, session_input),
             background=background,
         )
         await self._enqueue_job(job, run_id=run.run_id)
@@ -536,10 +569,7 @@ class RuntimeSupervisor:
             handle = RunHandle(session_id=session_id)
             job = _RunJob(
                 handle=handle,
-                prompt="",
-                title=None,
-                agent_wait_resolution=resolution,
-                agent_wait_identity=identity,
+                operation=_ResumeAgentWait(identity, resolution),
             )
             await self._enqueue_job(job, run_id=run_id)
             return handle
@@ -614,10 +644,7 @@ class RuntimeSupervisor:
                 return None
             job = _RunJob(
                 handle=RunHandle(session_id=session_id),
-                prompt="",
-                title=None,
-                history_epoch=epoch,
-                consume_pending=True,
+                operation=_ConsumeInputs(epoch),
                 detached=True,
             )
             try:
@@ -689,13 +716,9 @@ class RuntimeSupervisor:
         await self._enqueue_job(
             _RunJob(
                 handle=handle,
-                prompt="",
-                title=None,
-                interaction_kind="approval",
-                approval_id=approval_id,
-                approval_decision=approved,
-                approval_reason=reason,
-                approval_arguments=arguments_override,
+                operation=_ResolveApproval(
+                    run_id, approval_id, approved, reason, arguments_override
+                ),
             ),
             run_id=run_id,
         )
@@ -721,10 +744,7 @@ class RuntimeSupervisor:
         await self._enqueue_job(
             _RunJob(
                 handle=handle,
-                prompt="",
-                title=None,
-                interaction_kind="user_input",
-                user_answer=answer,
+                operation=_AnswerUser(run_id, answer),
             ),
             run_id=run_id,
         )
@@ -750,11 +770,11 @@ class RuntimeSupervisor:
 
         def read_boundary() -> tuple[int, int]:
             with self.store.session_read(session_id):
-                if job.prepared_run is not None:
+                if isinstance(job.operation, _PreparedRun):
                     active = self._load_active_run(session_id)
                     if (
                         active is None
-                        or active.run_id != job.prepared_run.run_id
+                        or active.run_id != job.operation.run.run_id
                         or active.status != "queued"
                     ):
                         raise SessionBusyError("prepared Run is no longer queued")
@@ -763,9 +783,9 @@ class RuntimeSupervisor:
                     0,
                 )
 
-        if job.prepared_run is not None:
+        if isinstance(job.operation, _PreparedRun):
             job.reservation = await self.runtime.run_ownership.reserve(
-                session_id, job.prepared_run.run_id
+                session_id, job.operation.run.run_id
             )
             if job.reservation is None:
                 raise SessionBusyError(f"session already has an execution owner: {session_id}")
@@ -781,8 +801,11 @@ class RuntimeSupervisor:
             if job.reservation is not None:
                 await run_blocking(job.reservation.release)
             raise
-        if job.history_epoch is None:
-            job.history_epoch = epoch
+        job.history_epoch = (
+            job.operation.history_epoch
+            if isinstance(job.operation, (_ContinueRun, _ConsumeInputs))
+            else epoch
+        )
         # Queries yield to other submissions and shutdown. Commit process-local
         # scheduling atomically only after checking the current ownership again.
         if not job.background:
@@ -797,7 +820,7 @@ class RuntimeSupervisor:
             run_id=run_id,
             status="queued",
         )
-        if run_id is None or job.prepared_run is not None:
+        if run_id is None or isinstance(job.operation, _PreparedRun):
             activity = queued_runtime_activity(
                 session_id, sequence=sequence, history_epoch=job.history_epoch
             )
@@ -1052,7 +1075,7 @@ class RuntimeSupervisor:
         job = self._jobs_by_session.get(session_id)
         if (
             job is not None
-            and job.continue_existing
+            and isinstance(job.operation, _ContinueRun)
             and self._snapshots[job.handle.handle_id].run_id == run_id
         ):
             # A scheduled continuation reuses a terminal Run. Observe its
@@ -1160,7 +1183,7 @@ class RuntimeSupervisor:
         snapshot = self._snapshots[job.handle.handle_id]
         if snapshot.status == "queued":
             job.cancelled = True
-            if job.consume_pending and snapshot.run_id is None:
+            if isinstance(job.operation, _ConsumeInputs) and snapshot.run_id is None:
                 for item in await run_blocking(
                     self.runtime.pending_user_inputs, job.handle.session_id
                 ):
@@ -1306,6 +1329,60 @@ class RuntimeSupervisor:
         if close_errors:
             raise ExceptionGroup("runtime managed resource shutdown failed", close_errors)
 
+    async def _execute_job(self, job: _RunJob) -> RunResult | None:
+        operation = job.operation
+        session_id = job.handle.session_id
+        if not isinstance(operation, (_RunInput, _ConsumeInputs)):
+            job.provider_stream_started.set()
+        match operation:
+            case _RunInput(prompt, title):
+                return await self.runtime.run(
+                    prompt,
+                    session_id=session_id,
+                    title=title,
+                    on_provider_stream_start=job.provider_stream_started.set,
+                )
+            case _ContinueRun(run_id, history_epoch):
+                return await self.runtime.continue_run(
+                    session_id=session_id,
+                    run_id=run_id,
+                    history_epoch=history_epoch,
+                )
+            case _PreparedRun(run, session_input):
+                return await self.runtime.run_prepared(
+                    run,
+                    session_input,
+                    reservation=job.reservation,
+                )
+            case _ConsumeInputs(history_epoch):
+                return await self.runtime.run_pending_inputs(
+                    session_id,
+                    history_epoch=history_epoch,
+                    on_provider_stream_start=job.provider_stream_started.set,
+                )
+            case _ResolveApproval(run_id, approval_id, approved, reason, arguments_override):
+                return await self.runtime.approve_tool(
+                    session_id=session_id,
+                    run_id=run_id,
+                    approval_id=approval_id,
+                    approved=approved,
+                    reason=reason,
+                    arguments_override=arguments_override,
+                )
+            case _AnswerUser(run_id, answer):
+                return await self.runtime.answer_user(
+                    session_id=session_id,
+                    run_id=run_id,
+                    answer=answer,
+                )
+            case _ResumeAgentWait(identity, resolution):
+                return await self.runtime.resume_agent_wait(
+                    session_id=session_id,
+                    identity=identity,
+                    resolution=resolution,
+                )
+        assert_never(operation)
+
     async def _worker(self, index: int) -> None:
         del index
         while True:
@@ -1340,66 +1417,7 @@ class RuntimeSupervisor:
                         )
                     )
                 try:
-                    if job.interaction_kind == "approval":
-                        job.provider_stream_started.set()
-                        run_id = self._snapshots[job.handle.handle_id].run_id
-                        assert run_id is not None
-                        assert job.approval_id is not None
-                        assert job.approval_decision is not None
-                        job.result = await self.runtime.approve_tool(
-                            session_id=job.handle.session_id,
-                            run_id=run_id,
-                            approval_id=job.approval_id,
-                            approved=job.approval_decision,
-                            reason=job.approval_reason,
-                            arguments_override=job.approval_arguments,
-                        )
-                    elif job.interaction_kind == "user_input":
-                        job.provider_stream_started.set()
-                        run_id = self._snapshots[job.handle.handle_id].run_id
-                        assert run_id is not None
-                        job.result = await self.runtime.answer_user(
-                            session_id=job.handle.session_id,
-                            run_id=run_id,
-                            answer=job.user_answer,
-                        )
-                    elif job.agent_wait_resolution is not None:
-                        job.provider_stream_started.set()
-                        assert job.agent_wait_identity is not None
-                        job.result = await self.runtime.resume_agent_wait(
-                            session_id=job.handle.session_id,
-                            identity=job.agent_wait_identity,
-                            resolution=job.agent_wait_resolution,
-                        )
-                    elif job.continue_existing:
-                        job.provider_stream_started.set()
-                        job.result = await self.runtime.continue_run(
-                            session_id=job.handle.session_id,
-                            run_id=self._snapshots[job.handle.handle_id].run_id,
-                            history_epoch=job.history_epoch,
-                        )
-                    elif job.prepared_run is not None:
-                        job.provider_stream_started.set()
-                        assert job.session_input is not None
-                        job.result = await self.runtime.run_prepared(
-                            job.prepared_run,
-                            job.session_input,
-                            reservation=job.reservation,
-                        )
-                    elif job.consume_pending:
-                        assert job.history_epoch is not None
-                        job.result = await self.runtime.run_pending_inputs(
-                            job.handle.session_id,
-                            history_epoch=job.history_epoch,
-                            on_provider_stream_start=job.provider_stream_started.set,
-                        )
-                    else:
-                        job.result = await self.runtime.run(
-                            job.prompt,
-                            session_id=job.handle.session_id,
-                            title=job.title,
-                            on_provider_stream_start=job.provider_stream_started.set,
-                        )
+                    job.result = await self._execute_job(job)
                 except asyncio.CancelledError:
                     await self._finish_interrupted_job(job)
                     raise

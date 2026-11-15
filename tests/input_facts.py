@@ -1,6 +1,7 @@
 """Synthetic accepted inputs used by persistence and query integration fixtures."""
 
 from ouro.application.inputs.queue import consumption_changes
+from ouro.core.base import new_id, utc_now
 from ouro.core.inputs import InputRecord, InputState, QueuedInput
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 
@@ -69,3 +70,19 @@ def append_input_messages(store, messages):
         original.sequence = fact.sequence
         original.before_harness_version = fact.before_harness_version
     return result
+
+
+def queued_input(session, **values):
+    """Build an input intent in the selected history for queue integration tests."""
+    fields = dict(
+        history_epoch=session.history_epoch,
+        queue_id=new_id("queued"),
+        queued_at=utc_now(),
+        mode="follow_up",
+        source="user",
+        role="user",
+        scaffold=False,
+        semantic_tag=None,
+    )
+    fields.update(values)
+    return QueuedInput(**fields)

@@ -10,14 +10,12 @@ from ouro.application.inputs.requests import InputSessionSettings
 from ouro.core.base import new_id, utc_now
 from ouro.core.errors import PersistenceError
 from ouro.core.events import EventRecord
-from ouro.core.input_content import InputFile, InputSkillReference
+from ouro.core.input_content import InputSkillReference
 from ouro.core.inputs import InputRecord, InputState, InputStateChange
 from ouro.core.inputs import QueuedInput as QueuedInput
 from ouro.core.inputs import QueuedInputMode as QueuedInputMode
 from ouro.core.inputs import QueuedInputSource as QueuedInputSource
-from ouro.core.message_roles import MessageRole
-from ouro.core.message_semantics import SemanticTag
-from ouro.core.messages import MessageRecord, SkillActivationContent
+from ouro.core.messages import MessageRecord
 from ouro.core.run_drivers import RunDriverBinding
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict
 from ouro.core.session_controls import HostSessionInput, SessionInputRequest
@@ -106,20 +104,24 @@ class QueuedInputQueue:
             if record is not None:
                 return self._host_receipt(session, request, record), None, session, ()
             session, item, _, events = self.enqueue(
-                snapshot=RuntimeSessionSnapshot(session=session),
-                prompt=request.prompt,
-                driver=driver,
-                mode=request.mode,
-                title=request.title,
-                resource_refs=request.resource_refs,
-                queue_id=queue_id,
-                source="host",
-                role=request.role,
-                scaffold=request.scaffold,
-                semantic_tag=request.semantic_tag,
-                host_source_id=request.host_source_id,
-                caused_by_run_id=session.active_run_id,
-                history_bound=request.history_epoch is not None,
+                session_id,
+                QueuedInput(
+                    history_epoch=session.history_epoch,
+                    history_bound=request.history_epoch is not None,
+                    queue_id=queue_id,
+                    prompt=request.prompt,
+                    driver=driver,
+                    mode=request.mode,
+                    title=request.title,
+                    resource_refs=request.resource_refs,
+                    queued_at=utc_now(),
+                    source="host",
+                    role=request.role,
+                    scaffold=request.scaffold,
+                    semantic_tag=request.semantic_tag,
+                    host_source_id=request.host_source_id,
+                    caused_by_run_id=session.active_run_id,
+                ),
             )
         return (
             HostInputReceipt(
@@ -155,76 +157,13 @@ class QueuedInputQueue:
 
     def enqueue(
         self,
+        session_id: str,
+        item: QueuedInput,
         *,
-        snapshot: RuntimeSessionSnapshot,
-        prompt: str,
-        driver: RunDriverBinding | None = None,
-        skill_activations: tuple[SkillActivationContent, ...] = (),
-        mode: QueuedInputMode = "follow_up",
-        title: str | None,
-        resource_refs: tuple[str, ...] = (),
-        attachments: tuple[InputFile, ...] = (),
-        queue_id: str | None = None,
-        source: QueuedInputSource = "user",
-        role: MessageRole,
-        scaffold: bool,
-        semantic_tag: SemanticTag | None = None,
-        host_source_id: str | None = None,
-        delegation_id: str | None = None,
-        plugin_id: str | None = None,
-        contribution_id: str | None = None,
-        generation_id: str | None = None,
-        execution_contract_hash: str | None = None,
-        caused_by_run_id: str | None = None,
-        continuation_decision_id: str | None = None,
-        session_control_controller_id: str | None = None,
-        session_control_activation_id: str | None = None,
-        prompt_policy_checked: bool = False,
-        prospective_run_id: str | None = None,
-        extension_catalog_id: str | None = None,
-        extension_generations: tuple[dict[str, object], ...] = (),
-        coalesce_key: str | None = None,
-        history_bound: bool = False,
         session_settings: InputSessionSettings | None = None,
     ) -> tuple[SessionRecord, QueuedInput, int, tuple[EventRecord, ...]]:
-        batch_id = new_id("batch") if coalesce_key is not None else None
-        item = QueuedInput(
-            history_epoch=snapshot.session.history_epoch,
-            history_bound=history_bound,
-            queue_id=queue_id or new_id("queued"),
-            prompt=prompt,
-            skill_activations=skill_activations,
-            driver=driver,
-            mode=mode,
-            title=title,
-            resource_refs=resource_refs,
-            attachments=attachments,
-            queued_at=utc_now(),
-            source=source,
-            role=role,
-            scaffold=scaffold,
-            semantic_tag=semantic_tag,
-            batch_id=batch_id,
-            batch_index=0 if batch_id is not None else None,
-            batch_size=1 if batch_id is not None else None,
-            coalesce_key=coalesce_key,
-            host_source_id=host_source_id,
-            delegation_id=delegation_id,
-            plugin_id=plugin_id,
-            contribution_id=contribution_id,
-            generation_id=generation_id,
-            execution_contract_hash=execution_contract_hash,
-            caused_by_run_id=caused_by_run_id,
-            continuation_decision_id=continuation_decision_id,
-            session_control_controller_id=session_control_controller_id,
-            session_control_activation_id=session_control_activation_id,
-            prompt_policy_checked=prompt_policy_checked,
-            prospective_run_id=prospective_run_id,
-            extension_catalog_id=extension_catalog_id,
-            extension_generations=extension_generations,
-        )
-        with self.store.session_mutation(snapshot.session.session_id):
-            latest = self.store.load_session_record(snapshot.session.session_id)
+        with self.store.session_mutation(session_id):
+            latest = self.store.load_session_record(session_id)
             if item.history_epoch != latest.history_epoch:
                 raise SessionCommitConflict("Queued input belongs to withdrawn Session history")
             record = self.store.load_input(latest.session_id, item.queue_id)

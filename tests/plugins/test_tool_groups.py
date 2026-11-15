@@ -8,7 +8,6 @@ import pytest
 from ouro.core.observers import ObserverRegistry
 from ouro.plugins.builtin import BuiltinPluginDefinition, BuiltinPluginRegistry
 from ouro.plugins.catalog.gates import PluginGenerationUnavailableError
-from ouro.plugins.contributions.preparation import ContributionCoordinator
 from ouro.plugins.installation.store import PluginPackageStore
 from ouro.plugins.invocation import plugin_invocation
 from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
@@ -73,7 +72,8 @@ def make_runtime(tmp_path, instances, factory=Discovery, *, contributes=None):
     )
     return PluginRuntimeResource(
         PluginPackageStore(tmp_path / "home"),
-        ContributionCoordinator(tools=ToolRegistry(), observers=ObserverRegistry()),
+        tools=ToolRegistry(),
+        observers=ObserverRegistry(),
         builtin_plugins=BuiltinPluginRegistry(
             (
                 BuiltinPluginDefinition(
@@ -180,7 +180,7 @@ async def test_closing_replaced_registration_cannot_withdraw_current_group(disco
 )
 async def test_invalid_publication_keeps_entire_previous_group(discovery, failure):
     runtime, instances = discovery
-    runtime.coordinator.tools.register(
+    runtime.tools.register(
         Tool(
             definition=ToolDefinition(name="host_tool", description="Host"),
             handler=lambda *_: "host",
@@ -219,7 +219,7 @@ async def test_rebase_keeps_original_group_and_retired_unleased_catalog_cannot_r
     old_catalog = accepted.catalog
     try:
         await instances[-1].context.tool_groups.publish(group("two"))
-        runtime.coordinator.tools.register(
+        runtime.tools.register(
             Tool(
                 definition=ToolDefinition(name="host_tool", description="Host"),
                 handler=lambda *_: "host",

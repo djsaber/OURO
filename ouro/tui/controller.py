@@ -1679,28 +1679,13 @@ class TuiController:
         self,
         draft: TuiCompactionConfiguration,
     ) -> CompactionConfigView:
-        return await asyncio.to_thread(self._save_compaction_configuration, draft)
-
-    def _save_compaction_configuration(
-        self,
-        draft: TuiCompactionConfiguration,
-    ) -> CompactionConfigView:
         provider_id: str | None = None
         endpoint_id: str | None = None
-        if draft.model_key is not None:
-            if draft.model_key == DEFAULT_MODEL:
-                model = self._runtime().configured_default_model()
-            else:
-                provider_id, separator, endpoint_id = draft.model_key.partition("/")
-                if not separator or not provider_id or not endpoint_id:
-                    raise ConfigError(f"invalid compaction model route: {draft.model_key}")
-                model = self._runtime().resolve_model(draft.model_key)
-            if draft.reasoning is not None:
-                try:
-                    resolve_reasoning(model.reasoning, draft.reasoning)
-                except ValueError as exc:
-                    raise ConfigError(f"invalid compaction reasoning override: {exc}") from exc
-        return self._require_configuration().save_compaction(
+        if draft.model_key is not None and draft.model_key != DEFAULT_MODEL:
+            provider_id, separator, endpoint_id = draft.model_key.partition("/")
+            if not separator or not provider_id or not endpoint_id:
+                raise ConfigError(f"invalid compaction model route: {draft.model_key}")
+        return await self._live_configuration().save_compaction(
             CompactionConfigInput(
                 strategy_id=draft.strategy_id,
                 fallback_strategy_id=draft.fallback_strategy_id,
@@ -1713,7 +1698,8 @@ class TuiController:
                 temperature=draft.temperature,
                 max_output_tokens=draft.max_output_tokens,
                 reasoning=draft.reasoning,
-            )
+            ),
+            models=self._runtime().models,
         )
 
     async def compact(self) -> CompactionCommandResult:

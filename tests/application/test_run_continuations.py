@@ -69,6 +69,7 @@ from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry
 from tests.application.helpers import wait_for_session_state
 from tests.event_capture import recorded_events
+from tests.input_facts import queued_input
 from tests.session_storage import session_connection
 from tests.tool_batches import bind_tool_messages, persist_tool_batch, seed_tool_messages
 
@@ -1216,11 +1217,11 @@ async def test_cancel_after_continuation_commit_uses_run_settlement_without_rece
     queue = QueuedInputQueue(store)
     if superseded:
         queue.enqueue(
-            snapshot=store.load_runtime_session(session.session_id),
-            prompt="user has priority",
-            title=None,
-            role="user",
-            scaffold=False,
+            session_id=session.session_id,
+            item=queued_input(
+                store.load_runtime_session(session.session_id).session,
+                prompt="user has priority",
+            ),
         )
     prompt = "One retained continuation intent. " * 2048
     registry = RunContinuationRegistry()
@@ -1454,11 +1455,11 @@ async def test_queued_user_input_supersedes_stale_automatic_continuation(tmp_pat
     )
     queue = QueuedInputQueue(store)
     queue.enqueue(
-        snapshot=store.load_runtime_session(session.session_id),
-        prompt="Use this newer user guidance",
-        title=None,
-        role="user",
-        scaffold=False,
+        session_id=session.session_id,
+        item=queued_input(
+            store.load_runtime_session(session.session_id).session,
+            prompt="Use this newer user guidance",
+        ),
     )
     service = RunContinuationService(store=store, registry=registry, queue=queue)
 

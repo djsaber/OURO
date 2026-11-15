@@ -4,6 +4,7 @@ from datetime import timedelta
 
 import pytest
 
+import ouro.application.runtime.service as runtime_module
 import ouro.application.tool_calls as tool_calls_module
 from ouro.application.runs.tool_batches import load_tool_batch
 from ouro.application.runtime.service import RuntimeService
@@ -34,8 +35,10 @@ def _result(invocation, content: str, *, is_error: bool = False) -> ToolResult:
     )
 
 
-def _runtime(tmp_path, *, registry, first_calls, mode="sequential") -> RuntimeService:
-    store = LocalSessionStore(tmp_path)
+def _runtime(
+    tmp_path, *, registry, first_calls, mode="sequential", store_type=LocalSessionStore
+) -> RuntimeService:
+    store = store_type(tmp_path / "sessions.db" if store_type is SQLiteSessionStore else tmp_path)
     store.initialize()
     return RuntimeService(
         store=store,
@@ -912,8 +915,11 @@ async def test_unattended_resume_cannot_request_user_input_again(tmp_path) -> No
     }
 
 
+@pytest.mark.parametrize("store_type", [LocalSessionStore, SQLiteSessionStore])
 @pytest.mark.asyncio
-async def test_resumable_tool_can_request_multiple_inputs_and_owns_final_result(tmp_path) -> None:
+async def test_resumable_tool_can_request_multiple_inputs_and_owns_final_result(
+    tmp_path, monkeypatch, store_type
+) -> None:
     initial_calls = 0
     resume_calls: list[tuple[object, object]] = []
 
@@ -952,14 +958,40 @@ async def test_resumable_tool_can_request_multiple_inputs_and_owns_final_result(
         tmp_path,
         registry=registry,
         first_calls=[ToolCallRequest(id="call_workflow", name="workflow__advance")],
+        store_type=store_type,
     )
 
     first = await runtime.run("advance")
+    batch_reads = []
+    load_batch = runtime_module.load_tool_batch
+
+    def read_batch(store, run):
+        batch_reads.append(run.run_id)
+        assert store.is_session_locked(run.session_id)
+        return load_batch(store, run)
+
+    monkeypatch.setattr(runtime_module, "load_tool_batch", read_batch)
+    commits = []
+    commit_session = runtime.store.commit_session
+
+    def commit(request):
+        commits.append(request)
+        return commit_session(request)
+
+    monkeypatch.setattr(runtime.store, "commit_session", commit)
     second = await runtime.answer_user(
         session_id=first.session.session_id,
         run_id=first.run.run_id,
         answer={"choice": "next"},
     )
+    assert batch_reads == [first.run.run_id]
+    waiting = [
+        request for request in commits if any(run.status == "waiting_user" for run in request.runs)
+    ]
+    assert len(waiting) == 1
+    assert waiting[0].runs[0].active_tool_batch.phase == "awaiting_interaction"
+    assert any(event.event_type == "ask_user_requested" for event in waiting[0].events)
+    assert runtime.store.load_run(second.session.session_id, second.run.run_id) == second.run
     completed = await runtime.answer_user(
         session_id=second.session.session_id,
         run_id=second.run.run_id,

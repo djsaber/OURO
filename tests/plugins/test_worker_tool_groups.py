@@ -11,7 +11,6 @@ from ouro.application.plugins.service import PluginService
 from ouro.core.interactions import AnswerResolution, UnattendedResolution
 from ouro.core.observers import ObserverRegistry
 from ouro.plugins.catalog.gates import PluginGenerationUnavailableError
-from ouro.plugins.contributions.preparation import ContributionCoordinator
 from ouro.plugins.installation.store import PluginPackageStore
 from ouro.plugins.invocation import plugin_invocation
 from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
@@ -41,7 +40,8 @@ def package(tmp_path, kind="worker", *, probe=False):
 async def worker(tmp_path):
     runtime = PluginRuntimeResource(
         PluginPackageStore(tmp_path / "home"),
-        ContributionCoordinator(tools=ToolRegistry(), observers=ObserverRegistry()),
+        tools=ToolRegistry(),
+        observers=ObserverRegistry(),
     )
     service = PluginService(runtime.store, runtime=runtime)
     service.install(package(tmp_path, probe=True))
@@ -258,7 +258,8 @@ async def test_worker_candidate_cannot_publish_before_activation(tmp_path):
     )
     runtime = PluginRuntimeResource(
         PluginPackageStore(tmp_path / "home"),
-        ContributionCoordinator(tools=ToolRegistry(), observers=ObserverRegistry()),
+        tools=ToolRegistry(),
+        observers=ObserverRegistry(),
     )
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)

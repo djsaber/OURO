@@ -12,9 +12,13 @@ from typing import Any
 from ouro.core.base import new_id
 from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import settle_owned_tasks
+from ouro.core.compaction import CompactionStrategyRegistry
+from ouro.core.context_providers import ContextProviderRegistry
+from ouro.core.continuations import RunContinuationRegistry
 from ouro.core.model_generation import ModelGenerationPort
 from ouro.core.observers import Observation, ObserverRegistry
 from ouro.core.plugin_tasks import PluginTaskTarget
+from ouro.core.prompt_policies import PromptPolicyRegistry
 from ouro.core.redaction import SensitiveValueRedactor, redact_text
 from ouro.core.run_drivers import (
     DEFAULT_DRIVER_ID,
@@ -25,6 +29,8 @@ from ouro.core.run_drivers import (
 from ouro.core.session_ports import SessionRepository
 from ouro.core.task_ports import TaskServicePort
 from ouro.core.tasks import AgentTaskTarget
+from ouro.core.tool_policies import ToolPolicyRegistry
+from ouro.core.turn_policies import TurnPolicyRegistry
 from ouro.plugins.builtin import EMPTY_BUILTIN_PLUGIN_REGISTRY, BuiltinPluginRegistry
 from ouro.plugins.catalog.bindings import bind_generation_gate
 from ouro.plugins.catalog.gates import GenerationGate, GenerationLease
@@ -43,7 +49,7 @@ from ouro.plugins.contributions.models import (
     PluginContributions,
     PreparedContributionSet,
 )
-from ouro.plugins.contributions.preparation import ContributionCoordinator
+from ouro.plugins.contributions.preparation import prepare_contributions
 from ouro.plugins.dependencies import (
     LockedPluginDependency,
     PluginDependencyError,
@@ -86,6 +92,7 @@ from ouro.plugins.models import (
 from ouro.plugins.native_ports import PluginNativePorts
 from ouro.plugins.processes import PluginProcessService
 from ouro.plugins.providers import ProviderBinding
+from ouro.plugins.registry import PluginCommandRegistry
 from ouro.plugins.resources import OwnedTaskGroup, ScopedPluginDataStore
 from ouro.plugins.run_drivers import run_driver_invocation
 from ouro.plugins.scheduling import NativePluginScheduler
@@ -96,6 +103,7 @@ from ouro.plugins.worker.instance import WorkerPluginInstance
 from ouro.sdk.plugins import v5 as sdk
 from ouro.sdk.plugins.v5 import StopReason
 from ouro.skills import SkillMetadata
+from ouro.tools.registry import ToolRegistry
 
 
 class PluginGenerationStartError(RuntimeError):
@@ -120,8 +128,16 @@ class PluginRuntimeResource:
     def __init__(
         self,
         store: PluginPackageStore,
-        coordinator: ContributionCoordinator,
         *,
+        tools: ToolRegistry,
+        observers: ObserverRegistry,
+        context_providers: ContextProviderRegistry | None = None,
+        commands: PluginCommandRegistry | None = None,
+        compaction: CompactionStrategyRegistry | None = None,
+        continuations: RunContinuationRegistry | None = None,
+        prompt_policies: PromptPolicyRegistry | None = None,
+        turn_policies: TurnPolicyRegistry | None = None,
+        tool_policies: ToolPolicyRegistry | None = None,
         credential_resolver=None,
         stop_timeout_seconds: float = 5.0,
         builtin_plugins: BuiltinPluginRegistry = EMPTY_BUILTIN_PLUGIN_REGISTRY,
@@ -129,7 +145,15 @@ class PluginRuntimeResource:
         session_repository: SessionRepository | None = None,
     ) -> None:
         self.store = store
-        self.coordinator = coordinator
+        self.tools = tools
+        self.observers = observers
+        self.context_providers = context_providers or ContextProviderRegistry()
+        self.commands = commands
+        self.compaction = compaction
+        self.continuations = continuations
+        self.prompt_policies = prompt_policies
+        self.turn_policies = turn_policies
+        self.tool_policies = tool_policies
         self.credential_resolver = credential_resolver
         self.stop_timeout_seconds = stop_timeout_seconds
         self.builtin_plugins = builtin_plugins
@@ -1280,7 +1304,7 @@ class PluginRuntimeResource:
             if (
                 current is not None
                 and self._catalog_base is not None
-                and self._catalog_base.tool_registry_revision == self.coordinator.tools.revision
+                and self._catalog_base.tool_registry_revision == self.tools.revision
             ):
                 return current
             catalog_base = self._capture_catalog_base(skills=self.base_skills)
@@ -1299,15 +1323,15 @@ class PluginRuntimeResource:
         skills: tuple[SkillMetadata, ...],
     ) -> ExtensionCatalogBase:
         return ExtensionCatalogBase.capture(
-            tools=self.coordinator.tools,
-            observers=self.coordinator.observers,
-            context_providers=self.coordinator.context_providers,
-            commands=self.coordinator.commands,
-            compaction=self.coordinator.compaction,
-            continuations=self.coordinator.continuations,
-            prompt_policies=self.coordinator.prompt_policies,
-            turn_policies=self.coordinator.turn_policies,
-            tool_policies=self.coordinator.tool_policies,
+            tools=self.tools,
+            observers=self.observers,
+            context_providers=self.context_providers,
+            commands=self.commands,
+            compaction=self.compaction,
+            continuations=self.continuations,
+            prompt_policies=self.prompt_policies,
+            turn_policies=self.turn_policies,
+            tool_policies=self.tool_policies,
             skills=skills,
         )
 
@@ -1854,7 +1878,7 @@ class PluginRuntimeResource:
                     own_resource=resources.append,
                 )
             )
-            prepared = self.coordinator.prepare(
+            prepared = prepare_contributions(
                 candidate,
                 generation,
                 contributions,

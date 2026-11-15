@@ -31,6 +31,7 @@ from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry
 from tests.event_capture import recorded_events
+from tests.input_facts import queued_input
 from tests.tool_batches import bind_tool_messages, persist_tool_batch
 
 
@@ -329,11 +330,11 @@ async def test_cancel_and_consume_compete_on_the_exact_queue_identity(store, win
     runtime = runtime_for(store)
     session = runtime.create_session(title="Queue race")
     _, item, _, _ = runtime.queued_inputs.enqueue(
-        snapshot=store.load_runtime_session(session.session_id),
-        prompt="edit me",
-        title=None,
-        role="user",
-        scaffold=False,
+        session_id=session.session_id,
+        item=queued_input(
+            store.load_runtime_session(session.session_id).session,
+            prompt="edit me",
+        ),
     )
     snapshot = store.load_runtime_session(session.session_id)
     entered, release = Event(), Event()
@@ -450,13 +451,13 @@ async def test_retained_user_queue_rechecks_policy_and_old_automatic_batch_canno
     try:
         first = await runtime.run("original")
         _, user, _, _ = runtime.queued_inputs.enqueue(
-            snapshot=store.load_runtime_session(first.session.session_id),
-            prompt="pending user",
-            title=None,
-            role="user",
-            scaffold=False,
-            prompt_policy_checked=True,
-            prospective_run_id="old_permit",
+            session_id=first.session.session_id,
+            item=queued_input(
+                store.load_runtime_session(first.session.session_id).session,
+                prompt="pending user",
+                prompt_policy_checked=True,
+                prospective_run_id="old_permit",
+            ),
         )
         automatic = queued_batch(runtime, first.session)
         store.truncate_messages(

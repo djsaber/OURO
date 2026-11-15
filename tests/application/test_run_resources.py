@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from ouro.application.inputs.requests import UserInputRequest
 from ouro.application.runs.lifecycle import reserve_run
 from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
@@ -155,6 +156,7 @@ async def runtime(tmp_path):
 
     source = SimpleNamespace(
         snapshot=catalog.acquire,
+        bind_observers=catalog.bind_observers,
         catalog=lambda: catalog,
         synchronize=AsyncMock(),
         driver_scope=nullcontext,
@@ -364,3 +366,37 @@ async def test_close_finishes_other_resources_when_a_lease_callback_fails(runtim
     gc.collect()
     assert catalog.lease_count == 0
     assert reference() is None
+
+
+@pytest.mark.parametrize("commit_fails", [False, True])
+async def test_queued_admission_retains_catalog_through_commit(runtime, monkeypatch, commit_fails):
+    app, catalog, source = runtime
+    app.bind_extensions(catalog=source)
+    commit = app.store.commit_session
+    accepted = []
+
+    def commit_input(request):
+        if request.inputs:
+            assert catalog.lease_count == 1
+            item = request.inputs[0].item
+            assert item.prompt_policy_checked
+            assert item.extension_catalog_id == catalog.catalog_id
+            accepted.append(item.queue_id)
+            if commit_fails:
+                raise OSError("input commit failed")
+        return commit(request)
+
+    monkeypatch.setattr(app.store, "commit_session", commit_input)
+    request = UserInputRequest(prompt="next input", session_id="session")
+    if commit_fails:
+        with pytest.raises(OSError, match="input commit failed"):
+            await app.accept_user_input(request)
+    else:
+        receipt = await app.accept_user_input(request)
+        assert receipt.queue_id == request.input_id
+    assert accepted == [request.input_id]
+    assert catalog.lease_count == 0
+    assert not app._run_resources
+    assert app.store.load_session_record("session").pending_input_ids == (
+        () if commit_fails else (request.input_id,)
+    )

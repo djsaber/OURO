@@ -23,6 +23,7 @@ from ouro.core.tools import ToolCallRequest, ToolInputRequest, ToolInvocation
 from ouro.sessions.backends.files.inputs import input_path
 from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
+from tests.input_facts import queued_input
 from tests.response_drafts import persist_response_draft
 from tests.tool_batches import persist_tool_batch
 
@@ -116,11 +117,11 @@ def test_observing_invalid_pending_input_does_not_repair_durable_state(store):
     store.create_session(session)
     queue = QueuedInputQueue(store)
     session, item, _, _ = queue.enqueue(
-        snapshot=store.load_runtime_session(session.session_id),
-        prompt="accepted",
-        title=None,
-        role="user",
-        scaffold=False,
+        session_id=session.session_id,
+        item=queued_input(
+            store.load_runtime_session(session.session_id).session,
+            prompt="accepted",
+        ),
     )
     if isinstance(store, LocalSessionStore):
         path = input_path(store.sessions_dir / session.session_id, item.queue_id)

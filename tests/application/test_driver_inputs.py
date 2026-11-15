@@ -192,7 +192,7 @@ async def test_undelivered_steering_is_retained_on_policy_rejection_or_cancellat
 
     policies = PromptPolicyRegistry()
     policies.register(PromptPolicyRegistration("ouro.host", "guard", guard))
-    plugins.coordinator.prompt_policies = policies
+    plugins.prompt_policies = policies
     service.install(plugin_source(tmp_path, kind))
     running = None
     try:
