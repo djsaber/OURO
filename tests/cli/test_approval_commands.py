@@ -13,6 +13,7 @@ from ouro.cli.approval_commands import (
 )
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
+from ouro.local_application import LocalApplication
 from ouro.mcp import MCPConfigStore, MCPRuntimeResource, MCPServerConfigUpdate
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
@@ -70,8 +71,8 @@ async def test_approve_command_continues_run(monkeypatch, tmp_path, capsys) -> N
         ],
     )
     monkeypatch.setattr(
-        "ouro.cli.approval_commands.build_default_runtime",
-        lambda home, **kwargs: runtime,
+        "ouro.cli.approval_commands.LocalApplication.build",
+        lambda home, **kwargs: LocalApplication.from_runtime(runtime, home=home),
     )
 
     run_result = await runtime.run("write file")
@@ -135,8 +136,8 @@ async def test_approve_command_continues_while_mcp_reconnects_in_background(
         ],
     )
     monkeypatch.setattr(
-        "ouro.cli.approval_commands.build_default_runtime",
-        lambda home, **kwargs: resumed_runtime,
+        "ouro.cli.approval_commands.LocalApplication.build",
+        lambda home, **kwargs: LocalApplication.from_runtime(resumed_runtime, home=home),
     )
 
     code = await approve_tool_command(waiting.session.session_id, home=str(tmp_path))
@@ -175,7 +176,7 @@ async def test_reject_command_returns_reason_to_model(monkeypatch, tmp_path, cap
         ],
     )
     monkeypatch.setattr(
-        "ouro.cli.approval_commands.build_default_runtime",
+        "ouro.cli.approval_commands.build_local_runtime",
         lambda home, **kwargs: runtime,
     )
 
@@ -214,8 +215,8 @@ async def test_approve_with_modified_arguments(monkeypatch, tmp_path, capsys) ->
         ],
     )
     monkeypatch.setattr(
-        "ouro.cli.approval_commands.build_default_runtime",
-        lambda home, **kwargs: runtime,
+        "ouro.cli.approval_commands.LocalApplication.build",
+        lambda home, **kwargs: LocalApplication.from_runtime(runtime, home=home),
     )
 
     run_result = await runtime.run("write file")
@@ -252,7 +253,7 @@ async def test_abort_command_aborts_waiting_approval(monkeypatch, tmp_path, caps
         ],
     )
     monkeypatch.setattr(
-        "ouro.cli.approval_commands.build_default_runtime",
+        "ouro.cli.approval_commands.build_local_runtime",
         lambda home, **kwargs: runtime,
     )
 
@@ -275,8 +276,8 @@ async def test_approve_without_waiting_run_fails(monkeypatch, tmp_path, capsys) 
         [[ProviderStreamEvent(type="text_delta", text="ok"), ProviderStreamEvent(type="done")]],
     )
     monkeypatch.setattr(
-        "ouro.cli.approval_commands.build_default_runtime",
-        lambda home, **kwargs: runtime,
+        "ouro.cli.approval_commands.LocalApplication.build",
+        lambda home, **kwargs: LocalApplication.from_runtime(runtime, home=home),
     )
 
     run_result = await runtime.run("hello")

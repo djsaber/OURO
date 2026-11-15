@@ -242,7 +242,7 @@ async def test_tui_exports_personal_prompt_configuration(tmp_path, monkeypatch):
         assert form._path is not None
         payload = read_archive(form._path, "prompts").manifest.data
         assert payload["prompts"]["additions"][0]["text"] == "Keep answers concise"
-        assert not app._data_transfer_progress.result.restart_required
+        assert not app._data_transfer.progress.result.restart_required
 
 
 @pytest.mark.asyncio
@@ -365,7 +365,9 @@ async def test_transfer_progress_stays_in_menu_and_outlives_picker(
     monkeypatch.setattr(app._controller, "transfer_data", delayed)
     async with run_ready_app(app, size=(100, 35)) as pilot:
         monkeypatch.setattr(
-            app, "notify", lambda message, **kwargs: notices.append((message, kwargs))
+            app._data_transfer,
+            "_notify",
+            lambda message, **kwargs: notices.append((message, kwargs)),
         )
         history = app.query_one(ConversationHistory)
         before = [(entry.kind, entry.text) for entry in history.entries]
@@ -379,7 +381,7 @@ async def test_transfer_progress_stays_in_menu_and_outlives_picker(
             assert app.screen is form
             assert any(row.loading for row in form._choices)
             assert next(row for row in form._choices if row.value == "submit").disabled
-            app._request_data_transfer(form._request())
+            app._data_transfer.submit(form._request())
             assert len(calls) == 1
             await _choose_menu_row(app, pilot, "replace")
             assert form._replace
@@ -428,7 +430,7 @@ async def test_export_command_pins_current_session_and_rejects_empty_or_argument
         await app._dispatch_command("/export")
         await pilot.pause()
         assert app.screen is welcome
-        assert app._data_transfer_progress is None
+        assert app._data_transfer.progress is None
         await app._open_session("ses_current")
         await app._dispatch_command("/export sessions")
         assert app.screen is welcome
@@ -442,9 +444,9 @@ async def test_export_command_pins_current_session_and_rejects_empty_or_argument
         assert next(row for row in form._choices if row.value == "kind").disabled
         await _choose_menu_row(app, pilot, "submit")
         async with asyncio.timeout(10):
-            while app._data_transfer_progress.running:
+            while app._data_transfer.progress.running:
                 await pilot.pause()
-        assert app._data_transfer_progress.result.count == 1
+        assert app._data_transfer.progress.result.count == 1
         target = build_local_data_transfer_service(tmp_path / "target")
         target.transfer(DataTransferRequest(action="import", kind="sessions", path=form._path))
         records = build_local_session_services(tmp_path / "target")._store.list_sessions()
@@ -505,7 +507,7 @@ async def test_export_session_selection_displays_identity_as_trailing_label(tmp_
         assert form._identities == ("ses_beta",)
         await _choose_menu_row(app, pilot, "submit")
         await wait_for_worker_group(app, pilot, group="data-transfer-operation")
-        assert app._data_transfer_progress.result.count == 1
+        assert app._data_transfer.progress.result.count == 1
 
 
 @pytest.mark.asyncio
@@ -549,13 +551,13 @@ async def test_import_detects_file_type_resets_options_and_recovers_from_invalid
         assert form._kind is None and not form._identities
         assert any(row.value == "archive-status" and row.description for row in form._choices)
         assert next(row for row in form._choices if row.value == "submit").disabled
-        assert app._data_transfer_progress.request is None
+        assert app._data_transfer.progress.request is None
         invalid.write_bytes(config.read_bytes())
         await choose_file(invalid)
         assert form._kind == "providers" and form._archive_error is None
         await _choose_menu_row(app, pilot, "submit")
         await wait_for_worker_group(app, pilot, group="data-transfer-operation")
-        assert app._data_transfer_progress.result.kind == "providers"
+        assert app._data_transfer.progress.result.kind == "providers"
         assert (tmp_path / "target" / "config" / "providers.json").is_file()
 
 
@@ -599,7 +601,7 @@ async def test_archive_detection_keeps_navigation_responsive_and_discards_replac
             release.set()
         await pilot.pause()
         assert form._kind == "mcp"
-        assert app._data_transfer_progress.request is None
+        assert app._data_transfer.progress.request is None
 
 
 @pytest.mark.asyncio
@@ -675,7 +677,7 @@ async def test_import_form_applies_existing_session_policy(tmp_path, monkeypatch
             )
         await _choose_menu_row(app, pilot, "submit")
         await wait_for_worker_group(app, pilot, group="data-transfer-operation")
-        result = app._data_transfer_progress.result
+        result = app._data_transfer.progress.result
         assert result is not None
         assert (result.count, result.skipped, result.replaced) == (
             (1, 0, 1) if replace else (0, 1, 0)

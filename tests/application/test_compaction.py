@@ -8,7 +8,6 @@ import ouro.application.context.summary as compaction_module
 from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.application.context.summary import LLMSummaryCompactionStrategy
 from ouro.application.resources import ResourceService
-from ouro.application.runtime.configuration import RuntimeConfigurationResolver
 from ouro.application.runtime.service import RuntimeService
 from ouro.config.compaction import CompactionConfig, CompactionConfigManager, CompactionModelConfig
 from ouro.config.prompts import PromptConfigManager, PromptDraft
@@ -39,6 +38,7 @@ from ouro.core.provider import (
 )
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.core.state import SessionRecord
+from ouro.local_configuration import RuntimeConfigurationResolver
 from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry

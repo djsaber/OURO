@@ -8,9 +8,9 @@ import pytest
 from ouro.application.usage import UsageService
 from ouro.billing import LocalUsageLedger
 from ouro.cli.main import main
-from ouro.cli.run import build_default_runtime
 from ouro.core.billing import ProviderUsageEntry, UsageFilter
 from ouro.core.errors import CompactionError
+from ouro.local_application import build_local_runtime
 from tests.application.test_billing_attribution import record
 
 
@@ -68,7 +68,7 @@ def test_cli_unknown_cost_count_and_recorded_billing_modes(tmp_path, capsys, cos
 
 @pytest.mark.asyncio
 async def test_default_runtime_records_provider_usage_not_context_estimates(tmp_path) -> None:
-    runtime = build_default_runtime(tmp_path)
+    runtime = build_local_runtime(tmp_path)
     result = await runtime.run("A very long prompt. " * 2_000)
 
     ledger = LocalUsageLedger(tmp_path)
@@ -85,7 +85,7 @@ async def test_default_runtime_records_provider_usage_not_context_estimates(tmp_
 
 @pytest.mark.asyncio
 async def test_failed_compaction_still_records_billable_provider_usage(tmp_path) -> None:
-    runtime = build_default_runtime(tmp_path)
+    runtime = build_local_runtime(tmp_path)
     first = await runtime.run("first turn")
     await runtime.run("second turn", session_id=first.session.session_id)
 
@@ -102,7 +102,7 @@ async def test_runtime_workspace_attribution_is_independent_of_session_state(tmp
     first_workspace, second_workspace = tmp_path / "first", tmp_path / "second"
     first_workspace.mkdir()
     second_workspace.mkdir()
-    runtime = build_default_runtime(tmp_path / "home")
+    runtime = build_local_runtime(tmp_path / "home")
     try:
         first = await runtime.run("first workspace", workspace=first_workspace)
         await runtime.run("second workspace", workspace=second_workspace)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from ouro.application.contracts.agents import (
     AgentDefinitionCatalogView,
@@ -10,7 +10,6 @@ from ouro.application.contracts.agents import (
     AgentToolOptionView,
 )
 from ouro.config.agents import AgentDefinitionsConfig, AgentDefinitionsConfigManager
-from ouro.config.providers.manager import ProviderConfigManager
 from ouro.core.agents import (
     AGENT_CONTROL_TOOL_NAMES,
     AgentCatalogEntry,
@@ -47,14 +46,18 @@ class AgentDefinitionService:
     """Resolve definitions and current tool capabilities for one decision."""
 
     def __init__(
-        self, config: AgentDefinitionsConfigManager, *, spawn_policy: AgentSpawnPolicy | None = None
+        self,
+        config: AgentDefinitionsConfigManager,
+        *,
+        default_model_route: Callable[[], str],
+        spawn_policy: AgentSpawnPolicy | None = None,
     ) -> None:
         self.config = config
         self._spawn_policy = spawn_policy
-        self.providers = ProviderConfigManager(config.file.root)
+        self._default_model_route = default_model_route
 
     def default_model_route(self) -> str:
-        return self.providers.require_default_route()
+        return self._default_model_route()
 
     def list(self, *, tools: ToolRegistry) -> AgentDefinitionCatalogView:
         config = self.config.snapshot()

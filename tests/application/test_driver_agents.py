@@ -13,6 +13,7 @@ from ouro.application.plugins.service import PluginService
 from ouro.application.runtime.service import RuntimeService
 from ouro.application.supervisor import RuntimeSupervisor
 from ouro.config.agents import AgentDefinitionsConfigManager
+from ouro.config.providers.manager import ProviderConfigManager
 from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import AgentDefinition, ToolSelection
@@ -89,7 +90,10 @@ def assemble(tmp_path, store, provider, calls):
             handler=deploy,
         )
     )
-    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path / "home"))
+    definitions = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path / "home"),
+        default_model_route=ProviderConfigManager(tmp_path / "home").require_default_route,
+    )
     if definitions.list(tools=tools).revision == 0:
         definitions.config.create(
             AgentDefinition(

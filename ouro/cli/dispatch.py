@@ -53,7 +53,7 @@ from ouro.cli.resource_commands import (
     show_resource,
 )
 from ouro.cli.run import (
-    RuntimeProviderOptions,
+    ProviderRuntimeOptions,
     run_json,
     run_print,
 )
@@ -756,7 +756,7 @@ def _usage_filters(args: argparse.Namespace) -> UsageFilterArgs:
     }
 
 
-def _provider_options(args: argparse.Namespace, *, prefix: str = "") -> RuntimeProviderOptions:
+def _provider_options(args: argparse.Namespace, *, prefix: str = "") -> ProviderRuntimeOptions:
     fields = (
         "provider_id",
         "endpoint_id",
@@ -782,7 +782,7 @@ def _provider_options(args: argparse.Namespace, *, prefix: str = "") -> RuntimeP
     reasoning = _reasoning_request(args, prefix=prefix)
     if reasoning is not None:
         values["reasoning_request"] = reasoning
-    return RuntimeProviderOptions.model_validate(values)
+    return ProviderRuntimeOptions.model_validate(values)
 
 
 def _reasoning_request(

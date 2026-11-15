@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import nullcontext
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING
@@ -171,7 +172,6 @@ from ouro.core.tool_requests import (
 )
 from ouro.core.tools import PermissionMode, ToolDefinition
 from ouro.core.turn_policies import TurnCompletionCandidate, TurnPolicyRegistry
-from ouro.plugins.run_drivers import run_driver_invocation
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT, render_agent_skills_prompt
 from ouro.sessions import RuntimeSessionSnapshot, SessionStore
 from ouro.skills import SkillMetadata
@@ -181,7 +181,6 @@ if TYPE_CHECKING:
     from ouro.application.resources import ResourceService
     from ouro.application.runtime.extensions import RuntimeCapabilities, RuntimeExtensions
     from ouro.application.tool_calls import AgentControlExecutor
-    from ouro.plugins.providers import ProviderBinding
 
 
 _LOG = logging.getLogger(__name__)
@@ -428,11 +427,6 @@ class RuntimeService:
         }
         if invalid:
             raise ValueError(f"invalid {scope} permission overrides: {invalid}")
-
-    async def bind_provider(self, protocol: str) -> ProviderBinding:
-        if self._extension_catalog is None:
-            raise ConfigError("plugin provider runtime is unavailable")
-        return await self._extension_catalog.bind_provider(protocol)
 
     def bind_extensions(
         self,
@@ -2217,7 +2211,12 @@ class RuntimeService:
                         ),
                     )
                 )
-                with run_driver_invocation(DEFAULT_DRIVER_ID, context):
+                scope = (
+                    self._extension_catalog.driver_scope(context)
+                    if self._extension_catalog is not None
+                    else nullcontext()
+                )
+                with scope:
                     result = await context.invoke(driver, resuming=resuming_driver)
             else:
                 if self._extension_catalog is None:

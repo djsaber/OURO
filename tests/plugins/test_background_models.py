@@ -193,7 +193,7 @@ async def test_published_callback_finishes_before_observing_external_disable(tmp
             await enabling
             assert [phase for phase, _ in events(log)] == ["starting", "request", "started"]
             with pytest.raises(ValueError, match="Provider is unavailable"):
-                await app.runtime.bind_provider(PROTOCOL)
+                await app.plugin_runtime.bind_provider(PROTOCOL)
             assert await app.plugin_runtime.wait_stopped(PLUGIN) == "disabled"
             assert not app.plugin_runtime.has_resources(PLUGIN)
         finally:
@@ -214,7 +214,7 @@ async def test_inherited_lifecycle_admission_expires_before_independent_work(tmp
 
         async def later():
             await release.wait()
-            return await app.runtime.bind_provider(PROTOCOL)
+            return await app.plugin_runtime.bind_provider(PROTOCOL)
 
         with app.plugin_runtime._admit_lifecycle_callbacks():
             pending = asyncio.create_task(later())

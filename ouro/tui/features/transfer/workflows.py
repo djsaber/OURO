@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import cast
+from typing import Literal, Protocol, cast
 from weakref import ReferenceType, ref
 
 from textual.worker import Worker
@@ -20,7 +20,6 @@ from ouro.application.transfer.service import (
 )
 from ouro.core.errors import OuroError
 from ouro.data_commands import format_data_result
-from ouro.tui.features.tasks.workflows import TaskManagementWorkflows
 from ouro.tui.features.transfer.paths import ArchivePathScreen
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.models import Choice
@@ -309,27 +308,66 @@ class DataTransferScreen(ChoiceScreen):
         return ()
 
 
-class DataTransferWorkflows(TaskManagementWorkflows):
-    _data_transfer_progress: DataTransferProgress | None = None
-    _data_transfer_screen_ref: ReferenceType[DataTransferScreen] | None = None
+class TransferOperations(Protocol):
+    @property
+    def draft_workspace(self) -> str | None: ...
 
-    def _export_current_session(self, session_id: str | None) -> None:
+    async def data_transfer_items(
+        self, request: DataTransferRequest
+    ) -> tuple[DataTransferItem, ...]: ...
+
+    async def data_archive_kind(self, path: Path) -> DataKind: ...
+
+    async def transfer_data(self, request: DataTransferRequest) -> DataTransferResult: ...
+
+
+class TransferNotification(Protocol):
+    def __call__(
+        self,
+        message: str,
+        *,
+        title: str = "",
+        severity: Literal["information", "warning", "error"] = "information",
+        timeout: float | None = None,
+        markup: bool = True,
+    ) -> None: ...
+
+
+class DataTransferWorkflow:
+    """Own transfer progress while the App owns execution and screen navigation."""
+
+    def __init__(
+        self,
+        *,
+        controller: Callable[[], TransferOperations],
+        show: Callable[[ChoiceScreen], object],
+        notify: TransferNotification,
+        start: Callable[[Callable[[], Coroutine[None, None, None]]], object],
+    ) -> None:
+        self._controller = controller
+        self._show = show
+        self._notify = notify
+        self._start = start
+        self.progress: DataTransferProgress | None = None
+        self._screen_ref: ReferenceType[DataTransferScreen] | None = None
+
+    def export_session(self, session_id: str | None) -> None:
         if session_id is None:
-            self.notify("Open a session to export", severity="warning")
+            self._notify("Open a session to export", severity="warning")
             return
-        self._open_data_transfer("export", "sessions", current_session_id=session_id)
+        self.open("export", "sessions", current_session_id=session_id)
 
-    def _choose_data_transfer(self, *, menu: ChoiceScreen | None = None) -> None:
+    def choose(self, *, menu: ChoiceScreen | None = None) -> None:
         picker: ChoiceScreen
 
         async def select_action(selected: str) -> None:
             action = cast(TransferAction, selected)
             if action == "import":
-                self._open_data_transfer("import", None, menu=picker)
+                self.open("import", None, menu=picker)
                 return
 
             async def select_kind(kind: str) -> None:
-                self._open_data_transfer(action, cast(DataKind, kind), menu=picker)
+                self.open(action, cast(DataKind, kind), menu=picker)
 
             picker.push_page(
                 title=f"{action.upper()} DATA",
@@ -354,9 +392,9 @@ class DataTransferWorkflows(TaskManagementWorkflows):
                 choices=choices,
                 on_select=select_action,
             )
-            self.push_screen(picker)
+            self._show(picker)
 
-    def _open_data_transfer(
+    def open(
         self,
         action: TransferAction,
         kind: DataKind | None,
@@ -364,26 +402,26 @@ class DataTransferWorkflows(TaskManagementWorkflows):
         menu: ChoiceScreen | None = None,
         current_session_id: str | None = None,
     ) -> None:
-        if self._data_transfer_progress is None:
-            self._data_transfer_progress = DataTransferProgress()
+        if self.progress is None:
+            self.progress = DataTransferProgress()
         screen = DataTransferScreen(
             action=action,
             kind=kind,
-            directory=Path(self._controller.draft_workspace or Path.cwd()),
-            load_items=self._controller.data_transfer_items,
-            identify_archive=self._controller.data_archive_kind,
-            progress=self._data_transfer_progress,
-            on_submit=self._request_data_transfer,
+            directory=Path(self._controller().draft_workspace or Path.cwd()),
+            load_items=self._controller().data_transfer_items,
+            identify_archive=self._controller().data_archive_kind,
+            progress=self.progress,
+            on_submit=self.submit,
             current_session_id=current_session_id,
         )
-        self._data_transfer_screen_ref = ref(screen)
+        self._screen_ref = ref(screen)
         if menu is not None:
             menu.show_child(screen)
         else:
-            self.push_screen(screen)
+            self._show(screen)
 
-    def _request_data_transfer(self, request: DataTransferRequest) -> None:
-        progress = self._data_transfer_progress
+    def submit(self, request: DataTransferRequest) -> None:
+        progress = self.progress
         assert progress is not None
         if progress.running:
             return
@@ -392,21 +430,19 @@ class DataTransferWorkflows(TaskManagementWorkflows):
         progress.result = None
         progress.error = None
         # The App owns execution so closing a menu cannot cancel a file commit.
-        _worker: Worker[None] = self.run_worker(
-            partial(self._run_data_transfer, request), group="data-transfer-operation"
-        )
+        self._start(partial(self._run, request))
 
-    async def _run_data_transfer(self, request: DataTransferRequest) -> None:
-        progress = self._data_transfer_progress
+    async def _run(self, request: DataTransferRequest) -> None:
+        progress = self.progress
         assert progress is not None
         try:
-            progress.result = await self._controller.transfer_data(request)
+            progress.result = await self._controller().transfer_data(request)
         except Exception as exc:  # noqa: BLE001 - surface operation errors inside the menu.
             progress.error = str(exc)
         finally:
             progress.running = False
         if progress.error is not None:
-            self.notify(
+            self._notify(
                 progress.error,
                 title=f"{request.action.title()} failed",
                 severity="error",
@@ -414,12 +450,12 @@ class DataTransferWorkflows(TaskManagementWorkflows):
                 markup=False,
             )
         elif progress.result is not None:
-            self.notify(
+            self._notify(
                 format_data_result(progress.result),
                 title=f"{request.action.title()} completed",
                 timeout=6,
                 markup=False,
             )
-        screen = self._data_transfer_screen_ref() if self._data_transfer_screen_ref else None
+        screen = self._screen_ref() if self._screen_ref else None
         if screen is not None:
             await screen.refresh_choices()

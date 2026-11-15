@@ -4,7 +4,7 @@ import pytest
 
 from ouro.cli.main import main
 from ouro.cli.parser import build_parser
-from ouro.cli.run import build_default_runtime
+from ouro.local_application import build_local_runtime
 
 
 @pytest.mark.parametrize(
@@ -47,4 +47,4 @@ def test_queued_input_config_command_persists_consumption_mode(tmp_path, capsys)
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["queued_inputs"]["consumption_mode"] == "all_at_once"
-    assert build_default_runtime(tmp_path).queued_input_config.consumption_mode == "all_at_once"
+    assert build_local_runtime(tmp_path).queued_input_config.consumption_mode == "all_at_once"

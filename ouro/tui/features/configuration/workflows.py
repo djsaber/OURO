@@ -16,6 +16,7 @@ from ouro.tui.controller import TuiController
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.features.prompts.workflows import PromptWorkflows
 from ouro.tui.features.providers.model_menus import model_selection_label
+from ouro.tui.features.transfer.workflows import DataTransferWorkflow
 from ouro.tui.menus.choice import ChoiceScreen, loading_menu
 from ouro.tui.menus.confirmation import ConfirmationScreen
 from ouro.tui.menus.labels import PERMISSION_LABELS
@@ -103,6 +104,8 @@ _TOOL_SOURCE_ORDER = {source: index for index, source in enumerate(_TOOL_SOURCE_
 
 
 class ConfigurationWorkflowsApp(PromptWorkflows):
+    _data_transfer: DataTransferWorkflow
+
     """Own the keyboard-first TUI workflows for durable configuration."""
 
     _controller: TuiController
@@ -129,7 +132,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 markup=False,
             )
         elif action_id == "data.transfer":
-            self._choose_data_transfer(menu=menu)
+            self._data_transfer.choose(menu=menu)
         elif action_id == "prompts.manage":
             await self._configure_prompts(menu=menu)
         elif action_id == "tools.permissions":

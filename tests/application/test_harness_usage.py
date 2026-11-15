@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from unittest.mock import Mock
 
 import pytest
@@ -105,6 +106,7 @@ async def test_native_usage_survives_undo_and_keeps_request_attribution(store, t
     resource = Mock(spec=PluginRuntimeResource)
     resource.snapshot.side_effect = catalog.acquire
     resource.catalog.return_value = catalog
+    resource.driver_scope.side_effect = nullcontext
     app.bind_extensions(catalog=resource)
     session = SessionRecord(controls=goal_controls("goal-a"))
     store.create_session(session)

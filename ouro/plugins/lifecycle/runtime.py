@@ -4,7 +4,7 @@ import asyncio
 import inspect
 import threading
 from collections.abc import AsyncGenerator, Callable, Generator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import AbstractContextManager, asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import Any
@@ -16,7 +16,12 @@ from ouro.core.model_generation import ModelGenerationPort
 from ouro.core.observers import Observation, ObserverRegistry
 from ouro.core.plugin_tasks import PluginTaskTarget
 from ouro.core.redaction import SensitiveValueRedactor, redact_text
-from ouro.core.run_drivers import DEFAULT_DRIVER_ID, RunDriverBinding, RunDriverRegistration
+from ouro.core.run_drivers import (
+    DEFAULT_DRIVER_ID,
+    RunDriverBinding,
+    RunDriverContext,
+    RunDriverRegistration,
+)
 from ouro.core.task_ports import TaskServicePort
 from ouro.core.tasks import AgentTaskTarget
 from ouro.plugins.builtin import EMPTY_BUILTIN_PLUGIN_REGISTRY, BuiltinPluginRegistry
@@ -81,6 +86,7 @@ from ouro.plugins.native_ports import PluginNativePorts
 from ouro.plugins.processes import PluginProcessService
 from ouro.plugins.providers import ProviderBinding
 from ouro.plugins.resources import OwnedTaskGroup, ScopedPluginDataStore
+from ouro.plugins.run_drivers import run_driver_invocation
 from ouro.plugins.scheduling import NativePluginScheduler
 from ouro.plugins.services import ServiceEndpoint
 from ouro.plugins.tasks import PluginTaskBinding, bind_plugin_task
@@ -163,6 +169,9 @@ class PluginRuntimeResource:
             # and must not retain this catalog after the admitting callback ends.
             admission.catalog = None
             self._lifecycle_admission.reset(token)
+
+    def driver_scope(self, context: RunDriverContext) -> AbstractContextManager[object]:
+        return run_driver_invocation(DEFAULT_DRIVER_ID, context)
 
     async def bind_provider(self, protocol: str) -> ProviderBinding:
         admission = self._lifecycle_admission.get()

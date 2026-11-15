@@ -18,7 +18,7 @@ OURO 的主包与升级包位于仓库根目录下的 `ouro/` 与 `ouro_upgrade/
 | `application/agents/`、`tasks/` | Agent 派遣及结果交付、自动任务领取及执行；复用原生 Session/Run |
 | `application/sessions/` | 会话用例、历史、编辑和恢复 |
 | `application/runs/` | 持久 Run 转换、执行所有权、续接、Driver/Turn 协作及恢复 |
-| `application/runtime/` | Runtime 编排、环境、配置和 RunResources；`extensions.py` 定义执行所需的能力及租约契约 |
+| `application/runtime/` | Runtime 编排、环境和 RunResources；`extensions.py` 定义执行所需的能力、调用作用域及租约契约 |
 | `application/inputs/` | 输入准备、策略评估、受理回执和队列；`admission.py` 拥有初始输入发布与受理事实查询 |
 | `application/context/` | `preparation.py` 提供上下文构造与记录，`compaction.py` 组合默认压缩流程，`summary.py` 实现摘要生成 |
 | `application/models/`、`observations/` | 模型查询和执行、会话快照与事件订阅 |
@@ -35,6 +35,12 @@ TUI、AgentService 和任务协调器保留自己的业务身份、授权与结�
 输入、观察和模型请求协作者不取得完整 Runtime 的控制权。契约放置在独立目录不意味着轻量导入：
 父包显式导出服务，因此导入初始化成本与模块的类型依赖需要分别评估。
 
+`application/models/catalog.py` 定义模型目录契约、固定模型目录和原生模型投影。
+`local_configuration.py` 持有文件配置解析与 ConfiguredModelCatalog，负责配置路由、adapter fingerprint、
+并发构造及关闭；Runtime 通过目录协议和配置、提示词、技能查询回调取得当前能力。
+AgentDefinitionService 显式接收默认模型路由查询，在调用时取得当前路由；Agent 配置不提供 Provider 配置的装配信息。
+Provider 构造参数统一使用 `config/provider_models.py` 的 ProviderRuntimeOptions。
+
 输入队列直接消费已验证的请求，处理接受、顺序和替换；用户、任务、Agent 及插件入口拥有各自的身份和调度规则。
 插件命令的输入与 Harness 变更在同一事务中提交，保证整批操作的原子性。
 
@@ -47,7 +53,13 @@ TUI、AgentService 和任务协调器保留自己的业务身份、授权与结�
 
 Runtime 通过 `RuntimeExtensions` 获取当前能力，通过 `RuntimeCapabilities` 持有一次决策的租约。
 `PluginRuntimeResource` 与 `ExtensionCatalogLease` 分别实现这两个契约，插件层拥有代次资源及安装、激活和候选发布状态。
-Provider 绑定沿用本地装配与插件 Provider 适配器之间的契约，由 Runtime 转发至已绑定的插件运行资源。
+默认 Driver 通过 RuntimeExtensions 的原生 `driver_scope` 进入扩展调用作用域，插件宿主负责 SDK 转换、
+身份、授权和退出失效；插件 Driver 的适配 handler 拥有自己的作用域。Runtime 不引用插件实现或 SDK 类型。
+Provider 绑定由本地装配直接注入协议适配器，插件运行资源在请求时提供对应代次的绑定。
+`LocalApplication.build` 装配完整执行环境；`from_runtime` 接收调用方已装配的 Runtime 及模型能力。
+`build_local_runtime` 提供独立本地 Runtime，插件协议通过显式 Provider binder 接入。
+未绑定的协议可保留模型路由与会话管理能力，实际模型请求报告不可用；连接检查由
+`open_local_provider_runtime` 持有所需的 Runtime 和协议插件生命周期。
 Core 的 `SessionControllerRegistry` 表达控制器契约、调用规则与可用性，插件适配器负责 SDK 转换及代次归属绑定。
 `RunDriverRegistration` 归 Core；执行者使用其原生 handler 和持久绑定，不依赖插件注册表实现。
 
@@ -80,8 +92,11 @@ Host 查询当前记录并投影连接状态和工具数量；各消费者独立
 | `tui/widgets/` | 跨界面共用的品牌、活动和状态小控件 |
 
 `app.py` 拥有界面任务和视图协调，`controller.py` 衔接应用服务。完整 Widget 类持有自己的
-渲染任务、滚动锚点和交互状态。功能工作流通过类继承与 App 协作，其方法访问 App 的界面状态；
-维护这一边界时需要同时检查状态访问、消息分发与 Textual 装饰器契约。
+渲染任务、滚动锚点和交互状态。providers、plugins、tasks、prompts 与配置菜单通过工作流继承协作；
+维护这些边界时需要同时检查状态访问、消息分发与 Textual 装饰器契约。
+`features/transfer/workflows.py` 的 DataTransferWorkflow 独立持有进度和屏幕弱引用，通过窄操作契约与
+导航、通知、任务启动回调协作。App 拥有传输 worker，关闭菜单不会取消已接受的文件操作；
+菜单自己的检查与选择读取仍由 Screen 管理。操作入口取得当前 Controller，以支持启动恢复后的依赖替换。
 `composer/draft_persistence.py` 独立拥有草稿保存任务、修订号、防抖等待与提交前刷盘，
 App 保留草稿内容、偏好、错误通知及关闭顺序。保存器在写入时取得当前快照，不依赖 App、
 Controller 或 Textual；提交取消时保护已有保存任务，关闭时等待其完成。

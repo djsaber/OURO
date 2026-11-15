@@ -5,7 +5,7 @@ import json
 import logging
 import sys
 from collections import Counter, OrderedDict
-from collections.abc import Sequence
+from collections.abc import Callable, Coroutine, Sequence
 from contextlib import ExitStack, aclosing
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -107,6 +107,7 @@ from ouro.tui.features.providers.model_menus import (
     reasoning_request,
     reasoning_values,
 )
+from ouro.tui.features.transfer.workflows import DataTransferWorkflow
 from ouro.tui.host_screen import _OuroHostScreen
 from ouro.tui.interactions.approval import (
     INTERACTION_PANEL_MAX_HEIGHT,
@@ -477,6 +478,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._controller = self._controller_factory(
             application=application, close_application=close_application
         )
+        self._data_transfer = DataTransferWorkflow(
+            controller=lambda: self._controller,
+            show=self.push_screen,
+            notify=self.notify,
+            start=self._start_data_transfer,
+        )
         self._session_backend = session_backend
         self._task_backend = task_backend
         self._home_access = ExitStack()
@@ -558,6 +565,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._theme_switch_active = False
         self._theme_switch_changed = asyncio.Event()
         self._theme_picker_ref: ReferenceType[ChoiceScreen] | None = None
+
+    def _start_data_transfer(self, work: Callable[[], Coroutine[None, None, None]]) -> None:
+        _worker: Worker[None] = self.run_worker(work, group="data-transfer-operation")
 
     @property
     def tui_theme(self) -> TuiTheme:
@@ -2978,7 +2988,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if argument:
                 self.notify("Usage: /export", severity="warning")
             else:
-                self._export_current_session(self._visible_session_id())
+                self._data_transfer.export_session(self._visible_session_id())
         elif command.name == "/unqueue":
             if argument:
                 await self._unqueue_message(argument)

@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from ouro.core.errors import ConfigError
 from ouro.core.provider import Provider
 from ouro.core.request_context import ProviderRequestContext
-from ouro.plugins.providers import PluginProvider, ProviderBinder
+from ouro.plugins.providers import PluginProvider, ProviderBinder, ProviderBinding
 from ouro.providers.factory import ProviderBuildContext
 from ouro.providers.headers import ProviderHeaderResolver
 from ouro.sdk.plugins.providers import ProviderConnection, ProviderRetryPolicy
+
+
+async def unavailable_provider_binding(protocol: str) -> ProviderBinding:
+    """Unbound runtimes can settle stored facts without activating protocol plugins."""
+    raise ConfigError("plugin provider runtime is unavailable")
 
 
 def build_plugin_provider(context: ProviderBuildContext, *, bind: ProviderBinder) -> Provider:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import pytest
 
 from ouro.application.agents.definitions import AgentDefinitionService
@@ -61,6 +63,9 @@ class CurrentCatalog:
             ),
             (),
         )
+
+    def driver_scope(self, context):
+        return nullcontext()
 
     def snapshot(self):
         return self.current.acquire()

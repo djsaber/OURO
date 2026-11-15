@@ -7,7 +7,6 @@ import pytest
 
 from ouro.application.inputs.requests import UserInputRequest
 from ouro.application.inputs.skills import SkillActivationService, SkillInvocationRequest
-from ouro.application.runtime.configuration import RuntimeConfigurationResolver
 from ouro.application.runtime.service import RuntimeService
 from ouro.config.queued_inputs import QueuedInputConfig
 from ouro.core.adapter import RuntimeAdapter
@@ -20,6 +19,7 @@ from ouro.core.prompt_policies import (
     PromptPolicyRegistry,
 )
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
+from ouro.local_configuration import RuntimeConfigurationResolver
 from ouro.sessions import LocalSessionStore
 from ouro.skills import SkillLoader, SkillManager
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult

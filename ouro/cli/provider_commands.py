@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import sys
 from collections.abc import Mapping
-from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any, Literal, Unpack
 
@@ -15,35 +14,23 @@ from ouro.application.contracts.configuration import (
     ProviderView,
 )
 from ouro.cli.errors import error_exit_code
-from ouro.cli.run import RuntimeProviderOptions, build_default_runtime
 from ouro.config import EndpointReasoningConfig, ProviderProtocol, ProviderType
 from ouro.config.endpoints import EndpointChanges
-from ouro.config.provider_models import is_plugin_protocol
+from ouro.config.provider_models import ProviderRuntimeOptions
 from ouro.core.base import new_id
 from ouro.core.errors import OuroError
 from ouro.core.request_context import ProviderRequestContext
-from ouro.local_application import open_local_plugins
+from ouro.local_application import open_local_provider_runtime
 
 
 async def check_provider_connection(
     *,
     home: str | Path | None = None,
-    provider_options: RuntimeProviderOptions | None = None,
+    provider_options: ProviderRuntimeOptions | None = None,
     json_mode: bool = False,
 ) -> int:
     try:
-        options = provider_options or RuntimeProviderOptions()
-        configured = ConfigurationFacade(home).provider(options.provider_id)
-        runtime = build_default_runtime(
-            home,
-            provider_options=options,
-        )
-        async with AsyncExitStack() as stack:
-            await stack.enter_async_context(runtime)
-            if is_plugin_protocol(options.protocol or configured.protocol):
-                plugins = await stack.enter_async_context(open_local_plugins(home))
-                assert plugins.runtime is not None
-                runtime.bind_extensions(catalog=plugins.runtime)
+        async with open_local_provider_runtime(home, provider_options=provider_options) as runtime:
             result = await runtime.adapter.provider.check_connection(
                 runtime.adapter.model,
                 request_context=ProviderRequestContext(

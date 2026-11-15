@@ -471,7 +471,7 @@ def _create_session_with_turns(store: SessionStore, count: int) -> str:
 def test_session_compact_success(monkeypatch, tmp_path, capsys) -> None:
     runtime = _compaction_runtime(tmp_path)
     monkeypatch.setattr(
-        "ouro.cli.session_commands.build_default_runtime",
+        "ouro.cli.session_commands.build_local_runtime",
         lambda home, **kwargs: runtime,
     )
     session_id = _create_session_with_turns(runtime.store, count=3)
@@ -487,7 +487,7 @@ def test_session_compact_success(monkeypatch, tmp_path, capsys) -> None:
 def test_session_compact_skipped(monkeypatch, tmp_path, capsys) -> None:
     runtime = _compaction_runtime(tmp_path)
     monkeypatch.setattr(
-        "ouro.cli.session_commands.build_default_runtime",
+        "ouro.cli.session_commands.build_local_runtime",
         lambda home, **kwargs: runtime,
     )
     session_id = _create_session_with_turns(runtime.store, count=1)
@@ -502,7 +502,7 @@ def test_session_compact_skipped(monkeypatch, tmp_path, capsys) -> None:
 def test_session_compact_missing(monkeypatch, tmp_path, capsys) -> None:
     runtime = _compaction_runtime(tmp_path)
     monkeypatch.setattr(
-        "ouro.cli.session_commands.build_default_runtime",
+        "ouro.cli.session_commands.build_local_runtime",
         lambda home, **kwargs: runtime,
     )
 
@@ -516,7 +516,7 @@ def test_session_compact_missing(monkeypatch, tmp_path, capsys) -> None:
 def test_session_compact_json(monkeypatch, tmp_path, capsys) -> None:
     runtime = _compaction_runtime(tmp_path)
     monkeypatch.setattr(
-        "ouro.cli.session_commands.build_default_runtime",
+        "ouro.cli.session_commands.build_local_runtime",
         lambda home, **kwargs: runtime,
     )
     session_id = _create_session_with_turns(runtime.store, count=3)

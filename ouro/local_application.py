@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Generator
-from contextlib import asynccontextmanager, contextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -13,15 +13,10 @@ from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.application.contracts.base import ApplicationStartupReport, Diagnostic
 from ouro.application.contracts.configuration import MCPRuntimeServerView
 from ouro.application.events import RuntimeEventSink
-from ouro.application.models.catalog import AdapterBuilder, ConfiguredModelCatalog
 from ouro.application.models.generation import ModelGenerationService
 from ouro.application.plugins.service import PluginService
 from ouro.application.provider_auth.service import ProviderAuthService
 from ouro.application.resources import ResourceService
-from ouro.application.runtime.configuration import (
-    RuntimeConfigurationResolver,
-    RuntimeProviderOptions,
-)
 from ouro.application.runtime.environment import RuntimeEnvironment
 from ouro.application.runtime.service import RuntimeService
 from ouro.application.sessions.service import SessionService
@@ -49,7 +44,12 @@ from ouro.billing import LocalUsageLedger
 from ouro.builtin_plugins import LOCAL_BUILTIN_PLUGINS
 from ouro.config import CompactionConfig, CredentialRef, CredentialResolver
 from ouro.config.agents import AgentDefinitionsConfigManager
-from ouro.config.provider_models import SUPPORTED_PROVIDER_TYPES, provider_type_spec
+from ouro.config.provider_models import (
+    SUPPORTED_PROVIDER_TYPES,
+    ProviderRuntimeOptions,
+    is_plugin_protocol,
+    provider_type_spec,
+)
 from ouro.config.providers.manager import ProviderConfigManager
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.cancellation import settle_owned_tasks
@@ -69,7 +69,12 @@ from ouro.deployment import (
     resolve_session_backend,
     resolve_task_backend,
 )
-from ouro.local_providers import build_plugin_provider
+from ouro.local_configuration import (
+    AdapterBuilder,
+    ConfiguredModelCatalog,
+    RuntimeConfigurationResolver,
+)
+from ouro.local_providers import build_plugin_provider, unavailable_provider_binding
 from ouro.mcp import MCPRuntimeResource, MCPServerConfig, MCPServerRecord
 from ouro.plugins.contributions.preparation import ContributionCoordinator
 from ouro.plugins.installation.store import PluginPackageStore
@@ -197,7 +202,7 @@ class LocalApplication:
         cls,
         home: str | Path | None = None,
         *,
-        provider_options: RuntimeProviderOptions | None = None,
+        provider_options: ProviderRuntimeOptions | None = None,
         system_prompt: str | None = None,
         event_sink: RuntimeEventSink | None = None,
         session_backend: SessionBackend | None = None,
@@ -206,6 +211,11 @@ class LocalApplication:
         service_policies: tuple[ProviderServicePolicy, ...] = (),
     ) -> LocalApplication:
         task_backend = resolve_task_backend(task_backend)
+
+        async def bind_provider(protocol: str) -> ProviderBinding:
+            assert application.plugin_runtime is not None
+            return await application.plugin_runtime.bind_provider(protocol)
+
         runtime = build_local_runtime(
             home,
             provider_options=provider_options,
@@ -214,8 +224,10 @@ class LocalApplication:
             session_backend=session_backend,
             auth_drivers=auth_drivers,
             service_policies=service_policies,
+            provider_binder=bind_provider,
         )
-        return cls.from_runtime(runtime, task_backend=task_backend)
+        application = cls.from_runtime(runtime, task_backend=task_backend)
+        return application
 
     @classmethod
     def from_runtime(
@@ -249,7 +261,9 @@ class LocalApplication:
         agent_config = AgentDefinitionsConfigManager(configured_home)
         configured_agents = agent_config.snapshot()
         agent_definitions = AgentDefinitionService(
-            agent_config, spawn_policy=configured_agents.runtime.spawn_policy
+            agent_config,
+            default_model_route=ProviderConfigManager(configured_home).require_default_route,
+            spawn_policy=configured_agents.runtime.spawn_policy,
         )
         supervisor = RuntimeSupervisor(runtime)
         agents = AgentService(
@@ -517,6 +531,28 @@ async def open_local_plugins(
 
 
 @asynccontextmanager
+async def open_local_provider_runtime(
+    home: str | Path | None = None,
+    *,
+    provider_options: ProviderRuntimeOptions | None = None,
+) -> AsyncGenerator[RuntimeService]:
+    """Own the configured Provider and its protocol plugin for a connection check."""
+    options = provider_options or ProviderRuntimeOptions()
+    configured = ConfigurationFacade(home).provider(options.provider_id)
+
+    async def bind_provider(protocol: str) -> ProviderBinding:
+        assert plugins.runtime is not None
+        return await plugins.runtime.bind_provider(protocol)
+
+    runtime = build_local_runtime(home, provider_options=options, provider_binder=bind_provider)
+    async with AsyncExitStack() as stack:
+        await stack.enter_async_context(runtime)
+        if is_plugin_protocol(options.protocol or configured.protocol):
+            plugins = await stack.enter_async_context(open_local_plugins(home))
+        yield runtime
+
+
+@asynccontextmanager
 async def open_local_agent_definitions(
     home: str | Path | None = None,
     *,
@@ -548,7 +584,10 @@ async def open_local_agent_definitions(
         await plugin_runtime.start()
         with plugin_runtime.snapshot() as catalog:
             yield LocalAgentDefinitionServices(
-                definitions=AgentDefinitionService(AgentDefinitionsConfigManager(root)),
+                definitions=AgentDefinitionService(
+                    AgentDefinitionsConfigManager(root),
+                    default_model_route=ProviderConfigManager(root).require_default_route,
+                ),
                 tools=catalog.tools,
             )
     finally:
@@ -565,12 +604,13 @@ async def open_local_agent_definitions(
 def build_local_runtime(
     home: str | Path | None = None,
     *,
-    provider_options: RuntimeProviderOptions | None = None,
+    provider_options: ProviderRuntimeOptions | None = None,
     system_prompt: str | None = None,
     event_sink: RuntimeEventSink | None = None,
     session_backend: SessionBackend | None = None,
     auth_drivers: tuple[AuthDriver, ...] = (),
     service_policies: tuple[ProviderServicePolicy, ...] = (),
+    provider_binder: ProviderBinder = unavailable_provider_binding,
 ) -> RuntimeService:
     root = resolve_local_home(home)
     session_services = build_local_session_services(root, session_backend=session_backend)
@@ -590,11 +630,8 @@ def build_local_runtime(
     service_policies = (*_BUILTIN_SERVICE_POLICIES, *service_policies)
     auth = ProviderAuthService(ProviderConfigManager(root), credentials, auth_drivers)
 
-    async def bind_provider(protocol: str) -> ProviderBinding:
-        return await runtime.bind_provider(protocol)
-
     adapter_builder = _authenticated_adapter_builder(
-        credentials, auth_drivers, service_policies, provider_binder=bind_provider
+        credentials, auth_drivers, service_policies, provider_binder=provider_binder
     )
     adapter = adapter_builder(resolved.provider_options)
     model_catalog = configuration.model_catalog(
@@ -866,7 +903,7 @@ def _authenticated_adapter_builder(
                     f"provider service policy is not registered: {connection.service_policy}"
                 )
 
-    def build(options: RuntimeProviderOptions) -> RuntimeAdapter:
+    def build(options: ProviderRuntimeOptions) -> RuntimeAdapter:
         policy = policy_by_id.get(options.service_policy or "")
         if options.service_policy is not None and policy is None:
             raise ConfigError("provider service registration is unavailable")

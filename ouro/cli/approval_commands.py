@@ -5,11 +5,10 @@ import sys
 from pathlib import Path
 
 from ouro.cli.errors import error_exit_code
-from ouro.cli.run import build_default_runtime
 from ouro.core.errors import OuroError
 from ouro.core.results import RunResult
 from ouro.deployment import SessionBackend
-from ouro.local_application import LocalApplication
+from ouro.local_application import LocalApplication, build_local_runtime
 
 
 async def approve_tool_command(
@@ -22,8 +21,8 @@ async def approve_tool_command(
     session_backend: SessionBackend | None = None,
 ) -> int:
     try:
-        runtime = build_default_runtime(home, session_backend=session_backend)
-        async with LocalApplication.from_runtime(runtime, home=home):
+        async with LocalApplication.build(home, session_backend=session_backend) as application:
+            runtime = application.runtime
             result = await runtime.approve_tool(
                 session_id=session_id,
                 run_id=run_id,
@@ -48,7 +47,7 @@ async def reject_tool_command(
     session_backend: SessionBackend | None = None,
 ) -> int:
     try:
-        runtime = build_default_runtime(home, session_backend=session_backend)
+        runtime = build_local_runtime(home, session_backend=session_backend)
         async with runtime:
             result = await runtime.approve_tool(
                 session_id=session_id,
@@ -74,7 +73,7 @@ async def abort_run_command(
     session_backend: SessionBackend | None = None,
 ) -> int:
     try:
-        runtime = build_default_runtime(home, session_backend=session_backend)
+        runtime = build_local_runtime(home, session_backend=session_backend)
         async with runtime:
             result = await runtime.abort_run(
                 session_id=session_id,

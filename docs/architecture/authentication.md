@@ -40,7 +40,7 @@ OpenCode 主仓库的内置 Codex 插件提供浏览器 PKCE 和设备码登录�
 |---|---|
 | `config/provider_models.py`、`config/providers/codec.py` | 产品、协议、认证驱动和凭据引用的结构与组合校验 |
 | `config/credentials.py`、`providers/factory.py` | 静态引用解析、协议选择与请求认证端口注入 |
-| `application/models/catalog.py` | 模型路由与 adapter 生命周期；请求认证独立取得当前凭据 |
+| `application/models/catalog.py` / `local_configuration.py` | 模型目录契约与本地路由实现；本地目录拥有 adapter 生命周期，请求认证独立取得当前凭据 |
 | `config/provider_templates/` | 产品默认连接与模型数据，模板不保存账户 |
 | `application/configuration/views.py` | 对 Host 投影安全配置和认证状态 |
 | `providers/http_transport.py`、`retrying.py` | HTTP/SSE、统一尝试预算和输出前认证恢复 |

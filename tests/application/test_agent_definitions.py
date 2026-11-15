@@ -6,6 +6,7 @@ from ouro.application.agents.definitions import AgentDefinitionService
 from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.application.runtime.service import RuntimeService
 from ouro.config.agents import AgentDefinitionsConfigManager
+from ouro.config.providers.manager import ProviderConfigManager
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import AgentSpawnPolicy, ToolSelection
 from ouro.core.errors import ConfigError
@@ -49,8 +50,31 @@ def _registry() -> ToolRegistry:
     return registry
 
 
+def test_default_model_route_uses_live_injected_query(tmp_path):
+    route = "first/endpoint"
+
+    def current_route():
+        if route is None:
+            raise ConfigError("system default endpoint is not configured")
+        return route
+
+    service = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path), default_model_route=current_route
+    )
+    assert service.default_model_route() == "first/endpoint"
+    route = "second/endpoint"
+    assert service.default_model_route() == "second/endpoint"
+    route = None
+    with pytest.raises(ConfigError, match="system default endpoint is not configured"):
+        service.default_model_route()
+    assert not (tmp_path / "config" / "providers.json").exists()
+
+
 def test_general_and_custom_definitions_share_one_catalog_pipeline(tmp_path) -> None:
-    service = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    service = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     created = service.create(
         name="Reader",
         description="Read-only investigation.",
@@ -79,7 +103,10 @@ def test_general_and_custom_definitions_share_one_catalog_pipeline(tmp_path) -> 
 
 
 def test_default_subagent_model_requires_explicit_system_route(tmp_path) -> None:
-    service = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    service = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     options = dict(
         name="Reader",
         description="Read evidence.",
@@ -102,7 +129,9 @@ def test_default_subagent_model_requires_explicit_system_route(tmp_path) -> None
 
 def test_missing_selected_tool_keeps_definition_but_excludes_it_from_resolution(tmp_path) -> None:
     manager = AgentDefinitionsConfigManager(tmp_path)
-    service = AgentDefinitionService(manager)
+    service = AgentDefinitionService(
+        manager, default_model_route=ProviderConfigManager(manager.file.root).require_default_route
+    )
     created = service.create(
         name="Reader",
         description="Read-only investigation.",
@@ -123,7 +152,10 @@ def test_missing_selected_tool_keeps_definition_but_excludes_it_from_resolution(
 
 
 def test_definition_model_can_be_set_and_cleared_atomically(tmp_path) -> None:
-    service = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    service = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     created = service.create(
         name="Reader",
         description="Read evidence.",
@@ -156,7 +188,10 @@ def test_catalog_excludes_hard_denied_tools_and_freezes_approval_floor(
     tmp_path,
     selection_mode,
 ) -> None:
-    service = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    service = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     if selection_mode == "selected":
         created = service.create(
             name="Reader",
@@ -197,7 +232,10 @@ def test_agent_tool_filters_use_declared_effect_and_source(tmp_path, source, eff
             handler=_handler,
         )
     )
-    service = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    service = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     reference = service.catalog_snapshot(registry).resolve("general").effective_tools[0]
     assert AgentSpawnPolicy().allows_tool(reference)
     assert AgentSpawnPolicy(allow_write=False).allows_tool(reference) == (effect == "read_only")
@@ -205,7 +243,10 @@ def test_agent_tool_filters_use_declared_effect_and_source(tmp_path, source, eff
 
 
 def test_builtin_definition_is_immutable_but_can_be_copied(tmp_path) -> None:
-    service = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    service = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
 
     with pytest.raises(ConfigError, match="immutable"):
         service.delete("general", expected_revision=0)
@@ -221,7 +262,10 @@ def test_builtin_definition_is_immutable_but_can_be_copied(tmp_path) -> None:
 async def test_runtime_persists_run_frozen_agent_catalog(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
-    service = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    service = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(FauxProvider(), ModelMetadata(model_id="faux", provider_id="faux")),
@@ -277,7 +321,10 @@ def test_delegated_tool_ceiling_permits_updates_but_not_authority_expansion(chan
 
 @pytest.mark.parametrize("agent_id", ["general", "reader"])
 def test_enabled_state_updates_live_catalog_and_preserves_frozen_contract(tmp_path, agent_id):
-    service = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    service = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     tools = _registry()
     created = service.copy_builtin("general", name="Reader", tools=tools, expected_revision=0)
     reader_id = created.definitions[-1].agent_id
@@ -294,14 +341,20 @@ def test_enabled_state_updates_live_catalog_and_preserves_frozen_contract(tmp_pa
     with pytest.raises(ConfigError, match="revision conflict"):
         service.set_enabled(agent_id, enabled=True, expected_revision=1, tools=tools)
     assert not service.get(agent_id, tools=tools).enabled
-    reloaded = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    reloaded = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     assert not reloaded.get(agent_id, tools=tools).enabled
     service.set_enabled(agent_id, enabled=True, expected_revision=2, tools=tools)
     assert service.catalog_snapshot(tools).resolve(agent_id) == frozen.resolve(agent_id)
 
 
 def test_disabled_state_survives_edits_and_policy_changes_and_is_removed_on_delete(tmp_path):
-    service = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    service = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     tools = _registry()
     created = service.copy_builtin("general", name="Reader", tools=tools, expected_revision=0)
     reader_id = created.definitions[-1].agent_id
@@ -330,7 +383,10 @@ def test_disabled_state_survives_edits_and_policy_changes_and_is_removed_on_dele
 async def test_enablement_refreshes_between_decisions_in_the_same_run(tmp_path):
     store = LocalSessionStore(tmp_path)
     store.initialize()
-    service = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    service = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     registry = _registry()
     catalogs = []
 
@@ -384,7 +440,10 @@ async def test_enablement_refreshes_between_decisions_in_the_same_run(tmp_path):
     ],
 )
 def test_framework_generates_unique_ids_and_rename_preserves_identity(tmp_path, name, prefix):
-    service = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    service = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     tools = _registry()
     first = service.create(
         name=name,
@@ -414,7 +473,10 @@ def test_framework_generates_unique_ids_and_rename_preserves_identity(tmp_path, 
         tools=tools,
         expected_revision=2,
     )
-    reloaded = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    reloaded = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     assert reloaded.get(first.agent_id, tools=tools).name == "Renamed"
     assert (
         reloaded.catalog_snapshot(tools).resolve(first.agent_id).definition.agent_id
@@ -431,7 +493,11 @@ def test_management_uses_active_whitelist_and_preserves_new_agent_enablement(
     config.update_runtime(
         config.snapshot().runtime.model_copy(update={"spawn_policy": policy}), expected_revision=0
     )
-    service = AgentDefinitionService(config, spawn_policy=policy)
+    service = AgentDefinitionService(
+        config,
+        spawn_policy=policy,
+        default_model_route=ProviderConfigManager(config.file.root).require_default_route,
+    )
     tools = _registry()
     created = service.create(
         name="Reader",
@@ -456,6 +522,10 @@ def test_management_uses_active_whitelist_and_preserves_new_agent_enablement(
     assert catalog.policy_restart_required
     assert catalog.definitions[-1].allowed_by_policy == agent.allowed_by_policy
     assert service.get(agent.agent_id, tools=tools).allowed_by_policy == agent.allowed_by_policy
-    restarted = AgentDefinitionService(config, spawn_policy=replacement)
+    restarted = AgentDefinitionService(
+        config,
+        spawn_policy=replacement,
+        default_model_route=ProviderConfigManager(config.file.root).require_default_route,
+    )
     assert restarted.get(agent.agent_id, tools=tools).allowed_by_policy
     assert not restarted.list(tools=tools).policy_restart_required

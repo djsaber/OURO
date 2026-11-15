@@ -6,14 +6,14 @@ from typing import cast
 
 from ouro.config.prompts import PromptDraft, PromptKind
 from ouro.tui.features.prompts.screens import PromptEntryScreen, prompt_choices, prompt_label
-from ouro.tui.features.transfer.workflows import DataTransferWorkflows
+from ouro.tui.features.tasks.workflows import TaskManagementWorkflows
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.confirmation import ConfirmationScreen
 from ouro.tui.menus.models import Choice
 from ouro.tui.theme import theme_for
 
 
-class PromptWorkflows(DataTransferWorkflows):
+class PromptWorkflows(TaskManagementWorkflows):
     async def _configure_prompts(self, *, menu: ChoiceScreen | None = None) -> None:
         try:
             current = await self._controller.prompt_configuration()

@@ -58,11 +58,6 @@ from ouro.application.contracts.sessions import (
 from ouro.application.events import RuntimeEventRecorder, RuntimeEventSinkRegistration
 from ouro.application.inputs.queue import QueuedUserInputView
 from ouro.application.resources import ResourceService
-from ouro.application.runtime.configuration import (
-    RuntimeConfigurationResolver,
-    RuntimeConfigurationSnapshot,
-    RuntimeProviderOptions,
-)
 from ouro.application.runtime.service import RuntimeService
 from ouro.application.sessions.service import SessionService, SessionTitleGenerator
 from ouro.application.supervisor import RuntimeSubscription, RuntimeSupervisor
@@ -107,9 +102,6 @@ __all__ = [
     "RuntimeEventCategory",
     "RuntimeEventView",
     "RuntimeService",
-    "RuntimeConfigurationResolver",
-    "RuntimeConfigurationSnapshot",
-    "RuntimeProviderOptions",
     "RuntimeSupervisor",
     "RuntimeSubscription",
     "ResourceService",

@@ -7,18 +7,37 @@ import pytest
 
 from ouro.automation.local_files import LocalTaskRepository
 from ouro.automation.sqlite import SQLiteTaskRepository
+from ouro.config.provider_models import ProviderRuntimeOptions
 from ouro.core.errors import ConfigError
 from ouro.core.state import SessionRecord
 from ouro.core.tasks import AgentTaskTarget, TaskConfiguration, TaskSchedule
 from ouro.deployment import resolve_session_backend, resolve_task_backend
 from ouro.local_application import (
     LocalApplication,
+    build_local_runtime,
     build_local_services,
     open_local_agent_definitions,
 )
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.backends.files.index import LocalSessionIndex
 from tests.session_storage import write_session_payload
+
+
+async def test_unbound_protocol_does_not_prevent_local_session_operations(tmp_path):
+    async with build_local_runtime(
+        tmp_path,
+        provider_options=ProviderRuntimeOptions(
+            protocol="test.protocol.provider/providers/probe", model="probe"
+        ),
+    ) as runtime:
+        session = runtime.create_session()
+        assert (
+            runtime.store.load_session_record(session.session_id).session_id == session.session_id
+        )
+        result = await runtime.adapter.provider.check_connection(runtime.adapter.model)
+        assert not result.ok
+        assert result.error_code == "plugin_provider_check_failed"
+        assert result.message == "plugin provider runtime is unavailable"
 
 
 async def test_local_application_discovers_skills_after_startup(tmp_path):

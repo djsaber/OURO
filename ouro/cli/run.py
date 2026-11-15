@@ -5,41 +5,19 @@ import sys
 from pathlib import Path
 
 from ouro.application.contracts.base import ApplicationStartupReport
-from ouro.application.events import RuntimeEventSink
 from ouro.application.inputs.queue import QueuedInputMode
-from ouro.application.runtime.configuration import RuntimeProviderOptions
-from ouro.application.runtime.service import RuntimeService
 from ouro.cli.errors import error_exit_code
+from ouro.config.provider_models import ProviderRuntimeOptions
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.errors import OuroError
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.results import RunResult
 from ouro.deployment import SessionBackend, TaskBackend
-from ouro.local_application import (
-    LocalApplication,
-    build_local_runtime,
-)
+from ouro.local_application import LocalApplication
 
 _DIM_ITALIC = "\x1b[2;3m"
 _RESET = "\x1b[0m"
-
-
-def build_default_runtime(
-    home: str | Path | None = None,
-    *,
-    provider_options: RuntimeProviderOptions | None = None,
-    system_prompt: str | None = None,
-    event_sink: RuntimeEventSink | None = None,
-    session_backend: SessionBackend | None = None,
-) -> RuntimeService:
-    return build_local_runtime(
-        home,
-        provider_options=provider_options,
-        system_prompt=system_prompt,
-        event_sink=event_sink,
-        session_backend=session_backend,
-    )
 
 
 async def run_print(
@@ -48,7 +26,7 @@ async def run_print(
     home: str | Path | None = None,
     session_id: str | None = None,
     title: str | None = None,
-    provider_options: RuntimeProviderOptions | None = None,
+    provider_options: ProviderRuntimeOptions | None = None,
     system_prompt: str | None = None,
     queue_mode: QueuedInputMode = "follow_up",
     approval_mode: SessionApprovalMode | None = None,
@@ -59,16 +37,16 @@ async def run_print(
 ) -> int:
     printer = _RunPrinter()
     try:
-        runtime = build_default_runtime(
+        application = LocalApplication.build(
             home,
             provider_options=provider_options,
             system_prompt=system_prompt,
             session_backend=session_backend,
+            task_backend=task_backend,
         )
+        runtime = application.runtime
         runtime.add_event_sink(printer)
-        async with LocalApplication.from_runtime(
-            runtime, home=home, task_backend=task_backend
-        ) as application:
+        async with application:
             _print_startup_diagnostics(application.startup_report)
             result = await runtime.run(
                 prompt,
@@ -98,7 +76,7 @@ async def run_json(
     home: str | Path | None = None,
     session_id: str | None = None,
     title: str | None = None,
-    provider_options: RuntimeProviderOptions | None = None,
+    provider_options: ProviderRuntimeOptions | None = None,
     system_prompt: str | None = None,
     queue_mode: QueuedInputMode = "follow_up",
     approval_mode: SessionApprovalMode | None = None,
@@ -109,15 +87,15 @@ async def run_json(
 ) -> int:
     startup_report = ApplicationStartupReport()
     try:
-        runtime = build_default_runtime(
+        application = LocalApplication.build(
             home,
             provider_options=provider_options,
             system_prompt=system_prompt,
             session_backend=session_backend,
+            task_backend=task_backend,
         )
-        async with LocalApplication.from_runtime(
-            runtime, home=home, task_backend=task_backend
-        ) as application:
+        runtime = application.runtime
+        async with application:
             startup_report = application.startup_report
             result = await runtime.run(
                 prompt,

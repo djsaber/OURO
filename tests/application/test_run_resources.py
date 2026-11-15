@@ -6,6 +6,7 @@ import subprocess
 import sys
 import textwrap
 import weakref
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -152,7 +153,10 @@ async def runtime(tmp_path):
     )
 
     source = SimpleNamespace(
-        snapshot=catalog.acquire, catalog=lambda: catalog, synchronize=AsyncMock()
+        snapshot=catalog.acquire,
+        catalog=lambda: catalog,
+        synchronize=AsyncMock(),
+        driver_scope=nullcontext,
     )
     yield app, catalog, source
     # Explicit close tests own their shutdown result, including expected errors.

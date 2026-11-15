@@ -187,7 +187,7 @@ def test_invalid_configuration_archive_cannot_change_target(tmp_path):
 
 
 def test_runtime_rejects_obsolete_shared_config_without_blocking_provider_inspection(tmp_path):
-    from ouro.application.runtime.configuration import RuntimeConfigurationResolver
+    from ouro.local_configuration import RuntimeConfigurationResolver
 
     JsonConfigFile(tmp_path).write({"providers": {"default": "faux"}})
     assert ProviderConfigManager(tmp_path).snapshot().default_provider_id == "faux"

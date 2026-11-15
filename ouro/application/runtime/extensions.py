@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from typing import Protocol
 
 from ouro.core.compaction import CompactionStrategyRegistry
@@ -11,13 +11,12 @@ from ouro.core.context_providers import ContextProviderRegistry
 from ouro.core.continuations import RunContinuationRegistry
 from ouro.core.observers import Observation, ObserverRegistry
 from ouro.core.prompt_policies import PromptPolicyRegistry
-from ouro.core.run_drivers import RunDriverBinding, RunDriverRegistration
+from ouro.core.run_drivers import RunDriverBinding, RunDriverContext, RunDriverRegistration
 from ouro.core.session_controller_registry import SessionControllerRegistry
 from ouro.core.session_controls import SessionControlState
 from ouro.core.state import RunContinuationControllerRef
 from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistry
-from ouro.plugins.providers import ProviderBinding
 from ouro.skills import SkillMetadata
 from ouro.tools import ToolRegistry
 
@@ -93,7 +92,7 @@ class RuntimeExtensions(Protocol):
         self, expected: RunDriverBinding
     ) -> AbstractAsyncContextManager[ContributionLease[RunDriverRegistration]]: ...
 
-    async def bind_provider(self, protocol: str) -> ProviderBinding: ...
+    def driver_scope(self, context: RunDriverContext) -> AbstractContextManager[object]: ...
 
     async def replace_base_skills(self, skills: tuple[SkillMetadata, ...]) -> None: ...
 

@@ -6,6 +6,7 @@ from ouro.application.runtime.service import RuntimeService
 from ouro.cli.run import run_json
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
+from ouro.local_application import LocalApplication
 from ouro.providers.faux import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
@@ -36,7 +37,10 @@ async def test_provider_error_code_survives_runtime_persistence_and_cli_json(
         tools=ToolRegistry(),
         default_workspace=tmp_path,
     )
-    monkeypatch.setattr("ouro.cli.run.build_default_runtime", lambda *args, **kwargs: runtime)
+    monkeypatch.setattr(
+        "ouro.cli.run.LocalApplication.build",
+        lambda home, **kwargs: LocalApplication.from_runtime(runtime, home=home),
+    )
     assert await run_json("hello", home=tmp_path) == 1
     result = json.loads(capsys.readouterr().out)
     assert "events" not in result

@@ -25,6 +25,7 @@ from ouro.application.supervisor import RuntimeSupervisor
 from ouro.application.usage import UsageService
 from ouro.billing import LocalUsageLedger
 from ouro.config.agents import AgentDefinitionsConfigManager
+from ouro.config.providers.manager import ProviderConfigManager
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import (
     AgentControlRequest,
@@ -673,7 +674,10 @@ async def _services(
     resources = ResourceService(store=resource_store, sessions=store)
     provider = CapturingChildProvider()
     tools = _tools()
-    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     definitions.config.create(
         AgentDefinition(
             agent_id="reader",
@@ -780,7 +784,10 @@ async def _active_subagent_services(
     store.initialize()
     provider = SteeredChildProvider()
     tools = _tools()
-    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     definitions.config.create(
         AgentDefinition(
             agent_id="reader",
@@ -2029,7 +2036,10 @@ async def test_child_hitl_is_projected_at_root_and_resolved_by_exact_identity(
             handler=_handler,
         )
     )
-    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
@@ -2134,7 +2144,10 @@ async def test_spawn_approval_does_not_approve_the_child_tool_call(tmp_path) -> 
             handler=_handler,
         )
     )
-    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
@@ -2203,7 +2216,10 @@ async def test_async_child_user_input_is_streamed_and_routed_by_exact_identity(
     store.initialize()
     provider = AskUserChildProvider()
     tools = _ask_tools()
-    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
@@ -2298,7 +2314,10 @@ async def test_simultaneous_child_inputs_remain_isolated(tmp_path) -> None:
     store.initialize()
     provider = ConcurrentAskUserProvider()
     tools = _ask_tools()
-    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
@@ -2401,7 +2420,10 @@ async def test_unattended_child_input_fails_deterministically_without_parking(tm
     store.initialize()
     provider = AskUserChildProvider()
     tools = _ask_tools()
-    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
@@ -3074,7 +3096,10 @@ async def test_sync_spawn_releases_parent_worker_and_resumes_original_tool_call(
     store = LocalSessionStore(tmp_path)
     store.initialize()
     tools = _tools()
-    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     definitions.config.create(
         AgentDefinition(
             agent_id="reader",
@@ -3187,7 +3212,10 @@ async def test_sync_delivery_commits_while_parent_model_is_still_running(
     )
     store.initialize()
     tools = _tools()
-    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     definitions.config.create(
         AgentDefinition(
             agent_id="reader",
@@ -3352,7 +3380,10 @@ async def test_parallel_sync_spawns_serialize_parent_resumption(
     )
     store.initialize()
     tools = _tools()
-    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     definitions.config.create(
         AgentDefinition(
             agent_id="reader",
@@ -3549,7 +3580,10 @@ async def test_sync_child_hitl_keeps_parent_parked_and_single_worker_progresses(
     store = LocalSessionStore(tmp_path)
     store.initialize()
     tools = _ask_tools()
-    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     provider = SyncHitlProvider()
     runtime = RuntimeService(
         store=store,
@@ -3623,7 +3657,10 @@ async def test_parent_abort_resolves_sync_wait_and_cascades_waiting_child(
     )
     store.initialize()
     tools = _ask_tools()
-    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
@@ -3704,7 +3741,10 @@ async def test_next_boundary_delivery_racing_parent_round_is_committed_once(tmp_
     store = LocalSessionStore(tmp_path)
     store.initialize()
     tools = _tools()
-    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     definitions.config.create(
         AgentDefinition(
             agent_id="reader",
@@ -3783,7 +3823,10 @@ async def test_async_result_delivery_is_exact_once(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     tools = _tools()
-    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     definitions.config.create(
         AgentDefinition(
             agent_id="reader",
@@ -3912,7 +3955,10 @@ async def test_delivery_run_can_message_the_same_subagent_without_deadlock(tmp_p
     store = LocalSessionStore(tmp_path)
     store.initialize()
     tools = _tools()
-    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     definitions.config.create(
         AgentDefinition(
             agent_id="reader",

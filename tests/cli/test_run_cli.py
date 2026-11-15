@@ -10,11 +10,13 @@ from ouro.application.context.summary import LLMSummaryCompactionStrategy
 from ouro.application.runtime.environment import RuntimeEnvironment
 from ouro.application.runtime.service import RuntimeService
 from ouro.cli.main import main
-from ouro.cli.run import RuntimeProviderOptions, build_default_runtime, run_json, run_print
+from ouro.cli.run import run_json, run_print
 from ouro.config import ProviderConfigManager, openai_chat_completions_effort_reasoning
+from ouro.config.provider_models import ProviderRuntimeOptions
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.reasoning import ReasoningRequest
+from ouro.local_application import LocalApplication, build_local_runtime
 from ouro.mcp import MCPConfigStore, MCPServerConfigUpdate
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 from ouro.providers import FauxProvider, OpenAIChatCompletionsProvider
@@ -108,11 +110,14 @@ def test_run_json_mode_outputs_machine_readable_result(tmp_path, capsys) -> None
 
 
 async def test_run_print_reports_invalid_live_prompt_configuration(tmp_path, capsys, monkeypatch):
-    runtime = build_default_runtime(tmp_path)
+    runtime = build_local_runtime(tmp_path)
     path = tmp_path / "config" / "prompts.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{broken-json", encoding="utf-8")
-    monkeypatch.setattr("ouro.cli.run.build_default_runtime", lambda *args, **kwargs: runtime)
+    monkeypatch.setattr(
+        "ouro.cli.run.LocalApplication.build",
+        lambda home, **kwargs: LocalApplication.from_runtime(runtime, home=home),
+    )
 
     code = await run_print("hello", home=tmp_path)
 
@@ -168,17 +173,22 @@ async def test_run_print_reports_failed_runtime_result(
     monkeypatch,
     capsys,
 ) -> None:
-    def fake_runtime(
+    def fake_application(
         home=None,
         *,
         provider_options=None,
         system_prompt=None,
         session_backend=None,
+        task_backend=None,
     ):
         del provider_options, system_prompt, session_backend
-        return _runtime(home or tmp_path, [[ProviderStreamEvent(type="done")]])
+        return LocalApplication.from_runtime(
+            _runtime(home or tmp_path, [[ProviderStreamEvent(type="done")]]),
+            home=home,
+            task_backend=task_backend,
+        )
 
-    monkeypatch.setattr("ouro.cli.run.build_default_runtime", fake_runtime)
+    monkeypatch.setattr("ouro.cli.run.LocalApplication.build", fake_application)
 
     code = await run_print("hello", home=tmp_path)
 
@@ -224,7 +234,10 @@ async def test_run_print_does_not_wait_for_configured_mcp_tool(
         ],
     )
 
-    monkeypatch.setattr("ouro.cli.run.build_default_runtime", lambda *args, **kwargs: runtime)
+    monkeypatch.setattr(
+        "ouro.cli.run.LocalApplication.build",
+        lambda home, **kwargs: LocalApplication.from_runtime(runtime, home=home),
+    )
 
     code = await run_print("use MCP", home=tmp_path)
 
@@ -276,7 +289,10 @@ async def test_run_json_composes_mcp_without_corrupting_machine_output(
             ],
         ],
     )
-    monkeypatch.setattr("ouro.cli.run.build_default_runtime", lambda *args, **kwargs: runtime)
+    monkeypatch.setattr(
+        "ouro.cli.run.LocalApplication.build",
+        lambda home, **kwargs: LocalApplication.from_runtime(runtime, home=home),
+    )
 
     code = await run_json("use MCP", home=tmp_path)
 
@@ -314,7 +330,10 @@ async def test_run_print_isolates_mcp_start_failure(
             ]
         ],
     )
-    monkeypatch.setattr("ouro.cli.run.build_default_runtime", lambda *args, **kwargs: runtime)
+    monkeypatch.setattr(
+        "ouro.cli.run.LocalApplication.build",
+        lambda home, **kwargs: LocalApplication.from_runtime(runtime, home=home),
+    )
 
     code = await run_print("hello", home=tmp_path)
 
@@ -468,9 +487,9 @@ def test_build_runtime_with_openai_chat_completions_provider_options(
 ) -> None:
     monkeypatch.setenv("OURO_TEST_KEY", "secret")
 
-    runtime = build_default_runtime(
+    runtime = build_local_runtime(
         tmp_path,
-        provider_options=RuntimeProviderOptions(
+        provider_options=ProviderRuntimeOptions(
             protocol="openai-chat-completions",
             provider_id="glm",
             model="glm-test",
@@ -520,7 +539,7 @@ def test_build_runtime_reads_local_config_file(tmp_path, monkeypatch) -> None:
         encoding="utf-8",
     )
 
-    runtime = build_default_runtime(tmp_path)
+    runtime = build_local_runtime(tmp_path)
 
     provider = runtime.adapter.provider
     assert isinstance(provider, OpenAIChatCompletionsProvider)
@@ -549,7 +568,7 @@ def test_config_prompt_command_persists_system_prompt(tmp_path, capsys) -> None:
 
     assert set_code == 0
     assert set_payload["effective_system_prompt"] == "Custom prompt."
-    assert build_default_runtime(tmp_path).system_prompt == "Custom prompt."
+    assert build_local_runtime(tmp_path).system_prompt == "Custom prompt."
 
     show_code = main(["config", "prompt", "--home", str(tmp_path), "--json"])
     show_payload = json.loads(capsys.readouterr().out)
@@ -564,7 +583,7 @@ def test_config_prompt_command_persists_system_prompt(tmp_path, capsys) -> None:
 
     assert clear_code == 0
     assert clear_payload["effective_system_prompt"] == DEFAULT_SYSTEM_PROMPT
-    assert build_default_runtime(tmp_path).system_prompt == DEFAULT_SYSTEM_PROMPT
+    assert build_local_runtime(tmp_path).system_prompt == DEFAULT_SYSTEM_PROMPT
 
 
 async def test_build_runtime_injects_available_skills_from_home_and_workspace(
@@ -586,7 +605,7 @@ async def test_build_runtime_injects_available_skills_from_home_and_workspace(
         )
 
     monkeypatch.setattr("ouro.local_application.build_runtime_adapter", fake_adapter)
-    runtime = build_default_runtime(home)
+    runtime = build_local_runtime(home)
 
     assert runtime.observers.registered() == []
 
@@ -805,7 +824,7 @@ def test_provider_commands_manage_config_and_runtime_default(
     assert show_payload["provider"]["base_url"] == "https://example.test/v1"
     assert show_payload["provider"]["provider_options"]["top_p"] == 0.8
 
-    runtime = build_default_runtime(tmp_path)
+    runtime = build_local_runtime(tmp_path)
 
     provider = runtime.adapter.provider
     assert isinstance(provider, OpenAIChatCompletionsProvider)
@@ -942,7 +961,7 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
     assert use_code == 0
     assert use_payload["default"] == provider_id
 
-    runtime = build_default_runtime(tmp_path)
+    runtime = build_local_runtime(tmp_path)
     assert runtime.adapter.model.endpoint_id == endpoint_id
     assert runtime.adapter.model.temperature == 0.2
     assert runtime.adapter.model.context_window == 200_000
@@ -1200,7 +1219,7 @@ def test_provider_add_api_path_defaults_and_endpoint_inherits(
 
     assert main(["provider", "use", provider_id, "--home", str(tmp_path)]) == 0
 
-    runtime = build_default_runtime(tmp_path)
+    runtime = build_local_runtime(tmp_path)
     provider = cast(OpenAIChatCompletionsProvider, runtime.adapter.provider)
     assert provider.api_path == "/responses/chat"
 
@@ -1277,7 +1296,7 @@ def test_provider_endpoint_set_api_path_overrides_provider_default(
 
     assert main(["provider", "use", provider_id, "--home", str(tmp_path)]) == 0
 
-    runtime = build_default_runtime(tmp_path)
+    runtime = build_local_runtime(tmp_path)
     provider = cast(OpenAIChatCompletionsProvider, runtime.adapter.provider)
     assert provider.api_path == "/chat/completions"
 
@@ -1435,7 +1454,7 @@ def test_provider_endpoint_add_default_selects_generated_endpoint(
 
     assert main(["provider", "use", provider_id, "--home", str(tmp_path)]) == 0
 
-    runtime = build_default_runtime(tmp_path)
+    runtime = build_local_runtime(tmp_path)
     assert runtime.adapter.model.endpoint_id == second_endpoint_id
     provider = cast(OpenAIChatCompletionsProvider, runtime.adapter.provider)
     assert provider.base_url == "https://second.example.test/v1"
@@ -1458,20 +1477,21 @@ def test_run_print_mode_shows_reasoning_deltas_and_answer(
         ],
     )
 
-    def fake_runtime(
+    def fake_application(
         home=None,
         *,
         provider_options=None,
         system_prompt=None,
         event_sink=None,
         session_backend=None,
+        task_backend=None,
     ):
         del session_backend
         if event_sink is not None:
             runtime.add_event_sink(event_sink)
-        return runtime
+        return LocalApplication.from_runtime(runtime, home=home, task_backend=task_backend)
 
-    monkeypatch.setattr("ouro.cli.run.build_default_runtime", fake_runtime)
+    monkeypatch.setattr("ouro.cli.run.LocalApplication.build", fake_application)
 
     code = main(["run", "--print", "--home", str(tmp_path), "hello"])
     captured = capsys.readouterr()
@@ -1525,7 +1545,7 @@ def test_runtime_composes_configured_compaction_endpoint(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    runtime = build_default_runtime(tmp_path)
+    runtime = build_local_runtime(tmp_path)
     strategy = runtime.compaction_strategies.get("builtin.llm_summary")
 
     assert isinstance(strategy, LLMSummaryCompactionStrategy)
@@ -1552,7 +1572,7 @@ def test_missing_compaction_endpoint_does_not_break_runtime_composition(tmp_path
         encoding="utf-8",
     )
 
-    runtime = build_default_runtime(tmp_path)
+    runtime = build_local_runtime(tmp_path)
     strategy = runtime.compaction_strategies.get("builtin.llm_summary")
 
     assert isinstance(strategy, LLMSummaryCompactionStrategy)

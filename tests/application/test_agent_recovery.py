@@ -11,6 +11,7 @@ from ouro.application.agents.service import AgentService
 from ouro.application.runtime.service import RuntimeService
 from ouro.application.supervisor import RuntimeSupervisor
 from ouro.config.agents import AgentDefinitionsConfigManager
+from ouro.config.providers.manager import ProviderConfigManager
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import (
     AgentCatalogEntry,
@@ -335,7 +336,10 @@ async def test_agent_target_reconcile_rebuilds_terminal_result_without_replaying
         ),
         tools=tools,
     )
-    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     supervisor = RuntimeSupervisor(runtime)
     service = AgentService(
         store=store,
@@ -479,7 +483,10 @@ async def test_target_reconcile_reports_parent_wait_referencing_missing_delegati
         ),
         tools=ToolRegistry(),
     )
-    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions = AgentDefinitionService(
+        AgentDefinitionsConfigManager(tmp_path),
+        default_model_route=ProviderConfigManager(tmp_path).require_default_route,
+    )
     supervisor = RuntimeSupervisor(runtime)
     service = AgentService(
         store=store,

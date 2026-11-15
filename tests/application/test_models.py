@@ -3,11 +3,11 @@ import threading
 
 import pytest
 
-from ouro.application.models.catalog import ConfiguredModelCatalog
 from ouro.config import ProviderConfigManager, ProviderRuntimeOptions
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata
+from ouro.local_configuration import ConfiguredModelCatalog
 from ouro.providers import FauxProvider, build_runtime_adapter
 from ouro.providers.openai_responses.adapter import OpenAIResponsesProvider
 

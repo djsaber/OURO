@@ -8,7 +8,6 @@ import pytest
 
 from ouro.application.observers import ObserverDispatcher
 from ouro.application.runs.tool_batches import load_tool_batch
-from ouro.application.runtime.configuration import RuntimeConfigurationResolver
 from ouro.application.runtime.environment import RuntimeEnvironment
 from ouro.application.runtime.service import RuntimeService
 from ouro.config.queued_inputs import QueuedInputConfig
@@ -24,6 +23,7 @@ from ouro.core.tool_policies import (
 )
 from ouro.core.tools import ToolInvocation
 from ouro.local_application import LocalApplication
+from ouro.local_configuration import RuntimeConfigurationResolver
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.providers import FauxProvider
 from ouro.sdk.plugins import v5 as sdk

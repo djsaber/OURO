@@ -64,6 +64,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
             "core",
             "deployment",
             "local_providers",
+            "local_configuration",
             "mcp",
             "plugins",
             "providers",
@@ -73,6 +74,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
             "tools",
         }
     ),
+    "local_configuration": frozenset({"application", "config", "core", "skills"}),
     "local_providers": frozenset({"core", "plugins", "providers", "sdk"}),
     "local_io": frozenset({"core"}),
     "local_locks": frozenset(),
@@ -187,16 +189,7 @@ def test_runtime_capability_consumers_do_not_depend_on_plugin_lifecycle_implemen
         APPLICATION_DIR / "runs" / "continuations.py",
     ):
         imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
-        assert not any(
-            module.startswith(
-                (
-                    "ouro.plugins.lifecycle",
-                    "ouro.plugins.catalog",
-                    "ouro.plugins.session_controllers",
-                )
-            )
-            for module in imports
-        ), str(path)
+        assert not any(module.startswith("ouro.plugins") for module in imports), str(path)
 
 
 def test_auth_contracts_do_not_load_concrete_storage_or_lifecycle() -> None:
@@ -601,3 +594,28 @@ def test_draft_persistence_does_not_depend_on_host_or_widgets() -> None:
     tui_imports = {module for module in imports if module.startswith("ouro.tui")}
     assert tui_imports <= {"ouro.tui.composer.drafts"}
     assert not any(module.startswith(("ouro.application", "textual")) for module in imports)
+
+
+def test_model_catalog_contract_does_not_load_local_configuration() -> None:
+    path = APPLICATION_DIR / "models" / "catalog.py"
+    imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+    assert not any(module.startswith(("ouro.config", "ouro.local_")) for module in imports)
+
+
+def test_agent_definitions_do_not_construct_provider_configuration() -> None:
+    path = APPLICATION_DIR / "agents" / "definitions.py"
+    imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+    assert "ouro.config.providers.manager" not in imports
+
+
+def test_transfer_workflow_does_not_inherit_other_features_or_the_app() -> None:
+    path = PROJECT_ROOT / "ouro" / "tui" / "features" / "transfer" / "workflows.py"
+    imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+    assert not any(
+        module.startswith(("ouro.tui.app", "ouro.tui.controller", "textual.app"))
+        or (
+            module.startswith("ouro.tui.features.")
+            and not module.startswith("ouro.tui.features.transfer.")
+        )
+        for module in imports
+    )

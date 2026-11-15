@@ -105,8 +105,9 @@ server 配置交给 Manager，并把发现工具投影到 RuntimeService 正在�
 - 单个 auto-start server 连接失败保留 failed record 并输出脱敏 warning，不阻止其他 server 或普通 Run；
 - Host 退出后动态 MCP 工具从 registry 移除，不留下失效 handler。
 
-只调用同步的 `build_default_runtime()` 会构建 RuntimeService 本体；执行型 Host 还必须通过
-`MCPRuntimeResource` 与 Supervisor 装配管理异步资源。
+`LocalApplication.build()` 为本地执行型 Host 装配 Runtime、MCP、插件和 Supervisor，统一管理异步资源。
+`build_local_runtime()` 只构建 RuntimeService 本体；自定义 Host 通过 `MCPRuntimeResource` 与
+Supervisor 装配所需资源并管理其生命周期。
 
 ## 调用、取消与错误
 

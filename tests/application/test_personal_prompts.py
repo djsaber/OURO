@@ -4,7 +4,6 @@ from threading import get_ident
 import pytest
 
 from ouro.application.configuration.facade import ConfigurationFacade
-from ouro.application.runtime.configuration import RuntimeConfigurationResolver
 from ouro.application.runtime.service import RuntimeService
 from ouro.application.sessions.service import SessionService
 from ouro.config.prompts import PromptConfigManager, PromptDraft
@@ -16,6 +15,7 @@ from ouro.core.context_providers import (
 )
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
 from ouro.local_application import LocalApplication, build_local_runtime
+from ouro.local_configuration import RuntimeConfigurationResolver
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore

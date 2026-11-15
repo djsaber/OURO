@@ -18,12 +18,11 @@ from ouro.cli.context_output import (
     render_context_status,
 )
 from ouro.cli.errors import error_exit_code
-from ouro.cli.run import build_default_runtime
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.compaction import CompactionCommandResult
 from ouro.core.errors import OuroError
 from ouro.deployment import SessionBackend
-from ouro.local_application import build_local_session_services
+from ouro.local_application import build_local_runtime, build_local_session_services
 
 
 def list_sessions(
@@ -506,7 +505,7 @@ async def compact_session(
 ) -> int:
     runtime = None
     try:
-        runtime = build_default_runtime(home, session_backend=session_backend)
+        runtime = build_local_runtime(home, session_backend=session_backend)
         async with runtime:
             result = await runtime.compact(session_id=session_id)
     except FileNotFoundError:
