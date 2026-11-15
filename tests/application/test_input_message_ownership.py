@@ -16,8 +16,9 @@ from tests.tui.test_history_commands import application_at
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
 @pytest.mark.parametrize("body", [False, True])
+@pytest.mark.parametrize("entry", ["supervised", "direct"])
 async def test_input_owns_body_and_attachments_across_history_branch_and_export(
-    tmp_path, backend, body
+    tmp_path, backend, body, entry
 ):
     home = tmp_path / "home"
     skill = home / "skills" / "demo" / "SKILL.md"
@@ -39,8 +40,18 @@ async def test_input_owns_body_and_attachments_across_history_branch_and_export(
     )
     app = application_at(home, backend=backend)
     try:
-        submission = await app.supervisor.submit_user_input(request)
-        result = await submission.wait()
+        if entry == "supervised":
+            submission = await app.supervisor.submit_user_input(request)
+            result = await submission.wait()
+        else:
+            result = await app.runtime.run(
+                request.prompt,
+                new_session_id=request.new_session_id,
+                input_id=request.input_id,
+                workspace=request.workspace,
+                attachments=request.attachments,
+                skill_invocations=request.skill_invocations,
+            )
         assert result.run.status == "completed", result.run.error
         session_id = result.session.session_id
         store = app.runtime.store

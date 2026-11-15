@@ -152,6 +152,7 @@ from ouro.core.session_controls import (
     AttributedSessionInputBatch,
     DelegatedTaskInput,
     HostSessionInput,
+    RunControlSnapshot,
     SessionControlActivation,
     SessionControlState,
     SessionControlTransitionResult,
@@ -160,7 +161,6 @@ from ouro.core.session_controls import (
 from ouro.core.session_titles import normalize_session_title, with_session_title
 from ouro.core.state import (
     RunContinuationCheckpoint,
-    RunContinuationControllerRef,
     RunRecord,
     SessionContinuationRequest,
     SessionRecord,
@@ -1329,20 +1329,7 @@ class RuntimeService:
         await self._synchronize_extensions()
         if request.session_id is None:
             session, _, prospective = await self._accept_new_user_input(
-                prompt=request.prompt,
-                new_session_id=session_id,
-                input_id=request.input_id,
-                title=request.title,
-                initial_model=request.initial_model,
-                initial_reasoning_request=request.initial_reasoning_request,
-                approval_mode=request.approval_mode,
-                interaction_mode=request.interaction_mode,
-                workspace=request.workspace,
-                queue_mode=request.queue_mode,
-                skill_invocations=request.skill_invocations,
-                input_resource_refs=request.input_resource_refs,
-                attachments=request.attachments,
-                input_driver=self._select_input_driver(None),
+                request, input_driver=self._select_input_driver(None)
             )
             # Accepted input carries the policy/skill facts; scheduling does not retain a lease.
             self._release_run_resources(prospective.run_id)
@@ -1446,46 +1433,34 @@ class RuntimeService:
 
     async def _accept_new_user_input(
         self,
+        request: UserInputRequest,
         *,
-        prompt: str,
-        new_session_id: str | None,
-        input_id: str | None,
-        title: str | None,
-        initial_model: str | None,
-        initial_reasoning_request: ReasoningRequest | None,
-        approval_mode: SessionApprovalMode | None,
-        interaction_mode: SessionInteractionMode | None,
-        workspace: str | Path | None,
-        queue_mode: QueuedInputMode,
-        skill_invocations: tuple[SkillInvocationRequest, ...],
-        input_resource_refs: tuple[str, ...],
-        attachments: tuple[InputFile, ...],
         input_driver: RunDriverBinding | None,
     ) -> tuple[SessionRecord, QueuedInput, RunRecord]:
         selected_model = (
-            self.resolve_model(initial_model)
-            if initial_model is not None
+            self.resolve_model(request.initial_model)
+            if request.initial_model is not None
             else self.models.default_model()
         )
-        selected_reasoning = initial_reasoning_request or ReasoningRequest()
+        selected_reasoning = request.initial_reasoning_request or ReasoningRequest()
         self._model_reasoning_state(selected_model, selected_reasoning)
         candidate_session = SessionRecord(
-            session_id=new_session_id or new_id("ses"),
+            session_id=request.new_session_id or new_id("ses"),
             workspace=(
-                str(Path(workspace).expanduser().resolve())
-                if workspace is not None
+                str(Path(request.workspace).expanduser().resolve())
+                if request.workspace is not None
                 else self.default_workspace
             ),
             current_model=selected_model.key,
             reasoning_request=selected_reasoning,
-            approval_mode=approval_mode or "inherit",
-            interaction_mode=interaction_mode or "interactive",
+            approval_mode=request.approval_mode or "inherit",
+            interaction_mode=request.interaction_mode or "interactive",
         )
-        candidate_session = with_session_title(candidate_session, title)
-        if attachments:
+        candidate_session = with_session_title(candidate_session, request.title)
+        if request.attachments:
             if self.resources is None:
                 raise ResourceAttachmentError("File inputs require a configured ResourceService")
-            self.resources.validate_file_inputs(attachments, candidate_session.workspace)
+            self.resources.validate_file_inputs(request.attachments, candidate_session.workspace)
         preapproved_new_run = RunRecord(
             session_id=candidate_session.session_id,
             status="running",
@@ -1499,16 +1474,16 @@ class RuntimeService:
             )
         try:
             resolved_skill_activations = await self._resolve_skill_activations_for_run(
-                preapproved_new_run.run_id, skill_invocations
+                preapproved_new_run.run_id, request.skill_invocations
             )
             candidate_input = QueuedInput(
-                queue_id=input_id or new_id("queued"),
-                prompt=prompt,
+                queue_id=request.input_id,
+                prompt=request.prompt,
                 driver=input_driver,
-                attachments=attachments,
-                resource_refs=input_resource_refs,
-                title=title,
-                mode=queue_mode,
+                attachments=request.attachments,
+                resource_refs=request.input_resource_refs,
+                title=request.title,
+                mode=request.queue_mode,
                 queued_at=utc_now(),
                 source="user",
                 role="user",
@@ -1570,136 +1545,141 @@ class RuntimeService:
         resource_refs: list[str] | tuple[str, ...] | None = None,
         attachments: tuple[InputFile, ...] = (),
         driver_id: str | None = None,
-        _queued_inputs: list[QueuedInput] | None = None,
-        _input_attribution: (
-            AttributedSessionInput | HostSessionInput | DelegatedTaskInput | None
-        ) = None,
-        _prepared_run: RunRecord | None = None,
-        _reservation: RunReservation | None = None,
-        _continuation_request: SessionContinuationRequest | None = None,
-        _on_provider_stream_start: Callable[[], None] | None = None,
+        on_provider_stream_start: Callable[[], None] | None = None,
         on_session_created: Callable[[SessionRecord], None] | None = None,
         on_input_accepted: Callable[[], None] | None = None,
     ) -> RunResult:
-        if new_session_id is not None and (
-            session_id is not None or _input_attribution is not None
-        ):
-            raise ValueError("new_session_id requires a new direct-user Session")
-        if approval_mode is not None and approval_mode not in SESSION_APPROVAL_MODES:
-            raise ValueError(f"invalid session approval mode: {approval_mode}")
-        if interaction_mode is not None and interaction_mode not in SESSION_INTERACTION_MODES:
-            raise ValueError(f"invalid session interaction mode: {interaction_mode}")
-        if initial_model is not None and session_id is not None:
-            raise ValueError("initial_model can only be set when creating a session")
-        if initial_reasoning_request is not None and session_id is not None:
-            raise ValueError("initial_reasoning_request can only be set when creating a session")
-        if workspace is not None and session_id is not None:
-            raise ValueError("workspace can only be set when creating a session")
+        """Submit user input and own its execution until the next Run boundary."""
         if skill_invocation is not None:
             if skill_invocations:
                 raise ValueError("use either skill_invocation or skill_invocations")
             skill_invocations = (skill_invocation,)
-        if skill_invocations:
-            arguments = skill_invocations[0].arguments
-            if (prompt and prompt != arguments) or any(
-                item.arguments != arguments for item in skill_invocations
-            ):
-                raise ValueError("prompt must match the skill invocation arguments")
-            prompt = arguments
-            if len({item.name for item in skill_invocations}) != len(skill_invocations):
-                raise ValueError("skill invocations must have unique names")
-        queued_skill_activation = any(
-            bool(item.skill_activations) for item in (_queued_inputs or ())
-        )
-        if (
-            not prompt.strip()
-            and not skill_invocations
-            and not queued_skill_activation
-            and not resource_refs
-            and not attachments
-            and not any(item.resource_refs or item.attachments for item in (_queued_inputs or ()))
-        ):
-            raise ValueError("run input requires a prompt or skill invocation")
-        if skill_invocations and _input_attribution is not None:
-            raise ValueError("skill invocation is only valid on direct user input")
-        if isinstance(_input_attribution, DelegatedTaskInput) and _prepared_run is None:
-            raise ValueError("delegated task input requires a prepared child run")
-        if _prepared_run is not None:
-            if session_id is None or _prepared_run.session_id != session_id:
-                raise ValueError("prepared run must target the supplied existing session")
-            if _prepared_run.status != "queued":
-                raise ValueError("prepared run must be queued")
-            if not isinstance(_input_attribution, HostSessionInput | DelegatedTaskInput):
-                raise ValueError("prepared run requires Host or delegated-task attribution")
-            if isinstance(_input_attribution, DelegatedTaskInput) and (
-                _prepared_run.metadata.get("delegation_id") != _input_attribution.delegation_id
-            ):
-                raise ValueError("prepared child run does not match delegated task identity")
-        content = InputContent(text=prompt, attachments=attachments)
+        if skill_invocations and not prompt:
+            prompt = skill_invocations[0].arguments
         if len(attachments) > 16:
             raise ResourceAttachmentError("A message can contain at most 16 attachments")
-        input_resource_refs = tuple(dict.fromkeys(resource_refs or content.resource_refs))
-        if attachments and input_resource_refs != content.resource_refs:
+        attachment_refs = InputContent(text=prompt, attachments=attachments).resource_refs
+        refs = tuple(dict.fromkeys(resource_refs or attachment_refs))
+        if attachments and refs != attachment_refs:
             raise ResourceAttachmentError("Attachment identities must match resource references")
-        if input_resource_refs and session_id is None and new_session_id is None:
+        if refs and session_id is None and new_session_id is None:
             raise ResourceAttachmentError(
                 "resource attachments require an existing Session or a reserved namespace; "
                 "pass session_id or new_session_id"
             )
+        if driver_id is not None and queue_mode != "follow_up":
+            raise ValueError("Driver selection cannot steer an existing Run")
+        return await self._run_input(
+            prompt,
+            session_id=session_id,
+            title=title,
+            queue_mode=queue_mode,
+            resource_refs=refs,
+            user_input=UserInputRequest(
+                prompt=prompt,
+                session_id=session_id,
+                new_session_id=new_session_id,
+                input_id=input_id or new_id("queued"),
+                title=title,
+                initial_model=initial_model,
+                initial_reasoning_request=initial_reasoning_request,
+                approval_mode=approval_mode,
+                interaction_mode=interaction_mode,
+                workspace=str(workspace) if workspace is not None else None,
+                queue_mode=queue_mode,
+                skill_invocations=skill_invocations,
+                resource_refs=refs,
+                attachments=attachments,
+            ),
+            driver_id=driver_id,
+            on_provider_stream_start=on_provider_stream_start,
+            on_session_created=on_session_created,
+            on_input_accepted=on_input_accepted,
+        )
+
+    async def _run_input(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+        title: str | None = None,
+        queue_mode: QueuedInputMode = "follow_up",
+        resource_refs: list[str] | tuple[str, ...] | None = None,
+        user_input: UserInputRequest | None = None,
+        driver_id: str | None = None,
+        queued_inputs: list[QueuedInput] | None = None,
+        attribution: (AttributedSessionInput | HostSessionInput | DelegatedTaskInput | None) = None,
+        prepared_run: RunRecord | None = None,
+        reservation: RunReservation | None = None,
+        continuation_request: SessionContinuationRequest | None = None,
+        on_provider_stream_start: Callable[[], None] | None = None,
+        on_session_created: Callable[[SessionRecord], None] | None = None,
+        on_input_accepted: Callable[[], None] | None = None,
+    ) -> RunResult:
+        """Start direct or accepted input under the existing execution ownership boundary."""
+        skill_invocations = user_input.skill_invocations if user_input is not None else ()
+        attachments = user_input.attachments if user_input is not None else ()
+        approval_mode = user_input.approval_mode if user_input is not None else None
+        interaction_mode = user_input.interaction_mode if user_input is not None else None
+        input_id = user_input.input_id if user_input is not None else None
+        input_resource_refs = tuple(resource_refs or ())
         if input_resource_refs or any(
-            item.resource_refs or item.attachments for item in (_queued_inputs or ())
+            item.resource_refs or item.attachments for item in (queued_inputs or ())
         ):
             await self.refresh_configuration()
         if skill_invocations:
             await self.refresh_skills()
         await self._synchronize_extensions()
         preapproved_new_run: RunRecord | None = None
-        attributed_driver = _input_attribution.driver_id if _input_attribution is not None else None
-        if driver_id is not None and attributed_driver not in {None, driver_id}:
-            raise ValueError("Run Driver selection conflicts with the attributed input")
-        driver_id = driver_id or attributed_driver
-        if driver_id is not None and (_prepared_run is not None or _queued_inputs):
-            raise ValueError("accepted work already has a Driver binding")
-        if driver_id is not None and queue_mode != "follow_up":
-            raise ValueError("Driver selection cannot steer an existing Run")
         input_driver = (
-            _queued_inputs[0].driver if _queued_inputs else self._select_input_driver(driver_id)
+            queued_inputs[0].driver
+            if queued_inputs
+            else self._select_input_driver(attribution.driver_id if attribution else driver_id)
         )
+
+        async def queue_active(current: RuntimeSessionSnapshot, active: RunRecord) -> RunResult:
+            if queued_inputs is not None:
+                return RunResult(session=current.session, run=active)
+            self._validate_requested_session_policies(
+                current.session,
+                approval_mode=approval_mode,
+                interaction_mode=interaction_mode,
+            )
+            queued_session, _ = await self._queue_input(
+                snapshot=current,
+                active_run=active,
+                prompt=prompt,
+                skill_invocations=skill_invocations,
+                title=title,
+                mode=queue_mode,
+                resource_refs=input_resource_refs,
+                attachments=attachments,
+                attribution=attribution,
+                driver=input_driver,
+                on_input_accepted=on_input_accepted,
+                input_id=input_id,
+            )
+            await self.advance_session(queued_session.session_id, queued_session.history_epoch)
+            return RunResult(session=queued_session, run=active)
+
         resolved_skill_activations: tuple[SkillActivationContent, ...] = ()
         if session_id is None:
-            if _input_attribution is None:
+            if attribution is None:
+                assert user_input is not None
                 session, first_input, preapproved_new_run = await self._accept_new_user_input(
-                    prompt=prompt,
-                    new_session_id=new_session_id,
-                    input_id=input_id,
-                    title=title,
-                    initial_model=initial_model,
-                    initial_reasoning_request=initial_reasoning_request,
-                    approval_mode=approval_mode,
-                    interaction_mode=interaction_mode,
-                    workspace=workspace,
-                    queue_mode=queue_mode,
-                    skill_invocations=skill_invocations,
-                    input_resource_refs=input_resource_refs,
-                    attachments=attachments,
-                    input_driver=input_driver,
+                    user_input, input_driver=input_driver
                 )
                 resolved_skill_activations = first_input.skill_activations
-                _queued_inputs = [first_input]
+                queued_inputs = [first_input]
             else:
                 session = await run_blocking(
                     self.create_session,
                     title=title,
-                    initial_model=initial_model,
-                    reasoning_request=initial_reasoning_request,
-                    approval_mode=approval_mode or "inherit",
-                    interaction_mode=interaction_mode or "interactive",
-                    workspace=workspace,
                 )
             snapshot = RuntimeSessionSnapshot(session=session)
             if on_session_created is not None:
                 on_session_created(session)
-            if _input_attribution is None and on_input_accepted is not None:
+            if attribution is None and on_input_accepted is not None:
                 on_input_accepted()
                 on_input_accepted = None
         else:
@@ -1707,7 +1687,7 @@ class RuntimeService:
                 self.run_ownership.is_locked,
                 session_id,
             )
-            should_reconcile = _prepared_run is None and not session_locked
+            should_reconcile = prepared_run is None and not session_locked
             if should_reconcile:
                 snapshot, reconciliation_diagnostics = await self._reconcile_session(session_id)
                 self._raise_incompatible_target(
@@ -1721,11 +1701,11 @@ class RuntimeService:
                     recover=False,
                 )
             session = snapshot.session
-            require_current_continuation(session, _continuation_request)
+            require_current_continuation(session, continuation_request)
             if (
-                isinstance(_input_attribution, HostSessionInput)
-                and _input_attribution.history_epoch is not None
-                and _input_attribution.history_epoch != session.history_epoch
+                isinstance(attribution, HostSessionInput)
+                and attribution.history_epoch is not None
+                and attribution.history_epoch != session.history_epoch
             ):
                 raise SessionCommitConflict("Host input belongs to withdrawn Session history")
             pending_continuation = next(
@@ -1751,55 +1731,34 @@ class RuntimeService:
                 attachments,
             )
             if active_run is not None and (
-                _prepared_run is None or active_run.run_id != _prepared_run.run_id
+                prepared_run is None or active_run.run_id != prepared_run.run_id
             ):
-                if _queued_inputs is not None:
-                    return RunResult(session=session, run=active_run)
-                self._validate_requested_session_policies(
-                    session,
-                    approval_mode=approval_mode,
-                    interaction_mode=interaction_mode,
-                )
-                queued_session, _ = await self._queue_input(
-                    snapshot=snapshot,
-                    active_run=active_run,
-                    prompt=prompt,
-                    skill_invocations=skill_invocations,
-                    title=title,
-                    mode=queue_mode,
-                    resource_refs=input_resource_refs,
-                    attachments=attachments,
-                    attribution=_input_attribution,
-                    driver=input_driver,
-                    on_input_accepted=on_input_accepted,
-                    input_id=input_id,
-                )
-                await self.advance_session(queued_session.session_id, queued_session.history_epoch)
-                return RunResult(session=queued_session, run=active_run)
-        if isinstance(_input_attribution, DelegatedTaskInput) and (
-            session.session_kind != "subagent"
-            or session.delegation_id != _input_attribution.delegation_id
+                return await queue_active(snapshot, active_run)
+        # The accepted facts and selected options now own everything needed by execution.
+        user_input = None
+        if isinstance(attribution, DelegatedTaskInput) and (
+            session.session_kind != "subagent" or session.delegation_id != attribution.delegation_id
         ):
             raise ValueError("delegated task input must target its child Session")
 
         queued_attributed_input = next(
-            (item for item in (_queued_inputs or []) if item.source != "user"),
+            (item for item in (queued_inputs or []) if item.source != "user"),
             None,
         )
         attributed_source = (
-            _attributed_input_source(_input_attribution)
-            if _input_attribution is not None
+            _attributed_input_source(attribution)
+            if attribution is not None
             else (queued_attributed_input.source if queued_attributed_input is not None else None)
         )
         run = (
-            _prepared_run
+            prepared_run
             or preapproved_new_run
             or RunRecord(
                 run_id=(
-                    _queued_inputs[0].prospective_run_id
-                    if _queued_inputs
-                    and _queued_inputs[0].prompt_policy_checked
-                    and _queued_inputs[0].prospective_run_id is not None
+                    queued_inputs[0].prospective_run_id
+                    if queued_inputs
+                    and queued_inputs[0].prompt_policy_checked
+                    and queued_inputs[0].prospective_run_id is not None
                     else new_id("run")
                 ),
                 session_id=session.session_id,
@@ -1808,21 +1767,21 @@ class RuntimeService:
                 origin=(
                     attributed_source
                     if attributed_source is not None
-                    else ("follow_up" if _queued_inputs else "user")
+                    else ("follow_up" if queued_inputs else "user")
                 ),
                 parent_run_id=(
                     next(
                         (
                             item.caused_by_run_id
-                            for item in (_queued_inputs or [])
+                            for item in (queued_inputs or [])
                             if item.caused_by_run_id is not None
                         ),
                         None,
                     )
                 ),
                 initiator_id=(
-                    _attributed_input_initiator(_input_attribution)
-                    if _input_attribution is not None
+                    _attributed_input_initiator(attribution)
+                    if attribution is not None
                     else _queued_input_initiator(queued_attributed_input)
                 ),
                 trigger=attributed_source or "user",
@@ -1833,16 +1792,16 @@ class RuntimeService:
         run_lock = await self.run_ownership.acquire(
             session.session_id,
             run.run_id,
-            reservation=_reservation,
+            reservation=reservation,
         )
         if run_lock is None:
-            if _queued_inputs is not None:
+            if queued_inputs is not None:
                 await self.run_ownership.wait_for_run_start(session.session_id)
             snapshot = await run_blocking(
                 self.store.load_runtime_session,
                 session.session_id,
             )
-            require_current_continuation(snapshot.session, _continuation_request)
+            require_current_continuation(snapshot.session, continuation_request)
             active_run = maybe_active_run(
                 snapshot.runs, history_epoch=snapshot.session.history_epoch
             )
@@ -1852,32 +1811,10 @@ class RuntimeService:
                 attachments,
             )
             if active_run is not None and (
-                _prepared_run is None or active_run.run_id != _prepared_run.run_id
+                prepared_run is None or active_run.run_id != prepared_run.run_id
             ):
-                if _queued_inputs is not None:
-                    return RunResult(session=snapshot.session, run=active_run)
-                self._validate_requested_session_policies(
-                    snapshot.session,
-                    approval_mode=approval_mode,
-                    interaction_mode=interaction_mode,
-                )
-                queued_session, _ = await self._queue_input(
-                    snapshot=snapshot,
-                    active_run=active_run,
-                    prompt=prompt,
-                    skill_invocations=skill_invocations,
-                    title=title,
-                    mode=queue_mode,
-                    resource_refs=input_resource_refs,
-                    attachments=attachments,
-                    attribution=_input_attribution,
-                    driver=input_driver,
-                    on_input_accepted=on_input_accepted,
-                    input_id=input_id,
-                )
-                await self.advance_session(queued_session.session_id, queued_session.history_epoch)
-                return RunResult(session=queued_session, run=active_run)
-            if _queued_inputs is not None:
+                return await queue_active(snapshot, active_run)
+            if queued_inputs is not None:
                 # The competing owner released before publishing, or already completed.
                 # Re-select against current durable inputs before trying execution again.
                 raise _QueuedInputSelectionChanged()
@@ -1899,39 +1836,14 @@ class RuntimeService:
             )
             locked_snapshot = await self.run_recovery.reconcile(locked_snapshot)
             session = locked_snapshot.session
-            require_current_continuation(session, _continuation_request)
+            require_current_continuation(session, continuation_request)
             locked_active_run = maybe_active_run(
                 locked_snapshot.runs, history_epoch=locked_snapshot.session.history_epoch
             )
             if locked_active_run is not None and (
-                _prepared_run is None or locked_active_run.run_id != _prepared_run.run_id
+                prepared_run is None or locked_active_run.run_id != prepared_run.run_id
             ):
-                if _queued_inputs is not None:
-                    return RunResult(session=session, run=locked_active_run)
-                self._validate_requested_session_policies(
-                    session,
-                    approval_mode=approval_mode,
-                    interaction_mode=interaction_mode,
-                )
-                queued_session, _ = await self._queue_input(
-                    snapshot=locked_snapshot,
-                    active_run=locked_active_run,
-                    prompt=prompt,
-                    skill_invocations=skill_invocations,
-                    title=title,
-                    mode=queue_mode,
-                    resource_refs=input_resource_refs,
-                    attachments=attachments,
-                    attribution=_input_attribution,
-                    driver=input_driver,
-                    on_input_accepted=on_input_accepted,
-                    input_id=input_id,
-                )
-                await self.advance_session(queued_session.session_id, queued_session.history_epoch)
-                return RunResult(
-                    session=queued_session,
-                    run=locked_active_run,
-                )
+                return await queue_active(locked_snapshot, locked_active_run)
             policy_updates: dict[str, object] = {}
             if approval_mode is not None and approval_mode != session.approval_mode:
                 policy_updates["approval_mode"] = approval_mode
@@ -1951,7 +1863,7 @@ class RuntimeService:
                     run,
                     self._extension_snapshot_for_run(run.run_id),
                 )
-            elif _prepared_run is not None and "extension_generations" in run.metadata:
+            elif prepared_run is not None and "extension_generations" in run.metadata:
                 await self._ensure_extension_snapshot(run)
             else:
                 run = await self._attach_extension_snapshot(run)
@@ -1959,7 +1871,7 @@ class RuntimeService:
                 resolved_skill_activations = await self._resolve_skill_activations_for_run(
                     run.run_id, skill_invocations
                 )
-            pending_inputs = _queued_inputs or [
+            pending_inputs = queued_inputs or [
                 QueuedInput(
                     queue_id=input_id or new_id("queued"),
                     history_epoch=session.history_epoch,
@@ -1972,43 +1884,37 @@ class RuntimeService:
                     attachments=attachments,
                     queued_at=utc_now(),
                     source=(
-                        _attributed_input_source(_input_attribution)
-                        if _input_attribution is not None
-                        else "user"
+                        _attributed_input_source(attribution) if attribution is not None else "user"
                     ),
-                    role=_input_role(_input_attribution),
-                    scaffold=_input_scaffold(_input_attribution),
-                    semantic_tag=(
-                        _input_attribution.semantic_tag if _input_attribution is not None else None
-                    ),
+                    role=_input_role(attribution),
+                    scaffold=_input_scaffold(attribution),
+                    semantic_tag=(attribution.semantic_tag if attribution is not None else None),
                     host_source_id=(
-                        _input_attribution.host_source_id
-                        if isinstance(_input_attribution, HostSessionInput)
+                        attribution.host_source_id
+                        if isinstance(attribution, HostSessionInput)
                         else None
                     ),
                     delegation_id=(
-                        _input_attribution.delegation_id
-                        if isinstance(_input_attribution, DelegatedTaskInput)
+                        attribution.delegation_id
+                        if isinstance(attribution, DelegatedTaskInput)
                         else None
                     ),
-                    plugin_id=(
-                        _input_attribution.plugin_id if _input_attribution is not None else None
-                    )
-                    if isinstance(_input_attribution, AttributedSessionInput)
+                    plugin_id=(attribution.plugin_id if attribution is not None else None)
+                    if isinstance(attribution, AttributedSessionInput)
                     else None,
                     contribution_id=(
-                        _input_attribution.contribution_id
-                        if isinstance(_input_attribution, AttributedSessionInput)
+                        attribution.contribution_id
+                        if isinstance(attribution, AttributedSessionInput)
                         else None
                     ),
                     generation_id=(
-                        _input_attribution.generation_id
-                        if isinstance(_input_attribution, AttributedSessionInput)
+                        attribution.generation_id
+                        if isinstance(attribution, AttributedSessionInput)
                         else None
                     ),
                     execution_contract_hash=(
-                        _input_attribution.execution_contract_hash
-                        if isinstance(_input_attribution, AttributedSessionInput)
+                        attribution.execution_contract_hash
+                        if isinstance(attribution, AttributedSessionInput)
                         else None
                     ),
                 )
@@ -2029,7 +1935,7 @@ class RuntimeService:
                     run=run,
                     inputs=pending_inputs,
                 )
-            is_queued_run = _queued_inputs is not None
+            is_queued_run = queued_inputs is not None
             if is_queued_run:
                 session, run, input_messages, committed_events = await run_blocking(
                     self._start_queued_run,
@@ -2037,7 +1943,7 @@ class RuntimeService:
                     run=run,
                     snapshot=locked_snapshot,
                     inputs=pending_inputs,
-                    continuation_request=_continuation_request,
+                    continuation_request=continuation_request,
                 )
             else:
                 input_messages = await run_blocking(
@@ -2077,7 +1983,7 @@ class RuntimeService:
                 sequence=sequence,
                 abort_signal=abort_signal,
                 adapter=active_adapter,
-                on_provider_stream_start=_on_provider_stream_start,
+                on_provider_stream_start=on_provider_stream_start,
             )
         finally:
             try:
@@ -2308,6 +2214,14 @@ class RuntimeService:
     ) -> RunResult:
         """Execute an already durable queued Run with typed input attribution."""
 
+        if run.status != "queued":
+            raise ValueError("prepared run must be queued")
+        if isinstance(session_input, DelegatedTaskInput) and (
+            run.metadata.get("delegation_id") != session_input.delegation_id
+        ):
+            raise ValueError("prepared child run does not match delegated task identity")
+        if session_input.driver_id is not None:
+            raise ValueError("accepted work already has a Driver binding")
         queued_inputs = None
         if isinstance(session_input, HostSessionInput) and session_input.queue_id is not None:
             accepted = await run_blocking(
@@ -2318,16 +2232,16 @@ class RuntimeService:
             validate_host_input(accepted, session_input)
             queued_inputs = [accepted.item]
         try:
-            return await self.run(
+            return await self._run_input(
                 session_input.prompt,
                 session_id=run.session_id,
                 title=session_input.title,
                 queue_mode=session_input.mode,
                 resource_refs=session_input.resource_refs,
-                _input_attribution=session_input,
-                _prepared_run=run,
-                _queued_inputs=queued_inputs,
-                _reservation=reservation,
+                attribution=session_input,
+                prepared_run=run,
+                queued_inputs=queued_inputs,
+                reservation=reservation,
             )
         except DelegationStartRevoked as exc:
             return await self.abort_run(
@@ -2487,12 +2401,7 @@ class RuntimeService:
             return resources.budget
         if self.settings_resolver is not None:
             return self.run_budget
-        raw = run.metadata.get("run_budget")
-        if raw is None:
-            return self.run_budget
-        if not isinstance(raw, dict):
-            raise ValueError("run has invalid delegated budget metadata")
-        return RunBudgetPolicy.model_validate(raw)
+        return run.budget_policy or self.run_budget
 
     async def _shared_budget_reason(
         self,
@@ -2691,12 +2600,12 @@ class RuntimeService:
     ) -> RunResult:
         """Submit an attributed extension input through the canonical Run boundary."""
 
-        return await self.run(
+        return await self._run_input(
             session_input.prompt,
             session_id=session_id,
             title=session_input.title,
             queue_mode=session_input.mode,
-            _input_attribution=session_input,
+            attribution=session_input,
         )
 
     async def submit_plugin_input_batch(
@@ -2732,11 +2641,11 @@ class RuntimeService:
             if not pending:
                 break
             try:
-                result = await self.run(
+                result = await self._run_input(
                     pending[0].prompt,
                     session_id=session_id,
                     title=pending[0].title,
-                    _queued_inputs=pending,
+                    queued_inputs=pending,
                 )
             except _QueuedInputSelectionChanged:
                 continue
@@ -2800,12 +2709,12 @@ class RuntimeService:
             if not pending:
                 break
             try:
-                return await self.run(
+                return await self._run_input(
                     pending[0].prompt,
                     session_id=receipt.session_id,
                     title=pending[0].title,
-                    _queued_inputs=pending,
-                    _continuation_request=_continuation_request,
+                    queued_inputs=pending,
+                    continuation_request=_continuation_request,
                 )
             except _QueuedInputSelectionChanged:
                 continue
@@ -3084,12 +2993,12 @@ class RuntimeService:
             if not pending:
                 return None
             try:
-                return await self.run(
+                return await self._run_input(
                     pending[0].prompt,
                     session_id=session_id,
                     title=pending[0].title,
-                    _queued_inputs=pending,
-                    _on_provider_stream_start=on_provider_stream_start,
+                    queued_inputs=pending,
+                    on_provider_stream_start=on_provider_stream_start,
                 )
             except _QueuedInputSelectionChanged:
                 continue
@@ -4380,58 +4289,29 @@ class RuntimeService:
         *,
         model_round: int,
         catalog: ExtensionCatalogLease | None = None,
-    ) -> dict[str, object]:
-        activations = [
-            {
-                "activation_id": activation.activation_id,
-                "controller_id": activation.controller_id,
-                "generation_id": activation.generation_id,
-                "execution_contract_hash": activation.execution_contract_hash,
-                "usage_scope": activation.usage_scope,
-            }
-            for activation in controls.activations
-        ]
-        for activation in controls.activations:
-            try:
-                controller = (
-                    catalog.session_controllers.get(activation.controller_id)
-                    if catalog is not None
-                    else None
-                )
-            except KeyError:
-                controller = None
-            if controller is None or (
-                controller.execution_contract_hash != activation.execution_contract_hash
-            ):
-                raise SessionControlContractError(
-                    f"Session controller contract is unavailable: {activation.controller_id}"
-                )
-        return {
-            "revision": controls.revision,
-            "model_round": model_round,
-            "activations": activations,
-        }
+    ) -> RunControlSnapshot:
+        unavailable = (
+            catalog.session_controllers.unavailable_controls(controls)
+            if catalog is not None
+            else tuple(activation.controller_id for activation in controls.activations)
+        )
+        if unavailable:
+            raise SessionControlContractError(
+                f"Session controller contract is unavailable: {unavailable[0]}"
+            )
+        return controls.run_snapshot(model_round)
 
     def _bind_control_state(self, run_id: str, controls: SessionControlState) -> str | None:
         resources = self._run_resources[run_id]
         snapshot = resources.snapshot
-        eligible: set[str] = set()
-        unavailable: list[str] = []
-        for activation in controls.activations:
-            try:
-                controller = (
-                    snapshot.session_controllers.get(activation.controller_id) if snapshot else None
-                )
-            except KeyError:
-                controller = None
-            if (
-                controller is None
-                or controller.execution_contract_hash != activation.execution_contract_hash
-            ):
-                unavailable.append(activation.controller_id)
-            else:
-                eligible.add(activation.controller_id)
-        resources.controller_ids = frozenset(eligible)
+        unavailable = (
+            snapshot.session_controllers.unavailable_controls(controls)
+            if snapshot is not None
+            else tuple(activation.controller_id for activation in controls.activations)
+        )
+        resources.controller_ids = frozenset(
+            activation.controller_id for activation in controls.activations
+        ).difference(unavailable)
         return (
             "Required Session controls are unavailable: " + ", ".join(unavailable)
             if unavailable
@@ -4499,53 +4379,7 @@ class RuntimeService:
         snapshot: ExtensionCatalogLease,
         controls: SessionControlState,
     ) -> RunContinuationCheckpoint | None:
-        generations = {generation.generation_id: generation for generation in snapshot.generations}
-        activations = {activation.controller_id: activation for activation in controls.activations}
-        controllers: list[RunContinuationControllerRef] = []
-        for registration in self._continuations_for_run(run.run_id).registered():
-            generation_id = registration.generation_id
-            generation = generations.get(generation_id or "")
-            if generation is None or generation.plugin_id != registration.plugin_id:
-                raise RuntimeError(
-                    "continuation policy is not owned by the active extension generation: "
-                    f"{registration.plugin_id}:{registration.policy_id}"
-                )
-            canonical_id = (
-                f"{registration.plugin_id}/continuation_policies/{registration.policy_id}"
-            )
-            contract_hash = snapshot.contract_hash(canonical_id)
-            if contract_hash is None:
-                raise RuntimeError(f"continuation policy contract is missing: {canonical_id}")
-            if (
-                registration.execution_contract_hash != generation.execution_contract_hash
-                or registration.contract_hash != contract_hash
-            ):
-                raise RuntimeError(
-                    f"continuation policy execution contract is inconsistent: {canonical_id}"
-                )
-            activation = (
-                activations.get(registration.active_when_controller_id)
-                if registration.active_when_controller_id is not None
-                else None
-            )
-            if registration.active_when_controller_id is not None and activation is None:
-                continue
-            assert generation.execution_contract_hash is not None
-            controllers.append(
-                RunContinuationControllerRef(
-                    plugin_id=registration.plugin_id,
-                    policy_id=registration.policy_id,
-                    version=generation.version,
-                    plugin_class=generation.plugin_class,
-                    release_id=generation.release_id,
-                    package_digest=generation.package_digest,
-                    generation_id=generation.generation_id,
-                    contract_hash=contract_hash,
-                    execution_contract_hash=generation.execution_contract_hash,
-                    active_when_controller_id=registration.active_when_controller_id,
-                    activation_id=(activation.activation_id if activation is not None else None),
-                )
-            )
+        controllers = snapshot.catalog.continuation_controllers(controls)
         previous = run.continuation
         if previous is None or previous.state == "resolved":
             if not controllers:

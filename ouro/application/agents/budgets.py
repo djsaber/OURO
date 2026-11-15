@@ -121,12 +121,9 @@ def _root_budget_state(
     root_session_id: str,
     parent_run: RunRecord,
 ) -> _RootBudgetState | None:
-    raw = parent_run.metadata.get("run_budget")
-    if raw is None:
+    policy = parent_run.budget_policy
+    if policy is None:
         return None
-    if not isinstance(raw, dict):
-        raise ValueError("parent Run has invalid budget metadata")
-    policy = RunBudgetPolicy.model_validate(raw)
     if (
         policy.max_input_tokens is not None or policy.max_output_tokens is not None
     ) and usage is None:

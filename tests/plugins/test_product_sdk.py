@@ -124,11 +124,8 @@ async def test_user_goal_uses_native_continuation_controls_and_usage(tmp_path):
             f"{plugin_id}:goal", "--token-budget 100 Ship end to end", session_id=session.session_id
         )
         assert len(command.accepted_inputs) == 1
-        pending = runtime.queued_inputs.eligible_session(
-            store.load_session_record(session.session_id)
-        )
-        result = await runtime.run(
-            pending[0].prompt, session_id=session.session_id, _queued_inputs=pending
+        result = await runtime.run_pending_inputs(
+            session.session_id, history_epoch=session.history_epoch
         )
         assert result.run.status == "completed", result.run.error
         assert result.run.continuation.action == "continue"

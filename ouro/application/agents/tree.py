@@ -19,7 +19,6 @@ from ouro.application.usage import UsageService
 from ouro.core.agents import DelegationRecord
 from ouro.core.callbacks import run_blocking
 from ouro.core.errors import SessionNotFoundError
-from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.state import RunRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
 from ouro.sessions import SessionStore
@@ -82,7 +81,7 @@ class AgentTreeProjector:
                 root_activity = None
             relations = self.store.list_delegations(root_session_id)
             revision = self.store.observation_revision(root_session_id)
-        root_budget = self._run_budget(root_run)
+        root_budget = root_run.budget_policy if root_run is not None else None
         nodes: list[AgentTreeNode] = []
         active_count = 0
         waiting_count = 0
@@ -214,17 +213,6 @@ class AgentTreeProjector:
             for relation in self.store.list_delegations(root_session_id)
             if relation.child_session_id is not None and relation.control_state == "open"
         )
-
-    @staticmethod
-    def _run_budget(run: RunRecord | None) -> RunBudgetPolicy | None:
-        if run is None:
-            return None
-        raw = run.metadata.get("run_budget")
-        if raw is None:
-            return None
-        if not isinstance(raw, dict):
-            raise ValueError("root Run has invalid budget metadata")
-        return RunBudgetPolicy.model_validate(raw)
 
     def _waiting_delegation_ids(self, run: RunRecord | None) -> tuple[str, ...]:
         if run is None or run.active_tool_batch is None:

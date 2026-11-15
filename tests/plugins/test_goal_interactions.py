@@ -166,8 +166,8 @@ class GoalApplication:
     async def consume(self):
         pending = self.pending()
         assert pending
-        return await self.runtime.run(
-            pending[0].prompt, session_id=self.session.session_id, _queued_inputs=pending
+        return await self.runtime.run_pending_inputs(
+            self.session.session_id, history_epoch=self.session.history_epoch
         )
 
     async def say(self, text):

@@ -12,7 +12,7 @@ from ouro.core.callbacks import invoke_bounded_callback
 from ouro.core.extensions import PluginSource
 from ouro.core.harness_calls import HarnessCallSnapshot, HarnessStateChange
 from ouro.core.redaction import redact_text
-from ouro.core.session_controls import SessionControlClaim
+from ouro.core.session_controls import SessionControlClaim, SessionControlState
 from ouro.plugins.models import PluginClass
 
 _CONTROLLER_ID = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
@@ -197,6 +197,15 @@ class PluginSessionControllerRegistry:
 
     def list(self) -> list[PluginSessionController]:
         return [self._controllers[key] for key in sorted(self._controllers)]
+
+    def unavailable_controls(self, controls: SessionControlState) -> tuple[str, ...]:
+        """Resolve active contracts against this catalog, preserving activation order."""
+        return tuple(
+            activation.controller_id
+            for activation in controls.activations
+            if (controller := self._controllers.get(activation.controller_id)) is None
+            or controller.execution_contract_hash != activation.execution_contract_hash
+        )
 
     def snapshot(self) -> dict[str, PluginSessionController]:
         return dict(self._controllers)

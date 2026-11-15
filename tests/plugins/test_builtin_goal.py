@@ -474,11 +474,8 @@ async def test_goal_runs_end_to_end_and_retains_final_usage(tmp_path) -> None:
             session_id=session.session_id,
         )
         assert len(command.accepted_inputs) == 1
-        pending = runtime.queued_inputs.eligible_session(
-            store.load_session_record(session.session_id)
-        )
-        result = await runtime.run(
-            pending[0].prompt, session_id=session.session_id, _queued_inputs=pending
+        result = await runtime.run_pending_inputs(
+            session.session_id, history_epoch=session.history_epoch
         )
         assert result.run.continuation.action == "continue"
         follow_up = await wait_for_input_settlement(
@@ -571,11 +568,8 @@ async def test_cold_abort_restores_goal_snapshot_and_pauses_goal(tmp_path) -> No
             session_id=session.session_id,
         )
         assert "Goal: active" in command.output
-        pending = runtime.queued_inputs.eligible_session(
-            store.load_session_record(session.session_id)
-        )
-        pending_hold = await runtime.run(
-            pending[0].prompt, session_id=session.session_id, _queued_inputs=pending
+        pending_hold = await runtime.run_pending_inputs(
+            session.session_id, history_epoch=session.history_epoch
         )
         assert pending_hold.run.status == "waiting_approval"
 

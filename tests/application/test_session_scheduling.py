@@ -92,7 +92,7 @@ async def test_session_dispatch_survives_changes_to_the_latest_receipt(
     app = streaming_application(tmp_path, FauxProvider(), backend=backend)
     runtime, supervisor = app.runtime, app.supervisor
     finished, release = asyncio.Event(), asyncio.Event()
-    run = runtime.run
+    run = runtime.run_pending_inputs
 
     async def held_run(*args, **kwargs):
         result = await run(*args, **kwargs)
@@ -101,7 +101,7 @@ async def test_session_dispatch_survives_changes_to_the_latest_receipt(
             await release.wait()
         return result
 
-    monkeypatch.setattr(runtime, "run", held_run)
+    monkeypatch.setattr(runtime, "run_pending_inputs", held_run)
     try:
         initial = UserInputRequest(prompt="initial")
         first = await supervisor.submit_user_input(initial)

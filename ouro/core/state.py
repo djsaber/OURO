@@ -13,6 +13,7 @@ from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.message_semantics import SemanticTag
 from ouro.core.reasoning import ReasoningRequest
+from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.run_drivers import DriverCheckpoint, RunDriverBinding
 from ouro.core.session_controls import (
     RunControlBinding,
@@ -319,6 +320,16 @@ class RunRecord(VersionedOuroModel):
                 and self.continuation.state == "pending"
             )
         )
+
+    @property
+    def budget_policy(self) -> RunBudgetPolicy | None:
+        """Decode the persisted budget; the caller owns its effective-policy selection."""
+        raw = self.metadata.get("run_budget")
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            raise ValueError("Run has invalid budget metadata")
+        return RunBudgetPolicy.model_validate(raw)
 
     @property
     def control_bindings(self) -> tuple[RunControlBinding, ...]:

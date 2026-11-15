@@ -11,6 +11,39 @@ from ouro.core.messages import (
     ToolExecutionTiming,
     ToolResultReference,
 )
+from ouro.core.session_controls import SessionControlActivation, SessionControlState
+from ouro.core.state import RunRecord
+
+
+def test_run_policy_reads_preserve_persisted_shape_and_captured_control_identity() -> None:
+    activation = SessionControlActivation(
+        controller_id="example/session_controllers/goal",
+        plugin_id="example",
+        controller_local_id="goal",
+        plugin_class="user",
+        release_id="release",
+        generation_id="generation",
+        execution_contract_hash="contract",
+        usage_scope="first",
+    )
+    controls = SessionControlState(revision=3, activations=[activation])
+    run = RunRecord(
+        session_id="ses_policy",
+        metadata={
+            "run_budget": {"max_model_rounds": 2},
+            "session_control_snapshot": controls.run_snapshot(1),
+        },
+    )
+    persisted = run.model_dump_json()
+    restored = RunRecord.model_validate_json(persisted)
+    activation.usage_scope = "second"
+    policy = restored.budget_policy
+    assert policy is not None and policy.max_model_rounds == 2
+    policy.max_model_rounds = 9
+    assert restored.budget_policy.max_model_rounds == 2
+    assert restored.control_bindings[0].usage_scope == "first"
+    assert restored.control_bindings[0].activation_id == activation.activation_id
+    assert restored.model_dump_json() == persisted
 
 
 def test_message_round_trip() -> None:

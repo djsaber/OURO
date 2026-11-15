@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import Any, Literal, Self
+from typing import Any, Literal, Self, TypedDict
 
 from pydantic import Field, JsonValue, field_validator, model_validator
 
@@ -300,11 +300,42 @@ class SessionControlActivation(OuroModel):
         return self
 
 
+class RunControlActivationSnapshot(TypedDict):
+    activation_id: str
+    controller_id: str
+    generation_id: str
+    execution_contract_hash: str
+    usage_scope: str | None
+
+
+class RunControlSnapshot(TypedDict):
+    revision: int
+    model_round: int
+    activations: list[RunControlActivationSnapshot]
+
+
 class SessionControlState(OuroModel):
     """Canonical Session projection for committed active controllers."""
 
     revision: int = Field(default=0, ge=0)
     activations: list[SessionControlActivation] = Field(default_factory=list)
+
+    def run_snapshot(self, model_round: int) -> RunControlSnapshot:
+        """Capture request attribution without retaining mutable control state."""
+        return {
+            "revision": self.revision,
+            "model_round": model_round,
+            "activations": [
+                {
+                    "activation_id": activation.activation_id,
+                    "controller_id": activation.controller_id,
+                    "generation_id": activation.generation_id,
+                    "execution_contract_hash": activation.execution_contract_hash,
+                    "usage_scope": activation.usage_scope,
+                }
+                for activation in self.activations
+            ],
+        }
 
     @model_validator(mode="after")
     def validate_unique_activations(self) -> Self:

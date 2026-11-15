@@ -1398,7 +1398,7 @@ class RuntimeSupervisor:
                             job.prompt,
                             session_id=job.handle.session_id,
                             title=job.title,
-                            _on_provider_stream_start=job.provider_stream_started.set,
+                            on_provider_stream_start=job.provider_stream_started.set,
                         )
                 except asyncio.CancelledError:
                     await self._finish_interrupted_job(job)

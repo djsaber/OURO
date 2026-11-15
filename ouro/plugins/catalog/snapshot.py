@@ -16,6 +16,8 @@ from ouro.core.continuations import ContinuationPolicyRegistration, RunContinuat
 from ouro.core.observers import Observation, ObserverRegistration, ObserverRegistry
 from ouro.core.prompt_policies import PromptPolicyRegistration, PromptPolicyRegistry
 from ouro.core.run_drivers import RunDriverBinding
+from ouro.core.session_controls import SessionControlState
+from ouro.core.state import RunContinuationControllerRef
 from ouro.core.tool_policies import ToolPolicyRegistration, ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistration, TurnPolicyRegistry
 from ouro.plugins.catalog.bindings import bind_generation_gate
@@ -319,6 +321,59 @@ class ExtensionCatalog:
     def contract_hash(self, canonical_identity: str) -> str | None:
         owner = self.owners.get(canonical_identity)
         return owner.contract_hash if owner is not None else None
+
+    def continuation_controllers(
+        self, controls: SessionControlState
+    ) -> list[RunContinuationControllerRef]:
+        """Project executable continuation identities from this catalog's publications."""
+        generations = {generation.generation_id: generation for generation in self.generations}
+        activations = {activation.controller_id: activation for activation in controls.activations}
+        controllers: list[RunContinuationControllerRef] = []
+        for registration in self.continuations.scoped(lambda: set(activations)).registered():
+            generation_id = registration.generation_id
+            generation = generations.get(generation_id or "")
+            if generation is None or generation.plugin_id != registration.plugin_id:
+                raise RuntimeError(
+                    "continuation policy is not owned by the active extension generation: "
+                    f"{registration.plugin_id}:{registration.policy_id}"
+                )
+            canonical_id = (
+                f"{registration.plugin_id}/continuation_policies/{registration.policy_id}"
+            )
+            contract_hash = self.contract_hash(canonical_id)
+            if contract_hash is None:
+                raise RuntimeError(f"continuation policy contract is missing: {canonical_id}")
+            if (
+                registration.execution_contract_hash != generation.execution_contract_hash
+                or registration.contract_hash != contract_hash
+            ):
+                raise RuntimeError(
+                    f"continuation policy execution contract is inconsistent: {canonical_id}"
+                )
+            activation = (
+                activations.get(registration.active_when_controller_id)
+                if registration.active_when_controller_id is not None
+                else None
+            )
+            if registration.active_when_controller_id is not None and activation is None:
+                continue
+            assert generation.execution_contract_hash is not None
+            controllers.append(
+                RunContinuationControllerRef(
+                    plugin_id=registration.plugin_id,
+                    policy_id=registration.policy_id,
+                    version=generation.version,
+                    plugin_class=generation.plugin_class,
+                    release_id=generation.release_id,
+                    package_digest=generation.package_digest,
+                    generation_id=generation.generation_id,
+                    contract_hash=contract_hash,
+                    execution_contract_hash=generation.execution_contract_hash,
+                    active_when_controller_id=registration.active_when_controller_id,
+                    activation_id=(activation.activation_id if activation is not None else None),
+                )
+            )
+        return controllers
 
     def _release(self) -> None:
         with self._lock:

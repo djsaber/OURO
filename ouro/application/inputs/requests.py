@@ -38,16 +38,12 @@ class UserInputRequest(ApplicationDTO):
 
     @model_validator(mode="after")
     def validate_input(self) -> Self:
-        if self.session_id is not None and any(
-            value is not None
-            for value in (
-                self.new_session_id,
-                self.initial_model,
-                self.initial_reasoning_request,
-                self.workspace,
-            )
-        ):
-            raise ValueError("Initial Session settings require a new Session")
+        if self.session_id is not None:
+            if self.new_session_id is not None:
+                raise ValueError("new_session_id requires a new direct-user Session")
+            for name in ("initial_model", "initial_reasoning_request", "workspace"):
+                if getattr(self, name) is not None:
+                    raise ValueError(f"{name} can only be set when creating a session")
         if not (
             self.prompt.strip() or self.skill_invocations or self.resource_refs or self.attachments
         ):
