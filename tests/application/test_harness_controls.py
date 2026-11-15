@@ -9,11 +9,11 @@ from ouro.application.harness import capture_harness
 from ouro.application.session_controls import SessionControlCoordinator, SessionControlError
 from ouro.core.harness_calls import HarnessInvocation, accept_state_changes
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict, SessionCommitStep
+from ouro.core.session_controller_registry import SessionControllerRegistry
 from ouro.core.session_controls import AttributedSessionControlTransition
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import SessionRecord
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
-from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.sdk.plugins import v5 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 
@@ -43,7 +43,7 @@ def registry(activate, deactivate, *, name="mode"):
     controller = adapt_sdk_contributions(
         sdk.ContributionSet(session_controllers=[contributed]), owner_id=OWNER
     ).session_controllers[0]
-    result = PluginSessionControllerRegistry()
+    result = SessionControllerRegistry()
     result.replace_owner(
         "instance",
         (

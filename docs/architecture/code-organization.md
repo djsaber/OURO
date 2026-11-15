@@ -18,8 +18,9 @@ OURO 的主包与升级包位于仓库根目录下的 `ouro/` 与 `ouro_upgrade/
 | `application/agents/`、`tasks/` | Agent 派遣及结果交付、自动任务领取及执行；复用原生 Session/Run |
 | `application/sessions/` | 会话用例、历史、编辑和恢复 |
 | `application/runs/` | 持久 Run 转换、执行所有权、续接、Driver/Turn 协作及恢复 |
-| `application/runtime/` | Runtime 编排、环境、配置和 RunResources；统一管理单次运行的进程内资源 |
-| `application/inputs/`、`context/` | 输入准备与队列；`preparation.py` 提供上下文构造与记录，`compaction.py` 组合默认压缩流程，`summary.py` 实现摘要生成 |
+| `application/runtime/` | Runtime 编排、环境、配置和 RunResources；`extensions.py` 定义执行所需的能力及租约契约 |
+| `application/inputs/` | 输入准备、策略评估、受理回执和队列；`admission.py` 拥有初始输入发布与受理事实查询 |
+| `application/context/` | `preparation.py` 提供上下文构造与记录，`compaction.py` 组合默认压缩流程，`summary.py` 实现摘要生成 |
 | `application/models/`、`observations/` | 模型查询和执行、会话快照与事件订阅 |
 | `application/configuration/`、`plugins/`、`provider_auth/`、`transfer/` | 对应能力的应用用例及投影 |
 | `application/supervisor.py`、`tool_calls.py` 等独立模块 | 任务调度、工具批次事务和各自的资源协作单元 |
@@ -30,6 +31,7 @@ RunLifecycle 拥有持久转换，Supervisor 拥有会话调度、执行队列�
 Runtime 通过装配的窄回调报告会话推进机会，不引用具体调度器或 Host。调度按当前队列事实安排执行，
 TUI、AgentService 和任务协调器保留自己的业务身份、授权与结算。
 `agents/budgets.py` 从 SessionStore 与用量账本读取共享预算事实；AgentService 拥有派遣、等待与结果交付的事务状态。
+账本按有界批次逐 Run 核对派发计数与报告覆盖，只返回预算所需的原始消耗与完整性。
 输入、观察和模型请求协作者不取得完整 Runtime 的控制权。契约放置在独立目录不意味着轻量导入：
 父包显式导出服务，因此导入初始化成本与模块的类型依赖需要分别评估。
 
@@ -39,7 +41,15 @@ TUI、AgentService 和任务协调器保留自己的业务身份、授权与结�
 用户输入约束由 `UserInputRequest` 表达。`RuntimeService.run` 与 Supervisor 受理共用该请求和新会话输入准备；
 `run` 等待本次执行结果，Supervisor 受理返回持久回执并拥有后续调度。已受理输入通过 `run_pending_inputs`，
 预留 Run 通过 `run_prepared` 进入内部执行边界。
+`InputSessionSettings` 表达随输入提交的会话选项；队列受理和直接 Run 启动在各自的原子提交内应用同一规则。
+策略检查在持久提交前完成；输入拒绝或受理提交失败不发布这些选项。
 执行边界统一处理锁竞争时的排队、锁内重读、输入消费和 Run 收尾，执行入口分别管理用户请求、已受理输入和锁预留。
+
+Runtime 通过 `RuntimeExtensions` 获取当前能力，通过 `RuntimeCapabilities` 持有一次决策的租约。
+`PluginRuntimeResource` 与 `ExtensionCatalogLease` 分别实现这两个契约，插件层拥有代次资源及安装、激活和候选发布状态。
+Provider 绑定沿用本地装配与插件 Provider 适配器之间的契约，由 Runtime 转发至已绑定的插件运行资源。
+Core 的 `SessionControllerRegistry` 表达控制器契约、调用规则与可用性，插件适配器负责 SDK 转换及代次归属绑定。
+`RunDriverRegistration` 归 Core；执行者使用其原生 handler 和持久绑定，不依赖插件注册表实现。
 
 工具首次执行与恢复共用 `tools/executor.py` 的回调执行边界，统一取消收尾、迟到结果保留、异常转换和
 结果归类；恢复入口负责恢复前的契约判断。Executor 返回结果、待输入或控制意图，

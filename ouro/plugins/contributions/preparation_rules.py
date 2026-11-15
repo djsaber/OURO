@@ -15,6 +15,8 @@ from ouro.core.continuations import ContinuationPolicyRegistration
 from ouro.core.extensions import PluginSource
 from ouro.core.observers import ObserverRegistration
 from ouro.core.prompt_policies import PromptPolicyRegistration
+from ouro.core.run_drivers import RunDriverRegistration
+from ouro.core.session_controller_registry import SessionController
 from ouro.core.tool_policies import ToolPolicyRegistration
 from ouro.core.turn_policies import TurnPolicyRegistration
 from ouro.plugins.contributions.models import (
@@ -27,8 +29,7 @@ from ouro.plugins.contributions.models import (
 from ouro.plugins.manifest import PluginManifest, ToolContributionSpec
 from ouro.plugins.providers import ProviderRegistration
 from ouro.plugins.registry import PluginCommand, PluginCommandArgument, bind_plugin_command
-from ouro.plugins.run_drivers import RunDriverRegistration
-from ouro.plugins.session_controllers import PluginSessionController, bind_plugin_session_controller
+from ouro.plugins.session_controllers import bind_plugin_session_controller
 from ouro.skills.models import SkillMetadata
 from ouro.tools.base import Tool
 
@@ -58,7 +59,7 @@ class _PreparedBuilder:
     prompt_policies: tuple[PromptPolicyRegistration, ...] = ()
     turn_policies: tuple[TurnPolicyRegistration, ...] = ()
     tool_policies: tuple[ToolPolicyRegistration, ...] = ()
-    session_controllers: tuple[PluginSessionController, ...] = ()
+    session_controllers: tuple[SessionController, ...] = ()
 
 
 @dataclass
@@ -284,15 +285,15 @@ def _prepare_session_controllers(
     manifest: PluginManifest,
     owner: ContributionOwner,
     source: PluginSource,
-    controllers: list[PluginSessionController],
-) -> tuple[PluginSessionController, ...]:
+    controllers: list[SessionController],
+) -> tuple[SessionController, ...]:
     declarations = {item.id: item for item in manifest.contributes.session_controllers}
     actual = _unique_contribution_map(
         "session controller",
         ((controller.controller_id, controller) for controller in controllers),
     )
     _validate_declared_set("session controller", declarations, actual)
-    prepared: list[PluginSessionController] = []
+    prepared: list[SessionController] = []
     for controller_id, controller in actual.items():
         declaration = declarations[controller_id]
         declared_claims = tuple((claim.domain, claim.access) for claim in declaration.claims)

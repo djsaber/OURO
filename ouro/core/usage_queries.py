@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
@@ -112,3 +113,12 @@ class UsageAuditLog(UsageQueryResult):
     @property
     def truncated(self) -> bool:
         return self.next_cursor is not None
+
+
+@dataclass(frozen=True, slots=True)
+class RunUsageCoverage:
+    """Raw consumption and per-Run report completeness for a budget check."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    complete: bool = True

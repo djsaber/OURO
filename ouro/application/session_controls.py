@@ -20,6 +20,12 @@ from ouro.core.session_commits import (
     SessionCommitConflict,
     SessionCommitStep,
 )
+from ouro.core.session_controller_registry import (
+    SessionController,
+    SessionControllerError,
+    SessionControllerOutput,
+    SessionControllerRegistry,
+)
 from ouro.core.session_controls import (
     AttributedSessionControlTransition,
     SessionControlActivation,
@@ -31,12 +37,6 @@ from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolCallState
 from ouro.core.tool_facts import ToolCallFacts
 from ouro.core.tools import ToolResult
-from ouro.plugins.session_controllers import (
-    PluginSessionController,
-    PluginSessionControllerError,
-    PluginSessionControllerOutput,
-    PluginSessionControllerRegistry,
-)
 from ouro.sessions import SessionStore
 
 
@@ -84,7 +84,7 @@ class SessionControlCoordinator:
         transition: AttributedSessionControlTransition,
         *,
         session_id: str,
-        controllers: PluginSessionControllerRegistry,
+        controllers: SessionControllerRegistry,
         workspace: str | None = None,
         resolving_tool_call_id: str | None = None,
     ) -> SessionControlTransitionResult:
@@ -118,14 +118,14 @@ class SessionControlCoordinator:
         *,
         session: SessionRecord,
         draft: HarnessCallSnapshot,
-        controllers: PluginSessionControllerRegistry,
+        controllers: SessionControllerRegistry,
         workspace: str | None = None,
     ) -> tuple[HarnessCallSnapshot, SessionControlTransitionResult]:
         """Evaluate one transition in the parent's draft, without canonical writes."""
         controls = draft.state.controls
         self._check_session_revision(controls, transition.expected_session_revision)
         targets: list[SessionControlActivation] = []
-        controller: PluginSessionController | None = None
+        controller: SessionController | None = None
         if transition.action == "release":
             target = _select_release_activation(controls, transition)
             if target is None:
@@ -181,7 +181,7 @@ class SessionControlCoordinator:
                 ) from exc
             self._validate_activation_controller(target, target_controller)
             target_controllers.append((target, target_controller))
-        output = PluginSessionControllerOutput()
+        output = SessionControllerOutput()
         try:
             for target, target_controller in target_controllers:
                 output = await target_controller.deactivate(
@@ -229,7 +229,7 @@ class SessionControlCoordinator:
                 )
             else:
                 activation = None
-        except PluginSessionControllerError as exc:
+        except SessionControllerError as exc:
             raise SessionControlError(str(exc)) from exc
         removed_ids = {item.activation_id for item in targets}
         retained = [item for item in controls.activations if item.activation_id not in removed_ids]
@@ -251,7 +251,7 @@ class SessionControlCoordinator:
 
     @staticmethod
     def _accept_output(
-        draft: HarnessCallSnapshot, output: PluginSessionControllerOutput
+        draft: HarnessCallSnapshot, output: SessionControllerOutput
     ) -> HarnessCallSnapshot:
         return accept_state_changes(draft, [output.harness_change] if output.harness_change else [])
 
@@ -487,10 +487,10 @@ class SessionControlCoordinator:
 
     @staticmethod
     def _controller_for_transition(
-        controllers: PluginSessionControllerRegistry,
+        controllers: SessionControllerRegistry,
         canonical_id: str,
         transition: AttributedSessionControlTransition,
-    ) -> PluginSessionController:
+    ) -> SessionController:
         try:
             controller = controllers.get(canonical_id)
         except KeyError as exc:
@@ -512,7 +512,7 @@ class SessionControlCoordinator:
     @staticmethod
     def _validate_activation_controller(
         activation: SessionControlActivation,
-        controller: PluginSessionController,
+        controller: SessionController,
     ) -> None:
         if (
             controller.execution_contract_hash != activation.execution_contract_hash
@@ -534,7 +534,7 @@ class SessionControlCoordinator:
             )
 
     @staticmethod
-    def _new_activation(controller: PluginSessionController) -> SessionControlActivation:
+    def _new_activation(controller: SessionController) -> SessionControlActivation:
         if (
             controller.release_id is None
             or controller.generation_id is None

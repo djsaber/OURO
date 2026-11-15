@@ -2,39 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import replace
 
 from ouro.core import run_drivers as core
-from ouro.core.plugin_contracts import PluginImplementation
+from ouro.core.run_drivers import RunDriverRegistration
 from ouro.plugins.invocation import current_invocation, plugin_invocation
 from ouro.plugins.tool_content import decode_worker_content
 from ouro.sdk.plugins import run_drivers as sdk
-
-
-@dataclass(frozen=True)
-class RunDriverRegistration:
-    driver_id: str
-    handler: core.RunDriverHandler
-    plugin_id: str = ""
-    release_id: str = ""
-    owner: str = ""
-    contract_hash: str = ""
-    execution_contract_hash: str = ""
-    implementation: PluginImplementation | None = None
-    dependencies: tuple[PluginImplementation, ...] = ()
-
-    @property
-    def canonical_id(self) -> str:
-        return f"{self.plugin_id}/run_drivers/{self.driver_id}"
-
-    @property
-    def binding(self) -> core.RunDriverBinding:
-        return core.RunDriverBinding(
-            driver_id=self.canonical_id,
-            contract_hash=self.contract_hash,
-            implementation=self.implementation,
-            dependencies=self.dependencies,
-        )
 
 
 class RunDriverRegistry:

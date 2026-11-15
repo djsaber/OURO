@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -12,7 +12,9 @@ from ouro.billing.schema import USAGE_SCHEMA as _SCHEMA
 from ouro.core.billing import ProviderUsageEntry, UsageFilter, UsageLedgerEvent
 from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
 from ouro.core.persistence import decode_versioned_record_json
+from ouro.core.state import RunRequestCounts
 from ouro.core.usage_queries import (
+    RunUsageCoverage,
     RunUsageTotals,
     UsageAuditLog,
     UsageEntryCursor,
@@ -215,6 +217,43 @@ class LocalUsageLedger:
                 (session_id, run_id),
             ).fetchone()
         return self._raw_totals(row)
+
+    def run_usage_coverage(
+        self, session_id: str, runs: Sequence[RunRequestCounts]
+    ) -> RunUsageCoverage:
+        """Aggregate raw consumption only after checking each Run's report coverage."""
+        if not runs:
+            return RunUsageCoverage()
+        input_tokens = output_tokens = 0
+        complete = True
+        with self._transaction() as connection:
+            for offset in range(0, len(runs), 300):
+                batch = runs[offset : offset + 300]
+                values = ",".join("(?, ?, ?)" for _ in batch)
+                row = connection.execute(
+                    "WITH requested(run_id, agent_count, summary_count) AS (VALUES " + values + ") "
+                    "SELECT COALESCE(SUM(t.input_tokens), 0), COALESCE(SUM(t.output_tokens), 0), "
+                    "MIN(COALESCE(t.agent_request_count, 0) >= r.agent_count AND "
+                    "COALESCE(t.compaction_request_count, 0) >= r.summary_count) "
+                    "FROM requested r LEFT JOIN raw_run_totals t "
+                    "ON t.session_id = ? AND t.run_id = r.run_id",
+                    (
+                        *(
+                            value
+                            for run in batch
+                            for value in (
+                                run.run_id,
+                                run.model_round_count,
+                                run.summary_request_count,
+                            )
+                        ),
+                        session_id,
+                    ),
+                ).fetchone()
+                input_tokens += row[0]
+                output_tokens += row[1]
+                complete = complete and bool(row[2])
+        return RunUsageCoverage(input_tokens, output_tokens, complete)
 
     def session_usage(self, session_id: str) -> RunUsageTotals | None:
         """Aggregate one Session's narrow raw Run totals without loading Run records."""

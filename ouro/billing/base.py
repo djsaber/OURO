@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
 
 from ouro.core.billing import ProviderUsageEntry, UsageFilter
+from ouro.core.state import RunRequestCounts
 from ouro.core.usage_queries import (
+    RunUsageCoverage,
     RunUsageTotals,
     UsageAuditLog,
     UsageEntryCursor,
@@ -29,6 +32,10 @@ class UsageLedger(Protocol):
     def get_raw(self, entry_id: str) -> ProviderUsageEntry | None: ...
 
     def run_usage(self, session_id: str, run_id: str) -> RunUsageTotals | None: ...
+
+    def run_usage_coverage(
+        self, session_id: str, runs: Sequence[RunRequestCounts]
+    ) -> RunUsageCoverage: ...
 
     def session_usage(self, session_id: str) -> RunUsageTotals | None: ...
 

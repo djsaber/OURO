@@ -849,7 +849,8 @@ usage。Supervisor 仍使用原全局 FIFO 与 execution permits，未增加 roo
 token 预算要求宿主提供同一 UsageService。原始消耗不随展示账单 correction/reset 减少；存在已发出但尚未收到
 用量报告的 parent/child 请求时，不能以已有部分汇总代替全部消耗：新的 spawn 明确拒绝，模型边界以
 usage_unavailable 暂停。已排队的 child 在执行边界重新检查共享预算。普通请求报告计数与摘要请求分开，摘要用量仍
-计入原始消耗。共享预算从计数投影读取 child Run 身份与两类派发数，逐 Run 对照原始报告；
+计入原始消耗。共享预算从计数投影读取 child Run 身份与两类派发数，账本在同一 child Session 的读快照内逐 Run 核对报告覆盖，再返回原始消耗与完整性。
+查询按至多 300 个身份分批执行，不物化每个 Run 的用量对象，不建立跨请求缓存；Session 派发计数与账本不构成跨存储原子快照。
 不加载完整 child Run，也不允许一个 Run 的额外报告覆盖另一个 Run 的缺失。仅有时间上限时不读取
 child 历史或账本；只有轮数上限时不读取账本。无 token 上限时，未知用量不阻止轮数或时间预算的独立判断。
 

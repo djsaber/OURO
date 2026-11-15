@@ -35,6 +35,11 @@ from ouro.core.prompt_policies import (
     PromptPolicyRegistry,
 )
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
+from ouro.core.session_controller_registry import (
+    SessionController,
+    SessionControllerOutput,
+    SessionControllerRegistry,
+)
 from ouro.core.session_controls import (
     SessionControlActivation,
     SessionControlClaim,
@@ -58,11 +63,6 @@ from ouro.plugins.registry import (
     PluginCommandError,
     PluginCommandRegistry,
     PluginCommandResult,
-)
-from ouro.plugins.session_controllers import (
-    PluginSessionController,
-    PluginSessionControllerOutput,
-    PluginSessionControllerRegistry,
 )
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
@@ -1590,16 +1590,16 @@ def _session_controller_registry(
     lifecycle_calls: list,
     *,
     generation_id: str = "gen-mode",
-) -> PluginSessionControllerRegistry:
+) -> SessionControllerRegistry:
     async def deactivate(call):
         lifecycle_calls.append(call)
-        return PluginSessionControllerOutput()
+        return SessionControllerOutput()
 
-    controller = PluginSessionController(
+    controller = SessionController(
         controller_id="mode",
         description="Own one generic Session mode.",
         claims=(SessionControlClaim(domain=f"{plugin_id}.mode"),),
-        activate_handler=lambda _call: PluginSessionControllerOutput(),
+        activate_handler=lambda _call: SessionControllerOutput(),
         deactivate_handler=deactivate,
         plugin_id=plugin_id,
         plugin_class="user",
@@ -1609,7 +1609,7 @@ def _session_controller_registry(
         contract_hash="session-controller-contract",
         execution_contract_hash=execution_contract_hash,
     )
-    registry = PluginSessionControllerRegistry()
+    registry = SessionControllerRegistry()
     registry.replace_owner("session-controller", (controller,))
     return registry
 

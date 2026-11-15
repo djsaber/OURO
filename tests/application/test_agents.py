@@ -2898,6 +2898,7 @@ async def test_unlimited_or_time_only_shared_budget_does_not_scan_child_usage(
 
     monkeypatch.setattr(store, "list_delegations", unexpected_scan)
     monkeypatch.setattr(service.usage, "run_usage", unexpected_scan)
+    monkeypatch.setattr(service.usage, "run_usage_coverage", unexpected_scan)
     try:
         assert service.budget_reason(parent, 1) is None
     finally:

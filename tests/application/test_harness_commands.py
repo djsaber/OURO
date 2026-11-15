@@ -17,11 +17,11 @@ from ouro.core.errors import PersistenceError
 from ouro.core.messages import MessageRecord
 from ouro.core.observers import ObserverRegistry
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict, SessionCommitStep
+from ouro.core.session_controller_registry import SessionControllerRegistry
 from ouro.core.state import SessionRecord
 from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_catalog
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.plugins.registry import PluginCommandRegistry
-from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.sdk.plugins import v5 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
@@ -81,7 +81,7 @@ def catalog(activate, *, driver_id=None):
             allow_session_inputs=True,
         )
     )
-    controllers = PluginSessionControllerRegistry()
+    controllers = SessionControllerRegistry()
     controllers.replace_owner(
         "instance",
         (

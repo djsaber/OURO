@@ -10,13 +10,13 @@ from ouro.core.context_providers import ContextProviderRegistration
 from ouro.core.continuations import ContinuationPolicyRegistration
 from ouro.core.observers import ObserverRegistration
 from ouro.core.prompt_policies import PromptPolicyRegistration
+from ouro.core.run_drivers import RunDriverRegistration
+from ouro.core.session_controller_registry import SessionController
 from ouro.core.tool_policies import ToolPolicyRegistration
 from ouro.core.turn_policies import TurnPolicyRegistration
 from ouro.plugins.models import PluginClass
 from ouro.plugins.providers import ProviderRegistration
 from ouro.plugins.registry import PluginCommand
-from ouro.plugins.run_drivers import RunDriverRegistration
-from ouro.plugins.session_controllers import PluginSessionController
 from ouro.skills import SkillMetadata
 from ouro.tools import Tool
 
@@ -62,7 +62,7 @@ class PluginContributions:
     prompt_policies: list[PromptPolicyRegistration] = field(default_factory=list)
     turn_policies: list[TurnPolicyRegistration] = field(default_factory=list)
     tool_policies: list[ToolPolicyRegistration] = field(default_factory=list)
-    session_controllers: list[PluginSessionController] = field(default_factory=list)
+    session_controllers: list[SessionController] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -94,7 +94,7 @@ class PreparedContributionSet:
     prompt_policies: tuple[PromptPolicyRegistration, ...] = ()
     turn_policies: tuple[TurnPolicyRegistration, ...] = ()
     tool_policies: tuple[ToolPolicyRegistration, ...] = ()
-    session_controllers: tuple[PluginSessionController, ...] = ()
+    session_controllers: tuple[SessionController, ...] = ()
     contract_hashes: dict[str, str] = field(default_factory=dict)
     degraded_reasons: tuple[str, ...] = ()
 

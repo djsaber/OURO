@@ -25,6 +25,11 @@ from ouro.core.observers import (
     ToolCallFinishedObservation,
     ToolCallRequestedObservation,
 )
+from ouro.core.session_controller_registry import (
+    SessionController,
+    SessionControllerCall,
+    SessionControllerOutput,
+)
 from ouro.core.session_controls import (
     SessionControlClaim,
     SessionControlTransitionRequest,
@@ -42,11 +47,6 @@ from ouro.plugins.inprocess.tools import _adapt_tool
 from ouro.plugins.providers import adapt_provider
 from ouro.plugins.registry import PluginCommand, PluginCommandRequest, PluginCommandResult
 from ouro.plugins.run_drivers import adapt_run_driver
-from ouro.plugins.session_controllers import (
-    PluginSessionController,
-    PluginSessionControllerCall,
-    PluginSessionControllerOutput,
-)
 from ouro.sdk.plugins import v5 as sdk
 
 
@@ -241,8 +241,8 @@ def _adapt_session_controller(
     contribution: sdk.SessionControllerContribution,
     *,
     owner_id: str,
-) -> PluginSessionController:
-    async def invoke(handler, call: PluginSessionControllerCall):
+) -> SessionController:
+    async def invoke(handler, call: SessionControllerCall):
         raw, change = await invoke_plugin_callback(
             handler,
             sdk.SessionControllerCall(
@@ -262,14 +262,14 @@ def _adapt_session_controller(
         )
         if not isinstance(raw, sdk.SessionControllerOutput):
             raise TypeError("session controller handler must return SessionControllerOutput")
-        return PluginSessionControllerOutput(
+        return SessionControllerOutput(
             harness_change=change,
             output=raw.output,
             data=dict(raw.data),
             usage_scope=raw.usage_scope,
         )
 
-    return PluginSessionController(
+    return SessionController(
         controller_id=contribution.id,
         description=contribution.description,
         claims=tuple(

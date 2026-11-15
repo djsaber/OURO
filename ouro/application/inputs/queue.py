@@ -6,6 +6,7 @@ from itertools import islice
 
 from ouro.application.contracts.execution import HostInputReceipt
 from ouro.application.contracts.sessions import QueuedUserInputView as QueuedUserInputView
+from ouro.application.inputs.requests import InputSessionSettings
 from ouro.core.base import new_id, utc_now
 from ouro.core.errors import PersistenceError
 from ouro.core.events import EventRecord
@@ -184,6 +185,7 @@ class QueuedInputQueue:
         extension_generations: tuple[dict[str, object], ...] = (),
         coalesce_key: str | None = None,
         history_bound: bool = False,
+        session_settings: InputSessionSettings | None = None,
     ) -> tuple[SessionRecord, QueuedInput, int, tuple[EventRecord, ...]]:
         batch_id = new_id("batch") if coalesce_key is not None else None
         item = QueuedInput(
@@ -236,9 +238,19 @@ class QueuedInputQueue:
                     )
                 return latest, record.item, len(latest.pending_input_ids), ()
             staged = self.stage_batch(latest, (item,))
+            configured = session_settings.apply(latest) if session_settings is not None else latest
+            if configured is not latest:
+                if self.store.is_session_locked(latest.session_id):
+                    assert session_settings is not None
+                    session_settings.apply(latest, executing=True)
+                now = utc_now()
+                configured = configured.model_copy(
+                    update={"updated_at": now, "last_activity_at": now}
+                )
             committed = self.store.commit_session(
                 SessionCommit(
                     before=latest,
+                    after=configured if configured is not latest else None,
                     inputs=staged.inputs,
                     input_changes=staged.changes,
                     events=(

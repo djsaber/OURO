@@ -135,3 +135,29 @@ class RunDriverContext(Protocol):
 RunDriverHandler = Callable[
     [RunDriverContext, DriverResume | None], Awaitable[DriverFinished | DriverSuspended]
 ]
+
+
+@dataclass(frozen=True)
+class RunDriverRegistration:
+    driver_id: str
+    handler: RunDriverHandler
+    plugin_id: str = ""
+    release_id: str = ""
+    owner: str = ""
+    contract_hash: str = ""
+    execution_contract_hash: str = ""
+    implementation: PluginImplementation | None = None
+    dependencies: tuple[PluginImplementation, ...] = ()
+
+    @property
+    def canonical_id(self) -> str:
+        return f"{self.plugin_id}/run_drivers/{self.driver_id}"
+
+    @property
+    def binding(self) -> RunDriverBinding:
+        return RunDriverBinding(
+            driver_id=self.canonical_id,
+            contract_hash=self.contract_hash,
+            implementation=self.implementation,
+            dependencies=self.dependencies,
+        )

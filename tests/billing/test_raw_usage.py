@@ -10,7 +10,42 @@ from ouro.application.usage import UsageService
 from ouro.billing import LocalUsageLedger
 from ouro.core.billing import UsageFilter
 from ouro.core.errors import PersistenceError
+from ouro.core.state import RunRequestCounts
+from ouro.core.usage_queries import RunUsageCoverage
 from tests.billing.test_local import _entry
+
+
+def test_batch_usage_preserves_run_identity_missing_reports_and_raw_totals(tmp_path, monkeypatch):
+    ledger = LocalUsageLedger(tmp_path)
+    service = UsageService(ledger)
+    runs = []
+    for index in range(405):
+        ledger.record(_entry(index))
+        runs.append(
+            RunRequestCounts(run_id=f"run_{index}", model_round_count=1, summary_request_count=0)
+        )
+    # Extra reports in one Run cannot compensate for a missing report in another.
+    ledger.record(_entry(405).model_copy(update={"run_id": "run_0"}))
+    service.reset(note="invoice reset must preserve consumption")
+    transaction = ledger._transaction
+    reads = 0
+
+    @contextmanager
+    def counted():
+        nonlocal reads
+        reads += 1
+        with transaction() as connection:
+            yield connection
+
+    monkeypatch.setattr(ledger, "_transaction", counted)
+    result = service.run_usage_coverage("ses_a", runs)
+    assert result == RunUsageCoverage(sum(range(1, 407)), 812, True)
+    assert reads == 1
+    assert service.run_usage_coverage("ses_a", []) == RunUsageCoverage()
+    assert reads == 1
+    missing = RunRequestCounts(run_id="missing", model_round_count=1, summary_request_count=0)
+    assert not service.run_usage_coverage("ses_a", [*runs, missing]).complete
+    assert not service.run_usage_coverage("another_session", runs).complete
 
 
 def test_session_consumption_uses_raw_run_totals_after_invoice_reset(tmp_path, monkeypatch):

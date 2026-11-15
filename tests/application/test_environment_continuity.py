@@ -15,6 +15,11 @@ from ouro.core.prompt_policies import (
     PromptPolicyRegistry,
 )
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
+from ouro.core.session_controller_registry import (
+    SessionController,
+    SessionControllerOutput,
+    SessionControllerRegistry,
+)
 from ouro.core.session_controls import (
     AttributedSessionControlTransition,
     HostSessionInput,
@@ -24,11 +29,6 @@ from ouro.core.state import RunRecord
 from ouro.core.tool_policies import ToolPolicyDecision, ToolPolicyRegistration, ToolPolicyRegistry
 from ouro.core.tools import ToolInputRequest, ToolInvocation
 from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_catalog
-from ouro.plugins.session_controllers import (
-    PluginSessionController,
-    PluginSessionControllerOutput,
-    PluginSessionControllerRegistry,
-)
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
@@ -68,8 +68,8 @@ class CurrentCatalog:
     async def synchronize(self):
         pass
 
-    def catalog(self):
-        return self.current
+    def bind_observers(self, observation, *, active_controller_ids):
+        return self.current.bind_observers(observation, active_controller_ids=active_controller_ids)
 
 
 def request(name="action", *, call_id="call_action"):
@@ -504,18 +504,18 @@ async def test_accepted_queue_survives_current_policy_rejection(store):
 
 
 async def test_newly_active_tool_policy_receives_current_harness_at_preflight(store):
-    controller = PluginSessionController(
+    controller = SessionController(
         controller_id="guard",
         description="Restrict tool execution",
         claims=(SessionControlClaim(domain="example.guard"),),
-        activate_handler=lambda call: PluginSessionControllerOutput(),
-        deactivate_handler=lambda call: PluginSessionControllerOutput(),
+        activate_handler=lambda call: SessionControllerOutput(),
+        deactivate_handler=lambda call: SessionControllerOutput(),
         plugin_id="example.guard",
         release_id="release",
         generation_id="generation",
         execution_contract_hash="contract",
     )
-    controllers = PluginSessionControllerRegistry()
+    controllers = SessionControllerRegistry()
     controllers.replace_owner("guard", (controller,))
     observed = []
 

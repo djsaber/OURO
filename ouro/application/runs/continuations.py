@@ -19,6 +19,7 @@ from ouro.core.harness_calls import accept_state_changes
 from ouro.core.inputs import InputRecord, InputStateChange
 from ouro.core.redaction import redact_text
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
+from ouro.core.session_controller_registry import SessionControllerRegistry
 from ouro.core.session_controls import (
     AttributedSessionControlTransition,
     SessionControlTransitionRequest,
@@ -31,7 +32,6 @@ from ouro.core.state import (
     RunRecord,
     SessionRecord,
 )
-from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.sessions import SessionStore
 
 
@@ -63,7 +63,7 @@ class RunContinuationService:
         registry: RunContinuationRegistry,
         queue: QueuedInputQueue,
         session_controls: SessionControlCoordinator | None = None,
-        session_controllers: PluginSessionControllerRegistry | None = None,
+        session_controllers: SessionControllerRegistry | None = None,
         usage_service: UsageService | None = None,
     ) -> None:
         self.store = store

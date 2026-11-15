@@ -163,28 +163,18 @@ def _root_budget_state(
     for relation in relations:
         if relation.child_session_id is None:
             continue
-        for child_run in store.load_run_request_counts(relation.child_session_id):
-            identity = (relation.child_session_id, child_run.run_id)
-            if identity in seen_runs:
-                continue
-            seen_runs.add(identity)
-            child_usage = (
-                usage.run_usage(relation.child_session_id, child_run.run_id)
-                if usage is not None and token_limited
-                else None
-            )
-            usage_known = usage_known and (
-                not token_limited
-                or (
-                    (child_usage.agent_request_count if child_usage is not None else 0)
-                    >= child_run.model_round_count
-                    and (child_usage.compaction_request_count if child_usage is not None else 0)
-                    >= child_run.summary_request_count
-                )
-            )
-            if child_usage is not None:
-                input_tokens += child_usage.input_tokens
-                output_tokens += child_usage.output_tokens
+        child_runs = [
+            child
+            for child in store.load_run_request_counts(relation.child_session_id)
+            if (relation.child_session_id, child.run_id) not in seen_runs
+        ]
+        if usage is not None and token_limited:
+            coverage = usage.run_usage_coverage(relation.child_session_id, child_runs)
+            input_tokens += coverage.input_tokens
+            output_tokens += coverage.output_tokens
+            usage_known = usage_known and coverage.complete
+        for child_run in child_runs:
+            seen_runs.add((relation.child_session_id, child_run.run_id))
             model_rounds += child_run.model_round_count
     return _RootBudgetState(
         policy=policy,

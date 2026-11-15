@@ -13,6 +13,11 @@ from ouro.core.billing import UsageFilter
 from ouro.core.harness import HarnessState
 from ouro.core.provider import ModelMetadata, Usage
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
+from ouro.core.session_controller_registry import (
+    SessionController,
+    SessionControllerOutput,
+    SessionControllerRegistry,
+)
 from ouro.core.session_controls import (
     SessionControlActivation,
     SessionControlClaim,
@@ -22,11 +27,6 @@ from ouro.core.state import RunRecord, SessionRecord
 from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_catalog
 from ouro.plugins.harness_calls import PluginStateView
 from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
-from ouro.plugins.session_controllers import (
-    PluginSessionController,
-    PluginSessionControllerOutput,
-    PluginSessionControllerRegistry,
-)
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
@@ -73,19 +73,19 @@ async def test_native_usage_survives_undo_and_keeps_request_attribution(store, t
         adapter=RuntimeAdapter(FauxProvider(), MODEL),
         usage_service=usage,
     )
-    controllers = PluginSessionControllerRegistry()
+    controllers = SessionControllerRegistry()
     controllers.replace_owner(
         OWNER,
         (
-            PluginSessionController(
+            SessionController(
                 controller_id="mode",
                 plugin_id=OWNER,
                 description="Attribute native usage",
                 claims=(SessionControlClaim(domain="example.usage", access="shared"),),
                 generation_id="generation",
                 execution_contract_hash="c" * 64,
-                activate_handler=lambda call: PluginSessionControllerOutput(),
-                deactivate_handler=lambda call: PluginSessionControllerOutput(),
+                activate_handler=lambda call: SessionControllerOutput(),
+                deactivate_handler=lambda call: SessionControllerOutput(),
             ),
         ),
     )

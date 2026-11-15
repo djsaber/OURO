@@ -15,7 +15,8 @@ from ouro.core.context_providers import ContextProviderRegistration, ContextProv
 from ouro.core.continuations import ContinuationPolicyRegistration, RunContinuationRegistry
 from ouro.core.observers import Observation, ObserverRegistration, ObserverRegistry
 from ouro.core.prompt_policies import PromptPolicyRegistration, PromptPolicyRegistry
-from ouro.core.run_drivers import RunDriverBinding
+from ouro.core.run_drivers import RunDriverBinding, RunDriverRegistration
+from ouro.core.session_controller_registry import SessionController, SessionControllerRegistry
 from ouro.core.session_controls import SessionControlState
 from ouro.core.state import RunContinuationControllerRef
 from ouro.core.tool_policies import ToolPolicyRegistration, ToolPolicyRegistry
@@ -33,11 +34,7 @@ from ouro.plugins.implementation_contracts import plugin_implementation
 from ouro.plugins.models import PluginClass, PluginGenerationRecord
 from ouro.plugins.providers import ProviderRegistration, ProviderRegistry
 from ouro.plugins.registry import PluginCommand, PluginCommandRegistry
-from ouro.plugins.run_drivers import RunDriverRegistration, RunDriverRegistry
-from ouro.plugins.session_controllers import (
-    PluginSessionController,
-    PluginSessionControllerRegistry,
-)
+from ouro.plugins.run_drivers import RunDriverRegistry
 from ouro.skills import SkillMetadata
 from ouro.tools import Tool, ToolRegistry
 
@@ -94,7 +91,7 @@ class ExtensionCatalogBase:
     turn_policies: list[TurnPolicyRegistration]
     tool_policies: list[ToolPolicyRegistration]
     skills: tuple[SkillMetadata, ...]
-    session_controllers: dict[str, PluginSessionController]
+    session_controllers: dict[str, SessionController]
 
     @classmethod
     def capture(
@@ -110,7 +107,7 @@ class ExtensionCatalogBase:
         turn_policies: TurnPolicyRegistry | None = None,
         tool_policies: ToolPolicyRegistry | None,
         skills: Sequence[SkillMetadata] = (),
-        session_controllers: PluginSessionControllerRegistry | None = None,
+        session_controllers: SessionControllerRegistry | None = None,
     ) -> ExtensionCatalogBase:
         captured_skills = tuple(skill.model_copy(deep=True) for skill in skills)
         skill_names = [skill.name for skill in captured_skills]
@@ -128,9 +125,7 @@ class ExtensionCatalogBase:
             turn_policies=(turn_policies or TurnPolicyRegistry()).snapshot(),
             tool_policies=(tool_policies or ToolPolicyRegistry()).snapshot(),
             skills=captured_skills,
-            session_controllers=(
-                session_controllers or PluginSessionControllerRegistry()
-            ).snapshot(),
+            session_controllers=(session_controllers or SessionControllerRegistry()).snapshot(),
         )
 
 
@@ -153,7 +148,7 @@ class ExtensionCatalog:
         turn_policies: TurnPolicyRegistry,
         tool_policies: ToolPolicyRegistry,
         skills: Sequence[SkillMetadata],
-        session_controllers: PluginSessionControllerRegistry,
+        session_controllers: SessionControllerRegistry,
         owners: Mapping[str, ContributionOwnerRecord],
         dependencies: Mapping[str, tuple[str, ...]] | None = None,
         tool_groups: Sequence[CatalogToolGroup] = (),
@@ -261,12 +256,12 @@ class ExtensionCatalog:
         command_id: str,
         *,
         controller_ids: set[str] | None = None,
-    ) -> ContributionBinding[tuple[PluginCommandRegistry, PluginSessionControllerRegistry]]:
+    ) -> ContributionBinding[tuple[PluginCommandRegistry, SessionControllerRegistry]]:
         command = self.commands.get(command_id)
         commands = PluginCommandRegistry()
         commands.register(command)
         commands.freeze()
-        controllers = PluginSessionControllerRegistry()
+        controllers = SessionControllerRegistry()
         selected = tuple(
             item
             for item in self.session_controllers.list()
@@ -404,6 +399,26 @@ class ExtensionCatalogLease:
     def generations(self) -> tuple[PluginGenerationRecord, ...]:
         return self.catalog.generations
 
+    def generation_metadata(self) -> list[dict[str, object]]:
+        return [item.model_dump(mode="json", exclude_none=True) for item in self.generations]
+
+    def execution_contracts(self) -> dict[str, str]:
+        return {
+            item.plugin_id: item.execution_contract_hash
+            for item in self.generations
+            if item.execution_contract_hash is not None
+        }
+
+    def continuation_controllers(
+        self, controls: SessionControlState
+    ) -> list[RunContinuationControllerRef]:
+        return self.catalog.continuation_controllers(controls)
+
+    def bind_observers(
+        self, observation: Observation, *, active_controller_ids: Callable[[], set[str]]
+    ) -> ContributionBinding[ObserverRegistry]:
+        return self.catalog.bind_observers(observation, active_controller_ids=active_controller_ids)
+
     @property
     def tools(self) -> ToolRegistry:
         return self.catalog.tools
@@ -445,7 +460,7 @@ class ExtensionCatalogLease:
         return self.catalog.skills
 
     @property
-    def session_controllers(self) -> PluginSessionControllerRegistry:
+    def session_controllers(self) -> SessionControllerRegistry:
         return self.catalog.session_controllers
 
     def contract_hash(self, canonical_identity: str) -> str | None:
@@ -500,7 +515,7 @@ def build_extension_catalog(
     turn_policies.restore(base.turn_policies)
     tool_policies = ToolPolicyRegistry()
     tool_policies.restore(base.tool_policies)
-    session_controllers = PluginSessionControllerRegistry()
+    session_controllers = SessionControllerRegistry()
     session_controllers.restore(base.session_controllers)
     skills = {skill.name: skill.model_copy(deep=True) for skill in base.skills}
     owners = _base_owner_records(base)

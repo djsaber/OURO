@@ -178,6 +178,27 @@ def test_context_building_and_model_execution_do_not_select_compaction_strategie
         }.intersection(imports)
 
 
+def test_runtime_capability_consumers_do_not_depend_on_plugin_lifecycle_implementations() -> None:
+    for path in (
+        APPLICATION_DIR / "runtime" / "service.py",
+        APPLICATION_DIR / "runtime" / "resources.py",
+        APPLICATION_DIR / "runtime" / "extensions.py",
+        APPLICATION_DIR / "session_controls.py",
+        APPLICATION_DIR / "runs" / "continuations.py",
+    ):
+        imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+        assert not any(
+            module.startswith(
+                (
+                    "ouro.plugins.lifecycle",
+                    "ouro.plugins.catalog",
+                    "ouro.plugins.session_controllers",
+                )
+            )
+            for module in imports
+        ), str(path)
+
+
 def test_auth_contracts_do_not_load_concrete_storage_or_lifecycle() -> None:
     for filename in ("contracts.py", "driver_contracts.py"):
         path = PROJECT_ROOT / "ouro" / "auth" / filename

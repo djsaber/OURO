@@ -259,6 +259,14 @@ uv run --frozen python -m dev.benchmarks.session_terminal --home .ouro-dev/manua
 ## Run 资源与状态读取
 
 ```powershell
+uv run --frozen python -m dev.benchmarks.budget_usage --counts 1 100 1000 --repeat 7
+```
+
+预算账本基准在临时目录保存合成用量，对同一组身份比较逐 Run 与批量查询，先断言结果完全相同。
+准备不计时，耗时与 tracemalloc 分开测量；报告原始样本、中位数和分配峰值，不清除 OS 缓存。
+它测量账本读取，不包含整个共享预算流程、跨 Session 计数读取、模型网络耗时或终端响应。
+
+```powershell
 uv run --frozen python -m dev.benchmarks.run_resources --label current-environment
 uv run --frozen python -m dev.benchmarks.session_harness_reads --label current-environment
 ```

@@ -20,7 +20,14 @@ from ouro.core.prompt_policies import (
     PromptPolicyDecision,
     PromptPolicyRegistration,
 )
-from ouro.core.run_drivers import DriverFinished, DriverResume, DriverSuspended, RunDriverContext
+from ouro.core.run_drivers import (
+    DriverFinished,
+    DriverResume,
+    DriverSuspended,
+    RunDriverContext,
+    RunDriverRegistration,
+)
+from ouro.core.session_controller_registry import SessionController
 from ouro.core.state import RunOutcome
 from ouro.core.tool_policies import ToolPolicyCall, ToolPolicyDecision, ToolPolicyRegistration
 from ouro.core.turn_policies import (
@@ -32,8 +39,6 @@ from ouro.plugins.catalog.gates import GenerationGate
 from ouro.plugins.contributions.models import PreparedContributionSet
 from ouro.plugins.providers import ProviderRegistration
 from ouro.plugins.registry import PluginCommand, PluginCommandRequest, PluginCommandResult
-from ouro.plugins.run_drivers import RunDriverRegistration
-from ouro.plugins.session_controllers import PluginSessionController
 from ouro.sdk.plugins import providers as provider_sdk
 from ouro.tools import Tool, ToolExecutionContext
 from ouro.tools.base import ToolExecutionResult
@@ -87,9 +92,9 @@ def _gated_provider(
 
 
 def _gated_session_controller(
-    controller: PluginSessionController,
+    controller: SessionController,
     gate: GenerationGate,
-) -> PluginSessionController:
+) -> SessionController:
     async def activate(call):
         async with gate.invocation():
             return await _invoke_callback(controller.activate_handler, call)

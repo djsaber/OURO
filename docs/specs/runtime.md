@@ -404,6 +404,9 @@ SessionStore 定点恢复；Host 的历史展示读取不触发恢复，进程�
 普通交互输入使用 `UserInputRequest` 和 `submit_user_input`：先校验并持久化输入，再复用既有队列调度消费。
 受理不等待 execution permit；活动 Session 的追加输入交由现有执行者按队列策略消费。输入保持 `source=user`、
 `role=user`、`scaffold=False`，模型、推理、workspace、权限/交互模式、附件、资源引用、技能及队列模式保留原有语义。
+已有空闲会话的审批与交互模式选项随输入受理原子提交；直接运行时随首次输入与 Run 启动提交。
+Prompt Policy 拒绝或受理提交失败时，不改变这两项模式。提交时重读会话，活动会话不接受随输入改变模式；
+相同模式的追加输入沿用现有队列规则。独立的会话设置命令具有自己的提交边界。
 `RuntimeService.run` 提供直接等待执行的底层接口。独立 Runtime 的调用方持有执行容量；装配 Supervisor 时，
 Runtime 通过窄调度回调交出后续输入的推进责任，后续 Run 重新进入共享 FIFO。
 

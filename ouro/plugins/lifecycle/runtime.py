@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import threading
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator, Callable, Generator
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -13,9 +13,10 @@ from ouro.core.base import new_id
 from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import settle_owned_tasks
 from ouro.core.model_generation import ModelGenerationPort
+from ouro.core.observers import Observation, ObserverRegistry
 from ouro.core.plugin_tasks import PluginTaskTarget
 from ouro.core.redaction import SensitiveValueRedactor, redact_text
-from ouro.core.run_drivers import DEFAULT_DRIVER_ID, RunDriverBinding
+from ouro.core.run_drivers import DEFAULT_DRIVER_ID, RunDriverBinding, RunDriverRegistration
 from ouro.core.task_ports import TaskServicePort
 from ouro.core.tasks import AgentTaskTarget
 from ouro.plugins.builtin import EMPTY_BUILTIN_PLUGIN_REGISTRY, BuiltinPluginRegistry
@@ -80,7 +81,6 @@ from ouro.plugins.native_ports import PluginNativePorts
 from ouro.plugins.processes import PluginProcessService
 from ouro.plugins.providers import ProviderBinding
 from ouro.plugins.resources import OwnedTaskGroup, ScopedPluginDataStore
-from ouro.plugins.run_drivers import RunDriverRegistration
 from ouro.plugins.scheduling import NativePluginScheduler
 from ouro.plugins.services import ServiceEndpoint
 from ouro.plugins.tasks import PluginTaskBinding, bind_plugin_task
@@ -611,6 +611,13 @@ class PluginRuntimeResource:
             raise PermissionError(
                 "Scheduled service must belong to the task owner or its declared dependency"
             )
+
+    def bind_observers(
+        self, observation: Observation, *, active_controller_ids: Callable[[], set[str]]
+    ) -> ContributionBinding[ObserverRegistry]:
+        return self.catalog().bind_observers(
+            observation, active_controller_ids=active_controller_ids
+        )
 
     def snapshot(self) -> ExtensionCatalogLease:
         if self._closed:

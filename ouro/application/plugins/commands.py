@@ -21,10 +21,10 @@ from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.core.run_drivers import RunDriverBinding
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
+from ouro.core.session_controller_registry import SessionControllerRegistry
 from ouro.core.session_titles import fallback_session_title
 from ouro.core.state import SessionContinuationRequest, SessionRecord
 from ouro.plugins.registry import PluginCommandRegistry
-from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.sessions import SessionStore
 
 if TYPE_CHECKING:
@@ -153,7 +153,7 @@ async def consume_plugin_command(
 async def execute_plugin_command(
     *,
     commands: PluginCommandRegistry,
-    controllers: PluginSessionControllerRegistry,
+    controllers: SessionControllerRegistry,
     store: SessionStore | None,
     command_id: str,
     argument: str,

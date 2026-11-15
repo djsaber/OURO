@@ -11,11 +11,37 @@ from ouro.application.contracts.execution import HostInputReceipt
 from ouro.application.inputs.skills import SkillInvocationRequest
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.base import new_id
+from ouro.core.errors import SessionBusyError
 from ouro.core.input_content import InputContent, InputFile
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.core.session_controls import SessionInputMode
+from ouro.core.state import SessionRecord
+
+
+@dataclass(frozen=True)
+class InputSessionSettings:
+    """Session options committed with an accepted user input."""
+
+    approval_mode: SessionApprovalMode | None = None
+    interaction_mode: SessionInteractionMode | None = None
+
+    def apply(self, session: SessionRecord, *, executing: bool = False) -> SessionRecord:
+        changes = {
+            name: value
+            for name, value in (
+                ("approval_mode", self.approval_mode),
+                ("interaction_mode", self.interaction_mode),
+            )
+            if value is not None and value != getattr(session, name)
+        }
+        if changes and (executing or session.active_run_id is not None):
+            name = next(iter(changes)).replace("_", " ")
+            raise SessionBusyError(
+                f"cannot change {name} while the session has an active run: {session.session_id}"
+            )
+        return session.model_copy(update=changes) if changes else session
 
 
 class UserInputRequest(ApplicationDTO):

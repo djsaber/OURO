@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -12,8 +12,9 @@ from ouro.core.context_snapshots import ModelRequestHeader
 from ouro.core.errors import PersistenceError
 from ouro.core.provider import ModelMetadata, Usage
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict
-from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord
+from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, RunRequestCounts
 from ouro.core.usage_queries import (
+    RunUsageCoverage,
     RunUsageTotals,
     UsageAuditLog,
     UsageEntryCursor,
@@ -243,6 +244,11 @@ class UsageService:
     def run_usage(self, session_id: str, run_id: str) -> RunUsageTotals | None:
         """Original Run consumption, independent of invoice correction and reset."""
         return self.ledger.run_usage(session_id, run_id)
+
+    def run_usage_coverage(
+        self, session_id: str, runs: Sequence[RunRequestCounts]
+    ) -> RunUsageCoverage:
+        return self.ledger.run_usage_coverage(session_id, runs)
 
     def run_values(self, session_id: str, run_id: str) -> dict[str, int | float] | None:
         """Bounded provider-value projection; absent reports remain unknown."""

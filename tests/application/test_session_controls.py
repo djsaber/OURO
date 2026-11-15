@@ -9,17 +9,17 @@ from ouro.application.session_controls import (
     SessionControlCoordinator,
     SessionControlError,
 )
+from ouro.core.session_controller_registry import (
+    SessionController,
+    SessionControllerCall,
+    SessionControllerOutput,
+    SessionControllerRegistry,
+)
 from ouro.core.session_controls import (
     AttributedSessionControlTransition,
     SessionControlClaim,
 )
 from ouro.core.state import SessionRecord
-from ouro.plugins.session_controllers import (
-    PluginSessionController,
-    PluginSessionControllerCall,
-    PluginSessionControllerOutput,
-    PluginSessionControllerRegistry,
-)
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 
 _CONTRACT = "c" * 64
@@ -42,21 +42,21 @@ def _controller(
     events: list[str],
     *,
     fail_activate: bool = False,
-) -> PluginSessionController:
+) -> SessionController:
     async def activate(call):
         events.append(f"activate:{call.controller_id}:{call.activation_id}")
         if fail_activate:
             raise RuntimeError("activation failed")
-        return PluginSessionControllerOutput(
+        return SessionControllerOutput(
             output=f"activated {call.controller_id}",
             data={"activation_id": call.activation_id},
         )
 
     async def deactivate(call):
         events.append(f"deactivate:{call.controller_id}:{call.activation_id}")
-        return PluginSessionControllerOutput(output=f"deactivated {call.controller_id}")
+        return SessionControllerOutput(output=f"deactivated {call.controller_id}")
 
-    return PluginSessionController(
+    return SessionController(
         controller_id=controller_id,
         description=f"Controller {controller_id}",
         claims=(SessionControlClaim(domain=domain, access="exclusive"),),
@@ -104,7 +104,7 @@ async def test_session_control_persistence_phases_run_outside_the_event_loop(
         "dev.example.thread-boundary",
         events,
     )
-    registry = PluginSessionControllerRegistry()
+    registry = SessionControllerRegistry()
     registry.replace_owner("thread-boundary", (controller,))
     coordinator = SessionControlCoordinator(store)
     event_loop_thread = get_ident()
@@ -161,7 +161,7 @@ async def test_session_control_claims_arbitrate_unknown_plugins_without_business
         "dev.example.independent-domain",
         events,
     )
-    registry = PluginSessionControllerRegistry()
+    registry = SessionControllerRegistry()
     registry.replace_owner("first", (first,))
     registry.replace_owner("second", (second,))
     registry.replace_owner("third", (independent,))
@@ -231,7 +231,7 @@ async def test_failed_controller_activation_never_publishes_host_state(tmp_path,
         events,
         fail_activate=True,
     )
-    registry = PluginSessionControllerRegistry()
+    registry = SessionControllerRegistry()
     registry.replace_owner("failure", (controller,))
     coordinator = SessionControlCoordinator(store)
 
@@ -259,13 +259,13 @@ async def test_controller_lifecycle_receives_session_kind_and_symmetric_release_
         delegation_id="delegation_1",
     )
     store.create_session(session)
-    calls: list[PluginSessionControllerCall] = []
+    calls: list[SessionControllerCall] = []
 
-    async def lifecycle(call: PluginSessionControllerCall) -> PluginSessionControllerOutput:
+    async def lifecycle(call: SessionControllerCall) -> SessionControllerOutput:
         calls.append(call)
-        return PluginSessionControllerOutput()
+        return SessionControllerOutput()
 
-    controller = PluginSessionController(
+    controller = SessionController(
         controller_id="mode",
         description="Own a generic mode.",
         claims=(SessionControlClaim(domain="dev.example.lifecycle"),),
@@ -279,7 +279,7 @@ async def test_controller_lifecycle_receives_session_kind_and_symmetric_release_
         contract_hash="d" * 64,
         execution_contract_hash=_CONTRACT,
     )
-    registry = PluginSessionControllerRegistry()
+    registry = SessionControllerRegistry()
     registry.replace_owner("lifecycle", (controller,))
     coordinator = SessionControlCoordinator(store)
 
@@ -334,7 +334,7 @@ async def test_replace_is_an_explicit_same_plugin_handoff(tmp_path, backend) -> 
         "dev.example.mode",
         events,
     )
-    registry = PluginSessionControllerRegistry()
+    registry = SessionControllerRegistry()
     registry.replace_owner("modes", (primary, alternate))
     coordinator = SessionControlCoordinator(store)
 
@@ -384,9 +384,9 @@ async def test_replace_can_rotate_the_same_controller_activation(tmp_path, backe
 
     async def lifecycle(call):
         calls.append(call)
-        return PluginSessionControllerOutput()
+        return SessionControllerOutput()
 
-    controller = PluginSessionController(
+    controller = SessionController(
         controller_id="mode",
         description="Rotate one controller identity.",
         claims=(SessionControlClaim(domain="dev.example.rotating-mode"),),
@@ -400,7 +400,7 @@ async def test_replace_can_rotate_the_same_controller_activation(tmp_path, backe
         contract_hash="d" * 64,
         execution_contract_hash=_CONTRACT,
     )
-    registry = PluginSessionControllerRegistry()
+    registry = SessionControllerRegistry()
     registry.replace_owner("rotating", (controller,))
     coordinator = SessionControlCoordinator(store)
     acquired = await coordinator.apply(
@@ -459,7 +459,7 @@ async def test_replace_cannot_take_over_another_plugin_activation(tmp_path) -> N
         "dev.example.mode",
         events,
     )
-    registry = PluginSessionControllerRegistry()
+    registry = SessionControllerRegistry()
     registry.replace_owner("controllers", (owner, intruder))
     coordinator = SessionControlCoordinator(store)
     acquired = await coordinator.apply(

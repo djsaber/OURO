@@ -15,13 +15,13 @@ from ouro.tools.builtin.agents import agent_control_tools
 from ouro.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
+    from ouro.application.runtime.extensions import RuntimeCapabilities
     from ouro.application.tool_calls import ToolCallCoordinator
-    from ouro.plugins.catalog.snapshot import ExtensionCatalogLease
 
 
 @dataclass
 class RunResources:
-    snapshot: ExtensionCatalogLease | None = None
+    snapshot: RuntimeCapabilities | None = None
     host_tools: ToolRegistry | None = None
     controller_ids: frozenset[str] = frozenset()
     agent_catalog: AgentCatalogSnapshot | None = None
@@ -54,7 +54,7 @@ class RunResources:
         self.agent_prompt = relation.definition.system_prompt if relation is not None else ""
         self.budget = relation.budget if relation is not None else None
 
-    def take_snapshot(self) -> ExtensionCatalogLease | None:
+    def take_snapshot(self) -> RuntimeCapabilities | None:
         """Transfer the lease without closing it; all other state stays Run-owned."""
         snapshot, self.snapshot = self.snapshot, None
         return snapshot

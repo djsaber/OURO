@@ -5,10 +5,10 @@ from dataclasses import replace
 import pytest
 
 from ouro.application.runs.tool_batches import load_batch_call
+from ouro.core.session_controller_registry import SessionControllerRegistry
 from ouro.core.state import SessionRecord
 from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_catalog
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
-from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.sdk.plugins import v5 as sdk
 from tests.application.tool_runtime import runtime
 from tests.application.tool_runtime import store as store
@@ -126,7 +126,7 @@ async def test_observation_precedes_control_and_remains_distinct_from_feedback(
             )
         }
     )
-    controllers = PluginSessionControllerRegistry()
+    controllers = SessionControllerRegistry()
     controllers.replace_owner(
         "test",
         (

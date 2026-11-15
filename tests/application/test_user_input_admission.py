@@ -105,14 +105,14 @@ async def test_host_cancel_during_admission_still_schedules_and_can_retry(
     app = streaming_application(tmp_path, provider, backend=backend)
     loop = asyncio.get_running_loop()
     entered, release = asyncio.Event(), threading.Event()
-    accept = app.runtime._accept_initial_input
+    accept = app.runtime.input_admission.accept_initial
 
     def held_accept(*args):
         loop.call_soon_threadsafe(entered.set)
         assert release.wait(10)
         return accept(*args)
 
-    monkeypatch.setattr(app.runtime, "_accept_initial_input", held_accept)
+    monkeypatch.setattr(app.runtime.input_admission, "accept_initial", held_accept)
     request = UserInputRequest(prompt="owned admission")
     host = asyncio.create_task(app.supervisor.submit_user_input(request))
     try:

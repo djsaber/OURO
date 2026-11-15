@@ -10,6 +10,7 @@ from ouro.application.inputs.queue import QueuedInputQueue
 from ouro.application.runs.continuations import RunContinuationService
 from ouro.core.continuations import RunContinuationRegistry
 from ouro.core.errors import PersistenceError
+from ouro.core.session_controller_registry import SessionControllerRegistry
 from ouro.core.session_controls import SessionControlActivation, SessionControlState
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import (
@@ -19,7 +20,6 @@ from ouro.core.state import (
     SessionRecord,
 )
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
-from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.sdk.plugins import v5 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from tests.harness_state import replace_harness_state
@@ -126,7 +126,7 @@ def setup(store, action):
             ),
         ),
     )
-    controllers = PluginSessionControllerRegistry()
+    controllers = SessionControllerRegistry()
     controllers.replace_owner(
         "instance",
         (

@@ -10,13 +10,13 @@ from ouro.core.context_providers import ContextProviderRegistry
 from ouro.core.continuations import RunContinuationRegistry
 from ouro.core.observers import ObserverRegistry
 from ouro.core.prompt_policies import PromptPolicyRegistry
+from ouro.core.session_controller_registry import SessionControllerRegistry
 from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistry
 from ouro.plugins.contributions.models import PreparedContributionSet
 from ouro.plugins.providers import ProviderRegistry
 from ouro.plugins.registry import PluginCommandRegistry
 from ouro.plugins.run_drivers import RunDriverRegistry
-from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.skills import SkillMetadata
 from ouro.tools import ToolRegistry
 
@@ -37,7 +37,7 @@ class CatalogProjectionTargets:
     turn_policies: TurnPolicyRegistry
     tool_policies: ToolPolicyRegistry
     skills: dict[str, SkillMetadata]
-    session_controllers: PluginSessionControllerRegistry
+    session_controllers: SessionControllerRegistry
 
 
 class ContributionProjectionAdapter(Protocol):

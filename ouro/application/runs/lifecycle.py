@@ -7,6 +7,7 @@ from typing import Any
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.harness import capture_harness
 from ouro.application.inputs.queue import consumption_changes
+from ouro.application.inputs.requests import InputSessionSettings
 from ouro.application.models.corrections import commit_model_correction
 from ouro.application.runs.tool_batches import load_tool_batch, prepare_batch_changes
 from ouro.application.session_controls import SessionControlCoordinator
@@ -141,6 +142,7 @@ class RunLifecycle:
         consumed_inputs: tuple[str, ...] = (),
         continuation_request: SessionContinuationRequest | None = None,
         events: tuple[EventRecord, ...] = (),
+        session_settings: InputSessionSettings | None = None,
     ) -> tuple[SessionRecord, RunRecord, tuple[EventRecord, ...]]:
         """Persist the shared session/run transition into an active run."""
 
@@ -174,7 +176,9 @@ class RunLifecycle:
             except FileNotFoundError:
                 current_run = None
             transition = plan_run_transition(
-                latest_session,
+                session_settings.apply(latest_session)
+                if session_settings is not None
+                else latest_session,
                 current_run=current_run,
                 next_run=run.model_copy(update={"status": "running"}),
                 resume=resume,

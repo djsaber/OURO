@@ -42,6 +42,7 @@ from ouro.core.observers import (
 from ouro.core.redaction import redact_text
 from ouro.core.run_budget import RunPauseReason
 from ouro.core.run_drivers import DriverCheckpoint
+from ouro.core.session_controller_registry import SessionControllerRegistry
 from ouro.core.session_controls import (
     AttributedSessionControlTransition,
     SessionControlState,
@@ -69,7 +70,6 @@ from ouro.core.tools import (
     ToolResultValue,
     tool_definition_contract_hash,
 )
-from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.tools import ToolBatchExecutor, ToolExecutionContext, ToolExecutor, ToolRegistry
 from ouro.tools.base import ToolExecutionAborted, ToolExecutionInterrupted
 from ouro.tools.schema import tool_argument_error
@@ -156,7 +156,7 @@ class ToolCallCoordinator:
         is_aborted: Callable[[str, str], bool],
         tool_policies: ToolPolicyRegistry | None = None,
         session_controls: SessionControlCoordinator | None = None,
-        session_controllers: PluginSessionControllerRegistry | None = None,
+        session_controllers: SessionControllerRegistry | None = None,
         agent_controls: AgentControlExecutor | None = None,
         refresh_controls: Callable[[SessionControlState], str | None] | None = None,
     ) -> None:
@@ -170,7 +170,7 @@ class ToolCallCoordinator:
         self.is_aborted = is_aborted
         self.tool_policies = tool_policies or ToolPolicyRegistry()
         self.session_controls = session_controls
-        self.session_controllers = session_controllers or PluginSessionControllerRegistry()
+        self.session_controllers = session_controllers or SessionControllerRegistry()
         self.agent_controls = agent_controls
         self.refresh_controls = refresh_controls
 

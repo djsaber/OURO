@@ -12,13 +12,13 @@ from ouro.core.context_providers import ContextProviderRegistration
 from ouro.core.continuations import ContinuationPolicyRegistration
 from ouro.core.observers import ObserverRegistration
 from ouro.core.prompt_policies import PromptPolicyRegistration
+from ouro.core.run_drivers import RunDriverRegistration
+from ouro.core.session_controller_registry import SessionController
 from ouro.core.tool_policies import ToolPolicyRegistration
 from ouro.core.turn_policies import TurnPolicyRegistration
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.providers import ProviderRegistration
 from ouro.plugins.registry import PluginCommand
-from ouro.plugins.run_drivers import RunDriverRegistration
-from ouro.plugins.session_controllers import PluginSessionController
 from ouro.tools import Tool
 
 
@@ -45,7 +45,7 @@ class ContributionContractContext:
     prompt_policies: tuple[PromptPolicyRegistration, ...]
     turn_policies: tuple[TurnPolicyRegistration, ...]
     tool_policies: tuple[ToolPolicyRegistration, ...]
-    session_controllers: tuple[PluginSessionController, ...]
+    session_controllers: tuple[SessionController, ...]
     resource_contracts: dict[str, object]
 
 

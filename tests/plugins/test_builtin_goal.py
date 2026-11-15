@@ -26,6 +26,7 @@ from ouro.core.provider import (
     Usage,
 )
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
+from ouro.core.session_controller_registry import SessionControllerRegistry
 from ouro.core.session_controls import AttributedSessionControlTransition
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolCallRequest, ToolInvocation
@@ -33,7 +34,6 @@ from ouro.local_application import LocalApplication
 from ouro.plugins.harness_calls import invoke_plugin_callback
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.plugins.resources import ScopedPluginDataStore
-from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.sdk.plugins import v5 as sdk
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
@@ -296,7 +296,7 @@ async def goal_session(tmp_path, request):
     store.initialize()
     plugin = _plugin(tmp_path / "plugin")
     contributed = adapt_sdk_contributions(await plugin.prepare(), owner_id=PLUGIN_ID)
-    controllers = PluginSessionControllerRegistry()
+    controllers = SessionControllerRegistry()
     controllers.replace_owner(
         "instance",
         [
