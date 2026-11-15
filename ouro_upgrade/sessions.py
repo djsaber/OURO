@@ -12,19 +12,19 @@ from pydantic import ValidationError
 
 from ouro.core.harness import HarnessVersion
 from ouro.core.resources import SessionResourceReference
+from ouro.core.session_queries import SessionIndexEntry
 from ouro.local_io import filesystem_path
-from ouro.sessions import SQLiteSessionStore
 from ouro.sessions.backends.files.database import initialize_index
 from ouro.sessions.backends.files.message_locations import FileMessageIndex, FileMessageReference
 from ouro.sessions.backends.sqlite.commits import SQLiteSessionCommits
 from ouro.sessions.backends.sqlite.messages import write_messages
-from ouro.sessions.backends.sqlite.store import SQLITE_SCHEMA_VERSION
+from ouro.sessions.backends.sqlite.store import SQLITE_SCHEMA_VERSION, SQLiteSessionStore
 from ouro.sessions.catalog import (
     SessionCatalogProjection,
     catalog_entry_from_projection,
     sort_catalog_entries,
 )
-from ouro.sessions.index import SessionIndex, SessionIndexEntry, invalid_session_index_entry
+from ouro.sessions.index import SessionIndex, invalid_session_index_entry
 from ouro.sessions.layout import DATA_LAYOUT_VERSION
 from ouro.sessions.sqlite_compactions import insert_compaction
 from ouro.sessions.sqlite_facts import write_call_state, write_facts

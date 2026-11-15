@@ -14,7 +14,7 @@ from ouro.core.session_controls import (
     AttributedSessionInputBatch,
     HostSessionInput,
 )
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 from tests.application.helpers import running_runtime_task
 from tests.event_capture import recorded_events

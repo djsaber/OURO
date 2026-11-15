@@ -6,15 +6,13 @@ from typing import cast
 
 from ouro.application.contracts.plugin_configuration import PluginConfigurationResult
 from ouro.application.contracts.plugins import PluginDetail, PluginSummary
-from ouro.tui.controller import TuiController
-from ouro.tui.conversation.view import ConversationView
 from ouro.tui.features.plugins.configuration import PluginConfigurationScreen
 from ouro.tui.features.plugins.install import PluginInstallScreen
-from ouro.tui.features.providers.workflows import ProviderConfigurationWorkflows
-from ouro.tui.menus.choice import ChoiceScreen, loading_menu
+from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.confirmation import ConfirmationScreen
 from ouro.tui.menus.models import Choice
-from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
+from ouro.tui.menus.workflows import WorkflowNavigation
+from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
 from ouro.tui.view_models import TuiPluginInstallConfiguration
 
 _CONTRIBUTION_LABELS = {
@@ -36,10 +34,11 @@ _CONTRIBUTION_LABELS = {
 }
 
 
-class PluginManagementWorkflows(ProviderConfigurationWorkflows):
+class PluginManagementWorkflows:
     """Project application-owned plugin management into shared TUI menus."""
 
-    _controller: TuiController
+    def __init__(self, navigation: WorkflowNavigation) -> None:
+        self._ui = navigation
 
     async def _choose_plugins(
         self,
@@ -49,10 +48,10 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
     ) -> None:
         revision = menu.page_revision if menu is not None else None
         try:
-            with loading_menu(self):
-                plugins = await self._controller.plugins()
+            with self._ui.loading(None):
+                plugins = await self._ui.controller().plugins()
         except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         if not plugins:
             return
@@ -63,10 +62,10 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
 
         async def refresh_plugins() -> tuple[Choice, ...] | None:
             try:
-                with loading_menu(self):
-                    return _plugin_choices(await self._controller.plugins())
+                with self._ui.loading(None):
+                    return _plugin_choices(await self._ui.controller().plugins())
             except Exception as exc:  # noqa: BLE001
-                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                await self._ui.notice(str(exc), error=True)
                 return None
 
         async def select_plugin(plugin_id: str) -> tuple[Choice, ...] | None:
@@ -93,7 +92,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             on_select=select_plugin,
             on_refresh=refresh_plugins,
         )
-        self.push_screen(plugin_menu)
+        self._ui.show(plugin_menu)
 
     async def _manage_plugin(
         self,
@@ -102,17 +101,15 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         menu: ChoiceScreen | None = None,
     ) -> None:
         try:
-            plugin = await self._controller.plugin(plugin_id)
+            plugin = await self._ui.controller().plugin(plugin_id)
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
 
         async def select_action(selected: str) -> tuple[Choice, ...] | None:
             # Enabling/disabling finishes when the refreshed menu is ready, not
             # when the lifecycle call returns; status projection may also wait.
-            with (
-                loading_menu(self, selected) if selected in {"enable", "disable"} else nullcontext()
-            ):
+            with self._ui.loading(selected) if selected in {"enable", "disable"} else nullcontext():
                 if selected in {"enable", "disable"}:
                     await self._set_plugin_enabled(plugin_id, enabled=selected == "enable")
                 elif selected == "restart":
@@ -129,24 +126,24 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                     )
                     return None
                 if menu is not None:
-                    refreshed = await self._controller.plugin(plugin_id)
-                    return _plugin_action_choices(refreshed, theme=theme_for(self))
+                    refreshed = await self._ui.controller().plugin(plugin_id)
+                    return _plugin_action_choices(refreshed, theme=self._ui.theme())
                 return None
 
-        choices = _plugin_action_choices(plugin, theme=theme_for(self))
+        choices = _plugin_action_choices(plugin, theme=self._ui.theme())
         if menu is not None:
 
             async def refresh_plugin_actions() -> tuple[Choice, ...] | None:
                 try:
-                    refreshed = await self._controller.plugin(plugin_id)
-                    return _plugin_action_choices(refreshed, theme=theme_for(self))
+                    refreshed = await self._ui.controller().plugin(plugin_id)
+                    return _plugin_action_choices(refreshed, theme=self._ui.theme())
                 except Exception as exc:  # noqa: BLE001
-                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    await self._ui.notice(str(exc), error=True)
                     return None
 
             menu.push_page(
-                title=theme_for(self).inline_separator.join(("PLUGIN", plugin.name)),
-                description=_plugin_description(plugin, theme=theme_for(self)),
+                title=self._ui.theme().inline_separator.join(("PLUGIN", plugin.name)),
+                description=_plugin_description(plugin, theme=self._ui.theme()),
                 placeholder=None,
                 choices=choices,
                 on_select=select_action,
@@ -154,33 +151,33 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             )
             return
         menu = ChoiceScreen(
-            title=theme_for(self).inline_separator.join(("PLUGIN", plugin.name)),
-            description=_plugin_description(plugin, theme=theme_for(self)),
+            title=self._ui.theme().inline_separator.join(("PLUGIN", plugin.name)),
+            description=_plugin_description(plugin, theme=self._ui.theme()),
             placeholder=None,
             choices=choices,
             on_select=select_action,
         )
-        await self.push_screen_wait(menu)
+        await self._ui.choose(menu)
 
     async def _install_plugin(self, *, menu: ChoiceScreen | None = None) -> None:
         draft = await (
             menu.open_child(PluginInstallScreen())
             if menu is not None
-            else self.push_screen_wait(PluginInstallScreen())
+            else self._ui.choose(PluginInstallScreen())
         )
         if draft is None:
             return
         try:
-            with loading_menu(self):
-                result = await self._controller.install_plugin(
+            with self._ui.loading(None):
+                result = await self._ui.controller().install_plugin(
                     cast(TuiPluginInstallConfiguration, draft)
                 )
         except Exception as exc:  # noqa: BLE001
-            self.notify(str(exc), severity="error", markup=False)
+            self._ui.notify(str(exc), severity="error", markup=False)
             return
         suffix = "installed" if result.changed else "already installed"
-        self.notify(
-            theme_for(self).inline_separator.join(
+        self._ui.notify(
+            self._ui.theme().inline_separator.join(
                 (f"Plugin {suffix}: {result.plugin_id}", result.status)
             )
         )
@@ -192,59 +189,63 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         menu: ChoiceScreen | None,
     ) -> None:
         try:
-            with loading_menu(self, "configure"):
-                view = await self._controller.plugin_configuration(plugin_id)
+            with self._ui.loading("configure"):
+                view = await self._ui.controller().plugin_configuration(plugin_id)
             if not view.configuration_supported:
-                self.notify(f"Plugin has no configurable fields: {plugin_id}", severity="warning")
+                self._ui.notify(
+                    f"Plugin has no configurable fields: {plugin_id}", severity="warning"
+                )
                 return
 
             async def reload_configuration():
-                return await self._controller.plugin_configuration(
+                return await self._ui.controller().plugin_configuration(
                     plugin_id, package_digest=view.package_digest
                 )
 
             screen = PluginConfigurationScreen(
                 view,
-                preview=self._controller.preview_plugin_configuration,
-                apply=self._controller.configure_plugin,
+                preview=self._ui.controller().preview_plugin_configuration,
+                apply=self._ui.controller().configure_plugin,
                 reload=reload_configuration,
-                theme=theme_for(self),
+                theme=self._ui.theme(),
             )
             result = await (
-                menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
+                menu.open_child(screen) if menu is not None else self._ui.choose(screen)
             )
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         if result is None:
             return
         applied = cast(PluginConfigurationResult, result)
-        self.notify(
-            theme_for(self).inline_separator.join(
+        self._ui.notify(
+            self._ui.theme().inline_separator.join(
                 (f"Plugin configuration: {applied.outcome}", applied.status)
             )
         )
         if applied.status in {"degraded", "failed"}:
-            await self.query_one(ConversationView).add_notice(
+            await self._ui.notice(
                 "; ".join(item.message for item in applied.diagnostics) or applied.status,
                 error=applied.status == "failed",
             )
 
     async def _set_plugin_enabled(self, plugin_id: str, *, enabled: bool) -> bool:
-        operation = self._controller.enable_plugin if enabled else self._controller.disable_plugin
+        operation = (
+            self._ui.controller().enable_plugin if enabled else self._ui.controller().disable_plugin
+        )
         try:
             await operation(plugin_id)
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return False
         return True
 
     async def _restart_plugin(self, plugin_id: str) -> None:
         try:
-            with loading_menu(self, "restart"):
-                await self._controller.restart_plugin(plugin_id)
+            with self._ui.loading("restart"):
+                await self._ui.controller().restart_plugin(plugin_id)
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
 
     async def _choose_plugin_install(
@@ -253,7 +254,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         *,
         menu: ChoiceScreen | None,
     ) -> None:
-        plugin = await self._controller.plugin(plugin_id)
+        plugin = await self._ui.controller().plugin(plugin_id)
         selected_install = next(
             (install.package_digest for install in plugin.installs if install.selected), None
         )
@@ -262,32 +263,32 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 install.package_digest,
                 install.version,
                 trailing=("selected" if install.selected else install.package_digest[:12]),
-                marker=theme_for(self).selected_choice_marker if install.selected else "",
+                marker=self._ui.theme().selected_choice_marker if install.selected else "",
             )
             for install in plugin.installs
         )
 
         async def select_install(package_digest: str) -> tuple[Choice, ...] | None:
             try:
-                with loading_menu(self, package_digest):
-                    result = await self._controller.select_plugin_install(
+                with self._ui.loading(package_digest):
+                    result = await self._ui.controller().select_plugin_install(
                         plugin_id,
                         package_digest,
                     )
                     if menu is not None:
-                        refreshed = await self._controller.plugin(plugin_id)
+                        refreshed = await self._ui.controller().plugin(plugin_id)
                         menu.update_parent_choices(
-                            _plugin_action_choices(refreshed, theme=theme_for(self)),
-                            description=_plugin_description(refreshed, theme=theme_for(self)),
+                            _plugin_action_choices(refreshed, theme=self._ui.theme()),
+                            description=_plugin_description(refreshed, theme=self._ui.theme()),
                         )
             except Exception as exc:  # noqa: BLE001
-                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                await self._ui.notice(str(exc), error=True)
                 return None
             return tuple(
                 replace(
                     choice,
                     marker=(
-                        theme_for(self).selected_choice_marker
+                        self._ui.theme().selected_choice_marker
                         if choice.value == result.package_digest
                         else ""
                     ),
@@ -300,16 +301,16 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
 
         if menu is not None:
             menu.push_page(
-                title=theme_for(self).inline_separator.join(("PLUGIN VERSIONS", plugin.name)),
+                title=self._ui.theme().inline_separator.join(("PLUGIN VERSIONS", plugin.name)),
                 placeholder="Filter versions…",
                 choices=choices,
                 initial_value=selected_install,
                 on_select=select_install,
             )
             return
-        await self.push_screen_wait(
+        await self._ui.choose(
             ChoiceScreen(
-                title=theme_for(self).inline_separator.join(("PLUGIN VERSIONS", plugin.name)),
+                title=self._ui.theme().inline_separator.join(("PLUGIN VERSIONS", plugin.name)),
                 placeholder="Filter versions…",
                 choices=choices,
                 initial_value=selected_install,
@@ -324,7 +325,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         menu: ChoiceScreen | None,
     ) -> None:
         revision = menu.page_revision if menu is not None else None
-        plugin = await self._controller.plugin(plugin_id)
+        plugin = await self._ui.controller().plugin(plugin_id)
         if menu is not None and (not menu.is_attached or menu.page_revision != revision):
             return
         selected = await (
@@ -339,7 +340,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 )
             )
             if menu is not None
-            else self.push_screen_wait(
+            else self._ui.choose(
                 ConfirmationScreen(
                     title="DELETE PLUGIN",
                     message=(
@@ -353,14 +354,14 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         if not ConfirmationScreen.confirmed(selected):
             return
         try:
-            with loading_menu(self, "remove"):
-                await self._controller.remove_plugin(plugin_id)
+            with self._ui.loading("remove"):
+                await self._ui.controller().remove_plugin(plugin_id)
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         if menu is not None:
-            with loading_menu(self):
-                choices = _plugin_choices(await self._controller.plugins())
+            with self._ui.loading(None):
+                choices = _plugin_choices(await self._ui.controller().plugins())
             if not menu.is_attached or menu.page_revision != revision:
                 return
             if not menu.pop_page(

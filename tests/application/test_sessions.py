@@ -33,7 +33,8 @@ from ouro.core.reasoning import ReasoningRequest
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolCallRequest, ToolDefinition
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.sessions.layout import DATA_LAYOUT_VERSION
 from tests.context_facts import save_context
 from tests.harness_state import replace_harness_state

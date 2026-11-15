@@ -4,7 +4,7 @@ import pytest
 
 from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions import SQLiteSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 
 
 @pytest.mark.parametrize("nested", [False, True])

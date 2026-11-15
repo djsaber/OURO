@@ -14,7 +14,8 @@ from ouro.core.context_providers import (
 from ouro.core.provider import ModelMetadata
 from ouro.core.session_commits import SessionCommit
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry
 from tests.run_facts import run_events
 

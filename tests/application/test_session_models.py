@@ -10,7 +10,7 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 from tests.run_facts import run_events
 

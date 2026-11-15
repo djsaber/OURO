@@ -5,7 +5,8 @@ import pytest
 from ouro.application.sessions.service import SessionService
 from ouro.core.messages import MessageRecord
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 
 
 @pytest.fixture(params=["files", "sqlite"])

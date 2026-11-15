@@ -67,10 +67,11 @@ from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.core.session_commits import SessionCommitConflict
 from ouro.core.session_observation import SessionObservationPosition
+from ouro.core.session_ports import SessionLock, SessionSnapshot, SessionStore
+from ouro.core.session_queries import SessionIndexEntry
 from ouro.core.session_titles import normalize_session_title, with_session_title
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord, SessionTitleSource
 from ouro.core.tool_facts import ToolCallFacts
-from ouro.sessions import SessionIndexEntry, SessionLock, SessionSnapshot, SessionStore
 
 if TYPE_CHECKING:
     from ouro.application.resources import ResourceService
@@ -489,7 +490,9 @@ class SessionService:
         index = self._store.read_catalog()
         entries = index.sessions if query is None else _filter_entries(index.sessions, query)
         return SessionCatalogResult(
-            entries=tuple(SessionCatalogEntry.from_index(entry) for entry in entries),
+            entries=tuple(
+                SessionCatalogEntry.model_validate(entry.model_dump()) for entry in entries
+            ),
         )
 
     def rename(self, session_id: str, title: str) -> SessionMutationResult:

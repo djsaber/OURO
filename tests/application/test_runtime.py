@@ -60,7 +60,8 @@ from ouro.prompts import (
 )
 from ouro.providers import FauxProvider
 from ouro.resources import LocalResourceStore
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.skills import SkillMetadata
 from ouro.tools import (
     Tool,

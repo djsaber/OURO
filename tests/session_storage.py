@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import closing, contextmanager
 
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 
 
 @contextmanager

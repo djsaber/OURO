@@ -8,7 +8,7 @@ from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata
 from ouro.providers import FauxProvider
 from ouro.resources import LocalResourceStore
-from ouro.sessions import SQLiteSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry
 from tests.event_capture import recorded_events
 

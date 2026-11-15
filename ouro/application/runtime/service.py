@@ -154,6 +154,7 @@ from ouro.core.session_controls import (
     SessionControlTransitionResult,
     SessionInputRole,
 )
+from ouro.core.session_ports import RuntimeSessionSnapshot, SessionStore
 from ouro.core.session_titles import normalize_session_title, with_session_title
 from ouro.core.state import (
     RunContinuationCheckpoint,
@@ -173,7 +174,6 @@ from ouro.core.tool_requests import (
 from ouro.core.tools import PermissionMode, ToolDefinition
 from ouro.core.turn_policies import TurnCompletionCandidate, TurnPolicyRegistry
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT, render_agent_skills_prompt
-from ouro.sessions import RuntimeSessionSnapshot, SessionStore
 from ouro.skills import SkillMetadata
 from ouro.tools import ToolExecutor, ToolRegistry, ToolResult
 

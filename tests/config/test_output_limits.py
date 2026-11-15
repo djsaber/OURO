@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.cli.main import main
 from ouro.config import ProviderRuntimeOptions
 from ouro.config.compaction import CompactionConfigManager
@@ -10,6 +9,7 @@ from ouro.config.endpoints import endpoint_config_from_mapping, endpoint_config_
 from ouro.config.providers.runtime import merge_runtime_options
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata
+from ouro.local_configuration import build_local_configuration
 from ouro.providers import build_runtime_adapter
 
 
@@ -55,7 +55,7 @@ def test_output_limit_requires_a_positive_integer(limit):
 
 
 def test_endpoint_limit_can_be_cleared_without_affecting_unedited_fields(tmp_path):
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     provider_id = facade.add_provider(
         display_name="Test",
         provider_type="custom",
@@ -90,7 +90,7 @@ def test_endpoint_limit_can_be_cleared_without_affecting_unedited_fields(tmp_pat
         )
         == 0
     )
-    saved = ConfigurationFacade(tmp_path).endpoint(provider_id, endpoint_id)
+    saved = build_local_configuration(tmp_path).endpoint(provider_id, endpoint_id)
     assert saved.max_output_tokens is None
     assert saved.display_name == "Renamed"
     assert saved.model_id == "test"

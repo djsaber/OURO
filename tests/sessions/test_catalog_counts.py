@@ -10,8 +10,9 @@ from ouro.core.errors import PersistenceError, ResourceNotFoundError
 from ouro.core.messages import MessageRecord
 from ouro.core.session_commits import SessionCommit
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.backends.files import index as files_index
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.sessions.portable import PortableSession, SessionBundle
 from tests.resource_fixtures import resource_record
 from tests.session_storage import session_connection

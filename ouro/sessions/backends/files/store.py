@@ -54,6 +54,9 @@ from ouro.core.session_commits import (
 from ouro.core.session_extensions import (
     SessionExtensionStateRecord,
 )
+from ouro.core.session_facts import SessionFactPage
+from ouro.core.session_observation import FactCursor
+from ouro.core.session_ports import RuntimeSessionSnapshot, SessionHistorySnapshot, SessionSnapshot
 from ouro.core.state import RunRecord, RunRequestCounts, SessionRecord
 from ouro.core.tool_batches import ToolCallState, validate_call_states
 from ouro.core.tool_facts import (
@@ -113,15 +116,9 @@ from ouro.sessions.backends.files.journal import reverse_jsonl
 from ouro.sessions.backends.files.messages import (
     FileMessageRecords,
 )
-from ouro.sessions.base import (
-    RuntimeSessionSnapshot,
-    SessionHistorySnapshot,
-    SessionSnapshot,
-)
 from ouro.sessions.index import SessionIndex
 from ouro.sessions.layout import DATA_LAYOUT_VERSION, DataLayoutManifest
 from ouro.sessions.locks import SessionMutationLock, SessionRunLock
-from ouro.sessions.observation import FactCursor, SessionFactPage
 from ouro.sessions.portable import SessionBundle, populate_sessions
 from ouro.sessions.sqlite_compactions import insert_compaction
 from ouro.sessions.sqlite_connections import ExecutionConnections, NativeSessionRunLock

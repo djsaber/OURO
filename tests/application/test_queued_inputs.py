@@ -11,8 +11,9 @@ from ouro.core.messages import InputMessageReference, MessageRecord, SkillActiva
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_controls import HostSessionInput, SessionInputRequest
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.backends.files.inputs import input_path
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.session_storage import session_connection
 
 

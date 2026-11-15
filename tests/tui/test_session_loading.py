@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import ConfigError
 from ouro.local_application import LocalApplication
+from ouro.local_configuration import build_local_configuration
 from ouro.providers import FauxProvider
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
@@ -133,7 +133,7 @@ async def test_configured_route_changes_do_not_block_session_loading(
         "openai-chat-completions",
         lambda context: RuntimeAdapter(FauxProvider(), context.model),
     )
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     original = configuration.add_provider(
         display_name="Local fixture",
         provider_type="custom",

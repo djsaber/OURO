@@ -206,7 +206,8 @@ def main():
     from dev.benchmarks.sqlite_sync import sqlite_sync_calls  # noqa: F401
 
     sys.path.insert(0, str(args.source.resolve()))
-    from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+    from ouro.sessions.backends.files.store import LocalSessionStore
+    from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 
     with tempfile.TemporaryDirectory(prefix="ouro-harness-") as directory:
         root = Path(directory)

@@ -16,7 +16,7 @@ from weakref import ReferenceType, ref
 
 from pydantic import JsonValue
 from textual import events, work
-from textual.app import ComposeResult
+from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.driver import Driver
@@ -97,8 +97,10 @@ from ouro.tui.conversation.transcript import project_transcript_entries
 from ouro.tui.conversation.view import ConversationView, PreparedTranscript
 from ouro.tui.features.configuration.workflows import (
     SYSTEM_SETTING_ACTIONS,
-    ConfigurationWorkflowsApp,
+    ConfigurationWorkflows,
 )
+from ouro.tui.features.plugins.workflows import PluginManagementWorkflows
+from ouro.tui.features.prompts.workflows import PromptWorkflows
 from ouro.tui.features.providers.model_menus import (
     UNAVAILABLE_MODEL_LABEL,
     approval_choices,
@@ -107,6 +109,8 @@ from ouro.tui.features.providers.model_menus import (
     reasoning_request,
     reasoning_values,
 )
+from ouro.tui.features.providers.workflows import ProviderConfigurationWorkflows
+from ouro.tui.features.tasks.workflows import TaskManagementWorkflows
 from ouro.tui.features.transfer.workflows import DataTransferWorkflow
 from ouro.tui.host_screen import _OuroHostScreen
 from ouro.tui.interactions.approval import (
@@ -132,6 +136,7 @@ from ouro.tui.menus.sessions import (
 )
 from ouro.tui.menus.sorting import sorted_models
 from ouro.tui.menus.styles import MENU_CSS
+from ouro.tui.menus.workflows import WorkflowNavigation
 from ouro.tui.preferences import (
     MAX_RECENT_WORKSPACES,
     TuiPreferences,
@@ -293,7 +298,7 @@ _INPUT_DRAFT_MEMORY_OPTIONS: dict[str, bool] = {"enable": True, "disable": False
 _CLEAR_WORKSPACE_HISTORY_ARGUMENT = "clear"
 
 
-class OuroTuiApp(ConfigurationWorkflowsApp):
+class OuroTuiApp(App[int]):
     _session_domain = "default"
     TITLE = "OURO"
     SUB_TITLE = "Agent"
@@ -484,6 +489,29 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             notify=self.notify,
             start=self._start_data_transfer,
         )
+        navigation = WorkflowNavigation(
+            controller=lambda: self._controller,
+            theme=lambda: self._tui_theme,
+            show=self.push_screen,
+            choose=self.push_screen_wait,
+            notify=self.notify,
+            notice=self._workflow_notice,
+            loading=lambda value: loading_menu(self, value),
+            start=self._start_workflow,
+        )
+        self._providers = ProviderConfigurationWorkflows(navigation)
+        self._plugins = PluginManagementWorkflows(navigation)
+        self._tasks = TaskManagementWorkflows(
+            navigation,
+            open_session=self._open_session,
+            sync_status=self._sync_task_status,
+        )
+        self._prompts = PromptWorkflows(navigation)
+        self._configuration = ConfigurationWorkflows(
+            navigation,
+            sync_mcp_status=self._sync_mcp_status,
+            manage_plugin=self._plugins._manage_plugin,
+        )
         self._session_backend = session_backend
         self._task_backend = task_backend
         self._home_access = ExitStack()
@@ -565,6 +593,87 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._theme_switch_active = False
         self._theme_switch_changed = asyncio.Event()
         self._theme_picker_ref: ReferenceType[ChoiceScreen] | None = None
+
+    @work(exclusive=True, group="navigation")
+    async def _run_system_setting(
+        self,
+        action_id: str,
+        *,
+        menu: ChoiceScreen | None = None,
+    ) -> None:
+        if action_id == "tasks.list":
+            await self._tasks._choose_tasks(menu=menu)
+        elif action_id == "tasks.create":
+            await self._tasks._edit_task(None, menu=menu)
+        elif action_id == "tasks.refresh":
+            await self._sync_task_status()
+            self.notify(
+                self._system_status.task_error or "Task status updated",
+                severity="error" if self._system_status.task_error else "information",
+                markup=False,
+            )
+        elif action_id == "data.transfer":
+            self._data_transfer.choose(menu=menu)
+        elif action_id == "prompts.manage":
+            await self._prompts._configure_prompts(menu=menu)
+        elif action_id == "tools.permissions":
+            await self._configuration._choose_tools(menu=menu)
+        elif action_id == "tools.execution":
+            await self._configuration._configure_tool_execution(menu=menu)
+        elif action_id == "agents.list":
+            await self._configuration._choose_agent_definitions(menu=menu)
+        elif action_id == "agents.policy":
+            await self._configuration._configure_agent_policy(menu=menu)
+        elif action_id == "agents.create":
+            await self._configuration._create_agent_definition(menu=menu)
+        elif action_id == "providers.list":
+            await self._providers._choose_providers(menu=menu)
+        elif action_id == "providers.add":
+            await self._providers._add_provider(menu=menu)
+        elif action_id.startswith("providers.endpoints."):
+            await self._providers._choose_endpoint_action(
+                action_id.removeprefix("providers.endpoints."),
+                menu=menu,
+            )
+        elif action_id == "plugins.list":
+            await self._plugins._choose_plugins(menu=menu)
+        elif action_id == "plugins.install":
+            await self._plugins._install_plugin(menu=menu)
+        elif action_id == "mcp.list":
+            await self._configuration._choose_mcp(menu=menu)
+        elif action_id == "mcp.add":
+            await self._configuration._edit_mcp(None, menu=menu)
+        elif action_id == "skills.list":
+            await self._configuration._choose_skills(menu=menu)
+        elif action_id == "skills.install":
+            await self._configuration._install_skill(menu=menu)
+        elif action_id == "skills.sources":
+            await self._configuration._configure_skill_sources(menu=menu)
+        elif action_id.startswith("skills."):
+            await self._configuration._choose_skill_action(
+                action_id.removeprefix("skills."), menu=menu
+            )
+        elif action_id == "queued_inputs.delivery":
+            await self._configuration._configure_queued_inputs(menu=menu)
+        elif action_id == "compaction.policy":
+            await self._configuration._configure_compaction(menu=menu)
+        else:
+            available = "|".join(action.action_id for action in SYSTEM_SETTING_ACTIONS)
+            await self.query_one(ConversationView).add_notice(
+                f"Unknown system setting action: {action_id}. Available: {available}",
+                error=True,
+            )
+
+    async def _workflow_notice(self, text: str, *, error: bool = False) -> None:
+        await self.query_one(ConversationView).add_notice(text, error=error)
+
+    def _start_workflow(
+        self,
+        work: Callable[[], Coroutine[None, None, None]],
+        *,
+        group: str,
+    ) -> None:
+        _worker: Worker[None] = self.run_worker(work, group=group)
 
     def _start_data_transfer(self, work: Callable[[], Coroutine[None, None, None]]) -> None:
         _worker: Worker[None] = self.run_worker(work, group="data-transfer-operation")
@@ -1996,7 +2105,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     @work(exclusive=True, group="provider-onboarding")
     async def _prompt_provider_setup(self) -> None:
-        await self._add_provider()
+        await self._providers._add_provider()
         models = await self._refresh_models()
         if models and not self._active_model:
             self.notify("Select a model with /model before sending your draft")
@@ -4851,7 +4960,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     switch=active_menu is not None,
                 )
             elif destination == _MENU_PLUGINS:
-                await self._choose_plugins(
+                await self._plugins._choose_plugins(
                     menu=active_menu,
                     switch=active_menu is not None,
                 )
@@ -4861,9 +4970,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     switch=active_menu is not None,
                 )
             elif destination == _MENU_TASKS:
-                await self._choose_tasks(menu=active_menu, switch=active_menu is not None)
+                await self._tasks._choose_tasks(menu=active_menu, switch=active_menu is not None)
             elif destination == _MENU_SKILLS:
-                await self._choose_skills(menu=active_menu, switch=active_menu is not None)
+                await self._configuration._choose_skills(
+                    menu=active_menu, switch=active_menu is not None
+                )
             elif destination == _MENU_HELP:
                 await self._choose_help(menu=active_menu, switch=active_menu is not None)
 

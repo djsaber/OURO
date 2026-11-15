@@ -29,7 +29,7 @@ from ouro.plugins.contributions.preparation import ContributionCoordinator
 from ouro.plugins.installation.store import PluginPackageStore
 from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import ToolRegistry
 
 PLUGIN = "dev.example.scheduled"

@@ -54,7 +54,7 @@ async def test_startup_defers_request_content_until_explicit_full_read(
     )
     async with run_ready_app(app, size=(100, 32)):
         assert app._controller._started
-    from ouro.sessions import LocalSessionStore
+    from ouro.sessions.backends.files.store import LocalSessionStore
 
     with pytest.raises(UnsupportedDataVersionError):
         LocalSessionStore(historical_home).load_latest_context("ses_fixture")

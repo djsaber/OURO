@@ -9,7 +9,8 @@ import pytest
 from ouro.core.agents import AgentDefinition, DelegationRecord
 from ouro.core.inputs import validate_input_snapshot
 from ouro.core.tool_batches import validate_call_states
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro_upgrade.engine import upgrade
 from ouro_upgrade.errors import UpgradeDataError
 from tests.upgrade.conftest import FIXTURES

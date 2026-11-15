@@ -7,23 +7,31 @@ from zoneinfo import ZoneInfo
 
 from ouro.core.model_selection import DEFAULT_MODEL
 from ouro.core.tasks import AgentTaskRun, PluginTaskTarget, TaskConfiguration, TaskRecord
-from ouro.tui.features.plugins.workflows import PluginManagementWorkflows
 from ouro.tui.features.tasks.screens import (
     FREQUENCY_LABELS,
     TASK_STATUS_LABELS,
     TaskConfigurationScreen,
 )
-from ouro.tui.menus.choice import ChoiceScreen, loading_menu
+from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.confirmation import ConfirmationScreen
 from ouro.tui.menus.models import Choice
-from ouro.tui.theme import TuiTheme, theme_for
+from ouro.tui.menus.workflows import WorkflowNavigation
+from ouro.tui.theme import TuiTheme
 
 
-class TaskManagementWorkflows(PluginManagementWorkflows):
+class TaskManagementWorkflows:
     """Expose task configuration and background sessions through the shared menu."""
 
-    _open_session: Callable[[str], Awaitable[None]]
-    _sync_task_status: Callable[[], Awaitable[None]]
+    def __init__(
+        self,
+        navigation: WorkflowNavigation,
+        *,
+        open_session: Callable[[str], Awaitable[None]],
+        sync_status: Callable[[], Awaitable[None]],
+    ) -> None:
+        self._ui = navigation
+        self._open_session = open_session
+        self._sync_task_status = sync_status
 
     async def _choose_tasks(
         self, *, menu: ChoiceScreen | None = None, switch: bool = False
@@ -33,13 +41,13 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
         offset = 0
 
         async def choices() -> tuple[Choice, ...]:
-            records = await self._controller.tasks(offset=offset)
+            records = await self._ui.controller().tasks(offset=offset)
             await self._sync_task_status()
             rows = [
                 Choice(
                     task.task_id,
                     task.configuration.display_title,
-                    description=_task_schedule_label(task, theme_for(self)),
+                    description=_task_schedule_label(task, self._ui.theme()),
                     trailing=TASK_STATUS_LABELS[task.status],
                     group="TASKS",
                     enabled_state=task.enabled,
@@ -64,13 +72,13 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
                     return None
                 return await choices()
             except Exception as exc:
-                self.notify(str(exc), severity="error", markup=False)
+                self._ui.notify(str(exc), severity="error", markup=False)
                 return None
 
         try:
             rows = await choices()
         except Exception as exc:
-            self.notify(str(exc), severity="error", markup=False)
+            self._ui.notify(str(exc), severity="error", markup=False)
             return
         if menu is not None:
             if not menu.is_attached or menu.page_revision != revision:
@@ -96,7 +104,7 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
                 on_select=select,
                 on_refresh=choices,
             )
-            self.push_screen(task_menu)
+            self._ui.show(task_menu)
 
     async def _edit_task(
         self, task: TaskRecord | None, *, menu: ChoiceScreen | None = None
@@ -105,33 +113,31 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
             plugin_task = task is not None and isinstance(
                 task.configuration.target, PluginTaskTarget
             )
-            models = () if plugin_task else await self._controller.models()
+            models = () if plugin_task else await self._ui.controller().models()
             system_default_model = (
-                None if plugin_task else await self._controller.configured_default_model()
+                None if plugin_task else await self._ui.controller().configured_default_model()
             )
             screen = TaskConfigurationScreen(
                 models=models,
-                workspace=self._controller.draft_workspace,
+                workspace=self._ui.controller().draft_workspace,
                 default_model=(
                     DEFAULT_MODEL
                     if system_default_model is not None
-                    else (await self._controller.default_model()).key
+                    else (await self._ui.controller().default_model()).key
                 )
                 if task is None
                 else None,
                 system_default_model=system_default_model,
                 configuration=task.configuration if task else None,
             )
-            draft = await (
-                menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
-            )
+            draft = await (menu.open_child(screen) if menu is not None else self._ui.choose(screen))
             if draft is None:
                 return
-            await self._controller.save_task(cast(TaskConfiguration, draft), existing=task)
+            await self._ui.controller().save_task(cast(TaskConfiguration, draft), existing=task)
             await self._sync_task_status()
-            self.notify("Task saved")
+            self._ui.notify("Task saved")
         except Exception as exc:
-            self.notify(str(exc), severity="error", markup=False)
+            self._ui.notify(str(exc), severity="error", markup=False)
 
     async def _delete_task(self, task: TaskRecord, *, menu: ChoiceScreen) -> bool:
         result = await menu.open_child(
@@ -143,22 +149,22 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
         )
         if not ConfirmationScreen.confirmed(result):
             return False
-        await self._controller.delete_task(task)
+        await self._ui.controller().delete_task(task)
         await self._sync_task_status()
         return True
 
     async def _manage_task(self, task_id: str, *, menu: ChoiceScreen) -> None:
-        task = await self._controller.task(task_id)
+        task = await self._ui.controller().task(task_id)
 
         async def choices() -> tuple[Choice, ...]:
             nonlocal task
-            task = await self._controller.task(task_id)
+            task = await self._ui.controller().task(task_id)
             await self._sync_task_status()
             return (
                 Choice(
                     "status",
                     TASK_STATUS_LABELS[task.status],
-                    description=task.error or _task_schedule_label(task, theme_for(self)),
+                    description=task.error or _task_schedule_label(task, self._ui.theme()),
                     group="STATUS",
                     disabled=True,
                 ),
@@ -172,7 +178,7 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
                 Choice(
                     "delete",
                     "Delete",
-                    accent=theme_for(self).danger,
+                    accent=self._ui.theme().danger,
                     disabled=task.active_execution_id is not None,
                     destructive=True,
                     group="CONFIGURATION",
@@ -191,10 +197,10 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
                 if value == "edit":
                     await self._edit_task(task, menu=menu)
                 elif value == "toggle":
-                    await self._controller.set_task_enabled(task, not task.enabled)
+                    await self._ui.controller().set_task_enabled(task, not task.enabled)
                 elif value == "interrupt":
-                    with loading_menu(self, "interrupt"):
-                        await self._controller.interrupt_task(task)
+                    with self._ui.loading("interrupt"):
+                        await self._ui.controller().interrupt_task(task)
                 elif value == "history":
                     await self._task_history(task_id, menu=menu)
                     return None
@@ -204,11 +210,11 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
                         return None
                 return await choices()
             except Exception as exc:
-                self.notify(str(exc), severity="error", markup=False)
+                self._ui.notify(str(exc), severity="error", markup=False)
                 return None
 
         menu.push_page(
-            title=theme_for(self).section_separator.join(
+            title=self._ui.theme().section_separator.join(
                 ("TASK", task.configuration.display_title)
             ),
             placeholder=None,
@@ -219,7 +225,7 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
 
     async def _task_history(self, task_id: str, *, menu: ChoiceScreen) -> None:
         async def choices() -> tuple[Choice, ...]:
-            executions = await self._controller.task_executions(task_id)
+            executions = await self._ui.controller().task_executions(task_id)
             return tuple(
                 Choice(
                     item.execution_id,
@@ -232,7 +238,7 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
             ) or (Choice("empty", "No executions yet", disabled=True),)
 
         async def select(execution_id: str) -> tuple[Choice, ...] | None:
-            executions = await self._controller.task_executions(task_id)
+            executions = await self._ui.controller().task_executions(task_id)
             execution = next(
                 (item for item in executions if item.execution_id == execution_id), None
             )
@@ -270,11 +276,11 @@ class TaskManagementWorkflows(PluginManagementWorkflows):
             try:
                 await self._open_session(execution.target.session_id)
             except Exception as exc:
-                self.notify(str(exc), severity="error", markup=False)
+                self._ui.notify(str(exc), severity="error", markup=False)
             return None
 
         menu.push_page(
-            title=theme_for(self).section_separator.join(("TASK EXECUTIONS", "LATEST 50")),
+            title=self._ui.theme().section_separator.join(("TASK EXECUTIONS", "LATEST 50")),
             placeholder="Filter executions…",
             choices=await choices(),
             on_select=select,

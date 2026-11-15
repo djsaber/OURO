@@ -15,7 +15,8 @@ from ouro.application.agents.recovery import AgentRecoveryService
 from ouro.application.contracts.agents import SpawnAgentRequest
 from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.session_controls import HostSessionInput
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.application.test_agent_control_cancellation import SteerProvider
 from tests.application.test_agent_multi_host import application
 

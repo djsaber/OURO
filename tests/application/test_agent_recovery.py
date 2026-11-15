@@ -23,11 +23,13 @@ from ouro.core.agents import (
 )
 from ouro.core.errors import PersistenceError
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
+from ouro.core.session_ports import SessionStore
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest
 from ouro.local_application import LocalApplication
-from ouro.sessions import LocalSessionStore, SessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry
 from tests.session_storage import write_session_payload
 from tests.tool_batches import persist_tool_batch

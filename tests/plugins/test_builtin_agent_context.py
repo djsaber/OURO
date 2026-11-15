@@ -25,7 +25,7 @@ from ouro.providers.anthropic_messages.codec import messages_to_anthropic_messag
 from ouro.providers.openai_chat_completions.codec import messages_to_chat_completions
 from ouro.providers.openai_responses.codec import responses_input
 from ouro.sdk.plugins import v5 as sdk
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import ToolRegistry
 
 PLUGIN_ID = "dev.ouro.agent_context"

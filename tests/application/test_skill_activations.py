@@ -20,7 +20,7 @@ from ouro.core.prompt_policies import (
 )
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.local_configuration import RuntimeConfigurationResolver
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.skills import SkillLoader, SkillManager
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 from tests.run_facts import run_events

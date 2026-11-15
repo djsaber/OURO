@@ -9,7 +9,8 @@ import pytest
 
 from ouro.core.state import SessionRecord
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolResult
 from tests.application.tool_runtime import runtime
 

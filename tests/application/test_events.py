@@ -13,7 +13,7 @@ from ouro.core.observers import (
     RuntimeEventObservation,
 )
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from tests.event_capture import recorded_events
 
 

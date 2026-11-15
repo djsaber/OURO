@@ -13,7 +13,8 @@ from ouro.billing.local import LocalUsageLedger
 from ouro.core.billing import UsageFilter
 from ouro.core.errors import PersistenceError
 from ouro.deployment import ensure_home_available
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro_upgrade import workspace
 from ouro_upgrade.engine import upgrade
 from ouro_upgrade.errors import UpgradeError

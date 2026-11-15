@@ -28,7 +28,8 @@ from ouro.core.compaction import CompactionArtifact, CompactionPolicy, Compactio
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.state import SessionRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 
 

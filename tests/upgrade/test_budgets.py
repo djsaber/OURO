@@ -8,7 +8,8 @@ from contextlib import closing
 import pytest
 
 from ouro.core.context import ContextMetrics
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro_upgrade.engine import upgrade
 from ouro_upgrade.errors import UpgradeError
 from ouro_upgrade.json_codec import loads

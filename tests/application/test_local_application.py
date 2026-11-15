@@ -18,8 +18,9 @@ from ouro.local_application import (
     build_local_services,
     open_local_agent_definitions,
 )
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.backends.files.index import LocalSessionIndex
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.session_storage import write_session_payload
 
 

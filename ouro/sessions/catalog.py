@@ -4,13 +4,13 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from ouro.core.messages import MessageRecord
-from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
-from ouro.sessions.index import (
+from ouro.core.session_queries import (
     PendingInteraction,
     SessionCatalogStatus,
     SessionHealth,
     SessionIndexEntry,
 )
+from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
 
 
 @dataclass(frozen=True)

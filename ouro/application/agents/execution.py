@@ -11,8 +11,8 @@ from ouro.core.agents import DelegationRecord
 from ouro.core.callbacks import run_blocking
 from ouro.core.errors import DelegationRevisionConflictError, PersistenceError, SessionBusyError
 from ouro.core.redaction import redact_text
+from ouro.core.session_ports import SessionStore
 from ouro.core.state import RunRecord
-from ouro.sessions import SessionStore
 
 _LOGGER = logging.getLogger(__name__)
 

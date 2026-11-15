@@ -9,7 +9,8 @@ from ouro.core.run_drivers import RunDriverBinding
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.plugins.installation.store import PluginPackageStore
 from ouro.plugins.models import BuiltinPluginActivationOverride
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.plugins.test_lifecycle import PLUGIN_ID, LifecyclePlugin, create_runtime
 
 

@@ -10,8 +10,8 @@ from ouro.core.events import EventRecord
 from ouro.core.inputs import InputStateChange
 from ouro.core.messages import ContentBlock, MessageRecord, ModelMessage, TextContent
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict
+from ouro.core.session_ports import RuntimeSessionSnapshot, SessionStore
 from ouro.core.state import ACTIVE_RUN_STATUSES, RESUMABLE_RUN_STATUSES, RunRecord, SessionRecord
-from ouro.sessions import RuntimeSessionSnapshot, SessionStore
 
 
 def continuable_run(

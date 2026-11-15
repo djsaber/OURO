@@ -23,7 +23,7 @@ from ouro.core.session_controls import HostSessionInput
 from ouro.core.state import RunRecord
 from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_catalog
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import ToolRegistry
 from tests.agent_facts import seed_delegation
 
@@ -102,7 +102,8 @@ def test_headless_runtime_completes_and_closes_with_tui_imports_blocked():
         from ouro.core.adapter import RuntimeAdapter
         from ouro.core.provider import ModelMetadata
         from ouro.providers import FauxProvider
-        from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+        from ouro.sessions.backends.files.store import LocalSessionStore
+        from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
         from ouro.tools import ToolRegistry
 
         async def main():

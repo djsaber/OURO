@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 
 from ouro.application.agents.definitions import AgentDefinitionService
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.application.runtime.service import RuntimeService
 from ouro.config.agents import AgentDefinitionsConfigManager
 from ouro.config.providers.manager import ProviderConfigManager
@@ -12,8 +11,9 @@ from ouro.core.agents import AgentSpawnPolicy, ToolSelection
 from ouro.core.errors import ConfigError
 from ouro.core.model_selection import DEFAULT_MODEL
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
+from ouro.local_configuration import build_local_configuration
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 
 
@@ -119,7 +119,7 @@ def test_default_subagent_model_requires_explicit_system_route(tmp_path) -> None
     with pytest.raises(ConfigError, match="system default endpoint is not configured"):
         service.create(**options)
 
-    ConfigurationFacade(tmp_path).add_provider(
+    build_local_configuration(tmp_path).add_provider(
         display_name="Primary", provider_type="openai", make_default=True
     )
     catalog = service.create(**options)

@@ -3,7 +3,7 @@
 from ouro.core.context_snapshots import ContextSnapshotRecord, RequestManifestRecord
 from ouro.core.request_manifest import RequestManifest, RequestMessage
 from ouro.core.session_commits import SessionCommit
-from ouro.sessions import SessionStore
+from ouro.core.session_ports import SessionStore
 
 
 def save_context(store: SessionStore, value: ContextSnapshotRecord) -> None:

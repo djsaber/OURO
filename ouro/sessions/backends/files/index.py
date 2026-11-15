@@ -15,6 +15,7 @@ from ouro.core.errors import PersistenceError, UnsupportedDataVersionError
 from ouro.core.inputs import resolve_input_content
 from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
+from ouro.core.session_queries import SessionHealth, SessionIndexEntry
 from ouro.core.state import SessionRecord
 from ouro.local_io import write_model_atomic
 from ouro.local_locks import FileOwnerLock
@@ -28,12 +29,7 @@ from ouro.sessions.catalog import (
     catalog_entry_from_session,
     sort_catalog_entries,
 )
-from ouro.sessions.index import (
-    SessionHealth,
-    SessionIndex,
-    SessionIndexEntry,
-    invalid_session_index_entry,
-)
+from ouro.sessions.index import SessionIndex, invalid_session_index_entry
 from ouro.sessions.sqlite_connections import ExecutionConnections
 from ouro.sessions.sqlite_runs import read_run
 

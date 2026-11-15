@@ -17,7 +17,8 @@ from ouro.plugins.contributions.preparation import ContributionCoordinator
 from ouro.plugins.installation.store import PluginPackageStore
 from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 from tests.event_capture import recorded_events
 

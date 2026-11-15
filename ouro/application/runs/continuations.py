@@ -24,6 +24,7 @@ from ouro.core.session_controls import (
     AttributedSessionControlTransition,
     SessionControlTransitionRequest,
 )
+from ouro.core.session_ports import SessionStore
 from ouro.core.state import (
     RunContinuationCheckpoint,
     RunContinuationControllerRef,
@@ -32,7 +33,6 @@ from ouro.core.state import (
     RunRecord,
     SessionRecord,
 )
-from ouro.sessions import SessionStore
 
 
 @dataclass(frozen=True)

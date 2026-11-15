@@ -14,7 +14,8 @@ from ouro.core.messages import MessageRecord
 from ouro.core.request_manifest import RequestManifest
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 
 
 @pytest.fixture(params=[LocalSessionStore, SQLiteSessionStore])

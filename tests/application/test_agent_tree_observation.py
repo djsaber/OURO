@@ -9,7 +9,7 @@ from ouro.application.agents.tree import AgentTreeProjector
 from ouro.application.contracts.agents import SpawnAgentRequest
 from ouro.core.errors import PersistenceError, SessionNotFoundError
 from ouro.core.state import SessionRecord
-from ouro.sessions import SQLiteSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.application.test_agents import _services
 from tests.application.test_session_event_following import supervisor_for
 from tests.tool_batches import seed_spawn_request

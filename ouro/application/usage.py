@@ -12,6 +12,7 @@ from ouro.core.context_snapshots import ModelRequestHeader
 from ouro.core.errors import PersistenceError
 from ouro.core.provider import ModelMetadata, Usage
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict
+from ouro.core.session_ports import SessionRepository
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, RunRequestCounts
 from ouro.core.usage_queries import (
     RunUsageCoverage,
@@ -24,7 +25,6 @@ from ouro.core.usage_queries import (
     UsageSummary,
     UsageTotals,
 )
-from ouro.sessions.base import SessionRepository
 
 
 @dataclass(frozen=True)

@@ -8,8 +8,9 @@ from ouro.core.errors import PersistenceError, SessionRecoveryRequiredError
 from ouro.core.messages import MessageRecord, ToolResultReference
 from ouro.core.state import SessionRecord
 from ouro.core.tools import ToolCallRequest
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.backends.files.journal import reverse_jsonl
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.tool_batches import seed_tool_messages
 
 

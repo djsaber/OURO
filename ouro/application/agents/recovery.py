@@ -5,8 +5,8 @@ from collections.abc import Iterable
 from ouro.application.contracts.base import Diagnostic
 from ouro.core.agents import DelegationRecord
 from ouro.core.errors import PersistenceError
+from ouro.core.session_ports import SessionStore
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions import SessionStore
 
 
 class AgentRecoveryService:

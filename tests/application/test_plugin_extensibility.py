@@ -27,7 +27,7 @@ from ouro.local_configuration import RuntimeConfigurationResolver
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.providers import FauxProvider
 from ouro.sdk.plugins import v5 as sdk
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import (
     Tool,
     ToolDefinition,

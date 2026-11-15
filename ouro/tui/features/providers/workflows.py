@@ -3,15 +3,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import cast
 
-from textual.app import App
-
 from ouro.application.contracts.configuration import (
     ProviderEndpointView,
     ProviderTemplateUpdateView,
     ProviderView,
 )
-from ouro.tui.controller import TuiController
-from ouro.tui.conversation.view import ConversationView
 from ouro.tui.features.providers.authentication import ProviderAuthenticationScreen
 from ouro.tui.features.providers.screens import (
     CUSTOM_PROVIDER_PROFILES,
@@ -24,40 +20,42 @@ from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.confirmation import ConfirmationScreen
 from ouro.tui.menus.models import Choice
 from ouro.tui.menus.sorting import display_sort_key, model_name_sort_key
-from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
+from ouro.tui.menus.workflows import WorkflowNavigation
+from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
 from ouro.tui.view_models import TuiEndpointConfiguration, TuiProviderConfiguration
 
 
-class ProviderConfigurationWorkflows(App[int]):
+class ProviderConfigurationWorkflows:
     """Own keyboard-first workflows for providers and their endpoints."""
 
-    _controller: TuiController
+    def __init__(self, navigation: WorkflowNavigation) -> None:
+        self._ui = navigation
 
     async def _choose_providers(self, *, menu: ChoiceScreen | None = None) -> None:
         try:
-            catalog = await self._controller.provider_catalog()
+            catalog = await self._ui.controller().provider_catalog()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
-        choices = _provider_catalog_choices(catalog.providers, theme=theme_for(self))
+        choices = _provider_catalog_choices(catalog.providers, theme=self._ui.theme())
         if menu is not None:
 
             async def refresh_providers() -> tuple[Choice, ...] | None:
                 try:
-                    refreshed = await self._controller.provider_catalog()
+                    refreshed = await self._ui.controller().provider_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    await self._ui.notice(str(exc), error=True)
                     return None
                 return _provider_catalog_choices(
                     refreshed.providers,
-                    theme=theme_for(self),
+                    theme=self._ui.theme(),
                 )
 
             async def select_provider(provider_id: str) -> tuple[Choice, ...] | None:
                 if provider_id == "add-provider":
                     await self._add_provider(menu=menu)
                     return None
-                refreshed = await self._controller.provider_catalog()
+                refreshed = await self._ui.controller().provider_catalog()
                 provider = next(
                     item for item in refreshed.providers if item.provider_id == provider_id
                 )
@@ -72,7 +70,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 on_refresh=refresh_providers,
             )
             return
-        selected = await self.push_screen_wait(
+        selected = await self._ui.choose(
             ChoiceScreen(title="PROVIDERS", placeholder="Filter providers…", choices=choices)
         )
         if selected is None:
@@ -85,9 +83,9 @@ class ProviderConfigurationWorkflows(App[int]):
 
     async def _add_provider(self, *, menu: ChoiceScreen | None = None) -> None:
         try:
-            templates = await self._controller.provider_templates()
+            templates = await self._ui.controller().provider_templates()
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         profiles = {
             f"preset:{template.template_id}": ProviderSetupProfile.from_template(template)
@@ -135,7 +133,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 on_select=select_profile,
             )
             return
-        selected = await self.push_screen_wait(
+        selected = await self._ui.choose(
             ChoiceScreen(
                 title="ADD PROVIDER",
                 placeholder="Choose a provider type…",
@@ -152,25 +150,23 @@ class ProviderConfigurationWorkflows(App[int]):
         *,
         menu: ChoiceScreen | None = None,
     ) -> None:
-        screen = ProviderConfigurationScreen(profile, theme=theme_for(self))
-        draft = await (
-            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
-        )
+        screen = ProviderConfigurationScreen(profile, theme=self._ui.theme())
+        draft = await (menu.open_child(screen) if menu is not None else self._ui.choose(screen))
         if draft is None:
             return
         provider_draft = cast(TuiProviderConfiguration, draft)
         try:
-            provider = await self._controller.add_provider(provider_draft)
+            provider = await self._ui.controller().add_provider(provider_draft)
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         suffix = (
             f"{provider.endpoint_count} preset endpoint(s)"
             if provider.endpoint_count
             else "add an endpoint to make it usable"
         )
-        self.notify(
-            theme_for(self).inline_separator.join(
+        self._ui.notify(
+            self._ui.theme().inline_separator.join(
                 (f"Provider added: {provider.display_name}", suffix)
             )
         )
@@ -181,15 +177,15 @@ class ProviderConfigurationWorkflows(App[int]):
         *,
         menu: ChoiceScreen | None = None,
     ) -> None:
-        choices = _provider_management_choices(provider, theme=theme_for(self))
+        choices = _provider_management_choices(provider, theme=self._ui.theme())
         if menu is not None:
 
             async def refresh_provider_actions() -> tuple[Choice, ...] | None:
                 nonlocal provider
                 try:
-                    catalog = await self._controller.provider_catalog()
+                    catalog = await self._ui.controller().provider_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    await self._ui.notice(str(exc), error=True)
                     return None
                 refreshed = next(
                     (
@@ -202,7 +198,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 if refreshed is None:
                     return ()
                 provider = refreshed
-                return _provider_management_choices(provider, theme=theme_for(self))
+                return _provider_management_choices(provider, theme=self._ui.theme())
 
             async def select_action(selected: str) -> tuple[Choice, ...] | None:
                 nonlocal provider
@@ -215,15 +211,15 @@ class ProviderConfigurationWorkflows(App[int]):
                     if saved is None:
                         return None
                     provider = saved
-                    catalog = await self._controller.provider_catalog()
+                    catalog = await self._ui.controller().provider_catalog()
                     menu.update_parent_choices(
                         _provider_catalog_choices(
                             catalog.providers,
-                            theme=theme_for(self),
+                            theme=self._ui.theme(),
                         ),
                         initial_value=provider.provider_id,
                     )
-                    return _provider_management_choices(provider, theme=theme_for(self))
+                    return _provider_management_choices(provider, theme=self._ui.theme())
                 elif selected == "toggle":
                     saved = await self._set_provider_enabled(
                         provider,
@@ -232,15 +228,15 @@ class ProviderConfigurationWorkflows(App[int]):
                     if saved is None:
                         return None
                     provider = saved
-                    catalog = await self._controller.provider_catalog()
+                    catalog = await self._ui.controller().provider_catalog()
                     menu.update_parent_choices(
                         _provider_catalog_choices(
                             catalog.providers,
-                            theme=theme_for(self),
+                            theme=self._ui.theme(),
                         ),
                         initial_value=provider.provider_id,
                     )
-                    return _provider_management_choices(provider, theme=theme_for(self))
+                    return _provider_management_choices(provider, theme=self._ui.theme())
                 elif selected == "endpoints":
                     await self._choose_endpoints(provider, menu=menu)
                 elif selected == "remove":
@@ -249,16 +245,16 @@ class ProviderConfigurationWorkflows(App[int]):
                 return None
 
             menu.push_page(
-                title=theme_for(self).inline_separator.join(("PROVIDER", provider.display_name)),
+                title=self._ui.theme().inline_separator.join(("PROVIDER", provider.display_name)),
                 placeholder=None,
                 choices=choices,
                 on_select=select_action,
                 on_refresh=refresh_provider_actions,
             )
             return
-        selected = await self.push_screen_wait(
+        selected = await self._ui.choose(
             ChoiceScreen(
-                title=theme_for(self).inline_separator.join(("PROVIDER", provider.display_name)),
+                title=self._ui.theme().inline_separator.join(("PROVIDER", provider.display_name)),
                 placeholder=None,
                 choices=choices,
             )
@@ -283,24 +279,24 @@ class ProviderConfigurationWorkflows(App[int]):
         menu: ChoiceScreen | None = None,
     ) -> None:
         try:
-            service = self._controller.provider_auth()
+            service = self._ui.controller().provider_auth()
         except Exception as exc:  # noqa: BLE001 - injected runtimes may omit authentication.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         try:
-            catalog = await self._controller.provider_catalog()
+            catalog = await self._ui.controller().provider_catalog()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         provider_names = {item.provider_id: item.display_name for item in catalog.providers}
         screen = ProviderAuthenticationScreen(
-            service, provider.provider_id, provider_names=provider_names, theme=theme_for(self)
+            service, provider.provider_id, provider_names=provider_names, theme=self._ui.theme()
         )
         if menu is not None:
             await menu.open_child(screen)
         else:
             await screen.prepare()
-            await self.push_screen_wait(screen)
+            await self._ui.choose(screen)
 
     async def _edit_provider(
         self,
@@ -309,52 +305,50 @@ class ProviderConfigurationWorkflows(App[int]):
         menu: ChoiceScreen | None = None,
     ) -> None:
         try:
-            templates = await self._controller.provider_templates()
+            templates = await self._ui.controller().provider_templates()
             profile = profile_for_provider(provider, templates)
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         screen = ProviderConfigurationScreen(
             profile,
             existing=provider,
-            theme=theme_for(self),
+            theme=self._ui.theme(),
         )
-        draft = await (
-            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
-        )
+        draft = await (menu.open_child(screen) if menu is not None else self._ui.choose(screen))
         if draft is None:
             return
         provider_draft = cast(TuiProviderConfiguration, draft)
         try:
-            saved = await self._controller.update_provider(
+            saved = await self._ui.controller().update_provider(
                 provider.provider_id,
                 provider_draft,
             )
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
-        self.notify(f"Provider saved: {saved.display_name} (next request)")
+        self._ui.notify(f"Provider saved: {saved.display_name} (next request)")
 
     async def _update_provider_template(
         self,
         provider: ProviderView,
     ) -> ProviderView | None:
         try:
-            catalog = await self._controller.update_provider_template(provider.provider_id)
+            catalog = await self._ui.controller().update_provider_template(provider.provider_id)
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return None
         updated = next(
             item for item in catalog.providers if item.provider_id == provider.provider_id
         )
         report = catalog.template_update
         if report is None:
-            await self.query_one(ConversationView).add_notice(
+            await self._ui.notice(
                 f"Provider has no preset template: {provider.display_name}",
                 error=True,
             )
             return None
-        self.notify(_provider_template_update_notice(report, theme=theme_for(self)))
+        self._ui.notify(_provider_template_update_notice(report, theme=self._ui.theme()))
         return updated
 
     async def _set_provider_enabled(
@@ -364,12 +358,12 @@ class ProviderConfigurationWorkflows(App[int]):
         enabled: bool,
     ) -> ProviderView | None:
         try:
-            saved = await self._controller.set_provider_enabled(
+            saved = await self._ui.controller().set_provider_enabled(
                 provider.provider_id,
                 enabled=enabled,
             )
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return None
         return saved
 
@@ -388,24 +382,22 @@ class ProviderConfigurationWorkflows(App[int]):
             ),
             confirm_label="Delete",
         )
-        selected = await (
-            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
-        )
+        selected = await (menu.open_child(screen) if menu is not None else self._ui.choose(screen))
         if not ConfirmationScreen.confirmed(selected):
             return False
         try:
-            catalog = await self._controller.provider_catalog()
+            catalog = await self._ui.controller().provider_catalog()
             if any(
                 item.provider_id == provider.provider_id and item.default
                 for item in catalog.providers
             ):
-                self.notify("Default provider cannot be deleted", severity="warning")
+                self._ui.notify("Default provider cannot be deleted", severity="warning")
                 return False
-            await self._controller.remove_provider(provider.provider_id)
+            await self._ui.controller().remove_provider(provider.provider_id)
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return False
-        self.notify(f"Provider deleted: {provider.display_name} (next request)")
+        self._ui.notify(f"Provider deleted: {provider.display_name} (next request)")
         return True
 
     async def _choose_endpoint_action(
@@ -415,15 +407,15 @@ class ProviderConfigurationWorkflows(App[int]):
         menu: ChoiceScreen | None = None,
     ) -> None:
         if action not in {"list", "add", "use"}:
-            await self.query_one(ConversationView).add_notice(
+            await self._ui.notice(
                 f"Unknown endpoint action: {action}",
                 error=True,
             )
             return
         try:
-            catalog = await self._controller.provider_catalog()
+            catalog = await self._ui.controller().provider_catalog()
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         if action == "add":
             providers = _sorted_providers(catalog.providers)
@@ -434,16 +426,16 @@ class ProviderConfigurationWorkflows(App[int]):
 
                 async def refresh_provider_choices() -> tuple[Choice, ...] | None:
                     try:
-                        refreshed = await self._controller.provider_catalog()
+                        refreshed = await self._ui.controller().provider_catalog()
                     except Exception as exc:  # noqa: BLE001
-                        await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                        await self._ui.notice(str(exc), error=True)
                         return None
                     providers_by_id.clear()
                     providers_by_id.update(
                         {provider.provider_id: provider for provider in refreshed.providers}
                     )
                     return tuple(
-                        _provider_choice(provider, theme=theme_for(self))
+                        _provider_choice(provider, theme=self._ui.theme())
                         for provider in _sorted_providers(tuple(providers_by_id.values()))
                     )
 
@@ -456,21 +448,21 @@ class ProviderConfigurationWorkflows(App[int]):
                     return None
 
                 menu.push_page(
-                    title=theme_for(self).inline_separator.join(("ADD ENDPOINT", "PROVIDER")),
+                    title=self._ui.theme().inline_separator.join(("ADD ENDPOINT", "PROVIDER")),
                     placeholder="Choose a provider…",
                     choices=tuple(
-                        _provider_choice(provider, theme=theme_for(self)) for provider in providers
+                        _provider_choice(provider, theme=self._ui.theme()) for provider in providers
                     ),
                     on_select=select_provider,
                     on_refresh=refresh_provider_choices,
                 )
                 return
-            provider_id = await self.push_screen_wait(
+            provider_id = await self._ui.choose(
                 ChoiceScreen(
-                    title=theme_for(self).inline_separator.join(("ADD ENDPOINT", "PROVIDER")),
+                    title=self._ui.theme().inline_separator.join(("ADD ENDPOINT", "PROVIDER")),
                     placeholder="Choose a provider…",
                     choices=tuple(
-                        _provider_choice(provider, theme=theme_for(self)) for provider in providers
+                        _provider_choice(provider, theme=self._ui.theme()) for provider in providers
                     ),
                 )
             )
@@ -484,35 +476,35 @@ class ProviderConfigurationWorkflows(App[int]):
         if not routes:
             return
         default_endpoint = _global_default_endpoint(catalog.providers)
-        selected_endpoint = await self._controller.selected_model_key()
+        selected_endpoint = await self._ui.controller().selected_model_key()
         choices = tuple(
             _endpoint_route_choice(
                 provider,
                 endpoint,
                 default_endpoint=default_endpoint,
                 selected_endpoint=selected_endpoint,
-                theme=theme_for(self),
+                theme=self._ui.theme(),
             )
             for provider, endpoint in routes.values()
         )
 
         async def refresh_routes() -> tuple[Choice, ...] | None:
             try:
-                refreshed = await self._controller.provider_catalog()
+                refreshed = await self._ui.controller().provider_catalog()
             except Exception as exc:  # noqa: BLE001
-                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                await self._ui.notice(str(exc), error=True)
                 return None
             routes.clear()
             routes.update(_endpoint_routes(refreshed.providers))
             default_endpoint = _global_default_endpoint(refreshed.providers)
-            selected_endpoint = await self._controller.selected_model_key()
+            selected_endpoint = await self._ui.controller().selected_model_key()
             return tuple(
                 _endpoint_route_choice(
                     item,
                     candidate,
                     default_endpoint=default_endpoint,
                     selected_endpoint=selected_endpoint,
-                    theme=theme_for(self),
+                    theme=self._ui.theme(),
                 )
                 for item, candidate in routes.values()
             )
@@ -534,7 +526,7 @@ class ProviderConfigurationWorkflows(App[int]):
                     on_refresh=refresh_routes,
                 )
             else:
-                await self.push_screen_wait(
+                await self._ui.choose(
                     ChoiceScreen(
                         title="SET DEFAULT ENDPOINT",
                         placeholder="Filter endpoints…",
@@ -561,7 +553,7 @@ class ProviderConfigurationWorkflows(App[int]):
             )
             return
 
-        route = await self.push_screen_wait(
+        route = await self._ui.choose(
             ChoiceScreen(
                 title="ENDPOINTS",
                 placeholder="Filter endpoints…",
@@ -580,17 +572,17 @@ class ProviderConfigurationWorkflows(App[int]):
         menu: ChoiceScreen | None = None,
     ) -> None:
         try:
-            catalog = await self._controller.provider_endpoints(provider.provider_id)
+            catalog = await self._ui.controller().provider_endpoints(provider.provider_id)
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         candidates = _sorted_endpoints(catalog.endpoints)
         choices = _provider_endpoint_choices(
             provider,
             candidates,
-            selected_endpoint=await self._controller.selected_model_key(),
+            selected_endpoint=await self._ui.controller().selected_model_key(),
             include_add=True,
-            theme=theme_for(self),
+            theme=self._ui.theme(),
         )
         if menu is not None:
             endpoints = {endpoint.endpoint_id: endpoint for endpoint in candidates}
@@ -598,9 +590,9 @@ class ProviderConfigurationWorkflows(App[int]):
             async def refresh_endpoints() -> tuple[Choice, ...] | None:
                 nonlocal provider
                 try:
-                    refreshed = await self._controller.provider_catalog()
+                    refreshed = await self._ui.controller().provider_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    await self._ui.notice(str(exc), error=True)
                     return None
                 current_provider = next(
                     (
@@ -621,9 +613,9 @@ class ProviderConfigurationWorkflows(App[int]):
                 return _provider_endpoint_choices(
                     provider,
                     refreshed_candidates,
-                    selected_endpoint=await self._controller.selected_model_key(),
+                    selected_endpoint=await self._ui.controller().selected_model_key(),
                     include_add=True,
-                    theme=theme_for(self),
+                    theme=self._ui.theme(),
                 )
 
             async def select_endpoint(endpoint_id: str) -> tuple[Choice, ...] | None:
@@ -635,16 +627,16 @@ class ProviderConfigurationWorkflows(App[int]):
                 return None
 
             menu.push_page(
-                title=theme_for(self).inline_separator.join(("ENDPOINTS", provider.display_name)),
+                title=self._ui.theme().inline_separator.join(("ENDPOINTS", provider.display_name)),
                 placeholder="Filter endpoints…",
                 choices=choices,
                 on_select=select_endpoint,
                 on_refresh=refresh_endpoints,
             )
             return
-        selected = await self.push_screen_wait(
+        selected = await self._ui.choose(
             ChoiceScreen(
-                title=theme_for(self).inline_separator.join(("ENDPOINTS", provider.display_name)),
+                title=self._ui.theme().inline_separator.join(("ENDPOINTS", provider.display_name)),
                 placeholder="Filter endpoints…",
                 choices=choices,
             )
@@ -667,16 +659,16 @@ class ProviderConfigurationWorkflows(App[int]):
         choices = _endpoint_management_choices(
             provider,
             endpoint,
-            theme=theme_for(self),
+            theme=self._ui.theme(),
         )
         if menu is not None:
 
             async def refresh_endpoint_actions() -> tuple[Choice, ...] | None:
                 nonlocal provider, endpoint
                 try:
-                    catalog = await self._controller.provider_catalog()
+                    catalog = await self._ui.controller().provider_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    await self._ui.notice(str(exc), error=True)
                     return None
                 refreshed_provider = next(
                     (
@@ -703,7 +695,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 return _endpoint_management_choices(
                     provider,
                     endpoint,
-                    theme=theme_for(self),
+                    theme=self._ui.theme(),
                 )
 
             async def select_action(selected: str) -> tuple[Choice, ...] | None:
@@ -722,7 +714,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 return None
 
             menu.push_page(
-                title=theme_for(self).inline_separator.join(
+                title=self._ui.theme().inline_separator.join(
                     ("ENDPOINT", endpoint.display_name or endpoint.model_id)
                 ),
                 placeholder=None,
@@ -731,9 +723,9 @@ class ProviderConfigurationWorkflows(App[int]):
                 on_refresh=refresh_endpoint_actions,
             )
             return
-        selected = await self.push_screen_wait(
+        selected = await self._ui.choose(
             ChoiceScreen(
-                title=theme_for(self).inline_separator.join(
+                title=self._ui.theme().inline_separator.join(
                     ("ENDPOINT", endpoint.display_name or endpoint.model_id)
                 ),
                 placeholder=None,
@@ -757,35 +749,33 @@ class ProviderConfigurationWorkflows(App[int]):
         screen = EndpointConfigurationScreen(
             provider,
             existing=existing,
-            theme=theme_for(self),
+            theme=self._ui.theme(),
         )
-        draft = await (
-            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
-        )
+        draft = await (menu.open_child(screen) if menu is not None else self._ui.choose(screen))
         if draft is None:
             return
         endpoint_draft = cast(TuiEndpointConfiguration, draft)
         try:
             saved = (
-                await self._controller.add_endpoint(provider.provider_id, endpoint_draft)
+                await self._ui.controller().add_endpoint(provider.provider_id, endpoint_draft)
                 if existing is None
-                else await self._controller.update_endpoint(
+                else await self._ui.controller().update_endpoint(
                     provider.provider_id,
                     existing.endpoint_id,
                     endpoint_draft,
                 )
             )
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         action = "added" if existing is None else "saved"
-        self.notify(f"Endpoint {action}: {saved.display_name or saved.model_id} (next request)")
+        self._ui.notify(f"Endpoint {action}: {saved.display_name or saved.model_id} (next request)")
 
     async def _use_endpoint(self, provider_id: str, endpoint_id: str) -> bool:
         try:
-            await self._controller.use_endpoint(provider_id, endpoint_id)
+            await self._ui.controller().use_endpoint(provider_id, endpoint_id)
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return False
         return True
 
@@ -804,26 +794,24 @@ class ProviderConfigurationWorkflows(App[int]):
             message=f"Delete {endpoint_label} from {provider.display_name}?",
             confirm_label="Delete",
         )
-        selected = await (
-            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
-        )
+        selected = await (menu.open_child(screen) if menu is not None else self._ui.choose(screen))
         if not ConfirmationScreen.confirmed(selected):
             return False
         try:
-            catalog = await self._controller.provider_catalog()
+            catalog = await self._ui.controller().provider_catalog()
             if _global_default_endpoint(catalog.providers) == (
                 f"{provider.provider_id}/{endpoint.endpoint_id}"
             ):
-                self.notify("Default endpoint cannot be deleted", severity="warning")
+                self._ui.notify("Default endpoint cannot be deleted", severity="warning")
                 return False
-            await self._controller.remove_endpoint(
+            await self._ui.controller().remove_endpoint(
                 provider.provider_id,
                 endpoint.endpoint_id,
             )
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return False
-        self.notify(f"Endpoint deleted: {endpoint_label} (next request)")
+        self._ui.notify(f"Endpoint deleted: {endpoint_label} (next request)")
         return True
 
 

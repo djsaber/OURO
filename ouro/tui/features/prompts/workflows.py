@@ -6,27 +6,29 @@ from typing import cast
 
 from ouro.config.prompts import PromptDraft, PromptKind
 from ouro.tui.features.prompts.screens import PromptEntryScreen, prompt_choices, prompt_label
-from ouro.tui.features.tasks.workflows import TaskManagementWorkflows
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.confirmation import ConfirmationScreen
 from ouro.tui.menus.models import Choice
-from ouro.tui.theme import theme_for
+from ouro.tui.menus.workflows import WorkflowNavigation
 
 
-class PromptWorkflows(TaskManagementWorkflows):
+class PromptWorkflows:
+    def __init__(self, navigation: WorkflowNavigation) -> None:
+        self._ui = navigation
+
     async def _configure_prompts(self, *, menu: ChoiceScreen | None = None) -> None:
         try:
-            current = await self._controller.prompt_configuration()
+            current = await self._ui.controller().prompt_configuration()
         except Exception as exc:  # noqa: BLE001 - report configuration errors at the UI boundary.
-            self.notify(str(exc), severity="error", markup=False)
+            self._ui.notify(str(exc), severity="error", markup=False)
             return
 
         async def refresh() -> tuple[Choice, ...]:
             nonlocal current
             try:
-                current = await self._controller.prompt_configuration()
+                current = await self._ui.controller().prompt_configuration()
             except Exception as exc:  # noqa: BLE001 - keep navigation usable after read failures.
-                self.notify(str(exc), severity="error", markup=False)
+                self._ui.notify(str(exc), severity="error", markup=False)
             return prompt_choices(current.config)
 
         async def select(value: str) -> tuple[Choice, ...] | None:
@@ -36,17 +38,17 @@ class PromptWorkflows(TaskManagementWorkflows):
                     kind = cast(PromptKind, identity)
                     draft = await screen.open_child(PromptEntryScreen(kind))
                     if draft is not None:
-                        await self._controller.save_prompt(
+                        await self._ui.controller().save_prompt(
                             kind,
                             cast(PromptDraft, draft),
                             expected_revision=current.config.revision,
                         )
-                        self.notify("Prompt saved (applies to the next model request)")
+                        self._ui.notify("Prompt saved (applies to the next model request)")
                         return await refresh()
                 else:
                     await manage(cast(PromptKind, prefix), identity)
             except Exception as exc:  # noqa: BLE001 - retain the menu on a rejected edit.
-                self.notify(str(exc), severity="error", markup=False)
+                self._ui.notify(str(exc), severity="error", markup=False)
                 return await refresh()
             return None
 
@@ -62,18 +64,18 @@ class PromptWorkflows(TaskManagementWorkflows):
                         draft = await screen.open_child(PromptEntryScreen(kind, entry))
                         if draft is None:
                             return None
-                        await self._controller.save_prompt(
+                        await self._ui.controller().save_prompt(
                             kind,
                             cast(PromptDraft, draft),
                             entry_id=entry.id,
                             expected_revision=revision,
                         )
                     elif value == "toggle":
-                        await self._controller.set_prompt_enabled(
+                        await self._ui.controller().set_prompt_enabled(
                             kind, entry_id, not entry.enabled, expected_revision=revision
                         )
                     elif value in {"up", "down"}:
-                        await self._controller.move_prompt(
+                        await self._ui.controller().move_prompt(
                             kind,
                             entry_id,
                             position + (-1 if value == "up" else 1),
@@ -89,14 +91,16 @@ class PromptWorkflows(TaskManagementWorkflows):
                         )
                         if not ConfirmationScreen.confirmed(confirmed):
                             return None
-                        await self._controller.remove_prompt(
+                        await self._ui.controller().remove_prompt(
                             kind, entry_id, expected_revision=revision
                         )
                     else:
                         return None
-                    self.notify("Prompt configuration saved (applies to the next model request)")
+                    self._ui.notify(
+                        "Prompt configuration saved (applies to the next model request)"
+                    )
                 except Exception as exc:  # noqa: BLE001 - revision and I/O errors stay visible.
-                    self.notify(str(exc), severity="error", markup=False)
+                    self._ui.notify(str(exc), severity="error", markup=False)
                 screen.pop_page(choices=await refresh(), initial_value=f"{kind}:{entry_id}")
                 return None
 
@@ -112,7 +116,7 @@ class PromptWorkflows(TaskManagementWorkflows):
                         if kind == "replacement" and not entry.enabled
                         else "",
                         description_accent=(
-                            theme_for(self).danger
+                            self._ui.theme().danger
                             if kind == "replacement" and not entry.enabled
                             else None
                         ),
@@ -122,7 +126,7 @@ class PromptWorkflows(TaskManagementWorkflows):
                     Choice(
                         "delete",
                         "Delete",
-                        accent=theme_for(self).danger,
+                        accent=self._ui.theme().danger,
                         destructive=True,
                     ),
                 ),
@@ -146,4 +150,4 @@ class PromptWorkflows(TaskManagementWorkflows):
                 on_select=select,
                 on_refresh=refresh,
             )
-            await self.push_screen_wait(screen)
+            await self._ui.choose(screen)

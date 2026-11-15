@@ -9,12 +9,12 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.config import ProviderConfigManager
 from ouro.core.base import utc_now
 from ouro.core.billing import UsageFilter
 from ouro.core.tasks import AgentTaskTarget, TaskConfiguration, TaskSchedule
 from ouro.local_application import LocalApplication, open_local_provider_auth
+from ouro.local_configuration import build_local_configuration
 from ouro.tools import Tool, ToolDefinition, ToolResult
 from tests.auth.openai_fixtures import tokens
 from tests.event_capture import recorded_events
@@ -26,7 +26,7 @@ from tests.run_facts import run_events
 async def test_subscription_target_override_fails_before_credentials_or_network(
     tmp_path, monkeypatch, base_url
 ):
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     created = facade.add_provider(
         display_name="Personal Codex",
         provider_type="openai-codex",
@@ -92,7 +92,7 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
         return client
 
     monkeypatch.setattr(httpx, "AsyncClient", client_factory)
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     created = facade.add_provider(
         display_name="Personal Codex",
         provider_type="openai-codex",

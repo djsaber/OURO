@@ -4,7 +4,7 @@ import json
 
 from ouro.cli.main import main
 from ouro.cli.parser import build_parser
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 
 
 def test_run_parser_accepts_session_approval_mode() -> None:

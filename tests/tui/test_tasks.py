@@ -9,7 +9,6 @@ from rich.text import Text
 from textual import events
 from textual.widgets import Input, OptionList, Static
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.application.contracts.models import AvailableModel
 from ouro.application.runtime.environment import RuntimeEnvironment
 from ouro.application.runtime.service import RuntimeService
@@ -19,7 +18,9 @@ from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.core.tasks import AgentTaskTarget, TaskConfiguration, TaskCounts, TaskSchedule
 from ouro.local_application import LocalApplication
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.local_configuration import build_local_configuration
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.commands import resolve_command
@@ -159,7 +160,7 @@ def test_new_task_uses_system_wall_time_and_edit_preserves_explicit_zone(
 
 async def test_new_task_preselects_configured_system_default_model(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    ConfigurationFacade(tmp_path).add_provider(
+    build_local_configuration(tmp_path).add_provider(
         display_name="Primary", provider_type="openai", make_default=True
     )
     app = OuroTuiApp(application=LocalApplication.build(tmp_path))
@@ -462,7 +463,7 @@ async def test_task_picker_marks_and_focuses_selected_option(tmp_path, field, ti
 
 
 async def test_new_task_uses_symbolic_default_independently_of_session_model(tmp_path):
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     routes = {}
     for provider_name in ("alpha", "zeta"):
         created = configuration.add_provider(

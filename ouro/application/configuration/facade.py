@@ -104,18 +104,32 @@ from ouro.skills import (
 class ConfigurationFacade:
     """Typed configuration use cases shared by CLI and future hosts."""
 
-    def __init__(self, root: str | Path | None = None) -> None:
-        self.provider_templates = ProviderTemplateStore(root)
-        self.providers = ProviderConfigManager(root)
-        self.prompts = PromptConfigManager(root)
-        self.permissions = PermissionConfigManager(root)
-        self.tool_execution = ToolExecutionConfigManager(root)
-        self.queued_inputs = QueuedInputConfigManager(root)
-        self.run_budget = RunBudgetConfigManager(root)
-        self.agents = AgentDefinitionsConfigManager(root)
-        self.compaction = CompactionConfigManager(root)
-        self.mcp = MCPConfigStore(root)
-        self.skills = SkillManager(root)
+    def __init__(
+        self,
+        *,
+        provider_templates: ProviderTemplateStore,
+        providers: ProviderConfigManager,
+        prompts: PromptConfigManager,
+        permissions: PermissionConfigManager,
+        tool_execution: ToolExecutionConfigManager,
+        queued_inputs: QueuedInputConfigManager,
+        run_budget: RunBudgetConfigManager,
+        agents: AgentDefinitionsConfigManager,
+        compaction: CompactionConfigManager,
+        mcp: MCPConfigStore,
+        skills: SkillManager,
+    ) -> None:
+        self.provider_templates = provider_templates
+        self.providers = providers
+        self.prompts = prompts
+        self.permissions = permissions
+        self.tool_execution = tool_execution
+        self.queued_inputs = queued_inputs
+        self.run_budget = run_budget
+        self.agents = agents
+        self.compaction = compaction
+        self.mcp = mcp
+        self.skills = skills
         self._skill_policy = self.skills.config
         self.root = self.providers.root
         self.config_path = self.root / "config" / "config.json"

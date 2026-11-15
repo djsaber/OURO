@@ -11,9 +11,9 @@ import pytest
 from rich.text import Text
 from textual.widgets import Input, Static
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.application.inputs.queue import QueuedUserInputView
 from ouro.application.inputs.requests import UserInputRequest
+from ouro.local_configuration import build_local_configuration
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
 from ouro.tui.composer.popup import CommandPopup
@@ -525,7 +525,10 @@ async def test_queued_input_delivery_uses_shared_settings_menu_and_persists_mode
         await pilot.press("enter")
         await wait_for_menu_action(pilot, screen)
 
-        assert ConfigurationFacade(tmp_path).queued_input_config().consumption_mode == "all_at_once"
+        assert (
+            build_local_configuration(tmp_path).queued_input_config().consumption_mode
+            == "all_at_once"
+        )
         assert app.screen is screen
         assert screen._choices[0].marker == ""
         assert screen._choices[1].marker == DEFAULT_TUI_THEME.selected_choice_marker

@@ -30,7 +30,8 @@ def main():
     from ouro.core.session_commits import SessionCommit, SessionCommitStep
     from ouro.core.session_controls import SessionControlActivation, SessionControlState
     from ouro.core.state import SessionRecord
-    from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+    from ouro.sessions.backends.files.store import LocalSessionStore
+    from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 
     with tempfile.TemporaryDirectory(prefix="ouro-harness-reads-") as directory:
         root = Path(directory)

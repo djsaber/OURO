@@ -11,7 +11,8 @@ from ouro.core.provider import ProviderStreamEvent, Usage
 from ouro.core.run_budget import RunBudgetPolicy
 from ouro.plugins.invocation import current_invocation, plugin_invocation
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolResult
 from tests.application.test_run_drivers import DRIVER, PLUGIN, host, plugin_source
 from tests.application.test_runtime import GateProvider

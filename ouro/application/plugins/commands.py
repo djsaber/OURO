@@ -22,10 +22,10 @@ from ouro.core.results import RunResult
 from ouro.core.run_drivers import RunDriverBinding
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_controller_registry import SessionControllerRegistry
+from ouro.core.session_ports import SessionStore
 from ouro.core.session_titles import fallback_session_title
 from ouro.core.state import SessionContinuationRequest, SessionRecord
 from ouro.plugins.registry import PluginCommandRegistry
-from ouro.sessions import SessionStore
 
 if TYPE_CHECKING:
     from ouro.application.plugins.service import PluginService

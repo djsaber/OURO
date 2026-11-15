@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
+from ouro.core.session_ports import SessionRepository
 from ouro.core.tools import ToolResultValue
-from ouro.sessions import SessionRepository
 from tests.event_capture import recorded_events
 
 

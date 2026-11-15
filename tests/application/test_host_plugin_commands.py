@@ -37,7 +37,8 @@ from ouro.plugins.registry import (
     PluginCommandResult,
 )
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry
 from tests.event_capture import recorded_events
 
@@ -736,7 +737,8 @@ def test_plugin_command_application_runs_with_host_imports_blocked(tmp_path):
         from ouro.core.adapter import RuntimeAdapter
         from ouro.core.provider import ModelMetadata, ProviderStreamEvent
         from ouro.providers import FauxProvider
-        from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+        from ouro.sessions.backends.files.store import LocalSessionStore
+        from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
         from ouro.tools import ToolRegistry
 
         class Commands:

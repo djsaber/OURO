@@ -3,7 +3,7 @@
 from ouro.core.harness import HarnessState
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_extensions import SessionExtensionStateRecord
-from ouro.sessions.base import SessionRepository
+from ouro.core.session_ports import SessionRepository
 
 
 def replace_harness_state(store: SessionRepository, state: SessionExtensionStateRecord) -> None:

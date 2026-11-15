@@ -7,11 +7,9 @@ from ouro.core.messages import MessageRecord
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.resources import LocalResourceStore
-from ouro.sessions import (
-    LocalSessionStore,
-    SQLiteSessionStore,
-    import_sessions_to_sqlite,
-)
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
+from ouro.sessions.transfer import import_sessions_to_sqlite
 from tests.harness_state import replace_harness_state
 from tests.resource_fixtures import resource_record
 

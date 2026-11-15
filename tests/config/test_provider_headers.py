@@ -4,11 +4,11 @@ import json
 
 import pytest
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.config import ProviderConfigManager, ProviderRuntimeOptions
 from ouro.config.provider_headers import parse_provider_headers, public_provider_headers
 from ouro.core.errors import ConfigError
 from ouro.core.request_context import ProviderRequestContext
+from ouro.local_configuration import build_local_configuration
 
 HEADERS = {
     "X-Private": {"source": "literal", "value": "private-value"},
@@ -92,7 +92,7 @@ def test_context_copies_values_and_rejects_unregistered_fields():
 def test_configuration_round_trip_preserve_replace_clear_and_public_redaction(
     tmp_path, provider_type
 ):
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     created = facade.add_provider(
         display_name="Service",
         provider_type=provider_type,
@@ -136,7 +136,7 @@ def test_configuration_round_trip_preserve_replace_clear_and_public_redaction(
 
 
 def test_runtime_header_override_is_whole_map_and_empty_clears(tmp_path):
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     created = facade.add_provider(
         display_name="Service",
         provider_type="custom",

@@ -4,7 +4,7 @@ import json
 
 from ouro.application.sessions.service import SessionService
 from ouro.cli.main import main
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.transfer.archive import read_archive
 
 

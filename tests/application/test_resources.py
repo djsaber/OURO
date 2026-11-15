@@ -28,7 +28,8 @@ from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolResult
 from ouro.resources import LocalResourceStore
 from ouro.resources.files import write_resource_contents
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.providers.test_tool_result_content import encode
 from tests.session_storage import session_connection
 from tests.tool_batches import persist_tool_batch, resolved_tool_batch

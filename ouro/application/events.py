@@ -25,8 +25,8 @@ from ouro.core.observers import (
 )
 from ouro.core.redaction import redact_data, redact_text
 from ouro.core.response_drafts import ResponseStreamPosition
+from ouro.core.session_ports import SessionRepository
 from ouro.core.turn_policies import TurnPolicyFailure
-from ouro.sessions import SessionRepository
 
 RuntimeEventSink = Callable[[EventRecord], None | Awaitable[None]]
 RuntimeEventFilter = Callable[[EventRecord], bool]

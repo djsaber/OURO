@@ -33,11 +33,11 @@ from ouro.core.session_controls import (
     SessionControlState,
     SessionControlTransitionResult,
 )
+from ouro.core.session_ports import SessionStore
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolCallState
 from ouro.core.tool_facts import ToolCallFacts
 from ouro.core.tools import ToolResult
-from ouro.sessions import SessionStore
 
 
 class SessionControlError(OuroError):

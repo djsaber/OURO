@@ -20,8 +20,8 @@ from ouro.core.prompt_policies import (
     PromptSkillActivationMetadata,
 )
 from ouro.core.redaction import SensitiveValueRedactor
+from ouro.core.session_ports import SessionStore
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions import SessionStore
 
 
 class InputAdmissionService:

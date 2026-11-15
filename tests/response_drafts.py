@@ -6,8 +6,8 @@ from ouro.core.context_snapshots import ModelRequestHeader, RequestManifestRecor
 from ouro.core.request_manifest import RequestManifest
 from ouro.core.response_drafts import ResponseDraftChunk
 from ouro.core.session_commits import SessionCommit
+from ouro.core.session_ports import SessionRepository
 from ouro.core.state import RunRecord
-from ouro.sessions import SessionRepository
 
 
 def persist_response_draft(

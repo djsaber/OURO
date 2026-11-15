@@ -10,7 +10,8 @@ from ouro.core.run_drivers import RunDriverBinding
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.plugins.installation.installer import PluginInstaller
 from ouro.plugins.installation.store import PluginPackageStore
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.plugins.test_plugin_system import _write_native_plugin
 
 PLUGIN = "dev.ouro.echo"

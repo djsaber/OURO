@@ -12,10 +12,10 @@ from textual.containers import Vertical
 from textual.widgets import Input, OptionList, Static, TextArea
 
 import ouro.tui.conversation.markdown_stream as conversation_history_markdown_stream
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.application.contracts.agents import AgentTreeNode
 from ouro.core.events import EventRecord
 from ouro.local_application import LocalApplication
+from ouro.local_configuration import build_local_configuration
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
 from ouro.tui.conversation.history import ConversationHistory
@@ -392,7 +392,7 @@ async def test_shared_menu_height_tracks_terminal_with_bounded_layout(tmp_path: 
 
 @pytest.mark.asyncio
 async def test_unselected_real_model_keeps_draft_instead_of_running_faux(tmp_path: Path) -> None:
-    ConfigurationFacade(tmp_path).add_provider(display_name="Primary", provider_type="openai")
+    build_local_configuration(tmp_path).add_provider(display_name="Primary", provider_type="openai")
     app = OuroTuiApp(application=LocalApplication.build(tmp_path))
 
     async with run_ready_app(app, size=(100, 34)) as pilot:

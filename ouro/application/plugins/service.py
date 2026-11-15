@@ -40,6 +40,7 @@ from ouro.core.callbacks import run_blocking
 from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.redaction import redact_text
 from ouro.core.session_controls import AttributedSessionControlTransition
+from ouro.core.session_ports import SessionStore
 from ouro.core.state import SessionRecord
 from ouro.local_processes.commands import run_process
 from ouro.plugins.builtin import BuiltinPluginDefinition, BuiltinPluginRegistry
@@ -69,7 +70,6 @@ from ouro.plugins.models import (
     PluginStateDocument,
 )
 from ouro.plugins.semver import SemVer
-from ouro.sessions import SessionStore
 
 _PLUGIN_GENERATION_RETAINING_RUN_STATUSES = frozenset(
     {

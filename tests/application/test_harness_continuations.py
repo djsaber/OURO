@@ -21,7 +21,8 @@ from ouro.core.state import (
 )
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.sdk.plugins import v5 as sdk
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.harness_state import replace_harness_state
 
 OWNER = "example.continuation"

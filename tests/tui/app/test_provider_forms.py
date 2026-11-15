@@ -7,10 +7,10 @@ from pathlib import Path
 import pytest
 from textual.widgets import Input, OptionList, Static
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.config import reasoning_effort_preset
 from ouro.config.provider_templates import get_provider_template
 from ouro.local_application import LocalApplication
+from ouro.local_configuration import build_local_configuration
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
 from ouro.tui.features.providers.screens import (
@@ -29,7 +29,7 @@ from tests.tui.helpers import wait_until as _wait_until
 
 
 def test_endpoint_history_field_is_independent_of_generation_editor(tmp_path):
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     provider_id = configuration.add_provider(
         display_name="Gateway",
         provider_type="custom",
@@ -57,7 +57,7 @@ def test_endpoint_history_field_is_independent_of_generation_editor(tmp_path):
 async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_draft(
     tmp_path: Path,
 ) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     created = configuration.add_provider(
         display_name="Custom",
         provider_type="custom",
@@ -248,7 +248,7 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
 
 @pytest.mark.asyncio
 async def test_actions_opens_provider_scoped_endpoint_configuration(tmp_path: Path) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     configuration.add_provider(
         display_name="Zulu",
         provider_type="custom",
@@ -343,14 +343,14 @@ async def test_add_provider_flow_integrates_presets_and_custom_profiles(
         await _wait_until(
             lambda: any(
                 provider.display_name == "Gemini Work"
-                for provider in ConfigurationFacade(tmp_path).provider_catalog().providers
+                for provider in build_local_configuration(tmp_path).provider_catalog().providers
             ),
             pilot,
             description="saved provider",
         )
         provider = next(
             item
-            for item in ConfigurationFacade(tmp_path).provider_catalog().providers
+            for item in build_local_configuration(tmp_path).provider_catalog().providers
             if item.display_name == "Gemini Work"
         )
         assert provider.provider_type == "gemini"
@@ -478,7 +478,7 @@ async def test_provider_configuration_uses_shared_grouped_inline_menu(
 def test_provider_editors_preserve_redacted_request_options_when_unchanged(
     tmp_path: Path,
 ) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     created = configuration.add_provider(
         display_name="Gateway",
         provider_type="custom",
@@ -524,7 +524,7 @@ def test_provider_editors_preserve_redacted_request_options_when_unchanged(
 async def test_provider_configuration_preserves_existing_enabled_state(
     tmp_path: Path,
 ) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     created = configuration.add_provider(
         display_name="Disabled Gateway",
         provider_type="custom",

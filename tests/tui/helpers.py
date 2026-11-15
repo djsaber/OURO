@@ -23,7 +23,7 @@ from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata
 from ouro.local_application import LocalApplication
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import ToolRegistry
 from ouro.tui.composer.popup import CommandPopup
 from ouro.tui.conversation.history import ConversationHistory

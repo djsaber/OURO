@@ -25,7 +25,7 @@ from ouro.core.provider import ModelMetadata
 from ouro.core.session_commits import SessionCommit
 from ouro.local_locks import FileMutationLock
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import ToolRegistry
 from tests.application.test_resources import _services
 

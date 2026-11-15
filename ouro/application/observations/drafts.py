@@ -3,7 +3,7 @@ from __future__ import annotations
 from ouro.core.context_snapshots import ModelRequestHeader
 from ouro.core.events import EventRecord
 from ouro.core.response_drafts import ResponseStreamPosition
-from ouro.sessions import SessionRepository
+from ouro.core.session_ports import SessionRepository
 
 
 def read_draft_events(

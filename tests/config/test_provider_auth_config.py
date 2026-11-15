@@ -5,7 +5,6 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.application.configuration.views import provider_view
 from ouro.auth.contracts import AuthError, CredentialRecord
 from ouro.config import provider_models
@@ -23,6 +22,7 @@ from ouro.config.providers.manager import ProviderConfigManager
 from ouro.config.providers.template_store import SCHEMA_VERSION, ProviderTemplateStore
 from ouro.core.base import new_id
 from ouro.core.errors import ConfigError, CredentialError
+from ouro.local_configuration import build_local_configuration
 from ouro.providers.factory import build_runtime_adapter
 
 
@@ -340,7 +340,7 @@ def test_ad_hoc_managed_auth_is_rejected(tmp_path):
 def test_facade_creates_and_replaces_managed_config_without_resolving_credentials(
     tmp_path, fixture_product
 ):
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     first = facade.add_provider(
         display_name="Subscription",
         provider_type="custom",

@@ -10,7 +10,6 @@ import pytest
 from rich.text import Text
 from textual.widgets import Input, OptionList, Static
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.application.contracts.models import AvailableModel
 from ouro.application.runtime.environment import RuntimeEnvironment
 from ouro.application.runtime.service import RuntimeService
@@ -19,8 +18,9 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.local_application import LocalApplication
+from ouro.local_configuration import build_local_configuration
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import ToolRegistry
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
@@ -111,7 +111,7 @@ async def test_status_line_default_reflects_endpoint_default(tmp_path: Path) -> 
 async def test_provider_enable_action_is_owned_by_provider_submenu(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     created = configuration.add_provider(
         display_name="Secondary",
         provider_type="custom",
@@ -165,7 +165,7 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(
             pilot,
             description="enabled provider reflected in its submenu",
         )
-        assert ConfigurationFacade(tmp_path).provider(provider_id).enabled is True
+        assert build_local_configuration(tmp_path).provider(provider_id).enabled is True
 
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="PROVIDERS")
@@ -185,7 +185,7 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(
             pilot,
             description="disabled provider reflected in its submenu",
         )
-        assert ConfigurationFacade(tmp_path).provider(provider_id).enabled is False
+        assert build_local_configuration(tmp_path).provider(provider_id).enabled is False
 
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="PROVIDERS")
@@ -198,7 +198,7 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(
 
 @pytest.mark.asyncio
 async def test_provider_submenu_updates_from_latest_preset_in_place(tmp_path: Path) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     created = configuration.add_provider(display_name="Primary", provider_type="openai")
     provider_id = created.changed_provider_id
     assert provider_id is not None
@@ -231,7 +231,7 @@ async def test_provider_submenu_updates_from_latest_preset_in_place(tmp_path: Pa
         assert (
             next(
                 endpoint.context_window
-                for endpoint in ConfigurationFacade(tmp_path).provider(provider_id).endpoints
+                for endpoint in build_local_configuration(tmp_path).provider(provider_id).endpoints
                 if endpoint.model_id == "gpt-5.6-sol"
             )
             == 2_000_000
@@ -246,7 +246,7 @@ async def test_provider_submenu_updates_from_latest_preset_in_place(tmp_path: Pa
 async def test_provider_catalog_refreshes_before_returning_from_submenu(
     tmp_path: Path,
 ) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     created = configuration.add_provider(
         display_name="Custom",
         provider_type="custom",
@@ -315,7 +315,7 @@ async def test_provider_catalog_refreshes_before_returning_from_submenu(
 async def test_default_provider_and_endpoint_show_badges_and_disable_deletion(
     tmp_path: Path,
 ) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     created = configuration.add_provider(
         display_name="Primary",
         provider_type="custom",
@@ -391,7 +391,7 @@ async def test_endpoint_actions_flatten_routes_grouped_by_provider(
     action_label: str,
     title: str,
 ) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     routes = {}
     for provider_name in ("primary", "secondary"):
         created = configuration.add_provider(
@@ -489,7 +489,7 @@ async def test_provider_deletions_use_shared_menu_confirmation(
     target_label: str,
     confirm_title: str,
 ) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     created = configuration.add_provider(
         display_name="Custom",
         provider_type="custom",
@@ -549,12 +549,12 @@ async def test_provider_deletions_use_shared_menu_confirmation(
         await wait_for_menu_action(pilot, menu)
         assert app.screen is menu
         assert not isinstance(app.screen, ConfirmationScreen)
-        assert ConfigurationFacade(tmp_path).provider(provider_id) is not None
+        assert build_local_configuration(tmp_path).provider(provider_id) is not None
 
 
 @pytest.mark.asyncio
 async def test_provider_management_returns_to_catalog_after_deletion(tmp_path: Path) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     created = configuration.add_provider(
         display_name="Custom",
         provider_type="custom",
@@ -597,13 +597,13 @@ async def test_provider_management_returns_to_catalog_after_deletion(tmp_path: P
         assert all(choice.value != provider_id for choice in app.screen._choices)
         assert all(
             provider.provider_id != provider_id
-            for provider in ConfigurationFacade(tmp_path).provider_catalog().providers
+            for provider in build_local_configuration(tmp_path).provider_catalog().providers
         )
 
 
 @pytest.mark.asyncio
 async def test_endpoint_management_returns_to_catalog_after_deletion(tmp_path: Path) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     created = configuration.add_provider(
         display_name="Custom",
         provider_type="custom",
@@ -688,7 +688,7 @@ async def test_endpoint_management_returns_to_catalog_after_deletion(tmp_path: P
 
 @pytest.mark.asyncio
 async def test_setting_default_endpoint_also_switches_default_provider(tmp_path: Path) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     routes = {}
     for provider_name in ("primary", "secondary"):
         created = configuration.add_provider(
@@ -742,10 +742,10 @@ async def test_setting_default_endpoint_also_switches_default_provider(tmp_path:
         assert choices[primary_key].trailing_badge == ""
         assert choices[secondary_key].trailing_badge == "default"
         assert sum(choice.trailing_badge == "default" for choice in choices.values()) == 1
-        catalog = ConfigurationFacade(tmp_path).provider_catalog()
+        catalog = build_local_configuration(tmp_path).provider_catalog()
         assert catalog.default_provider_id == routes["secondary"][0]
         assert (
-            ConfigurationFacade(tmp_path).provider(routes["secondary"][0]).default_endpoint
+            build_local_configuration(tmp_path).provider(routes["secondary"][0]).default_endpoint
             == routes["secondary"][1]
         )
         assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))

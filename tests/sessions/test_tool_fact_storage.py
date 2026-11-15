@@ -33,9 +33,11 @@ from ouro.core.tools import (
     ToolResultFeedback,
     ToolResultValue,
 )
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore, import_sessions_to_sqlite
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.sessions.portable import PortableSession, SessionBundle, populate_sessions
 from ouro.sessions.sqlite_facts import read_fact
+from ouro.sessions.transfer import import_sessions_to_sqlite
 from tests.session_storage import session_connection
 
 

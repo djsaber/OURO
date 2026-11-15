@@ -122,3 +122,23 @@ assert "ouro_upgrade.engine" not in sys.modules
         text=True,
         timeout=30,
     )
+
+
+@pytest.mark.parametrize(
+    "module", ["ouro.core.session_ports", "ouro.application.contracts.sessions"]
+)
+def test_session_contracts_do_not_load_storage_or_execution(module):
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            f"import {module}; import sys; "
+            "assert not any(name.startswith('ouro.sessions') for name in sys.modules); "
+            "assert 'ouro.application.runtime.service' not in sys.modules; "
+            "assert 'sqlite3' not in sys.modules",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )

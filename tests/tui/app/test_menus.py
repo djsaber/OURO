@@ -10,9 +10,9 @@ from rich.console import Console
 from textual.app import App
 from textual.widgets import Input, OptionList, Static
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.core.errors import PersistenceError
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
+from ouro.local_configuration import build_local_configuration
 from ouro.mcp import MCPServerConfigUpdate
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
@@ -559,7 +559,7 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
 async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
     tmp_path: Path,
 ) -> None:
-    saved = ConfigurationFacade(tmp_path).set_mcp_server_by_name(
+    saved = build_local_configuration(tmp_path).set_mcp_server_by_name(
         "local",
         MCPServerConfigUpdate(command="python", auto_start=False),
     )
@@ -599,7 +599,7 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
         options.focus()
         await pilot.press("enter")
         await wait_for_menu_action(pilot, action_screen)
-        assert ConfigurationFacade(tmp_path).mcp_server(saved.server_id).enabled is False
+        assert build_local_configuration(tmp_path).mcp_server(saved.server_id).enabled is False
         assert (
             next(choice for choice in app.screen._choices if choice.value == "toggle").label
             == "Enable"
@@ -627,7 +627,7 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
         options = app.screen.query_one("#choice-list", OptionList)
         await pilot.click(options, offset=(4, 1))
         await wait_for_menu_action(pilot, action_screen)
-        assert ConfigurationFacade(tmp_path).mcp_server(saved.server_id).enabled is True
+        assert build_local_configuration(tmp_path).mcp_server(saved.server_id).enabled is True
         assert (
             next(choice for choice in app.screen._choices if choice.value == "toggle").label
             == "Disable"

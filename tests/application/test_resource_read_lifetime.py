@@ -13,7 +13,8 @@ from ouro.core.errors import PersistenceError, SessionBusyError, SessionRecovery
 from ouro.core.messages import MessageRecord
 from ouro.local_locks import FileMutationLock
 from ouro.resources import LocalResourceStore
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 
 
 @pytest.fixture(params=["files", "sqlite"])

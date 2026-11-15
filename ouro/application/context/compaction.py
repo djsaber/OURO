@@ -44,9 +44,9 @@ from ouro.core.errors import (
 )
 from ouro.core.events import EventRecord
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict
+from ouro.core.session_ports import SessionStore
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolDefinition
-from ouro.sessions import SessionStore
 
 
 @dataclass(frozen=True)

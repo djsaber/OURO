@@ -23,6 +23,12 @@ from ouro.core.reasoning import ReasoningRequest
 from ouro.core.session_controls import SessionInputMode
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.session_observation import SessionObservationPosition
+from ouro.core.session_queries import (
+    UNREADABLE_SESSION_HEALTHS,
+    PendingInteraction,
+    SessionHealth,
+)
+from ouro.core.session_queries import SessionCatalogStatus as SessionCatalogStatus
 from ouro.core.state import (
     RunRecord,
     SessionRecord,
@@ -30,15 +36,6 @@ from ouro.core.state import (
     SessionTitleSource,
 )
 from ouro.core.tool_facts import ToolCallIdentity
-from ouro.sessions.index import (
-    UNREADABLE_SESSION_HEALTHS,
-    PendingInteraction,
-    SessionHealth,
-    SessionIndexEntry,
-)
-from ouro.sessions.index import (
-    SessionCatalogStatus as SessionCatalogStatus,
-)
 
 SessionSort = Literal["updated_desc", "created_desc", "title"]
 
@@ -108,10 +105,6 @@ class SessionCatalogEntry(ApplicationDTO):
     @property
     def catalog_marks_unreadable(self) -> bool:
         return self.catalog_error is None and self.health in UNREADABLE_SESSION_HEALTHS
-
-    @classmethod
-    def from_index(cls, entry: SessionIndexEntry) -> SessionCatalogEntry:
-        return cls.model_validate(entry.model_dump())
 
 
 class SessionView(ApplicationDTO):

@@ -4,8 +4,8 @@ from textual import events
 from textual.app import App
 from textual.widgets import Input, OptionList
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.config.prompts import PromptConfigManager, PromptDraft, PromptEntry
+from ouro.local_configuration import build_local_configuration
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.features.prompts.screens import PromptEntryScreen
 from ouro.tui.menus.choice import ChoiceScreen
@@ -49,7 +49,7 @@ async def test_prompt_editor_requires_content_and_preserves_multiline_and_cancel
 
 
 async def test_prompt_actions_manage_order_activation_edit_and_delete(tmp_path):
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     for revision, (kind, entry) in enumerate(
         (
             ("replacement", PromptEntry(id="base", text="Base", enabled=True)),
@@ -117,7 +117,7 @@ async def test_prompt_actions_manage_order_activation_edit_and_delete(tmp_path):
 
 async def test_prompt_creation_and_stale_editor_do_not_overwrite_other_changes(tmp_path):
     app = OuroTuiApp(application=two_route_application(tmp_path))
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     async with run_ready_app(app, size=(80, 24), notifications=True) as pilot:
         choose = partial(choose_menu, pilot)
 

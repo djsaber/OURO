@@ -29,7 +29,7 @@ from ouro.core.state import SessionRecord
 from ouro.core.tools import ToolCallRequest
 from ouro.local_application import LocalApplication
 from ouro.providers.openai_responses.codec import responses_input
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import (
     Tool,
     ToolDefinition,

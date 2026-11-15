@@ -16,7 +16,7 @@ from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.local_application import LocalApplication
 from ouro.mcp import MCPConfigStore, MCPRuntimeResource, MCPServerConfigUpdate
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
 from ouro.tools.builtin.shell import detect_command_shell
 

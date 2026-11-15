@@ -6,9 +6,9 @@ from dataclasses import replace
 import pytest
 from textual.widgets import OptionList
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.config import EndpointReasoningConfig, reasoning_effort_preset, reasoning_summary_preset
 from ouro.core.errors import ConfigError
+from ouro.local_configuration import build_local_configuration
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.features.providers.screens import (
     CUSTOM_PROVIDER_PROFILES,
@@ -30,7 +30,7 @@ from tests.tui.helpers import (
 
 async def test_endpoint_media_toggles_use_shared_configuration_validation(tmp_path):
     app = OuroTuiApp(application=two_route_application(tmp_path))
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     provider_id = facade.add_provider(
         display_name="Media",
         provider_type="custom",
@@ -77,7 +77,7 @@ async def test_endpoint_media_toggles_use_shared_configuration_validation(tmp_pa
 
 async def test_header_editor_preserves_secrets_and_explicitly_replaces_or_clears(tmp_path):
     app = OuroTuiApp(application=two_route_application(tmp_path))
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     created = facade.add_provider(
         display_name="Gateway",
         provider_type="custom",
@@ -147,7 +147,7 @@ async def test_endpoint_reasoning_presets_sync_settings_and_can_be_saved(
     tmp_path, protocol, preset, summary_preset, summaries
 ):
     app = OuroTuiApp(application=two_route_application(tmp_path))
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     created = facade.add_provider(
         display_name="Gateway",
         provider_type="custom",
@@ -266,7 +266,7 @@ async def test_create_custom_provider_through_protocol_entry_and_preserve_on_edi
         await pilot.press(*"env:GATEWAY_KEY", "enter")
         await pilot.pause()
         await select_choice(app, pilot, "provider-save")
-        facade = ConfigurationFacade(tmp_path)
+        facade = build_local_configuration(tmp_path)
         await wait_until(
             lambda: len(facade.provider_catalog().providers) == 1,
             pilot,
@@ -332,7 +332,7 @@ async def test_custom_provider_path_edit_keeps_the_chosen_protocol(tmp_path, api
 
 @pytest.mark.parametrize("provider_type", ["openai", "openai-codex", "anthropic"])
 def test_template_protocol_is_visible_and_fixed(tmp_path, provider_type):
-    template = ConfigurationFacade(tmp_path).provider_template(provider_type)
+    template = build_local_configuration(tmp_path).provider_template(provider_type)
     screen = ProviderConfigurationScreen(ProviderSetupProfile.from_template(template))
     choice = next(c for c in screen._choices if c.value == "provider-protocol")
     assert choice.disabled
@@ -342,7 +342,7 @@ def test_template_protocol_is_visible_and_fixed(tmp_path, provider_type):
 
 
 def test_static_preset_credentials_remain_unbound_until_explicitly_configured(tmp_path):
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     template = facade.provider_template("deepseek")
     profile = ProviderSetupProfile.from_template(template)
     screen = ProviderConfigurationScreen(profile)

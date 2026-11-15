@@ -14,7 +14,8 @@ from ouro.core.errors import SessionBusyError
 from ouro.core.provider import ModelMetadata
 from ouro.core.session_controls import AttributedSessionInput, HostSessionInput
 from ouro.core.state import RunRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry
 from tests.application.test_driver_inputs import SteeringProvider
 from tests.event_capture import recorded_events

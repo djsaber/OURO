@@ -22,6 +22,7 @@ from ouro.core.run_drivers import (
     RunDriverContext,
     RunDriverRegistration,
 )
+from ouro.core.session_ports import SessionRepository
 from ouro.core.task_ports import TaskServicePort
 from ouro.core.tasks import AgentTaskTarget
 from ouro.plugins.builtin import EMPTY_BUILTIN_PLUGIN_REGISTRY, BuiltinPluginRegistry
@@ -94,7 +95,6 @@ from ouro.plugins.tool_groups import PluginToolGroups, ToolGroupPublication, Too
 from ouro.plugins.worker.instance import WorkerPluginInstance
 from ouro.sdk.plugins import v5 as sdk
 from ouro.sdk.plugins.v5 import StopReason
-from ouro.sessions.base import SessionRepository
 from ouro.skills import SkillMetadata
 
 

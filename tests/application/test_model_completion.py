@@ -19,7 +19,8 @@ from ouro.core.provider import (
 )
 from ouro.providers import FauxProvider, OpenAIChatCompletionsProvider
 from ouro.providers.http_transport import HttpxProviderHTTPTransport
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
 from tests.event_capture import recorded_events
 from tests.run_facts import run_events, run_tool_results

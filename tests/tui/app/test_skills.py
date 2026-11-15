@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from textual.widgets import Input, OptionList, Static
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.application.contracts.configuration import SkillCatalogView, SkillView
+from ouro.local_configuration import build_local_configuration
 from ouro.skills import SkillLoader
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
@@ -189,7 +189,7 @@ async def test_skill_directory_sources_use_shared_menu_and_persist_toggles(tmp_p
             description="skill source update",
         )
 
-        policy = ConfigurationFacade(tmp_path).skill_policy()
+        policy = build_local_configuration(tmp_path).skill_policy()
         assert policy.disabled_sources == ["ouro.user"]
         assert await app._controller.runtime_skill_names() == ()
         assert (
@@ -213,7 +213,7 @@ async def test_skill_directory_sources_use_shared_menu_and_persist_toggles(tmp_p
             description="skill discovery update",
         )
 
-        policy = ConfigurationFacade(tmp_path).skill_policy()
+        policy = build_local_configuration(tmp_path).skill_policy()
         assert policy.enabled is False
         assert policy.disabled_sources == ["ouro.user"]
         assert (

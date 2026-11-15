@@ -22,7 +22,8 @@ from unittest.mock import patch
 from ouro.core.resources import ResourceSource, SessionResourceReference
 from ouro.core.state import SessionRecord
 from ouro.resources import LocalResourceStore
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 
 
 def metadata(name, content):

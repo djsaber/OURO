@@ -4,7 +4,7 @@ import pytest
 from textual import events
 from textual.widgets import OptionList, Static
 
-from ouro.application.configuration.facade import ConfigurationFacade
+from ouro.local_configuration import build_local_configuration
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.features.providers.screens import (
     CUSTOM_PROVIDER_PROFILES,
@@ -18,7 +18,7 @@ from tests.tui.test_provider_protocols import select_choice
 
 @pytest.mark.parametrize("source", ("inline", "env"))
 async def test_provider_credentials_preserve_replace_and_mask_both_sources(tmp_path, source):
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     created = facade.add_provider(
         display_name="Gateway",
         provider_type="custom",

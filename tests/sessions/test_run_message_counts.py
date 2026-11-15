@@ -11,7 +11,8 @@ from ouro.core.errors import PersistenceError, SessionRecoveryRequiredError
 from ouro.core.messages import MessageRecord, ToolResultReference
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolCallRequest
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.sessions.portable import PortableSession, SessionBundle
 from tests.tool_batches import seed_tool_messages
 

@@ -39,6 +39,7 @@ from ouro.core.run_budget import RunPauseReason
 from ouro.core.run_drivers import DriverCheckpoint, DriverResume
 from ouro.core.run_transitions import plan_run_transition
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict, SessionCommitStep
+from ouro.core.session_ports import RuntimeSessionSnapshot, SessionStore
 from ouro.core.state import (
     ACTIVE_RUN_STATUSES,
     RunPhase,
@@ -55,7 +56,6 @@ from ouro.core.tool_facts import (
     ToolOutcomeRecord,
 )
 from ouro.core.tools import ToolInvocation, ToolResult, ToolResultValue
-from ouro.sessions import RuntimeSessionSnapshot, SessionStore
 
 
 def reserve_run(

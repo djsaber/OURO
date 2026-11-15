@@ -32,14 +32,19 @@ Runtime 通过装配的窄回调报告会话推进机会，不引用具体调度
 TUI、AgentService 和任务协调器保留自己的业务身份、授权与结算。
 `agents/budgets.py` 从 SessionStore 与用量账本读取共享预算事实；AgentService 拥有派遣、等待与结果交付的事务状态。
 账本按有界批次逐 Run 核对派发计数与报告覆盖，只返回预算所需的原始消耗与完整性。
-输入、观察和模型请求协作者不取得完整 Runtime 的控制权。契约放置在独立目录不意味着轻量导入：
-父包显式导出服务，因此导入初始化成本与模块的类型依赖需要分别评估。
+输入、观察和模型请求协作者不取得完整 Runtime 的控制权。`application` 与 `sessions` 包入口不加载服务或后端；
+契约和实现从定义模块显式导入，会话契约可在不加载存储及运行服务的情况下使用。
 
 `application/models/catalog.py` 定义模型目录契约、固定模型目录和原生模型投影。
-`local_configuration.py` 持有文件配置解析与 ConfiguredModelCatalog，负责配置路由、adapter fingerprint、
-并发构造及关闭；Runtime 通过目录协议和配置、提示词、技能查询回调取得当前能力。
+`local_configuration.py` 装配 ConfigurationFacade 的本地配置协作者，持有文件配置解析与
+ConfiguredModelCatalog，负责配置路由、adapter fingerprint、并发构造及关闭；Runtime 通过目录协议和
+配置、提示词、技能查询回调取得当前能力。
 AgentDefinitionService 显式接收默认模型路由查询，在调用时取得当前路由；Agent 配置不提供 Provider 配置的装配信息。
 Provider 构造参数统一使用 `config/provider_models.py` 的 ProviderRuntimeOptions。
+
+`application/configuration/live.py` 拥有配置保存、运行生效和失败补偿的完整流程。LocalApplication
+将 MCP 协调、Skills 刷新和当前技能查询绑定到该用例。TUI 转换表单并呈现结果；离线 CLI 使用
+ConfigurationFacade 修改配置，不启动运行环境。配置管理器拥有原子写入与锁边界。
 
 输入队列直接消费已验证的请求，处理接受、顺序和替换；用户、任务、Agent 及插件入口拥有各自的身份和调度规则。
 插件命令的输入与 Harness 变更在同一事务中提交，保证整批操作的原子性。
@@ -92,8 +97,10 @@ Host 查询当前记录并投影连接状态和工具数量；各消费者独立
 | `tui/widgets/` | 跨界面共用的品牌、活动和状态小控件 |
 
 `app.py` 拥有界面任务和视图协调，`controller.py` 衔接应用服务。完整 Widget 类持有自己的
-渲染任务、滚动锚点和交互状态。providers、plugins、tasks、prompts 与配置菜单通过工作流继承协作；
-维护这些边界时需要同时检查状态访问、消息分发与 Textual 装饰器契约。
+渲染任务、滚动锚点和交互状态。providers、plugins、tasks、prompts 与配置菜单各自是独立工作流对象。
+`menus/workflows.py` 集中表达它们共用的菜单操作：当前 Controller 和主题查询、页面展示、通知及
+任务启动。App 绑定这些操作并拥有 Textual 事件、导航 worker 和关闭顺序；工作流不持有 App。
+跨功能导航通过显式回调完成。Controller 与主题按使用时查询，启动恢复及主题切换无需重建工作流。
 `features/transfer/workflows.py` 的 DataTransferWorkflow 独立持有进度和屏幕弱引用，通过窄操作契约与
 导航、通知、任务启动回调协作。App 拥有传输 worker，关闭菜单不会取消已接受的文件操作；
 菜单自己的检查与选择读取仍由 Screen 管理。操作入口取得当前 Controller，以支持启动恢复后的依赖替换。
@@ -136,13 +143,16 @@ Runtime 消费这些结果并拥有检查点更新及租约寿命。
 | 位置 | 组织依据 |
 |---|---|
 | `providers/openai_responses/`、`openai_chat_completions/`、`anthropic_messages/` | 按线协议组织 adapter、codec 和协议专属流处理；认证仍归 auth，共享传输、重试和工厂保留独立模块 |
-| `sessions/backends/files/`、`sqlite/` | 后端专属 store、commit 和索引；base、portable、共享查询、layout 与锁保持后端中立 |
+| `sessions/backends/files/`、`sqlite/` | 后端专属 store、commit 和索引；portable、共享查询、layout 与锁保持后端中立 |
 | `tools/builtin/` | 内置工具与显式注册；Agent 控制工具按能力绑定 |
 | `tools/builtin/search/` | `registration.py` 选择并装配搜索后端；`glob.py`、`grep.py`、`ripgrep.py` 各自拥有工具参数、执行和结果呈现；`files.py` 提供共享路径、遍历与忽略规则 |
 | `config/providers/` | Provider 配置管理、codec、运行解析与模板存储；共享声明位于 `config/provider_models.py`，内置模板位于 `config/provider_templates/` |
 | `cli/parsers/` | 命令族的完整参数注册函数；`cli/parser.py` 保持明确的注册顺序 |
 
 Core、Auth、MCP、Automation、Billing、Resources、Skills 和 Transfer 各自组织领域规则与实现。
+`core/session_ports.py` 定义会话事实、执行锁和目录读取契约，`session_queries.py` 与 `session_facts.py`
+定义后端中立查询表示；`sessions/index.py` 拥有索引文档版本与物理表示。归档发布契约
+SessionTransferStore 位于 `sessions/portable.py`，由本地传输装配使用，运行用例只依赖会话端口。
 两个会话后端复用 `sessions/sqlite_facts.py` 的有界事实读取与提交准备，后端各自拥有事务和物理布局。
 资源元信息是不可变值，在构造与替换时校验；文件读取边界负责当前文件归属、可用性和大小。
 不建立统一 infrastructure、foundation 或 utils 容器；新分组应对应多个实际协作者或完整、可独立理解的定义集合。
@@ -152,8 +162,8 @@ AskUser 的数据契约位于 `tools/builtin/ask_user_contract.py`，工具实�
 
 ## 导入、测试与演进
 
-内部代码从定义模块导入；包入口只公开该领域的受支持 API，例如 `ouro.application`、`ouro.providers`、
-`ouro.tools` 的显式导出。目录不承担路径代理或隐式注册职责。
+内部代码从定义模块导入；`application` 和 `sessions` 的包入口仅标识命名空间，
+`providers`、`tools` 等包保留明确的能力导出。目录不承担路径代理或隐式注册职责。
 递归架构测试保护顶层依赖及契约、协议和 Host 边界。源码定位、类的 `__module__` 与诊断 logger 名称
 属于 Python 模块元数据，不作为业务数据格式或插件协议。
 显式运行时模块依赖（含函数内导入）由循环依赖测试约束；`TYPE_CHECKING` 中的纯类型引用不构成运行时边。

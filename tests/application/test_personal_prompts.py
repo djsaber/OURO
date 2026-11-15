@@ -3,7 +3,6 @@ from threading import get_ident
 
 import pytest
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.application.runtime.service import RuntimeService
 from ouro.application.sessions.service import SessionService
 from ouro.config.prompts import PromptConfigManager, PromptDraft
@@ -15,10 +14,10 @@ from ouro.core.context_providers import (
 )
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
 from ouro.local_application import LocalApplication, build_local_runtime
-from ouro.local_configuration import RuntimeConfigurationResolver
+from ouro.local_configuration import RuntimeConfigurationResolver, build_local_configuration
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
 from tests.run_facts import run_events, run_tool_results
 
@@ -48,7 +47,7 @@ def _runtime(tmp_path, provider, **kwargs):
 
 @pytest.mark.parametrize("override", [None, "CLI base", ""])
 async def test_personal_prompts_reach_prepared_requests_in_order(tmp_path, override):
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     entries = (
         ("replacement", PromptDraft(text="Personal base\n", enabled=True)),
         (

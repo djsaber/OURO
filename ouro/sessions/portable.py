@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Self
+from typing import Protocol, Self
 
 from pydantic import ConfigDict, Field, model_validator
 
@@ -23,11 +23,11 @@ from ouro.core.message_content import materialize_message, validate_tool_message
 from ouro.core.messages import MessageFact
 from ouro.core.resources import SessionResourceReference
 from ouro.core.session_extensions import SessionExtensionStateRecord
+from ouro.core.session_ports import SessionRepository, SessionSnapshot, SessionStore
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolCallState, validate_call_states
 from ouro.core.tool_facts import ToolCallFacts
 from ouro.resources.media import validate_media_references
-from ouro.sessions.base import SessionRepository, SessionSnapshot
 from ouro.sessions.layout import DATA_LAYOUT_VERSION
 
 
@@ -266,3 +266,21 @@ def populate_sessions(
             raise PersistenceError("Session transfer failed snapshot verification")
     for delegation in bundle.delegations:
         target.create_delegation(delegation)
+
+
+class SessionTransferStore(SessionStore, Protocol):
+    """Session persistence with atomic archive publication."""
+
+    def import_bundle(
+        self,
+        bundle: SessionBundle,
+        *,
+        replace_session_ids: tuple[str, ...] = (),
+        resource_contents: Mapping[str, Mapping[str, bytes]] | None = None,
+    ) -> None:
+        """Publish a bundle, replacing explicitly selected trees with failure rollback.
+
+        The application owns execution locks and resolves complete target trees.
+        Other identity collisions are rejected at publication time.
+        """
+        ...

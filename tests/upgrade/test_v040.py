@@ -7,7 +7,8 @@ from contextlib import closing
 import pytest
 
 from ouro.billing.local import LocalUsageLedger
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro_upgrade.engine import upgrade
 from tests.upgrade.test_upgrade import hashes
 

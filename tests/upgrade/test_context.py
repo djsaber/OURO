@@ -11,7 +11,8 @@ import pytest
 from ouro.core.context import ContextMetrics
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.errors import PersistenceError
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro_upgrade import records
 from ouro_upgrade.engine import upgrade
 from ouro_upgrade.errors import UpgradeError

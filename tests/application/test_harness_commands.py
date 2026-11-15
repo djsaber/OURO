@@ -23,7 +23,8 @@ from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.plugins.registry import PluginCommandRegistry
 from ouro.sdk.plugins import v5 as sdk
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry
 
 OWNER = "example.command"

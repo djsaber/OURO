@@ -16,7 +16,8 @@ from ouro.core.tools import ToolCallRequest, ToolInvocation
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.providers import FauxProvider
 from ouro.sdk.plugins import v5 as sdk
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 from ouro.tools.builtin.todolist import builtin_todolist_tool
 from tests.application.helpers import running_runtime_task

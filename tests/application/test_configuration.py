@@ -4,13 +4,13 @@ import json
 
 import pytest
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.application.contracts.configuration import CompactionConfigInput, CredentialStatus
 from ouro.config import openai_chat_completions_effort_reasoning
 from ouro.config.prompts import PromptDraft
 from ouro.core.errors import ConfigError
 from ouro.core.reasoning import ReasoningRequest
 from ouro.local_application import LocalApplication
+from ouro.local_configuration import build_local_configuration
 from ouro.mcp import MCPServerConfigUpdate
 
 
@@ -33,7 +33,7 @@ def test_credential_availability_is_derived_from_state(state, configured, availa
 
 
 def test_configuration_overview_exposes_typed_defaults(tmp_path) -> None:
-    overview = ConfigurationFacade(tmp_path).overview()
+    overview = build_local_configuration(tmp_path).overview()
 
     assert overview.config_path.endswith("config.json")
     assert overview.providers.default_provider_id is None
@@ -52,7 +52,7 @@ def test_configuration_overview_exposes_typed_defaults(tmp_path) -> None:
 def test_mcp_configuration_is_exposed_only_through_redacted_application_views(
     tmp_path,
 ) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     saved = facade.save_mcp_server(
         None,
         MCPServerConfigUpdate(
@@ -80,7 +80,7 @@ def test_provider_commands_return_safe_views_and_explicit_effect_scope(
     tmp_path,
     monkeypatch,
 ) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     monkeypatch.delenv("GLM_API_KEY", raising=False)
 
     saved = facade.add_provider(
@@ -124,7 +124,7 @@ def test_provider_commands_return_safe_views_and_explicit_effect_scope(
 
 @pytest.mark.parametrize("secret", ("inline-secret", "env:LITERAL_API_KEY"))
 def test_inline_provider_credential_is_never_exposed(tmp_path, secret) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     created = facade.add_provider(
         display_name="Local",
         provider_type="custom",
@@ -144,7 +144,7 @@ def test_inline_provider_credential_is_never_exposed(tmp_path, secret) -> None:
 
 
 def test_configuration_section_commands_preserve_other_sections(tmp_path) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
 
     prompt = facade.save_prompt(
         "replacement",
@@ -179,7 +179,7 @@ def test_configuration_section_commands_preserve_other_sections(tmp_path) -> Non
     assert agents.change.effective_from == "next_runtime"
     assert compaction.model.max_output_tokens == 2048
 
-    overview = ConfigurationFacade(tmp_path).overview()
+    overview = build_local_configuration(tmp_path).overview()
     assert overview.prompt.config.system_prompt == "Custom prompt"
     assert overview.permissions.tools == {"Bash": "approval"}
     assert overview.permissions.plugins == {"dev.ouro.deploy": "deny"}
@@ -190,7 +190,7 @@ def test_configuration_section_commands_preserve_other_sections(tmp_path) -> Non
 
 
 def test_complete_compaction_configuration_is_saved_atomically(tmp_path) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
 
     saved = facade.save_compaction(
         CompactionConfigInput(
@@ -226,7 +226,7 @@ def test_complete_compaction_configuration_is_saved_atomically(tmp_path) -> None
 
 
 def test_compaction_overrides_are_validated_against_fixed_endpoint_capabilities(tmp_path) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     created = facade.add_provider(
         display_name="GLM",
         provider_type="custom",
@@ -267,7 +267,7 @@ def test_compaction_overrides_are_validated_against_fixed_endpoint_capabilities(
 
 
 def test_invalid_agent_runtime_update_does_not_change_persisted_state(tmp_path) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     before = facade.agent_runtime_config()
 
     with pytest.raises(ConfigError, match="invalid Agent runtime config"):
@@ -278,7 +278,7 @@ def test_invalid_agent_runtime_update_does_not_change_persisted_state(tmp_path) 
 
 
 def test_agent_runtime_update_exposes_the_complete_spawn_policy(tmp_path) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
 
     updated = facade.update_agent_runtime(
         expected_revision=0,
@@ -299,7 +299,7 @@ def test_agent_runtime_update_exposes_the_complete_spawn_policy(tmp_path) -> Non
 
 @pytest.mark.asyncio
 async def test_agent_runtime_config_is_applied_by_local_composition_root(tmp_path) -> None:
-    ConfigurationFacade(tmp_path).update_agent_runtime(
+    build_local_configuration(tmp_path).update_agent_runtime(
         expected_revision=0,
         allowed_agent_id_patterns=("review-*",),
     )
@@ -318,7 +318,7 @@ async def test_agent_runtime_config_is_applied_by_local_composition_root(tmp_pat
 
 
 def test_invalid_configuration_mutation_does_not_change_persisted_state(tmp_path) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     created = facade.add_provider(
         display_name="GLM",
         provider_type="custom",
@@ -347,7 +347,7 @@ def test_provider_template_catalog_exposes_deprecated_and_filters_disabled(
     import ouro.config.providers.template_store as store_module
     from ouro.config.provider_templates import provider_templates
 
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     facade.provider_template_catalog()
     template_path = tmp_path / "config" / "provider-templates.json"
     without_mistral = tuple(
@@ -376,7 +376,7 @@ def test_provider_template_catalog_exposes_deprecated_and_filters_disabled(
 
 
 def test_restore_provider_template_returns_inline_view(tmp_path) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     template_path = tmp_path / "config" / "provider-templates.json"
     facade.provider_template_catalog()
     root = json.loads(template_path.read_text(encoding="utf-8"))
@@ -393,7 +393,7 @@ def test_restore_provider_template_returns_inline_view(tmp_path) -> None:
 def test_provider_templates_are_typed_and_apply_provider_endpoint_atomically(
     tmp_path,
 ) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     facade.save_prompt(
         "replacement",
         PromptDraft(text="Keep this section", enabled=True),
@@ -446,11 +446,14 @@ def test_provider_templates_are_typed_and_apply_provider_endpoint_atomically(
     assert provider.default_endpoint is not None
     assert facade.endpoint(provider_id, provider.default_endpoint).model_id == "gemini-3.8-flash"
     assert provider.credential.reference == "none"
-    assert ConfigurationFacade(tmp_path).system_prompt().config.system_prompt == "Keep this section"
+    assert (
+        build_local_configuration(tmp_path).system_prompt().config.system_prompt
+        == "Keep this section"
+    )
 
 
 def test_provider_template_reapply_preserves_other_endpoints_and_credential(tmp_path) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     created = facade.add_provider(
         display_name="Primary",
         provider_type="openai",
@@ -483,7 +486,7 @@ def test_provider_template_reapply_preserves_other_endpoints_and_credential(tmp_
 
 
 def test_provider_update_returns_template_merge_report_and_tracking_state(tmp_path) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     created = facade.add_provider(display_name="Primary", provider_type="openai")
     provider_id = created.changed_provider_id
     assert provider_id is not None
@@ -518,7 +521,7 @@ def test_removed_provider_template_rejects_update_without_changing_provider(
     import ouro.config.providers.template_store as store_module
     from ouro.config.provider_templates import provider_templates
 
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     created = facade.add_provider(display_name="Primary", provider_type="openai")
     provider_id = created.changed_provider_id
     assert provider_id is not None
@@ -536,7 +539,7 @@ def test_removed_provider_template_rejects_update_without_changing_provider(
 
 
 def test_provider_settings_update_preserves_integrated_endpoint_registry(tmp_path) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     created = facade.add_provider(display_name="Primary", provider_type="openai")
     provider_id = created.changed_provider_id
     assert provider_id is not None
@@ -562,7 +565,7 @@ def test_provider_settings_update_preserves_integrated_endpoint_registry(tmp_pat
 
 
 def test_provider_settings_reject_disabling_the_default_provider(tmp_path) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     created = facade.add_provider(display_name="Primary", provider_type="openai", make_default=True)
     provider_id = created.changed_provider_id
     assert provider_id is not None
@@ -574,7 +577,7 @@ def test_provider_settings_reject_disabling_the_default_provider(tmp_path) -> No
 
 
 def test_using_endpoint_atomically_updates_the_default_provider_route(tmp_path) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     provider_ids: dict[str, str] = {}
     endpoint_ids: dict[str, str] = {}
     for provider_name in ("primary", "secondary"):
@@ -608,7 +611,7 @@ def test_using_endpoint_atomically_updates_the_default_provider_route(tmp_path) 
 
 
 def test_using_endpoint_rejects_disabled_provider_without_partial_update(tmp_path) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     primary = facade.add_provider(display_name="Primary", provider_type="openai", make_default=True)
     disabled = facade.add_provider(
         display_name="Disabled",
@@ -636,7 +639,7 @@ def test_using_endpoint_rejects_disabled_provider_without_partial_update(tmp_pat
 def test_provider_template_model_override_keeps_generated_endpoint_registry(
     tmp_path,
 ) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
 
     created = facade.add_provider(
         display_name="OpenAI",
@@ -663,7 +666,7 @@ def test_provider_template_model_override_keeps_generated_endpoint_registry(
 
 
 def test_generated_provider_and_endpoint_ids_avoid_user_configured_collisions(tmp_path) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
 
     first = facade.add_provider(display_name="OpenAI", provider_type="openai")
     second = facade.add_provider(display_name="OpenAI", provider_type="openai")
@@ -689,7 +692,7 @@ def test_generated_provider_and_endpoint_ids_avoid_user_configured_collisions(tm
 
 
 def test_integrated_provider_update_is_detected_from_persisted_type(tmp_path) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     created = facade.add_provider(display_name="Primary", provider_type="anthropic")
     provider_id = created.changed_provider_id
     assert provider_id is not None
@@ -703,7 +706,7 @@ def test_integrated_provider_update_is_detected_from_persisted_type(tmp_path) ->
 
 
 def test_provider_create_and_explicit_replace_keep_internal_identity(tmp_path) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     created = facade.add_provider(display_name="Primary", provider_type="anthropic")
     provider_id = created.changed_provider_id
     assert provider_id is not None
@@ -738,7 +741,7 @@ def test_skill_queries_and_management_use_application_dtos(tmp_path) -> None:
         "---\nname: echo\ndescription: Echo guidance\n---\n\nUse echo carefully.\n",
         encoding="utf-8",
     )
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
 
     catalog = facade.skill_catalog()
     loaded = facade.skill("echo")
@@ -758,7 +761,7 @@ def test_skill_queries_and_management_use_application_dtos(tmp_path) -> None:
 
 
 def test_skill_discovery_policy_updates_application_view(tmp_path) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
 
     policy = facade.update_skill_discovery(
         source_updates={"ouro.user": False, "claude.workspace": False}

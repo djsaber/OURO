@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,7 @@ from rich.text import Text
 from textual.pilot import Pilot
 from textual.widgets import Input, OptionList, Static
 
-from ouro.application.configuration.facade import ConfigurationFacade
+from ouro.local_configuration import build_local_configuration
 from ouro.mcp import MCPManager, MCPRuntimeResource, MCPServerConfig, MCPServerConfigUpdate
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
@@ -144,6 +145,9 @@ async def test_mcp_catalog_can_create_edit_and_delete_its_last_entry(
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
     notices: list[str] = []
     monkeypatch.setattr(app, "notify", lambda message, **_: notices.append(message))
+    monkeypatch.setattr(
+        app._configuration, "_ui", replace(app._configuration._ui, notify=app.notify)
+    )
     async with run_ready_app(app, size=(100, 34)) as pilot:
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -183,7 +187,7 @@ async def test_mcp_catalog_can_create_edit_and_delete_its_last_entry(
         # finishes saving, reconciling runtime state, and refreshing its rows.
         await wait_for_menu_action(pilot, menu)
         assert app.screen is menu
-        server_id = ConfigurationFacade(tmp_path).mcp_server_by_name("Local").server_id
+        server_id = build_local_configuration(tmp_path).mcp_server_by_name("Local").server_id
         assert [choice.value for choice in menu._choices] == [server_id, "+"]
         options = menu.query_one(OptionList)
         options.highlighted = options.get_option_index(server_id)
@@ -225,7 +229,7 @@ async def test_mcp_catalog_can_create_edit_and_delete_its_last_entry(
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="MCP • Renamed")
         await wait_for_menu_action(pilot, menu)
-        assert ConfigurationFacade(tmp_path).mcp_server(server_id).name == "Renamed"
+        assert build_local_configuration(tmp_path).mcp_server(server_id).name == "Renamed"
         await pilot.press("enter")
         await _wait_for_screen(app, ConfirmationScreen, title="CONFIRM DELETE MCP")
         await pilot.press("down", "enter")
@@ -246,7 +250,7 @@ async def test_mcp_connect_runs_in_background_and_contains_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    saved = ConfigurationFacade(tmp_path).set_mcp_server_by_name(
+    saved = build_local_configuration(tmp_path).set_mcp_server_by_name(
         "local",
         MCPServerConfigUpdate(command="unused-in-test", auto_start=False),
     )
@@ -320,7 +324,7 @@ async def test_mcp_disconnect_runs_in_background_and_refreshes_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    saved = ConfigurationFacade(tmp_path).set_mcp_server_by_name(
+    saved = build_local_configuration(tmp_path).set_mcp_server_by_name(
         "local",
         MCPServerConfigUpdate(command="unused-in-test", auto_start=False),
     )
@@ -386,7 +390,7 @@ async def test_mcp_disconnect_then_connect_survives_closed_action_menus(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    saved = ConfigurationFacade(tmp_path).set_mcp_server_by_name(
+    saved = build_local_configuration(tmp_path).set_mcp_server_by_name(
         "local",
         MCPServerConfigUpdate(command="unused-in-test", auto_start=False),
     )
@@ -466,7 +470,7 @@ async def test_mcp_disconnect_then_connect_survives_closed_action_menus(
 
 @pytest.mark.asyncio
 async def test_tool_permissions_group_all_registered_sources(tmp_path: Path) -> None:
-    ConfigurationFacade(tmp_path).set_tool_permission("UnavailableTest", "deny")
+    build_local_configuration(tmp_path).set_tool_permission("UnavailableTest", "deny")
     app = OuroTuiApp(home=tmp_path, application=_application_with_tool_sources(tmp_path))
 
     async with run_ready_app(app, size=(100, 34)) as pilot:
@@ -550,7 +554,9 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
             == "Allow automatically"
         )
         assert not list(app.screen.query("Toast"))
-        assert ConfigurationFacade(tmp_path).permission_config().tools["BuiltinTest"] == "auto"
+        assert (
+            build_local_configuration(tmp_path).permission_config().tools["BuiltinTest"] == "auto"
+        )
 
         await pilot.press("enter")
         await _wait_for_screen(
@@ -574,7 +580,7 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
             == "Default • Ask for approval"
         )
         assert not list(app.screen.query("Toast"))
-        assert "BuiltinTest" not in ConfigurationFacade(tmp_path).permission_config().tools
+        assert "BuiltinTest" not in build_local_configuration(tmp_path).permission_config().tools
 
 
 @pytest.mark.parametrize(
@@ -598,7 +604,7 @@ def test_mcp_management_menu_keeps_stable_actions_and_disables_unavailable_ones(
     runtime_status: str | None,
     selectable_runtime_actions: set[str],
 ) -> None:
-    saved = ConfigurationFacade(tmp_path).set_mcp_server_by_name(
+    saved = build_local_configuration(tmp_path).set_mcp_server_by_name(
         "local",
         MCPServerConfigUpdate(command="python", enabled=enabled, auto_start=False),
     )
@@ -640,7 +646,7 @@ def test_mcp_management_menu_keeps_stable_actions_and_disables_unavailable_ones(
 
 @pytest.mark.asyncio
 async def test_mcp_management_returns_to_catalog_after_deletion(tmp_path: Path) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     for name in ("keep", "remove"):
         configuration.set_mcp_server_by_name(
             name,
@@ -676,7 +682,7 @@ async def test_mcp_management_returns_to_catalog_after_deletion(tmp_path: Path) 
 async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
     tmp_path: Path,
 ) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     saved = configuration.set_mcp_server_by_name(
         "local",
         MCPServerConfigUpdate(

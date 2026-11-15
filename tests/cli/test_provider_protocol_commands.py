@@ -4,13 +4,13 @@ import json
 
 import pytest
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.cli.main import main
 from ouro.config import ProviderConfigManager, ProviderRuntimeOptions
+from ouro.local_configuration import build_local_configuration
 
 
 def test_history_reasoning_field_can_be_set_preserved_and_cleared(tmp_path, capsys):
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     provider_id = facade.add_provider(
         display_name="Gateway",
         provider_type="custom",
@@ -72,7 +72,7 @@ def test_history_reasoning_field_can_be_set_preserved_and_cleared(tmp_path, caps
 
 
 def test_endpoint_media_flags_persist_and_update_independently(tmp_path, capsys):
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     provider_id = facade.add_provider(
         display_name="Media",
         provider_type="custom",
@@ -162,7 +162,7 @@ def test_custom_provider_creation_update_and_replacement(
     assert provider["api_path"] == api_path
     assert provider["endpoint_count"] == 0
 
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     endpoints = facade.add_endpoint(provider_id, display_name="Chat", model="custom-model")
     endpoint_id = endpoints.changed_endpoint_id
     assert endpoint_id is not None
@@ -187,7 +187,7 @@ def test_custom_provider_creation_update_and_replacement(
         == 0
     )
     capsys.readouterr()
-    saved = ConfigurationFacade(tmp_path).provider(provider_id)
+    saved = build_local_configuration(tmp_path).provider(provider_id)
     assert saved.protocol == protocol
     assert saved.api_path == api_path
     assert saved.endpoint_count == 1
@@ -212,7 +212,7 @@ def test_custom_provider_creation_update_and_replacement(
         == 0
     )
     capsys.readouterr()
-    saved = ConfigurationFacade(tmp_path).provider(provider_id)
+    saved = build_local_configuration(tmp_path).provider(provider_id)
     assert saved.protocol == "openai-chat-completions"
     assert saved.api_path is None
     assert saved.endpoint_count == 0
@@ -220,7 +220,7 @@ def test_custom_provider_creation_update_and_replacement(
 
 @pytest.mark.parametrize("operation", ["add", "replace"])
 def test_custom_provider_requires_explicit_protocol_without_writing(tmp_path, capsys, operation):
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     created = facade.add_provider(display_name="Existing", provider_type="anthropic")
     provider_id = created.changed_provider_id
     assert provider_id is not None
@@ -252,7 +252,7 @@ def test_rejected_protocol_selection_preserves_configuration(
     operation,
     provider_type,
 ):
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     created = facade.add_provider(display_name="Existing", provider_type="anthropic")
     provider_id = created.changed_provider_id
     assert provider_id is not None
@@ -282,7 +282,7 @@ def test_rejected_protocol_selection_preserves_configuration(
 
 
 def test_replace_custom_provider_with_responses(tmp_path, capsys):
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     created = facade.add_provider(display_name="Gateway", provider_type="anthropic")
     provider_id = created.changed_provider_id
     assert provider_id is not None

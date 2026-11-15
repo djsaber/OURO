@@ -8,8 +8,8 @@ import pytest
 
 from ouro.core.errors import UnsupportedDataVersionError
 from ouro.core.state import SessionRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
-from ouro.sessions.backends.sqlite.store import SQLITE_SCHEMA_VERSION
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLITE_SCHEMA_VERSION, SQLiteSessionStore
 from ouro.sessions.layout import DATA_LAYOUT_VERSION
 
 

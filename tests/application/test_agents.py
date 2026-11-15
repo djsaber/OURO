@@ -47,7 +47,8 @@ from ouro.core.tools import ToolInvocation
 from ouro.providers.anthropic_messages.codec import messages_to_anthropic_messages
 from ouro.providers.openai_responses.codec import responses_input
 from ouro.resources import LocalResourceStore
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolInputRequest, ToolRegistry, ToolResult
 from tests.application.helpers import (
     wait_for_agent_interactions,

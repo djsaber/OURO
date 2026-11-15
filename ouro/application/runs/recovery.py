@@ -5,10 +5,10 @@ from ouro.application.runs.lifecycle import RunLifecycle
 from ouro.application.runs.tool_batches import load_tool_batch
 from ouro.core.base import utc_now
 from ouro.core.callbacks import run_blocking
+from ouro.core.session_ports import RuntimeSessionSnapshot, SessionRepository
 from ouro.core.state import RESUMABLE_RUN_STATUSES
 from ouro.core.tool_batches import ToolBatchCall
 from ouro.core.tools import ToolResult, ToolResultFeedback, ToolResultValue
-from ouro.sessions import RuntimeSessionSnapshot, SessionRepository
 
 
 class RunRecoveryService:

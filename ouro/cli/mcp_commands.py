@@ -5,9 +5,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.cli.errors import error_exit_code
 from ouro.core.errors import OuroError
+from ouro.local_configuration import build_local_configuration
 from ouro.mcp import MCPServerConfigUpdate
 
 
@@ -17,7 +17,7 @@ def list_mcp_configs(
     json_mode: bool = False,
 ) -> int:
     try:
-        snapshot = ConfigurationFacade(home).mcp_catalog()
+        snapshot = build_local_configuration(home).mcp_catalog()
     except OuroError as exc:
         _print_mcp_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
@@ -52,7 +52,7 @@ def show_mcp_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        facade = ConfigurationFacade(home)
+        facade = build_local_configuration(home)
         config = facade.mcp_server_by_name(server_name)
     except OuroError as exc:
         _print_mcp_error(exc, json_mode=json_mode)
@@ -94,7 +94,7 @@ def set_mcp_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        facade = ConfigurationFacade(home)
+        facade = build_local_configuration(home)
         config = facade.set_mcp_server_by_name(server_name, update)
     except OuroError as exc:
         _print_mcp_error(exc, json_mode=json_mode)
@@ -119,7 +119,7 @@ def remove_mcp_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        facade = ConfigurationFacade(home)
+        facade = build_local_configuration(home)
         config = facade.mcp_server_by_name(server_name)
         catalog = facade.remove_mcp_server(config.server_id)
     except OuroError as exc:
@@ -144,7 +144,7 @@ async def check_mcp_connection(
     json_mode: bool = False,
 ) -> int:
     try:
-        facade = ConfigurationFacade(home)
+        facade = build_local_configuration(home)
         config = facade.mcp_server_by_name(server_name)
         check = await facade.check_mcp_server(config.server_id)
     except OuroError as exc:

@@ -5,7 +5,6 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.application.contracts.configuration import (
     LoadedSkillView,
     SkillDiagnosticView,
@@ -15,6 +14,7 @@ from ouro.application.contracts.configuration import (
 )
 from ouro.config.skills import SkillInstallScope
 from ouro.core.errors import ConfigError, OuroError
+from ouro.local_configuration import build_local_configuration
 
 
 def list_skills(
@@ -24,7 +24,7 @@ def list_skills(
     include_disabled: bool = False,
 ) -> int:
     try:
-        catalog = ConfigurationFacade(home).skill_catalog(include_disabled=include_disabled)
+        catalog = build_local_configuration(home).skill_catalog(include_disabled=include_disabled)
     except OuroError as exc:
         _print_skill_error(str(exc), json_mode=json_mode)
         return 1
@@ -77,7 +77,7 @@ def show_skill(
     json_mode: bool = False,
 ) -> int:
     try:
-        loaded = ConfigurationFacade(home).skill(name)
+        loaded = build_local_configuration(home).skill(name)
     except ConfigError as exc:
         _print_skill_error(str(exc), json_mode=json_mode)
         return 1
@@ -123,7 +123,7 @@ def show_skill_roots(
     json_mode: bool = False,
 ) -> int:
     try:
-        roots = ConfigurationFacade(home).skill_roots()
+        roots = build_local_configuration(home).skill_roots()
     except OuroError as exc:
         _print_skill_error(str(exc), json_mode=json_mode)
         return 1
@@ -154,7 +154,7 @@ def show_skills_prompt(
     json_mode: bool = False,
 ) -> int:
     try:
-        prompt = ConfigurationFacade(home).skills_prompt()
+        prompt = build_local_configuration(home).skills_prompt()
     except OuroError as exc:
         _print_skill_error(str(exc), json_mode=json_mode)
         return 1
@@ -182,7 +182,7 @@ def validate_skills(
     json_mode: bool = False,
 ) -> int:
     try:
-        result = ConfigurationFacade(home).validate_skills(path)
+        result = build_local_configuration(home).validate_skills(path)
     except OuroError as exc:
         _print_skill_error(str(exc), json_mode=json_mode)
         return 1
@@ -213,7 +213,7 @@ def install_skills(
     json_mode: bool = False,
 ) -> int:
     return _run_management(
-        lambda: ConfigurationFacade(home).install_skills(
+        lambda: build_local_configuration(home).install_skills(
             source,
             scope=scope,
             selector=selector,
@@ -232,7 +232,7 @@ def update_skill(
     json_mode: bool = False,
 ) -> int:
     return _run_management(
-        lambda: ConfigurationFacade(home).update_skill(name),
+        lambda: build_local_configuration(home).update_skill(name),
         json_mode=json_mode,
     )
 
@@ -245,7 +245,7 @@ def remove_skill(
     json_mode: bool = False,
 ) -> int:
     return _run_management(
-        lambda: ConfigurationFacade(home).remove_skill(name, force=force),
+        lambda: build_local_configuration(home).remove_skill(name, force=force),
         json_mode=json_mode,
     )
 
@@ -258,7 +258,7 @@ def set_skill_enabled(
     json_mode: bool = False,
 ) -> int:
     return _run_management(
-        lambda: ConfigurationFacade(home).set_skill_enabled(name, enabled=enabled),
+        lambda: build_local_configuration(home).set_skill_enabled(name, enabled=enabled),
         json_mode=json_mode,
     )
 

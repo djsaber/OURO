@@ -13,9 +13,10 @@ from ouro.core.errors import PersistenceError, SessionRecoveryRequiredError
 from ouro.core.messages import InputMessageReference, MessageFact, MessageRecord
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict
 from ouro.core.state import SessionRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.backends.files.commits import FileSessionCommits
 from ouro.sessions.backends.files.message_locations import FileMessageIndex
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.input_facts import append_input_messages, input_snapshot, message_request
 from tests.session_storage import session_connection
 

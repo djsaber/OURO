@@ -12,7 +12,8 @@ from ouro.providers import (
     OpenAIResponsesProvider,
 )
 from ouro.providers.http_transport import HttpxProviderHTTPTransport
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry
 from tests.providers.responses_fixtures import message, terminal
 

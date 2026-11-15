@@ -7,8 +7,8 @@ from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.model_execution import ModelExecutionResult
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict, SessionCommitStep
+from ouro.core.session_ports import SessionStore
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
-from ouro.sessions import SessionStore
 
 MAX_TOOL_ARGUMENT_RETRIES = 2
 

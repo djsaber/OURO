@@ -23,7 +23,8 @@ from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderCompletion, ProviderStreamEvent, Usage
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry
 from tests.context_facts import save_context
 

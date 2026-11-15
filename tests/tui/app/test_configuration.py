@@ -10,7 +10,7 @@ from rich.text import Text
 from textual.containers import Vertical
 from textual.widgets import Input, OptionList
 
-from ouro.application.configuration.facade import ConfigurationFacade
+from ouro.local_configuration import build_local_configuration
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.features.configuration.compaction import CompactionConfigurationScreen
 from ouro.tui.menus.choice import ChoiceScreen
@@ -130,7 +130,7 @@ async def test_action_list_and_help_pages_render_once_on_the_shared_surface(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     configuration.add_provider(
         display_name="Custom",
         provider_type="custom",

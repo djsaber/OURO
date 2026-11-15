@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import AbortSignal, settle_owned_tasks
 from ouro.core.results import RunResult
+from ouro.core.session_ports import SessionLock, SessionStore
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, RunStatus, SessionRecord
-from ouro.sessions import SessionLock, SessionStore
 
 
 @dataclass

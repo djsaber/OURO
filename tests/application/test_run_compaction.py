@@ -20,7 +20,7 @@ from ouro.core.run_budget import RunBudgetPolicy
 from ouro.providers.anthropic_messages.codec import messages_to_anthropic_messages
 from ouro.providers.openai_chat_completions.codec import messages_to_chat_completions
 from ouro.providers.openai_responses.codec import responses_input
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.skills import SkillLoader
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 from tests.event_capture import recorded_events

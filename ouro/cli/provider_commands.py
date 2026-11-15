@@ -6,7 +6,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal, Unpack
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.application.contracts.configuration import (
     ProviderEndpointView,
     ProviderTemplateUpdateView,
@@ -21,6 +20,7 @@ from ouro.core.base import new_id
 from ouro.core.errors import OuroError
 from ouro.core.request_context import ProviderRequestContext
 from ouro.local_application import open_local_provider_runtime
+from ouro.local_configuration import build_local_configuration
 
 
 async def check_provider_connection(
@@ -80,7 +80,7 @@ def list_provider_configs(
     json_mode: bool = False,
 ) -> int:
     try:
-        catalog = ConfigurationFacade(home).provider_catalog()
+        catalog = build_local_configuration(home).provider_catalog()
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
@@ -122,7 +122,7 @@ def list_provider_templates(
     json_mode: bool = False,
 ) -> int:
     try:
-        facade = ConfigurationFacade(home)
+        facade = build_local_configuration(home)
         catalog = facade.provider_template_catalog()
         templates = (
             [facade.provider_template(template_id)]
@@ -175,7 +175,7 @@ def restore_provider_template(
     json_mode: bool = False,
 ) -> int:
     try:
-        facade = ConfigurationFacade(home)
+        facade = build_local_configuration(home)
         template = facade.restore_provider_template(template_id)
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
@@ -204,7 +204,7 @@ def show_provider_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        facade = ConfigurationFacade(home)
+        facade = build_local_configuration(home)
         provider = facade.provider(provider_id)
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
@@ -271,7 +271,7 @@ def mutate_provider_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        facade = ConfigurationFacade(home)
+        facade = build_local_configuration(home)
         if operation == "update":
             if provider_id is None:
                 raise AssertionError("provider id is required for update")
@@ -389,7 +389,7 @@ def use_provider_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        catalog = ConfigurationFacade(home).use_provider(provider_id)
+        catalog = build_local_configuration(home).use_provider(provider_id)
         provider = next(item for item in catalog.providers if item.provider_id == provider_id)
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
@@ -420,7 +420,7 @@ def remove_provider_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        catalog = ConfigurationFacade(home).remove_provider(provider_id)
+        catalog = build_local_configuration(home).remove_provider(provider_id)
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
@@ -449,7 +449,7 @@ def list_provider_endpoints(
     json_mode: bool = False,
 ) -> int:
     try:
-        catalog = ConfigurationFacade(home).endpoint_catalog(provider_id)
+        catalog = build_local_configuration(home).endpoint_catalog(provider_id)
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
@@ -492,7 +492,7 @@ def show_provider_endpoint(
     json_mode: bool = False,
 ) -> int:
     try:
-        endpoint = ConfigurationFacade(home).endpoint(provider_id, endpoint_id)
+        endpoint = build_local_configuration(home).endpoint(provider_id, endpoint_id)
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
@@ -545,7 +545,7 @@ def create_provider_endpoint(
     json_mode: bool = False,
 ) -> int:
     try:
-        catalog = ConfigurationFacade(home).add_endpoint(
+        catalog = build_local_configuration(home).add_endpoint(
             provider_id,
             display_name=display_name,
             model=model,
@@ -602,7 +602,7 @@ def update_provider_endpoint(
     **changes: Unpack[EndpointChanges],
 ) -> int:
     try:
-        catalog = ConfigurationFacade(home).update_endpoint(
+        catalog = build_local_configuration(home).update_endpoint(
             provider_id, endpoint_id, make_default=make_default, **changes
         )
         endpoint = next(item for item in catalog.endpoints if item.endpoint_id == endpoint_id)
@@ -638,7 +638,7 @@ def use_provider_endpoint(
     json_mode: bool = False,
 ) -> int:
     try:
-        catalog = ConfigurationFacade(home).use_endpoint(provider_id, endpoint_id)
+        catalog = build_local_configuration(home).use_endpoint(provider_id, endpoint_id)
         endpoint = next(item for item in catalog.endpoints if item.endpoint_id == endpoint_id)
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
@@ -667,7 +667,7 @@ def remove_provider_endpoint(
     json_mode: bool = False,
 ) -> int:
     try:
-        facade = ConfigurationFacade(home)
+        facade = build_local_configuration(home)
         catalog = facade.remove_endpoint(provider_id, endpoint_id)
         providers = facade.provider_catalog()
     except OuroError as exc:

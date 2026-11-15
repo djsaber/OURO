@@ -29,7 +29,8 @@ from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_
 from ouro.plugins.harness_calls import PluginStateView
 from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry
 
 OWNER = "example.goal"

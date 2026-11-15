@@ -5,7 +5,6 @@ import asyncio
 import pytest
 
 import ouro.application.context.summary as compaction_module
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.application.context.summary import LLMSummaryCompactionStrategy
 from ouro.application.resources import ResourceService
 from ouro.application.runtime.service import RuntimeService
@@ -38,9 +37,10 @@ from ouro.core.provider import (
 )
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.core.state import SessionRecord
-from ouro.local_configuration import RuntimeConfigurationResolver
+from ouro.local_configuration import RuntimeConfigurationResolver, build_local_configuration
 from ouro.resources import LocalResourceStore
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry
 from tests.event_capture import recorded_events
 from tests.run_facts import run_events
@@ -280,7 +280,7 @@ def _append_turns(
 
 
 def test_default_compaction_route_tracks_explicit_system_selection(tmp_path) -> None:
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     primary = facade.add_provider(display_name="Primary", provider_type="openai", make_default=True)
     assert primary.changed_provider_id is not None
     facade.update_compaction_model(use_default_model=True)

@@ -1,28 +1,22 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from functools import partial
 from typing import cast
-
-from textual import work
-from textual.worker import Worker
 
 from ouro.application.contracts.agents import AgentDefinitionCatalogView, AgentDefinitionView
 from ouro.application.contracts.configuration import MCPServerConfigView, SkillPolicyView, SkillView
 from ouro.config import QueuedInputConsumptionMode
 from ouro.core.tools import PermissionMode
-from ouro.tui.controller import TuiController
-from ouro.tui.conversation.view import ConversationView
-from ouro.tui.features.prompts.workflows import PromptWorkflows
 from ouro.tui.features.providers.model_menus import model_selection_label
-from ouro.tui.features.transfer.workflows import DataTransferWorkflow
-from ouro.tui.menus.choice import ChoiceScreen, loading_menu
+from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.confirmation import ConfirmationScreen
 from ouro.tui.menus.labels import PERMISSION_LABELS
 from ouro.tui.menus.models import Choice
 from ouro.tui.menus.sorting import display_sort_key, sorted_agent_definitions
-from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
+from ouro.tui.menus.workflows import WorkflowNavigation
+from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme
 from ouro.tui.view_models import (
     McpServerStatus,
     TuiAgentDefinitionConfiguration,
@@ -30,7 +24,6 @@ from ouro.tui.view_models import (
     TuiCompactionConfiguration,
     TuiMCPServerConfiguration,
     TuiSkillInstallConfiguration,
-    TuiSystemStatus,
     TuiToolConfiguration,
     TuiToolExecutionConfiguration,
 )
@@ -103,89 +96,25 @@ _TOOL_SOURCE_GROUPS = {
 _TOOL_SOURCE_ORDER = {source: index for index, source in enumerate(_TOOL_SOURCE_GROUPS)}
 
 
-class ConfigurationWorkflowsApp(PromptWorkflows):
-    _data_transfer: DataTransferWorkflow
-
+class ConfigurationWorkflows:
     """Own the keyboard-first TUI workflows for durable configuration."""
 
-    _controller: TuiController
-    _system_status: TuiSystemStatus
-
-    _sync_mcp_status: Callable[[], None]
-
-    @work(exclusive=True, group="navigation")
-    async def _run_system_setting(
+    def __init__(
         self,
-        action_id: str,
+        navigation: WorkflowNavigation,
         *,
-        menu: ChoiceScreen | None = None,
+        sync_mcp_status: Callable[[], None],
+        manage_plugin: Callable[..., Awaitable[None]],
     ) -> None:
-        if action_id == "tasks.list":
-            await self._choose_tasks(menu=menu)
-        elif action_id == "tasks.create":
-            await self._edit_task(None, menu=menu)
-        elif action_id == "tasks.refresh":
-            await self._sync_task_status()
-            self.notify(
-                self._system_status.task_error or "Task status updated",
-                severity="error" if self._system_status.task_error else "information",
-                markup=False,
-            )
-        elif action_id == "data.transfer":
-            self._data_transfer.choose(menu=menu)
-        elif action_id == "prompts.manage":
-            await self._configure_prompts(menu=menu)
-        elif action_id == "tools.permissions":
-            await self._choose_tools(menu=menu)
-        elif action_id == "tools.execution":
-            await self._configure_tool_execution(menu=menu)
-        elif action_id == "agents.list":
-            await self._choose_agent_definitions(menu=menu)
-        elif action_id == "agents.policy":
-            await self._configure_agent_policy(menu=menu)
-        elif action_id == "agents.create":
-            await self._create_agent_definition(menu=menu)
-        elif action_id == "providers.list":
-            await self._choose_providers(menu=menu)
-        elif action_id == "providers.add":
-            await self._add_provider(menu=menu)
-        elif action_id.startswith("providers.endpoints."):
-            await self._choose_endpoint_action(
-                action_id.removeprefix("providers.endpoints."),
-                menu=menu,
-            )
-        elif action_id == "plugins.list":
-            await self._choose_plugins(menu=menu)
-        elif action_id == "plugins.install":
-            await self._install_plugin(menu=menu)
-        elif action_id == "mcp.list":
-            await self._choose_mcp(menu=menu)
-        elif action_id == "mcp.add":
-            await self._edit_mcp(None, menu=menu)
-        elif action_id == "skills.list":
-            await self._choose_skills(menu=menu)
-        elif action_id == "skills.install":
-            await self._install_skill(menu=menu)
-        elif action_id == "skills.sources":
-            await self._configure_skill_sources(menu=menu)
-        elif action_id.startswith("skills."):
-            await self._choose_skill_action(action_id.removeprefix("skills."), menu=menu)
-        elif action_id == "queued_inputs.delivery":
-            await self._configure_queued_inputs(menu=menu)
-        elif action_id == "compaction.policy":
-            await self._configure_compaction(menu=menu)
-        else:
-            available = "|".join(action.action_id for action in SYSTEM_SETTING_ACTIONS)
-            await self.query_one(ConversationView).add_notice(
-                f"Unknown system setting action: {action_id}. Available: {available}",
-                error=True,
-            )
+        self._ui = navigation
+        self._sync_mcp_status = sync_mcp_status
+        self._manage_plugin = manage_plugin
 
     async def _configure_queued_inputs(self, *, menu: ChoiceScreen | None = None) -> None:
         try:
-            config = await self._controller.queued_input_configuration()
+            config = await self._ui.controller().queued_input_configuration()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
 
         def choices(selected: QueuedInputConsumptionMode) -> tuple[Choice, ...]:
@@ -194,7 +123,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                     mode,
                     label,
                     trailing=_QUEUED_INPUT_CONSUMPTION_DETAILS[mode],
-                    marker=(theme_for(self).selected_choice_marker if mode == selected else ""),
+                    marker=(self._ui.theme().selected_choice_marker if mode == selected else ""),
                 )
                 for mode, label in _QUEUED_INPUT_CONSUMPTION_LABELS.items()
             )
@@ -202,11 +131,11 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         async def select_mode(value: str) -> tuple[Choice, ...] | None:
             try:
                 mode = cast(QueuedInputConsumptionMode, value)
-                saved = await self._controller.update_queued_input_consumption(mode)
+                saved = await self._ui.controller().update_queued_input_consumption(mode)
             except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                await self._ui.notice(str(exc), error=True)
                 return None
-            self.notify(
+            self._ui.notify(
                 f"Queued messages: {_QUEUED_INPUT_CONSUMPTION_LABELS[saved.consumption_mode]}"
                 " (next input consumption)"
             )
@@ -221,7 +150,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 on_select=select_mode,
             )
             return
-        await self.push_screen_wait(
+        await self._ui.choose(
             ChoiceScreen(
                 title="QUEUED MESSAGES",
                 placeholder=None,
@@ -235,29 +164,27 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         from ouro.tui.features.configuration.compaction import CompactionConfigurationScreen
 
         try:
-            config = await self._controller.compaction_configuration()
-            models = await self._controller.models()
-            strategies = self._controller.compaction_strategies()
+            config = await self._ui.controller().compaction_configuration()
+            models = await self._ui.controller().models()
+            strategies = self._ui.controller().compaction_strategies()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         screen = CompactionConfigurationScreen(
             config,
             models=models,
             strategy_ids=strategies,
-            theme=theme_for(self),
-            system_default_model=await self._controller.configured_default_model(),
+            theme=self._ui.theme(),
+            system_default_model=await self._ui.controller().configured_default_model(),
         )
-        draft = await (
-            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
-        )
+        draft = await (menu.open_child(screen) if menu is not None else self._ui.choose(screen))
         if draft is None:
             return
         compaction_draft = cast(TuiCompactionConfiguration, draft)
         try:
-            saved = await self._controller.save_compaction_configuration(compaction_draft)
+            saved = await self._ui.controller().save_compaction_configuration(compaction_draft)
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         route = (
             f"{saved.model.provider_id}/{saved.model.endpoint_id}"
@@ -267,17 +194,17 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         label = (
             "default model"
             if saved.model.use_default_model
-            else model_selection_label(route, models, theme=theme_for(self))
+            else model_selection_label(route, models, theme=self._ui.theme())
             if route
             else "conversation model"
         )
-        self.notify(f"Context compaction saved: {label} (next request)")
+        self._ui.notify(f"Context compaction saved: {label} (next request)")
 
     async def _choose_tools(self, *, menu: ChoiceScreen | None = None) -> None:
         try:
-            tools = await self._controller.tool_configurations()
+            tools = await self._ui.controller().tool_configurations()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         if not tools:
             return
@@ -288,7 +215,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             screen.replace_page(
                 title="TOOL PERMISSIONS",
                 placeholder="Filter tools…",
-                choices=_tool_choices(tuple(tool_catalog.values()), theme=theme_for(self)),
+                choices=_tool_choices(tuple(tool_catalog.values()), theme=self._ui.theme()),
                 initial_value=initial_value,
                 on_select=select_tool_or_permission,
                 on_cancel=cancel_submenu,
@@ -299,13 +226,13 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             if active_tool is None:
                 tool = tool_catalog.get(selected)
                 if tool is None:
-                    await self.query_one(ConversationView).add_notice(
+                    await self._ui.notice(
                         f"Tool not found: {selected}",
                         error=True,
                     )
                     return None
                 if tool.permission_control == "tool":
-                    self.notify(
+                    self._ui.notify(
                         f"{tool.display_name} permissions are controlled by its plugin",
                         severity="warning",
                     )
@@ -313,12 +240,12 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 active_tool = tool
                 current = tool.permission_override or "default"
                 screen.replace_page(
-                    title=f"TOOL PERMISSION{theme_for(self).inline_separator}{tool.display_name}",
+                    title=f"TOOL PERMISSION{self._ui.theme().inline_separator}{tool.display_name}",
                     placeholder=None,
                     choices=_tool_permission_choices(
                         current,
                         default_permission=tool.inherited_permission,
-                        theme=theme_for(self),
+                        theme=self._ui.theme(),
                     ),
                     initial_value=current,
                     on_select=select_tool_or_permission,
@@ -328,13 +255,13 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 return None
 
             try:
-                await self._controller.set_tool_permission(
+                await self._ui.controller().set_tool_permission(
                     active_tool.name,
                     _TOOL_PERMISSION_CHOICES[selected],
                 )
-                refreshed = await self._controller.tool_configurations()
+                refreshed = await self._ui.controller().tool_configurations()
             except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                await self._ui.notice(str(exc), error=True)
                 return None
             selected_catalog_value = active_tool.name
             tool_catalog.clear()
@@ -357,7 +284,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             screen.push_page(
                 title="TOOL PERMISSIONS",
                 placeholder="Filter tools…",
-                choices=_tool_choices(tools, theme=theme_for(self)),
+                choices=_tool_choices(tools, theme=self._ui.theme()),
                 on_select=select_tool_or_permission,
                 on_cancel=cancel_submenu,
             )
@@ -365,57 +292,55 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         screen = ChoiceScreen(
             title="TOOL PERMISSIONS",
             placeholder="Filter tools…",
-            choices=_tool_choices(tools, theme=theme_for(self)),
+            choices=_tool_choices(tools, theme=self._ui.theme()),
             on_select=select_tool_or_permission,
             on_cancel=cancel_submenu,
         )
-        await self.push_screen_wait(screen)
+        await self._ui.choose(screen)
 
     async def _configure_tool_execution(self, *, menu: ChoiceScreen | None = None) -> None:
         from ouro.tui.features.configuration.tools import ToolExecutionConfigurationScreen
 
         try:
-            current = await self._controller.tool_execution_configuration()
+            current = await self._ui.controller().tool_execution_configuration()
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         screen = ToolExecutionConfigurationScreen(current)
-        draft = await (
-            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
-        )
+        draft = await (menu.open_child(screen) if menu is not None else self._ui.choose(screen))
         if draft is None:
             return
         tool_execution_draft = cast(TuiToolExecutionConfiguration, draft)
         try:
-            updated = await self._controller.update_tool_execution(tool_execution_draft)
+            updated = await self._ui.controller().update_tool_execution(tool_execution_draft)
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
-        self.notify(f"Tool execution saved: {updated.mode} (next tool batch)")
+        self._ui.notify(f"Tool execution saved: {updated.mode} (next tool batch)")
 
     async def _configure_agent_policy(self, *, menu: ChoiceScreen | None = None) -> None:
         from ouro.tui.features.configuration.agents import AgentDispatchPolicyScreen
 
         try:
-            current = await self._controller.agent_runtime_configuration()
-            models = await self._controller.models()
+            current = await self._ui.controller().agent_runtime_configuration()
+            models = await self._ui.controller().models()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         screen = AgentDispatchPolicyScreen(
             current,
             models=models,
-            theme=theme_for(self),
+            theme=self._ui.theme(),
         )
-        draft = await (
-            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
-        )
+        draft = await (menu.open_child(screen) if menu is not None else self._ui.choose(screen))
         if draft is None:
             return
         try:
-            await self._controller.update_agent_runtime(cast(TuiAgentRuntimeConfiguration, draft))
+            await self._ui.controller().update_agent_runtime(
+                cast(TuiAgentRuntimeConfiguration, draft)
+            )
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
 
     async def _choose_agent_definitions(
@@ -424,25 +349,25 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         menu: ChoiceScreen | None = None,
     ) -> None:
         try:
-            catalog = await self._controller.agent_definition_catalog()
+            catalog = await self._ui.controller().agent_definition_catalog()
         except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         screen: ChoiceScreen
 
         async def refresh_definitions() -> tuple[Choice, ...] | None:
             try:
-                refreshed = await self._controller.agent_definition_catalog()
+                refreshed = await self._ui.controller().agent_definition_catalog()
             except Exception as exc:  # noqa: BLE001
-                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                await self._ui.notice(str(exc), error=True)
                 return None
-            return _agent_definition_choices(refreshed.definitions, theme=theme_for(self))
+            return _agent_definition_choices(refreshed.definitions, theme=self._ui.theme())
 
         async def select_definition(agent_id: str) -> tuple[Choice, ...] | None:
             try:
-                current = await self._controller.agent_definition_catalog()
+                current = await self._ui.controller().agent_definition_catalog()
             except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
-                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                await self._ui.notice(str(exc), error=True)
                 return None
             definition = next(
                 (item for item in current.definitions if item.agent_id == agent_id),
@@ -463,7 +388,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 title="SUBAGENTS",
                 description=_agent_catalog_notice(catalog),
                 placeholder="Filter subagents…",
-                choices=_agent_definition_choices(catalog.definitions, theme=theme_for(self)),
+                choices=_agent_definition_choices(catalog.definitions, theme=self._ui.theme()),
                 on_select=select_definition,
                 on_refresh=refresh_definitions,
             )
@@ -472,11 +397,11 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             title="SUBAGENTS",
             description=_agent_catalog_notice(catalog),
             placeholder="Filter subagents…",
-            choices=_agent_definition_choices(catalog.definitions, theme=theme_for(self)),
+            choices=_agent_definition_choices(catalog.definitions, theme=self._ui.theme()),
             on_select=select_definition,
             on_refresh=refresh_definitions,
         )
-        await self.push_screen_wait(screen)
+        await self._ui.choose(screen)
 
     async def _manage_agent_definition(
         self,
@@ -500,25 +425,25 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 )
             elif action == "toggle":
                 try:
-                    saved = await self._controller.set_agent_definition_enabled(
+                    saved = await self._ui.controller().set_agent_definition_enabled(
                         definition.agent_id,
                         enabled=not definition.enabled,
                         expected_revision=expected_revision,
                     )
                 except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    await self._ui.notice(str(exc), error=True)
                     return None
             else:
                 return None
             if saved is not None:
                 menu.pop_page(
-                    choices=_agent_definition_choices(saved.definitions, theme=theme_for(self)),
+                    choices=_agent_definition_choices(saved.definitions, theme=self._ui.theme()),
                     initial_value=definition.agent_id,
                 )
             return None
 
         menu.push_page(
-            title=f"SUBAGENT{theme_for(self).inline_separator}{definition.name}",
+            title=f"SUBAGENT{self._ui.theme().inline_separator}{definition.name}",
             description=(
                 "Current dispatch policy does not allow this subagent. "
                 "Enabling it does not override policy; adjust framework configuration or CLI."
@@ -533,7 +458,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                     "delete",
                     "Delete",
                     disabled=not definition.editable,
-                    accent=theme_for(self).danger if definition.editable else None,
+                    accent=self._ui.theme().danger if definition.editable else None,
                     destructive=definition.editable,
                 ),
             ),
@@ -544,31 +469,29 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         from ouro.tui.features.configuration.agents import AgentDefinitionConfigurationScreen
 
         try:
-            catalog = await self._controller.agent_definition_catalog()
-            tools = await self._controller.agent_definition_tools()
-            models = await self._controller.models()
+            catalog = await self._ui.controller().agent_definition_catalog()
+            tools = await self._ui.controller().agent_definition_tools()
+            models = await self._ui.controller().models()
         except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         screen = AgentDefinitionConfigurationScreen(
             tools,
             models,
-            theme=theme_for(self),
-            system_default_model=await self._controller.configured_default_model(),
+            theme=self._ui.theme(),
+            system_default_model=await self._ui.controller().configured_default_model(),
         )
-        draft = await (
-            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
-        )
+        draft = await (menu.open_child(screen) if menu is not None else self._ui.choose(screen))
         if draft is None:
             return
         definition = cast(TuiAgentDefinitionConfiguration, draft)
         try:
-            await self._controller.create_agent_definition(
+            await self._ui.controller().create_agent_definition(
                 definition,
                 expected_revision=catalog.revision,
             )
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
 
     async def _edit_agent_definition(
@@ -581,33 +504,31 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         from ouro.tui.features.configuration.agents import AgentDefinitionConfigurationScreen
 
         try:
-            existing = await self._controller.agent_definition(agent_id)
-            tools = await self._controller.agent_definition_tools()
-            models = await self._controller.models()
+            existing = await self._ui.controller().agent_definition(agent_id)
+            tools = await self._ui.controller().agent_definition_tools()
+            models = await self._ui.controller().models()
         except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return None
         screen = AgentDefinitionConfigurationScreen(
             tools,
             models,
             existing,
-            theme=theme_for(self),
-            system_default_model=await self._controller.configured_default_model(),
+            theme=self._ui.theme(),
+            system_default_model=await self._ui.controller().configured_default_model(),
         )
-        draft = await (
-            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
-        )
+        draft = await (menu.open_child(screen) if menu is not None else self._ui.choose(screen))
         if draft is None:
             return None
         definition = cast(TuiAgentDefinitionConfiguration, draft)
         try:
-            saved = await self._controller.update_agent_definition(
+            saved = await self._ui.controller().update_agent_definition(
                 agent_id,
                 definition,
                 expected_revision=expected_revision,
             )
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return None
         return saved
 
@@ -625,31 +546,29 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             ),
             confirm_label="Delete",
         )
-        selected = await (
-            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
-        )
+        selected = await (menu.open_child(screen) if menu is not None else self._ui.choose(screen))
         if not ConfirmationScreen.confirmed(selected):
             return None
         try:
-            saved = await self._controller.delete_agent_definition(
+            saved = await self._ui.controller().delete_agent_definition(
                 agent_id,
                 expected_revision=expected_revision,
             )
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return None
         return saved
 
     async def _choose_mcp(self, *, menu: ChoiceScreen | None = None) -> None:
         async def refresh_servers() -> tuple[Choice, ...] | None:
             try:
-                configs = await self._controller.mcp_configurations()
+                configs = await self._ui.controller().mcp_configurations()
                 self._sync_mcp_status()
-                runtime = {item.server_id: item for item in self._controller.mcp_servers()}
+                runtime = {item.server_id: item for item in self._ui.controller().mcp_servers()}
             except Exception as exc:  # noqa: BLE001
-                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                await self._ui.notice(str(exc), error=True)
                 return None
-            return _mcp_choices(configs, runtime, theme=theme_for(self))
+            return _mcp_choices(configs, runtime, theme=self._ui.theme())
 
         choices = await refresh_servers()
         if choices is None:
@@ -671,7 +590,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 on_refresh=refresh_servers,
             )
             return
-        selected = await self.push_screen_wait(
+        selected = await self._ui.choose(
             ChoiceScreen(title="MCPs", placeholder="Filter MCPs…", choices=choices)
         )
         if selected == "+":
@@ -686,17 +605,21 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         menu: ChoiceScreen | None = None,
     ) -> None:
         try:
-            config = await self._controller.mcp_configuration(server_id)
+            config = await self._ui.controller().mcp_configuration(server_id)
             self._sync_mcp_status()
             status = next(
-                (item for item in self._controller.mcp_servers() if item.server_id == server_id),
+                (
+                    item
+                    for item in self._ui.controller().mcp_servers()
+                    if item.server_id == server_id
+                ),
                 None,
             )
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
 
-        actions = _mcp_management_choices(config, status, theme=theme_for(self))
+        actions = _mcp_management_choices(config, status, theme=self._ui.theme())
 
         if menu is not None:
             loading_action: str | None = None
@@ -704,24 +627,24 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             async def refresh_mcp_actions() -> tuple[Choice, ...] | None:
                 nonlocal config, status
                 try:
-                    config = await self._controller.mcp_configuration(server_id)
+                    config = await self._ui.controller().mcp_configuration(server_id)
                     self._sync_mcp_status()
                     status = next(
                         (
                             item
-                            for item in self._controller.mcp_servers()
+                            for item in self._ui.controller().mcp_servers()
                             if item.server_id == server_id
                         ),
                         None,
                     )
                 except Exception as exc:  # noqa: BLE001
-                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    await self._ui.notice(str(exc), error=True)
                     return None
                 return _mcp_management_choices(
                     config,
                     status,
                     loading_action=loading_action,
-                    theme=theme_for(self),
+                    theme=self._ui.theme(),
                 )
 
             async def finish_runtime_action(action: str, page_revision: int) -> None:
@@ -731,20 +654,20 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 finally:
                     loading_action = None
                 try:
-                    configs = await self._controller.mcp_configurations()
-                    runtime = {item.server_id: item for item in self._controller.mcp_servers()}
+                    configs = await self._ui.controller().mcp_configurations()
+                    runtime = {item.server_id: item for item in self._ui.controller().mcp_servers()}
                     config = next(item for item in configs if item.server_id == server_id)
                     status = runtime.get(server_id)
                 except Exception as exc:  # noqa: BLE001
-                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    await self._ui.notice(str(exc), error=True)
                     return
                 if menu.update_choices(
-                    _mcp_management_choices(config, status, theme=theme_for(self)),
+                    _mcp_management_choices(config, status, theme=self._ui.theme()),
                     expected_revision=page_revision,
                     preferred_value=action,
                 ):
                     menu.update_parent_choices(
-                        _mcp_choices(configs, runtime, theme=theme_for(self)),
+                        _mcp_choices(configs, runtime, theme=self._ui.theme()),
                         initial_value=server_id,
                     )
                 else:
@@ -757,8 +680,8 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                     if saved is not None:
                         config = saved
                         menu.update_choices(
-                            _mcp_management_choices(config, status, theme=theme_for(self)),
-                            title=f"MCP{theme_for(self).inline_separator}{config.name}",
+                            _mcp_management_choices(config, status, theme=self._ui.theme()),
+                            title=f"MCP{self._ui.theme().inline_separator}{config.name}",
                         )
                 elif selected == "toggle":
                     if not await self._set_mcp_enabled(
@@ -766,15 +689,15 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                         enabled=not config.enabled,
                     ):
                         return None
-                    configs = await self._controller.mcp_configurations()
-                    runtime = {item.server_id: item for item in self._controller.mcp_servers()}
+                    configs = await self._ui.controller().mcp_configurations()
+                    runtime = {item.server_id: item for item in self._ui.controller().mcp_servers()}
                     config = next(item for item in configs if item.server_id == server_id)
                     status = runtime.get(server_id)
                     menu.update_parent_choices(
-                        _mcp_choices(configs, runtime, theme=theme_for(self)),
+                        _mcp_choices(configs, runtime, theme=self._ui.theme()),
                         initial_value=server_id,
                     )
-                    return _mcp_management_choices(config, status, theme=theme_for(self))
+                    return _mcp_management_choices(config, status, theme=self._ui.theme())
                 elif selected == "check":
                     await self._check_mcp(server_id)
                 elif selected in {"start", "stop", "restart", "refresh"}:
@@ -783,10 +706,10 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                             config,
                             status,
                             loading_action=loading_action,
-                            theme=theme_for(self),
+                            theme=self._ui.theme(),
                         )
                     loading_action = selected
-                    _worker: Worker[None] = self.run_worker(
+                    self._ui.start(
                         partial(finish_runtime_action, selected, menu.page_revision),
                         group=f"mcp-menu-{server_id}",
                     )
@@ -794,7 +717,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                         config,
                         status,
                         loading_action=loading_action,
-                        theme=theme_for(self),
+                        theme=self._ui.theme(),
                     )
                 elif selected == "remove":
                     if await self._remove_mcp(config, menu=menu):
@@ -802,16 +725,16 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 return None
 
             menu.push_page(
-                title=f"MCP{theme_for(self).inline_separator}{config.name}",
+                title=f"MCP{self._ui.theme().inline_separator}{config.name}",
                 placeholder=None,
                 choices=actions,
                 on_select=select_action,
                 on_refresh=refresh_mcp_actions,
             )
             return
-        selected = await self.push_screen_wait(
+        selected = await self._ui.choose(
             ChoiceScreen(
-                title=f"MCP{theme_for(self).inline_separator}{config.name}",
+                title=f"MCP{self._ui.theme().inline_separator}{config.name}",
                 placeholder=None,
                 choices=actions,
             )
@@ -835,40 +758,38 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
     ) -> MCPServerConfigView | None:
         from ouro.tui.features.configuration.mcp import MCPConfigurationScreen
 
-        screen = MCPConfigurationScreen(existing, theme=theme_for(self))
-        draft = await (
-            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
-        )
+        screen = MCPConfigurationScreen(existing, theme=self._ui.theme())
+        draft = await (menu.open_child(screen) if menu is not None else self._ui.choose(screen))
         if draft is None:
             return None
         mcp_draft = cast(TuiMCPServerConfiguration, draft)
         try:
-            saved = await self._controller.save_mcp_configuration(mcp_draft)
+            saved = await self._ui.controller().save_mcp_configuration(mcp_draft)
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return None
         self._sync_mcp_status()
-        self.notify(
-            f"MCP configuration saved: {saved.name}{theme_for(self).inline_separator}"
+        self._ui.notify(
+            f"MCP configuration saved: {saved.name}{self._ui.theme().inline_separator}"
             "tool policy active; restart for connection changes"
         )
         return saved
 
     async def _check_mcp(self, server_id: str) -> None:
         try:
-            with loading_menu(self, "check"):
-                result = await self._controller.check_mcp_server(server_id)
+            with self._ui.loading("check"):
+                result = await self._ui.controller().check_mcp_server(server_id)
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         if result.ok:
-            self.notify(
-                f"MCP check passed: {result.server.name}{theme_for(self).inline_separator}"
+            self._ui.notify(
+                f"MCP check passed: {result.server.name}{self._ui.theme().inline_separator}"
                 f"{len(result.tool_names)} tool(s)"
             )
         else:
-            await self.query_one(ConversationView).add_notice(
-                f"MCP check failed: {result.server.name}{theme_for(self).inline_separator}"
+            await self._ui.notice(
+                f"MCP check failed: {result.server.name}{self._ui.theme().inline_separator}"
                 f"{result.error or result.status}",
                 error=True,
             )
@@ -879,20 +800,20 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         action: str,
     ) -> McpServerStatus | None:
         operations = {
-            "start": self._controller.start_mcp_server,
-            "stop": self._controller.stop_mcp_server,
-            "restart": self._controller.restart_mcp_server,
-            "refresh": self._controller.refresh_mcp_tools,
+            "start": self._ui.controller().start_mcp_server,
+            "stop": self._ui.controller().stop_mcp_server,
+            "restart": self._ui.controller().restart_mcp_server,
+            "refresh": self._ui.controller().refresh_mcp_tools,
         }
         try:
             status = await operations[action](server_id)
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return None
         self._sync_mcp_status()
         if status.status == "failed":
-            self.notify(
-                f"MCP {status.name}: {status.status}{theme_for(self).inline_separator}"
+            self._ui.notify(
+                f"MCP {status.name}: {status.status}{self._ui.theme().inline_separator}"
                 f"{status.tool_count} tool(s)",
                 severity="error",
             )
@@ -909,25 +830,23 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             message=(f"Delete {config.name}? Takes effect after restarting the app."),
             confirm_label="Delete",
         )
-        selected = await (
-            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
-        )
+        selected = await (menu.open_child(screen) if menu is not None else self._ui.choose(screen))
         if not ConfirmationScreen.confirmed(selected):
             return False
         try:
-            await self._controller.remove_mcp_configuration(config.server_id)
+            await self._ui.controller().remove_mcp_configuration(config.server_id)
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return False
         self._sync_mcp_status()
-        self.notify(f"MCP deleted: {config.name} (next restart)")
+        self._ui.notify(f"MCP deleted: {config.name} (next restart)")
         return True
 
     async def _set_mcp_enabled(self, server_id: str, *, enabled: bool) -> bool:
         try:
-            await self._controller.set_mcp_enabled(server_id, enabled=enabled)
+            await self._ui.controller().set_mcp_enabled(server_id, enabled=enabled)
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return False
         self._sync_mcp_status()
         return True
@@ -938,17 +857,17 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         menu: ChoiceScreen | None = None,
     ) -> None:
         try:
-            policy = await self._controller.skill_policy()
+            policy = await self._ui.controller().skill_policy()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
 
         async def refresh_sources() -> tuple[Choice, ...] | None:
             nonlocal policy
             try:
-                policy = await self._controller.skill_policy()
+                policy = await self._ui.controller().skill_policy()
             except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                await self._ui.notice(str(exc), error=True)
                 return None
             return _skill_source_choices(policy)
 
@@ -956,7 +875,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             nonlocal policy
             try:
                 if source_id == "discovery":
-                    policy = await self._controller.update_skill_discovery(
+                    policy = await self._ui.controller().update_skill_discovery(
                         enabled=not policy.enabled
                     )
                 else:
@@ -966,16 +885,16 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                     )
                     if source is None:
                         return None
-                    policy = await self._controller.update_skill_discovery(
+                    policy = await self._ui.controller().update_skill_discovery(
                         source_updates={source_id: not source.enabled}
                     )
             except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                await self._ui.notice(str(exc), error=True)
                 return None
             return _skill_source_choices(policy)
 
         choices = _skill_source_choices(policy)
-        hint = theme_for(self).inline_separator.join(
+        hint = self._ui.theme().inline_separator.join(
             (
                 "↑/↓ move",
                 "←/→ group",
@@ -993,7 +912,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 interaction_hint=hint,
             )
             return
-        await self.push_screen_wait(
+        await self._ui.choose(
             ChoiceScreen(
                 title="SKILL SOURCES",
                 placeholder=None,
@@ -1013,28 +932,28 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
     ) -> None:
         revision = menu.page_revision if menu is not None else None
         try:
-            with loading_menu(self):
-                catalog = await self._controller.skill_catalog()
+            with self._ui.loading(None):
+                catalog = await self._ui.controller().skill_catalog()
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         if menu is not None and (not menu.is_attached or menu.page_revision != revision):
             return
         if selector is None:
-            choices = _skill_choices(catalog.skills, theme=theme_for(self))
+            choices = _skill_choices(catalog.skills, theme=self._ui.theme())
             skill_menu: ChoiceScreen
             skills = {skill.name: skill for skill in catalog.skills}
 
             async def refresh_skills() -> tuple[Choice, ...] | None:
                 try:
-                    with loading_menu(self):
-                        refreshed = await self._controller.skill_catalog()
+                    with self._ui.loading(None):
+                        refreshed = await self._ui.controller().skill_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    await self._ui.notice(str(exc), error=True)
                     return None
                 skills.clear()
                 skills.update({skill.name: skill for skill in refreshed.skills})
-                return _skill_choices(refreshed.skills, theme=theme_for(self))
+                return _skill_choices(refreshed.skills, theme=self._ui.theme())
 
             async def select_skill(name: str) -> tuple[Choice, ...] | None:
                 if name not in skills:
@@ -1062,10 +981,10 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 on_select=select_skill,
                 on_refresh=refresh_skills,
             )
-            self.push_screen(skill_menu)
+            self._ui.show(skill_menu)
             return
         if not any(item.name == selector for item in catalog.skills):
-            await self.query_one(ConversationView).add_notice(
+            await self._ui.notice(
                 f"Skill not found: {selector}",
                 error=True,
             )
@@ -1079,16 +998,16 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         menu: ChoiceScreen | None = None,
     ) -> None:
         if action not in {"toggle", "update", "remove"}:
-            await self.query_one(ConversationView).add_notice(
+            await self._ui.notice(
                 f"Unknown skill action: {action}",
                 error=True,
             )
             return
         try:
-            with loading_menu(self):
-                catalog = await self._controller.skill_catalog()
+            with self._ui.loading(None):
+                catalog = await self._ui.controller().skill_catalog()
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         candidates = (
             tuple(skill for skill in catalog.skills if skill.managed)
@@ -1102,7 +1021,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             "update": "UPDATE",
             "remove": "DELETE",
         }[action]
-        choices = tuple(_skill_choice(skill, theme=theme_for(self)) for skill in candidates)
+        choices = tuple(_skill_choice(skill, theme=self._ui.theme()) for skill in candidates)
         if action == "toggle":
             skills = {skill.name: skill for skill in candidates}
 
@@ -1111,10 +1030,10 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 if not await self._set_skill_enabled(name, enabled=not skill.enabled):
                     return None
                 try:
-                    with loading_menu(self):
-                        refreshed = await self._controller.skill_catalog()
+                    with self._ui.loading(None):
+                        refreshed = await self._ui.controller().skill_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    await self.query_one(ConversationView).add_notice(
+                    await self._ui.notice(
                         str(exc),
                         error=True,
                     )
@@ -1122,7 +1041,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 skills.clear()
                 skills.update({skill.name: skill for skill in refreshed.skills})
                 return tuple(
-                    _skill_choice(skill, theme=theme_for(self)) for skill in skills.values()
+                    _skill_choice(skill, theme=self._ui.theme()) for skill in skills.values()
                 )
 
             if menu is not None:
@@ -1133,7 +1052,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                     on_select=toggle_skill,
                 )
             else:
-                await self.push_screen_wait(
+                await self._ui.choose(
                     ChoiceScreen(
                         title=f"{action_label} SKILL",
                         placeholder="Filter skills…",
@@ -1147,10 +1066,10 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
 
             async def refresh_skill_candidates() -> tuple[Choice, ...] | None:
                 try:
-                    with loading_menu(self):
-                        refreshed = await self._controller.skill_catalog()
+                    with self._ui.loading(None):
+                        refreshed = await self._ui.controller().skill_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    await self._ui.notice(str(exc), error=True)
                     return None
                 refreshed_candidates = (
                     tuple(skill for skill in refreshed.skills if skill.managed)
@@ -1160,7 +1079,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 skills.clear()
                 skills.update({skill.name: skill for skill in refreshed_candidates})
                 return tuple(
-                    _skill_choice(skill, theme=theme_for(self)) for skill in refreshed_candidates
+                    _skill_choice(skill, theme=self._ui.theme()) for skill in refreshed_candidates
                 )
 
             async def select_skill(name: str) -> tuple[Choice, ...] | None:
@@ -1179,7 +1098,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 on_refresh=refresh_skill_candidates,
             )
             return
-        selected = await self.push_screen_wait(
+        selected = await self._ui.choose(
             ChoiceScreen(
                 title=f"{action_label} SKILL",
                 placeholder="Filter skills…",
@@ -1201,17 +1120,17 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         menu: ChoiceScreen | None = None,
     ) -> None:
         try:
-            with loading_menu(self):
-                catalog = await self._controller.skill_catalog()
+            with self._ui.loading(None):
+                catalog = await self._ui.controller().skill_catalog()
             skill = next(
                 (item for item in catalog.skills if item.name == name),
                 None,
             )
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         if skill is None:
-            await self.query_one(ConversationView).add_notice(
+            await self._ui.notice(
                 f"Skill not found: {name}",
                 error=True,
             )
@@ -1221,16 +1140,16 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             await self._manage_plugin(plugin_id, menu=menu)
             return
 
-        actions = _skill_management_choices(skill, theme=theme_for(self))
+        actions = _skill_management_choices(skill, theme=self._ui.theme())
         if menu is not None:
 
             async def refresh_skill_actions() -> tuple[Choice, ...] | None:
                 nonlocal skill
                 try:
-                    with loading_menu(self):
-                        catalog = await self._controller.skill_catalog()
+                    with self._ui.loading(None):
+                        catalog = await self._ui.controller().skill_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    await self._ui.notice(str(exc), error=True)
                     return None
                 refreshed = next(
                     (item for item in catalog.skills if item.name == name),
@@ -1239,7 +1158,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 if refreshed is None:
                     return ()
                 skill = refreshed
-                return _skill_management_choices(skill, theme=theme_for(self))
+                return _skill_management_choices(skill, theme=self._ui.theme())
 
             async def select_action(selected: str) -> tuple[Choice, ...] | None:
                 nonlocal skill
@@ -1249,24 +1168,24 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                         enabled=selected == "enable",
                     ):
                         return None
-                    with loading_menu(self):
-                        catalog = await self._controller.skill_catalog()
+                    with self._ui.loading(None):
+                        catalog = await self._ui.controller().skill_catalog()
                     refreshed = next(
                         (item for item in catalog.skills if item.name == name),
                         None,
                     )
                     if refreshed is None:
-                        await self.query_one(ConversationView).add_notice(
+                        await self._ui.notice(
                             f"Skill not found after state change: {name}",
                             error=True,
                         )
                         return None
                     skill = refreshed
                     menu.update_parent_choices(
-                        _skill_choices(catalog.skills, theme=theme_for(self)),
+                        _skill_choices(catalog.skills, theme=self._ui.theme()),
                         initial_value=name,
                     )
-                    return _skill_management_choices(skill, theme=theme_for(self))
+                    return _skill_management_choices(skill, theme=self._ui.theme())
                 elif selected == "update":
                     await self._update_skill(name)
                 elif selected == "remove":
@@ -1274,7 +1193,7 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 return None
 
             menu.push_page(
-                title=f"SKILL{theme_for(self).inline_separator}{name}",
+                title=f"SKILL{self._ui.theme().inline_separator}{name}",
                 description=skill.description,
                 placeholder=None,
                 choices=actions,
@@ -1282,9 +1201,9 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
                 on_refresh=refresh_skill_actions,
             )
             return
-        selected = await self.push_screen_wait(
+        selected = await self._ui.choose(
             ChoiceScreen(
-                title=f"SKILL{theme_for(self).inline_separator}{name}",
+                title=f"SKILL{self._ui.theme().inline_separator}{name}",
                 description=skill.description,
                 placeholder=None,
                 choices=actions,
@@ -1301,37 +1220,35 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
         from ouro.tui.features.configuration.skills import SkillInstallScreen
 
         screen = SkillInstallScreen()
-        draft = await (
-            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
-        )
+        draft = await (menu.open_child(screen) if menu is not None else self._ui.choose(screen))
         if draft is None:
             return
         skill_draft = cast(TuiSkillInstallConfiguration, draft)
         try:
-            with loading_menu(self):
-                result = await self._controller.install_skills(skill_draft)
+            with self._ui.loading(None):
+                result = await self._ui.controller().install_skills(skill_draft)
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
         names = ", ".join(item.name for item in result.skills) or "none"
-        self.notify(f"Skills installed: {names}")
+        self._ui.notify(f"Skills installed: {names}")
 
     async def _set_skill_enabled(self, name: str, *, enabled: bool) -> bool:
         try:
-            await self._controller.set_skill_enabled(name, enabled=enabled)
+            await self._ui.controller().set_skill_enabled(name, enabled=enabled)
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return False
         return True
 
     async def _update_skill(self, name: str) -> None:
         try:
-            with loading_menu(self, "update"):
-                await self._controller.update_skill(name)
+            with self._ui.loading("update"):
+                await self._ui.controller().update_skill(name)
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
-        self.notify(f"Skill updated: {name} (next restart)")
+        self._ui.notify(f"Skill updated: {name} (next restart)")
 
     async def _remove_skill(
         self,
@@ -1344,18 +1261,16 @@ class ConfigurationWorkflowsApp(PromptWorkflows):
             message=f"Delete {name}? Takes effect after restarting the app.",
             confirm_label="Delete",
         )
-        selected = await (
-            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
-        )
+        selected = await (menu.open_child(screen) if menu is not None else self._ui.choose(screen))
         if not ConfirmationScreen.confirmed(selected):
             return
         try:
-            with loading_menu(self, "remove"):
-                await self._controller.remove_skill(name)
+            with self._ui.loading("remove"):
+                await self._ui.controller().remove_skill(name)
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            await self._ui.notice(str(exc), error=True)
             return
-        self.notify(f"Skill deleted: {name} (next restart)")
+        self._ui.notify(f"Skill deleted: {name} (next restart)")
 
 
 def _tool_choices(

@@ -8,8 +8,9 @@ import pytest
 
 from ouro.core.errors import PersistenceError, SessionRecoveryRequiredError
 from ouro.core.messages import MessageRecord, ToolMessageReference
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.backends.files.message_locations import FileMessageIndex
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.sessions.portable import PortableSession, SessionBundle
 from tests.sessions.test_tool_fact_storage import commit, facts
 from tests.sessions.test_tool_fact_storage import store as store

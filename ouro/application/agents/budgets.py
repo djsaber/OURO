@@ -8,8 +8,8 @@ from ouro.application.usage import UsageService
 from ouro.core.base import utc_now
 from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.run_budget import RunBudgetPolicy, RunPauseReason
+from ouro.core.session_ports import SessionStore
 from ouro.core.state import RunRecord
-from ouro.sessions import SessionStore
 
 
 @dataclass(frozen=True)

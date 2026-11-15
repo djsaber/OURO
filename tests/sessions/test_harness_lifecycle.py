@@ -18,7 +18,9 @@ from ouro.core.session_controls import (
 )
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import SessionRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore, import_sessions_to_sqlite
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
+from ouro.sessions.transfer import import_sessions_to_sqlite
 
 
 def build_store(path, backend):

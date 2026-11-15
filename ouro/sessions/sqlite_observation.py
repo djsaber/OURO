@@ -7,9 +7,10 @@ import sqlite3
 from ouro.core.compaction import CompactionRecord
 from ouro.core.inputs import InputState
 from ouro.core.persistence import decode_versioned_record_json
+from ouro.core.session_facts import SessionFactPage
+from ouro.core.session_observation import FactCursor
 from ouro.core.state import RunRecord
 from ouro.core.tool_batches import ToolCallState
-from ouro.sessions.observation import FactCursor, SessionFactPage
 
 OBSERVATION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS session_revisions (

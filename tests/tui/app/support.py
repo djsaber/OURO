@@ -24,7 +24,7 @@ from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolSource
 from ouro.local_application import LocalApplication
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.skills import SkillMetadata
 from ouro.tools import (
     Tool,

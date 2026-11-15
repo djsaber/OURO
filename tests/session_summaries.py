@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from ouro.core.compaction import CompactionRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.session_commits import SessionCommit
-from ouro.sessions import SessionStore
+from ouro.core.session_ports import SessionStore
 
 
 def commit_summary(store: SessionStore, record: CompactionRecord) -> None:

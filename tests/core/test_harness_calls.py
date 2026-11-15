@@ -10,7 +10,8 @@ from ouro.core.harness_calls import HarnessCallSnapshot, HarnessInvocation, acce
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict, SessionCommitStep
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import SessionRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.harness_state import replace_harness_state
 
 

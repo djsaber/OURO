@@ -23,8 +23,8 @@ from ouro.application.runs.tool_batches import load_batch_call
 from ouro.core.context_snapshots import ModelRequestHeader
 from ouro.core.messages import MessageRecord
 from ouro.core.session_observation import FactCursor, SessionObservationPosition
+from ouro.core.session_ports import SessionStore
 from ouro.core.tool_batches import ToolCallBatchRecord
-from ouro.sessions.base import SessionStore
 
 
 def read_observation_page(

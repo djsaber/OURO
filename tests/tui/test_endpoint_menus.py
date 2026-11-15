@@ -1,7 +1,7 @@
 import pytest
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.core.errors import ConfigError
+from ouro.local_configuration import build_local_configuration
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.menus.choice import ChoiceScreen
 from tests.tui.helpers import run_ready_app, two_route_application
@@ -12,7 +12,7 @@ from tests.tui.helpers import run_ready_app, two_route_application
 async def test_endpoint_menus_project_global_default_independently_of_session_selection(
     tmp_path, scope, selection
 ):
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     provider_ids = {}
     endpoint_ids = {}
     for provider_name in ("gateway", "other"):
@@ -60,9 +60,11 @@ async def test_endpoint_menus_project_global_default_independently_of_session_se
         app.push_screen(menu)
         await pilot.pause()
         if scope == "provider":
-            await app._choose_endpoints(configuration.provider(gateway_id), menu=menu)
+            await app._providers._choose_endpoints(configuration.provider(gateway_id), menu=menu)
         else:
-            await app._choose_endpoint_action("use" if scope == "default" else "list", menu=menu)
+            await app._providers._choose_endpoint_action(
+                "use" if scope == "default" else "list", menu=menu
+            )
         await pilot.pause()
         choices = {choice.value: choice for choice in menu._choices}
         recent_choice = recent_id if scope == "provider" else recent_key
@@ -119,7 +121,7 @@ async def test_endpoint_menus_project_global_default_independently_of_session_se
 async def test_endpoint_menu_remains_available_without_a_resolvable_selection(
     tmp_path, monkeypatch, selected
 ):
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     created = configuration.add_provider(
         display_name="Gateway",
         provider_type="custom",
@@ -156,7 +158,7 @@ async def test_endpoint_menu_remains_available_without_a_resolvable_selection(
         menu = ChoiceScreen(title="ACTIONS", placeholder="Choose an action…", choices=())
         app.push_screen(menu)
         await pilot.pause()
-        await app._choose_endpoint_action("list", menu=menu)
+        await app._providers._choose_endpoint_action("list", menu=menu)
         assert len(menu._choices) == 1
         assert menu._choices[0].value == f"{provider_id}/{endpoint_id}"
         assert menu._choices[0].marker == ""

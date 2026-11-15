@@ -8,9 +8,9 @@ from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.run_transitions import plan_run_transition, session_state_for_run
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
+from ouro.core.session_ports import RuntimeSessionSnapshot, SessionSnapshot, SessionStore
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolCallState
-from ouro.sessions import RuntimeSessionSnapshot, SessionSnapshot, SessionStore
 
 _INCOMPLETE_RUN_STATUSES = {"queued", "running"}
 

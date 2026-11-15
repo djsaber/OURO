@@ -13,7 +13,8 @@ from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest, ToolResult
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.response_drafts import persist_response_draft
 from tests.tool_batches import persist_tool_batch
 

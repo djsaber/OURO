@@ -5,6 +5,7 @@ from typing import cast
 
 from ouro.core.content import ContentPart
 from ouro.core.errors import PersistenceError
+from ouro.core.session_ports import SessionRepository
 from ouro.core.state import RunRecord
 from ouro.core.tool_batches import (
     ToolBatchCall,
@@ -22,7 +23,6 @@ from ouro.core.tool_facts import (
     ToolOutcomeRecord,
 )
 from ouro.core.tools import ToolInvocation, ToolInvocationBinding, ToolResult
-from ouro.sessions.base import SessionRepository
 
 
 def load_batch_states(store: SessionRepository, run: RunRecord) -> tuple[ToolCallState, ...]:

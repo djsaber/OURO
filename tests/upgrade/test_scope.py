@@ -115,7 +115,7 @@ def test_missing_session_timestamp_uses_saved_history(historical_home, field):
     del raw[field]
     path.write_text(json.dumps(raw), encoding="utf-8")
     upgrade(historical_home)
-    from ouro.sessions import LocalSessionStore
+    from ouro.sessions.backends.files.store import LocalSessionStore
 
     session = LocalSessionStore(historical_home).load_session("ses_fixture").session
     assert getattr(session, field).isoformat() == "2026-09-01T00:00:00+00:00"

@@ -15,8 +15,9 @@ from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.session_controls import HostSessionInput
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.backends.files.delegations import record_path
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 from tests.agent_facts import seed_delegation
 from tests.application.test_compaction import (

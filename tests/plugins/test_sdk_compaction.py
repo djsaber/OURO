@@ -16,7 +16,7 @@ from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStrea
 from ouro.core.state import SessionRecord
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.sdk.plugins import v5 as sdk
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import ToolRegistry
 
 

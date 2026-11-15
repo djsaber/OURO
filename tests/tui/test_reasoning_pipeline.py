@@ -12,7 +12,8 @@ from ouro.core.reasoning import ReasoningRequest
 from ouro.providers import OpenAIChatCompletionsProvider
 from ouro.providers.http_transport import HttpxProviderHTTPTransport
 from ouro.providers.reasoning import ReasoningPayloadEncoder
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry
 from ouro.tui.conversation.transcript import project_transcript_entries
 

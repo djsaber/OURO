@@ -1,11 +1,11 @@
 import pytest
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.config.endpoints import ProviderEndpointConfig
 from ouro.config.provider_models import ProviderConfig, ProviderRuntimeOptions
 from ouro.config.provider_templates import provider_templates
 from ouro.config.providers.runtime import merge_runtime_options
 from ouro.core.errors import ConfigError
+from ouro.local_configuration import build_local_configuration
 from ouro.providers.factory import build_runtime_adapter
 
 
@@ -84,7 +84,7 @@ def test_presets_only_enable_media_supported_by_the_configured_connection():
 def test_incompatible_media_capability_is_rejected_before_config_write(
     tmp_path, protocol, capability
 ):
-    config = ConfigurationFacade(tmp_path)
+    config = build_local_configuration(tmp_path)
     provider = config.add_provider(
         display_name="Test",
         provider_type="custom",
@@ -108,7 +108,7 @@ def test_incompatible_media_capability_is_rejected_before_config_write(
 
 
 def test_media_capabilities_round_trip_through_configuration_and_runtime_overrides(tmp_path):
-    config = ConfigurationFacade(tmp_path)
+    config = build_local_configuration(tmp_path)
     provider_id = config.add_provider(
         display_name="Test",
         provider_type="custom",
@@ -118,14 +118,14 @@ def test_media_capabilities_round_trip_through_configuration_and_runtime_overrid
     created = config.add_endpoint(
         provider_id, model="av", supports_audio_input=True, supports_video_input=True
     )
-    saved = ConfigurationFacade(tmp_path).provider(provider_id).endpoints[0]
+    saved = build_local_configuration(tmp_path).provider(provider_id).endpoints[0]
     assert (
         saved.supports_audio_input and saved.supports_video_input and not saved.supports_image_input
     )
     config.update_endpoint(
         provider_id, created.changed_endpoint_id, display_name=None, supports_audio_input=False
     )
-    updated = ConfigurationFacade(tmp_path).provider(provider_id).endpoints[0]
+    updated = build_local_configuration(tmp_path).provider(provider_id).endpoints[0]
     assert not updated.supports_audio_input and updated.supports_video_input
     options = merge_runtime_options(
         ProviderRuntimeOptions(

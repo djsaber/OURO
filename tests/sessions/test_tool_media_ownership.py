@@ -28,7 +28,8 @@ from ouro.core.messages import MessageRecord, ToolMessageReference
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.tool_facts import ToolCallFacts, ToolFactConflict
 from ouro.resources import LocalResourceStore
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.session_storage import session_connection
 from tests.sessions.test_tool_fact_storage import commit, facts, file_fact_payload
 from tests.sessions.test_tool_fact_storage import store as store

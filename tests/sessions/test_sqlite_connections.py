@@ -5,7 +5,8 @@ from threading import Barrier
 import pytest
 
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.sessions.sqlite_connections import ExecutionConnections
 
 

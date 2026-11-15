@@ -19,8 +19,9 @@ from ouro.core.inputs import InputRecord, InputState, InputStateChange, QueuedIn
 from ouro.core.messages import InputMessageReference, MessageRecord
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict, SessionCommitStep
 from ouro.core.state import SessionRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.backends.files.inputs import input_key, input_path
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.sessions.portable import PortableSession, SessionBundle, populate_sessions
 from tests.input_facts import append_input_messages
 

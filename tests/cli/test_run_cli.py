@@ -5,7 +5,6 @@ from typing import Any, cast
 
 import pytest
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.application.context.summary import LLMSummaryCompactionStrategy
 from ouro.application.runtime.environment import RuntimeEnvironment
 from ouro.application.runtime.service import RuntimeService
@@ -17,10 +16,11 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.reasoning import ReasoningRequest
 from ouro.local_application import LocalApplication, build_local_runtime
+from ouro.local_configuration import build_local_configuration
 from ouro.mcp import MCPConfigStore, MCPServerConfigUpdate
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 from ouro.providers import FauxProvider, OpenAIChatCompletionsProvider
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
 from ouro.tools.builtin.shell import detect_command_shell
 
@@ -994,7 +994,7 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
     remove_payload = json.loads(capsys.readouterr().out)
     assert remove_code != 0
     assert "cannot remove the default endpoint" in remove_payload["error"]
-    assert ConfigurationFacade(tmp_path).provider_catalog().default_provider_id == provider_id
+    assert build_local_configuration(tmp_path).provider_catalog().default_provider_id == provider_id
 
 
 @pytest.mark.parametrize(
@@ -1065,7 +1065,7 @@ def test_provider_endpoint_reasoning_effort_preset_configures_custom_model(
     assert reasoning["capability"]["activation"] == "toggle"
     assert reasoning["profile"]["effort"]["enabled"] == enabled_payload
     assert (
-        ConfigurationFacade(tmp_path)
+        build_local_configuration(tmp_path)
         .endpoint(provider_id, endpoint_id)
         .reasoning.model_dump(mode="json", exclude_none=True)
         == reasoning
@@ -1132,7 +1132,7 @@ def test_provider_remove_rejects_user_visible_default(tmp_path, capsys) -> None:
 
     assert remove_code != 0
     assert "cannot remove the default provider" in remove_payload["error"]
-    assert ConfigurationFacade(tmp_path).provider_catalog().default_provider_id == provider_id
+    assert build_local_configuration(tmp_path).provider_catalog().default_provider_id == provider_id
 
 
 def _write_skill(root, skill_name: str, name: str, description: str) -> None:
@@ -1361,7 +1361,7 @@ def test_provider_add_and_update_configure_validated_retry_policy(tmp_path, caps
     )
     payload = json.loads(capsys.readouterr().out)
     provider_id = payload["provider"]["provider_id"]
-    provider = ConfigurationFacade(tmp_path).provider(provider_id)
+    provider = build_local_configuration(tmp_path).provider(provider_id)
 
     assert code == 0
     assert provider_id.startswith("provider_")
@@ -1386,7 +1386,7 @@ def test_provider_add_and_update_configure_validated_retry_policy(tmp_path, caps
 
     assert code == 2
     assert error["error_type"] == "ConfigError"
-    assert ConfigurationFacade(tmp_path).provider(provider_id) == provider
+    assert build_local_configuration(tmp_path).provider(provider_id) == provider
 
 
 def test_provider_endpoint_add_default_selects_generated_endpoint(

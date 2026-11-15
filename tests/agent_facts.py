@@ -8,8 +8,8 @@ from ouro.core.agents import (
 )
 from ouro.core.base import new_id
 from ouro.core.run_budget import RunBudgetPolicy
+from ouro.core.session_ports import SessionStore
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions import SessionStore
 
 
 def seed_delegation(

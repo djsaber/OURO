@@ -87,7 +87,7 @@ from ouro.plugins.registry import (
 from ouro.plugins.worker.client import JsonRpcWorkerClient
 from ouro.plugins.worker.codec import WorkerProtocolError
 from ouro.sdk.plugins.v5 import ContributionSet
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.skills import SkillMetadata
 from ouro.tools import (
     Tool,

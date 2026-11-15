@@ -17,7 +17,8 @@ from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.state import SessionRecord
 from ouro.local_application import LocalApplication
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 from ouro.tui.app import OuroTuiApp
 

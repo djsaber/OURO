@@ -16,7 +16,7 @@ from ouro.core.errors import CompactionError
 from ouro.core.provider import ModelMetadata
 from ouro.core.run_budget import RunBudgetPolicy
 from ouro.local_application import build_local_runtime
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 from tests.application.helpers import running_runtime_task
 from tests.application.test_compaction import SummaryRouteProvider, _append_turns, _summary_adapter

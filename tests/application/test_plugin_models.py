@@ -14,7 +14,7 @@ from ouro.local_application import LocalApplication
 from ouro.plugins.invocation import plugin_invocation
 from ouro.providers import FauxProvider
 from ouro.sdk.plugins.models import ModelInput, ModelRequest
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import ToolRegistry
 
 PLUGIN = "dev.ouro.examples.model_review"

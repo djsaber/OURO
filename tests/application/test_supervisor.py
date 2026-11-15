@@ -22,7 +22,7 @@ from ouro.core.session_controls import HostSessionInput
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.mcp import MCPConfigStore, MCPRuntimeResource, MCPServerConfigUpdate
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import ToolRegistry
 from tests.application.helpers import (
     wait_for_run_event,

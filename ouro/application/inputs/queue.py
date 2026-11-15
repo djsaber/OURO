@@ -21,8 +21,8 @@ from ouro.core.messages import MessageRecord, SkillActivationContent
 from ouro.core.run_drivers import RunDriverBinding
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict
 from ouro.core.session_controls import HostSessionInput, SessionInputRequest
+from ouro.core.session_ports import RuntimeSessionSnapshot, SessionRepository
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions import RuntimeSessionSnapshot, SessionRepository
 
 
 @dataclass(frozen=True)

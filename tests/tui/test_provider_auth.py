@@ -8,10 +8,10 @@ import pytest
 from textual.app import App
 from textual.widgets import Input, OptionList
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.auth.authorization import TaskAuthorizationAttempt
 from ouro.auth.contracts import AuthError
 from ouro.local_application import LocalApplication
+from ouro.local_configuration import build_local_configuration
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.features.providers.authentication import (
     ProviderAuthenticationScreen,
@@ -87,7 +87,7 @@ def _provider_names(owner) -> dict[str, str]:
 
 
 async def test_builtin_subscription_starts_without_login_and_shows_service_limits(tmp_path):
-    facade = ConfigurationFacade(tmp_path)
+    facade = build_local_configuration(tmp_path)
     created = facade.add_provider(
         display_name="Personal Codex",
         provider_type="openai-codex",
@@ -421,7 +421,7 @@ async def test_full_tui_uses_runtime_auth_and_preserves_managed_provider_edit(
     async with run_ready_app(app, size=(100, 40)) as pilot:
         controller = app._controller
         assert controller.provider_auth() is application.provider_auth
-        configuration = ConfigurationFacade(tmp_path)
+        configuration = build_local_configuration(tmp_path)
         before = configuration.provider(provider_id)
         profile = profile_for_provider(before, ())
         editor = ProviderConfigurationScreen(profile, before)

@@ -5,7 +5,6 @@ import sys
 from pathlib import Path
 from typing import Unpack
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.cli.errors import error_exit_code
 from ouro.config import QueuedInputConsumptionMode
 from ouro.config.compaction import CompactionRequestChanges
@@ -13,6 +12,7 @@ from ouro.core.agents import ExecutionMode
 from ouro.core.errors import ConfigError, OuroError
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode
+from ouro.local_configuration import build_local_configuration
 
 
 def show_permissions_config(
@@ -24,7 +24,7 @@ def show_permissions_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        facade = ConfigurationFacade(home)
+        facade = build_local_configuration(home)
         if tool_name is not None and plugin_id is not None:
             raise ConfigError("--tool and --plugin are mutually exclusive")
         if mode is not None and tool_name is None and plugin_id is None:
@@ -90,7 +90,7 @@ def show_skill_discovery_config(
             **{source_id: True for source_id in enabled_sources},
             **{source_id: False for source_id in disabled_sources},
         }
-        facade = ConfigurationFacade(home)
+        facade = build_local_configuration(home)
         config = (
             facade.update_skill_discovery(
                 enabled=enabled,
@@ -142,7 +142,7 @@ def show_compaction_config(
     **request: Unpack[CompactionRequestChanges],
 ) -> int:
     try:
-        facade = ConfigurationFacade(home)
+        facade = build_local_configuration(home)
         config = facade.compaction_config()
         has_update = any(
             (
@@ -215,7 +215,7 @@ def show_tool_execution_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        facade = ConfigurationFacade(home)
+        facade = build_local_configuration(home)
         config = (
             facade.update_tool_execution(
                 mode=mode,
@@ -262,7 +262,7 @@ def show_queued_input_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        facade = ConfigurationFacade(home)
+        facade = build_local_configuration(home)
         config = (
             facade.update_queued_inputs(consumption_mode=consumption_mode)
             if consumption_mode is not None
@@ -307,7 +307,7 @@ def show_run_budget_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        facade = ConfigurationFacade(home)
+        facade = build_local_configuration(home)
         has_update = clear or any(
             value is not None
             for value in (
@@ -372,7 +372,7 @@ def show_agent_runtime_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        facade = ConfigurationFacade(home)
+        facade = build_local_configuration(home)
         has_update = any(
             value is not None
             for value in (

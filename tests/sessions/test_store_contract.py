@@ -20,9 +20,11 @@ from ouro.core.errors import PersistenceError, ResourceNotFoundError, Unsupporte
 from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.session_extensions import SessionExtensionStateRecord
+from ouro.core.session_ports import SessionStore
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.resources.prepared import save_prepared_resources
-from ouro.sessions import LocalSessionStore, SessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.context_facts import save_context
 from tests.harness_state import remove_harness_state, replace_harness_state
 from tests.resource_fixtures import resource_record

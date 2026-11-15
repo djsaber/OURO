@@ -15,7 +15,8 @@ from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import SessionRecord
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.sdk.plugins import v5 as sdk
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 
 OWNER = "example.controls"
 CONTRACT = "c" * 64

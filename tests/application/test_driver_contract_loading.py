@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from ouro.core.session_controls import HostSessionInput
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.application.test_run_drivers import DRIVER, PLUGIN, host, plugin_source, set_driver_body
 from tests.application.test_runtime import GateProvider
 

@@ -21,7 +21,8 @@ from ouro.core.observers import ObserverRegistry
 from ouro.core.results import RunResult
 from ouro.core.session_commits import SessionCommitConflict
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 
 
 @pytest.fixture(params=[LocalSessionStore, SQLiteSessionStore])

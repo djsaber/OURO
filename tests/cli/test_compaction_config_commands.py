@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.cli.main import main
 from ouro.config import CompactionConfigManager
+from ouro.local_configuration import build_local_configuration
 
 
 def test_config_compaction_command_persists_and_displays_model_options(
@@ -160,7 +160,7 @@ def test_config_compaction_default_model_requires_a_selected_system_endpoint(
     assert code != 0
     assert "system default endpoint is not configured" in capsys.readouterr().err
 
-    ConfigurationFacade(tmp_path).add_provider(
+    build_local_configuration(tmp_path).add_provider(
         display_name="Primary", provider_type="openai", make_default=True
     )
     code = main(["config", "compaction", "--home", str(tmp_path), "--default-model"])

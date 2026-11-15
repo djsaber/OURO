@@ -28,7 +28,8 @@ from ouro.core.tasks import (
     TaskSchedule,
 )
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
 from tests.application.helpers import wait_for_runtime_event
 

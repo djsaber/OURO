@@ -20,8 +20,9 @@ from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest, ToolInputRequest, ToolInvocation
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.backends.files.inputs import input_path
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.response_drafts import persist_response_draft
 from tests.tool_batches import persist_tool_batch
 

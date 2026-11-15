@@ -36,9 +36,9 @@ from ouro.core.resources import (
     SessionResourceReference,
 )
 from ouro.core.session_commits import SessionCommitConflict
+from ouro.core.session_ports import SessionStore
 from ouro.resources import ResourceStore
 from ouro.resources.media import capture_media
-from ouro.sessions import SessionStore
 
 DEFAULT_MAX_RESOURCE_BYTES = 100 * 1024 * 1024
 DEFAULT_MAX_MODEL_TEXT_BYTES = 1 * 1024 * 1024

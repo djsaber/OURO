@@ -25,7 +25,8 @@ from ouro.core.session_commits import (
 from ouro.core.session_controls import SessionControlActivation, SessionControlState
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.context_facts import save_context
 from tests.session_storage import session_connection
 

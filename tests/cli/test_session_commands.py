@@ -22,9 +22,10 @@ from ouro.core.compaction import (
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
+from ouro.core.session_ports import SessionStore
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.local_application import build_local_session_services
-from ouro.sessions import LocalSessionStore, SessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import ToolRegistry
 from ouro.transfer.archive import read_archive
 

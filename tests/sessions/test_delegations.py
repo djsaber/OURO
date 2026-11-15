@@ -25,8 +25,10 @@ from ouro.core.errors import (
 from ouro.core.messages import MessageRecord
 from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
+from ouro.core.session_ports import SessionStore
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions import LocalSessionStore, SessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 
 
 @pytest.fixture(params=("files", "sqlite"))

@@ -7,9 +7,9 @@ from pydantic import Field
 from ouro.core.base import OuroModel
 from ouro.core.errors import PersistenceError
 from ouro.core.resources import ResourceRecord, SessionResourceReference
+from ouro.core.session_ports import SessionRepository, SessionSnapshot
 from ouro.resources import ResourceStore
 from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
-from ouro.sessions.base import SessionRepository, SessionSnapshot
 
 
 class SQLiteImportReport(OuroModel):

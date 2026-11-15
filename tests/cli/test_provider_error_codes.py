@@ -8,7 +8,7 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.local_application import LocalApplication
 from ouro.providers.faux import FauxProvider
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import ToolRegistry
 from tests.event_capture import recorded_events
 

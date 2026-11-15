@@ -7,16 +7,24 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 
+from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.application.context.prompts import PromptContext
 from ouro.application.contracts.models import AvailableModel
 from ouro.application.models.catalog import available_model, close_runtime_adapters, model_route_key
 from ouro.config import (
+    AgentDefinitionsConfigManager,
     CompactionConfig,
+    CompactionConfigManager,
+    PermissionConfigManager,
     PromptConfigManager,
     ProviderConfigManager,
     ProviderRuntimeOptions,
+    ProviderTemplateStore,
     QueuedInputConfig,
+    QueuedInputConfigManager,
+    RunBudgetConfigManager,
     ToolExecutionConfig,
+    ToolExecutionConfigManager,
 )
 from ouro.config.runtime import RuntimeSettingsResolver
 from ouro.core.adapter import RuntimeAdapter
@@ -24,9 +32,27 @@ from ouro.core.context import compose_system_prompt
 from ouro.core.errors import ConfigError
 from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.tools import PermissionMode
-from ouro.skills import SkillMetadata, discover_skill_catalog
+from ouro.mcp import MCPConfigStore
+from ouro.skills import SkillManager, SkillMetadata, discover_skill_catalog
 
 AdapterBuilder = Callable[[ProviderRuntimeOptions], RuntimeAdapter]
+
+
+def build_local_configuration(root: str | Path | None = None) -> ConfigurationFacade:
+    """Assemble local configuration use cases without starting an execution runtime."""
+    return ConfigurationFacade(
+        provider_templates=ProviderTemplateStore(root),
+        providers=ProviderConfigManager(root),
+        prompts=PromptConfigManager(root),
+        permissions=PermissionConfigManager(root),
+        tool_execution=ToolExecutionConfigManager(root),
+        queued_inputs=QueuedInputConfigManager(root),
+        run_budget=RunBudgetConfigManager(root),
+        agents=AgentDefinitionsConfigManager(root),
+        compaction=CompactionConfigManager(root),
+        mcp=MCPConfigStore(root),
+        skills=SkillManager(root),
+    )
 
 
 @dataclass(frozen=True)

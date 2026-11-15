@@ -3,8 +3,8 @@ from __future__ import annotations
 from ouro.application.usage import UsageService
 from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.session_commits import SessionCommitConflict
+from ouro.core.session_ports import SessionRepository
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions.base import SessionRepository
 
 
 def capture_harness(

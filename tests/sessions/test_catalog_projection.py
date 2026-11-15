@@ -10,7 +10,8 @@ import pytest
 from ouro.core.errors import PersistenceError
 from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.resource_fixtures import resource_record
 from tests.session_storage import read_session_payload, write_session_payload
 from tests.sessions.test_tool_fact_storage import commit, facts

@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 from ouro.core.session_commits import SessionCommit
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.sessions.layout import DATA_LAYOUT_VERSION
 from ouro_upgrade import databases, session_records, workspace
 from ouro_upgrade.engine import upgrade

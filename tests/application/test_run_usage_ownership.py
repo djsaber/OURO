@@ -19,7 +19,8 @@ from ouro.core.provider import ModelMetadata, ProviderStreamEvent, Usage
 from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry
 
 

@@ -5,7 +5,8 @@ import asyncio
 import pytest
 
 from dev.benchmarks import session_terminal
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])

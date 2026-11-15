@@ -38,7 +38,7 @@ LocalApplication：本地组合与生命周期所有者
 | `core` | 领域记录、Provider / Tool / Driver 协议、原子消息帧、上下文与默认循环 |
 | `application` | Session / Run 用例、事务与恢复、Agent / Task、查询投影和 Host DTO |
 | `local_application` / `local_configuration` / `local_providers` | 实现选择、本地配置与模型目录、扩展及协议装配、共享服务与完整关闭顺序 |
-| `sessions` | 后端中立持久化端口、文件 / SQLite、提交、撤销与查询索引 |
+| `sessions` | 文件 / SQLite、原子提交、撤销、归档发布与查询索引；实现 Core 会话端口 |
 | `resources` | 会话文件、元数据、完整性与本地发布 |
 | `providers` | HTTP / SSE、协议编解码、适配工厂与可见输出之前的安全重试 |
 | `auth` | 授权尝试、凭据材料、revision 条件提交、刷新 / 注销及请求认证 |

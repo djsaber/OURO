@@ -64,7 +64,8 @@ from ouro.plugins.registry import (
     PluginCommandRegistry,
     PluginCommandResult,
 )
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry
 from tests.application.helpers import wait_for_session_state
 from tests.event_capture import recorded_events

@@ -12,8 +12,7 @@ from ouro.core.input_content import InputAttachment, InputFileReference
 from ouro.core.resources import ResourceRecord
 from ouro.core.state import ACTIVE_RUN_STATUSES
 from ouro.resources.base import ResourceStore
-from ouro.sessions.base import SessionStore
-from ouro.sessions.portable import PortableSession, SessionBundle
+from ouro.sessions.portable import PortableSession, SessionBundle, SessionTransferStore
 from ouro.transfer.archive import (
     MAX_ARCHIVE_BYTES,
     ArchiveIndex,
@@ -40,7 +39,7 @@ class SessionImportResult(ApplicationDTO):
 class SessionTransferService:
     """Transfer inactive Session trees and their immutable resource closure."""
 
-    def __init__(self, sessions: SessionStore, resources: ResourceStore) -> None:
+    def __init__(self, sessions: SessionTransferStore, resources: ResourceStore) -> None:
         self.sessions = sessions
         self.resources = resources
 

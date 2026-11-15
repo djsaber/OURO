@@ -40,6 +40,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
             "core",
             "deployment",
             "local_application",
+            "local_configuration",
             "local_permissions",
             "mcp",
             "sdk",
@@ -74,7 +75,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
             "tools",
         }
     ),
-    "local_configuration": frozenset({"application", "config", "core", "skills"}),
+    "local_configuration": frozenset({"application", "config", "core", "mcp", "skills"}),
     "local_providers": frozenset({"core", "plugins", "providers", "sdk"}),
     "local_io": frozenset({"core"}),
     "local_locks": frozenset(),
@@ -110,6 +111,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
             "core",
             "deployment",
             "local_application",
+            "local_configuration",
             "local_io",
             "mcp",
             "sdk",
@@ -619,3 +621,36 @@ def test_transfer_workflow_does_not_inherit_other_features_or_the_app() -> None:
         )
         for module in imports
     )
+
+
+def test_configuration_facade_does_not_construct_local_adapters() -> None:
+    tree = ast.parse((APPLICATION_DIR / "configuration" / "facade.py").read_text(encoding="utf-8"))
+    constructors = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+        if alias.name.endswith(("Manager", "Store"))
+    }
+    assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in constructors
+        for node in ast.walk(tree)
+    )
+
+
+def test_feature_workflows_do_not_inherit_hosts_or_other_features() -> None:
+    for path in (PROJECT_ROOT / "ouro" / "tui" / "features").glob("*/workflows.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and "Workflow" in node.name:
+                assert node.bases == [], str(path)
+
+
+def test_configuration_use_cases_do_not_depend_on_hosts() -> None:
+    for path in (APPLICATION_DIR / "configuration").glob("*.py"):
+        imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+        assert not any(
+            module.startswith(("ouro.tui", "ouro.cli", "ouro.local_")) for module in imports
+        ), str(path)

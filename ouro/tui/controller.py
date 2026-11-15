@@ -14,6 +14,7 @@ from pydantic import JsonValue
 from ouro.application.agents.service import AgentService
 from ouro.application.agents.tree import AgentTreeSubscription
 from ouro.application.configuration.facade import ConfigurationFacade
+from ouro.application.configuration.live import LiveConfigurationService
 from ouro.application.contracts.agents import (
     AgentDefinitionCatalogView,
     AgentDefinitionDetail,
@@ -106,7 +107,7 @@ from ouro.core.tools import PermissionMode
 from ouro.core.usage_queries import UsageSummary, UsageTotals
 from ouro.deployment import SessionBackend, TaskBackend
 from ouro.local_application import LocalApplication
-from ouro.mcp import MCPServerConfig
+from ouro.local_configuration import build_local_configuration
 from ouro.skills import SkillMetadata
 from ouro.tui.state import PendingInteraction
 from ouro.tui.status import (
@@ -285,7 +286,7 @@ class TuiController:
         runtime = self._application.runtime
         self._draft_workspace = runtime.default_workspace
         if self._configuration is None and runtime.environment.home is not None:
-            self._configuration = ConfigurationFacade(runtime.environment.home)
+            self._configuration = build_local_configuration(runtime.environment.home)
         models_task = asyncio.create_task(self.models())
         model_task = asyncio.create_task(self.default_model())
         usage_task = asyncio.create_task(self.usage_summary())
@@ -1487,80 +1488,19 @@ class TuiController:
         return await asyncio.to_thread(configuration.mcp_server, server_id)
 
     @publishes_status
-    async def set_mcp_enabled(
-        self,
-        server_id: str,
-        *,
-        enabled: bool,
-    ) -> MCPServerConfigView:
-        configuration = self._require_configuration()
-        previous = await asyncio.to_thread(configuration.mcp_server, server_id)
-        if previous.enabled == enabled:
-            return previous
-
-        def update() -> tuple[MCPServerConfigView, MCPServerConfig]:
-            saved = configuration.save_mcp_server(
-                server_id,
-                MCPServerConfigInput(enabled=enabled),
-            )
-            config = configuration.mcp.get(server_id)
-            assert config is not None
-            return saved, config
-
-        saved, config = await asyncio.to_thread(update)
-        self._runtime()
-        assert self._application is not None
-        try:
-            await self._application.reconcile_mcp_configuration(config)
-        except Exception:
-            await asyncio.to_thread(
-                configuration.save_mcp_server,
-                server_id,
-                MCPServerConfigInput(enabled=previous.enabled),
-            )
-            restored = configuration.mcp.get(server_id)
-            assert restored is not None
-            await self._application.reconcile_mcp_configuration(restored)
-            raise
-        return saved
+    async def set_mcp_enabled(self, server_id: str, *, enabled: bool) -> MCPServerConfigView:
+        return await self._live_configuration().set_mcp_enabled(server_id, enabled=enabled)
 
     @publishes_status
-    async def save_mcp_configuration(
-        self,
-        draft: TuiMCPServerConfiguration,
-    ) -> MCPServerConfigView:
-        configuration = self._require_configuration()
-        previous = (
-            await asyncio.to_thread(configuration.mcp.get, draft.server_id)
-            if draft.server_id is not None
-            else None
+    async def save_mcp_configuration(self, draft: TuiMCPServerConfiguration) -> MCPServerConfigView:
+        return await self._live_configuration().save_mcp_configuration(
+            draft.server_id, self._mcp_configuration_input(draft)
         )
-        saved, config = await asyncio.to_thread(self._save_mcp_configuration, draft)
-        self._runtime()
-        assert self._application is not None
-        try:
-            await self._application.reconcile_mcp_configuration(config)
-        except Exception:
-            if previous is None:
-                await asyncio.to_thread(configuration.remove_mcp_server, saved.server_id)
-                raise
-            await asyncio.to_thread(
-                configuration.save_mcp_server,
-                previous.server_id,
-                MCPServerConfigInput.model_validate(
-                    previous.model_dump(mode="python", exclude={"server_id", "metadata"})
-                ),
-            )
-            restored = configuration.mcp.get(previous.server_id)
-            assert restored is not None
-            await self._application.reconcile_mcp_configuration(restored)
-            raise
-        return saved
 
-    def _save_mcp_configuration(
+    def _mcp_configuration_input(
         self,
         draft: TuiMCPServerConfiguration,
-    ) -> tuple[MCPServerConfigView, MCPServerConfig]:
+    ) -> MCPServerConfigInput:
         payload: dict[str, object] = {
             "name": draft.name,
             "transport": draft.transport,
@@ -1587,12 +1527,7 @@ class TuiController:
             value = getattr(draft, field_name)
             if value is not None:
                 payload[field_name] = value
-        update = MCPServerConfigInput.model_validate(payload)
-        configuration = self._require_configuration()
-        saved = configuration.save_mcp_server(draft.server_id, update)
-        config = configuration.mcp.get(saved.server_id)
-        assert config is not None
-        return saved, config
+        return MCPServerConfigInput.model_validate(payload)
 
     @publishes_status
     async def remove_mcp_configuration(self, server_id: str) -> None:
@@ -1678,27 +1613,10 @@ class TuiController:
         enabled: bool | None = None,
         source_updates: Mapping[str, bool] | None = None,
     ) -> SkillPolicyView:
-        configuration = self._require_configuration()
-        updates = dict(source_updates or {})
-        previous = await asyncio.to_thread(configuration.skill_policy)
-        if enabled is None and not updates:
-            return previous
-        saved = await asyncio.to_thread(
-            configuration.update_skill_discovery,
+        return await self._live_configuration().update_skill_discovery(
             enabled=enabled,
-            source_updates=updates,
+            source_updates=source_updates,
         )
-        try:
-            await self._refresh_runtime_skills(configuration)
-        except Exception:
-            previous_sources = {source.source_id: source.enabled for source in previous.sources}
-            await asyncio.to_thread(
-                configuration.update_skill_discovery,
-                enabled=previous.enabled if enabled is not None else None,
-                source_updates={source_id: previous_sources[source_id] for source_id in updates},
-            )
-            raise
-        return saved
 
     @publishes_status
     async def install_skills(
@@ -1727,46 +1645,13 @@ class TuiController:
         return await asyncio.to_thread(configuration.remove_skill, name)
 
     @publishes_status
-    async def set_skill_enabled(
-        self,
-        name: str,
-        *,
-        enabled: bool,
-    ) -> SkillManagementView:
-        plugin_skill = next(
-            (
-                skill
-                for skill in await self._runtime().available_skills()
-                if skill.name == name and _plugin_skill_owner(skill) is not None
-            ),
-            None,
-        )
-        if plugin_skill is not None:
-            raise ConfigError(f"plugin skill {name!r} is managed through its owning plugin")
-        configuration = self._require_configuration()
-        result = await asyncio.to_thread(configuration.set_skill_enabled, name, enabled=enabled)
-        try:
-            await self._refresh_runtime_skills(configuration)
-        except Exception:
-            await asyncio.to_thread(
-                configuration.set_skill_enabled,
-                name,
-                enabled=not enabled,
-            )
-            raise
-        return result
+    async def set_skill_enabled(self, name: str, *, enabled: bool) -> SkillManagementView:
+        return await self._live_configuration().set_skill_enabled(name, enabled=enabled)
 
-    async def _refresh_runtime_skills(self, configuration: ConfigurationFacade) -> None:
-        catalog = await asyncio.to_thread(configuration.skill_catalog)
-        skills = tuple(
-            SkillMetadata.model_validate(
-                skill.model_dump(mode="python", exclude={"managed", "install"})
-            )
-            for skill in catalog.skills
-        )
-        self._runtime()
+    def _live_configuration(self) -> LiveConfigurationService:
+        configuration = self._require_configuration()
         assert self._application is not None
-        await self._application.refresh_skills(skills)
+        return self._application.configuration_changes(configuration)
 
     async def compaction_configuration(self) -> CompactionConfigView:
         configuration = self._require_configuration()
@@ -2437,12 +2322,4 @@ def _session_control_fallback_label(plugin_id: str) -> str:
 
 def _tool_plugin_id(metadata: Metadata) -> str | None:
     plugin_id = metadata.get("plugin_id")
-    return plugin_id if isinstance(plugin_id, str) and plugin_id else None
-
-
-def _plugin_skill_owner(skill: SkillMetadata) -> str | None:
-    ouro = skill.extensions.get("ouro")
-    if not isinstance(ouro, dict):
-        return None
-    plugin_id = ouro.get("plugin_id")
     return plugin_id if isinstance(plugin_id, str) and plugin_id else None

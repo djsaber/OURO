@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 
-from ouro.application.configuration.facade import ConfigurationFacade
 from ouro.cli.main import main
 from ouro.local_application import LocalApplication
+from ouro.local_configuration import build_local_configuration
 
 
 def _json_command(args: list[str], capsys) -> tuple[int, dict[str, object]]:
@@ -42,7 +42,7 @@ def test_agent_definition_cli_default_model_requires_system_route(tmp_path, caps
     assert code != 0
     assert "system default endpoint is not configured" in failed["error"]
 
-    ConfigurationFacade(tmp_path).add_provider(
+    build_local_configuration(tmp_path).add_provider(
         display_name="Primary", provider_type="openai", make_default=True
     )
     code, created = _json_command(command, capsys)

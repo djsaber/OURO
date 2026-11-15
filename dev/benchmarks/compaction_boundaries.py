@@ -27,7 +27,8 @@ from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry
 
 

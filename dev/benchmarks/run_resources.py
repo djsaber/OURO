@@ -28,7 +28,8 @@ def make_runtime(root, backend="files"):
     from ouro.core.provider import ModelMetadata
     from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_catalog
     from ouro.providers import FauxProvider
-    from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+    from ouro.sessions.backends.files.store import LocalSessionStore
+    from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
     from ouro.tools import ToolRegistry
 
     store = (

@@ -13,7 +13,7 @@ from ouro.core.errors import SessionBusyError
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
 from tests.run_facts import run_tool_results
 

@@ -10,7 +10,9 @@ from ouro.core.messages import MessageRecord
 from ouro.core.session_commits import SessionCommit
 from ouro.core.state import RunContinuationCheckpoint, RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolCallBatchRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore, sqlite_runs
+from ouro.sessions import sqlite_runs
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 
 
 @pytest.fixture(params=[LocalSessionStore, SQLiteSessionStore])

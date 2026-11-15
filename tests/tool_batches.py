@@ -3,10 +3,10 @@ from ouro.application.runs.tool_batches import prepare_batch_changes
 from ouro.core.message_content import materialize_message
 from ouro.core.messages import MessageRecord, ToolMessageReference
 from ouro.core.session_commits import SessionCommit
+from ouro.core.session_ports import SessionRepository
 from ouro.core.state import RunRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest, ToolInvocation, ToolResult
-from ouro.sessions.base import SessionRepository
 
 
 def seed_spawn_request(store: SessionRepository, request: SpawnAgentRequest) -> SpawnAgentRequest:

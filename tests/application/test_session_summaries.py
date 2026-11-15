@@ -3,10 +3,11 @@ from contextlib import closing
 
 import pytest
 
-from ouro.application import SessionService, SessionSummary
+from ouro.application.contracts.sessions import SessionSummary
+from ouro.application.sessions.service import SessionService
 from ouro.core.errors import PersistenceError, SessionNotFoundError
 from ouro.local_application import build_local_session_services
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from tests.session_storage import write_session_payload
 from tests.session_summaries import add_session_summaries, select_summary
 

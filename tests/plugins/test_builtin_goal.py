@@ -35,7 +35,8 @@ from ouro.plugins.harness_calls import invoke_plugin_callback
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.plugins.resources import ScopedPluginDataStore
 from ouro.sdk.plugins import v5 as sdk
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 from tests.application.helpers import wait_for_input_settlement
 

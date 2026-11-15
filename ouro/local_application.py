@@ -6,10 +6,12 @@ from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, supp
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
+from typing import cast
 
 from ouro.application.agents.definitions import AgentDefinitionService
 from ouro.application.agents.service import AgentService
 from ouro.application.configuration.facade import ConfigurationFacade
+from ouro.application.configuration.live import LiveConfigurationService
 from ouro.application.contracts.base import ApplicationStartupReport, Diagnostic
 from ouro.application.contracts.configuration import MCPRuntimeServerView
 from ouro.application.events import RuntimeEventSink
@@ -60,6 +62,7 @@ from ouro.core.continuations import RunContinuationRegistry
 from ouro.core.errors import ConfigError, OuroError
 from ouro.core.observers import ObserverRegistry
 from ouro.core.prompt_policies import PromptPolicyRegistry
+from ouro.core.session_ports import SessionStore
 from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistry
 from ouro.deployment import (
@@ -73,6 +76,7 @@ from ouro.local_configuration import (
     AdapterBuilder,
     ConfiguredModelCatalog,
     RuntimeConfigurationResolver,
+    build_local_configuration,
 )
 from ouro.local_providers import build_plugin_provider, unavailable_provider_binding
 from ouro.mcp import MCPRuntimeResource, MCPServerConfig, MCPServerRecord
@@ -84,7 +88,9 @@ from ouro.plugins.registry import PluginCommandRegistry
 from ouro.providers import build_runtime_adapter
 from ouro.providers.authentication import ProviderRequestPolicy
 from ouro.resources import LocalResourceStore
-from ouro.sessions import LocalSessionStore, SessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
+from ouro.sessions.portable import SessionTransferStore
 from ouro.skills import SkillMetadata
 from ouro.tools import ToolRegistry, builtin_tools
 
@@ -106,7 +112,7 @@ class LocalSessionServices:
 
     sessions: SessionService
     resources: ResourceService
-    _store: SessionStore = field(repr=False)
+    _store: SessionTransferStore = field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -182,6 +188,14 @@ class LocalApplication:
     def startup_report(self) -> ApplicationStartupReport:
         return self._startup_report
 
+    def configuration_changes(self, configuration: ConfigurationFacade) -> LiveConfigurationService:
+        return LiveConfigurationService(
+            configuration,
+            reconcile_mcp=self.reconcile_mcp_configuration,
+            refresh_skills=self.refresh_skills,
+            available_skills=self.runtime.available_skills,
+        )
+
     def transfer_data(self, request: DataTransferRequest) -> DataTransferResult:
         return self._data_transfer_service().transfer(request)
 
@@ -195,7 +209,9 @@ class LocalApplication:
         home = self.runtime.environment.home
         if home is None:
             raise OuroError("runtime has no configured deployment home")
-        return build_local_data_transfer_service(home, session_store=self.runtime.store)
+        return build_local_data_transfer_service(
+            home, session_store=cast(SessionTransferStore, self.runtime.store)
+        )
 
     @classmethod
     def build(
@@ -538,7 +554,7 @@ async def open_local_provider_runtime(
 ) -> AsyncGenerator[RuntimeService]:
     """Own the configured Provider and its protocol plugin for a connection check."""
     options = provider_options or ProviderRuntimeOptions()
-    configured = ConfigurationFacade(home).provider(options.provider_id)
+    configured = build_local_configuration(home).provider(options.provider_id)
 
     async def bind_provider(protocol: str) -> ProviderBinding:
         assert plugins.runtime is not None
@@ -697,7 +713,7 @@ def build_local_services(
         sessions=session_services.sessions,
         resources=session_services.resources,
         usage=build_local_usage_service(root),
-        configuration=ConfigurationFacade(root),
+        configuration=build_local_configuration(root),
         plugins=build_local_plugin_service(root, session_store=session_services._store),
     )
 
@@ -711,7 +727,7 @@ def build_local_session_services(
 
     root = resolve_local_home(home)
     selected_backend = resolve_session_backend(session_backend)
-    store: SessionStore
+    store: SessionTransferStore
     if selected_backend == "files":
         store = LocalSessionStore(root)
     else:
@@ -743,7 +759,7 @@ def build_local_data_transfer_service(
     home: str | Path | None = None,
     *,
     session_backend: SessionBackend | None = None,
-    session_store: SessionStore | None = None,
+    session_store: SessionTransferStore | None = None,
 ) -> DataTransferService:
     root = resolve_local_home(home)
 

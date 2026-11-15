@@ -12,7 +12,8 @@ from ouro.core.messages import MessageRecord, ToolResultReference
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest, ToolInvocation
-from ouro.sessions import DATA_LAYOUT_VERSION, LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.layout import DATA_LAYOUT_VERSION
 from tests.response_drafts import persist_response_draft
 from tests.session_storage import write_session_payload
 from tests.tool_batches import persist_tool_batch, seed_tool_messages

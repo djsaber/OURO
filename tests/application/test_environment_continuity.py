@@ -32,7 +32,8 @@ from ouro.core.tool_policies import ToolPolicyDecision, ToolPolicyRegistration, 
 from ouro.core.tools import ToolInputRequest, ToolInvocation
 from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_catalog
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 from tests.agent_facts import seed_delegation
 from tests.event_capture import recorded_events

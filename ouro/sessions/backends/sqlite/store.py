@@ -51,6 +51,10 @@ from ouro.core.session_commits import (
     SessionCommitStep,
 )
 from ouro.core.session_extensions import SessionExtensionStateRecord
+from ouro.core.session_facts import SessionFactPage
+from ouro.core.session_observation import FactCursor
+from ouro.core.session_ports import RuntimeSessionSnapshot, SessionHistorySnapshot, SessionSnapshot
+from ouro.core.session_queries import SessionIndexEntry
 from ouro.core.state import RunRecord, RunRequestCounts, SessionRecord
 from ouro.core.tool_batches import ToolCallState, validate_call_states
 from ouro.core.tool_facts import (
@@ -80,21 +84,15 @@ from ouro.sessions import sqlite_resources
 from ouro.sessions.backends.sqlite.commits import SQLiteSessionCommits
 from ouro.sessions.backends.sqlite.messages import read_counts as read_message_counts
 from ouro.sessions.backends.sqlite.messages import read_result_references, write_messages
-from ouro.sessions.base import (
-    RuntimeSessionSnapshot,
-    SessionHistorySnapshot,
-    SessionSnapshot,
-)
 from ouro.sessions.catalog import (
     SessionCatalogProjection,
     catalog_entry_from_projection,
     catalog_entry_from_session,
     sort_catalog_entries,
 )
-from ouro.sessions.index import SessionIndex, SessionIndexEntry, invalid_session_index_entry
+from ouro.sessions.index import SessionIndex, invalid_session_index_entry
 from ouro.sessions.locks import SessionRunLock
 from ouro.sessions.message_reads import resolve_messages
-from ouro.sessions.observation import FactCursor, SessionFactPage
 from ouro.sessions.portable import SessionBundle, populate_sessions
 from ouro.sessions.sqlite_compactions import insert_compaction
 from ouro.sessions.sqlite_connections import ExecutionConnections, NativeSessionRunLock

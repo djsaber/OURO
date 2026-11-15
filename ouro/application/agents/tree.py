@@ -19,9 +19,9 @@ from ouro.application.usage import UsageService
 from ouro.core.agents import DelegationRecord
 from ouro.core.callbacks import run_blocking
 from ouro.core.errors import SessionNotFoundError
+from ouro.core.session_ports import SessionStore
 from ouro.core.state import RunRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
-from ouro.sessions import SessionStore
 
 _RELATION_EVENT_TYPES = frozenset(
     {

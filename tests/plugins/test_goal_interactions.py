@@ -27,7 +27,8 @@ from ouro.local_application import LocalApplication
 from ouro.providers.anthropic_messages.codec import messages_to_anthropic_messages
 from ouro.providers.openai_chat_completions.codec import messages_to_chat_completions
 from ouro.providers.openai_responses.codec import responses_input
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 from tests.application.helpers import wait_for_input_settlement, wait_for_runtime_event
 

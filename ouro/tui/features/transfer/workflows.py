@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import Protocol, cast
 from weakref import ReferenceType, ref
 
 from textual.worker import Worker
@@ -24,6 +24,7 @@ from ouro.tui.features.transfer.paths import ArchivePathScreen
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.models import Choice
 from ouro.tui.menus.multiple import MultiChoiceScreen
+from ouro.tui.menus.workflows import Notify
 from ouro.tui.theme import theme_for
 
 TRANSFER_KIND_LABELS = {
@@ -321,18 +322,6 @@ class TransferOperations(Protocol):
     async def transfer_data(self, request: DataTransferRequest) -> DataTransferResult: ...
 
 
-class TransferNotification(Protocol):
-    def __call__(
-        self,
-        message: str,
-        *,
-        title: str = "",
-        severity: Literal["information", "warning", "error"] = "information",
-        timeout: float | None = None,
-        markup: bool = True,
-    ) -> None: ...
-
-
 class DataTransferWorkflow:
     """Own transfer progress while the App owns execution and screen navigation."""
 
@@ -341,7 +330,7 @@ class DataTransferWorkflow:
         *,
         controller: Callable[[], TransferOperations],
         show: Callable[[ChoiceScreen], object],
-        notify: TransferNotification,
+        notify: Notify,
         start: Callable[[Callable[[], Coroutine[None, None, None]]], object],
     ) -> None:
         self._controller = controller

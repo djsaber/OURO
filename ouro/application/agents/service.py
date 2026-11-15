@@ -74,6 +74,7 @@ from ouro.core.run_budget import RunPauseReason
 from ouro.core.run_transitions import plan_run_transition
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict
 from ouro.core.session_controls import DelegatedTaskInput, HostSessionInput
+from ouro.core.session_ports import SessionStore
 from ouro.core.state import (
     ACTIVE_RUN_STATUSES,
     RESUMABLE_RUN_STATUSES,
@@ -84,7 +85,6 @@ from ouro.core.state import (
 from ouro.core.tool_batches import ToolCallBatchRecord, ToolCallState
 from ouro.core.tool_facts import ToolCallIdentity, ToolOutcomeRecord
 from ouro.core.tools import ToolInvocation, ToolResult
-from ouro.sessions import SessionStore
 
 _LOGGER = logging.getLogger(__name__)
 

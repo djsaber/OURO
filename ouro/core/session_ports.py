@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Generator, Iterable, Mapping
+from collections.abc import Generator, Iterable
 from contextlib import AbstractContextManager
 from datetime import datetime
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
 from pydantic import Field
 
@@ -25,6 +25,9 @@ from ouro.core.resources import ResourceRecord, SessionResourceReference
 from ouro.core.response_drafts import ResponseDraftChunk, ResponseDraftPage
 from ouro.core.session_commits import SessionCommit, SessionCommitResult
 from ouro.core.session_extensions import SessionExtensionStateRecord
+from ouro.core.session_facts import SessionFactPage
+from ouro.core.session_observation import FactCursor
+from ouro.core.session_queries import SessionCatalog
 from ouro.core.state import RunRecord, RunRequestCounts, SessionRecord
 from ouro.core.tool_batches import ToolCallState
 from ouro.core.tool_facts import (
@@ -34,12 +37,6 @@ from ouro.core.tool_facts import (
     ToolCallStart,
     ToolOutcomeRecord,
 )
-from ouro.sessions.index import SessionIndex
-
-if TYPE_CHECKING:
-    from ouro.sessions.portable import SessionBundle
-
-from ouro.sessions.observation import FactCursor, SessionFactPage
 
 
 class RuntimeSessionSnapshot(OuroModel):
@@ -428,7 +425,7 @@ class SessionRepository(Protocol):
 class SessionCatalogStore(Protocol):
     """Disposable projection whose reads never inspect canonical Session state."""
 
-    def read_catalog(self) -> SessionIndex: ...
+    def read_catalog(self) -> SessionCatalog: ...
 
     def refresh_catalog(
         self,
@@ -437,18 +434,4 @@ class SessionCatalogStore(Protocol):
 
 
 class SessionStore(SessionRepository, SessionCatalogStore, Protocol):
-    """Complete in-process store composed from canonical and catalog ports."""
-
-    def import_bundle(
-        self,
-        bundle: SessionBundle,
-        *,
-        replace_session_ids: tuple[str, ...] = (),
-        resource_contents: Mapping[str, Mapping[str, bytes]] | None = None,
-    ) -> None:
-        """Publish a bundle, replacing explicitly selected trees with failure rollback.
-
-        The application owns execution locks and resolves complete target trees.
-        Other identity collisions are rejected at publication time.
-        """
-        ...
+    """Canonical Session facts and their disposable catalog projection."""

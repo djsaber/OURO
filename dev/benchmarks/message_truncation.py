@@ -13,7 +13,8 @@ from time import perf_counter
 
 from ouro.core.messages import MessageRecord
 from ouro.core.state import SessionRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 
 
 def measure(store, *, prefix_count: int, repeat: int = 5) -> dict[str, object]:

@@ -21,7 +21,8 @@ from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.local_application import LocalApplication
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.conversation.history import ConversationHistory

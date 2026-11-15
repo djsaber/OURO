@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from ouro.billing.local import LocalUsageLedger
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro_upgrade import workspace
 from ouro_upgrade.engine import upgrade
 from ouro_upgrade.errors import UpgradeError

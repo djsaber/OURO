@@ -25,9 +25,10 @@ from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolInvocation
 from ouro.core.usage_queries import UsageSummary, UsageSummaryGroup, UsageTotals
 from ouro.local_application import LocalApplication
+from ouro.local_configuration import build_local_configuration
 from ouro.mcp import MCPServerConfigUpdate
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.skills import discover_skill_catalog
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult, builtin_tools
 from ouro.tui.controller import TuiController
@@ -542,7 +543,7 @@ async def test_controller_start_defers_session_catalog_until_requested(
         lambda _event: None,
         lambda _status: None,
         application=application,
-        configuration=ConfigurationFacade(tmp_path),
+        configuration=build_local_configuration(tmp_path),
     )
 
     def unexpected_catalog(*_args, **_kwargs):
@@ -653,7 +654,7 @@ def _skill_prompt_application(
 async def test_controller_configures_provider_endpoint_through_application_facade(
     tmp_path: Path,
 ) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     created = configuration.add_provider(
         display_name="Custom",
         provider_type="custom",
@@ -743,7 +744,7 @@ async def test_controller_configures_provider_endpoint_through_application_facad
 async def test_first_tui_endpoint_does_not_choose_default_provider(
     tmp_path: Path,
 ) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     created = configuration.add_provider(
         display_name="Custom",
         provider_type="custom",
@@ -794,7 +795,7 @@ async def test_first_tui_endpoint_does_not_choose_default_provider(
 async def test_controller_configures_preset_and_custom_providers(
     tmp_path: Path,
 ) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     controller = TuiController(
         lambda _event: None,
         lambda _status: None,
@@ -888,7 +889,7 @@ async def test_controller_configures_preset_and_custom_providers(
 async def test_controller_manages_tool_permissions_and_execution_limits_via_facade(
     tmp_path: Path,
 ) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     controller = TuiController(
         lambda _event: None,
         lambda _status: None,
@@ -958,7 +959,7 @@ async def test_controller_manages_subagent_policy_and_definitions(
     tmp_path: Path,
     allowed_agents: tuple[str, ...],
 ) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     configuration.update_agent_runtime(
         expected_revision=0, allowed_agent_id_patterns=allowed_agents
     )
@@ -1050,7 +1051,7 @@ async def test_controller_manages_subagent_policy_and_definitions(
 async def test_controller_rejects_overrides_for_contract_controlled_plugin_tools(
     tmp_path: Path,
 ) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     application = _reasoning_application(tmp_path)
     application.runtime.tools.register(
         Tool(
@@ -1093,7 +1094,7 @@ async def test_controller_tool_catalog_includes_search_and_todolist_as_host_buil
         lambda _event: None,
         lambda _status: None,
         application=application,
-        configuration=ConfigurationFacade(tmp_path),
+        configuration=build_local_configuration(tmp_path),
     )
     await controller.start()
 
@@ -1147,7 +1148,7 @@ async def test_controller_manages_plugins_through_local_application_boundary(
         lambda _event: None,
         lambda _status: None,
         application=application,
-        configuration=ConfigurationFacade(tmp_path),
+        configuration=build_local_configuration(tmp_path),
     )
     await controller.start()
 
@@ -1213,7 +1214,7 @@ async def test_controller_installs_and_configures_user_plugin(tmp_path: Path) ->
         lambda _event: None,
         lambda _status: None,
         application=_reasoning_application(tmp_path),
-        configuration=ConfigurationFacade(tmp_path),
+        configuration=build_local_configuration(tmp_path),
     )
     await controller.start()
 
@@ -1237,7 +1238,7 @@ async def test_controller_installs_and_configures_user_plugin(tmp_path: Path) ->
 
 @pytest.mark.asyncio
 async def test_controller_creates_mcp_configuration(tmp_path: Path) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     controller = TuiController(
         lambda _event: None,
         lambda _status: None,
@@ -1284,7 +1285,7 @@ async def test_controller_creates_mcp_configuration(tmp_path: Path) -> None:
 async def test_controller_rolls_back_mcp_save_when_runtime_reconciliation_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing: bool
 ) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     previous = (
         configuration.set_mcp_server_by_name(
             "Original", MCPServerConfigUpdate(command="python", env={"TOKEN": "secret"})
@@ -1347,7 +1348,7 @@ async def test_controller_rolls_back_mcp_save_when_runtime_reconciliation_fails(
 async def test_controller_hot_updates_mcp_tool_policy_without_reconfiguring_connection(
     tmp_path: Path,
 ) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     created = configuration.set_mcp_server_by_name(
         "local",
         MCPServerConfigUpdate(command="python", auto_start=False),
@@ -1422,7 +1423,7 @@ async def test_controller_manages_discovered_skill_policy(tmp_path: Path) -> Non
         "---\nname: demo\ndescription: Demo skill.\n---\n\nUse the demo workflow.\n",
         encoding="utf-8",
     )
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     controller = TuiController(
         lambda _event: None,
         lambda _status: None,
@@ -1468,7 +1469,7 @@ async def test_controller_updates_skill_directory_sources_and_live_runtime(
         "---\nname: codex-skill\ndescription: Codex skill.\n---\n",
         encoding="utf-8",
     )
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     controller = TuiController(
         lambda _event: None,
         lambda _status: None,
@@ -1508,7 +1509,7 @@ async def test_controller_rolls_back_skill_source_when_runtime_refresh_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     controller = TuiController(
         lambda _event: None,
         lambda _status: None,
@@ -1520,7 +1521,7 @@ async def test_controller_rolls_back_skill_source_when_runtime_refresh_fails(
     async def fail_refresh(_configuration: ConfigurationFacade) -> None:
         raise RuntimeError("refresh failed")
 
-    monkeypatch.setattr(controller, "_refresh_runtime_skills", fail_refresh)
+    monkeypatch.setattr(controller._application, "refresh_skills", fail_refresh)
     try:
         with pytest.raises(RuntimeError, match="refresh failed"):
             await controller.update_skill_discovery(source_updates={"ouro.user": False})
@@ -1568,7 +1569,7 @@ async def test_controller_skill_catalog_tracks_live_plugin_skills(tmp_path: Path
         lambda _event: None,
         lambda _status: None,
         application=_reasoning_application(tmp_path),
-        configuration=ConfigurationFacade(tmp_path),
+        configuration=build_local_configuration(tmp_path),
     )
     await controller.start()
 
@@ -1609,7 +1610,7 @@ async def test_skill_toggle_changes_subsequent_dialogue_runs_in_same_controller(
         encoding="utf-8",
     )
     provider = _SkillPromptCapturingProvider()
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     controller = TuiController(
         lambda _event: None,
         lambda _status: None,
@@ -1635,7 +1636,7 @@ async def test_skill_toggle_changes_subsequent_dialogue_runs_in_same_controller(
 
 @pytest.mark.asyncio
 async def test_controller_persists_queued_input_consumption_mode(tmp_path: Path) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     controller = TuiController(
         lambda _event: None,
         lambda _status: None,
@@ -1660,7 +1661,7 @@ async def test_controller_persists_queued_input_consumption_mode(tmp_path: Path)
 async def test_controller_persists_complete_compaction_options_and_requires_session(
     tmp_path: Path,
 ) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     controller = TuiController(
         lambda _event: None,
         lambda _status: None,
@@ -2406,7 +2407,7 @@ async def test_controller_configuration_reads_do_not_block_the_event_loop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    configuration = ConfigurationFacade(tmp_path)
+    configuration = build_local_configuration(tmp_path)
     controller = TuiController(
         lambda _event: None,
         lambda _status: None,

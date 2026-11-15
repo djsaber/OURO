@@ -7,7 +7,8 @@ import pytest
 
 from ouro.application.runs.ownership import RunExecutionOwnership
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])

@@ -25,7 +25,8 @@ from ouro.core.messages import MessageRecord
 from ouro.core.observers import ObserverRegistry
 from ouro.core.session_commits import SessionCommit
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 
 
 def experiment(root, backend, history_size, old_runs, repeat):

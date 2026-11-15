@@ -24,7 +24,8 @@ from ouro.core.context_snapshots import ModelRequestHeader, RequestManifestRecor
 from ouro.core.request_manifest import RequestManifest
 from ouro.core.session_commits import SessionCommit
 from ouro.core.state import SessionRecord
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 
 
 def experiment(root, backend, size, repeat):

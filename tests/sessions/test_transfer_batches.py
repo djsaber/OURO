@@ -9,10 +9,10 @@ import ouro.sessions.backends.files.store as file_store
 from ouro.core.errors import PersistenceError
 from ouro.core.harness import HarnessVersion
 from ouro.core.messages import MessageRecord
+from ouro.core.session_ports import SessionSnapshot
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
-from ouro.sessions.base import SessionSnapshot
 from ouro.sessions.portable import PortableSession, SessionBundle
 
 

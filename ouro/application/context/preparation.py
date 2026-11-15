@@ -46,10 +46,10 @@ from ouro.core.message_semantics import (
 from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.observers import ContextPreparedObservation, FrozenJson, freeze_json
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict
+from ouro.core.session_ports import SessionStore
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolDefinition
 from ouro.prompts import AFK_CONTEXT_PROMPT
-from ouro.sessions import SessionStore
 
 
 class ContextMessageAppender(Protocol):

@@ -25,7 +25,8 @@ from ouro.core.state import RunRecord
 from ouro.core.tools import ToolDefinition
 from ouro.local_application import LocalApplication
 from ouro.providers import FauxProvider
-from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry
 
 
