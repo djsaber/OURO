@@ -136,7 +136,7 @@ class PromptWorkflows:
         if menu is not None:
             screen = menu
             screen.push_page(
-                title="PERSONAL PROMPTS",
+                title="PROMPTS",
                 placeholder="Filter prompts…",
                 choices=prompt_choices(current.config),
                 on_select=select,
@@ -144,7 +144,7 @@ class PromptWorkflows:
             )
         else:
             screen = ChoiceScreen(
-                title="PERSONAL PROMPTS",
+                title="PROMPTS",
                 placeholder="Filter prompts…",
                 choices=prompt_choices(current.config),
                 on_select=select,

@@ -12,7 +12,6 @@ from ouro.core.tools import PermissionMode
 from ouro.tui.features.providers.model_menus import model_selection_label
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.confirmation import ConfirmationScreen
-from ouro.tui.menus.labels import PERMISSION_LABELS
 from ouro.tui.menus.models import Choice
 from ouro.tui.menus.sorting import display_sort_key, sorted_agent_definitions
 from ouro.tui.menus.workflows import WorkflowNavigation
@@ -44,8 +43,9 @@ SYSTEM_SETTING_ACTIONS = (
     SystemSettingAction("tasks.create", "+ task", "Tasks"),
     SystemSettingAction("queued_inputs.delivery", "Queued messages", "Settings"),
     SystemSettingAction("compaction.policy", "Context compaction", "Settings"),
-    SystemSettingAction("prompts.manage", "Personal prompts", "Settings"),
-    SystemSettingAction("data.transfer", "Manage data", "Settings"),
+    SystemSettingAction("prompts.manage", "Prompts", "Settings"),
+    SystemSettingAction("data.transfer", "Data", "Settings"),
+    SystemSettingAction("tools.configure", "Tool", "Settings"),
     SystemSettingAction("providers.list", "Manage providers", "Providers"),
     SystemSettingAction("providers.endpoints.list", "Manage endpoints", "Providers"),
     SystemSettingAction(
@@ -57,8 +57,6 @@ SYSTEM_SETTING_ACTIONS = (
     SystemSettingAction("providers.endpoints.add", "+ endpoint", "Providers"),
     SystemSettingAction("plugins.list", "Manage plugins", "Plugins"),
     SystemSettingAction("plugins.install", "+ plugin", "Plugins"),
-    SystemSettingAction("tools.permissions", "Tool permissions", "Tools"),
-    SystemSettingAction("tools.execution", "Tool execution limits", "Tools"),
     SystemSettingAction("agents.policy", "Subagent permissions", "Subagents"),
     SystemSettingAction("agents.list", "Manage subagents", "Subagents"),
     SystemSettingAction("agents.create", "+ subagent", "Subagents"),
@@ -77,23 +75,6 @@ _QUEUED_INPUT_CONSUMPTION_DETAILS: dict[QueuedInputConsumptionMode, str] = {
     "one_by_one": "Process each message separately",
     "all_at_once": "Process waiting messages together",
 }
-
-_TOOL_PERMISSION_CHOICES: dict[str, PermissionMode | None] = {
-    "default": None,
-    "auto": "auto",
-    "approval": "approval",
-    "deny": "deny",
-}
-
-_TOOL_SOURCE_GROUPS = {
-    "builtin": "Built-in",
-    "mcp": "MCP",
-    "official_plugin": "Official plugins",
-    "third_party_plugin": "Third-party plugins",
-    "ai_generated_plugin": "AI-generated plugins",
-    "unavailable": "Unavailable",
-}
-_TOOL_SOURCE_ORDER = {source: index for index, source in enumerate(_TOOL_SOURCE_GROUPS)}
 
 
 class ConfigurationWorkflows:
@@ -200,119 +181,35 @@ class ConfigurationWorkflows:
         )
         self._ui.notify(f"Context compaction saved: {label} (next request)")
 
-    async def _choose_tools(self, *, menu: ChoiceScreen | None = None) -> None:
-        try:
-            tools = await self._ui.controller().tool_configurations()
-        except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            await self._ui.notice(str(exc), error=True)
-            return
-        if not tools:
-            return
-        tool_catalog = {tool.name: tool for tool in tools}
-        active_tool: TuiToolConfiguration | None = None
-
-        def show_tool_catalog(*, initial_value: str | None = None) -> None:
-            screen.replace_page(
-                title="TOOL PERMISSIONS",
-                placeholder="Filter tools…",
-                choices=_tool_choices(tuple(tool_catalog.values()), theme=self._ui.theme()),
-                initial_value=initial_value,
-                on_select=select_tool_or_permission,
-                on_cancel=cancel_submenu,
-            )
-
-        async def select_tool_or_permission(selected: str) -> tuple[Choice, ...] | None:
-            nonlocal active_tool
-            if active_tool is None:
-                tool = tool_catalog.get(selected)
-                if tool is None:
-                    await self._ui.notice(
-                        f"Tool not found: {selected}",
-                        error=True,
-                    )
-                    return None
-                if tool.permission_control == "tool":
-                    self._ui.notify(
-                        f"{tool.display_name} permissions are controlled by its plugin",
-                        severity="warning",
-                    )
-                    return None
-                active_tool = tool
-                current = tool.permission_override or "default"
-                screen.replace_page(
-                    title=f"TOOL PERMISSION{self._ui.theme().inline_separator}{tool.display_name}",
-                    placeholder=None,
-                    choices=_tool_permission_choices(
-                        current,
-                        default_permission=tool.inherited_permission,
-                        theme=self._ui.theme(),
-                    ),
-                    initial_value=current,
-                    on_select=select_tool_or_permission,
-                    on_cancel=cancel_submenu,
-                    interaction_hint=ChoiceScreen.BACK_HINT,
-                )
-                return None
-
-            try:
-                await self._ui.controller().set_tool_permission(
-                    active_tool.name,
-                    _TOOL_PERMISSION_CHOICES[selected],
-                )
-                refreshed = await self._ui.controller().tool_configurations()
-            except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-                await self._ui.notice(str(exc), error=True)
-                return None
-            selected_catalog_value = active_tool.name
-            tool_catalog.clear()
-            tool_catalog.update({tool.name: tool for tool in refreshed})
-            active_tool = None
-            show_tool_catalog(initial_value=selected_catalog_value)
-            return None
-
-        def cancel_submenu() -> bool:
-            nonlocal active_tool
-            if active_tool is None:
-                return False
-            initial_value = active_tool.name
-            active_tool = None
-            show_tool_catalog(initial_value=initial_value)
-            return True
-
-        if menu is not None:
-            screen = menu
-            screen.push_page(
-                title="TOOL PERMISSIONS",
-                placeholder="Filter tools…",
-                choices=_tool_choices(tools, theme=self._ui.theme()),
-                on_select=select_tool_or_permission,
-                on_cancel=cancel_submenu,
-            )
-            return
-        screen = ChoiceScreen(
-            title="TOOL PERMISSIONS",
-            placeholder="Filter tools…",
-            choices=_tool_choices(tools, theme=self._ui.theme()),
-            on_select=select_tool_or_permission,
-            on_cancel=cancel_submenu,
-        )
-        await self._ui.choose(screen)
-
-    async def _configure_tool_execution(self, *, menu: ChoiceScreen | None = None) -> None:
-        from ouro.tui.features.configuration.tools import ToolExecutionConfigurationScreen
+    async def _configure_tools(self, *, menu: ChoiceScreen | None = None) -> None:
+        from ouro.tui.features.configuration.tools import ToolConfigurationScreen
 
         try:
-            current = await self._ui.controller().tool_execution_configuration()
+            controller = self._ui.controller()
+            current = await controller.tool_execution_configuration()
+            tools = await controller.tool_configurations()
         except Exception as exc:  # noqa: BLE001
             await self._ui.notice(str(exc), error=True)
             return
-        screen = ToolExecutionConfigurationScreen(current)
+
+        async def save_permission(
+            name: str, mode: PermissionMode | None
+        ) -> tuple[TuiToolConfiguration, ...] | None:
+            try:
+                await controller.set_tool_permission(name, mode)
+                return await controller.tool_configurations()
+            except Exception as exc:  # noqa: BLE001
+                await self._ui.notice(str(exc), error=True)
+                return None
+
+        screen = ToolConfigurationScreen(current, tools=tools, on_permission=save_permission)
         draft = await (menu.open_child(screen) if menu is not None else self._ui.choose(screen))
         if draft is None:
             return
-        tool_execution_draft = cast(TuiToolExecutionConfiguration, draft)
         try:
-            updated = await self._ui.controller().update_tool_execution(tool_execution_draft)
+            updated = await controller.update_tool_execution(
+                cast(TuiToolExecutionConfiguration, draft)
+            )
         except Exception as exc:  # noqa: BLE001
             await self._ui.notice(str(exc), error=True)
             return
@@ -1140,7 +1037,7 @@ class ConfigurationWorkflows:
             await self._manage_plugin(plugin_id, menu=menu)
             return
 
-        actions = _skill_management_choices(skill, theme=self._ui.theme())
+        actions = _skill_management_choices(skill)
         if menu is not None:
 
             async def refresh_skill_actions() -> tuple[Choice, ...] | None:
@@ -1158,7 +1055,7 @@ class ConfigurationWorkflows:
                 if refreshed is None:
                     return ()
                 skill = refreshed
-                return _skill_management_choices(skill, theme=self._ui.theme())
+                return _skill_management_choices(skill)
 
             async def select_action(selected: str) -> tuple[Choice, ...] | None:
                 nonlocal skill
@@ -1185,7 +1082,7 @@ class ConfigurationWorkflows:
                         _skill_choices(catalog.skills, theme=self._ui.theme()),
                         initial_value=name,
                     )
-                    return _skill_management_choices(skill, theme=self._ui.theme())
+                    return _skill_management_choices(skill)
                 elif selected == "update":
                     await self._update_skill(name)
                 elif selected == "remove":
@@ -1194,7 +1091,7 @@ class ConfigurationWorkflows:
 
             menu.push_page(
                 title=f"SKILL{self._ui.theme().inline_separator}{name}",
-                description=skill.description,
+                description=f"{skill.description}\n\n{skill.location}",
                 placeholder=None,
                 choices=actions,
                 on_select=select_action,
@@ -1204,7 +1101,7 @@ class ConfigurationWorkflows:
         selected = await self._ui.choose(
             ChoiceScreen(
                 title=f"SKILL{self._ui.theme().inline_separator}{name}",
-                description=skill.description,
+                description=f"{skill.description}\n\n{skill.location}",
                 placeholder=None,
                 choices=actions,
             )
@@ -1273,43 +1170,6 @@ class ConfigurationWorkflows:
         self._ui.notify(f"Skill deleted: {name} (next restart)")
 
 
-def _tool_choices(
-    tools: tuple[TuiToolConfiguration, ...],
-    *,
-    theme: TuiTheme = DEFAULT_TUI_THEME,
-) -> tuple[Choice, ...]:
-    ordered = sorted(
-        tools,
-        key=lambda tool: (
-            _TOOL_SOURCE_ORDER[tool.source],
-            (tool.plugin_name or tool.plugin_id or "").casefold(),
-            (tool.plugin_id or "").casefold(),
-            tool.display_name.casefold(),
-            tool.name.casefold(),
-        ),
-    )
-    choices: list[Choice] = []
-    for tool in ordered:
-        plugin_group = tool.plugin_name or tool.plugin_id
-        choices.append(
-            Choice(
-                tool.name,
-                tool.display_name,
-                group=(
-                    plugin_group if plugin_group is not None else _TOOL_SOURCE_GROUPS[tool.source]
-                ),
-                group_trailing=(
-                    tool.plugin_id
-                    if tool.plugin_id is not None and tool.plugin_name is not None
-                    else ""
-                ),
-                trailing=_tool_labels(tool, theme=theme),
-                disabled=tool.permission_control == "tool",
-            )
-        )
-    return tuple(choices)
-
-
 def _agent_catalog_notice(catalog: AgentDefinitionCatalogView) -> str:
     return (
         "Saved dispatch policy changes require restarting OURO. Status shows the active policy."
@@ -1335,48 +1195,6 @@ def _agent_definition_choices(
         )
         for definition in sorted_agent_definitions(definitions)
     )
-
-
-def _tool_permission_choices(
-    current: str,
-    *,
-    default_permission: PermissionMode | None,
-    theme: TuiTheme = DEFAULT_TUI_THEME,
-) -> tuple[Choice, ...]:
-    return tuple(
-        Choice(
-            value,
-            PERMISSION_LABELS[value],
-            trailing=(
-                PERMISSION_LABELS[default_permission]
-                if value == "default" and default_permission is not None
-                else ""
-            ),
-            marker=theme.selected_choice_marker if value == current else "",
-        )
-        for value in _TOOL_PERMISSION_CHOICES
-    )
-
-
-def _tool_labels(
-    tool: TuiToolConfiguration,
-    *,
-    theme: TuiTheme = DEFAULT_TUI_THEME,
-) -> str:
-    permission: str
-    if tool.permission_control == "tool":
-        permission = PERMISSION_LABELS[tool.effective_permission or "unavailable"]
-        return theme.inline_separator.join(("Plugin controlled", permission))
-    elif tool.permission_override is not None:
-        permission = PERMISSION_LABELS[tool.permission_override]
-    elif tool.effective_permission is not None:
-        permission = theme.inline_separator.join(
-            ("Default", PERMISSION_LABELS[tool.effective_permission])
-        )
-    else:
-        permission = "unavailable"
-    availability = "" if tool.available else f"{theme.inline_separator}unavailable"
-    return f"{permission}{availability}"
 
 
 def _mcp_labels(status: McpServerStatus | None) -> str:
@@ -1529,12 +1347,8 @@ def _skill_source_choices(policy: SkillPolicyView) -> tuple[Choice, ...]:
     return tuple(choices)
 
 
-def _skill_management_choices(
-    skill: SkillView, *, theme: TuiTheme = DEFAULT_TUI_THEME
-) -> tuple[Choice, ...]:
+def _skill_management_choices(skill: SkillView) -> tuple[Choice, ...]:
     return (
-        Choice("source", "Source", trailing=_skill_source_label(skill, theme=theme), disabled=True),
-        Choice("location", skill.location, disabled=True, wrap=True),
         Choice(
             "disable" if skill.enabled else "enable",
             "Disable" if skill.enabled else "Enable",

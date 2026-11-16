@@ -369,14 +369,14 @@ class DataTransferWorkflow:
         if menu is not None:
             picker = menu
             picker.push_page(
-                title="MANAGE DATA",
+                title="DATA",
                 placeholder=None,
                 choices=choices,
                 on_select=select_action,
             )
         else:
             picker = ChoiceScreen(
-                title="MANAGE DATA",
+                title="DATA",
                 placeholder=None,
                 choices=choices,
                 on_select=select_action,

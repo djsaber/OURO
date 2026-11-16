@@ -13,7 +13,7 @@ from ouro.tui.features.configuration.values import (
     _positive_float,
 )
 from ouro.tui.menus.editable import EditableChoiceScreen
-from ouro.tui.menus.labels import PERMISSION_LABELS
+from ouro.tui.menus.labels import PERMISSION_LABELS, TOOL_APPROVAL_LABEL
 from ouro.tui.menus.models import Choice
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 from ouro.tui.view_models import TuiMCPServerConfiguration
@@ -277,7 +277,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
             ),
             Choice(
                 "mcp-permission",
-                "Default tool permission",
+                TOOL_APPROVAL_LABEL,
                 trailing=PERMISSION_LABELS[self._values["mcp-permission"]],
                 group="TOOLS",
             ),

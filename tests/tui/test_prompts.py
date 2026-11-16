@@ -73,7 +73,7 @@ async def test_prompt_actions_manage_order_activation_edit_and_delete(tmp_path):
 
         await pilot.press("ctrl+p")
         await wait_for_screen(app, ChoiceScreen, title="ACTIONS")
-        await choose("Personal prompts", title="PERSONAL PROMPTS")
+        await choose("Prompts", title="PROMPTS")
         menu = app.screen
         assert any(c.label == "First annotation" for c in app.screen._choices)
         await choose("other", title="PROMPT · Other")
@@ -82,11 +82,11 @@ async def test_prompt_actions_manage_order_activation_edit_and_delete(tmp_path):
         assert choices["delete"].label == "Delete"
         assert choices["delete"].destructive
         assert choices["toggle"].description == ("Enabling overrides OURO's default system prompt.")
-        await choose("Enable", title="PERSONAL PROMPTS")
+        await choose("Enable", title="PROMPTS")
         config = PromptConfigManager(tmp_path).snapshot().config
         assert [p.enabled for p in config.replacements] == [False, True]
         await choose("last", title="PROMPT · Last")
-        await choose("Move up", title="PERSONAL PROMPTS")
+        await choose("Move up", title="PROMPTS")
         assert (
             PromptConfigManager(tmp_path).snapshot().config.additional_system_prompt
             == "Last\n\nFirst"
@@ -96,11 +96,11 @@ async def test_prompt_actions_manage_order_activation_edit_and_delete(tmp_path):
         assert isinstance(app.screen, PromptEntryScreen)
         await choose("Content")
         await pilot.press("ctrl+u", "n", "ctrl+enter", "e", "enter")
-        await choose("Save", title="PERSONAL PROMPTS")
+        await choose("Save", title="PROMPTS")
         await wait_for_menu_action(pilot, menu)
         assert PromptConfigManager(tmp_path).snapshot().config.additions[1].text == "n\ne"
         await choose("last", title="PROMPT · Last")
-        await choose("Disable", title="PERSONAL PROMPTS")
+        await choose("Disable", title="PROMPTS")
         assert PromptConfigManager(tmp_path).snapshot().config.additional_system_prompt == "n\ne"
         await choose("last", title="PROMPT · Last")
         await choose("Delete", title="CONFIRM DELETE PROMPT")
@@ -110,7 +110,7 @@ async def test_prompt_actions_manage_order_activation_edit_and_delete(tmp_path):
         assert len(PromptConfigManager(tmp_path).snapshot().config.additions) == 2
         await choose("Delete", title="CONFIRM DELETE PROMPT")
         await pilot.press("down", "enter")
-        await wait_for_screen(app, ChoiceScreen, title="PERSONAL PROMPTS")
+        await wait_for_screen(app, ChoiceScreen, title="PROMPTS")
         assert len(PromptConfigManager(tmp_path).snapshot().config.additions) == 1
         await pilot.press("escape", "escape")
 
@@ -123,7 +123,7 @@ async def test_prompt_creation_and_stale_editor_do_not_overwrite_other_changes(t
 
         await pilot.press("ctrl+p")
         await wait_for_screen(app, ChoiceScreen, title="ACTIONS")
-        await choose("Personal prompts", title="PERSONAL PROMPTS")
+        await choose("Prompts", title="PROMPTS")
         menu = app.screen
         app.screen.query_one(Input).value = "+"
         await pilot.pause()
@@ -140,7 +140,7 @@ async def test_prompt_creation_and_stale_editor_do_not_overwrite_other_changes(t
             ).enabled_state
             is True
         )
-        await choose("Save", title="PERSONAL PROMPTS")
+        await choose("Save", title="PROMPTS")
         await wait_for_menu_action(pilot, menu)
         config = facade.system_prompt().config
         assert len(config.additions) == 1
@@ -158,12 +158,12 @@ async def test_prompt_creation_and_stale_editor_do_not_overwrite_other_changes(t
         )
         await choose("Content")
         await pilot.press("ctrl+u", "x", "enter")
-        await choose("Save", title="PERSONAL PROMPTS")
+        await choose("Save", title="PROMPTS")
         await wait_for_menu_action(pilot, menu)
         assert facade.system_prompt().config.additions[0].text == "External edit"
         assert any("revision conflict" in str(item.message) for item in app._notifications)
         # Refresh and edit again against the current revision.
         await choose("External edit", title="PROMPT · External edit")
-        await choose("Disable", title="PERSONAL PROMPTS")
+        await choose("Disable", title="PROMPTS")
         assert facade.system_prompt().config.additional_system_prompt == ""
         await pilot.press("escape", "escape")

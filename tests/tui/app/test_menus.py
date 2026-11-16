@@ -18,7 +18,7 @@ from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
 from ouro.tui.features.configuration.compaction import CompactionConfigurationScreen
 from ouro.tui.features.configuration.mcp import MCPConfigurationScreen
-from ouro.tui.features.configuration.tools import ToolExecutionConfigurationScreen
+from ouro.tui.features.configuration.tools import ToolConfigurationScreen
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.editable import EditableChoiceScreen
 from ouro.tui.menus.models import Choice
@@ -699,7 +699,12 @@ async def test_tool_execution_uses_shared_grouped_inline_menu(tmp_path: Path) ->
     async with run_ready_app(app, size=(80, 24)) as pilot:
         await pilot.pause()
         current = await app._controller.tool_execution_configuration()
-        screen = ToolExecutionConfigurationScreen(current)
+
+        async def save_permission(name, mode):
+            await app._controller.set_tool_permission(name, mode)
+            return await app._controller.tool_configurations()
+
+        screen = ToolConfigurationScreen(current, tools=(), on_permission=save_permission)
         app.push_screen(screen, callback=results.append)
         await pilot.pause()
 

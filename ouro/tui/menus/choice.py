@@ -1170,8 +1170,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             return enabled[min(preferred_position, len(enabled) - 1)]
         return enabled[0]
 
-    @staticmethod
-    def _matches_filter(choice: Choice, normalized_needle: str) -> bool:
+    def _matches_filter(self, choice: Choice, normalized_needle: str) -> bool:
         return (
             not normalized_needle
             or normalized_needle in choice.label.casefold()

@@ -301,18 +301,10 @@ async def test_skill_disable_action_is_owned_by_skill_submenu(tmp_path: Path) ->
         await _wait_for_screen(app, ChoiceScreen, title="SKILL • demo")
 
         assert app.screen.query_one("#choice-title", Static).render().plain == "SKILL • demo"
-        assert {choice.value for choice in app.screen._choices} == {
-            "disable",
-            "source",
-            "location",
-        }
+        assert [choice.value for choice in app.screen._choices] == ["disable"]
         assert app.screen._choices[-1].label == "Disable"
         description = app.screen.query_one("#choice-description", Static).render().plain
-        assert "Demo skill." in description
-        details = {choice.value: choice for choice in app.screen._choices}
-        assert details["source"].trailing == "ouro • user"
-        assert details["location"].label == str(skill_dir / "SKILL.md")
-        assert details["location"].disabled
+        assert description == f"Demo skill.\n\n{skill_dir / 'SKILL.md'}"
 
         options = app.screen.query_one("#choice-list", OptionList)
         options.focus()
@@ -324,11 +316,7 @@ async def test_skill_disable_action_is_owned_by_skill_submenu(tmp_path: Path) ->
         )
         assert await app._controller.runtime_skill_names() == ()
         assert app.screen._choices[-1].label == "Enable"
-        assert {choice.value for choice in app.screen._choices} == {
-            "enable",
-            "source",
-            "location",
-        }
+        assert [choice.value for choice in app.screen._choices] == ["enable"]
 
         await pilot.press("escape")
         await pilot.pause()

@@ -52,7 +52,7 @@ ouro config compaction --max-output-tokens none
 
 摘要上限是独立配置，默认不限制，选择当前会话模型也不会继承主请求或端点的输出数值。Messages 协议要求显式有限值，需要分别为使用它的主请求和摘要请求配置。请求与输入预算见[Provider 规格](../specs/provider-configuration.md)，摘要采用条件见[上下文与压缩](../specs/context-and-compaction.md)。
 
-个性化提示词通过 `ouro config prompt` 或 TUI `Actions > Personal prompts` 管理。替换项最多启用一项；
+个性化提示词通过 `ouro config prompt` 或 TUI `Actions > Prompts` 管理。替换项最多启用一项；
 启用另一项会原子关闭原项，全部关闭时使用默认系统提示词。追加项可独立启停，按数组顺序在基础提示词之后、
 Skills 和请求级上下文之前追加。描述可省略，仅用于列表展示和用户标注，模型只接收正文。
 

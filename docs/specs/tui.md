@@ -388,9 +388,10 @@ Windows 输出适配器在 Textual 的 flush 边界合并画面片段，复用�
 配置刷新不重载对话正文，不改变滚动、输入或焦点。欢迎页可见时同步刷新系统摘要。
 
 
-Actions/设置界面覆盖主题、显示偏好、输入草稿、排队输入、压缩、工具执行、Agent definition 与派遣
-策略、Provider/Endpoint、MCP、插件、Skills 及来源。编辑使用 Configuration/Application 命令的 revision 与
-校验规则；UI 不直接合并共享配置。
+Actions 的 Settings 分组覆盖主题、显示偏好、输入草稿、排队输入、压缩和工具设置（`Tool`）。
+`Tool` 包含执行参数与权限分组；权限下以不可选的 Built-in / MCP / Plugin 标题划分子分组，标题前空一行，工具保留所属服务或插件名。
+Actions 的其他分组覆盖 Agent definition 与派遣策略、Provider/Endpoint、MCP、插件、Skills 及来源。
+编辑使用 Configuration/Application 命令的 revision 与校验规则；UI 不直接合并共享配置。
 
 Actions 的 Plugins 分组提供 `Manage plugins` 和 `+ plugin`；删除操作位于具体插件的管理页。
 二元配置使用状态标签，Enter 原地切换。
@@ -638,7 +639,7 @@ Controller 不维护第二份恢复输入缓存，界面只通过 Runtime 执行
 
 `/export` 不接受参数，仅导出打开命令时的当前会话及其完整子会话树与附件，设置页固定会话范围；
 未打开会话时提示先打开会话，不回退到全量导出。TUI 不提供 `/import` 命令。
-其他数据操作从 Actions → Manage data 进入分页菜单；导出先选择数据类型，导入直接进入归档设置页，
+其他数据操作从 Actions → Data 进入分页菜单；导出先选择数据类型，导入直接进入归档设置页，
 无需指定类型。归档识别通过应用层读取并校验 manifest，在后台完成；识别前禁用导入，失败留在菜单内。
 识别后显示只读类型及适用的范围、覆盖选项，更换归档清空之前的选择和覆盖设置。
 Esc 逐级返回并保留上层选择。

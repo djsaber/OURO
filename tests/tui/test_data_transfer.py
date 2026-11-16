@@ -192,8 +192,8 @@ async def _open_data_menu(app, pilot, action, kind=None):
     await wait_for_screen(app, ChoiceScreen, title="ACTIONS")
     menu = app.screen
     await _choose_menu_row(app, pilot, "__ouro_system_setting__:data.transfer")
-    await wait_for_screen(app, ChoiceScreen, title="MANAGE DATA")
-    assert app.screen is menu and menu._title == "MANAGE DATA"
+    await wait_for_screen(app, ChoiceScreen, title="DATA")
+    assert app.screen is menu and menu._title == "DATA"
     await _choose_menu_row(app, pilot, action)
     if action == "import":
         await wait_for_screen(app, DataTransferScreen, title="IMPORT DATA")
@@ -463,14 +463,14 @@ async def test_data_menu_returns_through_pages_without_changing_conversation(tmp
         menu = app.screen
         assert menu._title == "EXPORT DATA"
         await pilot.press("escape")
-        await wait_for_screen(app, ChoiceScreen, title="MANAGE DATA")
-        assert app.screen is menu and menu._title == "MANAGE DATA"
+        await wait_for_screen(app, ChoiceScreen, title="DATA")
+        assert app.screen is menu and menu._title == "DATA"
         await _choose_menu_row(app, pilot, "import")
         await wait_for_screen(app, DataTransferScreen, title="IMPORT DATA")
         assert isinstance(app.screen, DataTransferScreen)
         assert app.screen._kind is None
         await pilot.press("escape")
-        await wait_for_screen(app, ChoiceScreen, title="MANAGE DATA")
+        await wait_for_screen(app, ChoiceScreen, title="DATA")
         await pilot.press("escape")
         await wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         assert app.screen is menu and menu._title == "ACTIONS"

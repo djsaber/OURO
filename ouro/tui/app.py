@@ -285,7 +285,6 @@ _ACTION_GROUP_RANK = {
             "Tasks",
             "Providers",
             "Plugins",
-            "Tools",
             "Subagents",
             "MCPs",
             "Skills",
@@ -616,10 +615,8 @@ class OuroTuiApp(App[int]):
             self._data_transfer.choose(menu=menu)
         elif action_id == "prompts.manage":
             await self._prompts._configure_prompts(menu=menu)
-        elif action_id == "tools.permissions":
-            await self._configuration._choose_tools(menu=menu)
-        elif action_id == "tools.execution":
-            await self._configuration._configure_tool_execution(menu=menu)
+        elif action_id == "tools.configure":
+            await self._configuration._configure_tools(menu=menu)
         elif action_id == "agents.list":
             await self._configuration._choose_agent_definitions(menu=menu)
         elif action_id == "agents.policy":

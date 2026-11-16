@@ -106,8 +106,8 @@ pause/resume 不额外排入执行输入。下一次模型请求准备时，尚�
 ## 4. 模型工具
 
 GetGoal、CreateGoal、UpdateGoal 始终同时暴露，保持工具前缀稳定。
-三者均声明 permission_control=tool、permission_mode=auto，由插件控制权限；工具权限面板标记为
-“Plugin controlled”和“Allow automatically”，不提供 Host 权限覆盖。状态校验、控制冲突与工具策略仍然生效。
+三者均声明 permission_control=tool、permission_mode=auto，由插件控制权限；`Tool` 页的权限分组标记为
+`auto`，不提供 Host 权限覆盖。状态校验、控制冲突与工具策略仍然生效。
 
 ### GetGoal
 

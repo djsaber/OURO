@@ -12,13 +12,11 @@ APPROVAL_DESCRIPTIONS = {
 }
 
 PERMISSION_LABELS = {
-    "default": "Use default",
-    "inherit": "Use default",
-    "auto": "Allow automatically",
-    "approval": "Ask for approval",
-    "deny": "Block",
-    "afk": "Away mode",
-    "unavailable": "Unavailable",
+    "default": "inherit",
+    "auto": "auto",
+    "approval": "approval",
+    "deny": "deny",
+    "unavailable": "unavailable",
 }
 
 THINKING_LABELS = {

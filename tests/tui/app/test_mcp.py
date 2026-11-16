@@ -477,38 +477,48 @@ async def test_tool_permissions_group_all_registered_sources(tmp_path: Path) -> 
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Tool permissions"
+        app.screen.query_one("#choice-filter", Input).value = "Tool"
         await pilot.pause()
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="TOOL PERMISSIONS")
+        await _wait_for_screen(app, ChoiceScreen, title="TOOL")
 
         groups = list(dict.fromkeys(choice.group for choice in app.screen._choices))
-        assert groups[:3] == [
-            "Built-in",
-            "MCP",
-            "dev.ouro.official",
-        ]
-        assert groups[-3:] == [
-            "dev.ouro.third-party",
-            "dev.ouro.generated",
-            "Unavailable",
-        ]
-        choices = {choice.value: choice for choice in app.screen._choices}
-        assert choices["BuiltinTest"].group == "Built-in"
-        assert choices["McpTest"].group == "MCP"
-        assert choices["OfficialPluginTest"].group == "dev.ouro.official"
-        assert choices["ThirdPartyPluginTest"].group == "dev.ouro.third-party"
-        assert choices["AiGeneratedPluginTest"].group == "dev.ouro.generated"
-        assert not any(choice.label == "Plugin default" for choice in choices.values())
-        assert choices["UnavailableTest"].group == "Unavailable"
-        assert choices["BuiltinTest"].trailing == "Default • Ask for approval"
-        assert choices["ContractControlledTest"].trailing == (
-            "Plugin controlled • Allow automatically"
-        )
+        assert groups == ["EXECUTION", "PERMISSIONS", "ACTIONS"]
+        headers = [c for c in app.screen._choices if c.value.startswith("tool-source:")]
+        assert [c.label for c in headers] == ["\nBuilt-in", "\nMCP", "\nPlugin"]
+        assert all(c.disabled for c in headers)
+        choices = {
+            choice.value.removeprefix("permission:"): choice
+            for choice in app.screen._choices
+            if choice.value.startswith("permission:")
+        }
+        assert choices["BuiltinTest"].label == "BuiltinTest"
+        assert choices["McpTest"].label == "McpTest"
+        assert choices["OfficialPluginTest"].label == "dev.ouro.official: OfficialPluginTest"
+        assert choices["ThirdPartyPluginTest"].label == "dev.ouro.third-party: ThirdPartyPluginTest"
+        assert choices["AiGeneratedPluginTest"].label == "dev.ouro.generated: AiGeneratedPluginTest"
+        assert choices["UnavailableTest"].label == "Unavailable: UnavailableTest"
+        assert choices["BuiltinTest"].trailing == "approval"
+        assert choices["ContractControlledTest"].trailing == "auto"
         assert choices["ContractControlledTest"].disabled is True
         assert choices["ThirdPartyPluginTest"].disabled is False
-        assert choices["UnavailableTest"].trailing == "Block • unavailable"
+        assert choices["UnavailableTest"].trailing == "unavailable"
         assert all(choice.description == "" for choice in choices.values())
+        assert all(choice.group_trailing == "" for choice in choices.values())
+        search = app.screen.query_one("#choice-filter", Input)
+        search.value = "BuiltinTest"
+        await pilot.pause()
+        options = app.screen.query_one(OptionList)
+        assert options.get_option("tool-source:Built-in").disabled
+        assert options.option_count == 3  # Permissions heading, source heading and tool.
+        assert options.highlighted == options.get_option_index("permission:BuiltinTest")
+        search.value = "Plugin"
+        await pilot.pause()
+        assert options.get_option("tool-source:Plugin").disabled
+        assert options.get_option("permission:OfficialPluginTest")
+        search.value = "no-matching-tool"
+        await pilot.pause()
+        assert options.option_count == 0
 
 
 @pytest.mark.asyncio
@@ -519,39 +529,51 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Tool permissions"
+        app.screen.query_one("#choice-filter", Input).value = "Tool"
         await pilot.pause()
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="TOOL PERMISSIONS")
+        await _wait_for_screen(app, ChoiceScreen, title="TOOL")
 
         tool_screen = app.screen
+        tool_screen._refresh("tool-execution-mode")
+        await pilot.press("enter")
+        execution_mode = tool_screen._values["tool-execution-mode"]
         tool_screen.query_one("#choice-filter", Input).value = "BuiltinTest"
         await pilot.pause()
         await pilot.press("enter")
         await _wait_for_screen(
             app,
             ChoiceScreen,
-            title="TOOL PERMISSION • BuiltinTest",
+            title="TOOL APPROVAL • BuiltinTest",
         )
-        assert app.screen is tool_screen
-        assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
+        assert app.screen is not tool_screen
+        assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 3
         current = next(choice for choice in app.screen._choices if choice.value == "default")
-        assert current.label == "Use default"
+        assert [choice.label for choice in app.screen._choices] == [
+            "inherit",
+            "auto",
+            "approval",
+            "deny",
+        ]
+        assert current.label == "inherit"
         assert current.marker == DEFAULT_TUI_THEME.selected_choice_marker
-        assert current.trailing == "Ask for approval"
+        assert current.trailing == "approval"
         assert all(choice.trailing != "current" for choice in app.screen._choices)
         assert not app.screen.query_one("#choice-filter", Input).display
         options = app.screen.query_one(OptionList)
         options.highlighted = options.get_option_index("auto")
         await pilot.pause()
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="TOOL PERMISSIONS")
+        await _wait_for_screen(app, ChoiceScreen, title="TOOL")
 
         assert app.screen is tool_screen
-        assert app.screen.query_one("#choice-title", Static).render().plain == ("TOOL PERMISSIONS")
+        assert tool_screen._values["tool-execution-mode"] == execution_mode
+        assert app.screen.query_one("#choice-title", Static).render().plain == "TOOL"
         assert (
-            next(choice for choice in app.screen._choices if choice.value == "BuiltinTest").trailing
-            == "Allow automatically"
+            next(
+                choice for choice in app.screen._choices if choice.value == "permission:BuiltinTest"
+            ).trailing
+            == "auto"
         )
         assert not list(app.screen.query("Toast"))
         assert (
@@ -562,10 +584,10 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
         await _wait_for_screen(
             app,
             ChoiceScreen,
-            title="TOOL PERMISSION • BuiltinTest",
+            title="TOOL APPROVAL • BuiltinTest",
         )
-        assert app.screen is tool_screen
-        assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
+        assert app.screen is not tool_screen
+        assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 3
         assert "default" in {choice.value for choice in app.screen._choices}
         assert "inherit" not in {choice.value for choice in app.screen._choices}
         assert not app.screen.query_one("#choice-filter", Input).display
@@ -573,14 +595,35 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
         options.highlighted = options.get_option_index("default")
         await pilot.pause()
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="TOOL PERMISSIONS")
+        await _wait_for_screen(app, ChoiceScreen, title="TOOL")
         assert app.screen is tool_screen
+        assert tool_screen._values["tool-execution-mode"] == execution_mode
         assert (
-            next(choice for choice in app.screen._choices if choice.value == "BuiltinTest").trailing
-            == "Default • Ask for approval"
+            next(
+                choice for choice in app.screen._choices if choice.value == "permission:BuiltinTest"
+            ).trailing
+            == "approval"
         )
         assert not list(app.screen.query("Toast"))
         assert "BuiltinTest" not in build_local_configuration(tmp_path).permission_config().tools
+
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="TOOL APPROVAL • BuiltinTest")
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="TOOL")
+        assert tool_screen._values["tool-execution-mode"] == execution_mode
+        tool_screen.query_one("#choice-filter", Input).value = ""
+        await pilot.pause()
+        tool_screen._refresh("tool-config-save")
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await _wait_until(
+            lambda: (
+                build_local_configuration(tmp_path).tool_execution_config().mode == execution_mode
+            ),
+            pilot,
+            description="combined tool settings saved",
+        )
 
 
 @pytest.mark.parametrize(

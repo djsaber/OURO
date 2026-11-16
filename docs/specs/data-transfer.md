@@ -39,7 +39,7 @@ ouro data <export|import> --kind <kind> --path <archive> [--id <id>] [--replace]
 ```
 
 CLI 另有 `--home`、`--session-backend`、`--json`。TUI `/export` 仅导出当前会话，不接受参数，未打开会话时明确提示。
-其余操作通过 Actions → Manage data 分页菜单生成同一业务请求，不提供 `/import` 命令。
+其余操作通过 Actions → Data 分页菜单生成同一业务请求，不提供 `/import` 命令。
 导出通过菜单选择类型；导入选择归档后，应用层根据通过格式与版本校验的 manifest 自动识别类型，
 TUI 显示相应范围与覆盖选项；不按文件名推断类型。正式导入重新校验归档及识别类型，避免文件更换后误导入。
 无需填写 flags 或会话 ID；会话候选读取复用应用层只读查询，ID 显示为右侧标签。
