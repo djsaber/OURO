@@ -176,21 +176,21 @@ reasoning_content、reasoning 与 reasoning_details 扩展，Responses 与 Messa
 有正文时显示 `Thought`，可点击展开或执行 `/thoughts expand`。摘要请求不改变本地折叠偏好。
 签名、加密数据等续接状态按来源和协议约束保存、回传，修改思考等级或摘要选项不会丢弃这些数据。
 
-会话保留助手的可读思考，是否进入本次请求由上下文选择决定。来源兼容的原生续接可携带签名、密文和绑定内容；
-没有可用原生续接时，Responses 和 Messages 将可读思考作为有明确起止标记的历史推理文字放在助手正文之前。
-这段内容表示先前助手的推理记录，不代表已经确认的结论或已经执行的操作。
+会话分别保留助手正文与可读思考。选入上下文的思考仅通过目标协议的专用字段或原生结构发送，不拼入助手正文。
+Responses 使用原生 reasoning item，Messages 使用原生 thinking / redacted_thinking block；来源兼容的完整续接
+按协议回传，包括签名、密文及绑定内容。没有可用原生续接时，这两个协议只发送正文与工具调用，可读思考保留在会话中。
 
 Chat Completions 端点的 `reasoning_text_field` 声明历史思考文本的字段：`reasoning_content` 或 `reasoning`。
-它位于端点顶层，与 `reasoning` 生成配置并列。没有可用原生续接时，每条助手消息都携带声明的字段，
-没有思考文本时值为空字符串。null 或未设置时仅将非空思考作为上述历史推理文字提供。
-该设置不改变本次思考生成，也不控制响应读取。端点配置片段：
+它与 `reasoning` 生成配置并列。设为 null 或省略时，请求不发这两个字段。同源的 `reasoning_details` 可以独立回传；
+带签名等原生数据的 `reasoning` 或 `reasoning_content` 数组只按端点声明的同名字段回传。
+没有可用原生续接时，声明的字段承载会话中的可读思考；没有思考文本的助手正文或工具调用携带空字符串。端点配置片段：
 
 ```json
 {"model_id": "my-model", "reasoning_text_field": "reasoning"}
 ```
 
 CLI 使用 `provider endpoint add/update --reasoning-text-field reasoning_content|reasoning|none`，
-TUI 使用 History reasoning field。none 或空值表示以历史推理文字提供。有效原生续接不重复附加同一份可读思考。
+TUI 使用 History reasoning field。CLI 的 none 与 TUI 的空值表示不声明历史思考文本字段。
 
 思考协议定义见 [OpenAI 推理文档](https://developers.openai.com/api/docs/guides/reasoning) 与
 [Anthropic 思考文档](https://platform.claude.com/docs/en/build-with-claude/thinking)。完整配置契约见

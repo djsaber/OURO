@@ -53,6 +53,8 @@ def messages_to_chat_completions(
             model_id=model_id,
             reasoning_text_field=reasoning_text_field,
         )
+        if converted is None:
+            continue
         if converted["role"] == "system":
             system_contents.append(converted["content"])
         else:
@@ -89,37 +91,30 @@ def _message_to_chat_completions(
     provider_id: str,
     model_id: str,
     reasoning_text_field: Literal["reasoning_content", "reasoning"] | None,
-) -> dict[str, Any]:
-    role = message.role
-    if role == "tool_result":
-        wire_role = "tool"
-    else:
-        wire_role = role
-
-    native: dict[str, Any] = {}
-    continuation = message.provider_continuation
-    if (
-        wire_role == "assistant"
-        and continuation is not None
-        and continuation.matches(
-            provider_id=provider_id,
-            protocol="openai-chat-completions",
-            model_id=model_id,
-        )
-    ):
-        for block in continuation.blocks:
-            native.update(reasoning_fields_from_response(block))
+) -> dict[str, Any] | None:
+    wire_role = "tool" if message.role == "tool_result" else message.role
     converted: dict[str, Any] = {
         "role": wire_role,
         "content": _message_content_to_chat_completions(message, modalities=modalities),
     }
     if wire_role == "assistant":
-        if native:
-            converted.update(native)
-        elif reasoning_text_field is not None:
-            converted[reasoning_text_field] = message.reasoning_content
-        elif message.reasoning_content:
-            converted["content"] = message.reasoning_context_text + converted["content"]
+        reasoning: dict[str, Any] = {}
+        continuation = message.provider_continuation
+        if continuation is not None and continuation.matches(
+            provider_id=provider_id, protocol="openai-chat-completions", model_id=model_id
+        ):
+            fields = (
+                ("reasoning_details", reasoning_text_field)
+                if reasoning_text_field
+                else ("reasoning_details",)
+            )
+            for block in continuation.blocks:
+                reasoning.update(copy_reasoning_arrays(block, fields))
+        if not reasoning and reasoning_text_field is not None:
+            reasoning[reasoning_text_field] = message.reasoning_content
+        if not (converted["content"] or message.tool_calls or any(reasoning.values())):
+            return None
+        converted.update(reasoning)
         if message.tool_calls:
             converted["tool_calls"] = [
                 _tool_call_message_to_chat_completions(item.model_dump(mode="json"))
@@ -255,8 +250,10 @@ def _content_to_text(content: object) -> str:
 _REASONING_FIELDS = ("reasoning_content", "reasoning", "reasoning_details")
 
 
-def reasoning_fields_from_response(payload: Mapping[str, Any]) -> dict[str, list[Any]]:
-    """Copy native arrays once at the response boundary; strings remain canonical text."""
+def copy_reasoning_arrays(
+    payload: Mapping[str, Any], fields: tuple[str, ...] = _REASONING_FIELDS
+) -> dict[str, list[Any]]:
+    """Copy the selected wire arrays; string values belong to canonical reasoning."""
     details = payload.get("reasoning_details")
     if details is not None and (
         not isinstance(details, list) or any(not isinstance(item, Mapping) for item in details)
@@ -264,7 +261,7 @@ def reasoning_fields_from_response(payload: Mapping[str, Any]) -> dict[str, list
         raise ValueError("Chat Completions reasoning_details must be an array of objects")
     return {
         field: deepcopy(value)
-        for field in _REASONING_FIELDS
+        for field in fields
         if isinstance(value := payload.get(field), list) and value
     }
 

@@ -19,8 +19,9 @@ from ouro.providers.openai_responses.codec import responses_input
 from tests.providers.test_openai_chat_completions import FakeStreamingTransport, FakeTransport
 
 
-@pytest.mark.parametrize("field", ["reasoning", "reasoning_content"])
-def test_signed_thinking_is_not_overwritten_by_a_same_named_text_field(field):
+@pytest.mark.parametrize("native_field", ["reasoning", "reasoning_content"])
+@pytest.mark.parametrize("field", [None, "reasoning", "reasoning_content"])
+def test_signed_reasoning_uses_only_the_declared_text_field(native_field, field):
     native = [{"type": "reasoning.text", "text": "Original.", "signature": "signed"}]
     assistant = ModelMessage(
         role="assistant",
@@ -29,7 +30,7 @@ def test_signed_thinking_is_not_overwritten_by_a_same_named_text_field(field):
             provider_id="p",
             protocol="openai-chat-completions",
             model_id="m",
-            blocks=({field: native},),
+            blocks=({native_field: native},),
         ),
     )
     wire = messages_to_chat_completions(
@@ -40,13 +41,17 @@ def test_signed_thinking_is_not_overwritten_by_a_same_named_text_field(field):
         model_id="m",
         reasoning_text_field=field,
     )
-    assert wire == [{"role": "assistant", "content": "", field: native}]
+    if field is None:
+        assert wire == []
+    else:
+        expected = native if field == native_field else "Readable summary."
+        assert wire == [{"role": "assistant", "content": "", field: expected}]
 
 
 @pytest.mark.parametrize("target", ["chat", "responses", "messages"])
 @pytest.mark.parametrize("foreign_state", [False, True])
 @pytest.mark.parametrize("answer", ["Checking the file.", ""])
-def test_selected_reasoning_survives_protocol_projection_with_complete_tool_history(
+def test_unmapped_reasoning_stays_out_of_answers_without_losing_tool_history(
     target, foreign_state, answer
 ):
     assistant = ModelMessage(
@@ -73,20 +78,55 @@ def test_selected_reasoning_survives_protocol_projection_with_complete_tool_hist
     if target == "chat":
         wire = messages_to_chat_completions(history, supports_image_input=False, **options)
         assert wire[0]["tool_calls"][0]["id"] == wire[1]["tool_call_id"] == "call_1"
-        assert wire[0]["content"] == assistant.reasoning_context_text + assistant.text_content
+        assert wire[0]["content"] == answer
     elif target == "responses":
         wire = responses_input(history, scope=("account",), **options)["input"]
-        assert wire[1]["call_id"] == wire[2]["call_id"] == "call_1"
-        assert wire[0]["content"] == assistant.reasoning_context_text + assistant.text_content
+        assert wire[-2]["call_id"] == wire[-1]["call_id"] == "call_1"
+        assert wire[:-2] == ([{"role": "assistant", "content": answer}] if answer else [])
     else:
         _, wire = messages_to_anthropic_messages(history, supports_image_input=False, **options)
         assert wire[0]["content"][-1]["id"] == wire[1]["content"][0]["tool_use_id"] == "call_1"
-        assert wire[0]["content"][0] == {"type": "text", "text": assistant.reasoning_context_text}
+        assert wire[0]["content"][:-1] == ([{"type": "text", "text": answer}] if answer else [])
     encoded = json.dumps(wire)
-    assert encoded.count(assistant.reasoning_content) == 1
+    assert assistant.reasoning_content not in encoded
     assert answer in encoded and "Configuration is valid." in encoded
     assert "source-only-state" not in encoded
     assert [m.model_dump_json() for m in history] == before
+
+
+@pytest.mark.parametrize("target", ["chat", "responses", "messages"])
+@pytest.mark.parametrize("content", [[], [TextContent(text="")]])
+def test_omitted_reasoning_does_not_leave_an_empty_assistant_message(target, content):
+    history = [
+        ModelMessage.text(role="user", text="Question."),
+        ModelMessage(role="assistant", content=content, reasoning_content="Unfinished thought."),
+        ModelMessage.text(role="user", text="Continue."),
+    ]
+    options = dict(system_prompt="", provider_id="p", model_id="m")
+    if target == "chat":
+        wire = messages_to_chat_completions(history, supports_image_input=False, **options)
+        assert wire == [
+            {"role": "user", "content": "Question."},
+            {"role": "user", "content": "Continue."},
+        ]
+    elif target == "responses":
+        wire = responses_input(history, scope=("account",), **options)["input"]
+        assert wire == [
+            {"role": "user", "content": "Question."},
+            {"role": "user", "content": "Continue."},
+        ]
+    else:
+        _, wire = messages_to_anthropic_messages(history, supports_image_input=False, **options)
+        assert wire == [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Question."},
+                    {"type": "text", "text": "Continue."},
+                ],
+            }
+        ]
+    assert history[1].reasoning_content == "Unfinished thought."
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -138,7 +178,7 @@ async def test_plain_reasoning_has_one_history_path_independent_of_response_spel
         == second
         == {
             "role": "assistant",
-            "content": "Answer." if field else assistant.reasoning_context_text + "Answer.",
+            "content": "Answer.",
             **({field: "Check first."} if field else {}),
         }
     )

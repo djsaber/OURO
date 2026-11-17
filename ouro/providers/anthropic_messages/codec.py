@@ -40,6 +40,8 @@ def messages_to_anthropic_messages(
             provider_id=provider_id,
             model_id=model_id,
         )
+        if item["role"] == "assistant" and not item["content"]:
+            continue
         if converted and converted[-1]["role"] == item["role"]:
             converted[-1]["content"].extend(item["content"])
         else:
@@ -183,8 +185,6 @@ def _message_to_anthropic(
                 raise ValueError("Anthropic continuation does not match tool calls")
             return {"role": role, "content": deepcopy(native["content"])}
     content = _message_content(message, supports_image_input=supports_image_input)
-    if message.reasoning_content:
-        content.insert(0, {"type": "text", "text": message.reasoning_context_text})
     if role == "assistant":
         content.extend(
             {

@@ -44,7 +44,7 @@ def test_reasoning_text_field_is_independent_of_generation_controls(field):
     )
     assert payload == {}
     validate_reasoning_protocol_compatibility("openai-chat-completions", endpoint.reasoning, field)
-    for protocol in ("openai-responses", "anthropic-messages", "faux"):
+    for protocol in ("openai-responses", "anthropic-messages", "faux", "acme.ai/providers/model"):
         with pytest.raises(ValueError, match="reasoning_text_field"):
             validate_reasoning_protocol_compatibility(protocol, endpoint.reasoning, field)
 

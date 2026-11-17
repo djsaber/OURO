@@ -148,7 +148,7 @@ Gemini 端点均启用 WAV/MP3 音频输入，使用官方 Chat Completions 兼�
 [3.1 Pro](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview)、
 [3.5 Flash-Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite)。
 
-通过 Chat Completions 兼容接口发送 `reasoning_effort`。模板没有声明跨模型回传思考文本的字段。
+通过 Chat Completions 兼容接口发送 `reasoning_effort`。模板未声明历史思考文本字段。
 
 ## DeepSeek
 
@@ -269,7 +269,7 @@ Pro 的音频输入关闭，能力范围以[模型目录](https://docs.volcengin
 |---|---:|---:|---|---|---|---|
 | `command-a-plus-05-2026`（默认） | 128,000 | 不限制 | 图片 | 开启 | 可切换，默认开启 / high | high |
 
-使用 `reasoning_effort=high/none` 映射思考开关。响应中的已支持思考字段由协议适配器接收和续接。
+使用 `reasoning_effort=high/none` 映射思考开关。适配器读取响应中的可读思考；模板未声明历史思考文本字段。
 
 ## 使用方式
 

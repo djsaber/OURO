@@ -36,9 +36,9 @@ from ouro.providers.openai_chat_completions.codec import (
     _tool_to_chat_completions,
     _usage_from_response,
     _usage_from_response_or_none,
+    copy_reasoning_arrays,
     messages_to_chat_completions,
     reasoning_continuation,
-    reasoning_fields_from_response,
     reasoning_text_from_response,
 )
 from ouro.providers.reasoning import ReasoningPayloadEncoder
@@ -297,7 +297,7 @@ class OpenAIChatCompletionsProvider:
             yield ProviderStreamEvent(type="error", error="provider response message is invalid")
             return
 
-        continuation = reasoning_continuation(reasoning_fields_from_response(message))
+        continuation = reasoning_continuation(copy_reasoning_arrays(message))
         reasoning = reasoning_text_from_response(message)
         has_reasoning = bool(reasoning or continuation)
         if reasoning:
@@ -370,7 +370,7 @@ class OpenAIChatCompletionsProvider:
             if not isinstance(delta, Mapping):
                 continue
 
-            fields = reasoning_fields_from_response(delta)
+            fields = copy_reasoning_arrays(delta)
             reasoning = reasoning_text_from_response(delta)
             saw_reasoning = saw_reasoning or bool(reasoning)
             for field, value in fields.items():

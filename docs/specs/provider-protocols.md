@@ -16,8 +16,7 @@ Provider 配置分别表达用户实例、产品配置、线协议和认证选�
 | `auth_driver` | 认证方式的稳定标识；省略为 static | `static` |
 
 `provider_id` 不参与协议推断且不接受用户配置；相同厂商或相同展示名可以有多个实例，多个厂商也可以复用同一个协议 adapter。
-Endpoint 的 reasoning capability/profile 同样不参与 adapter 分派；它在选定协议内声明请求控制项、
-原生参数映射及可选的 Chat Completions 思考文本字段。
+Endpoint 的 reasoning capability/profile 在选定协议内声明生成控制项及其原生参数映射，不参与 adapter 分派。
 
 ## 产品类型与协议
 
@@ -43,9 +42,10 @@ Endpoint 的 reasoning capability/profile 同样不参与 adapter 分派；它�
 
 `custom` 类型允许用户为自定义 Endpoint 声明思考请求配置。协议适配器独立解析可读思考和原生续接状态，
 不由启停、等级或摘要配置过滤返回内容。规范思考文本随会话进入模型消息；Chat Completions 通过
-Endpoint 的 `reasoning_text_field` 声明历史思考使用 reasoning_content 或 reasoning，没有可用原生续接时
-空思考也以空字符串写入该字段；null 仅将非空思考写为标注的历史推理文字。
-Responses 和 Messages 在没有可用原生续接时也使用历史推理文字。规范会话保存可读思考；Responses 的完整输出项、
+Endpoint 的 `reasoning_text_field` 选择 `reasoning_content` 或 `reasoning`；未声明时请求省略这两个字段。
+同源 `reasoning_details` 独立回传。字段与原生续接的选择规则见[端点配置规格](provider-configuration.md)。
+Responses 和 Messages 使用各自原生 reasoning item 与 thinking block，没有可用原生续接时只编码正文与工具调用。
+三种协议均不将思考拼入助手正文。规范会话保存可读思考；Responses 的完整输出项、
 Messages 的完整 content 序列及 Chat Completions 含非文字信息的思考数组作为协议重放附件独立保存，
 回传时校验来源与协议结构。有效原生表示不重复附加可读副本。
 
@@ -140,7 +140,7 @@ type/protocol 组合必须合法。所有冲突与校验在一次写盘前完成
 
 内置协议通过协议档案、adapter 构造器和允许该协议的产品档案接入；插件协议通过公开 Provider contribution 接入，
 两者均须保持 factory 与厂商品牌无关。SDK 扩展方式见[插件开发指南](../development/plugin-development.md)。
-Reasoning profile 表达经过校验的静态请求片段及可选思考文本字段，不执行插件代码，也不承担任意请求 schema。
+Reasoning profile 只描述生成控制项的静态请求片段。
 历史数据转换由独立升级流程负责，配置读取不执行隐式迁移。
 
 ## 验收

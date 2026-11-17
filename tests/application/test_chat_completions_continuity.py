@@ -21,7 +21,7 @@ from tests.application.test_session_models import _StaticCatalog
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.parametrize("text_field", ["reasoning_content", "reasoning"])
+@pytest.mark.parametrize("text_field", [None, "reasoning_content", "reasoning"])
 @pytest.mark.parametrize("resume_tools", [False, True])
 async def test_model_switch_after_restart_preserves_reasoning_and_completed_tools(
     tmp_path, backend, streaming, text_field, resume_tools
@@ -63,10 +63,18 @@ async def test_model_switch_after_restart_preserves_reasoning_and_completed_tool
             message, finish = {"content": "Inspected."}, "stop"
         else:
             assistants = [m for m in payload["messages"] if m["role"] == "assistant"]
-            assert assistants[0][text_field] == "Inspect first."
             assert len(assistants) == (1 if resume_tools else 2)
-            if not resume_tools:
-                assert assistants[1][text_field] == ""
+            if text_field is not None:
+                assert assistants[0][text_field] == "Inspect first."
+                if not resume_tools:
+                    assert assistants[1][text_field] == ""
+            else:
+                assert all(
+                    "reasoning" not in m and "reasoning_content" not in m for m in assistants
+                )
+            assert [m["content"] for m in assistants] == (
+                [""] if resume_tools else ["", "Inspected."]
+            )
             assert all("reasoning_details" not in m for m in assistants)
             other_field = "reasoning" if text_field == "reasoning_content" else "reasoning_content"
             assert all(other_field not in m for m in assistants)
@@ -76,7 +84,10 @@ async def test_model_switch_after_restart_preserves_reasoning_and_completed_tool
             assert payload["thinking"] == {"type": "enabled"}
             assert payload["tools"]
             message, finish = (
-                {text_field: "Continue from the facts.", "content": "Continued."},
+                {
+                    text_field or "reasoning_content": "Continue from the facts.",
+                    "content": "Continued.",
+                },
                 "stop",
             )
         choice = {"delta" if streaming else "message": message, "finish_reason": finish}

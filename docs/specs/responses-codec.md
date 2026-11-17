@@ -72,7 +72,9 @@ ProviderContinuationArtifact 外层保留 provider_id、protocol=`openai-respons
 
 scope 由调用者从同次认证快照传入，不含 Token、有效期或 refresh revision。codec 不重新读凭据。没有 continuation 的普通文本不要求账户 scope；生成或重放 opaque 状态必须有非空稳定 scope。
 
-原生重放是请求编码的可选路径。provider/protocol/model 不匹配时，不解释来源 codec 的 blocks，编码该消息的 canonical 正文、标注的历史推理文字和工具调用。同一路由先校验 envelope 的版本与字段，再比较本次认证 scope；scope 不同同样使用 canonical 消息帧。选择只影响请求投影，不修改持久化附件，也不发送其他路由或账户的 opaque items。
+原生重放是请求编码的可选路径。provider/protocol/model 不匹配时，不解释来源 codec 的 blocks，仅编码该消息的 canonical 正文和工具调用。同一路由先校验 envelope 的版本与字段，再比较本次认证 scope；scope 不同同样使用 canonical 消息帧。选择只影响请求投影，不修改持久化附件，也不发送其他路由或账户的 opaque items。
+
+思考仅由原生 reasoning item 承载；encrypted_content 可选，明文 reasoning item 同样按完整输出序列保存和重放。没有兼容原生附件时，规范思考文字保留在会话中，不写入 assistant 正文，也不据此构造原生 item。没有正文或工具调用的助手消息在这条编码路径中省略。
 
 路由与 scope 均兼容时，重新验证完整 item 结构。function_call 的 call_id、name、解析后的 arguments 及次序必须与 canonical tool_calls 一致。损坏的 envelope、未知可执行 item、工具帧矛盾明确失败，不通过退回 canonical 编码掩盖数据错误。
 

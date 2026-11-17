@@ -377,8 +377,6 @@ def validate_reasoning_protocol_compatibility(
     """Reject request controls a wire adapter cannot encode."""
 
     capability = reasoning.capability
-    if is_plugin_protocol(protocol):
-        return
     if protocol != "openai-chat-completions" and reasoning_text_field is not None:
         raise ValueError("reasoning_text_field requires the Chat Completions protocol")
     if protocol == "faux" and (

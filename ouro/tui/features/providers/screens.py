@@ -770,7 +770,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
                     Choice(
                         "endpoint-reasoning-field",
                         "History reasoning field",
-                        trailing=self._values["endpoint-reasoning-field"] or "Historical notes",
+                        trailing=self._values["endpoint-reasoning-field"] or "None",
                         group="ADVANCED",
                         edit_value=self._values["endpoint-reasoning-field"],
                         edit_placeholder="reasoning_content, reasoning, or empty",

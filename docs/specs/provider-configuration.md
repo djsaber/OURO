@@ -247,11 +247,10 @@ Profile 禁止覆盖 model、messages、tools、token limit、stream、system �
 Endpoint 的 `reasoning_text_field` 取 `reasoning_content`、`reasoning` 或 null，仅用于 Chat Completions。
 它与 `reasoning` 并列，声明目标端点接收历史思考文字的字段，与本轮生成的启停、等级和摘要独立。
 没有可用原生续接时，每条 assistant 消息的规范思考按该字段发送，空思考显式编码为空字符串。
-null 使用带 `[Assistant reasoning]` 和 `[End assistant reasoning]` 标记的非空历史推理文字，
-置于对应 assistant 正文之前；空思考不添加标记。编码不修改会话事实、正文或工具调用关系。
-响应字段名不决定下一次请求字段名，纯文本不需要来源匹配；字段名只来自目标端点声明。
+null 或未设置时，请求省略 `reasoning_content` 和 `reasoning`。同源原生数组只能按声明的同名字段回传；
+`reasoning_details` 独立按来源回传。纯文本按目标字段发送，无需来源匹配。思考不拼入 assistant 正文。
 CLI `provider endpoint add/update --reasoning-text-field reasoning_content|reasoning|none` 和
-TUI 的 History reasoning field 编辑这一声明。none 或空值使用历史推理文字。
+TUI 的 History reasoning field 编辑这一声明。CLI 的 none 与 TUI 的空值表示不声明文本字段。
 
 ### 通用预设与端点声明
 
@@ -304,11 +303,13 @@ Chat Completions 支持 reasoning_content、reasoning 与 reasoning_details 扩�
 序列中的文字与工具调用可以和规范会话重复保存，但请求中只使用一种表示。更改生成选项不改变已有事实。
 
 每次请求先选择上下文，再由目标协议编码。可用的原生续接按协议结构回传，不重复附加可读思考。
-没有可用原生续接时，Chat Completions 使用端点声明的文字字段或历史推理标记；Responses 和 Messages
-使用同样的历史推理标记。标记中的内容是先前助手的推理记录，不作为用户指令、确认结论或已执行动作。
+思考与助手正文始终使用各自的协议字段或结构。没有可用原生续接时，Chat Completions 仅通过端点声明的
+文字字段发送规范思考；未声明字段，以及 Responses、Messages 无原生续接时，省略这份思考，保留正文与工具调用。
+省略思考后没有可发送内容的助手消息不进入请求。Responses 的原生明文 reasoning item 无需加密字段即可重放；
+Messages 的原生 thinking / redacted_thinking block 保留签名、密文与顺序，不从规范文本构造签名或续接状态。
 切换模型、协议或 Responses 认证作用域不会删除会话思考，也不会将其伪造成目标协议的原生思考。
-上下文预算覆盖原生附件与可读表达中较大的一份；估算结果按消息引用复用，内置估算器版本标记为 `3`。
-压缩请求使用规范历史和可读思考，不包含原生密文或签名；压缩覆盖的历史不再逐条进入普通请求。
+上下文预算覆盖原生附件与可读思考中较大的一份；估算结果按消息引用复用，内置估算器版本标记为 `5`。
+压缩请求将规范历史和可读思考作为待总结的会话资料，不包含原生密文或签名；压缩覆盖的历史不再逐条进入普通请求。
 
 TUI 只对已有正文提供思考区域与展开、折叠偏好。服务端摘要选项控制请求，客户端展示偏好控制投影；两者均不改变已保存的
 原生续接数据。缺失思考正文不是协议错误，也不能作为远端未执行思考的证据。
@@ -471,7 +472,7 @@ OpenAI Chat Completions 实现负责：
   普通字符串与仅含文字的数组归入规范思考，不保存响应字段名作为续接状态。
   含签名、密文或其他非文字信息的数组保存完整原生字段与块顺序，不逐字段推断是否必须回传；
   流式块在终态统一判断，允许签名晚于文字到达。
-  来源匹配时使用这些原生块；其他情况统一编码规范思考，不从文字重建签名或密文；
+  请求只重放来源匹配且目标端点接受的原生字段，保留数组内容与顺序；没有可重放字段时按端点声明编码规范思考；
 - 外部流缺失 tool index 时按块位置处理；
 - 不符合 Endpoint 能力、媒体格式或消息角色的直接输入明确报错；工具结果按能力提供原生内容或明确降级说明。
 
