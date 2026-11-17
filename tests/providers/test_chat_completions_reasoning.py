@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from ouro.core.messages import ModelMessage, ProviderContinuationArtifact
+from ouro.core.messages import ModelMessage, ProviderContinuationArtifact, TextContent
 from ouro.core.provider import ModelMetadata
 from ouro.providers import OpenAIChatCompletionsProvider
 from tests.providers.test_openai_chat_completions import FakeStreamingTransport, FakeTransport
@@ -29,7 +29,10 @@ async def test_target_text_field_encodes_canonical_text_without_replaying_foreig
     )
     messages = [
         ModelMessage(
-            role="assistant", reasoning_content="original text", provider_continuation=artifact
+            role="assistant",
+            reasoning_content="original text",
+            provider_continuation=artifact,
+            content=[TextContent(text="answer")],
         ),
         ModelMessage.text(role="assistant", text="answer without reasoning"),
     ]
@@ -41,14 +44,11 @@ async def test_target_text_field_encodes_canonical_text_without_replaying_foreig
     ]
     sent = provider.transport.requests[0]["payload"]["messages"]
     if not foreign:
-        assert sent[0] == {"role": "assistant", "content": "", **artifact.blocks[0]}
+        assert sent[0] == {"role": "assistant", "content": "answer", **artifact.blocks[0]}
     elif field is not None:
-        assert sent[0] == {"role": "assistant", "content": "", field: "original text"}
+        assert sent[0] == {"role": "assistant", "content": "answer", field: "original text"}
     else:
-        assert sent[0] == {
-            "role": "assistant",
-            "content": "[Assistant reasoning]\noriginal text\n[End assistant reasoning]\n\n",
-        }
+        assert sent[0] == {"role": "assistant", "content": "answer"}
     assert sent[1] == {
         "role": "assistant",
         "content": "answer without reasoning",
@@ -133,10 +133,10 @@ async def test_structured_reasoning_roundtrip_preserves_blocks_and_displays_text
     if text_field is not None:
         assert replay.requests[1]["payload"]["messages"][0][text_field] == "checked facts"
     else:
-        assert (
-            "[Assistant reasoning]\nchecked facts"
-            in replay.requests[1]["payload"]["messages"][0]["content"]
-        )
+        assert replay.requests[1]["payload"]["messages"][0] == {
+            "role": "assistant",
+            "content": "answer",
+        }
     assert artifact.blocks[0]["reasoning_details"] == details
 
 

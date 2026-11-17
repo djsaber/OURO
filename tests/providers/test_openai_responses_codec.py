@@ -98,12 +98,15 @@ def test_input_preserves_system_order_canonical_calls_and_tool_result_references
     }
 
 
-def test_complete_items_survive_persistence_and_replace_canonical_reconstruction():
+@pytest.mark.parametrize("encrypted", [False, True])
+def test_complete_items_survive_persistence_and_replace_canonical_reconstruction(encrypted):
     output = [
         reasoning(content=[{"type": "reasoning_text", "text": "analysis"}]),
         message(phase="commentary"),
         call(),
     ]
+    if not encrypted:
+        del output[0]["encrypted_content"]
     original = assistant(output)
     stored = MessageRecord(
         session_id="test",
@@ -117,11 +120,8 @@ def test_complete_items_survive_persistence_and_replace_canonical_reconstruction
     assert request["input"] == output
     assert "scope" not in request and "format_version" not in request
     assert "canonical display" not in str(request)
-    request["input"][0]["encrypted_content"] = "changed"
-    assert (
-        restored.provider_continuation.blocks[0]["items"][0]["encrypted_content"]
-        == "opaque-ciphertext"
-    )
+    request["input"][0]["content"][0]["text"] = "changed"
+    assert restored.provider_continuation.blocks[0]["items"] == output
 
 
 def test_two_tool_rounds_replay_reasoning_and_results_without_rebuilding_calls():

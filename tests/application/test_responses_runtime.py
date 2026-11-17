@@ -480,8 +480,7 @@ async def test_model_switch_after_failure_preserves_completed_tool_frames(
         first_target = requests[2][0]
         assert first_target["model"] == "summary"
         assert not output_items(first_target)
-        assert source_message.reasoning_content in json.dumps(first_target)
-        assert "[Assistant reasoning]" in json.dumps(first_target)
+        assert source_message.reasoning_content not in json.dumps(first_target)
         assert "opaque-ciphertext" not in json.dumps(first_target)
         assert [
             i["call_id"] for i in first_target["input"] if i.get("type") == "function_call"

@@ -39,7 +39,7 @@ class ContextMetrics(OuroModel):
     estimated_fixed_tokens: int = Field(ge=0)
     budget: ContextBudget | None = None
     estimator_id: str = "builtin.conservative"
-    estimator_version: str = "4"
+    estimator_version: str = "5"
 
     @model_validator(mode="after")
     def _validate_measurement(self) -> ContextMetrics:
@@ -367,17 +367,15 @@ def _estimate_visible_message_tokens(
         if model_message.tool_result is not None
         else None,
     }
-    # The codec chooses native replay or portable reasoning. Either may be
-    # larger: visible text can be streamed without appearing in the native item.
+    # Budget both representations without coupling the estimate to a wire protocol.
+    # The codec may send native state, a dedicated text field, or omit reasoning.
     native_tokens = (
         active_estimator(model_message.provider_continuation.model_dump_json())
         if model_message.provider_continuation is not None
         else 0
     )
     reasoning_tokens = (
-        active_estimator(model_message.reasoning_context_text)
-        if model_message.reasoning_content
-        else 0
+        active_estimator(model_message.reasoning_content) if model_message.reasoning_content else 0
     )
     return (
         4

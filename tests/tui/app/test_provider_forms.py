@@ -48,6 +48,10 @@ def test_endpoint_history_field_is_independent_of_generation_editor(tmp_path):
     assert screen._draft().reasoning_text_field == "reasoning"
     screen._values["endpoint-reasoning-field"] = ""
     assert screen._draft().reasoning_text_field is None
+    field_choice = next(
+        c for c in screen._endpoint_choices() if c.value == "endpoint-reasoning-field"
+    )
+    assert field_choice.trailing == "None"
     screen._values["endpoint-reasoning-field"] = "unknown"
     with pytest.raises(ValueError, match="History reasoning field"):
         screen._draft()

@@ -136,13 +136,6 @@ class ModelMessage(OuroModel):
     reasoning_content: str = ""
     provider_continuation: ProviderContinuationArtifact | None = None
 
-    @property
-    def reasoning_context_text(self) -> str:
-        """Readable historical reasoning, distinct from the assistant's answer."""
-        if not self.reasoning_content:
-            return ""
-        return f"[Assistant reasoning]\n{self.reasoning_content}\n[End assistant reasoning]\n\n"
-
     @model_validator(mode="after")
     def validate_tool_fields(self) -> ModelMessage:
         if self.tool_calls and self.role != "assistant":

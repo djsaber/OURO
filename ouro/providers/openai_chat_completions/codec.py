@@ -53,6 +53,13 @@ def messages_to_chat_completions(
             model_id=model_id,
             reasoning_text_field=reasoning_text_field,
         )
+        if (
+            converted["role"] == "assistant"
+            and not converted["content"]
+            and not converted.get("tool_calls")
+            and not any(converted.get(field) for field in _REASONING_FIELDS)
+        ):
+            continue
         if converted["role"] == "system":
             system_contents.append(converted["content"])
         else:
@@ -118,8 +125,6 @@ def _message_to_chat_completions(
             converted.update(native)
         elif reasoning_text_field is not None:
             converted[reasoning_text_field] = message.reasoning_content
-        elif message.reasoning_content:
-            converted["content"] = message.reasoning_context_text + converted["content"]
         if message.tool_calls:
             converted["tool_calls"] = [
                 _tool_call_message_to_chat_completions(item.model_dump(mode="json"))

@@ -44,8 +44,9 @@ Endpoint 的 reasoning capability/profile 同样不参与 adapter 分派；它�
 `custom` 类型允许用户为自定义 Endpoint 声明思考请求配置。协议适配器独立解析可读思考和原生续接状态，
 不由启停、等级或摘要配置过滤返回内容。规范思考文本随会话进入模型消息；Chat Completions 通过
 Endpoint 的 `reasoning_text_field` 声明历史思考使用 reasoning_content 或 reasoning，没有可用原生续接时
-空思考也以空字符串写入该字段；null 仅将非空思考写为标注的历史推理文字。
-Responses 和 Messages 在没有可用原生续接时也使用历史推理文字。规范会话保存可读思考；Responses 的完整输出项、
+空思考也以空字符串写入该字段；null 或未设置时不发送规范思考文字。该声明只适用于 Chat Completions。
+Responses 和 Messages 使用各自原生 reasoning item 与 thinking block，没有可用原生续接时只编码正文与工具调用。
+三种协议均不将思考拼入助手正文。规范会话保存可读思考；Responses 的完整输出项、
 Messages 的完整 content 序列及 Chat Completions 含非文字信息的思考数组作为协议重放附件独立保存，
 回传时校验来源与协议结构。有效原生表示不重复附加可读副本。
 

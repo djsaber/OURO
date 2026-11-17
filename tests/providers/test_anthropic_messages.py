@@ -671,7 +671,6 @@ async def test_anthropic_stream_preserves_signed_thinking_for_same_route_only() 
     mismatched_content = replay_transport.requests[1]["payload"]["messages"][0]["content"]
     assert matching_content == native_content
     assert mismatched_content == [
-        {"type": "text", "text": "[Assistant reasoning]\ncheck\n[End assistant reasoning]\n\n"},
         native_content[1],
         native_content[3],
     ]
