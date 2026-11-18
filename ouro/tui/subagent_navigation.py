@@ -77,11 +77,11 @@ class SubagentNavigationPanel(Static):
         agents: Iterable[AgentTreeNode],
         root_status: str,
     ) -> None:
-        materialized = tuple(
-            agent
-            for agent in agents
-            if root_session_id is not None and agent.root_session_id == root_session_id
-        )
+        groups: dict[str, list[AgentTreeNode]] = {}
+        for agent in agents:
+            if root_session_id is not None and agent.root_session_id == root_session_id:
+                groups.setdefault(agent.parent_run_id, []).append(agent)
+        materialized = tuple(agent for group in groups.values() for agent in group)
         if (
             root_session_id == self._root_session_id
             and root_status == self._root_status
@@ -128,11 +128,7 @@ class SubagentNavigationPanel(Static):
     def begin_navigation(self) -> None:
         hover_changed = self._hovered_session_id is not None
         self._hovered_session_id = None
-        if not self._agents:
-            if hover_changed:
-                self._refresh_content()
-            return
-        if self._navigation_active:
+        if not self._agents or self._navigation_active:
             if hover_changed:
                 self._refresh_content()
             return
@@ -152,7 +148,7 @@ class SubagentNavigationPanel(Static):
             return self._selected_session_id
         session_ids = (
             self._root_session_id,
-            *(agent.session_id for agent in self._ordered_agents()),
+            *(agent.session_id for agent in self._agents),
         )
         selected = self._selected_session_id
         index = session_ids.index(selected) if selected in session_ids else 0
@@ -163,8 +159,7 @@ class SubagentNavigationPanel(Static):
         return self._select(self._root_session_id)
 
     def select_last_child(self) -> str | None:
-        ordered = self._ordered_agents()
-        target = ordered[-1].session_id if ordered else self._root_session_id
+        target = self._agents[-1].session_id if self._agents else self._root_session_id
         return self._select(target)
 
     def select_session(self, session_id: str) -> str | None:
@@ -235,7 +230,7 @@ class SubagentNavigationPanel(Static):
         self._refresh_content()
 
     def _visible_agents(self) -> tuple[AgentTreeNode, ...]:
-        ordered = self._ordered_agents()
+        ordered = self._agents
         if len(ordered) <= _MAX_VISIBLE_CHILDREN:
             return ordered
         selected = self._selected_session_id
@@ -248,12 +243,6 @@ class SubagentNavigationPanel(Static):
         max_start = len(ordered) - _MAX_VISIBLE_CHILDREN
         start = min(max(0, index - _MAX_VISIBLE_CHILDREN // 2), max_start)
         return ordered[start : start + _MAX_VISIBLE_CHILDREN]
-
-    def _ordered_agents(self) -> tuple[AgentTreeNode, ...]:
-        groups: dict[str, list[AgentTreeNode]] = {}
-        for agent in self._agents:
-            groups.setdefault(agent.parent_run_id, []).append(agent)
-        return tuple(agent for group in groups.values() for agent in group)
 
     def _node_text(self) -> Text:
         if not self._agents or self._root_session_id is None:

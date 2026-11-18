@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import platform
 from pathlib import Path
 from statistics import median
@@ -67,7 +68,7 @@ async def measure(directory: Path, keys: int) -> dict:
         "arguments_ms": round(arguments_ms, 2),
         "open_to_paint_ms": round(open_ms, 2),
         "navigate_to_paint_median_ms": round(median(latencies), 2),
-        "navigate_to_paint_p95_ms": round(sorted(latencies)[int((len(latencies) - 1) * 0.95)], 2),
+        "navigate_to_paint_p95_ms": round(sorted(latencies)[math.ceil(keys * 0.95) - 1], 2),
         "navigate_to_paint_samples_ms": [round(value, 2) for value in latencies],
     }
 

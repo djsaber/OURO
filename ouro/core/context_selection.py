@@ -22,10 +22,10 @@ class ContextSelection(OuroModel):
 
     def elided_ids(self, messages: Sequence[MessageRecord]) -> frozenset[str]:
         boundary = self.media_elided_through
+        if boundary is None:
+            return frozenset()
         return frozenset(
-            item.message_id
-            for item in messages
-            if boundary is not None and 0 < item.sequence <= boundary.sequence
+            item.message_id for item in messages if 0 < item.sequence <= boundary.sequence
         )
 
     def retain_prefix(self, last: MessageRecord | None) -> ContextSelection:

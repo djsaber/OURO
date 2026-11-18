@@ -51,11 +51,26 @@ class _PreparedMedia:
 Blocks = list[ContentBlock | _PreparedMedia]
 
 
+def _media_size(blocks: Blocks) -> int:
+    return sum(
+        part.size for part in blocks if isinstance(part, _PreparedMedia) and part.omission is None
+    )
+
+
 @dataclass(frozen=True)
 class _PreparedMessage:
     message: MessageRecord
     content: Blocks
     paths: tuple[Path, ...]
+
+    def materialize(self, *, elided: bool = False) -> MessageRecord:
+        content = [
+            part.materialize(elided=elided) if isinstance(part, _PreparedMedia) else part
+            for part in self.content
+        ]
+        return with_attachment_read_paths(
+            self.message.model_copy(update={"content": content}), self.paths
+        )
 
 
 @dataclass(frozen=True)
@@ -68,34 +83,22 @@ class PreparedFileInputs:
     @property
     def media_sizes(self) -> dict[str, int]:
         return {
-            item.message.message_id: sum(
-                part.size
-                for part in item.content
-                if isinstance(part, _PreparedMedia) and part.omission is None
-            )
+            item.message.message_id: size
             for item in self.messages
+            if (size := _media_size(item.content))
         }
 
     def materialize(self, elided_ids: frozenset[str] = frozenset()) -> list[MessageRecord]:
         require_media_capacity(
-            sum(size for identity, size in self.media_sizes.items() if identity not in elided_ids),
+            sum(
+                _media_size(item.content)
+                for item in self.messages
+                if item.message.message_id not in elided_ids
+            ),
             self.media_limit,
         )
         return [
-            with_attachment_read_paths(
-                item.message.model_copy(
-                    update={
-                        "content": [
-                            part.materialize(elided=item.message.message_id in elided_ids)
-                            if isinstance(part, _PreparedMedia)
-                            else part
-                            for part in item.content
-                        ]
-                    }
-                ),
-                item.paths,
-            )
-            for item in self.messages
+            item.materialize(elided=item.message.message_id in elided_ids) for item in self.messages
         ]
 
 
@@ -236,11 +239,9 @@ class FileInputProjector:
             message.content, role=message.role, modalities=input_modalities
         )
         content_left = DEFAULT_INPUT_CONTENT_BUDGET
-        media_used = sum(
-            part.size
-            for part in content
-            if isinstance(part, _PreparedMedia) and part.omission is None
-        )
+        media_used = _media_size(content)
+        require_media_capacity(media_used, DEFAULT_REQUEST_MEDIA_CHARS)
+        upload_paths: dict[str, Path] = {}
 
         def omission(kind: MediaModality) -> str | None:
             if kind in input_modalities:
@@ -286,35 +287,25 @@ class FileInputProjector:
                     )
                 )
             else:
+                source = self._upload_source(message.session_id, item.resource_id, item.name)
+                upload_paths[item.resource_id] = source.path
                 blocks, used = self._blocks(
-                    self._upload_source(message.session_id, item.resource_id, item.name),
+                    source,
                     omission=omission,
                     content_budget=content_left,
                 )
                 content.append(TextContent(text="\n\n"))
             content.extend(blocks)
             content_left -= used
-            size = sum(
-                part.size
-                for part in blocks
-                if isinstance(part, _PreparedMedia) and part.omission is None
-            )
-            media_used += size
+            media_used += _media_size(blocks)
             require_media_capacity(media_used, DEFAULT_REQUEST_MEDIA_CHARS)
-        prepared = PreparedFileInputs(
-            [
-                _PreparedMessage(
-                    message,
-                    content,
-                    tuple(
-                        self._upload_source(message.session_id, identity).path
-                        for identity in dict.fromkeys(message.resource_refs)
-                    ),
-                )
-            ],
-            DEFAULT_REQUEST_MEDIA_CHARS,
+        paths = tuple(
+            upload_paths[identity]
+            if identity in upload_paths
+            else self._upload_source(message.session_id, identity).path
+            for identity in dict.fromkeys(message.resource_refs)
         )
-        return prepared.materialize()[0]
+        return _PreparedMessage(message, content, paths).materialize()
 
     def _upload_source(self, session_id: str, resource_id: str, name: str | None = None) -> _Source:
         record = self.record(session_id, resource_id)
@@ -358,19 +349,13 @@ class FileInputProjector:
                     before.st_size,
                     read,
                 )
-                result = self._blocks(
+                blocks, used = self._blocks(
                     source,
                     omission=omission,
                     content_budget=content_budget,
                 )
-                blocks, used = result
                 require_media_capacity(
-                    media_used
-                    + sum(
-                        part.size
-                        for part in blocks
-                        if isinstance(part, _PreparedMedia) and part.omission is None
-                    ),
+                    media_used + _media_size(blocks),
                     DEFAULT_REQUEST_MEDIA_CHARS,
                 )
                 # References must be observed while this checked file handle is open.
@@ -419,31 +404,23 @@ class FileInputProjector:
                 modalities=input_modalities,
                 prepare_media=partial(self._prepare_owned_media, message.session_id),
             )
-            if message.semantic_tag != "attachments":
-                for identity in message.resource_refs:
-                    source = self._upload_source(message.session_id, identity)
-                    key = (message.session_id, identity)
-                    blocks, used = self._blocks(
-                        source,
-                        omission=omission,
-                        content_budget=content_left,
-                        repeated=key in seen,
-                    )
-                    content.append(TextContent(text="\n\n"))
-                    content.extend(blocks)
-                    content_left -= used
-                    seen.add(key)
-            prepared.append(
-                _PreparedMessage(
-                    message,
-                    content,
-                    tuple(
-                        self._upload_source(message.session_id, identity).path
-                        for identity in dict.fromkeys(message.resource_refs)
-                    ),
+            paths = {}
+            for identity in message.resource_refs:
+                source = self._upload_source(message.session_id, identity)
+                paths[identity] = source.path
+                if message.semantic_tag == "attachments":
+                    continue
+                key = (message.session_id, identity)
+                blocks, used = self._blocks(
+                    source, omission=omission, content_budget=content_left, repeated=key in seen
                 )
-            )
-        return PreparedFileInputs(list(reversed(prepared)), DEFAULT_REQUEST_MEDIA_CHARS)
+                content.append(TextContent(text="\n\n"))
+                content.extend(blocks)
+                content_left -= used
+                seen.add(key)
+            prepared.append(_PreparedMessage(message, content, tuple(paths.values())))
+        prepared.reverse()
+        return PreparedFileInputs(prepared, DEFAULT_REQUEST_MEDIA_CHARS)
 
     def _prepare_owned_media(
         self, session_id: str, block: MediaContent, reason: str | None

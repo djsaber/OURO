@@ -482,27 +482,22 @@ class ProviderTemplateStore:
         self,
         loaded: Mapping[str, _LoadedTemplate],
         notices: list[str],
-        inline: Mapping[str, ProviderTemplate] | None = None,
+        inline: Mapping[str, ProviderTemplate],
     ) -> ProviderTemplateCatalogSnapshot:
         # The inline catalog's curation order is part of the source of truth;
         # templates the user added follow it in stable alphabetical order.
-        ordered = list(inline or {})
-        ordered.extend(template_id for template_id in sorted(loaded) if template_id not in ordered)
-
-        def _entry(template_id: str) -> ProviderTemplateEntry | None:
-            item = loaded.get(template_id)
-            if item is None or item.template is None:
-                return None
-            return ProviderTemplateEntry(
-                template=item.template,
-                origin=item.meta.origin,
-                deprecated=item.meta.deprecated,
-                enabled=item.meta.enabled,
-            )
-
-        entries = tuple(entry for entry in map(_entry, ordered) if entry is not None)
+        ordered = (*inline, *sorted(loaded.keys() - inline.keys()))
         return ProviderTemplateCatalogSnapshot(
-            entries=entries,
+            entries=tuple(
+                ProviderTemplateEntry(
+                    template=item.template,
+                    origin=item.meta.origin,
+                    deprecated=item.meta.deprecated,
+                    enabled=item.meta.enabled,
+                )
+                for item in map(loaded.get, ordered)
+                if item is not None and item.template is not None
+            ),
             notices=tuple(notices),
             config_path=self._file.path,
         )

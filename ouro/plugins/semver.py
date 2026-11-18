@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import operator
 import re
 from dataclasses import dataclass
 from functools import total_ordering
@@ -9,9 +10,18 @@ _SEMVER_PATTERN = re.compile(
     r"(?P<minor>0|[1-9]\d*)\."
     r"(?P<patch>0|[1-9]\d*)"
     r"(?:-(?P<prerelease>[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
-    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$",
+    re.ASCII,
 )
 _COMPARATOR_PATTERN = re.compile(r"^(>=|<=|>|<|==|=)?\s*(\S+)$")
+_OPERATORS = {
+    "=": operator.eq,
+    "==": operator.eq,
+    "<": operator.lt,
+    "<=": operator.le,
+    ">": operator.gt,
+    ">=": operator.ge,
+}
 
 
 @total_ordering
@@ -27,17 +37,15 @@ class SemVer:
         match = _SEMVER_PATTERN.fullmatch(value.strip())
         if match is None:
             raise ValueError(f"invalid semantic version: {value}")
-        prerelease = match.group("prerelease")
-        if prerelease and any(
-            item.isdigit() and len(item) > 1 and item.startswith("0")
-            for item in prerelease.split(".")
-        ):
+        raw = match.group("prerelease")
+        prerelease = tuple(raw.split(".")) if raw else ()
+        if any(item.isdigit() and len(item) > 1 and item.startswith("0") for item in prerelease):
             raise ValueError(f"invalid semantic version: {value}")
         return cls(
             major=int(match.group("major")),
             minor=int(match.group("minor")),
             patch=int(match.group("patch")),
-            prerelease=tuple(prerelease.split(".")) if prerelease else (),
+            prerelease=prerelease,
         )
 
     def __lt__(self, other: object) -> bool:
@@ -52,58 +60,39 @@ class SemVer:
 
 def validate_version_range(value: str) -> str:
     normalized = value.strip()
+    _parse_range(normalized)
+    return normalized
+
+
+def _parse_range(normalized: str) -> list[tuple[str, SemVer]]:
     if not normalized:
         raise ValueError("version range cannot be empty")
     if normalized == "*":
-        return normalized
+        return []
     if normalized.startswith(("^", "~")):
-        SemVer.parse(normalized[1:])
-        return normalized
-    comparators = _split_range(normalized)
-    if not comparators:
-        raise ValueError("version range must contain a comparator")
-    for comparator in comparators:
+        lower = SemVer.parse(normalized[1:])
+        upper = (
+            _caret_upper_bound(lower)
+            if normalized[0] == "^"
+            else SemVer(lower.major, lower.minor + 1, 0)
+        )
+        return [(">=", lower), ("<", upper)]
+    comparators = []
+    for comparator in map(str.strip, normalized.split(",")):
+        if not comparator:
+            continue
         match = _COMPARATOR_PATTERN.fullmatch(comparator)
         if match is None:
             raise ValueError(f"invalid version comparator: {comparator}")
-        SemVer.parse(match.group(2))
-    return normalized
+        comparators.append((match.group(1) or "=", SemVer.parse(match.group(2))))
+    if not comparators:
+        raise ValueError("version range must contain a comparator")
+    return comparators
 
 
 def version_satisfies(version: str, requirement: str) -> bool:
     candidate = SemVer.parse(version)
-    normalized = validate_version_range(requirement)
-    if normalized == "*":
-        return True
-    if normalized.startswith("^"):
-        lower = SemVer.parse(normalized[1:])
-        upper = _caret_upper_bound(lower)
-        return candidate >= lower and candidate < upper
-    if normalized.startswith("~"):
-        lower = SemVer.parse(normalized[1:])
-        upper = SemVer(lower.major, lower.minor + 1, 0)
-        return candidate >= lower and candidate < upper
-    return all(_matches_comparator(candidate, item) for item in _split_range(normalized))
-
-
-def _split_range(value: str) -> list[str]:
-    return [item.strip() for item in value.split(",") if item.strip()]
-
-
-def _matches_comparator(candidate: SemVer, comparator: str) -> bool:
-    match = _COMPARATOR_PATTERN.fullmatch(comparator)
-    assert match is not None
-    operator = match.group(1) or "=="
-    expected = SemVer.parse(match.group(2))
-    if operator in {"=", "=="}:
-        return candidate == expected
-    if operator == ">=":
-        return candidate >= expected
-    if operator == "<=":
-        return candidate <= expected
-    if operator == ">":
-        return candidate > expected
-    return candidate < expected
+    return all(_OPERATORS[op](candidate, bound) for op, bound in _parse_range(requirement.strip()))
 
 
 def _caret_upper_bound(version: SemVer) -> SemVer:

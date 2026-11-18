@@ -88,7 +88,7 @@ def _checked_entries(archive: ZipFile) -> list[ZipInfo]:
         ):
             raise DataTransferError("archive contains duplicate or unsupported entries")
         seen.add(key)
-    if "manifest.json" not in {entry.filename for entry in entries}:
+    if not any(entry.filename == "manifest.json" for entry in entries):
         raise DataTransferError("archive is missing manifest.json")
     return entries
 
@@ -100,17 +100,21 @@ def _read_manifest(content: bytes) -> ArchiveManifest:
     return manifest
 
 
+def _read_index(archive: ZipFile, entries: list[ZipInfo]) -> ArchiveIndex | None:
+    if any(entry.filename == "index.json" for entry in entries):
+        return ArchiveIndex.model_validate_json(archive.read("index.json"))
+    return None
+
+
 def read_archive_index(path: Path) -> ArchiveIndex | ArchiveManifest:
     """Read only selection metadata; payload integrity is checked at import time."""
     try:
         with ZipFile(path) as archive:
             entries = _checked_entries(archive)
-            if any(entry.filename == "index.json" for entry in entries):
-                return ArchiveIndex.model_validate_json(archive.read("index.json"))
             # The index is an optional accelerator, like the local Session catalog.
             # Without it, let the application project headers from the manifest.
             # Attachments are never decompressed on this path.
-            return _read_manifest(archive.read("manifest.json"))
+            return _read_index(archive, entries) or _read_manifest(archive.read("manifest.json"))
     except (
         OSError,
         BadZipFile,
@@ -143,14 +147,18 @@ def portable_path(value: str) -> PurePosixPath:
 def read_archive(path: Path, kind: DataKind | None = None) -> DataArchive:
     try:
         with ZipFile(path) as archive:
-            files = {entry.filename: archive.read(entry) for entry in _checked_entries(archive)}
-        manifest = _read_manifest(files.pop("manifest.json"))
-        index_bytes = files.pop("index.json", None)
-        index = ArchiveIndex.model_validate_json(index_bytes) if index_bytes is not None else None
-        if index is not None and index.kind != manifest.kind:
-            raise DataTransferError("archive index does not match its manifest")
-        if kind is not None and manifest.kind != kind:
-            raise DataTransferError(f"archive kind is {manifest.kind}; requested {kind}")
+            entries = _checked_entries(archive)
+            manifest = _read_manifest(archive.read("manifest.json"))
+            if kind is not None and manifest.kind != kind:
+                raise DataTransferError(f"archive kind is {manifest.kind}; requested {kind}")
+            index = _read_index(archive, entries)
+            if index is not None and index.kind != manifest.kind:
+                raise DataTransferError("archive index does not match its manifest")
+            files = {
+                entry.filename: archive.read(entry)
+                for entry in entries
+                if entry.filename not in {"manifest.json", "index.json"}
+            }
         return DataArchive(manifest, files, index)
     except (
         OSError,

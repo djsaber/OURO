@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, time
+from zoneinfo import ZoneInfo
 
 import pytest
 from pydantic import ValidationError
@@ -63,6 +64,15 @@ def test_exact_boundary_and_end_date_are_inclusive_only_when_requested():
     schedule = TaskSchedule(frequency="daily", starts_at=start, ends_at=start)
     assert next_occurrence(schedule, start, inclusive=True) == start
     assert next_occurrence(schedule, start) is None
+
+
+def test_schedule_orders_repeated_wall_times_by_instant():
+    first = datetime(2026, 11, 1, 1, 45, tzinfo=ZoneInfo("America/New_York"))
+    second = first.replace(minute=15, fold=1)
+    schedule = TaskSchedule(frequency="custom", unit="minutes", starts_at=first, ends_at=second)
+    assert next_occurrence(schedule, second, inclusive=True) == second.astimezone(UTC)
+    with pytest.raises(ValidationError, match="End must be on or after start"):
+        TaskSchedule(frequency="daily", starts_at=second, ends_at=first)
 
 
 def test_monthly_invalid_date_skips_to_leap_year_without_clamping():
@@ -132,6 +142,8 @@ def test_hourly_wall_time_preserves_minute_and_skips_repeated_hours(timezone, af
         {"interval": True},
         {"frequency": "weekly", "weekdays": (0, 0)},
         {"frequency": "weekly", "weekdays": (7,)},
+        {"frequency": "weekly", "weekdays": (True,)},
+        {"frequency": "weekly", "weekdays": ("2",)},
         {"at": time(1, 2, 3)},
         {"frequency": "daily", "month_day": 12},
         {"frequency": "custom", "unit": "hours", "weekdays": (0,)},

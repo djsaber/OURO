@@ -215,17 +215,16 @@ def file_session(work: Workspace, directory: Path) -> SessionIndexEntry:
         connection.commit()
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         connection.execute("PRAGMA journal_mode=DELETE")
-    new_paths = {
-        f"{relative}/{path.relative_to(temporary).as_posix()}"
+    outputs = {
+        f"{relative}/{path.relative_to(temporary).as_posix()}": path
         for path in temporary.rglob("*")
         if path.is_file()
     }
     for path in old_paths:
-        if path not in new_paths:
+        if path not in outputs:
             work.stage(path, None)
-    for output_path in temporary.rglob("*"):
-        if output_path.is_file():
-            work.stage(f"{relative}/{output_path.relative_to(temporary).as_posix()}", output_path)
+    for path, output_path in outputs.items():
+        work.stage(path, output_path)
     # Obsolete notifications and receipts remain in the maintenance backup only.
     old_events = f"{relative}/events.jsonl"
     if work.path(old_events).exists():

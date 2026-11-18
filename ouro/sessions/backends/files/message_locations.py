@@ -282,23 +282,18 @@ class FileMessageIndex:
                     )
         added_calls = {key for item in appended for key in item.call_keys}
         affected_calls = added_calls | {key for item in removed for key in item.call_keys}
-        cut = min((item.position for item in removed), default=None)
-        for key in affected_calls:
-            before = (
-                connection.execute(
-                    "SELECT 1 FROM call_memberships WHERE call_key = ? LIMIT 1", (key,)
-                ).fetchone()
-                is not None
+        if affected_calls:
+            cut = min((item.position for item in removed), default=None)
+            first_positions = connection.execute(
+                "SELECT value, (SELECT MIN(position) FROM call_memberships "
+                "WHERE call_key = keys.value) "
+                "FROM json_each(?) AS keys",
+                (json.dumps(tuple(affected_calls)),),
             )
-            retained = (
-                before
-                if cut is None
-                else connection.execute(
-                    "SELECT 1 FROM call_memberships WHERE call_key = ? AND position < ? LIMIT 1",
-                    (key, cut),
-                ).fetchone()
-                is not None
-            )
-            run_id, _, _ = json.loads(key)
-            current(run_id).tool_call_count += int(retained or key in added_calls) - int(before)
+            for key, first in first_positions:
+                existed = first is not None
+                remains = key in added_calls or (first is not None and (cut is None or first < cut))
+                if existed != remains:
+                    run_id, _, _ = json.loads(key)
+                    current(run_id).tool_call_count += 1 if remains else -1
         return tuple(RunMessageCounts.model_validate(vars(item)) for item in counts.values())

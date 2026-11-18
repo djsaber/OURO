@@ -148,23 +148,27 @@ def truncate_messages(connection: sqlite3.Connection, session_id: str, cut_row: 
         "FROM messages WHERE session_id = ? AND row_id >= ? AND run_id IS NOT NULL GROUP BY run_id",
         (session_id, cut_row),
     ).fetchall()
-    keys = connection.execute(
-        "SELECT DISTINCT run_id, call_key FROM message_call_references "
-        "WHERE session_id = ? AND message_row >= ?",
-        (session_id, cut_row),
-    ).fetchall()
+    removed_calls = dict(
+        connection.execute(
+            "SELECT run_id, COUNT(*) FROM ("
+            "SELECT DISTINCT run_id, call_key FROM message_call_references "
+            "WHERE session_id = ?1 AND message_row >= ?2) AS removed "
+            "WHERE NOT EXISTS (SELECT 1 FROM message_call_references "
+            "INDEXED BY message_call_identity "
+            "WHERE session_id = ?1 AND call_key = removed.call_key AND message_row < ?2) "
+            "GROUP BY run_id",
+            (session_id, cut_row),
+        )
+    )
     connection.execute(
         "DELETE FROM messages WHERE session_id = ? AND row_id >= ?", (session_id, cut_row)
     )
     for run_id, count, automatic in inputs:
-        _change_counts(connection, session_id, run_id, inputs=-count, automatic=-(automatic or 0))
-    for run_id, key in keys:
-        if (
-            connection.execute(
-                "SELECT 1 FROM message_call_references "
-                "WHERE session_id = ? AND call_key = ? LIMIT 1",
-                (session_id, key),
-            ).fetchone()
-            is None
-        ):
-            _change_counts(connection, session_id, run_id, calls=-1)
+        _change_counts(
+            connection,
+            session_id,
+            run_id,
+            calls=-removed_calls.get(run_id, 0),
+            inputs=-count,
+            automatic=-(automatic or 0),
+        )

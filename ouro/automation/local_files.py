@@ -8,6 +8,7 @@ from collections import Counter
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from heapq import nsmallest
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -184,7 +185,7 @@ class LocalTaskRepository:
     ) -> tuple[TaskRecord, ...]:
         _validate_page(limit, 0)
         with self._readable():
-            due = sorted(
+            due = (
                 (entry.next_run_at, task_id)
                 for task_id, entry in self._catalog().tasks.items()
                 if entry.enabled
@@ -193,7 +194,7 @@ class LocalTaskRepository:
                 and entry.next_run_at <= now
                 and (after is None or (entry.next_run_at, task_id) > after)
             )
-            return tuple(self._task(task_id).task for _, task_id in due[:limit])
+            return tuple(self._task(task_id).task for _, task_id in nsmallest(limit, due))
 
     def next_due(self) -> datetime | None:
         with self._readable():

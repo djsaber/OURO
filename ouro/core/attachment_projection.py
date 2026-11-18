@@ -75,15 +75,16 @@ def decode_slice(raw: bytes, encoding: str, *, offset: int, final: bool) -> tupl
         if 0xDC00 <= unit <= 0xDFFF:
             raw, skipped = raw[2:], skipped + 2
     if encoding.startswith("utf-8") and offset:
-        while raw and raw[0] & 0xC0 == 0x80:
-            raw, skipped = raw[1:], skipped + 1
+        while skipped < min(3, len(raw)) and raw[skipped] & 0xC0 == 0x80:
+            skipped += 1
+        raw = raw[skipped:]
     decoder = codecs.getincrementaldecoder(
         "utf-8" if offset and encoding == "utf-8-sig" else encoding
     )()
     text = decoder.decode(raw, final=final)
     pending = len(decoder.getstate()[0])
     return (
-        text.removeprefix("\ufeff") if offset == 0 else text,
+        text.removeprefix("\ufeff") if offset == 0 and encoding.startswith("utf-16") else text,
         offset + skipped,
         offset + skipped + len(raw) - pending,
     )

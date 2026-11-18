@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -14,6 +15,13 @@ from ouro.providers.openai_responses.codec import (
 )
 from ouro.providers.openai_responses.errors import OpenAIResponsesError
 from ouro.providers.openai_responses.items import OpenAIResponsesItemAccumulator
+
+_TEXT_LANES = {
+    "response.output_text": ("message", "output_text", "content_index", "text"),
+    "response.refusal": ("message", "refusal", "content_index", "refusal"),
+    "response.reasoning_text": ("reasoning", "reasoning_text", "content_index", "text"),
+    "response.reasoning_summary_text": ("reasoning", "summary_text", "summary_index", "text"),
+}
 
 
 @dataclass
@@ -55,7 +63,9 @@ class OpenAIResponsesStreamDecoder:
         self._model_id = model_id
         self._scope = scope
         self._items = OpenAIResponsesItemAccumulator()
-        self._text: dict[tuple[int, str, int], _Text] = {}
+        self._text: defaultdict[int, defaultdict[tuple[str, int], _Text]] = defaultdict(
+            lambda: defaultdict(_Text)
+        )
         self._tools: dict[int, _Tool] = {}
         self._call_ids: dict[str, int] = {}
         self._terminal: dict[str, Any] | None = None
@@ -103,26 +113,15 @@ class OpenAIResponsesStreamDecoder:
             if item["type"] not in {"message", "reasoning"}:
                 raise OpenAIResponsesError("unsupported_output_item")
             return []
-        lanes = {
-            "response.output_text": ("message", "output_text", "content_index", "text"),
-            "response.refusal": ("message", "refusal", "content_index", "refusal"),
-            "response.reasoning_text": ("reasoning", "reasoning_text", "content_index", "text"),
-            "response.reasoning_summary_text": (
-                "reasoning",
-                "summary_text",
-                "summary_index",
-                "text",
-            ),
-        }
         stem, _, suffix = kind.rpartition(".")
-        if stem in lanes and suffix in {"delta", "done"}:
+        if stem in _TEXT_LANES and suffix in {"delta", "done"}:
             self._require_open(kind)
-            item_kind, lane, coordinate, field_name = lanes[stem]
+            item_kind, lane, coordinate, field_name = _TEXT_LANES[stem]
             item_index = self._event_item(event, item_kind)
             if item_index is None:
                 return []
             part = _index(event, coordinate)
-            progress = self._text.setdefault((item_index, lane, part), _Text())
+            progress = self._text[item_index][lane, part]
             text = (
                 progress.delta(event.get("delta"))
                 if suffix == "delta"
@@ -201,7 +200,12 @@ class OpenAIResponsesStreamDecoder:
                 completion=ProviderCompletion(
                     finish_reason=(
                         "content_filter"
-                        if any(lane == "refusal" for _, lane, _ in self._text)
+                        if any(
+                            part["type"] == "refusal"
+                            for item in items
+                            if item["type"] == "message"
+                            for part in item["content"]
+                        )
                         else "tool_call"
                         if self._tools
                         else "stop"
@@ -258,24 +262,19 @@ class OpenAIResponsesStreamDecoder:
             )
             return events
         events = []
-        keys = set()
+        pending: dict[tuple[str, int], _Text] = self._text.pop(index, {})
         fields = ("content",) if item["type"] == "message" else ("summary", "content")
         for content_field in fields:
             for part_index, part in enumerate(item.get(content_field) or []):
                 lane = part["type"]
-                key = (index, lane, part_index)
-                keys.add(key)
-                progress = self._text.setdefault(key, _Text())
+                progress = pending.pop((lane, part_index), None)
+                text = part["refusal" if lane == "refusal" else "text"]
                 events.extend(
-                    _display(
-                        lane, progress.finish(part["refusal" if lane == "refusal" else "text"])
-                    )
+                    _display(lane, progress.finish(text) if progress is not None else text)
                 )
         # Visible reasoning may be streamed without being repeated in the
         # replay item. Preserve the native item rather than synthesizing text.
-        if item["type"] == "message" and any(
-            key[0] == index and key not in keys for key in self._text
-        ):
+        if item["type"] == "message" and pending:
             raise OpenAIResponsesError(
                 "conflicting_output_item", detail=f"message_content, output_index={index}"
             )

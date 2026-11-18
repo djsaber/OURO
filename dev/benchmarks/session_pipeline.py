@@ -11,6 +11,7 @@ import asyncio
 import gc
 import inspect
 import json
+import math
 import platform
 import statistics
 import tempfile
@@ -68,9 +69,9 @@ def distribution(values):
     return {
         "count": len(values),
         "p50_ms": round(statistics.median(ordered), 3),
-        "p95_ms": round(ordered[int((len(ordered) - 1) * 0.95)], 3),
-        "p99_ms": round(ordered[int((len(ordered) - 1) * 0.99)], 3),
-        "max_ms": round(max(ordered), 3),
+        "p95_ms": round(ordered[math.ceil(len(ordered) * 0.95) - 1], 3),
+        "p99_ms": round(ordered[math.ceil(len(ordered) * 0.99) - 1], 3),
+        "max_ms": round(ordered[-1], 3),
     }
 
 

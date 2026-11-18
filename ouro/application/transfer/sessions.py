@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from contextlib import ExitStack
+from itertools import chain
 
 from pydantic import ConfigDict, ValidationError
 
@@ -93,16 +94,15 @@ class SessionTransferService:
                 raise DataTransferError(
                     "Sessions must be inactive and consistent before export"
                 ) from exc
-            files: dict[str, bytes] = {}
-            size = 0
-            for name, (session_id, resource) in _resource_files(bundle).items():
-                content = self.resources.load_content(
-                    session_id, resource, max_bytes=MAX_ARCHIVE_BYTES
+            resources = _resource_files(bundle)
+            if sum(record.size for _, record in resources.values()) > MAX_ARCHIVE_BYTES:
+                raise DataTransferError("Session resources exceed the archive size limit")
+            files = {
+                name: _verified_content(
+                    record, self.resources.load_content(session_id, record, max_bytes=record.size)
                 )
-                size += len(content)
-                if size > MAX_ARCHIVE_BYTES:
-                    raise DataTransferError("Session resources exceed the archive size limit")
-                files[name] = content
+                for name, (session_id, record) in resources.items()
+            }
         data = SessionArchiveData(bundle=bundle)
         manifest = ArchiveManifest(kind="sessions", data=data.model_dump(mode="json"))
         return DataArchive(manifest, files, session_archive_index(manifest))
@@ -115,42 +115,40 @@ class SessionTransferService:
         replace: bool = False,
     ) -> SessionImportResult:
         try:
-            data = SessionArchiveData.model_validate(archive.manifest.data)
+            bundle = SessionArchiveData.model_validate(archive.manifest.data).bundle
         except ValidationError as exc:
             raise DataTransferError("invalid or unsupported Session archive data") from exc
         if archive.index is not None and archive.index != session_archive_index(archive.manifest):
             raise DataTransferError("archive index does not match its manifest")
-        resources = _resource_files(data.bundle)
-        if set(archive.files) != set(resources):
+        resources = _resource_files(bundle)
+        if archive.files.keys() != resources.keys():
             raise DataTransferError("Session archive resource files do not match its manifest")
-        for name, (_session_id, record) in resources.items():
-            content = archive.files[name]
-            if (
-                len(content) != record.size
-                or f"sha256:{hashlib.sha256(content).hexdigest()}" != record.digest
-            ):
-                raise DataTransferError("Session archive resource integrity check failed")
+        contents: dict[str, dict[str, bytes]] = {}
+        for name, (session_id, record) in resources.items():
+            contents.setdefault(session_id, {})[record.filename] = _verified_content(
+                record, archive.files[name]
+            )
         if identities:
-            records = {item.snapshot.session.session_id: item for item in data.bundle.sessions}
-            missing = set(identities) - records.keys()
+            roots_by_id = {
+                item.snapshot.session.session_id: item.snapshot.session.agent_root_session_id
+                for item in bundle.sessions
+            }
+            missing = set(identities) - roots_by_id.keys()
             if missing:
                 raise DataTransferError(
                     f"sessions not found in archive: {', '.join(sorted(missing))}"
                 )
-            roots = {
-                records[identity].snapshot.session.agent_root_session_id for identity in identities
-            }
-            data.bundle = _select_roots(data.bundle, roots)
-        return self._publish_import(data, archive, replace=replace)
+            bundle = _select_roots(bundle, {roots_by_id[identity] for identity in identities})
+        return self._publish_import(bundle, contents, replace=replace)
 
     def _publish_import(
-        self, data: SessionArchiveData, archive: DataArchive, *, replace: bool
+        self, bundle: SessionBundle, contents: dict[str, dict[str, bytes]], *, replace: bool
     ) -> SessionImportResult:
-        bundle = data.bundle
         selected_count = len(bundle.sessions)
-        existing = {record.session_id: record for record in self.sessions.list_sessions()}
         if not replace:
-            bundle = _skip_existing_trees(bundle, set(existing))
+            bundle = _skip_existing_trees(
+                bundle, {record.session_id for record in self.sessions.list_sessions()}
+            )
         if not bundle.sessions:
             return SessionImportResult(count=0, skipped=selected_count)
         with ExitStack() as locks:
@@ -205,13 +203,12 @@ class SessionTransferService:
                         f"stop the active Session before replacement: {identity}"
                     )
             if bundle.sessions:
-                contents: dict[str, dict[str, bytes]] = {}
-                for name, (session_id, resource) in _resource_files(bundle).items():
-                    contents.setdefault(session_id, {})[resource.filename] = archive.files[name]
                 self.sessions.import_bundle(
                     bundle,
                     replace_session_ids=tuple(sorted(replaced_ids)),
-                    resource_contents=contents,
+                    resource_contents={
+                        key: contents[key] for key in incoming.keys() & contents.keys()
+                    },
                 )
         return SessionImportResult(
             count=len(bundle.sessions),
@@ -286,8 +283,11 @@ def _external_reference_diagnostics(bundle: SessionBundle) -> tuple[Diagnostic, 
         paths = sorted(
             {
                 file.path
-                for message in snapshot.messages
-                for file in message.input_attachments
+                for attachments in chain(
+                    (record.item.attachments for record in snapshot.inputs),
+                    (message.input_attachments for message in snapshot.messages),
+                )
+                for file in attachments
                 if isinstance(file, InputFileReference)
             }
         )
@@ -322,13 +322,22 @@ def _external_reference_diagnostics(bundle: SessionBundle) -> tuple[Diagnostic, 
     return tuple(diagnostics)
 
 
+def _verified_content(record: ResourceRecord, content: bytes) -> bytes:
+    if (
+        len(content) != record.size
+        or f"sha256:{hashlib.sha256(content).hexdigest()}" != record.digest
+    ):
+        raise DataTransferError("Session archive resource integrity check failed")
+    return content
+
+
 def _resource_files(bundle: SessionBundle) -> dict[str, tuple[str, ResourceRecord]]:
     files: dict[str, tuple[str, ResourceRecord]] = {}
     seen: set[str] = set()
     for item in bundle.sessions:
         session_id = item.snapshot.session.session_id
         ids = {record.resource_id for record in item.resources}
-        messages = list(item.snapshot.messages)
+        messages = item.snapshot.messages
         required = {
             identity for message in messages for identity in message.referenced_resource_ids
         }

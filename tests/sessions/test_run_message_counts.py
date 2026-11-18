@@ -119,8 +119,14 @@ def test_tool_counts_follow_published_membership_and_transfer(store, tmp_path):
         assert target.load_run_message_counts(session.session_id, run.run_id) == counts
     store.truncate_messages(
         session.session_id,
-        before_message_id=assistant.message_id,
+        before_message_id=result.message_id,
         expected_last_message_id=result.message_id,
+    )
+    assert store.load_run_message_counts(session.session_id, run.run_id) == counts
+    store.truncate_messages(
+        session.session_id,
+        before_message_id=assistant.message_id,
+        expected_last_message_id=assistant.message_id,
     )
     counts = store.load_run_message_counts(session.session_id, run.run_id)
     assert (counts.tool_call_count, counts.input_count, counts.automatic_continuation) == (
@@ -300,7 +306,9 @@ def test_sqlite_message_batch_updates_counts_once_per_run(tmp_path, monkeypatch,
 
 
 @pytest.mark.parametrize("call_count", [4, 64])
-def test_sqlite_call_membership_publication_batches_one_message(tmp_path, monkeypatch, call_count):
+def test_sqlite_batches_call_membership_on_publication_and_withdrawal(
+    tmp_path, monkeypatch, call_count
+):
     store = SQLiteSessionStore(tmp_path / "sessions.db")
     store.initialize()
     session = SessionRecord()
@@ -346,3 +354,17 @@ def test_sqlite_call_membership_publication_batches_one_message(tmp_path, monkey
         store.load_run_message_counts(session.session_id, "run_counts").tool_call_count
         == call_count
     )
+    statements.clear()
+    store.truncate_messages(
+        session.session_id,
+        before_message_id=assistant.message_id,
+        expected_last_message_id=results[-1].message_id,
+    )
+    assert store.load_run_message_counts(session.session_id, "run_counts").tool_call_count == 0
+    assert sum(sql.startswith("UPDATE run_message_counts SET") for sql in statements) == 1
+    (membership_read,) = (
+        sql for sql in statements if sql.startswith("SELECT") and "message_call_references" in sql
+    )
+    with store.session_read(session.session_id) as connection:
+        plan = connection.execute("EXPLAIN QUERY PLAN " + membership_read)
+        assert any("call_key=?" in row[3] for row in plan)

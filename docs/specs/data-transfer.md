@@ -40,8 +40,8 @@ ouro data <export|import> --kind <kind> --path <archive> [--id <id>] [--replace]
 
 CLI 另有 `--home`、`--session-backend`、`--json`。TUI `/export` 仅导出当前会话，不接受参数，未打开会话时明确提示。
 其余操作通过 Actions → Data 分页菜单生成同一业务请求，不提供 `/import` 命令。
-导出通过菜单选择类型；导入选择归档后，应用层根据通过格式与版本校验的 manifest 自动识别类型，
-TUI 显示相应范围与覆盖选项；不按文件名推断类型。正式导入重新校验归档及识别类型，避免文件更换后误导入。
+导出通过菜单选择类型；导入菜单从可选的 `index.json` 读取归档类型与选择项，没有索引时读取
+`manifest.json`。预览不解压附件。正式导入以 manifest 为准，不按文件名或菜单预览推断实际类型。
 无需填写 flags 或会话 ID；会话候选读取复用应用层只读查询，ID 显示为右侧标签。
 菜单内动态展示后台传输与结果，不写入对话栏。菜单关闭不取消 App 持有的操作，重开继续查看；同一时间只接受一项传输。
 kind 取 `providers`、`provider-templates`、`mcp`、`agents`、`prompts`、`sessions`、`skills`，
@@ -70,6 +70,7 @@ version；内容文件由清单中的类型化引用关联。技能内容位于 
 
 读取前检查数量与声明解压体积，上限 10,000 条目与 512 MiB。拒绝路径穿越、绝对路径、Windows 特殊路径、
 符号链接、非普通文件、加密条目和大小写冲突路径；只向新建 staging 写入已校验的条目，不使用 `extractall`。
+正式导入先校验 manifest 的格式和版本，确认其类型与导入请求、可选索引一致，再解压内容文件。
 会话资源逐一校验 SHA-256、大小，以及消息文件项、媒体资源引用、队列和最近请求媒体/源消息的清单闭包；内部观察资源同样随归档携带。未知 kind、版本、无效结构、重复 identity、外部 Session 引用、
 断裂的 parent/child 关系与缺失 Harness checkpoint 都会明确失败。
 

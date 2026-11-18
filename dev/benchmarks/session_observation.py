@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import ctypes
 import json
+import math
 import platform
 import sys
 import tempfile
@@ -81,8 +82,8 @@ def distribution(values):
         return {"count": 0}
     return {
         "count": len(ordered),
-        "p95_ms": round(ordered[int((len(ordered) - 1) * 0.95)], 3),
-        "p99_ms": round(ordered[int((len(ordered) - 1) * 0.99)], 3),
+        "p95_ms": round(ordered[math.ceil(len(ordered) * 0.95) - 1], 3),
+        "p99_ms": round(ordered[math.ceil(len(ordered) * 0.99) - 1], 3),
         "max_ms": round(ordered[-1], 3),
     }
 

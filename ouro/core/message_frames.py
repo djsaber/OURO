@@ -55,21 +55,18 @@ def conversation_turns(messages: Sequence[MessageRecord]) -> list[list[MessageRe
     """Group messages by user requests when no model-turn identity is available."""
 
     turns: list[list[MessageRecord]] = []
-    current: list[MessageRecord] = []
     for message in messages:
-        same_input = bool(
-            current
-            and message.metadata.get("session_input_batch_id")
-            and message.metadata.get("session_input_batch_id")
-            == current[-1].metadata.get("session_input_batch_id")
-        )
-        if message.role == "user" and current and not same_input:
-            turns.append(current)
-            current = []
-        current.append(message)
-    if current:
-        turns.append(current)
+        if not turns or _starts_user_turn(message, turns[-1][-1]):
+            turns.append([])
+        turns[-1].append(message)
     return turns
+
+
+def _starts_user_turn(message: MessageRecord, previous: MessageRecord) -> bool:
+    if message.role != "user":
+        return False
+    batch_id = message.metadata.get("session_input_batch_id")
+    return not batch_id or batch_id != previous.metadata.get("session_input_batch_id")
 
 
 def context_frames(messages: Sequence[MessageRecord]) -> list[list[MessageRecord]]:
@@ -82,60 +79,31 @@ def context_frames(messages: Sequence[MessageRecord]) -> list[list[MessageRecord
     """
 
     frames: list[list[MessageRecord]] = []
-    current: list[MessageRecord] = []
-    current_turn_id: str | None = None
-    pending_messages: list[MessageRecord] = []
-
-    def flush_current() -> None:
-        nonlocal current, current_turn_id
-        if current:
-            frames.append(current)
-        current = []
-        current_turn_id = None
-
+    previous: MessageRecord | None = None
     for message in messages:
-        if message.turn_id is not None:
-            if current and current_turn_id != message.turn_id:
-                flush_current()
-            if not current:
-                pending_frames = conversation_turns(pending_messages)
-                frames.extend(pending_frames[:-1])
-                current = list(pending_frames[-1]) if pending_frames else []
-                pending_messages = []
-                current_turn_id = message.turn_id
-            current.append(message)
-            continue
-
-        if current_turn_id is not None:
-            flush_current()
-        pending_messages.append(message)
-
-    flush_current()
-    frames.extend(conversation_turns(pending_messages))
+        if (
+            previous is None
+            or (previous.turn_id is not None and previous.turn_id != message.turn_id)
+            or (message.turn_id is None and _starts_user_turn(message, previous))
+        ):
+            frames.append([])
+        frames[-1].append(message)
+        previous = message
     for index, frame in enumerate(frames):
-        if _is_complete_frame(frame):
-            continue
-        return [*frames[:index], [message for tail in frames[index:] for message in tail]]
+        if not _is_complete_frame(frame):
+            for tail in frames[index + 1 :]:
+                frame.extend(tail)
+            del frames[index + 1 :]
+            break
     return frames
 
 
-def _tool_call_ids(message: MessageRecord) -> set[str]:
-    if message.role != "assistant":
-        return set()
-    return {call.id for call in message.tool_calls if call.id}
-
-
-def _tool_result_id(message: MessageRecord) -> str | None:
-    return (
-        message.tool_result.tool_call_id
-        if message.tool_result is not None and message.tool_result.producer.kind == "model"
-        else None
-    )
-
-
 def _is_complete_frame(frame: Sequence[MessageRecord]) -> bool:
-    expected = {call_id for message in frame for call_id in _tool_call_ids(message)}
+    expected = {call.id for message in frame for call in message.tool_calls if call.id}
     if not expected:
         return True
-    seen = {result_id for message in frame if (result_id := _tool_result_id(message)) is not None}
-    return expected.issubset(seen)
+    return expected.issubset(
+        result.tool_call_id
+        for message in frame
+        if (result := message.tool_result) is not None and result.producer.kind == "model"
+    )

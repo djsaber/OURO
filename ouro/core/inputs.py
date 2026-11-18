@@ -272,21 +272,20 @@ def validate_input_snapshot(
     *,
     messages: Sequence[MessageRecord],
 ) -> tuple[InputState, ...]:
-    identities = {record.item.queue_id for record in inputs}
-    if len(identities) != len(inputs) or any(record.session_id != session_id for record in inputs):
+    by_id = {record.item.queue_id: record for record in inputs}
+    if len(by_id) != len(inputs) or any(record.session_id != session_id for record in inputs):
         raise ValueError("duplicate or foreign accepted input")
     actual = (
         states if states is not None else tuple(InputState.pending(record) for record in inputs)
     )
+    states_by_id = {state.input_id: state for state in actual}
     if (
-        {state.input_id for state in actual} != identities
-        or len(actual) != len(identities)
+        states_by_id.keys() != by_id.keys()
+        or len(actual) != len(by_id)
         or any(state.session_id != session_id for state in actual)
         or {state.input_id for state in actual if state.status == "pending"} != set(pending_ids)
     ):
         raise ValueError("accepted inputs and lifecycle states do not match the Session queue")
-    by_id = {record.item.queue_id: record for record in inputs}
-    states_by_id = {state.input_id: state for state in actual}
     for message in messages:
         identity = message.input_id
         if identity is None:

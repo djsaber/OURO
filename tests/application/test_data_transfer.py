@@ -7,6 +7,7 @@ from zipfile import ZipFile
 
 import pytest
 
+from ouro.application.inputs.queue import QueuedInputQueue
 from ouro.application.transfer.service import DataTransferRequest
 from ouro.config.agents import AgentDefinitionsConfigManager
 from ouro.config.file import JsonConfigFile
@@ -21,6 +22,7 @@ from ouro.core.context_selection import MessageBoundary
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.errors import ConfigError, PersistenceError, SessionBusyError
 from ouro.core.harness import HarnessState
+from ouro.core.input_content import InputFileReference
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, Usage
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
@@ -43,6 +45,7 @@ from ouro.transfer.archive import (
     write_archive,
 )
 from tests.context_facts import save_context
+from tests.input_facts import queued_input
 from tests.tool_batches import seed_tool_messages
 
 
@@ -453,6 +456,22 @@ def test_corrupt_resource_rejected_before_session_publication(tmp_path):
     assert not build_local_session_services(tmp_path / "target")._store.list_sessions()
 
 
+def test_export_refuses_same_size_resource_corruption_without_replacing_archive(tmp_path):
+    home = tmp_path / "source"
+    services = build_local_session_services(home)
+    session = services.sessions.create().session
+    attachment = tmp_path / "input.txt"
+    attachment.write_bytes(b"data")
+    record = services.resources.import_resource(session.session_id, attachment).resource
+    path = tmp_path / "backup.zip"
+    transfer(home, "export", "sessions", path)
+    original = path.read_bytes()
+    services.resources.resource_path(session.session_id, record.resource_id).write_bytes(b"oops")
+    with pytest.raises(DataTransferError, match="integrity"):
+        transfer(home, "export", "sessions", path, replace=True)
+    assert path.read_bytes() == original
+
+
 def test_skills_transfer_actual_files_without_discovery_configuration(tmp_path):
     source, target = tmp_path / "source", tmp_path / "target"
     skill = source / "skills" / "review"
@@ -490,6 +509,40 @@ def test_unsafe_archive_paths_are_rejected(tmp_path, name):
         stream.writestr(name, "unsafe")
     with pytest.raises(DataTransferError, match="unsafe path|undeclared files"):
         transfer(tmp_path / "target", "import", "skills", archive)
+
+
+def test_wrong_archive_kind_never_reads_content_files(tmp_path, monkeypatch):
+    path = tmp_path / "wrong-kind.zip"
+    write_archive(
+        path, DataArchive(ArchiveManifest(kind="skills", data={}), {"file": b"data"}), replace=False
+    )
+    read = ZipFile.read
+
+    def metadata_only(archive, name):
+        assert name == "manifest.json"
+        return read(archive, name)
+
+    monkeypatch.setattr(ZipFile, "read", metadata_only)
+    with pytest.raises(DataTransferError, match="archive kind"):
+        read_archive(path, "sessions")
+
+
+def test_import_reports_external_paths_owned_by_accepted_inputs(tmp_path):
+    home = tmp_path / "source"
+    services = build_local_session_services(home)
+    session = services.sessions.create().session
+    reference = InputFileReference(name="notes.txt", path=str(tmp_path / "notes.txt"))
+    QueuedInputQueue(services._store).enqueue(
+        session.session_id, queued_input(session, attachments=(reference,))
+    )
+    path = tmp_path / "sessions.zip"
+    transfer(home, "export", "sessions", path)
+    result = transfer(tmp_path / "target", "import", "sessions", path)
+    assert [
+        (item.session_id, item.metadata["paths"])
+        for item in result.diagnostics
+        if item.code == "session_file_references_preserved"
+    ] == [(session.session_id, [reference.path])]
 
 
 def test_archive_kind_version_and_destination_conflicts(tmp_path):

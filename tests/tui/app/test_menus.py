@@ -499,19 +499,19 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
             next(choice for choice in plugin_screen._choices if choice.value == "restart").disabled
             is False
         )
+        assert "Agent Context" in app._system_status.plugin_active_names
 
         await pilot.press("enter")
-        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Agent Context")
+        await wait_for_menu_action(pilot, plugin_screen)
         assert app.screen is plugin_screen
-        await _wait_until(
-            lambda: any(choice.value == "enable" for choice in plugin_screen._choices),
-            pilot,
-            description="disabled plugin actions",
-        )
         lifecycle = {choice.value: choice for choice in plugin_screen._choices}
         assert lifecycle["enable"].trailing == ""
         assert lifecycle["restart"].disabled is True
-        assert "Agent Context" not in app._system_status.plugin_active_names
+        await _wait_until(
+            lambda: "Agent Context" not in app._system_status.plugin_active_names,
+            pilot,
+            description="disabled plugin removed from welcome status",
+        )
 
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="PLUGINS")
@@ -524,26 +524,16 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Agent Context")
         options = plugin_screen.query_one("#choice-list", OptionList)
         await pilot.click(options, offset=(4, options.get_option_index("enable")))
-        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Agent Context")
+        await wait_for_menu_action(pilot, plugin_screen)
+        assert app.screen is plugin_screen
+        lifecycle = {choice.value: choice for choice in plugin_screen._choices}
+        assert lifecycle["disable"].trailing == "active"
+        assert lifecycle["restart"].disabled is False
+        assert options.get_option("restart").disabled is False
         await _wait_until(
-            lambda: any(
-                choice.value == "disable" and choice.trailing == "active"
-                for choice in plugin_screen._choices
-            ),
+            lambda: "Agent Context" in app._system_status.plugin_active_names,
             pilot,
-            description="enabled plugin actions",
-        )
-        assert (
-            next(choice for choice in plugin_screen._choices if choice.value == "disable").trailing
-            == "active"
-        )
-        assert (
-            next(choice for choice in plugin_screen._choices if choice.value == "restart").disabled
-            is False
-        )
-        assert (
-            plugin_screen.query_one("#choice-list", OptionList).get_option("restart").disabled
-            is False
+            description="enabled plugin listed in welcome status",
         )
 
         await pilot.press("escape")

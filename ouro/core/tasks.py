@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import time
-from typing import Literal, Self
+from datetime import UTC, time
+from typing import Annotated, Literal, Self
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AwareDatetime, ConfigDict, Field, JsonValue, field_validator, model_validator
@@ -27,7 +27,7 @@ class TaskSchedule(OuroModel):
     at: time = time(9)
     interval: int = Field(default=1, ge=1, le=10000, strict=True)
     unit: RepeatUnit = "days"
-    weekdays: tuple[int, ...] = ()  # Monday = 0; also filters custom calendar schedules.
+    weekdays: tuple[Annotated[int, Field(strict=True, ge=0, le=6)], ...] = ()
     month_day: int | None = Field(default=None, ge=1, le=31, strict=True)
 
     @field_validator("timezone")
@@ -41,13 +41,12 @@ class TaskSchedule(OuroModel):
 
     @model_validator(mode="after")
     def valid_schedule(self) -> Self:
-        if self.ends_at is not None and self.ends_at < self.starts_at:
+        start, end = self.starts_at, self.ends_at
+        if end is not None and end.astimezone(UTC) < start.astimezone(UTC):
             raise ValueError("End must be on or after start")
         if self.at.tzinfo is not None or self.at.second or self.at.microsecond:
             raise ValueError("Execution time must be local HH:MM, without a time zone")
-        if len(set(self.weekdays)) != len(self.weekdays) or any(
-            type(day) is not int or not 0 <= day <= 6 for day in self.weekdays
-        ):
+        if len(set(self.weekdays)) != len(self.weekdays):
             raise ValueError("Weekdays must be distinct numbers from 0 (Monday) to 6 (Sunday)")
         if self.frequency != "custom" and (self.interval != 1 or self.unit != "days"):
             raise ValueError("Repeat unit and interval are only configurable for custom schedules")
