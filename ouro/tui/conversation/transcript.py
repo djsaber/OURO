@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import replace
 
 from ouro.application.contracts.execution import RuntimeToolCallActivity
 from ouro.core.compaction import CompactionRecord
@@ -135,6 +134,7 @@ def _input_transcript_entry(
         scaffold=message.scaffold,
         run_id=message.run_id,
         reference_start=reference_start,
+        source_sequence=message.sequence,
     )
 
 
@@ -145,7 +145,7 @@ def project_transcript_entries(
     *,
     mutable_tool_call_keys: frozenset[tuple[str | None, str | None, str]],
     show_scaffold_messages: bool = False,
-) -> tuple[tuple[TranscriptEntry, ...], frozenset[str]]:
+) -> tuple[TranscriptEntry, ...]:
     """Build immutable history away from Textual's event loop.
 
     Entries are bucketed directly at their message boundary. This preserves the
@@ -153,22 +153,16 @@ def project_transcript_entries(
     sorting an intermediate list of ordering tuples.
     """
 
-    materialized = tuple(
-        message
-        for message in messages
-        if _presents_message(
-            message,
-            show_scaffold_messages=show_scaffold_messages,
-        )
-    )
     requests = {request.message_id: request for run in runs for request in run.requests}
-    tool_activities = _tool_activities_from_messages(materialized)
-    message_entries: list[list[TranscriptEntry]] = [[] for _ in materialized]
+    tool_activities = _tool_activities_from_messages(messages)
+    message_entries: list[list[TranscriptEntry]] = [[] for _ in messages]
     message_positions: dict[str, int] = {}
     last_message_by_run: dict[str, int] = {}
 
-    for message_index, message in enumerate(materialized):
+    for message_index, message in enumerate(messages):
         message_positions[message.message_id] = message_index
+        if not _presents_message(message, show_scaffold_messages=show_scaffold_messages):
+            continue
         if message.run_id is not None:
             last_message_by_run[message.run_id] = message_index
         entries = message_entries[message_index]
@@ -190,11 +184,17 @@ def project_transcript_entries(
                     kind="assistant",
                     reasoning=message.reasoning_content,
                     run_id=message.run_id,
+                    source_sequence=message.sequence,
                     reasoning_seconds=(request.reasoning_seconds if request is not None else None),
                 )
             )
         entries.extend(
-            TranscriptEntry(kind="assistant", text=block, run_id=message.run_id)
+            TranscriptEntry(
+                kind="assistant",
+                text=block,
+                run_id=message.run_id,
+                source_sequence=message.sequence,
+            )
             for block in split_markdown_blocks(message.text_content)
         )
         for key in _tool_call_keys(message).values():
@@ -207,21 +207,23 @@ def project_transcript_entries(
                         kind="tool",
                         run_id=message.run_id,
                         tool=activity,
+                        source_sequence=message.sequence,
                     )
                 )
 
-    run_entries: dict[int, list[TranscriptEntry]] = {}
-    presented_run_ids: set[str] = set()
     for run in runs:
         boundary_index = last_message_by_run.get(run.run_id)
         if boundary_index is None or run.duration_seconds is None:
             continue
-        run_entries.setdefault(boundary_index, []).append(
-            TranscriptEntry(kind="run", run_id=run.run_id, run=run)
+        message_entries[boundary_index].append(
+            TranscriptEntry(
+                kind="run",
+                run_id=run.run_id,
+                run=run,
+                source_sequence=messages[boundary_index].sequence,
+            )
         )
-        presented_run_ids.add(run.run_id)
 
-    compaction_entries: dict[int, list[TranscriptEntry]] = {}
     for compaction in compactions:
         boundary_index = message_positions.get(compaction.history_boundary_message_id)
         if boundary_index is None:
@@ -229,9 +231,10 @@ def project_transcript_entries(
                 f"compaction {compaction.compaction_id} references missing history "
                 f"boundary {compaction.history_boundary_message_id}"
             )
-        compaction_entries.setdefault(boundary_index, []).append(
+        message_entries[boundary_index].append(
             TranscriptEntry(
                 kind="compaction",
+                source_sequence=messages[boundary_index].sequence,
                 compaction=_compaction_presentation(
                     compaction_id=compaction.compaction_id,
                     covered_message_count=compaction.covered_message_count,
@@ -242,17 +245,7 @@ def project_transcript_entries(
             )
         )
 
-    transcript: list[TranscriptEntry] = []
-    for message_index, entries in enumerate(message_entries):
-        transcript.extend(
-            replace(entry, source_sequence=materialized[message_index].sequence)
-            for entry in (
-                *entries,
-                *run_entries.get(message_index, ()),
-                *compaction_entries.get(message_index, ()),
-            )
-        )
-    return tuple(transcript), frozenset(presented_run_ids)
+    return tuple(entry for entries in message_entries for entry in entries)
 
 
 def _user_message_presentation(

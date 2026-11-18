@@ -99,7 +99,7 @@ async def test_session_observation_does_not_reserve_sqlite_writer(tmp_path, monk
         monkeypatch.setattr(store, "load_compactions_in_range", read_with_concurrent_write)
         observation = await app._controller.observe_session(session.session_id)
         try:
-            assert observation.loaded.detail.session.session_id == session.session_id
+            assert observation.loaded.snapshot.session.session_id == session.session_id
             assert written == [other.session_id]
         finally:
             observation.subscription.close()

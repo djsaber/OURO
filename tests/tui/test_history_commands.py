@@ -25,10 +25,11 @@ from ouro.tools import ToolRegistry
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.drafts import TuiInputDraftStore
 from ouro.tui.composer.input import Composer
+from ouro.tui.conversation.history import ConversationHistory
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from tests.run_facts import run_events
-from tests.tui.helpers import run_ready_app, wait_for_workers
+from tests.tui.helpers import run_ready_app, wait_for_workers, wait_until
 
 
 def application_at(tmp_path, provider=None, *, backend="files", skills=None):
@@ -433,6 +434,21 @@ async def test_continue_interrupted_run_uses_command_without_a_user_message(tmp_
         assert snapshot.runs[0].status == "completed"
         assert [m.text_content for m in snapshot.messages if m.role == "user"] == [
             "original question"
+        ]
+        history = app.query_one(ConversationHistory)
+        await wait_until(
+            lambda: any(entry.run and entry.run.status == "completed" for entry in history.entries),
+            pilot,
+            description="continued Run summary",
+        )
+        assert [
+            (entry.kind, entry.text)
+            for entry in history.entries
+            if entry.run_id == result.run.run_id
+        ] == [
+            ("user", "original question"),
+            ("assistant", "continued"),
+            ("run", ""),
         ]
 
 

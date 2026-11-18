@@ -61,7 +61,6 @@ from ouro.application.contracts.plugins import (
 from ouro.application.contracts.sessions import (
     SessionBranchResult,
     SessionCatalogEntry,
-    SessionDetail,
     SessionHistoryAnchor,
     SessionHistoryWindow,
     SessionObservationSnapshot,
@@ -174,6 +173,10 @@ def publishes_status[**P, R](
                 self._publish_status_changed()
 
     return wrapped
+
+
+class NoInputModels(ConfigError):
+    """Sending the draft requires configuring a provider endpoint."""
 
 
 class TuiController:
@@ -475,7 +478,7 @@ class TuiController:
         selection = (self._session_id, self._initial_model)
         available = await self.models()
         if not available:
-            raise ConfigError("add a provider and endpoint before sending a message")
+            raise NoInputModels("add a provider and endpoint before sending a message")
         selected = (
             await asyncio.to_thread(runtime.resolve_model, selection[1])
             if selection[0] is None and selection[1] is not None
@@ -490,7 +493,7 @@ class TuiController:
         if selected.provider_id == "faux" and any(
             model.provider_id != "faux" for model in available
         ):
-            raise ConfigError("select an available model before sending a message")
+            raise ConfigError("Select an available model with /model before sending")
         is_new_session = self._session_id is None
         if is_new_session:
             self._creating_session = True
@@ -661,13 +664,11 @@ class TuiController:
             return ()
         if self._application.agents is None:
             return ()
-        interactions = await asyncio.to_thread(self._read_agent_interactions, session_id)
+        # Child views retain their primary Session as the control target.
+        interactions = await asyncio.to_thread(
+            self._application.agents.list_agent_interactions, session_id
+        )
         return interactions if self._session_id == session_id else ()
-
-    def _read_agent_interactions(self, session_id: str) -> tuple[AgentInteractionView, ...]:
-        assert self._application is not None and self._application.agents is not None
-        session = self._runtime().sessions.open(session_id, recover=False).session
-        return self._application.agents.list_agent_interactions(session.agent_root_session_id)
 
     async def new_session(self) -> AvailableModel:
         """Reset the visible Session and return the next Session's model.
@@ -770,7 +771,7 @@ class TuiController:
 
         def read() -> tuple[str | None, str | None]:
             try:
-                session = runtime.sessions.open(session_id, recover=False).session
+                session = runtime.sessions.view(session_id)
             except PersistenceError, SessionNotFoundError, FileNotFoundError:
                 # Inheriting defaults is optional. An unreadable previous
                 # Session must not prevent navigation to a fresh draft.
@@ -1927,7 +1928,7 @@ class TuiController:
                 selected_reasoning = ReasoningRequest() if route_changed else reasoning_request
                 runtime.model_reasoning(model.key, selected_reasoning)
             else:
-                session = runtime.sessions.open(session_id, recover=False).session
+                session = runtime.sessions.view(session_id)
                 current_model = session.current_model or runtime.current_model().key
                 route_changed = model.key != current_model
                 runtime.switch_session_model(
@@ -1972,9 +1973,7 @@ class TuiController:
             interaction_mode = self._interaction_mode
         else:
             sessions = self._runtime().sessions
-            session = await asyncio.to_thread(
-                lambda: sessions.open(session_id, recover=False).session
-            )
+            session = await asyncio.to_thread(sessions.view, session_id)
             approval_mode = session.approval_mode
             interaction_mode = session.interaction_mode
         return _approval_preset(approval_mode, interaction_mode)
@@ -2065,8 +2064,8 @@ class TuiController:
     ) -> TuiSessionObservation:
         """Prepare an explicitly selected control Session, including execution recovery."""
         runtime = self._runtime()
-        detail = await asyncio.to_thread(runtime.sessions.open, session_id, recover=False)
-        if detail.session.session_kind == "primary":
+        session = await asyncio.to_thread(runtime.sessions.view, session_id)
+        if session.session_kind == "primary":
             assert self._application is not None
             await self._application.supervisor.schedule_session(session_id)
         return await self.observe_session(session_id, history_anchor=history_anchor)
@@ -2091,7 +2090,7 @@ class TuiController:
         )
         try:
             loaded = await self.load_observation_snapshot(subscription.initial_snapshot)
-            session = loaded.detail.session
+            session = loaded.snapshot.session
             control = (
                 session
                 if session.session_kind == "primary"
@@ -2169,19 +2168,8 @@ class TuiController:
         except ConfigError:
             reasoning = None
         return LoadedSession(
-            detail=_observation_detail(snapshot),
-            messages=snapshot.messages,
-            events=snapshot.events,
-            runs=snapshot.runs,
-            active_tool_calls=snapshot.active_tool_calls,
-            pending_interactions=snapshot.pending_interactions,
-            current_request=snapshot.current_request,
-            context_status=snapshot.context_status,
-            effective_context_metrics=snapshot.effective_context_metrics,
-            compactions=snapshot.compactions,
-            queued_inputs=snapshot.queued_inputs,
+            snapshot=snapshot,
             session_controls=self._session_control_statuses(session_id),
-            history_before_cursor=snapshot.history_before_cursor,
             approval_preset=_approval_preset(
                 snapshot.session.approval_mode, snapshot.session.interaction_mode
             ),
@@ -2266,7 +2254,7 @@ class TuiController:
         if cached is not None:
             return cached
         try:
-            session = self._runtime().sessions.open(session_id, recover=False).session
+            session = self._runtime().sessions.view(session_id)
         except FileNotFoundError, PersistenceError, SessionNotFoundError:
             return None
         root_session_id = session.agent_root_session_id
@@ -2278,27 +2266,6 @@ def _approval_preset(
     approval_mode: SessionApprovalMode, interaction_mode: SessionInteractionMode
 ) -> TuiApprovalPreset:
     return "afk" if approval_mode == "auto" and interaction_mode == "unattended" else approval_mode
-
-
-def _observation_detail(snapshot: SessionObservationSnapshot) -> SessionDetail:
-    recent_run_id = snapshot.session.active_run_id or snapshot.session.last_run_id
-    recent_run = next(
-        (run for run in snapshot.runs if run.run_id == recent_run_id),
-        None,
-    )
-    active_compaction = next(
-        (
-            item
-            for item in snapshot.compactions
-            if item.compaction_id == snapshot.session.active_compaction_id
-        ),
-        None,
-    )
-    return SessionDetail(
-        session=snapshot.session,
-        recent_run=recent_run,
-        active_compaction=active_compaction,
-    )
 
 
 def _session_control_fallback_label(plugin_id: str) -> str:

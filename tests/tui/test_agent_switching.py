@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from ouro.core.input_content import InputAttachment, InputContent, InputSkillReference
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
 from ouro.tui.subagent_navigation import SubagentNavigationPanel
@@ -61,6 +62,38 @@ async def test_rapid_agent_navigation_loads_only_settled_target(
         assert observe.await_count == int(finish_at_child)
         assert app._visible_session_id() == (child_id if finish_at_child else root_id)
         assert not panel.navigation_active
+
+
+async def test_input_waiting_on_a_command_returns_to_its_full_draft_after_child_navigation(
+    tmp_path,
+):
+    application = _application(tmp_path)
+    root_id, child_id = _persist_direct_child_session(application)
+    app = OuroTuiApp(application=application, resume_session_id=root_id)
+    pending = InputContent(
+        text="Review", skills=(InputSkillReference(name="review", text_offset=6),)
+    )
+    draft = InputContent(
+        text="Next", attachments=(InputAttachment(resource_id="r", name="note.txt", text_offset=4),)
+    )
+    async with run_ready_app(app) as pilot:
+        composer = app.query_one(Composer)
+        async with app._composer_submission_lock:
+            composer.load_input(pending)
+            await pilot.press("enter")
+            composer.load_input(draft)
+            app.action_agent_node_right()
+            await wait_for_worker_group(app, pilot, group="navigation")
+            assert app._visible_session_id() == child_id
+        await wait_for_worker_group(app, pilot, group="composer-input")
+        assert composer.input_content.is_empty
+        app.action_agent_node_root()
+        await wait_for_worker_group(app, pilot, group="navigation")
+        assert composer.input_content == InputContent(
+            text="Next\nReview",
+            attachments=draft.attachments,
+            skills=(InputSkillReference(name="review", text_offset=11, order=1),),
+        )
 
 
 async def test_repeated_target_does_not_restart_inflight_agent_load(tmp_path, monkeypatch):
@@ -153,7 +186,7 @@ async def test_return_to_visible_session_discards_inflight_load_without_reloadin
             release.set()
             await wait_for_worker_group(app, pilot, group="navigation")
         assert len(observations) == 1
-        assert observations[0].loaded.detail.session.session_id == child_id
+        assert observations[0].loaded.snapshot.session.session_id == child_id
         assert observations[0].subscription.closed
         assert app._visible_session_id() == root_id
         assert app.query_one(ActivityIndicator)._activity != "loading_session"
@@ -180,7 +213,7 @@ async def test_cancelled_child_load_preserves_final_surface_and_draft(
         install = app._install_session_surface
 
         async def delayed_install(loaded, **kwargs):
-            if loaded.detail.session.session_id == child_id:
+            if loaded.snapshot.session.session_id == child_id:
                 subscriptions.append(kwargs["subscription"])
                 entered.set()
                 await release.wait()
@@ -255,7 +288,7 @@ async def test_late_child_load_cannot_replace_latest_target_or_interrupt_runs_an
         stale_subscriptions = []
 
         async def delayed_install(loaded, **kwargs):
-            session_id = loaded.detail.session.session_id
+            session_id = loaded.snapshot.session.session_id
             if session_id == first_id:
                 stale_subscriptions.append(kwargs["subscription"])
                 entered.set()

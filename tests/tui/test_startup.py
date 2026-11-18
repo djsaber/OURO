@@ -122,18 +122,22 @@ async def test_startup_exit_keeps_feedback_visible_until_owned_construction_sett
     async with app.run_test(size=(80, 24)):
         try:
             assert await asyncio.to_thread(entered.wait, 5)
-            app.post_message(events.Key(key, None))
-            # Input handling awaits the owned constructor, so don't ask Pilot to
-            # wait for the event queue to become idle while this gate is held.
-            async with asyncio.timeout(5):
-                while not app._host_closing:
-                    await asyncio.sleep(0.01)
-            assert isinstance(app.screen, StartupScreen)
-            assert app._startup_screen._message.render().plain == "Exiting…"
-            assert not app._exit
-            assert not application._closed
+            # A suspended terminal may never paint another frame during teardown.
+            with app.batch_update():
+                app.post_message(events.Key(key, None))
+                async with asyncio.timeout(5):
+                    while not app._host_closing:
+                        await asyncio.sleep(0.01)
+                assert isinstance(app.screen, StartupScreen)
+                assert app._startup_screen._message.render().plain == "Exiting…"
+                assert not app._exit
+                assert not application._closed
+                release.set()
+                await asyncio.wait_for(cancelled.wait(), 5)
+                async with asyncio.timeout(5):
+                    while not app._exit:
+                        await asyncio.sleep(0.01)
         finally:
             release.set()
-        await asyncio.wait_for(cancelled.wait(), 5)
     assert application._closed
     assert app.return_value == 0

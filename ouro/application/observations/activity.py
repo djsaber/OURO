@@ -19,6 +19,7 @@ from ouro.application.contracts.tool_activity import PendingInteraction
 from ouro.core.context import ContextMetrics
 from ouro.core.context_snapshots import ModelRequestHeader
 from ouro.core.events import EventRecord
+from ouro.core.response_drafts import ResponseDraftChannel
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord, ToolCallStatus
 
@@ -82,6 +83,7 @@ def project_runtime_activity_state(
     effective_context_metrics: ContextMetrics | None = None,
     batch: ToolCallBatchRecord | None = None,
     current_request: ModelRequestHeader | None = None,
+    draft_channel: ResponseDraftChannel | None = None,
 ) -> RuntimeActivitySnapshot:
     """Project bounded current activity without replaying historical events."""
 
@@ -114,7 +116,7 @@ def project_runtime_activity_state(
         updated_at=run.ended_at or run.started_at,
     )
     activity = overlay_run_activity(activity, run, tool_calls=project_batch_activity(batch))
-    activity = overlay_request_activity(activity, run, current_request)
+    activity = overlay_request_activity(activity, run, current_request, draft_channel=draft_channel)
     if status_override is not None and status_override != activity.status:
         activity = activity.model_copy(
             update={
@@ -559,6 +561,8 @@ def overlay_request_activity(
     current: RuntimeActivitySnapshot,
     run: RunRecord,
     request: ModelRequestHeader | None,
+    *,
+    draft_channel: ResponseDraftChannel | None = None,
 ) -> RuntimeActivitySnapshot:
     if (
         request is None
@@ -572,6 +576,8 @@ def overlay_request_activity(
         activity = "compacting"
     elif request.provider_done_at is not None:
         activity = "finalizing_response"
+    elif draft_channel is not None:
+        activity = "streaming_text" if draft_channel == "text" else "streaming_reasoning"
     elif request.turn_id != current.turn_id or activity not in _MODEL_ACTIVITIES:
         activity = "waiting_model" if request.started_at is not None else "preparing_model"
     return current.model_copy(

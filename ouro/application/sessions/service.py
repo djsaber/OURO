@@ -309,31 +309,39 @@ class SessionService:
                 return SessionHistoryWindow(
                     session_id=session_id, history_epoch=session.history_epoch
                 )
-            if (
-                before is None
-                and anchor is not None
-                and anchor.history_epoch == session.history_epoch
-            ):
-                limit = max(limit, session.message_count - anchor.first_sequence + 1)
-            with closing(self._store.iter_messages_before(session_id, before=before)) as records:
-                messages, cursor = select_history_suffix(records, limit=limit)
-            run_ids = dict.fromkeys(message.run_id for message in messages if message.run_id)
-            return SessionHistoryWindow(
-                session_id=session_id,
-                history_epoch=session.history_epoch,
-                messages=messages,
-                runs=tuple(self._store.load_run(session_id, run_id) for run_id in run_ids),
-                compactions=tuple(
-                    self._store.load_compactions_in_range(
-                        session_id,
-                        first_sequence=messages[0].sequence,
-                        last_sequence=messages[-1].sequence,
-                    )
+            return self._read_history_window(session, limit=limit, before=before, anchor=anchor)
+
+    def _read_history_window(
+        self,
+        session: SessionRecord,
+        *,
+        limit: int,
+        before: int | None = None,
+        anchor: SessionHistoryAnchor | None = None,
+    ) -> SessionHistoryWindow:
+        """Use the caller's Session head and open read transaction for the entire window."""
+        session_id = session.session_id
+        if before is None and anchor is not None and anchor.history_epoch == session.history_epoch:
+            limit = max(limit, session.message_count - anchor.first_sequence + 1)
+        with closing(self._store.iter_messages_before(session_id, before=before)) as records:
+            messages, cursor = select_history_suffix(records, limit=limit)
+        run_ids = dict.fromkeys(message.run_id for message in messages if message.run_id)
+        return SessionHistoryWindow(
+            session_id=session_id,
+            history_epoch=session.history_epoch,
+            messages=messages,
+            runs=tuple(self._store.load_run(session_id, run_id) for run_id in run_ids),
+            compactions=tuple(
+                self._store.load_compactions_in_range(
+                    session_id,
+                    first_sequence=messages[0].sequence,
+                    last_sequence=messages[-1].sequence,
                 )
-                if messages
-                else (),
-                before_cursor=cursor,
             )
+            if messages
+            else (),
+            before_cursor=cursor,
+        )
 
     def observation_snapshot(
         self,
@@ -360,8 +368,10 @@ class SessionService:
                     before_cursor = None
                 else:
                     session = self._load_session_record(session_id)
-                    window = self.history_window(
-                        session_id, limit=history_limit, anchor=history_anchor
+                    if history_limit < 1:
+                        raise ValueError("history window limit must be positive")
+                    window = self._read_history_window(
+                        session, limit=history_limit, anchor=history_anchor
                     )
                     messages, runs, compactions = window.messages, window.runs, window.compactions
                     recent_run_id = session.active_run_id or session.last_run_id

@@ -87,14 +87,14 @@ from ouro.tui.composer.queue import QueuedInputPanel
 from ouro.tui.composer.recovery import recover_input_drafts, release_unused_draft_resources
 from ouro.tui.composer.skill_picker import SkillPicker
 from ouro.tui.composer.surface import WelcomePanel
-from ouro.tui.controller import TuiController
+from ouro.tui.controller import NoInputModels, TuiController
 from ouro.tui.conversation.history import ConversationHistory
 from ouro.tui.conversation.history_models import ConversationHistoryState, TranscriptEntry
 from ouro.tui.conversation.markdown_stream import AssistantMarkdownStream
 from ouro.tui.conversation.messages import ToolNavigationRequested
 from ouro.tui.conversation.tools import is_terminal_tool
 from ouro.tui.conversation.transcript import project_transcript_entries
-from ouro.tui.conversation.view import ConversationView, PreparedTranscript
+from ouro.tui.conversation.view import ConversationView
 from ouro.tui.features.configuration.workflows import (
     SYSTEM_SETTING_ACTIONS,
     ConfigurationWorkflows,
@@ -209,9 +209,9 @@ class ObservationDelivery:
 
 @dataclass(frozen=True)
 class CachedSessionHistory:
-    state: ConversationHistoryState
+    state: ConversationHistoryState | None
     anchor: SessionHistoryAnchor | None
-    through_sequence: int
+    snapshot_sequence: int
     show_scaffold_messages: bool
     run_ids: frozenset[str]
     # Application cursors are opaque; a Files cursor is not a message sequence.
@@ -531,11 +531,10 @@ class OuroTuiApp(App[int]):
         self._agent_switch_worker: Worker[None] | None = None
         self._agent_switch_deadline = 0.0
         self._pending_agent_switch: tuple[str, AgentTreeNode | None] | None = None
-        self._controlled_composer_draft: str | None = None
         self._held_session_scroll_y: dict[str, float] = {}
         self._session_history_states: OrderedDict[str, CachedSessionHistory] = OrderedDict()
         self._history_anchor: SessionHistoryAnchor | None = None
-        self._history_last_sequence = 0
+        self._history_snapshot_sequence = 0
         self._history_show_scaffold_messages = self._preferences.show_scaffold_messages
         self._history_before_cursor: int | None = None
         self._history_run_ids: set[str] = set()
@@ -1138,6 +1137,12 @@ class OuroTuiApp(App[int]):
                 subscription.acknowledge(batch)
                 if self._projection is not None:
                     self._projection.confirm_messages(batch.position.message_sequence)
+                if self._history_anchor is None and batch.position.message_sequence:
+                    # Observation started on an empty history and now has its first prefix.
+                    self._history_anchor = SessionHistoryAnchor(
+                        history_epoch=batch.history_epoch, first_sequence=1
+                    )
+                    subscription.retain_history_from(self._history_anchor)
                 self._observation_delivery = None
         except Exception as exc:  # noqa: BLE001 - observation failure is local to this view.
             if self._observation_subscription is subscription and not self._host_closing:
@@ -1424,6 +1429,9 @@ class OuroTuiApp(App[int]):
             self._session_status_harness_version = facts.session.harness_version
             self._schedule_session_status_refresh()
         conversation = self.query_one(ConversationView)
+        history = self.query_one(ConversationHistory)
+        if facts.session.active_run_id is not None:
+            await history.reopen_run(facts.session.active_run_id)
         self._history_run_ids.update(message.run_id for message in batch.messages if message.run_id)
         boundaries = sorted(
             [
@@ -1470,6 +1478,8 @@ class OuroTuiApp(App[int]):
             await finish_through(message.sequence - 1)
             if projection.has_message(message.message_id, message.sequence):
                 continue
+            if message.run_id is not None:
+                await history.reopen_run(message.run_id)
             if message.role == "assistant":
                 if not projection.is_current_response(message):
                     await conversation.finish_assistant()
@@ -1521,9 +1531,6 @@ class OuroTuiApp(App[int]):
                     for item in queue.values()
                 )
             )
-        self._history_last_sequence = max(
-            self._history_last_sequence, batch.position.message_sequence
-        )
         self._sync_activity(projection.activity)
         await self._refresh_interaction()
 
@@ -1557,6 +1564,7 @@ class OuroTuiApp(App[int]):
         diagnostics: list[str] = []
         latest_update = None
         queue_changed = False
+        interaction_changed = False
         refresh_agent_interactions = any(
             event.session_id != projection.session_id
             or event.event_type in _AGENT_INTERACTION_EVENTS
@@ -1610,6 +1618,13 @@ class OuroTuiApp(App[int]):
             if update is None:
                 continue
             latest_update = update
+            interaction_changed |= update.interaction_changed
+            if (
+                event.event_type == "run_status_changed"
+                and event.payload.get("resumed") is True
+                and event.run_id is not None
+            ):
+                await self.query_one(ConversationHistory).reopen_run(event.run_id)
             if update.activity.tool_calls != previous_tools:
                 if not tools_dirty:
                     await flush_stream()
@@ -1689,7 +1704,8 @@ class OuroTuiApp(App[int]):
             return
 
         if latest_update is None:
-            await self._refresh_interaction(refresh_agents=refresh_agent_interactions)
+            if refresh_agent_interactions:
+                self._request_agent_interactions()
             return
         if latest_update.activity.activity != "streaming_reasoning":
             conversation.finish_reasoning()
@@ -1704,7 +1720,8 @@ class OuroTuiApp(App[int]):
         if queue_changed and not self._visible_read_only:
             await self._sync_queued_inputs(latest_update.event.session_id)
         self._sync_activity(latest_update.activity)
-        await self._refresh_interaction(refresh_agents=refresh_agent_interactions)
+        if interaction_changed or refresh_agent_interactions:
+            await self._refresh_interaction(refresh_agents=refresh_agent_interactions)
         if self._host_closing or not conversation.is_attached:
             return
         for diagnostic in diagnostics:
@@ -1745,48 +1762,28 @@ class OuroTuiApp(App[int]):
             if panel.display and panel.awaiting_freeform:
                 panel.accept_freeform(message.text)
             return
-        self._execute_composer_input(message)
+        self._execute_composer_input(
+            message, self._controller.selection_revision, self._controller.session_id
+        )
 
     @work(group="composer-input")
-    async def _execute_composer_input(self, message: Composer.Submitted) -> None:
-        revision = self._controller.selection_revision
-        origin_session_id = self._controller.session_id
-        with self.query_one(ActivityIndicator).pending_operation():
-            async with self._composer_submission_lock:
-                await self._prepare_composer_input(message, revision, origin_session_id)
-
-    async def _prepare_composer_input(
+    async def _execute_composer_input(
         self, message: Composer.Submitted, revision: int, origin_session_id: str | None
     ) -> None:
-        if revision != self._controller.selection_revision:
-            self._restore_unsent_input(message.content, revision, origin_session_id)
-            self.notify("Session changed while preparing input; the original draft was restored")
-            return
-        try:
-            models = await self._controller.models()
-        except Exception as exc:  # noqa: BLE001 - keep the unsent draft on catalog failures.
-            self._restore_unsent_input(message.content, revision, origin_session_id)
-            self.notify(str(exc), severity="error", markup=False)
-            return
-        if revision != self._controller.selection_revision:
-            self._restore_unsent_input(message.content, revision, origin_session_id)
-            self.notify("Session changed while preparing input; the original draft was restored")
-            return
-        if not models:
-            self._restore_unsent_input(message.content, revision, origin_session_id)
-            self.notify("Add a provider and endpoint to send a message")
-            self._prompt_provider_setup()
-            return
-        if not self._active_model and any(model.provider_id != "faux" for model in models):
-            self._restore_unsent_input(message.content, revision, origin_session_id)
-            self.notify("Select an available model with /model before sending")
-            return
-        self._submit_run(
-            message.text,
-            message.mode,
-            attachments=message.content.attachments,
-            skills=message.content.skills,
-        )
+        with self.query_one(ActivityIndicator).pending_operation():
+            async with self._composer_submission_lock:
+                if revision != self._controller.selection_revision or self._visible_read_only:
+                    self._restore_unsent_input(message.content, revision, origin_session_id)
+                    self.notify(
+                        "Session changed while preparing input; the original draft was restored"
+                    )
+                    return
+                self._submit_run(
+                    message.text,
+                    message.mode,
+                    attachments=message.content.attachments,
+                    skills=message.content.skills,
+                )
 
     def on_composer_attachment_requested(self, message: Composer.AttachmentRequested) -> None:
         if self._visible_read_only or self._interaction is not None:
@@ -2236,8 +2233,10 @@ class OuroTuiApp(App[int]):
                 self._restore_unsent_input(pending, revision, origin_session_id)
                 if welcome_on_failure and same_selection and view_revision == self._view_revision:
                     self._set_welcome_mode(True)
-            if same_selection:
+            if same_selection and view_revision == self._view_revision:
                 self.query_one(StatusLine).set_activity("failed")
+                if isinstance(exc, NoInputModels):
+                    self._prompt_provider_setup()
             self.notify(str(exc), severity="error", markup=False)
         finally:
             if revision == self._controller.selection_revision:
@@ -2246,20 +2245,23 @@ class OuroTuiApp(App[int]):
 
     def _restore_unsent_input(
         self, content: InputContent, revision: int, origin_session_id: str | None
-    ) -> None:
+    ) -> bool:
+        """Merge undelivered content into its owning draft, including while viewing a child."""
         same_selection = revision == self._controller.selection_revision
         target_session = self._controller.session_id if same_selection else origin_session_id
+        editable = same_selection and not self._visible_read_only
         current = (
-            self.query_one(Composer).input_content
-            if same_selection
+            self.query_one(Composer).draft_content
+            if editable
             else self._input_drafts.content_for(target_session)
         )
         restored = current.followed_by(content)
         self._remember_input_draft(
             target_session, restored.text, attachments=restored.attachments, skills=restored.skills
         )
-        if same_selection:
+        if editable:
             self._edit_draft(restored)
+        return not current.is_empty
 
     def _owns_session_surface(self, session_id: str) -> bool:
         if self._visible_read_only:
@@ -3257,18 +3259,7 @@ class OuroTuiApp(App[int]):
             await self._sync_queued_inputs()
         except Exception as exc:  # noqa: BLE001 - cancellation already committed.
             self.notify(f"Could not refresh queued inputs: {exc}", severity="warning", markup=False)
-        current = (
-            self.query_one(Composer).draft_content
-            if revision == self._controller.selection_revision
-            else self._input_drafts.content_for(session_id)
-        )
-        restored = current.followed_by(content)
-        self._remember_input_draft(
-            session_id, restored.text, attachments=restored.attachments, skills=restored.skills
-        )
-        if revision == self._controller.selection_revision:
-            self._edit_draft(restored)
-        if not current.is_empty:
+        if self._restore_unsent_input(content, revision, session_id):
             self.notify("Restored queued input after the current draft")
 
     def _navigate_options(
@@ -3494,7 +3485,6 @@ class OuroTuiApp(App[int]):
                 self._pending_runtime_events.clear()
                 self._visible_read_only = False
                 self._visible_agent = None
-                self._controlled_composer_draft = None
                 self.query_one(Composer).set_class(False, "read-only-session")
                 self._interaction = None
                 await self._replace_agent_tree(None)
@@ -3705,12 +3695,12 @@ class OuroTuiApp(App[int]):
         """Retain recent inactive history without duplicating the active buffer."""
 
         self._session_history_states.pop(session_id, None)
-        if state is None:
+        if state is None and self._history_anchor is None:
             return
         self._session_history_states[session_id] = CachedSessionHistory(
             state,
             self._history_anchor,
-            self._history_last_sequence,
+            self._history_snapshot_sequence,
             self._history_show_scaffold_messages,
             frozenset(self._history_run_ids),
             self._history_before_cursor,
@@ -3736,66 +3726,75 @@ class OuroTuiApp(App[int]):
         )
 
     async def _prepare_retained_history(
-        self, loaded: LoadedSession, revision: int
-    ) -> tuple[LoadedSession, tuple[TranscriptEntry, ...], SessionHistoryAnchor | None]:
+        self, snapshot: SessionObservationSnapshot, revision: int
+    ) -> tuple[
+        SessionObservationSnapshot, tuple[TranscriptEntry, ...], SessionHistoryAnchor | None
+    ]:
         """Read only a missing gap, then reuse the canonical presentation prefix."""
-        session = loaded.detail.session
+        session = snapshot.session
         cached = self._session_history_states.get(session.session_id)
+        entries: Sequence[TranscriptEntry]
         if self._visible_session_id() == session.session_id:
             entries = self.query_one(ConversationHistory).entries
             anchor = self._history_anchor
-            through = self._history_last_sequence
+            through = self._history_snapshot_sequence
             scaffold = self._history_show_scaffold_messages
         elif cached is not None:
-            entries = tuple(cached.state.entries)
+            entries = cached.state.entries if cached.state is not None else ()
             anchor = cached.anchor
-            through = cached.through_sequence
+            through = cached.snapshot_sequence
             scaffold = cached.show_scaffold_messages
         else:
-            return loaded, (), None
+            return snapshot, (), None
         if (
             anchor is None
             or anchor.history_epoch != session.history_epoch
             or scaffold != self._preferences.show_scaffold_messages
-            or not loaded.messages
+            or not snapshot.messages
         ):
-            return loaded, (), None
-        pages = [loaded.messages]
-        first_sequence = loaded.messages[0].sequence
-        runs = {run.run_id: run for run in loaded.runs}
-        compactions = {item.compaction_id: item for item in loaded.compactions}
-        before = loaded.history_before_cursor
-        while before is not None and first_sequence > through + 1:
-            window = await self._controller.history_window(
-                session.session_id, before=before, history_epoch=session.history_epoch
+            return snapshot, (), None
+        first_sequence = snapshot.messages[0].sequence
+        before = snapshot.history_before_cursor
+        if before is not None and first_sequence > through + 1:
+            pages = [snapshot.messages]
+            runs = {run.run_id: run for run in snapshot.runs}
+            compactions = {item.compaction_id: item for item in snapshot.compactions}
+            while before is not None and first_sequence > through + 1:
+                window = await self._controller.history_window(
+                    session.session_id, before=before, history_epoch=session.history_epoch
+                )
+                if self._host_closing or revision != self._view_revision:
+                    return snapshot, (), None
+                if window.history_epoch != session.history_epoch:
+                    return snapshot, (), None
+                pages.append(window.messages)
+                if window.messages:
+                    first_sequence = window.messages[0].sequence
+                for run in window.runs:
+                    runs.setdefault(run.run_id, run)
+                for item in window.compactions:
+                    compactions.setdefault(item.compaction_id, item)
+                before = window.before_cursor
+            snapshot = snapshot.model_copy(
+                update={
+                    "messages": tuple(message for page in reversed(pages) for message in page),
+                    "runs": tuple(runs.values()),
+                    "compactions": tuple(compactions.values()),
+                    "history_before_cursor": before,
+                }
             )
-            if self._host_closing or revision != self._view_revision:
-                return loaded, (), None
-            pages.append(window.messages)
-            if window.messages:
-                first_sequence = window.messages[0].sequence
-            for run in window.runs:
-                runs.setdefault(run.run_id, run)
-            for item in window.compactions:
-                compactions.setdefault(item.compaction_id, item)
-            before = window.before_cursor
-        messages = tuple(message for page in reversed(pages) for message in page)
+        if anchor.first_sequence >= first_sequence:
+            return snapshot, (), None
+        newer_run_ids = {message.run_id for message in snapshot.messages}
+        newer_run_ids.add(session.active_run_id)
         prefix = tuple(
             entry
             for entry in entries
-            if entry.source_sequence is not None and entry.source_sequence < messages[0].sequence
+            if entry.source_sequence is not None
+            and entry.source_sequence < first_sequence
+            and (entry.kind != "run" or entry.run_id not in newer_run_ids)
         )
-        return (
-            replace(
-                loaded,
-                messages=messages,
-                runs=tuple(runs.values()),
-                compactions=tuple(compactions.values()),
-                history_before_cursor=before,
-            ),
-            prefix,
-            anchor if anchor.first_sequence < messages[0].sequence else None,
-        )
+        return snapshot, prefix, anchor
 
     def _remember_visible_session_history(self) -> None:
         session_id = self._visible_session_id()
@@ -4136,9 +4135,9 @@ class OuroTuiApp(App[int]):
         revision: int,
         selection: TuiSessionObservation | None = None,
     ) -> bool:
-        session = loaded.detail.session
-        loaded, retained_prefix, retained_anchor = await self._prepare_retained_history(
-            loaded, revision
+        session = loaded.snapshot.session
+        snapshot, retained_prefix, retained_anchor = await self._prepare_retained_history(
+            loaded.snapshot, revision
         )
         if self._host_closing or revision != self._view_revision:
             return False
@@ -4154,20 +4153,12 @@ class OuroTuiApp(App[int]):
                 retained_before_cursor = cached.before_cursor
         projection, transcript, active_stream_tail = await asyncio.to_thread(
             self._prepare_loaded_session,
-            loaded,
+            snapshot,
             self._models,
             show_scaffold_messages=self._preferences.show_scaffold_messages,
         )
         if retained_prefix:
-            transcript = (
-                (*retained_prefix, *transcript[0]),
-                transcript[1]
-                | frozenset(
-                    entry.run_id
-                    for entry in retained_prefix
-                    if entry.kind == "run" and entry.run_id is not None
-                ),
-            )
+            transcript = (*retained_prefix, *transcript)
         if self._host_closing or revision != self._view_revision:
             return False
         tree = self._agent_tree_subscription
@@ -4231,21 +4222,24 @@ class OuroTuiApp(App[int]):
                         self._held_session_scroll_y.pop(session.session_id, None)
                     composer = self.query_one(Composer)
                     if read_only and not self._visible_read_only:
-                        self._controlled_composer_draft = (
-                            composer.text
-                            if self._projection is not None
-                            else self._input_drafts.draft_for(session.agent_root_session_id)
-                        )
+                        if visible_session_id == session.agent_root_session_id:
+                            content = composer.draft_content
+                            self._remember_input_draft(
+                                visible_session_id,
+                                content.text,
+                                attachments=content.attachments,
+                                skills=content.skills,
+                            )
                         composer.restore_command_draft("")
                     elif not read_only and self._visible_read_only:
                         if (
                             self._visible_agent is not None
                             and self._visible_agent.root_session_id == session.session_id
                         ):
-                            composer.restore_command_draft(self._controlled_composer_draft or "")
+                            composer.bind_history(session.session_id)
+                            composer.load_input(self._input_drafts.content_for(session.session_id))
                         else:
                             self._restore_input_draft(session.session_id)
-                        self._controlled_composer_draft = None
                     elif (
                         not read_only
                         and visible_session_id != session.session_id
@@ -4264,7 +4258,7 @@ class OuroTuiApp(App[int]):
                     self._interaction = None
                     self._sync_interaction(None)
                     has_conversation = bool(
-                        transcript[0] or loaded.queued_inputs or session.active_run_id
+                        transcript or snapshot.queued_inputs or session.active_run_id
                     )
                     if (
                         selection is not None
@@ -4281,24 +4275,26 @@ class OuroTuiApp(App[int]):
                         reusable_history=reusable_history.state if reusable_history else None,
                     )
                     self._history_anchor = retained_anchor or _history_anchor(
-                        session.history_epoch, loaded.messages
+                        session.history_epoch, snapshot.messages
                     )
-                    self._history_last_sequence = (
-                        loaded.messages[-1].sequence if loaded.messages else 0
+                    self._history_snapshot_sequence = (
+                        snapshot.messages[-1].sequence if snapshot.messages else 0
                     )
                     self._history_show_scaffold_messages = self._preferences.show_scaffold_messages
                     self._history_before_cursor = (
                         retained_before_cursor
                         if retained_anchor is not None
-                        else loaded.history_before_cursor
+                        else snapshot.history_before_cursor
                     )
                     self._history_run_ids = {
-                        message.run_id for message in loaded.messages if message.run_id is not None
+                        message.run_id
+                        for message in snapshot.messages
+                        if message.run_id is not None
                     } | retained_run_ids
                     self._history_request = None
                     self._history_load_failed = False
                     self.query_one(QueuedInputPanel).set_inputs(
-                        () if read_only else loaded.queued_inputs
+                        () if read_only else snapshot.queued_inputs
                     )
                     await self._restore_projection(
                         projection,
@@ -4506,24 +4502,19 @@ class OuroTuiApp(App[int]):
         models: tuple[AvailableModel, ...],
         *,
         show_scaffold_messages: bool = False,
-    ) -> PreparedTranscript:
+    ) -> tuple[TranscriptEntry, ...]:
         presentations = project_run_presentations(
             (run for run in window.runs if run.kind == "agent"), window.messages, models=models
         )
-        entries, presented = project_transcript_entries(
+        entries = project_transcript_entries(
             window.messages,
             window.compactions,
             presentations,
             mutable_tool_call_keys=frozenset(),
             show_scaffold_messages=show_scaffold_messages,
         )
-        return (
-            tuple(
-                entry
-                for entry in entries
-                if entry.kind != "run" or entry.run_id not in newer_run_ids
-            ),
-            presented - newer_run_ids,
+        return tuple(
+            entry for entry in entries if entry.kind != "run" or entry.run_id not in newer_run_ids
         )
 
     def _show_session_load_error(
@@ -4681,40 +4672,26 @@ class OuroTuiApp(App[int]):
 
     @staticmethod
     def _prepare_loaded_session(
-        loaded: LoadedSession,
+        snapshot: SessionObservationSnapshot,
         models: tuple[AvailableModel, ...],
         *,
         show_scaffold_messages: bool = False,
     ) -> tuple[
         TuiSessionProjection,
-        PreparedTranscript,
+        tuple[TranscriptEntry, ...],
         tuple[str, str],
     ]:
         """Build persisted projections without occupying Textual's event loop."""
 
-        projection = restore_session_content(
-            SessionObservationSnapshot(
-                session=loaded.detail.session,
-                messages=loaded.messages,
-                events=loaded.events,
-                runs=loaded.runs,
-                active_tool_calls=loaded.active_tool_calls,
-                pending_interactions=loaded.pending_interactions,
-                current_request=loaded.current_request,
-                compactions=loaded.compactions,
-                queued_inputs=loaded.queued_inputs,
-                context_status=loaded.context_status,
-                effective_context_metrics=loaded.effective_context_metrics,
-            )
-        )
+        projection = restore_session_content(snapshot)
         presentations = project_run_presentations(
-            (run for run in loaded.runs if run.kind == "agent"), loaded.messages, models=models
+            (run for run in snapshot.runs if run.kind == "agent"), snapshot.messages, models=models
         )
         tools = tuple(tool for tool in projection.activity.tool_calls if tool.tool_name)
         terminal_tools = all(is_terminal_tool(tool) for tool in tools)
-        transcript = project_transcript_entries(
-            loaded.messages,
-            loaded.compactions,
+        entries = project_transcript_entries(
+            snapshot.messages,
+            snapshot.compactions,
             presentations,
             mutable_tool_call_keys=frozenset(
                 (projection.activity.run_id, tool.batch_id, tool.tool_call_id)
@@ -4723,7 +4700,6 @@ class OuroTuiApp(App[int]):
             ),
             show_scaffold_messages=show_scaffold_messages,
         )
-        entries, presented_runs = transcript
         prepared = list(entries)
         if tools and terminal_tools:
             historical_tools = {
@@ -4763,7 +4739,7 @@ class OuroTuiApp(App[int]):
                 TranscriptEntry(kind="assistant", run_id=projection.activity.run_id, text=block)
                 for block in blocks
             )
-        return projection, (tuple(prepared), presented_runs), (reasoning, answer)
+        return projection, tuple(prepared), (reasoning, answer)
 
     async def _restore_projection(
         self,
@@ -5507,7 +5483,6 @@ class OuroTuiApp(App[int]):
                 return False
             self._preferences = preferences
         self.query_one(ConversationView).show_scaffold_messages = enabled
-        self._session_history_states.clear()
         session_id = self._visible_session_id()
         if session_id is not None:
             # Reload through observation so retained pages, active streams and
@@ -5769,7 +5744,6 @@ class OuroTuiApp(App[int]):
                 self.notify(str(exc), severity="error", markup=False)
                 return False
             self._preferences = preferences
-        self._session_history_states.clear()
         await self.query_one(ConversationView).set_reasoning_expanded(expanded)
         return True
 
@@ -5819,7 +5793,6 @@ class OuroTuiApp(App[int]):
         )
         if theme == self._tui_theme:
             return
-        self._session_history_states.clear()
         self._tui_theme = theme
         self.console.pop_theme()
         self.console.push_theme(theme.rich_theme())
@@ -5906,7 +5879,6 @@ class OuroTuiApp(App[int]):
             surface.show_exiting()
             workers = tuple(self.workers)
             self._begin_host_close()
-            await surface.wait_for_refresh()
             await asyncio.gather(*(worker.wait() for worker in workers), return_exceptions=True)
         self.exit(0)
 

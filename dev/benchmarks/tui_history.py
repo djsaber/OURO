@@ -17,10 +17,8 @@ from textual.widgets import Input
 
 from ouro.application.contracts.sessions import SessionObservationSnapshot
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.controller import _observation_detail
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.theme import DEFAULT_TUI_THEME
-from ouro.tui.view_models import LoadedSession
 
 
 class HistoryApp(App):
@@ -94,12 +92,12 @@ async def sample(prepared, *, dump: Path | None = None) -> dict:
                 await history.toggle_trace(summary)
                 await measure("trace_reexpand", lambda: history.toggle_trace(summary))
 
-            thoughts = [entry for entry in prepared[0] if entry.reasoning]
+            thoughts = [entry for entry in prepared if entry.reasoning]
             if thoughts:
                 longest = max(thoughts, key=lambda entry: len(entry.reasoning))
                 result["reasoning_chars"] = len(longest.reasoning)
                 await conversation.set_reasoning_expanded(False)
-                await conversation.load_transcript(((longest,), frozenset()))
+                await conversation.load_transcript((longest,))
                 await history.wait_until_rendered()
                 await measure("reasoning_first_expand", lambda: history.toggle_reasoning(0))
                 await history.toggle_reasoning(0)
@@ -132,29 +130,15 @@ def main() -> None:
     parser.add_argument("--strips-output", type=Path)
     args = parser.parse_args()
     snapshot = SessionObservationSnapshot.model_validate_json(args.snapshot.read_bytes())
-    loaded = LoadedSession(
-        detail=_observation_detail(snapshot),
-        messages=snapshot.messages,
-        events=snapshot.events,
-        runs=snapshot.runs,
-        active_tool_calls=snapshot.active_tool_calls,
-        pending_interactions=snapshot.pending_interactions,
-        current_request=snapshot.current_request,
-        context_status=snapshot.context_status,
-        effective_context_metrics=snapshot.effective_context_metrics,
-        compactions=snapshot.compactions,
-        queued_inputs=snapshot.queued_inputs,
-        history_before_cursor=snapshot.history_before_cursor,
-    )
     start = perf_counter()
-    prepared = OuroTuiApp._prepare_loaded_session(loaded, ())[1]
+    prepared = OuroTuiApp._prepare_loaded_session(snapshot, ())[1]
     print(
         json.dumps(
             {
                 "python": platform.python_version(),
                 "platform": platform.platform(),
-                "messages": len(loaded.messages),
-                "entries": len(prepared[0]),
+                "messages": len(snapshot.messages),
+                "entries": len(prepared),
                 "projection_ms": (perf_counter() - start) * 1000,
             }
         ),

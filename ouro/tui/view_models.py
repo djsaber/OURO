@@ -14,26 +14,18 @@ from ouro.application.contracts.models import AvailableModel, ModelReasoningStat
 from ouro.application.contracts.plugins import PluginCommandExecutionView
 from ouro.application.contracts.sessions import (
     SessionCatalogEntry,
-    SessionContextStatus,
-    SessionDetail,
+    SessionObservationSnapshot,
     SessionView,
 )
-from ouro.application.contracts.tool_activity import PendingInteraction, RuntimeToolCallActivity
-from ouro.application.inputs.queue import QueuedUserInputView
 from ouro.application.observations.sessions import SessionObservation
 from ouro.config import EndpointReasoningConfig, ProviderProtocol, ProviderType
 from ouro.core.agents import ExecutionMode, ToolSelection
 from ouro.core.approvals import SessionApprovalMode, ToolPermissionControl
 from ouro.core.base import OuroModel
-from ouro.core.compaction import CompactionRecord
-from ouro.core.context import ContextMetrics
-from ouro.core.context_snapshots import ModelRequestHeader
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
-from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
-from ouro.core.state import RunRecord
 from ouro.core.tasks import TaskCounts
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode, ToolEffect, ToolSource
@@ -278,19 +270,8 @@ class TuiBootstrap:
 
 @dataclass(frozen=True)
 class LoadedSession:
-    detail: SessionDetail
-    messages: tuple[MessageRecord, ...]
-    events: tuple[EventRecord, ...]
-    runs: tuple[RunRecord, ...] = ()
-    active_tool_calls: tuple[RuntimeToolCallActivity, ...] = ()
-    pending_interactions: tuple[PendingInteraction, ...] = ()
-    current_request: ModelRequestHeader | None = None
-    context_status: SessionContextStatus | None = None
-    effective_context_metrics: ContextMetrics | None = None
-    compactions: tuple[CompactionRecord, ...] = ()
-    queued_inputs: tuple[QueuedUserInputView, ...] = ()
+    snapshot: SessionObservationSnapshot
     session_controls: tuple[TuiSessionControlStatus, ...] = ()
-    history_before_cursor: int | None = None
     approval_preset: TuiApprovalPreset = "inherit"
     reasoning_state: ModelReasoningState | None = None
 

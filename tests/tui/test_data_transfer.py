@@ -147,7 +147,7 @@ async def test_imported_history_opens_with_missing_dependencies_in_live_sqlite_h
         )
         assert result.count == 1
         loaded = await app._controller.load_session(session.session_id)
-        assert loaded.messages == tuple(before.messages)
+        assert loaded.snapshot.messages == tuple(before.messages)
         assert loaded.session_controls[0].controller_id == activation.controller_id
         async with asyncio.timeout(10):
             await app._open_session(session.session_id)

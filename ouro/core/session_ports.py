@@ -22,7 +22,7 @@ from ouro.core.message_statistics import RunMessageCounts, RunResultReferences
 from ouro.core.messages import MessageFact, MessageRecord
 from ouro.core.provider import ProviderRetryNotice
 from ouro.core.resources import ResourceRecord, SessionResourceReference
-from ouro.core.response_drafts import ResponseDraftChunk, ResponseDraftPage
+from ouro.core.response_drafts import ResponseDraftChunk, ResponseDraftHead, ResponseDraftPage
 from ouro.core.session_commits import SessionCommit, SessionCommitResult
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.session_facts import SessionFactPage
@@ -219,6 +219,10 @@ class SessionRepository(Protocol):
         self, session_id: str, context_id: str, chunk: ResponseDraftChunk
     ) -> int:
         """Append a current request prefix before exposing it to observers."""
+        ...
+
+    def response_draft_head(self, session_id: str, context_id: str) -> ResponseDraftHead | None:
+        """Read the latest fragment's position and channel without materializing its content."""
         ...
 
     def load_response_draft(

@@ -17,6 +17,7 @@ from ouro.tools.builtin.files import builtin_file_tools
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.conversation.history import ConversationHistory
 from ouro.tui.conversation.history_models import TranscriptEntry
+from ouro.tui.conversation.messages import _HISTORY_ACTION
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
@@ -239,9 +240,8 @@ async def test_runs_without_a_final_text_or_without_trace_cannot_collapse(ending
         await history.toggle_trace(len(entries) - 1)
         assert history.rendered_text == before
         assert not any(
-            "ouro_trace_entry" in segment.style.meta
-            for line in history.lines
-            for segment in line
+            _HISTORY_ACTION in segment.style.meta
+            for segment in history.lines[history.entry_line(len(entries) - 1)]
             if segment.style
         )
 
@@ -358,7 +358,7 @@ async def test_trace_choices_survive_session_cache_resize_theme_and_prepend():
 
 async def test_prepend_adds_disclosure_to_previously_answer_only_run():
     app = TraceApp()
-    async with app.run_test(size=(80, 24)):
+    async with app.run_test(size=(80, 24)) as pilot:
         history = app.query_one(ConversationHistory)
         entries = trace_entries()
         await history.load(entries[4:])
@@ -366,13 +366,9 @@ async def test_prepend_adds_disclosure_to_previously_answer_only_run():
         history.prepend(entries[:4])
         await history.wait_until_rendered()
         assert "Investigating" not in history.rendered_text
-        assert any(
-            segment.style.meta.get("ouro_trace_entry") == 7
-            for line in history.lines
-            for segment in line
-            if segment.style
-        )
-        await history.toggle_trace(7)
+        await pilot.pause()
+        await pilot.click(offset=(4, history.region.y + history.entry_line(7)))
+        await pilot.pause()
         assert "Investigating" in history.rendered_text
         assert "Final answer" in history.rendered_text
 

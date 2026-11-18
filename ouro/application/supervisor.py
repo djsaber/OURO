@@ -377,31 +377,33 @@ class RuntimeSupervisor:
         on_input_accepted: Callable[[], None] | None,
     ) -> UserInputSubmission:
         receipt = await self.runtime.accept_user_input(request)
-        active = await run_blocking(self._load_active_run, receipt.session_id)
+        session, active = await run_blocking(
+            self._read_session_run,
+            receipt.session_id,
+            include_run=request.session_id is not None and receipt.run_id is None,
+        )
+        history_epoch = session.history_epoch
+        result_run_id = receipt.run_id or (active.run_id if active is not None else None)
         # Notify before execution can publish events for a newly selected Session.
         try:
             if request.session_id is None and on_session_created is not None:
-                session = await run_blocking(self.store.load_session_record, receipt.session_id)
                 on_session_created(session)
             if on_input_accepted is not None:
                 on_input_accepted()
         finally:
             # A Host callback cannot strand a durable accepted input.
-            session = await run_blocking(self.store.load_session_record, receipt.session_id)
-            self._pending_sessions[receipt.session_id] = session.history_epoch
+            self._pending_sessions[receipt.session_id] = max(
+                history_epoch, self._pending_sessions.get(receipt.session_id, history_epoch)
+            )
             try:
                 job = await self._dispatch_session(receipt.session_id)
             finally:
                 self._ensure_session_dispatch(receipt.session_id)
 
         async def result() -> RunResult:
-            if receipt.run_id is not None:
+            if result_run_id is not None:
                 return await run_blocking(
-                    self.runtime.sessions.run_result, receipt.session_id, receipt.run_id
-                )
-            if active is not None and request.session_id is not None:
-                return await run_blocking(
-                    self.runtime.sessions.run_result, receipt.session_id, active.run_id
+                    self.runtime.sessions.run_result, receipt.session_id, result_run_id
                 )
             if job is not None:
                 await job.done.wait()
@@ -451,7 +453,8 @@ class RuntimeSupervisor:
             await self.runtime.reconcile_session(session_id)
         if session_id in self._jobs_by_session:
             raise SessionBusyError(f"session already has a supervised run: {session_id}")
-        if await run_blocking(self._load_active_run, session_id) is not None:
+        _, active = await run_blocking(self._read_session_run, session_id)
+        if active is not None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
 
         handle = RunHandle(session_id=session_id)
@@ -529,7 +532,7 @@ class RuntimeSupervisor:
             # A durable terminal result can be observed before its local job
             # releases ownership. Admit the queued successor after that release.
             await previous_job.done.wait()
-        active = await run_blocking(self._load_active_run, session_id)
+        _, active = await run_blocking(self._read_session_run, session_id)
         if active is None or active.run_id != run.run_id or active.status != "queued":
             raise SessionBusyError(
                 f"prepared run is not the Session's queued active run: {run.run_id}"
@@ -589,13 +592,19 @@ class RuntimeSupervisor:
 
     async def schedule_session(self, session_id: str) -> None:
         """Adopt accepted Session work without replaying or creating an input."""
+
+        def read_work() -> tuple[SessionRecord, RunRecord | None]:
+            with self.store.session_read(session_id):
+                session = self.store.load_session_record(session_id)
+                run_id = session.active_run_id
+                return session, self.store.load_run(session_id, run_id) if run_id else None
+
         await self.start()
-        session = await run_blocking(self.store.load_session_record, session_id)
-        if session.active_run_id is not None:
-            active = await run_blocking(self.store.load_run, session_id, session.active_run_id)
-            if active.status == "running":
-                await self.recover_session(session_id)
-        await self._request_session_progress(session_id, session.history_epoch)
+        session, active = await run_blocking(read_work)
+        if active is not None and active.status == "running":
+            await self.recover_session(session_id)
+        if active is not None or session.pending_input_ids:
+            await self._request_session_progress(session_id, session.history_epoch)
 
     async def _request_session_progress(self, session_id: str, history_epoch: int) -> None:
         if self._closed:
@@ -768,21 +777,6 @@ class RuntimeSupervisor:
     async def _enqueue_job(self, job: _RunJob, *, run_id: str | None = None) -> None:
         session_id = job.handle.session_id
 
-        def read_boundary() -> tuple[int, int]:
-            with self.store.session_read(session_id):
-                if isinstance(job.operation, _PreparedRun):
-                    active = self._load_active_run(session_id)
-                    if (
-                        active is None
-                        or active.run_id != job.operation.run.run_id
-                        or active.status != "queued"
-                    ):
-                        raise SessionBusyError("prepared Run is no longer queued")
-                return (
-                    self.store.load_session_record(session_id).history_epoch,
-                    0,
-                )
-
         if isinstance(job.operation, _PreparedRun):
             job.reservation = await self.runtime.run_ownership.reserve(
                 session_id, job.operation.run.run_id
@@ -790,7 +784,17 @@ class RuntimeSupervisor:
             if job.reservation is None:
                 raise SessionBusyError(f"session already has an execution owner: {session_id}")
         try:
-            epoch, sequence = await run_blocking(read_boundary)
+            session, active = await run_blocking(
+                self._read_session_run,
+                session_id,
+                include_run=isinstance(job.operation, _PreparedRun),
+            )
+            if isinstance(job.operation, _PreparedRun) and (
+                active is None
+                or active.run_id != job.operation.run.run_id
+                or active.status != "queued"
+            ):
+                raise SessionBusyError("prepared Run is no longer queued")
             # Admission publishes only after the durable queued Run has a real
             # execution owner. All Hosts' recovery paths observe the same lock.
             if self._closed:
@@ -804,7 +808,7 @@ class RuntimeSupervisor:
         job.history_epoch = (
             job.operation.history_epoch
             if isinstance(job.operation, (_ContinueRun, _ConsumeInputs))
-            else epoch
+            else session.history_epoch
         )
         # Queries yield to other submissions and shutdown. Commit process-local
         # scheduling atomically only after checking the current ownership again.
@@ -821,9 +825,7 @@ class RuntimeSupervisor:
             status="queued",
         )
         if run_id is None or isinstance(job.operation, _PreparedRun):
-            activity = queued_runtime_activity(
-                session_id, sequence=sequence, history_epoch=job.history_epoch
-            )
+            activity = queued_runtime_activity(session_id, history_epoch=job.history_epoch)
             self._publish_activity(
                 activity if run_id is None else activity.model_copy(update={"run_id": run_id})
             )
@@ -943,17 +945,18 @@ class RuntimeSupervisor:
             self._event_stream_tasks.add(task)
             task.add_done_callback(self._event_stream_tasks.discard)
 
-        return initial
+        return self._activities[session_id]
 
     def _load_observed_state(
         self, session_id: str, *, status_override: SupervisorRunStatus | None = None
     ) -> tuple[RuntimeActivitySnapshot, SessionObservationPosition, int]:
         with self.store.session_read(session_id):
-            activity = self._load_activity(session_id, status_override=status_override)
             session = self.store.load_session_record(session_id)
+            activity, draft = self._read_activity(session, status_override=status_override)
             position = SessionObservationPosition(
                 revision=self.store.observation_revision(session_id),
                 message_sequence=session.message_count,
+                draft=draft,
             )
             return activity, position, session.history_epoch
 
@@ -1549,33 +1552,45 @@ class RuntimeSupervisor:
         run_id: str | None = None,
         status_override: SupervisorRunStatus | None = None,
     ) -> RuntimeActivitySnapshot:
-        # Current records are read together; no historical notification is replayed.
         with self.store.session_read(session_id):
             session = self.store.load_session_record(session_id)
-            selected_run_id = run_id or session.active_run_id or session.last_run_id
-            run = (
-                self.store.load_run(session_id, selected_run_id)
-                if selected_run_id is not None
-                else None
+            activity, _ = self._read_activity(
+                session, run_id=run_id, status_override=status_override
             )
-            batch = load_tool_batch(self.store, run) if run is not None else None
-            context = self.store.load_latest_context_header(session_id)
-            context_status = (
-                self.runtime.sessions.project_context_status(context) if context else None
-            )
-            metrics = context.metrics if context else None
-            active_id = session.context_selection.compaction_id
-            active = self.store.load_compaction(session_id, active_id) if active_id else None
-            if active is not None and active.context_metrics_after is not None:
-                if context is None or active.created_at > context.prepared_at:
-                    metrics = active.context_metrics_after
-            current_request = context
-            if run is not None and run.current_request_id is not None:
-                if context is None or context.context_id != run.current_request_id:
-                    current_request = self.store.load_request_header(
-                        session_id, run.current_request_id
-                    )
-        return project_runtime_activity_state(
+            return activity
+
+    def _read_activity(
+        self,
+        session: SessionRecord,
+        *,
+        run_id: str | None = None,
+        status_override: SupervisorRunStatus | None = None,
+    ) -> tuple[RuntimeActivitySnapshot, ResponseStreamPosition | None]:
+        """Read the activity and the prefix it describes in the caller's read boundary."""
+        session_id = session.session_id
+        selected_run_id = run_id or session.active_run_id or session.last_run_id
+        run = self.store.load_run(session_id, selected_run_id) if selected_run_id else None
+        batch = load_tool_batch(self.store, run) if run is not None else None
+        context = self.store.load_latest_context_header(session_id)
+        context_status = self.runtime.sessions.project_context_status(context) if context else None
+        metrics = context.metrics if context else None
+        active_id = session.context_selection.compaction_id
+        active = self.store.load_compaction(session_id, active_id) if active_id else None
+        if active is not None and active.context_metrics_after is not None:
+            if context is None or active.created_at > context.prepared_at:
+                metrics = active.context_metrics_after
+        current_request = context
+        if run is not None and run.current_request_id is not None:
+            if context is None or context.context_id != run.current_request_id:
+                current_request = self.store.load_request_header(session_id, run.current_request_id)
+        head = (
+            self.store.response_draft_head(session_id, current_request.context_id)
+            if current_request is not None
+            and current_request.purpose == "agent"
+            and current_request.response_closed_at is None
+            else None
+        )
+        activity = project_runtime_activity_state(
             session,
             run,
             sequence=0,
@@ -1584,7 +1599,9 @@ class RuntimeSupervisor:
             effective_context_metrics=metrics,
             batch=batch,
             current_request=current_request,
+            draft_channel=head.channel if head is not None else None,
         )
+        return activity, head.position if head is not None else None
 
     def _resolve_job(self, handle_or_session: RunHandle | str) -> _RunJob:
         if isinstance(handle_or_session, RunHandle):
@@ -1660,16 +1677,23 @@ class RuntimeSupervisor:
             return snapshot.session_id
         return handle_or_session
 
-    def _load_active_run(self, session_id: str) -> RunRecord | None:
+    def _read_session_run(
+        self, session_id: str, *, include_run: bool = True
+    ) -> tuple[SessionRecord, RunRecord | None]:
         with self.store.session_read(session_id):
             session = self.store.load_session_record(session_id)
-            return maybe_active_run(
-                self.store.load_pending_runs(session_id), history_epoch=session.history_epoch
+            active = (
+                maybe_active_run(
+                    self.store.load_pending_runs(session_id), history_epoch=session.history_epoch
+                )
+                if include_run
+                else None
             )
+            return session, active
 
     async def _finish_interrupted_job(self, job: _RunJob) -> None:
         try:
-            active = await run_blocking(self._load_active_run, job.handle.session_id)
+            _, active = await run_blocking(self._read_session_run, job.handle.session_id)
         except Exception:  # noqa: BLE001 - shutdown must still release process state.
             active = None
         await self._finish_job(

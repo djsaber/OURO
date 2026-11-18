@@ -18,6 +18,7 @@ from collections import Counter
 from functools import wraps
 from pathlib import Path
 from time import perf_counter
+from unittest.mock import patch
 
 
 def process_resources():
@@ -74,6 +75,33 @@ def process_resources():
     if not psapi.GetProcessMemoryInfo(process, ctypes.byref(memory), memory.cb):
         raise ctypes.WinError(ctypes.get_last_error())
     return {"read_transfer_bytes": io.read_bytes, "working_set_bytes": memory.working_set}
+
+
+async def wait_for_tui_start(app, pilot):
+    """Wait for startup while leaving long-lived observers running."""
+    for worker in tuple(app.workers):
+        if worker.name == "tui-start":
+            await worker.wait()
+    await pilot.pause()
+
+
+async def time_composer_key(composer, *, target=None):
+    """Timestamp key enqueue and the resulting document edit on the same clock."""
+    from textual.events import Key
+
+    applied = asyncio.get_running_loop().create_future()
+    edit = composer.edit
+
+    def stamp_edit(operation):
+        result = edit(operation)
+        if operation.text == "x" and not applied.done():
+            applied.set_result(perf_counter())
+        return result
+
+    with patch.object(composer, "edit", stamp_edit):
+        pressed = perf_counter()
+        (composer if target is None else target).post_message(Key("x", "x"))
+        return pressed, await asyncio.wait_for(applied, 5)
 
 
 def distribution(values):
@@ -224,10 +252,7 @@ async def measure(backend, count, home):
         async with application:
             app = OuroTuiApp(application=application, close_application=False)
             async with app.run_test(size=(120, 40)) as pilot:
-                await pilot.pause()
-                await app.workers.wait_for_complete(
-                    [worker for worker in app.workers if worker.name == "tui-start"]
-                )
+                await wait_for_tui_start(app, pilot)
                 stage_ms = Counter()
 
                 def timed_stage(name, operation):

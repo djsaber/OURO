@@ -197,8 +197,8 @@ async def test_idle_submission_does_not_present_follow_up_queue(
             )
             # Loading an older boundary must not mix in a newly consumed queue.
             accepted_view = await app._controller.load_observation_snapshot(accepted_snapshot)
-            assert [item.prompt for item in accepted_view.queued_inputs] == ["First input"]
-            assert accepted_view.detail.session.active_run_id is None
+            assert [item.prompt for item in accepted_view.snapshot.queued_inputs] == ["First input"]
+            assert accepted_view.snapshot.session.active_run_id is None
             assert True not in transitions
             assert composer.text == "Next draft"
             assert composer.has_focus and not composer.disabled

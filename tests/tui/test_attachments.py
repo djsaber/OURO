@@ -5,6 +5,7 @@ import re
 from contextlib import contextmanager
 from tempfile import TemporaryDirectory
 from threading import Event
+from unittest.mock import AsyncMock
 
 import pytest
 from textual import events
@@ -73,7 +74,7 @@ def test_attachment_input_appears_once_in_conversation(prompt):
     messages = separate_attachments(
         MessageRecord.text(session_id="s", role="user", text=prompt), (item,)
     )
-    entries, _ = project_transcript_entries(
+    entries = project_transcript_entries(
         tuple(messages),
         (),
         (),
@@ -546,9 +547,7 @@ async def test_submit_preflight_restores_original_session_after_navigation(tmp_p
             app.query_one(Composer).load_text("second draft")
         finally:
             release.set()
-        await wait_for_workers(
-            app, [worker for worker in app.workers if worker.group == "composer-input"]
-        )
+        await wait_for_workers(app, [worker for worker in app.workers if worker.group == "run"])
         assert app.query_one(Composer).input_content == InputContent(text="second draft")
         assert app._input_drafts.content_for(first.session_id) == content
         assert not application.runtime.store.load_session(second.session_id).messages
@@ -730,7 +729,9 @@ async def test_import_keeps_original_in_ouro_data_without_writing_workspace(tmp_
 
 
 @pytest.mark.parametrize("existing", (False, True))
-async def test_terminal_file_paste_uploads_and_submits_on_both_pages(tmp_path, existing):
+async def test_terminal_file_paste_uploads_and_submits_on_both_pages(
+    tmp_path, existing, monkeypatch
+):
     root = tmp_path / "home"
     application = application_at(root)
     runtime = application.runtime
@@ -765,10 +766,13 @@ async def test_terminal_file_paste_uploads_and_submits_on_both_pages(tmp_path, e
         identity = origin or app._input_drafts.welcome_resource_id
         uploaded = runtime.resources.directory_for(identity) / attachment.name
         path.unlink()
+        catalog = AsyncMock(wraps=app._controller.models)
+        monkeypatch.setattr(app._controller, "models", catalog)
         await pilot.press("enter")
         await wait_for_workers(app, [w for w in app.workers if w.group == "run"], timeout=10)
         await pilot.pause()
         assert app._controller.session_id == identity
+        catalog.assert_awaited_once()
         snapshot = runtime.store.load_session(identity)
         body = next(message for message in snapshot.messages if not message.scaffold)
         assert body.text_content == content.text

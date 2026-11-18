@@ -21,7 +21,6 @@ from textual.widget import Widget
 
 from ouro.tui.conversation.history_models import (
     CompactionPresentation,
-    HistoryLine,
     PreparedLine,
     ReasoningLayout,
     ToolActivityRenderer,
@@ -30,12 +29,7 @@ from ouro.tui.conversation.history_models import (
     _RenderedEntry,
 )
 from ouro.tui.conversation.markdown_stream import _BACKGROUND_MARKDOWN_CHARS
-from ouro.tui.conversation.messages import (
-    _MESSAGE_META,
-    _REASONING_ENTRY_META,
-    _TOOL_NAVIGATION_META,
-    _TRACE_ENTRY_META,
-)
+from ouro.tui.conversation.messages import _HISTORY_ACTION
 from ouro.tui.markdown import assistant_markdown
 from ouro.tui.selection import RangeSelectionOnly
 from ouro.tui.state import (
@@ -47,14 +41,14 @@ from ouro.tui.state import (
 from ouro.tui.text_wrapping import ProseText, wrap_plain_lines
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 
+_ACTION_STYLE = Style(meta={_HISTORY_ACTION: True})
+
 
 def _thought_label(
     reasoning_seconds: float | None,
     *,
-    entry_index: int,
     expanded: bool,
     theme: TuiTheme,
-    highlighted: bool = False,
 ) -> Text:
     label = _reasoning_label_text(
         "Thought",
@@ -62,9 +56,7 @@ def _thought_label(
         expanded=expanded,
         theme=theme,
     )
-    if highlighted:
-        label.stylize(theme.text_highlight)
-    label.stylize(Style(meta={_REASONING_ENTRY_META: entry_index}))
+    label.stylize(_ACTION_STYLE)
     return label
 
 
@@ -98,8 +90,6 @@ class _MessageContent:
     text: str
     theme: TuiTheme
     created_at: datetime | None = None
-    entry_index: int = -1
-    highlighted: bool = False
     lowlight: bool = False
     reference_start: int | None = None
 
@@ -115,12 +105,7 @@ class _MessageContent:
         right_width = min(right, interior_width - left_width)
         content_width = interior_width - left_width - right_width
         content_options = options.update_width(max(1, content_width))
-        interaction_meta = {_MESSAGE_META: self.entry_index}
-        interaction_style = Style(meta=interaction_meta)
-        panel_style = Style(
-            bgcolor=self.theme.highlight if self.highlighted else self.theme.panel,
-            meta=interaction_meta,
-        )
+        panel_style = Style(bgcolor=self.theme.panel) + _ACTION_STYLE
         content = ProseText(
             self.text if self.reference_start is None else self.text[: self.reference_start],
             style=self.theme.text_lowlight if self.lowlight else self.theme.text_emphasis,
@@ -140,7 +125,7 @@ class _MessageContent:
         border = Segment(
             "│",
             Style(color=self.theme.text_lowlight if self.lowlight else self.theme.accent)
-            + interaction_style,
+            + _ACTION_STYLE,
         )
 
         def framed_line(line: list[Segment]) -> RenderResult:
@@ -180,6 +165,18 @@ def _format_user_message_timestamp(
         return time_label
     date_label = f"{local_created_at.year}/{local_created_at.month}/{local_created_at.day}"
     return f"{date_label}{separator}{time_label}"
+
+
+def _highlight_message_row(line: Strip, *, reasoning: bool, theme: TuiTheme) -> Strip:
+    """Paint the thought label or message panel without laying out the entry again."""
+    hover = Style(color=theme.text_highlight) if reasoning else Style(bgcolor=theme.highlight)
+    segments = []
+    for segment in line:
+        style = segment.style
+        if style is not None and style.meta.get(_HISTORY_ACTION) and (reasoning or style.bgcolor):
+            segment = Segment(segment.text, style + hover, segment.control)
+        segments.append(segment)
+    return Strip(segments, line.cell_length)
 
 
 def _apply_selection_style(
@@ -247,8 +244,7 @@ def _prepare_reasoning_layout(source: str, *, width: int, theme: TuiTheme) -> Re
     return ReasoningLayout(
         width,
         theme,
-        # Frozen reasoning includes the live widget's right padding. Build its
-        # final row once, rather than allocating a second Strip per body line.
+        # Keep the live widget's right padding in each frozen row.
         tuple(
             _render_stream_line(line, width=width, theme=theme, plain=False, right_gutter=1)
             for line in wrapped
@@ -562,17 +558,15 @@ def _reasoning_rows(
     layout: ReasoningLayout | None,
     console: Console,
     options: ConsoleOptions,
-) -> list[HistoryLine]:
+) -> list[PreparedLine]:
     """Compose the label and already wrapped body without re-rendering every line."""
     label = _thought_label(
         request.entry.reasoning_seconds,
-        entry_index=request.entry_index,
         expanded=request.reasoning_expanded,
         theme=request.theme,
-        highlighted=request.reasoning_highlighted,
     )
     top = 1 if request.previous_kind == "tool" else 0
-    rows = _render_strips_at_width(console, options, Padding(label, (top, 0, 1, 0)))
+    rows = _render_rows(console, options, Padding(label, (top, 0, 1, 0)))
     if request.reasoning_expanded and layout is not None:
         rows.extend(
             row
@@ -580,7 +574,7 @@ def _reasoning_rows(
             else PreparedLine((*row.segments, Segment(" ", Style.null())), options.max_width)
             for row in layout.lines
         )
-        rows.append(Strip.blank(options.max_width, Style.null()))
+        rows.append(PreparedLine.blank(options.max_width, Style.null()))
     return rows
 
 
@@ -600,8 +594,6 @@ def _entry_renderables(
                         entry.text,
                         theme,
                         created_at=entry.created_at,
-                        entry_index=request.entry_index,
-                        highlighted=request.message_highlighted,
                         lowlight=entry.scaffold or entry.kind in {"scaffold", "command"},
                         reference_start=entry.reference_start,
                     ),
@@ -619,10 +611,9 @@ def _entry_renderables(
             agent=entry.agent,
         )
         if entry.tool.tool_name == "SpawnAgent" and entry.run_id is not None:
-            interaction_style = Style(meta={_TOOL_NAVIGATION_META: request.entry_index})
-            if request.tool_highlighted:
+            if request.highlighted:
                 rendered = theme.highlight_text(rendered)
-            rendered.stylize(interaction_style, 0, len(rendered))
+            rendered.stylize(_ACTION_STYLE, 0, len(rendered))
         return [(rendered, "body")]
     if entry.kind == "notice":
         top = 1 if request.previous_kind == "tool" else 0
@@ -639,7 +630,7 @@ def _entry_renderables(
         assert entry.run is not None
         summary = _run_summary(entry.run, theme)
         if request.trace_collapsed is not None:
-            if request.trace_highlighted:
+            if request.highlighted:
                 marker = (
                     theme.collapsed_disclosure_marker
                     if request.trace_collapsed
@@ -650,7 +641,7 @@ def _entry_renderables(
                 summary.append(f"{'show' if request.trace_collapsed else 'hide'} trace")
                 summary = theme.highlight_text(summary)
             # Hover never changes the row height, even in a narrow terminal.
-            summary.stylize(Style(meta={_TRACE_ENTRY_META: request.entry_index}))
+            summary.stylize(_ACTION_STYLE)
             summary.no_wrap = True
             summary.overflow = "ellipsis"
         return [(Padding(summary, (0, 0, 1, 0)), "body")]
@@ -668,19 +659,20 @@ def _entry_renderables(
     return pieces
 
 
-def _render_strips_at_width(
+def _render_rows(
     console: Console,
     options: ConsoleOptions,
     renderable: RenderableType,
-) -> list[HistoryLine]:
+) -> list[PreparedLine]:
     """Render one immutable piece using captured console geometry."""
 
     segments = console.render(renderable, options)
-    strips: list[HistoryLine] = [
-        strip.adjust_cell_length(options.max_width)
-        for strip in Strip.from_lines(list(Segment.split_lines(segments)))
+    width = options.max_width
+    rows = [
+        PreparedLine(tuple(Segment.adjust_line_length(line, width)), width)
+        for line in Segment.split_lines(segments)
     ]
-    return strips or [Strip.blank(options.max_width)]
+    return rows or [PreparedLine.blank(width)]
 
 
 def _render_entry_requests(
@@ -726,13 +718,13 @@ def _render_entry_requests(
             layout = _prepare_reasoning_layout(
                 request.entry.reasoning, width=max(1, options.max_width - 1), theme=request.theme
             )
-        pieces: list[tuple[list[HistoryLine], _PieceTag]] = (
+        pieces: list[tuple[list[PreparedLine], _PieceTag]] = (
             [(_reasoning_rows(request, layout, *context_for(request.theme)), "reasoning")]
             if request.entry.kind == "assistant" and request.entry.reasoning
             else []
         )
         pieces.extend(
-            (_render_strips_at_width(*context_for(request.theme), renderable), tag)
+            (_render_rows(*context_for(request.theme), renderable), tag)
             for renderable, tag in _entry_renderables(request, render_tool)
         )
         rendered.append(

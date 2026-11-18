@@ -1893,7 +1893,7 @@ async def test_controller_forks_current_session_without_mutating_source(
         loaded = await controller.load_session(branch.session.session_id)
 
         assert branch.session.parent_session_id == source_session_id
-        assert [message.text_content for message in loaded.messages] == [
+        assert [message.text_content for message in loaded.snapshot.messages] == [
             message.text_content for message in source_before.messages
         ]
         assert source_after == source_before
@@ -1950,7 +1950,7 @@ async def test_controller_load_session_does_not_block_the_event_loop(
         assert reader_entered is True
         assert event_loop_remained_responsive is True
         assert reader_threads != [event_loop_thread]
-        assert loaded.detail.session.session_id == result.session.session_id
+        assert loaded.snapshot.session.session_id == result.session.session_id
     finally:
         await controller.close()
 
@@ -2030,7 +2030,7 @@ async def test_controller_observes_another_session_without_changing_control_targ
         observation = await controller.observe_session(observed.session_id)
 
         assert controller.session_id == controlled.session.session_id
-        assert observation.loaded.detail.session.session_id == observed.session_id
+        assert observation.loaded.snapshot.session.session_id == observed.session_id
         assert (
             observation.subscription.initial_snapshot.position.revision
             == application.runtime.store.observation_revision(observed.session_id)
@@ -2066,7 +2066,7 @@ async def test_controller_selects_subagent_surface_under_root_control(
 
         loaded = await controller.load_session(child.session_id)
 
-        assert loaded.detail.session.session_id == child.session_id
+        assert loaded.snapshot.session.session_id == child.session_id
         assert controller.session_id == root.session_id
     finally:
         await controller.close()
@@ -2345,16 +2345,18 @@ async def test_controller_loads_completed_session_without_runtime_recovery(
 
         loaded = await controller.load_session(result.session.session_id)
 
-        assert loaded.detail.session.active_run_id is None
-        assert loaded.events == ()
-        assert loaded.runs == (result.run,)
-        assert loaded.messages
-        assistant = next(message for message in loaded.messages if message.role == "assistant")
+        assert loaded.snapshot.session.active_run_id is None
+        assert loaded.snapshot.events == ()
+        assert loaded.snapshot.runs == (result.run,)
+        assert loaded.snapshot.messages
+        assistant = next(
+            message for message in loaded.snapshot.messages if message.role == "assistant"
+        )
         assert assistant.model_response is not None
         assert assistant.model_response.ended_at >= assistant.model_response.started_at
-        assert loaded.context_status is not None
-        assert loaded.effective_context_metrics == loaded.context_status.metrics
-        assert loaded.compactions == ()
+        assert loaded.snapshot.context_status is not None
+        assert loaded.snapshot.effective_context_metrics == loaded.snapshot.context_status.metrics
+        assert loaded.snapshot.compactions == ()
     finally:
         await controller.close()
 
@@ -2399,9 +2401,9 @@ async def test_controller_restores_compaction_boundaries_and_effective_metrics(
 
         loaded = await controller.load_session(session_id)
 
-        assert loaded.compactions == (compaction,)
-        assert loaded.context_status == before
-        assert loaded.effective_context_metrics == compacted_metrics
+        assert loaded.snapshot.compactions == (compaction,)
+        assert loaded.snapshot.context_status == before
+        assert loaded.snapshot.effective_context_metrics == compacted_metrics
     finally:
         await controller.close()
 

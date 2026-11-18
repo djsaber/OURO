@@ -78,7 +78,7 @@ async def test_scheduling_an_empty_queue_does_not_load_execution_state(
     monkeypatch.setattr(app.runtime.store, "load_runtime_session", forbidden)
     try:
         await app.supervisor.schedule_session(session.session_id)
-        await app.supervisor._session_dispatch_tasks[session.session_id]
+        assert session.session_id not in app.supervisor._session_dispatch_tasks
         assert app.runtime.store.load_session_record(session.session_id) == session
     finally:
         await app.close()

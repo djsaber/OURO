@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from bisect import bisect_right
 from collections.abc import Iterable
 from dataclasses import replace
 
-from rich.segment import Segment
-from rich.style import Style
 from textual import events
 from textual.cache import LRUCache
 from textual.events import Resize
@@ -22,7 +21,6 @@ from ouro.application.contracts.agents import AgentTreeNode
 from ouro.application.contracts.execution import RuntimeToolCallActivity
 from ouro.tui.conversation.history_models import (
     ConversationHistoryState,
-    HistoryLine,
     PreparedLine,
     ReasoningLayout,
     ToolActivityRenderer,
@@ -34,14 +32,12 @@ from ouro.tui.conversation.history_models import (
 )
 from ouro.tui.conversation.history_rendering import (
     _apply_selection_style,
+    _highlight_message_row,
     _render_entry_requests,
 )
 from ouro.tui.conversation.markdown_stream import _BACKGROUND_MARKDOWN_CHARS
 from ouro.tui.conversation.messages import (
-    _MESSAGE_META,
-    _REASONING_ENTRY_META,
-    _TOOL_NAVIGATION_META,
-    _TRACE_ENTRY_META,
+    _HISTORY_ACTION,
     MessageCopyRequested,
     ToolNavigationRequested,
 )
@@ -50,42 +46,6 @@ from ouro.tui.state import RunPresentation
 from ouro.tui.theme import TuiTheme, theme_for
 
 _LOAD_CHUNK_ENTRIES = 50
-
-
-def _shift_piece_indexes(pieces: list[_Piece], offset: int) -> None:
-    """Retain rendered text while moving its click targets to new entry indexes."""
-    for piece in pieces:
-        piece.entry_index += offset
-        shifted: list[HistoryLine] = []
-        for strip in piece.rows:
-            if isinstance(strip, PreparedLine):
-                shifted.append(strip)
-                continue
-            segments: list[Segment] = []
-            changed = False
-            for segment in strip:
-                style = segment.style
-                if style is not None:
-                    metadata = {
-                        key: value + offset
-                        for key, value in style.meta.items()
-                        if key
-                        in {
-                            _REASONING_ENTRY_META,
-                            _TRACE_ENTRY_META,
-                            _TOOL_NAVIGATION_META,
-                            _MESSAGE_META,
-                        }
-                        and isinstance(value, int)
-                    }
-                    if metadata:
-                        segment = Segment(
-                            segment.text, style + Style(meta=metadata), segment.control
-                        )
-                        changed = True
-                segments.append(segment)
-            shifted.append(Strip(segments, strip.cell_length) if changed else strip)
-        piece.rows = shifted
 
 
 class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
@@ -129,7 +89,7 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         collapse_traces: bool = True,
     ) -> None:
         super().__init__(id="conversation-history")
-        self.lines: list[HistoryLine] = []
+        self.lines: list[PreparedLine] = []
         self._line_cache: LRUCache[tuple[int, int, int], Strip] = LRUCache(1024)
         self._widest_line_width = 0
         self._size_known = False
@@ -154,10 +114,7 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         self._prepared_reasoning: dict[int, ReasoningLayout] = {}
         self._pending_history_state: ConversationHistoryState | None = None
         self._trace_visibility_dirty = False
-        self._hovered_trace_entry_index: int | None = None
-        self._hovered_message_entry_index: int | None = None
-        self._hovered_tool_entry_index: int | None = None
-        self._hovered_reasoning_entry_index: int | None = None
+        self._hovered_entry: int | None = None
         self._rendered_count = 0
         self._prefix_pending = 0
         self._render_failed = False
@@ -237,10 +194,16 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         if key in self._line_cache:
             line = self._line_cache[key]
         else:
-            row = self.lines[source_y]
-            line = row.to_strip() if isinstance(row, PreparedLine) else row
+            line = self.lines[source_y].to_strip()
             line = line.crop_extend(key[1], key[1] + width, self.rich_style)
             self._line_cache[key] = line
+        hovered = self._hovered_entry
+        if hovered is not None and self._entry_at_row(source_y) == hovered:
+            kind = self._entries[hovered].kind
+            if kind in {"assistant", "user", "scaffold", "command"}:
+                line = _highlight_message_row(
+                    line, reasoning=kind == "assistant", theme=theme_for(self)
+                )
         line = line.apply_style(self.rich_style)
         selection = self.text_selection
         if selection is not None and (span := selection.get_span(source_y)) is not None:
@@ -258,23 +221,32 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
     def get_content_width(self, container: Size, viewport: Size) -> int:
         return self.virtual_size.width if self._size_known else container.width
 
+    def _action_entry(self, event: events.MouseEvent) -> int | None:
+        """Resolve a marked cell against the currently displayed row geometry."""
+        if event.style is None or not event.style.meta.get(_HISTORY_ACTION):
+            return None
+        offset = event.get_content_offset(self)
+        if offset is None:
+            return None
+        row = self.scroll_offset.y + offset.y
+        if not 0 <= row < len(self.lines):
+            return None
+        return self._entry_at_row(row)
+
+    def _entry_at_row(self, row: int) -> int:
+        return self._pieces[bisect_right(self._piece_line_starts, row) - 1].entry_index
+
     def on_click(self, event: events.Click) -> None:
         if event.button != 1 or event.style is None:
             return
-        trace_index = event.style.meta.get(_TRACE_ENTRY_META)
-        if isinstance(trace_index, int):
-            self.post_message(self.ToggleTraceRequested(trace_index))
-            event.stop()
-            return
-        entry_index = event.style.meta.get(_REASONING_ENTRY_META)
-        if isinstance(entry_index, int):
-            self.post_message(self.ToggleReasoningRequested(entry_index))
-            event.stop()
-            return
-        tool_entry_index = event.style.meta.get(_TOOL_NAVIGATION_META)
-        if isinstance(tool_entry_index, int) and 0 <= tool_entry_index < len(self._entries):
-            entry = self._entries[tool_entry_index]
-            if entry.run_id is not None and entry.tool is not None:
+        entry_index = self._action_entry(event)
+        if entry_index is not None:
+            entry = self._entries[entry_index]
+            if entry.kind == "run":
+                self.post_message(self.ToggleTraceRequested(entry_index))
+            elif entry.kind == "assistant":
+                self.post_message(self.ToggleReasoningRequested(entry_index))
+            elif entry.tool is not None and entry.run_id is not None:
                 self.post_message(
                     ToolNavigationRequested(
                         parent_run_id=entry.run_id,
@@ -282,19 +254,19 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
                         parent_batch_id=entry.tool.batch_id,
                     )
                 )
-                event.stop()
+            else:
+                return
+            event.stop()
         elif event.style.link:
             self.app.open_url(event.style.link)
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
         if event.button != 3 or event.style is None or self.screen.get_selected_text() is not None:
             return
-        message_entry_index = event.style.meta.get(_MESSAGE_META)
-        if not isinstance(message_entry_index, int) or not 0 <= message_entry_index < len(
-            self._entries
-        ):
+        entry_index = self._action_entry(event)
+        if entry_index is None:
             return
-        entry = self._entries[message_entry_index]
+        entry = self._entries[entry_index]
         if entry.kind not in {"user", "scaffold", "command"}:
             return
         event.prevent_default()
@@ -302,49 +274,24 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         self.post_message(MessageCopyRequested(entry.text))
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
-        hovered_message = None
-        hovered_tool = None
-        hovered_reasoning = None
-        hovered_trace = None
-        if event.style is not None:
-            message_entry_index = event.style.meta.get(_MESSAGE_META)
-            if isinstance(message_entry_index, int):
-                hovered_message = message_entry_index
-            tool_entry_index = event.style.meta.get(_TOOL_NAVIGATION_META)
-            if isinstance(tool_entry_index, int):
-                hovered_tool = tool_entry_index
-            reasoning_entry_index = event.style.meta.get(_REASONING_ENTRY_META)
-            if isinstance(reasoning_entry_index, int):
-                hovered_reasoning = reasoning_entry_index
-            trace_index = event.style.meta.get(_TRACE_ENTRY_META)
-            if isinstance(trace_index, int):
-                hovered_trace = trace_index
-        self._set_hovered_entry("_hovered_message_entry_index", hovered_message)
-        self._set_hovered_entry("_hovered_tool_entry_index", hovered_tool)
-        self._set_hovered_entry("_hovered_reasoning_entry_index", hovered_reasoning)
-        self._set_hovered_entry("_hovered_trace_entry_index", hovered_trace)
+        self._set_hovered_entry(self._action_entry(event))
 
     def on_leave(self, _event: events.Leave) -> None:
-        self._set_hovered_entry("_hovered_message_entry_index", None)
-        self._set_hovered_entry("_hovered_tool_entry_index", None)
-        self._set_hovered_entry("_hovered_reasoning_entry_index", None)
-        self._set_hovered_entry("_hovered_trace_entry_index", None)
+        self._set_hovered_entry(None)
 
-    def _set_hovered_entry(self, attribute: str, entry_index: int | None) -> None:
-        previous = getattr(self, attribute)
+    def _set_hovered_entry(self, entry_index: int | None) -> None:
+        previous = self._hovered_entry
         if previous == entry_index:
             return
-        setattr(self, attribute, entry_index)
+        self._hovered_entry = entry_index
         for changed in (previous, entry_index):
-            if changed is not None and 0 <= changed < len(self._entries):
+            if changed is not None and self._entries[changed].kind in {"run", "tool"}:
                 self._rerender_entry(changed)
+        self.refresh()
 
     def replace(self, entries: Iterable[TranscriptEntry]) -> None:
-        self._hovered_trace_entry_index = None
+        self._hovered_entry = None
         self._trace_collapsed_by_run.clear()
-        self._hovered_message_entry_index = None
-        self._hovered_tool_entry_index = None
-        self._hovered_reasoning_entry_index = None
         self._reasoning_expanded_by_entry.clear()
         if self._reset_buffer(list(entries)):
             self._render_entries()
@@ -356,22 +303,7 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
 
         if not self._entries:
             return None
-        hovered_indexes = {
-            index
-            for index in (
-                self._hovered_message_entry_index,
-                self._hovered_tool_entry_index,
-                self._hovered_reasoning_entry_index,
-                self._hovered_trace_entry_index,
-            )
-            if index is not None
-        }
-        self._hovered_message_entry_index = None
-        self._hovered_tool_entry_index = None
-        self._hovered_reasoning_entry_index = None
-        self._hovered_trace_entry_index = None
-        if hovered_indexes and not all(self._rerender_entry(index) for index in hovered_indexes):
-            self._render_entries()
+        self._set_hovered_entry(None)
         state = ConversationHistoryState(
             entries=self._entries,
             pieces=self._pieces,
@@ -428,10 +360,7 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         self._pending_history_state = None
         self._visibility_pending = False
         self._render_failed = False
-        self._hovered_message_entry_index = None
-        self._hovered_tool_entry_index = None
-        self._hovered_reasoning_entry_index = None
-        self._hovered_trace_entry_index = None
+        self._hovered_entry = None
         self._trace_collapsed_by_run = (
             dict(reusable_state.trace_collapsed_by_run) if reusable_state is not None else {}
         )
@@ -523,10 +452,8 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         for index in changed_indexes:
             if not self._rerender_entry(index):
                 return None
-        if self._trace_summary_indexes or state.collapse_traces != self._collapse_traces:
+        if self._trace_visibility_dirty or state.collapse_traces != self._collapse_traces:
             self._rebuild_lines()
-            for index in self._trace_summary_indexes.values():
-                self._rerender_entry(index)
         self._line_cache.clear()
         self.display = bool(self._entries)
         self.virtual_size = Size(self._widest_line_width, len(self.lines))
@@ -592,13 +519,7 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         if not entries:
             return
         self._content_revision += 1
-        for attribute in (
-            "_hovered_message_entry_index",
-            "_hovered_tool_entry_index",
-            "_hovered_reasoning_entry_index",
-            "_hovered_trace_entry_index",
-        ):
-            self._set_hovered_entry(attribute, None)
+        self._set_hovered_entry(None)
         offset = len(entries)
         self._prepared_reasoning = {
             index + offset: layout for index, layout in self._prepared_reasoning.items()
@@ -618,7 +539,8 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         if self._rendered_count:
             self._prefix_pending += offset
             self._rendered_count += offset
-        _shift_piece_indexes(self._pieces, offset)
+        for piece in self._pieces:
+            piece.entry_index += offset
         self._rebuild_lines()
         for run_id in self._trace_summary_indexes.keys() - previous_traces:
             # An older page may introduce the first trace for a cached reply.
@@ -703,6 +625,14 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
     @property
     def presented_run_ids(self) -> frozenset[str]:
         return frozenset(self._run_entry_indexes)
+
+    async def reopen_run(self, run_id: str) -> None:
+        """Release a continued Run's summary and folded trace before appending new work."""
+        index = self._run_entry_indexes.get(run_id)
+        if index is not None:
+            entries = self._entries.copy()
+            del entries[index]
+            await self.load(entries, reusable_state=self.take_state(), wait_for_render=False)
 
     def update_run(self, run: RunPresentation) -> bool:
         """Reconcile an existing summary without changing its history boundary."""
@@ -1168,15 +1098,12 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
                         ),
                         None,
                     ),
-                    message_highlighted=self._hovered_message_entry_index == entry_index,
-                    tool_highlighted=self._hovered_tool_entry_index == entry_index,
-                    reasoning_highlighted=(self._hovered_reasoning_entry_index == entry_index),
+                    highlighted=self._hovered_entry == entry_index,
                     trace_collapsed=(
                         self.is_trace_collapsed(entry.run_id)
                         if entry.kind == "run" and entry.run_id in self._trace_summary_indexes
                         else None
                     ),
-                    trace_highlighted=self._hovered_trace_entry_index == entry_index,
                 )
             )
             previous = entry.kind
@@ -1200,7 +1127,7 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
             for index in indexes
         )
 
-    def _append_rows(self, rows: list[HistoryLine]) -> None:
+    def _append_rows(self, rows: list[PreparedLine]) -> None:
         self.lines.extend(rows)
         self._widest_line_width = max(
             self._widest_line_width,
@@ -1219,7 +1146,7 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         """Rebuild visible line offsets from the prepared rows."""
         self._trace_visibility_dirty = False
         self._line_cache.clear()
-        lines: list[HistoryLine] = []
+        lines: list[PreparedLine] = []
         starts: list[int] = []
         user_lines: list[int] = []
         piece_indexes_by_entry: dict[int, list[int]] = {}

@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import gc
-import inspect
 import json
 import math
 import platform
@@ -22,8 +21,7 @@ from collections import Counter
 from functools import wraps
 from pathlib import Path
 
-from textual import events
-
+from dev.benchmarks.session_observation import time_composer_key, wait_for_tui_start
 from ouro.application.contracts.execution import RuntimeToolCallActivity
 from ouro.application.observations.activity import queued_runtime_activity, runtime_activity_changed
 from ouro.application.runtime.environment import RuntimeEnvironment
@@ -152,17 +150,11 @@ class Probe:
         composer = app.query_one(Composer)
         while self.running:
             await asyncio.sleep(0.03)
-            if composer.disabled:
+            if composer.disabled or not self.running:
                 continue
             composer.focus()
-            previous = composer.text
-            start = time.perf_counter()
-            app.post_message(events.Key("x", "x"))
-            async with asyncio.timeout(5):
-                while composer.text == previous and self.running:
-                    await asyncio.sleep(0.001)
-            if composer.text != previous:
-                self.key_ms.append((time.perf_counter() - start) * 1000)
+            pressed, edited = await time_composer_key(composer, target=app)
+            self.key_ms.append((edited - pressed) * 1000)
 
     def gc_callback(self, phase, info):
         if phase == "start":
@@ -254,6 +246,7 @@ async def run_one(backend, mode, delay_ms):
         await asyncio.to_thread(app.runtime.store.create_session_snapshot, session, messages)
         probe = None
         tasks = []
+        submission_timings = {}
         render = ConversationHistory._render_entries
         spinner_tick = ActivityIndicator._tick
         spinner_activity = ActivityIndicator.set_activity
@@ -277,10 +270,7 @@ async def run_one(backend, mode, delay_ms):
                 ActivityIndicator.set_activity = set_spinner_activity
                 tui = OuroTuiApp(application=app, close_application=False)
                 async with tui.run_test(size=(120, 40)) as pilot:
-                    await pilot.pause()
-                    await tui.workers.wait_for_complete(
-                        [worker for worker in tui.workers if worker.name == "tui-start"]
-                    )
+                    await wait_for_tui_start(tui, pilot)
                     probe = Probe(app.runtime.store, delay_ms)
                     tasks = [asyncio.create_task(probe.tick())]
 
@@ -307,6 +297,19 @@ async def run_one(backend, mode, delay_ms):
                     composer = tui.query_one(Composer)
                     composer.focus()
                     composer.load_text("Inspect evidence")
+                    submit = tui._controller.submit
+
+                    async def measure_submission(*args, on_input_accepted, **kwargs):
+                        def accepted():
+                            submission_timings["enter_to_accepted_ms"] = (
+                                time.perf_counter() - pressed
+                            ) * 1000
+                            on_input_accepted()
+
+                        return await submit(*args, on_input_accepted=accepted, **kwargs)
+
+                    tui._controller.submit = measure_submission
+                    pressed = time.perf_counter()
                     await pilot.press("enter")
                     worker = next(
                         worker
@@ -316,6 +319,9 @@ async def run_one(backend, mode, delay_ms):
                     tasks.append(asyncio.create_task(probe.keys(tui)))
                     async with asyncio.timeout(60):
                         await worker.wait()
+                    submission_timings["enter_to_result_ms"] = (
+                        time.perf_counter() - pressed
+                    ) * 1000
                     await tui._flush_pending_runtime_events()
                     await asyncio.sleep(0.2)
                     assert tui._projection.activity.status == "completed"
@@ -329,9 +335,7 @@ async def run_one(backend, mode, delay_ms):
                 probe = Probe(app.runtime.store, delay_ms)
                 tasks = [asyncio.create_task(probe.tick())]
                 await asyncio.sleep(0.01)
-                subscription = app.supervisor.subscribe(session.session_id)
-                if inspect.isawaitable(subscription):
-                    subscription = await subscription
+                subscription = await app.supervisor.subscribe(session.session_id)
                 handle = await app.supervisor.submit(
                     "Inspect evidence", session_id=session.session_id
                 )
@@ -343,7 +347,7 @@ async def run_one(backend, mode, delay_ms):
                 probe.running = False
                 await asyncio.gather(*tasks)
                 probe.restore()
-            return {"backend": backend, "mode": mode, **probe.report()}
+            return {"backend": backend, "mode": mode, **submission_timings, **probe.report()}
         finally:
             ConversationHistory._render_entries = render
             ActivityIndicator._tick = spinner_tick

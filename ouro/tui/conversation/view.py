@@ -38,9 +38,6 @@ _TRANSCRIPT_BACKGROUND_ENTRY_THRESHOLD = 64
 _TRANSCRIPT_BACKGROUND_TEXT_THRESHOLD = 8 * 1024
 
 
-type PreparedTranscript = tuple[tuple[TranscriptEntry, ...], frozenset[str]]
-
-
 def _requires_background_transcript_projection(
     messages: tuple[MessageRecord, ...],
     compactions: tuple[CompactionRecord, ...],
@@ -141,8 +138,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             await self.stop_animation("scroll_y", complete=False)
             self._restore_scroll_y(self.scroll_y + message.line_delta)
 
-    def prepend_transcript(self, prepared: PreparedTranscript) -> None:
-        entries, _ = prepared
+    def prepend_transcript(self, entries: tuple[TranscriptEntry, ...]) -> None:
         self._presented_compaction_ids.update(
             entry.compaction.compaction_id
             for entry in entries
@@ -203,8 +199,8 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
 
         self._follow_tail = False
         self._restored_scroll_y = max(0.0, scroll_y)
-        # Cached strips can repaint before layout runs. Publish their saved offset
-        # now; arrange() will clamp it against the destination's actual geometry.
+        # Cached rows can repaint before layout. Publish their saved offset now
+        # and let arrange() clamp it to the destination's actual geometry.
         self.set_scroll(None, self._restored_scroll_y)
         self.refresh(layout=True)
 
@@ -341,7 +337,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             compaction_records,
             run_presentations,
         ):
-            transcript, presented_run_ids = await asyncio.to_thread(
+            transcript = await asyncio.to_thread(
                 project_transcript_entries,
                 materialized,
                 compaction_records,
@@ -350,7 +346,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                 show_scaffold_messages=self.show_scaffold_messages,
             )
         else:
-            transcript, presented_run_ids = project_transcript_entries(
+            transcript = project_transcript_entries(
                 materialized,
                 compaction_records,
                 run_presentations,
@@ -358,14 +354,14 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                 show_scaffold_messages=self.show_scaffold_messages,
             )
         await self.load_transcript(
-            (transcript, presented_run_ids),
+            transcript,
             held_scroll_y=held_scroll_y,
             reusable_history=reusable_history,
         )
 
     async def load_transcript(
         self,
-        prepared: PreparedTranscript,
+        transcript: tuple[TranscriptEntry, ...],
         *,
         held_scroll_y: float | None = None,
         reusable_history: ConversationHistoryState | None = None,
@@ -378,7 +374,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         self._current_run_id = None
         self._presented_compaction_ids.clear()
 
-        transcript, _ = prepared
         self._presented_compaction_ids.update(
             entry.compaction.compaction_id
             for entry in transcript

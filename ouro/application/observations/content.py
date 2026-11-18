@@ -241,6 +241,7 @@ class SessionContentProjection:
             self._run_id = event.run_id
             self._assistant_text.replace("")
             self._reasoning_text.replace("")
+            interaction_changed = bool(self._pending_interactions)
             self._pending_interactions.clear()
             self._model_request_started_at = None
             self._reasoning_seen = False

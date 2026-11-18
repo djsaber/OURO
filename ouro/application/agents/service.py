@@ -2095,17 +2095,11 @@ class AgentService:
                     or call.agent_wait.wait_id != wait.wait_id
                 ):
                     raise ValueError("parent ToolCall no longer has the original child wait")
-                resolved = (
-                    call is not None
-                    and call.agent_wait is not None
-                    and call.agent_wait.resolution is not None
-                )
+                resolved = call.agent_wait.resolution is not None
                 if not resolved and receipt is not None and attempt_finished:
                     receipt.result()
                     raise SessionBusyError("Parent continuation has not resolved the child wait")
                 if parent.status == "waiting_child" and not resolved and not scheduled:
-                    if call is None or call.agent_wait is None:
-                        raise ValueError("parent ToolCall no longer has a pending child wait")
                     handle = await self._schedule_agent_wait_result(
                         session_id=session_id,
                         identity=identity,
@@ -2137,6 +2131,9 @@ class AgentService:
                         await asyncio.gather(change, return_exceptions=True)
                     if notification.diagnostic is not None:
                         raise OuroError(notification.diagnostic.message)
+                    if notification.facts is not None:
+                        # A coalesced fact page may be the only notice of the result commit.
+                        break
                     event = notification.event
                     if (
                         event is not None
@@ -2152,7 +2149,6 @@ class AgentService:
                         not resolved
                         or activity.run_id != run_id
                         or activity.status not in ACTIVE_RUN_STATUSES
-                        or batch is None
                         or activity.batch_id != batch.batch_id
                         or activity.batch_phase in {"completed", "aborted"}
                     ):

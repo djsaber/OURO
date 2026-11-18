@@ -27,15 +27,12 @@ from tests.tui.test_background_navigation import NavigationProvider, submit
 from tests.tui.test_tasks import streaming_application
 
 
-@pytest.mark.parametrize("highlighted", [False, True])
-def test_scaffold_frame_preserves_user_message_layout_and_targets(highlighted):
+def test_scaffold_frame_preserves_user_message_layout_and_targets():
     console = Console(force_terminal=True, color_system="truecolor", width=36)
     options = dict(
         text="Long wrapped message with 中文 and **literal markup**\nSecond line",
         theme=DEFAULT_TUI_THEME,
         created_at=datetime(2026, 10, 19, tzinfo=UTC),
-        entry_index=2,
-        highlighted=highlighted,
     )
     user = console.render_lines(_MessageContent(**options))
     scaffold = console.render_lines(_MessageContent(**options, lowlight=True))
@@ -58,7 +55,7 @@ def test_revealing_attachment_scaffolds_preserves_file_labels_and_user_targets(p
     )
     results = []
     for enabled in (False, True):
-        entries, _ = project_transcript_entries(
+        entries = project_transcript_entries(
             messages,
             (),
             (),
@@ -128,7 +125,7 @@ async def test_live_inputs_and_loaded_history_share_scaffold_projection(tmp_path
             events, input_messages={message.message_id: message for message in messages}
         )
         history = app.query_one(ConversationHistory)
-        expected, _ = project_transcript_entries(
+        expected = project_transcript_entries(
             messages,
             (),
             (),
@@ -211,7 +208,10 @@ async def test_settings_toggle_refreshes_visible_session_and_survives_navigation
         assert any(entry.scaffold for entry in restarted.query_one(ConversationHistory).entries)
 
 
-async def test_toggle_preserves_loaded_history_window_and_projects_earlier_pages(tmp_path):
+@pytest.mark.parametrize("all_scaffold", [False, True])
+async def test_toggle_preserves_loaded_history_window_and_projects_earlier_pages(
+    tmp_path, all_scaffold
+):
     application = _application(tmp_path)
     session = application.runtime.sessions.create(title="Long history").session
     application.runtime.store.append_messages(
@@ -220,7 +220,7 @@ async def test_toggle_preserves_loaded_history_window_and_projects_earlier_pages
                 session_id=session.session_id,
                 role="user",
                 text=f"Message {index}",
-                scaffold=index % 2 == 0,
+                scaffold=all_scaffold or index % 2 == 0,
             )
             for index in range(405)
         ]
@@ -235,9 +235,11 @@ async def test_toggle_preserves_loaded_history_window_and_projects_earlier_pages
         assert len(texts) == 400
         assert await app._set_scaffold_messages(False)
         assert [entry.text for entry in history.entries] == [
-            text for text in texts if int(text.split()[-1]) % 2
+            text for text in texts if not all_scaffold and int(text.split()[-1]) % 2
         ]
+        await app._new_session()
         assert await app._set_scaffold_messages(True)
+        await app._open_session(session.session_id)
         assert [entry.text for entry in history.entries] == texts
         assert await app._prepend_history_window(app._view_revision)
         assert [entry.text for entry in history.entries] == [

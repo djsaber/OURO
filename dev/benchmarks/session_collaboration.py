@@ -13,7 +13,7 @@ from pathlib import Path
 from time import perf_counter
 
 import ouro.tui.conversation.history_rendering as history_module
-from dev.benchmarks.session_observation import distribution, process_resources
+from dev.benchmarks.session_observation import distribution, process_resources, wait_for_tui_start
 from dev.benchmarks.session_pipeline import Probe
 from ouro.application.agents.tree import AgentTreeProjector
 from ouro.application.runtime.environment import RuntimeEnvironment
@@ -60,11 +60,6 @@ def application(home, backend, provider):
             environment=RuntimeEnvironment.local(home),
         )
     )
-
-
-async def ready(app, pilot):
-    await pilot.pause()
-    await app.workers.wait_for_complete([w for w in app.workers if w.name == "tui-start"])
 
 
 async def measure(home, backend, cycles):
@@ -114,8 +109,8 @@ async def measure(home, backend, cycles):
                 first.run_test(size=(120, 40)) as first_pilot,
                 second.run_test(size=(120, 40)) as second_pilot,
             ):
-                await ready(first, first_pilot)
-                await ready(second, second_pilot)
+                await wait_for_tui_start(first, first_pilot)
+                await wait_for_tui_start(second, second_pilot)
                 await first._open_session(ids[0])
                 await second._open_session(ids[0])
                 await first_pilot.pause()

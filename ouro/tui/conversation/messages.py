@@ -4,16 +4,7 @@ from __future__ import annotations
 
 from textual.message import Message
 
-_REASONING_ENTRY_META = "ouro_reasoning_entry"
-
-
-_TRACE_ENTRY_META = "ouro_trace_entry"
-
-
-_TOOL_NAVIGATION_META = "ouro_tool_navigation"
-
-
-_MESSAGE_META = "ouro_message"
+_HISTORY_ACTION = "ouro_history_action"
 
 
 class ToolNavigationRequested(Message):

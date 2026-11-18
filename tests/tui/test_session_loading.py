@@ -99,9 +99,9 @@ async def test_tui_restores_history_and_observation_without_the_old_model(
 
             observation = await app._controller.observe_session(session_id)
             try:
-                assert observation.loaded.messages
-                assert observation.loaded.effective_context_metrics == durable
-                assert observation.loaded.detail.session.current_model == "faux/recent"
+                assert observation.loaded.snapshot.messages
+                assert observation.loaded.snapshot.effective_context_metrics == durable
+                assert observation.loaded.snapshot.session.current_model == "faux/recent"
             finally:
                 observation.subscription.close()
 
@@ -174,10 +174,11 @@ async def test_configured_route_changes_do_not_block_session_loading(
             configuration.update_provider(provider_id, enabled=False)
 
         loaded = await controller.load_session(result.session.session_id)
-        assert loaded.messages
-        assert loaded.detail.session.current_model == route
-        assert loaded.effective_context_metrics == runtime.sessions.effective_context_metrics(
-            result.session.session_id
+        assert loaded.snapshot.messages
+        assert loaded.snapshot.session.current_model == route
+        assert (
+            loaded.snapshot.effective_context_metrics
+            == runtime.sessions.effective_context_metrics(result.session.session_id)
         )
         with pytest.raises(ConfigError):
             await controller.select_model(route)

@@ -206,7 +206,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         composer = app.query_one(Composer)
         assert composer.disabled is True
         assert composer.text == ""
-        assert app._controlled_composer_draft == "pending root draft"
+        assert app._input_drafts.draft_for(root_session_id) == "pending root draft"
         assert any(
             entry.kind == "scaffold" and entry.text == "first child task"
             for entry in app.query_one(ConversationHistory).entries
@@ -282,7 +282,6 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         composer = app.query_one(Composer)
         assert composer.disabled is False
         assert composer.text == "pending root draft"
-        assert app._controlled_composer_draft is None
         assert "Root history paragraph 0" in "\n".join(
             entry.text
             for entry in app.query_one(ConversationHistory).entries

@@ -285,7 +285,8 @@ async def test_message_hover_and_right_click_copy_preserve_selection_priority(ki
             y for y, line in enumerate(history.lines) if "copy this exact" in line.text
         )
         message_x = history.lines[message_y].text.index("copy this exact")
-        next(
+        prepared = history.lines[message_y]
+        before = next(
             segment
             for segment in history.render_line(message_y)
             if "copy this exact" in segment.text
@@ -294,11 +295,13 @@ async def test_message_hover_and_right_click_copy_preserve_selection_priority(ki
         await pilot.hover(history, offset=(message_x, message_y))
         await pilot.pause()
 
-        next(
+        hovered = next(
             segment
             for segment in history.render_line(message_y)
             if "copy this exact" in segment.text
         )
+        assert history.lines[message_y] is prepared
+        assert hovered.style.bgcolor != before.style.bgcolor
 
         await pilot.click(history, offset=(message_x, message_y))
         await pilot.pause()

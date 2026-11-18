@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Literal, Protocol
 
 from rich.segment import Segment
+from rich.style import Style
 from rich.text import Text
 from textual.strip import Strip
 
@@ -68,7 +69,7 @@ _PieceTag = Literal["body", "user", "reasoning"]
 
 @dataclass(frozen=True, slots=True)
 class PreparedLine:
-    """Plain row geometry, without Textual's per-Strip rendering caches.
+    """Rich row geometry shared by history and the live text surface.
 
     Only a row entering the viewport needs a Strip. Wrapping, selection and
     scroll geometry use these immutable segments directly.
@@ -87,8 +88,9 @@ class PreparedLine:
     def to_strip(self) -> Strip:
         return Strip(self.segments, self.cell_length)
 
-
-type HistoryLine = Strip | PreparedLine
+    @classmethod
+    def blank(cls, width: int, style: Style | None = None) -> PreparedLine:
+        return cls((Segment(" " * width, style),), width)
 
 
 @dataclass(frozen=True)
@@ -108,7 +110,7 @@ class _Piece:
     Other pieces keep their rows until content, geometry or theme changes.
     """
 
-    rows: list[HistoryLine]
+    rows: list[PreparedLine]
     tag: _PieceTag = "body"
     entry_index: int = -1
     reasoning_layout: ReasoningLayout | None = None
@@ -126,17 +128,14 @@ class _EntryRenderRequest:
     theme: TuiTheme
     reasoning_expanded: bool
     reasoning_layout: ReasoningLayout | None = None
-    message_highlighted: bool = False
-    tool_highlighted: bool = False
-    reasoning_highlighted: bool = False
+    highlighted: bool = False
     trace_collapsed: bool | None = None
-    trace_highlighted: bool = False
 
 
 @dataclass(frozen=True)
 class _RenderedEntry:
     entry_index: int
-    pieces: tuple[tuple[list[HistoryLine], _PieceTag], ...]
+    pieces: tuple[tuple[list[PreparedLine], _PieceTag], ...]
     reasoning_layout: ReasoningLayout | None = None
     reasoning_expanded: bool = True
     trace_collapsed: bool | None = None
@@ -155,7 +154,7 @@ class ConversationHistoryState:
     piece_line_starts: list[int]
     piece_indexes_by_entry: dict[int, list[int]]
     user_lines: list[int]
-    lines: list[HistoryLine]
+    lines: list[PreparedLine]
     widest_line_width: int
     render_width: int
     rendered_count: int

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from pydantic import ConfigDict, Field
 
 from ouro.core.base import OuroModel
+
+ResponseDraftChannel = Literal["text", "reasoning"]
 
 
 class ResponseDraftChunk(OuroModel):
@@ -12,7 +14,7 @@ class ResponseDraftChunk(OuroModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    channel: Literal["text", "reasoning"]
+    channel: ResponseDraftChannel
     content: str = Field(min_length=1)
 
 
@@ -28,6 +30,11 @@ class ResponseStreamPosition(OuroModel):
     context_id: str
     after_cursor: int = Field(default=0, ge=0)
     cursor: int | None = Field(default=None, ge=1)
+
+
+class ResponseDraftHead(NamedTuple):
+    position: ResponseStreamPosition
+    channel: ResponseDraftChannel
 
 
 class ResponseDraftPage(OuroModel):

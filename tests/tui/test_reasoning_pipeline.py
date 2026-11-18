@@ -99,7 +99,7 @@ async def test_max_effort_response_reaches_persisted_conversation_history(
             assert header is not None
             assert header.response_message_id == assistant.message_id
             assert header.response_closed_at is not None
-            entries, _ = project_transcript_entries(
+            entries = project_transcript_entries(
                 snapshot.messages,
                 (),
                 (),

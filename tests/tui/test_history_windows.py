@@ -12,7 +12,7 @@ from ouro.core.base import utc_now
 from ouro.core.errors import SessionNotFoundError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
-from ouro.core.session_commits import SessionCommit
+from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.state import RunRecord
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
@@ -164,6 +164,7 @@ async def test_opening_a_live_session_does_not_read_full_execution_history(
 
             with monkeypatch.context() as patch:
                 patch.setattr(application.runtime.store, "load_runtime_session", forbidden)
+                patch.setattr(application.runtime.sessions, "open", forbidden)
                 await app._open_session(session.session_id)
                 assert app._projection.activity.status == "running"
                 if not prefix_before_open:
@@ -255,6 +256,36 @@ async def test_recent_window_pages_and_cached_reentry_keep_the_same_history_star
         assert all(sequence is not None and sequence > 605 for sequence in rendered)
         assert conversation.held_scroll_y() == held
         assert app.query_one(Composer).text == "x"
+
+
+@pytest.mark.parametrize("initial_count", [0, 3])
+async def test_reentry_keeps_live_content_older_than_the_recent_window(tmp_path, initial_count):
+    application = streaming_application(tmp_path, None)
+    session, initial = seed(application, initial_count)
+    app = OuroTuiApp(application=application, resume_session_id=session.session_id)
+    async with run_ready_app(app) as pilot:
+        observation = app._observation_subscription
+        additions = [
+            MessageRecord.text(session_id=session.session_id, role="assistant", text="Live reply"),
+            *(
+                MessageRecord.text(session_id=session.session_id, role="user", text=f"Input {i}")
+                for i in range(201)
+            ),
+        ]
+        await asyncio.to_thread(application.runtime.store.append_messages, additions)
+        await wait_until(
+            lambda: observation.applied_position.message_sequence == initial_count + len(additions),
+            pilot,
+            description="live history applied before switching",
+        )
+        await app._new_session()
+        await app._open_session(session.session_id)
+        history = app.query_one(ConversationHistory)
+        await history.wait_until_rendered()
+        assert [entry.text for entry in history.entries] == [
+            message.text_content for message in (*initial, *additions)
+        ]
+        assert app._history_before_cursor is None
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
@@ -766,3 +797,57 @@ async def test_cached_reentry_retains_run_boundaries_in_hidden_scaffold_messages
         assert await app._prepend_history_window(app._view_revision)
         await history.wait_until_rendered()
         assert not any(entry.kind == "run" for entry in history.entries)
+
+
+@pytest.mark.parametrize("switch_away", [False, True])
+async def test_continued_run_summary_follows_its_latest_message(tmp_path, switch_away):
+    application = streaming_application(tmp_path, None)
+    session, _ = seed(application, 0)
+    store = application.runtime.store
+    run = RunRecord(session_id=session.session_id, status="paused", ended_at=utc_now())
+    record = store.load_session_record(session.session_id)
+    prompt = MessageRecord.text(
+        session_id=session.session_id, run_id=run.run_id, role="user", text="Start"
+    )
+    store.commit_session(
+        SessionCommit(
+            before=record,
+            after=record.model_copy(update={"last_run_id": run.run_id}),
+            runs=(run,),
+            steps=(SessionCommitStep(message=prompt),),
+        )
+    )
+    app = OuroTuiApp(application=application, resume_session_id=session.session_id)
+    async with run_ready_app(app) as pilot:
+        history = app.query_one(ConversationHistory)
+        assert history.entries[-1].run.status == "paused"
+        if switch_away:
+            await app._new_session()
+        count = 200 if switch_away else 1
+        replies = [
+            MessageRecord.text(
+                session_id=session.session_id,
+                run_id=run.run_id,
+                role="assistant",
+                text=f"Reply {i}",
+            )
+            for i in range(count)
+        ]
+        store.commit_session(
+            SessionCommit(
+                before=store.load_session_record(session.session_id),
+                runs=(run.model_copy(update={"status": "completed", "ended_at": utc_now()}),),
+                steps=tuple(SessionCommitStep(message=reply) for reply in replies),
+            )
+        )
+        if switch_away:
+            await app._open_session(session.session_id)
+        await wait_until(
+            lambda: any(entry.run and entry.run.status == "completed" for entry in history.entries),
+            pilot,
+            description="continued Run observed",
+        )
+        assert [entry.run.status for entry in history.entries if entry.run] == ["completed"]
+        assert history.entries[0].text == "Start"
+        assert history.entries[-2].text == replies[-1].text_content
+        assert history.entries[-1].kind == "run"

@@ -322,7 +322,7 @@ def test_history_keeps_reused_provider_call_ids_in_their_native_scope(
                 ),
             ]
         )
-    entries, _ = project_transcript_entries(
+    entries = project_transcript_entries(
         tuple(messages),
         (),
         (),
@@ -333,7 +333,7 @@ def test_history_keeps_reused_provider_call_ids_in_their_native_scope(
         ("batch", {"n": 0}, "completed"),
         (second_batch, {"n": 1}, "failed"),
     ]
-    selected, _ = project_transcript_entries(
+    selected = project_transcript_entries(
         tuple(messages),
         (),
         (),

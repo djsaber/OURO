@@ -41,6 +41,7 @@ from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent, Usage
 from ouro.core.session_commits import SessionCommit
+from ouro.core.session_observation import SessionObservationPosition
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_facts import ToolCallIdentity
 from ouro.core.tools import ToolInvocation
@@ -3495,6 +3496,19 @@ async def test_parallel_sync_spawns_serialize_parent_resumption(
                     # consumed its negative receipt and awaits batch publication.
                     if partial_checks:
                         stale_read.set()
+                        if late_check == 0 and updates == 0:
+                            # Keep only the durable page from the sibling's terminal commit.
+                            await asyncio.to_thread(parent_committed.wait)
+                            page, _ = await asyncio.to_thread(
+                                runtime.sessions.observation_changes,
+                                session_id,
+                                after=SessionObservationPosition(),
+                                history_epoch=parent.history_epoch,
+                                limit=128,
+                            )
+                            assert page.facts is not None
+                            subscription.offer(RuntimeNotification(kind="facts", facts=page))
+                            updates += 1
                     return await get()
 
                 monkeypatch.setattr(subscription, "get", waiting_for_commit)

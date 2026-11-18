@@ -244,7 +244,7 @@ async def test_initial_activity_and_position_share_read_boundary(stores, monkeyp
     supervisor = supervisor_for(reader)
     captured, release = asyncio.Event(), threading.Event()
     loop = asyncio.get_running_loop()
-    load = supervisor._load_activity
+    load = supervisor._read_activity
 
     def paused(*args, **kwargs):
         activity = load(*args, **kwargs)
@@ -252,7 +252,7 @@ async def test_initial_activity_and_position_share_read_boundary(stores, monkeyp
         assert release.wait(5)
         return activity
 
-    monkeypatch.setattr(supervisor, "_load_activity", paused)
+    monkeypatch.setattr(supervisor, "_read_activity", paused)
     opening = asyncio.create_task(supervisor.subscribe(run.session_id, include_activity=True))
     update = None
     subscription = None
@@ -284,8 +284,9 @@ async def test_initial_activity_and_position_share_read_boundary(stores, monkeyp
         await supervisor.shutdown()
 
 
-async def test_reattach_discards_cached_activity_from_a_previous_follower(stores):
+async def test_reattach_discards_cached_activity_from_a_previous_follower(stores, monkeypatch):
     from ouro.core.base import utc_now
+    from ouro.core.response_drafts import ResponseDraftChunk
     from tests.response_drafts import persist_response_draft
 
     writer, reader = stores
@@ -313,16 +314,35 @@ async def test_reattach_discards_cached_activity_from_a_previous_follower(stores
             runs=(active,),
         )
     )
-    persist_response_draft(writer, active, turn_id="turn_next", text="current answer")
+    header = persist_response_draft(
+        writer, active, turn_id="turn_next", reasoning="first thought", text="current answer"
+    )
+    read_draft = reader.load_response_draft
+
+    def read_suffix(session_id, context_id, *, after_cursor=0, limit=None):
+        assert after_cursor >= 2, "activity reattachment reread the existing response body"
+        return read_draft(session_id, context_id, after_cursor=after_cursor, limit=limit)
+
+    monkeypatch.setattr(reader, "load_response_draft", read_suffix)
+    assert supervisor.activity(active.session_id).activity == "streaming_text"
     second = await supervisor.subscribe(active.session_id, include_activity=True)
     try:
         assert second.initial_activity.run_id == active.run_id
+        assert second.initial_activity.activity == "streaming_text"
         assert supervisor._activities[active.session_id].run_id == active.run_id
+        writer.append_response_draft(
+            active.session_id,
+            header.context_id,
+            ResponseDraftChunk(channel="reasoning", content="next thought"),
+        )
         async with asyncio.timeout(5):
             while True:
                 item = await second.get()
                 assert item.diagnostic is None
-                if item.activity and item.activity.activity == "streaming_text":
+                if item.facts is not None:
+                    assert [event.stream.cursor for event in item.facts.events] == [3]
+                if item.activity:
+                    assert item.activity.activity == "streaming_reasoning"
                     assert item.activity.run_id == active.run_id
                     break
     finally:

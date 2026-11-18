@@ -345,6 +345,15 @@ async def test_history_restores_compaction_boundaries_in_chronological_order(
             f"{DEFAULT_TUI_THEME.section_separator}57m 05.4s"
         ) in history.rendered_text
 
+        hidden = messages[0].model_copy(update={"scaffold": True})
+        await conversation.load_messages((hidden, *messages[1:]), compactions)
+        assert [entry.kind for entry in history.entries] == [
+            "compaction",
+            "assistant",
+            "compaction",
+            "user",
+        ]
+
         invalid = compactions[0].model_copy(update={"history_boundary_message_id": "msg_missing"})
         with pytest.raises(ValueError, match="references missing history boundary"):
             await conversation.load_messages(messages, (invalid,))

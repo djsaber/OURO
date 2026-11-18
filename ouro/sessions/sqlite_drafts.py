@@ -8,7 +8,13 @@ from pydantic import ValidationError
 
 from ouro.core.context_snapshots import ModelRequestHeader
 from ouro.core.errors import PersistenceError
-from ouro.core.response_drafts import ResponseDraftChunk, ResponseDraftFragment, ResponseDraftPage
+from ouro.core.response_drafts import (
+    ResponseDraftChunk,
+    ResponseDraftFragment,
+    ResponseDraftHead,
+    ResponseDraftPage,
+    ResponseStreamPosition,
+)
 
 DRAFT_SCHEMA = """
 CREATE TABLE IF NOT EXISTS response_streams (
@@ -58,6 +64,26 @@ def append_chunk(
     if row is None:
         raise PersistenceError("request no longer accepts response Draft fragments")
     return int(row[0])
+
+
+def read_head(
+    connection: sqlite3.Connection, session_id: str, context_id: str
+) -> ResponseDraftHead | None:
+    row = connection.execute(
+        "SELECT d.position, d.channel FROM response_streams s "
+        "JOIN response_drafts d USING (session_id) "
+        "WHERE s.session_id = ? AND s.context_id = ? ORDER BY d.position DESC LIMIT 1",
+        (session_id, context_id),
+    ).fetchone()
+    if row is None:
+        return None
+    cursor, channel = row
+    if channel not in ("text", "reasoning"):
+        raise PersistenceError("invalid response Draft channel")
+    return ResponseDraftHead(
+        ResponseStreamPosition(context_id=context_id, after_cursor=cursor - 1, cursor=cursor),
+        channel,
+    )
 
 
 def read_page(

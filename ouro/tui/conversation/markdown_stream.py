@@ -6,9 +6,9 @@ from itertools import pairwise
 
 from markdown_it import MarkdownIt
 
-# Rich's Markdown renders through this same parser configuration, so block
-# boundaries detected for freezing always agree with the rendered structure.
-_MARKDOWN_PARSER = MarkdownIt().enable("strikethrough").enable("table")
+# Use Rich's block grammar. Only the renderer needs emphasis, links and other inline tokens.
+_MARKDOWN_PARSER = MarkdownIt().enable("table")
+_MARKDOWN_PARSER.core.ruler.enableOnly(["normalize", "block"])
 
 
 _ATOMIC_BLOCKS = frozenset({"fence", "hr", "code_block", "html_block"})

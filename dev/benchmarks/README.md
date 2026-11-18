@@ -175,7 +175,7 @@ uv run --frozen python -m dev.benchmarks.session_pipeline --mode tui --store-del
 每个 Session 包含 120 条历史消息；两轮模型响应各含 40 个间隔 5 ms 的文本 delta，并执行一个约 32 KiB 的工具。
 `--mode runtime|tui|activity|all` 选择场景，`--backend files|sqlite|all` 选择后端。`--deltas-per-round` 控制流长度，
 `--delta-interval-ms` 控制分片间隔；设为 0 可测量连续突发。
-TUI 使用 Textual `run_test(size=(120, 40))`，记录 1 ms ticker 的 loop lag、按键到 Composer 更新、动画 tick 间隔、
+TUI 使用 Textual `run_test(size=(120, 40))`，记录 Enter 到持久化受理和运行结果返回的耗时、1 ms ticker 的 loop lag、按键到 Composer 更新、动画 tick 间隔、
 GC、慢回调和 Store 线程归属。超过 16ms 的 GC 附带代次、回收对象数与 gen2 触发栈。
 Store 计数包含嵌套公共调用，不等于物理 IO；注入延迟不代表特定硬件。
 探针在退出时恢复，不修改生产 GC、动画频率、流式窗口和背压。
@@ -354,13 +354,14 @@ uv run --frozen --extra themes python -B -X utf8 -m dev.benchmarks.tui_sessions 
 uv run --frozen --extra themes python -B -X utf8 -m dev.benchmarks.tui_history --snapshot <observation.json> --repeat 3
 ```
 
-`tui_sessions` 使用临时 Files home、离线 Provider 和真实 OuroTuiApp。进入前保持 Run 运行，恢复 48,070 字符思考
+`tui_sessions` 使用临时会话库、离线 Provider 和真实 OuroTuiApp。`--backend` 可选 `files`（默认）或 `sqlite`。进入前保持 Run 运行，恢复 48,070 字符思考
 及开放答案尾部；分别测主页进入、补两页后经主页重进、后续实时分片。报告安装、输入响应、历史帧、草稿帧、
-最大事件循环延迟、投影消息数及布局缓存命中。`--reasoning-chars` 控制草稿大小，`--workdir` 指定临时目录的父目录。
-不计种子构造、应用启动和清理；按键计时从 Textual Key 入队到 Composer 内容改变，不包含物理键盘／终端传输。
+最大事件循环延迟、投影消息数及布局缓存命中。每次翻页分别记录界面线程登记新页的耗时和从请求到排版完成的总耗时。
+`--reasoning-chars` 控制草稿大小，`--workdir` 指定临时目录的父目录。
+种子构造、应用启动和清理在计时区间之外。按键计时在 Textual Key 入队和 Composer 实际完成文本编辑时各取一次时间戳，覆盖消息分派与编辑。物理键盘与终端传输需在实际终端测量。
 
 `tui_history` 只读取当前格式的 SessionObservationSnapshot JSON，不访问或修改会话目录。
 测冷／热历史、最大轨迹首次／再次展开、最长思考首次／再次展开及流式输出转历史；
-`--strips-output <path>` 可保存首轮文字、样式和交互 metadata 以对照布局。该输出包含会话内容，应留在本地。
+`--strips-output <path>` 可保存首轮各行的文字和 Rich 样式以对照布局。该输出包含会话内容，应留在本地。
 JSONL 保留每轮原始值；不清 OS 缓存。headless 刷新确认不等于真实终端 paint，三个样本不能证明 p95/p99。
 设计与测量结果见 [TUI 性能改进计划](../../docs/plans/archive/2026-10-29-tui-performance.md)。

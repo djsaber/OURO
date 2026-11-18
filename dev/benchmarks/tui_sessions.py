@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import gc
 import json
 import platform
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter
 
-from textual.events import Key
-
+from dev.benchmarks.session_observation import time_composer_key, wait_for_tui_start
 from ouro.application.inputs.requests import UserInputRequest
 from ouro.application.runtime.environment import RuntimeEnvironment
 from ouro.application.runtime.service import RuntimeService
@@ -94,7 +94,13 @@ async def sample(
     )
     application = LocalApplication.from_runtime(runtime)
     app = OuroTuiApp(application=application)
-    result = {"messages": messages, "reasoning_chars": reasoning_chars, "samples": []}
+    result = {
+        "backend": backend,
+        "messages": messages,
+        "reasoning_chars": reasoning_chars,
+        "samples": [],
+        "pages": [],
+    }
     preparations = []
     prepare = app._prepare_loaded_session
 
@@ -112,10 +118,7 @@ async def sample(
 
     app._prepare_loaded_session = measured_preparation
     async with app.run_test(size=(100, 32)) as pilot:
-        for worker in tuple(app.workers):
-            if worker.name == "tui-start":
-                await worker.wait()
-        await pilot.pause()
+        await wait_for_tui_start(app, pilot)
         submission = await application.supervisor.submit_user_input(
             UserInputRequest(session_id=session.session_id, prompt="Continue synthetic session")
         )
@@ -124,6 +127,21 @@ async def sample(
             await asyncio.sleep(0.15)  # Let the existing draft publication interval elapse.
             history = app.query_one(ConversationHistory)
             turn = app.query_one(AssistantTurn)
+            prepend = history.prepend
+
+            def measured_prepend(entries):
+                previous = len(history.entries)
+                start = perf_counter()
+                prepend(entries)
+                result["pages"].append(
+                    {
+                        "previous_entries": previous,
+                        "added_entries": len(entries),
+                        "register_ms": (perf_counter() - start) * 1000,
+                    }
+                )
+
+            history.prepend = measured_prepend
             restores = []
             restore = history._restore_state
 
@@ -154,13 +172,9 @@ async def sample(
                 start = perf_counter()
                 await app._open_session(session.session_id)
                 installed_ms = (perf_counter() - start) * 1000
-                composer = app.query_one(Composer)
-                previous = composer.text
-                key_start = perf_counter()
-                composer.post_message(Key("x", "x"))
-                await until(lambda composer=composer, previous=previous: composer.text != previous)
-                key_ms = (perf_counter() - key_start) * 1000
-                interactive_ms = (perf_counter() - start) * 1000
+                key_start, edited = await time_composer_key(app.query_one(Composer))
+                key_ms = (edited - key_start) * 1000
+                interactive_ms = (edited - start) * 1000
                 await until(lambda: history.render_complete and bool(history.lines))
                 await app.screen.wait_for_refresh()
                 history_frame_ms = (perf_counter() - start) * 1000
@@ -193,9 +207,11 @@ async def sample(
                 )
                 if scenario == "home_to_running":
                     for _ in range(2):
+                        page_start = perf_counter()
                         if not await app._prepend_history_window(app._view_revision):
                             break
                         await history.wait_until_rendered()
+                        result["pages"][-1]["rendered_ms"] = (perf_counter() - page_start) * 1000
                     await app._new_session()
                     await pilot.pause()
             start = perf_counter()
@@ -216,6 +232,7 @@ def main() -> None:
     parser.add_argument("--messages", type=int, nargs="+", default=[1000, 10000])
     parser.add_argument("--reasoning-chars", type=int, default=48070)
     parser.add_argument("--repeat", type=int, default=3)
+    parser.add_argument("--backend", choices=["files", "sqlite"], default="files")
     parser.add_argument("--workdir", type=Path)
     args = parser.parse_args()
     if args.workdir:
@@ -223,9 +240,15 @@ def main() -> None:
     print(json.dumps({"python": platform.python_version(), "platform": platform.platform()}))
     for count in args.messages:
         for repeat in range(args.repeat):
+            gc.collect()  # Each sample starts after the previous Textual App has been collected.
             with TemporaryDirectory(prefix="tui-", dir=args.workdir) as directory:
                 measured = asyncio.run(
-                    sample(Path(directory), messages=count, reasoning_chars=args.reasoning_chars)
+                    sample(
+                        Path(directory),
+                        messages=count,
+                        reasoning_chars=args.reasoning_chars,
+                        backend=args.backend,
+                    )
                 )
             print(json.dumps({"repeat": repeat, **measured}), flush=True)
 

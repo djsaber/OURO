@@ -43,7 +43,7 @@ from ouro.core.messages import MessageFact, MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.provider import ProviderRetryNotice
 from ouro.core.resources import ResourceRecord, ResourceSource, SessionResourceReference
-from ouro.core.response_drafts import ResponseDraftChunk, ResponseDraftPage
+from ouro.core.response_drafts import ResponseDraftChunk, ResponseDraftHead, ResponseDraftPage
 from ouro.core.session_commits import (
     SessionCommit,
     SessionCommitConflict,
@@ -98,6 +98,7 @@ from ouro.sessions.sqlite_compactions import insert_compaction
 from ouro.sessions.sqlite_connections import ExecutionConnections, NativeSessionRunLock
 from ouro.sessions.sqlite_drafts import append_chunk as append_draft_chunk
 from ouro.sessions.sqlite_drafts import publish_draft
+from ouro.sessions.sqlite_drafts import read_head as read_draft_head
 from ouro.sessions.sqlite_drafts import read_page as read_draft_page
 from ouro.sessions.sqlite_facts import load_snapshot as load_tool_facts
 from ouro.sessions.sqlite_facts import (
@@ -1086,6 +1087,10 @@ class SQLiteSessionStore:
     ) -> int:
         with _SQLiteMutation(self, durable=False):
             return append_draft_chunk(self._transaction_connection(), session_id, context_id, chunk)
+
+    def response_draft_head(self, session_id: str, context_id: str) -> ResponseDraftHead | None:
+        with self.session_read(session_id) as connection:
+            return read_draft_head(connection, session_id, context_id)
 
     def load_response_draft(
         self, session_id: str, context_id: str, *, after_cursor: int = 0, limit: int | None = None

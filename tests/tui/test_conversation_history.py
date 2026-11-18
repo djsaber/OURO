@@ -28,7 +28,7 @@ from ouro.tui.conversation.history_rendering import (
     _run_summary,
 )
 from ouro.tui.conversation.markdown_stream import AssistantMarkdownStream, split_markdown_blocks
-from ouro.tui.conversation.messages import ToolNavigationRequested
+from ouro.tui.conversation.messages import MessageCopyRequested, ToolNavigationRequested
 from ouro.tui.conversation.tools import ToolActivityRow
 from ouro.tui.conversation.turn import AssistantTurn
 from ouro.tui.conversation.view import ConversationView
@@ -210,6 +210,7 @@ class _HistoryApp(App[None]):
         )
         self.navigation: list[tuple[str, str]] = []
         self.navigation_batches: list[str | None] = []
+        self.copied: list[str] = []
 
     def compose(self) -> ComposeResult:
         yield self.history
@@ -217,6 +218,9 @@ class _HistoryApp(App[None]):
     def on_tool_navigation_requested(self, message: ToolNavigationRequested) -> None:
         self.navigation.append((message.parent_run_id, message.parent_tool_call_id))
         self.navigation_batches.append(message.parent_batch_id)
+
+    def on_message_copy_requested(self, message: MessageCopyRequested) -> None:
+        self.copied.append(message.text)
 
 
 class _ThemedHistoryApp(_HistoryApp):
@@ -246,7 +250,16 @@ class _StreamingLinesApp(App[None]):
         yield self.tail
 
 
-async def test_long_reasoning_materializes_only_viewport_rows(monkeypatch):
+@pytest.mark.parametrize(
+    ("entry", "count"),
+    [
+        (TranscriptEntry(kind="assistant", reasoning="thought\n" * 5000), 5000),
+        (TranscriptEntry(kind="assistant", text="**thought**\n\n" * 400), 400),
+        (TranscriptEntry(kind="user", text="thought\n" * 400), 400),
+    ],
+    ids=["reasoning", "markdown", "user"],
+)
+async def test_history_materializes_only_viewport_rows(monkeypatch, entry, count):
     painted = []
     original = PreparedLine.to_strip
 
@@ -257,12 +270,13 @@ async def test_long_reasoning_materializes_only_viewport_rows(monkeypatch):
     monkeypatch.setattr(PreparedLine, "to_strip", materialize)
     app = _ThemedHistoryApp()
     async with app.run_test(size=(80, 24)) as pilot:
-        await app.history.load((TranscriptEntry(kind="assistant", reasoning="thought\n" * 5000),))
+        await app.history.load((entry,))
         await pilot.pause()
-        assert len(app.history.lines) > 5000
+        assert len(app.history.lines) > count
+        assert all(isinstance(line, PreparedLine) for line in app.history.lines)
         assert 0 < len(painted) < 10 * app.history.size.height
         initial = len(painted)
-        assert app.history.rendered_text.count("thought") == 5000
+        assert app.history.rendered_text.count("thought") == count
         assert len(painted) == initial
         app.history.scroll_end(animate=False, immediate=True)
         await pilot.pause()
@@ -528,7 +542,7 @@ async def test_same_session_history_reuse_renders_only_the_changed_suffix(
 
 
 @pytest.mark.parametrize("kind", ["user", "command"])
-async def test_prepend_reuses_existing_strips_and_remaps_message_click_targets(monkeypatch, kind):
+async def test_prepend_reuses_existing_rows_and_resolves_scrolled_clicks(monkeypatch, kind):
     app = _HistoryApp()
     entries = tuple(TranscriptEntry(kind=kind, text=f"recent {i}") for i in range(30))
     older = tuple(TranscriptEntry(kind="assistant", text=f"older {i}") for i in range(12))
@@ -542,6 +556,7 @@ async def test_prepend_reuses_existing_strips_and_remaps_message_click_targets(m
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
         await app.history.load(entries)
+        saved_rows = app.history._pieces[app.history._piece_indexes_by_entry[5][0]].rows
         monkeypatch.setattr(conversation_history, "_render_entry_requests", counted)
         app.history.prepend(older)
         app.history.append(TranscriptEntry(kind="assistant", text="live tail"))
@@ -552,16 +567,12 @@ async def test_prepend_reuses_existing_strips_and_remaps_message_click_targets(m
             TranscriptEntry(kind="assistant", text="live tail"),
         )
         assert rendered == [*(entry.text for entry in older), "recent 0", "live tail"]
-        # This message frame was retained, including its remapped right-click target.
-        indexes = {
-            segment.style.meta.get("ouro_message")
-            for piece in app.history._pieces
-            if piece.entry_index == 17
-            for strip in piece.rows
-            for segment in strip
-            if segment.style is not None and "ouro_message" in segment.style.meta
-        }
-        assert indexes == {17}
+        assert app.history._pieces[app.history._piece_indexes_by_entry[17][0]].rows is saved_rows
+        row = app.history.entry_line(17) + 1
+        app.history.scroll_to(y=row, animate=False, immediate=True)
+        await pilot.pause()
+        await pilot.click(app.history, offset=(2, row - app.history.scroll_offset.y), button=3)
+        assert app.copied == ["recent 5"]
         assert app.history.rendered_text.index("older 0") < app.history.rendered_text.index(
             "recent 0"
         )
@@ -1068,6 +1079,15 @@ def test_split_markdown_blocks_preserves_every_block() -> None:
 def test_split_markdown_blocks_of_blank_document_is_empty() -> None:
     assert split_markdown_blocks("") == ()
     assert split_markdown_blocks("\n\n  \n") == ()
+
+
+def test_nested_and_inline_markup_keep_their_top_level_blocks() -> None:
+    blocks = (
+        "- **outer**\n  - [inner](https://example.org)\n\n",
+        "| a | b |\n|---|---|\n| *x* | `y` |\n\n",
+        "Heading\n=======\n",
+    )
+    assert split_markdown_blocks("".join(blocks)) == blocks
 
 
 @pytest.mark.parametrize(

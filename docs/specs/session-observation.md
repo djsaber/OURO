@@ -100,7 +100,8 @@ text, reasoning, tool, interaction, run, compaction, lifecycle, agent, unknown
 当前请求小头、有效上下文指标和当前 Draft。`events` 只承载当前 Draft 的显示分片，不包含历史通知。
 `position` 包含事实修订号、消息位置和草稿偏移；分页时附带仅在内存使用的事实页位置。
 
-快照与后续事实页都在 `SessionRepository.session_read` 内取得一致数据。SQLite 使用短读事务，Files 使用短会话锁；
+快照与后续事实页都在 `SessionRepository.session_read` 内取得一致数据。近期窗口和观察位置共用本次读取的 Session 头。
+SQLite 使用短读事务，Files 使用短会话锁；
 嵌套查询共享资源寿命。存储边界在通知脱敏、界面排版及异步等待前释放。观察不启动执行、申请 Run 所有权或恢复任务。
 
 `observe_session(history_limit=...)` 可选择近期窗口，省略时读取完整历史。`history_window` 按消息顺序返回消息、
@@ -112,7 +113,8 @@ text, reasoning, tool, interaction, run, compaction, lifecycle, agent, unknown
 ## 统一增量观察
 
 `RuntimeSupervisor.observe_session` 返回 `SessionObservation`。订阅先登记，再读取一致快照；共享跟踪器的初始
-活动与起始位置也在同一读取边界内取得，避免旧状态配上新位置而漏掉变化。
+活动与起始位置也在同一读取边界内取得。正在生成响应时，跟踪器按索引读取最后一个草稿片段的通道和位置，
+据此区分思考与正文，并从下一片段开始跟踪。正文观察者从自己的快照取得已有输出。
 
 `get()` 返回一页 `SessionObservationBatch`：初次包含 snapshot；后续包含当前事实、新消息或在线通知。
 消费者应用后调用 `acknowledge(batch)`，才推进 `applied_position`；未确认时重复 get 返回同一页。
@@ -133,7 +135,8 @@ text, reasoning, tool, interaction, run, compaction, lifecycle, agent, unknown
 
 本地连续通知直接交付，不等待轮询。提交通知携带提交修订号及其之前的消息位置，最后一项携带完整确认位置。
 若缺少早先正文，则交给同一事实读取管线补齐，避免晚到的旧正文排在新输出之后。纯在线进度不确认事实提交。
-状态订阅只保留一个合并通知；Draft 增长不推进事实修订号，也不逐字刷新任务树。
+状态订阅只保留一个合并通知。同步子任务等待者收到持久化事实页时重新检查父会话的结果回执，
+即使批次完成通知已被合并也能确认交付。Draft 增长不推进事实修订号，也不逐字刷新任务树。
 
 当前响应使用 `ResponseStreamPosition(context_id, after_cursor, cursor)`。草稿保存可恢复前缀后即交付本地通知；
 工具参数片段仅在线预览。正式 assistant 消息提交后关闭 Draft，遗漏的正文由消息补齐，已显示前缀不重复追加。
