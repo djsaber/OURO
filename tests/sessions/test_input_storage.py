@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
@@ -10,20 +11,20 @@ import pytest
 
 import ouro.local_io as local_io
 import ouro.sessions.backends.files.commits as file_commits
-import ouro.sessions.backends.files.inputs as file_inputs
 import ouro.sessions.sqlite_inputs as sqlite_inputs
 from ouro.application.sessions.editing import undo_user_input
 from ouro.core.base import utc_now
 from ouro.core.errors import PersistenceError, SessionRecoveryRequiredError
+from ouro.core.input_content import InputFileReference
 from ouro.core.inputs import InputRecord, InputState, InputStateChange, QueuedInput
 from ouro.core.messages import InputMessageReference, MessageRecord
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict, SessionCommitStep
 from ouro.core.state import SessionRecord
-from ouro.sessions.backends.files.inputs import input_key, input_path
 from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.sessions.portable import PortableSession, SessionBundle, populate_sessions
 from tests.input_facts import append_input_messages
+from tests.session_storage import session_connection
 
 
 @pytest.fixture(params=["files", "sqlite"])
@@ -68,6 +69,52 @@ def consume(session, record):
                 input_id=record.item.queue_id, status="consumed", message_ids=(message.message_id,)
             ),
         ),
+    )
+
+
+def test_accepted_input_owns_sparse_body_and_history_materializes_independent_views(
+    store, monkeypatch
+):
+    session = SessionRecord()
+    record = accepted(session)
+    record.item.attachments = (InputFileReference(name="one", path="/workspace/one"),)
+    record.item.extension_catalog_id = "catalog"
+    record.item.extension_generations = ({"settings": {"empty": [], "value": None}},)
+    body = MessageRecord(
+        session_id=session.session_id,
+        role="user",
+        input_ref=InputMessageReference(input_id=record.item.queue_id),
+    )
+    attachment = MessageRecord(
+        session_id=session.session_id,
+        role="user",
+        scaffold=True,
+        semantic_tag="attachments",
+        input_ref=InputMessageReference(input_id=record.item.queue_id, part="attachments"),
+    )
+    echo = body.model_copy(update={"message_id": "msg_echo"})
+    messages = [attachment, body, echo]
+    state = InputState.pending(record).model_copy(
+        update={
+            "status": "consumed",
+            "message_ids": tuple(message.message_id for message in messages),
+        }
+    )
+    store.create_session_snapshot(session, messages, inputs=(record,), input_states=(state,))
+    with session_connection(store, session.session_id) as connection:
+        payload = json.loads(connection.execute("SELECT payload FROM inputs").fetchone()[0])
+    assert payload["schema_version"] == record.schema_version
+    assert payload["item"]["semantic_tag"] is None
+    assert not {"driver", "skill_activations", "plugin_id"} & payload["item"].keys()
+    assert store.load_input(session.session_id, record.item.queue_id) == record
+    monkeypatch.setattr(InputRecord, "__deepcopy__", lambda *_: pytest.fail("copied full input"))
+    recent, earlier, observation = store.load_messages_tail(session.session_id, limit=3)
+    assert recent.text_content == record.item.prompt
+    recent.input_attachments[0].name = "edited view"
+    assert earlier.input_attachments[0].name == "one"
+    assert observation.input_attachments[0].name == "one"
+    assert (
+        store.load_message(session.session_id, body.message_id).input_attachments[0].name == "one"
     )
 
 
@@ -133,38 +180,22 @@ def test_local_input_change_does_not_read_or_rewrite_accepted_bodies(
     else:
         request = SessionCommit(before=session, inputs=(accepted(session, "new_input"),))
     with monkeypatch.context() as patch:
-        if isinstance(store, LocalSessionStore):
-            open_path = Path.open
-            replace = local_io.replace_path_with_retry
-            body_names = {f"{input_key(record.item.queue_id)}.json" for record in records}
+        connect = sqlite3.connect
 
-            def guarded_open(path, *args, **kwargs):
-                assert not (path.parent.name == "records" and path.name in body_names)
-                return open_path(path, *args, **kwargs)
+        def authorize(operation, table, column, _database, _source):
+            if table == "inputs" and (
+                (operation == sqlite3.SQLITE_READ and column == "payload")
+                or operation in {sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE}
+            ):
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
 
-            def guarded_replace(source, target):
-                assert not (target.parent.name == "records" and target.name in body_names)
-                return replace(source, target)
+        def guarded_connect(*args, **kwargs):
+            connection = connect(*args, **kwargs)
+            connection.set_authorizer(authorize)
+            return connection
 
-            patch.setattr(Path, "open", guarded_open)
-            patch.setattr(local_io, "replace_path_with_retry", guarded_replace)
-        else:
-            connect = store._connect
-
-            def authorize(operation, table, column, _database, _source):
-                if table == "inputs" and (
-                    (operation == sqlite3.SQLITE_READ and column == "payload")
-                    or operation in {sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE}
-                ):
-                    return sqlite3.SQLITE_DENY
-                return sqlite3.SQLITE_OK
-
-            def guarded_connect():
-                connection = connect()
-                connection.set_authorizer(authorize)
-                return connection
-
-            patch.setattr(store, "_connect", guarded_connect)
+        patch.setattr(sqlite3, "connect", guarded_connect)
         store.commit_session(request)
     assert [
         store.load_input(session.session_id, record.item.queue_id) for record in records
@@ -172,22 +203,25 @@ def test_local_input_change_does_not_read_or_rewrite_accepted_bodies(
 
 
 @pytest.mark.parametrize("boundary", ["decision", "body", "state", "head", "cleanup"])
-def test_file_input_acceptance_recovers_native_decision(tmp_path, monkeypatch, boundary):
+def test_file_input_and_message_recovers_one_decision(tmp_path, monkeypatch, boundary):
     store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord()
     store.create_session(session)
     record = accepted(session)
-    request = SessionCommit(before=session, inputs=(record,))
+    request = consume(session, record).model_copy(update={"inputs": (record,)})
     directory = store.sessions_dir / session.session_id
-    target = {
-        "decision": directory / "commit.json",
-        "body": input_path(directory, record.item.queue_id),
-    }.get(boundary)
     replace, unlink = local_io.replace_path_with_retry, Path.unlink
     reached = []
     write_head = file_commits.write_session
     write_state = file_commits.write_state
+    write_input = file_commits.write_input
+
+    def fail_input(connection, record):
+        write_input(connection, record)
+        if boundary == "body":
+            reached.append(boundary)
+            raise OSError("injected input acceptance interruption")
 
     def fail_state(connection, state, **kwargs):
         write_state(connection, state, **kwargs)
@@ -203,7 +237,7 @@ def test_file_input_acceptance_recovers_native_decision(tmp_path, monkeypatch, b
 
     def fail_replace(source, destination):
         replace(source, destination)
-        if destination == target:
+        if boundary == "decision" and destination == directory / "commit.json":
             reached.append(boundary)
             raise OSError("injected input acceptance interruption")
 
@@ -214,6 +248,7 @@ def test_file_input_acceptance_recovers_native_decision(tmp_path, monkeypatch, b
         return unlink(path, *args, **kwargs)
 
     with monkeypatch.context() as patch:
+        patch.setattr(file_commits, "write_input", fail_input)
         patch.setattr(file_commits, "write_state", fail_state)
         patch.setattr(file_commits, "write_session", fail_head)
         patch.setattr(local_io, "replace_path_with_retry", fail_replace)
@@ -236,10 +271,11 @@ def test_file_input_acceptance_recovers_native_decision(tmp_path, monkeypatch, b
         pass
     assert reader.load_input(session.session_id, record.item.queue_id) == record
     state = reader.load_input_state(session.session_id, record.item.queue_id)
-    assert state is not None and state.status == "pending"
-    assert reader.load_session_record(session.session_id).pending_input_ids == (
-        record.item.queue_id,
-    )
+    assert state is not None and state.status == "consumed"
+    messages = reader.load_messages_page(session.session_id)[0]
+    assert [message.text_content for message in messages] == [record.item.prompt]
+    assert state.message_ids == (messages[0].message_id,)
+    assert reader.load_session_record(session.session_id).pending_input_ids == ()
     assert reader.load_session_record(session.session_id).last_commit_id == request.operation_id
     with pytest.raises(SessionCommitConflict, match="already applied"):
         reader.commit_session(request)
@@ -386,8 +422,12 @@ def test_file_terminal_input_recovery_preserves_original_body(
         )
     )
     directory = store.sessions_dir / session.session_id
-    body = input_path(directory, record.item.queue_id)
-    original = body.read_bytes()
+
+    def stored_body():
+        with session_connection(store, session.session_id) as connection:
+            return connection.execute("SELECT payload FROM inputs").fetchone()[0]
+
+    original = stored_body()
     unlink = Path.unlink
 
     write_head = file_commits.write_session
@@ -414,7 +454,7 @@ def test_file_terminal_input_recovery_preserves_original_body(
         patch.setattr(Path, "unlink", interrupt_cleanup)
         with pytest.raises(PersistenceError, match="injected"):
             store.commit_session(request)
-    assert body.read_bytes() == original
+    assert stored_body() == original
     reader = LocalSessionStore(tmp_path)
     reader.initialize()
     if action == "consume":
@@ -434,7 +474,7 @@ def test_file_terminal_input_recovery_preserves_original_body(
     assert len(messages) == (1 if action == "consume" else 0)
     assert state.message_ids == tuple(message.message_id for message in messages)
     assert reader.load_session_record(session.session_id).pending_input_ids == ()
-    assert body.read_bytes() == original
+    assert stored_body() == original
 
 
 def test_cross_backend_transfer_retains_pending_and_terminal_acceptances(store, tmp_path):
@@ -499,7 +539,7 @@ def test_snapshot_rejects_invalid_input_references_before_publication(store, dam
         store.load_session_record(session.session_id)
 
 
-def test_file_failure_before_acceptance_decision_leaves_no_input_fact(tmp_path, monkeypatch):
+def test_file_input_acceptance_rolls_back_without_a_journal(tmp_path, monkeypatch):
     store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord()
@@ -507,22 +547,23 @@ def test_file_failure_before_acceptance_decision_leaves_no_input_fact(tmp_path, 
     record = accepted(session)
     request = SessionCommit(before=session, inputs=(record,))
     directory = store.sessions_dir / session.session_id
-    replace = local_io.replace_path_with_retry
-
-    def interrupt(source, destination):
-        if destination == directory / "commit.json":
-            raise OSError("injected before input decision")
-        return replace(source, destination)
-
-    with monkeypatch.context() as patch:
-        patch.setattr(local_io, "replace_path_with_retry", interrupt)
-        with pytest.raises(PersistenceError, match="injected"):
-            store.commit_session(request)
+    monkeypatch.setattr(store._commits, "_publish_decision", lambda *_: pytest.fail("journal"))
+    with session_connection(store, session.session_id) as connection:
+        connection.execute(
+            "CREATE TRIGGER interrupt AFTER INSERT ON input_states BEGIN "
+            "SELECT RAISE(ABORT, 'injected input fault'); END"
+        )
+    with pytest.raises(PersistenceError, match="injected"):
+        store.commit_session(request)
     reader = LocalSessionStore(tmp_path)
     assert reader.load_session_record(session.session_id) == session
     assert reader.load_input(session.session_id, record.item.queue_id) is None
     assert reader.load_input_state(session.session_id, record.item.queue_id) is None
     assert not (directory / "commit.json").exists()
+    with session_connection(store, session.session_id) as connection:
+        connection.execute("DROP TRIGGER interrupt")
+    store.commit_session(request)
+    assert reader.load_input(session.session_id, record.item.queue_id) == record
 
 
 @pytest.mark.parametrize("identity", ["../host/结果:1", "x" * 256])
@@ -555,9 +596,8 @@ def test_cold_message_queries_resolve_only_selected_input_bodies(store, monkeypa
     ]
     append_input_messages(store, messages)
     is_files = isinstance(store, LocalSessionStore)
-    module = file_inputs if is_files else sqlite_inputs
     decoded = []
-    decode = module.decode_versioned_record_json
+    decode = sqlite_inputs.decode_versioned_record_json
 
     def track(model, payload, **kwargs):
         value = decode(model, payload, **kwargs)
@@ -565,18 +605,18 @@ def test_cold_message_queries_resolve_only_selected_input_bodies(store, monkeypa
             decoded.append(value.item.queue_id)
         return value
 
-    monkeypatch.setattr(module, "decode_versioned_record_json", track)
+    monkeypatch.setattr(sqlite_inputs, "decode_versioned_record_json", track)
+    statements = []
+    connect = sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", traced_connect)
     if is_files:
         reader = LocalSessionStore(store.sessions_dir.parent)
-        open_path = Path.open
-        allowed = {f"{input_key(f'input_{index}')}.json" for index in (28, 29)}
-
-        def guarded_open(path, *args, **kwargs):
-            if path.parent.name == "records" and path.parent.parent.name == "inputs":
-                assert path.name in allowed, "a selected message read an unrelated Input"
-            return open_path(path, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "open", guarded_open)
     else:
         reader = SQLiteSessionStore(store.database)
     if query == "point":
@@ -592,7 +632,8 @@ def test_cold_message_queries_resolve_only_selected_input_bodies(store, monkeypa
         found = reader.load_messages_tail(session.session_id, limit=2)
         expected = messages[-1:-3:-1]
     assert found == expected
-    assert decoded == [message.input_id for message in expected]
+    assert sorted(decoded) == sorted(message.input_id for message in expected)
+    assert len([sql for sql in statements if " FROM inputs " in sql]) == 1
 
 
 @pytest.mark.parametrize("damage", ["unbound", "role", "scaffold", "tag"])

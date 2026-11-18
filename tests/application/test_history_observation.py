@@ -20,11 +20,11 @@ from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest, ToolInputRequest, ToolInvocation
-from ouro.sessions.backends.files.inputs import input_path
 from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.input_facts import queued_input
 from tests.response_drafts import persist_response_draft
+from tests.session_storage import session_connection
 from tests.tool_batches import persist_tool_batch
 
 
@@ -123,15 +123,11 @@ def test_observing_invalid_pending_input_does_not_repair_durable_state(store):
             prompt="accepted",
         ),
     )
-    if isinstance(store, LocalSessionStore):
-        path = input_path(store.sessions_dir / session.session_id, item.queue_id)
-        path.write_text("{}")
-    else:
-        with store.session_mutation(session.session_id):
-            store._transaction_connection().execute(
-                "UPDATE inputs SET payload = '{}' WHERE session_id = ? AND input_id = ?",
-                (session.session_id, item.queue_id),
-            )
+    with session_connection(store, session.session_id) as connection:
+        connection.execute(
+            "UPDATE inputs SET payload = '{}' WHERE session_id = ? AND input_id = ?",
+            (session.session_id, item.queue_id),
+        )
     service = SessionService(store)
 
     with pytest.raises(PersistenceError):

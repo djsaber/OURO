@@ -65,8 +65,8 @@ kind 取 `providers`、`provider-templates`、`mcp`、`agents`、`prompts`、`se
 ## 归档与验证
 
 ZIP 根部 `manifest.json` 包含 `format=ouro-data`、`version=1`、kind 与领域 data。
-配置原样保留当前权威 JSON 结构。会话 data 使用后端无关的 `SessionBundle`，包含当前 Session data layout
-version；内容文件由清单中的类型化引用关联。技能内容位于 `skills/<name>/…`，资源内容位于 `sessions/<session_id>/resources/files/<filename>`。
+配置原样保留当前权威 JSON 结构。会话 data 使用后端无关的 `SessionBundle`；其中 `layout_version=43` 标识归档内记录的组织方式，独立于 Files 布局和 SQLite schema。
+内容文件由清单中的类型化引用关联。技能内容位于 `skills/<name>/…`，资源内容位于 `sessions/<session_id>/resources/files/<filename>`。
 
 读取前检查数量与声明解压体积，上限 10,000 条目与 512 MiB。拒绝路径穿越、绝对路径、Windows 特殊路径、
 符号链接、非普通文件、加密条目和大小写冲突路径；只向新建 staging 写入已校验的条目，不使用 `extractall`。

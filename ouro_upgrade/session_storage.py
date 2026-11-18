@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from contextlib import closing
 from pathlib import Path
 
-from ouro.core.inputs import InputState
+from ouro.core.inputs import InputRecord, InputState
+from ouro.sessions.sqlite_inputs import INPUT_SCHEMA, write_input
 from ouro.sessions.sqlite_observation import OBSERVATION_SCHEMA
 from ouro_upgrade.databases import database
 from ouro_upgrade.errors import UpgradeDataError, require
-from ouro_upgrade.files import children, record
+from ouro_upgrade.files import children, decode, record
 from ouro_upgrade.json_codec import dumps, loads
 from ouro_upgrade.records import MODELS, NESTED_RECORDS, convert, validate
 from ouro_upgrade.retired_fields import sql_predicate
@@ -108,9 +110,20 @@ def current_records(connection: sqlite3.Connection, *, include_delegations: bool
 
 
 def current_file(connection: sqlite3.Connection) -> bool:
-    return connection.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_revisions'"
-    ).fetchone() is not None and current_records(connection)
+    return (
+        _has_table(connection, "inputs")
+        and _has_table(connection, "session_revisions")
+        and current_records(connection)
+    )
+
+
+def _has_table(connection: sqlite3.Connection, name: str) -> bool:
+    return (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+        ).fetchone()
+        is not None
+    )
 
 
 def authority_records(connection: sqlite3.Connection, *, include_delegations: bool = False) -> bool:
@@ -151,12 +164,8 @@ def file_session(work: Workspace, directory: Path) -> None:
         )
 
     def transform(connection: sqlite3.Connection) -> bool:
-        changed = (
-            connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_revisions'"
-            ).fetchone()
-            is None
-        )
+        connection.execute("PRAGMA journal_mode=WAL")
+        changed = not _has_table(connection, "session_revisions")
         if changed:
             connection.execute(
                 "CREATE TABLE input_states (session_id TEXT NOT NULL, input_id TEXT NOT NULL, "
@@ -180,6 +189,33 @@ def file_session(work: Workspace, directory: Path) -> None:
                     (state.session_id, state.input_id, payload),
                 )
                 work.stage(name, None)
+        if not _has_table(connection, "inputs"):
+            connection.execute(INPUT_SCHEMA)
+            expected = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT input_id FROM input_states WHERE session_id = ?", (directory.name,)
+                )
+            }
+            sources = (
+                path.relative_to(work.home).as_posix()
+                for path in children(directory / "inputs/records", "*.json")
+            )
+            for name, data in work.read_many(sources):
+                accepted = validate(InputRecord, decode(data))
+                identity = accepted.item.queue_id
+                require(
+                    accepted.session_id == directory.name
+                    and identity in expected
+                    and Path(name).stem == hashlib.sha256(identity.encode()).hexdigest(),
+                    name,
+                    "accepted input does not match its stored identity or state",
+                )
+                write_input(connection, accepted)
+                expected.remove(identity)
+                work.stage(name, None)
+            require(not expected, relative, "missing accepted input body")
+            changed = True
         return authority_records(connection) or changed
 
     database(

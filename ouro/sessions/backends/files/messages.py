@@ -18,9 +18,9 @@ from ouro.core.tool_facts import ToolCallRecord, ToolOutcomeRecord
 from ouro.resources.files import read_resource_content
 from ouro.resources.media import materialize_message_media
 from ouro.sessions import sqlite_facts, sqlite_resources
-from ouro.sessions.backends.files.inputs import read_input
 from ouro.sessions.backends.files.message_locations import FileMessageIndex, FileMessageReference
 from ouro.sessions.message_reads import resolve_messages
+from ouro.sessions.sqlite_inputs import read_input
 
 
 def _run_key(run_id: str, identity: str) -> str:
@@ -90,7 +90,7 @@ class FileMessageRecords:
         reference = fact.outcome_ref
         message = materialize_owned_message(
             fact,
-            read_input(directory, fact.session_id, fact.input_ref.input_id)
+            read_input(connection, fact.session_id, fact.input_ref.input_id)
             if fact.input_ref is not None
             else None,
             calls=[
@@ -134,11 +134,7 @@ class FileMessageRecords:
         connection: sqlite3.Connection,
         include_media: bool = True,
     ) -> list[MessageRecord]:
-        messages = resolve_messages(
-            facts,
-            connection=connection,
-            read_input=lambda session_id, input_id: read_input(directory, session_id, input_id),
-        )
+        messages = resolve_messages(facts, connection=connection)
         return [
             materialize_message_media(
                 message, lambda identity: FileMessageRecords.media(connection, directory, identity)

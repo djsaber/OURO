@@ -214,7 +214,6 @@ def file_session(work: Workspace, directory: Path) -> SessionIndexEntry:
         entry = write(connection, data, directory=temporary)
         connection.commit()
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        connection.execute("PRAGMA journal_mode=DELETE")
     outputs = {
         f"{relative}/{path.relative_to(temporary).as_posix()}": path
         for path in temporary.rglob("*")
@@ -367,7 +366,6 @@ def sqlite(connection: sqlite3.Connection, units: UpgradeUnits) -> bool | Path:
                 save_delegation(output, loads(row[0]))
         output.commit()
         output.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        output.execute("PRAGMA journal_mode=DELETE")
     return target
 
 

@@ -111,7 +111,6 @@ from ouro.sessions.backends.files.delegations import (
     record_path as delegation_path,
 )
 from ouro.sessions.backends.files.index import LocalSessionIndex
-from ouro.sessions.backends.files.inputs import input_path, read_input
 from ouro.sessions.backends.files.journal import reverse_jsonl
 from ouro.sessions.backends.files.messages import (
     FileMessageRecords,
@@ -127,7 +126,14 @@ from ouro.sessions.sqlite_drafts import publish_draft
 from ouro.sessions.sqlite_drafts import read_page as read_draft_page
 from ouro.sessions.sqlite_facts import load_snapshot as load_tool_facts
 from ouro.sessions.sqlite_facts import load_states, read_call_state, write_call_state, write_facts
-from ouro.sessions.sqlite_inputs import read_state, write_state
+from ouro.sessions.sqlite_inputs import (
+    read_input,
+    read_inputs,
+    read_state,
+    read_states,
+    write_input,
+    write_state,
+)
 from ouro.sessions.sqlite_observation import advance_revision, read_changes, read_revision
 from ouro.sessions.sqlite_requests import (
     read_headers,
@@ -272,8 +278,8 @@ class LocalSessionStore:
             return read_call_state(reader.connection(), session_id, identity)
 
     def load_input(self, session_id: str, input_id: str) -> InputRecord | None:
-        with self.session_read(session_id):
-            return read_input(self._require_session_dir(session_id), session_id, input_id)
+        with self.session_read(session_id) as reader:
+            return read_input(reader.connection(), session_id, input_id)
 
     def load_input_state(self, session_id: str, input_id: str) -> InputState | None:
         with self.session_read(session_id) as reader:
@@ -607,8 +613,6 @@ class LocalSessionStore:
             ):
                 raise PersistenceError("Session snapshot has a missing Harness checkpoint")
             staged = FileSessionCommits(lambda _session_id: staging_dir)
-            for record in inputs:
-                write_model_atomic(input_path(staging_dir, record.item.queue_id), record)
             for version in versions:
                 if version.session_id != session.session_id:
                     raise PersistenceError("Harness checkpoint belongs to another Session")
@@ -645,6 +649,8 @@ class LocalSessionStore:
                 initialize_index(connection)
                 self._messages.create(connection, staging_dir, messages)
                 write_session(connection, session)
+                for record in inputs:
+                    write_input(connection, record)
                 for state in states:
                     write_state(connection, state)
                 for reference in resource_references or ():
@@ -1052,22 +1058,8 @@ class LocalSessionStore:
                 compactions=history.compactions,
                 tool_facts=load_tool_facts(reader.connection(), session_id),
                 call_states=load_states(reader.connection(), session_id),
-                inputs=sorted(
-                    (
-                        decode_versioned_record_json(
-                            InputRecord, read_text_atomic(path), label="input"
-                        )
-                        for path in (session_dir / "inputs" / "records").glob("*.json")
-                    ),
-                    key=lambda record: record.item.queue_id,
-                ),
-                input_states=[
-                    decode_versioned_record_json(InputState, row[0], label="input state")
-                    for row in reader.connection().execute(
-                        "SELECT payload FROM input_states WHERE session_id = ? ORDER BY input_id",
-                        (session_id,),
-                    )
-                ],
+                inputs=list(read_inputs(reader.connection(), session_id)),
+                input_states=list(read_states(reader.connection(), session_id)),
                 extension_states=self.load_session_extension_states(session_id),
                 harness_versions=[
                     self._commits.load_harness(session_id, path.stem)
@@ -1529,7 +1521,7 @@ class LocalSessionStore:
             raise UnsupportedDataVersionError(
                 f"unsupported OURO data layout at {self._layout_path}: "
                 f"found {version}, expected {DATA_LAYOUT_VERSION}; "
-                "use a new OURO_HOME or remove obsolete development data"
+                "stop writers and check this home with ouro-upgrade --home <OURO_HOME> --check"
             )
 
     def _recover_trash_staging(self) -> None:

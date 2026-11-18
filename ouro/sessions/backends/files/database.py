@@ -10,6 +10,7 @@ from pathlib import Path
 from ouro.core.errors import PersistenceError
 from ouro.sessions.sqlite_connections import ExecutionConnections
 from ouro.sessions.sqlite_drafts import DRAFT_SCHEMA
+from ouro.sessions.sqlite_inputs import INPUT_SCHEMA
 from ouro.sessions.sqlite_observation import OBSERVATION_SCHEMA
 from ouro.sessions.sqlite_resources import RESOURCE_SCHEMA
 
@@ -185,6 +186,7 @@ def initialize_index(connection: sqlite3.Connection) -> None:
     connection.executescript(
         "BEGIN;\n"
         + _SCHEMA
+        + INPUT_SCHEMA
         + OBSERVATION_SCHEMA
         + DRAFT_SCHEMA
         + RESOURCE_SCHEMA

@@ -12,7 +12,12 @@ from ouro.core.context_snapshots import ModelRequestHeader, RequestManifestRecor
 from ouro.core.errors import CompactionStateError, PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessState, HarnessVersion
-from ouro.core.inputs import InputRecord, InputState, InputStateChange
+from ouro.core.inputs import (
+    InputRecord,
+    InputState,
+    InputStateChange,
+    validate_input_message_semantics,
+)
 from ouro.core.message_frames import MessageTruncation
 from ouro.core.messages import MessageFact, MessageRecord
 from ouro.core.session_observation import SessionObservationPosition
@@ -269,7 +274,6 @@ def prepare_session_commit(
             versions.append(harness)
         if step.message is not None:
             message = step.message.model_copy(
-                deep=True,
                 update={
                     "sequence": session.message_count + 1,
                     "before_harness_version": previous_version,
@@ -445,11 +449,18 @@ def _prepare_inputs(
     *,
     withdrawn_input_ids: tuple[str, ...],
 ) -> tuple[InputState, ...]:
+    if not (
+        request.inputs
+        or request.input_changes
+        or request.before_message_id is not None
+        or any(message.input_ref is not None for message in messages)
+    ):
+        return ()
     states = {state.input_id: state for state in current_states}
     if any(state.session_id != session.session_id for state in current_states):
         raise PersistenceError("input state belongs to another Session")
     changed: dict[str, InputState] = {}
-    pending = list(session.pending_input_ids)
+    pending = dict.fromkeys(session.pending_input_ids)
     for record in request.inputs:
         identity = record.item.queue_id
         if identity in states:
@@ -458,7 +469,7 @@ def _prepare_inputs(
             raise SessionCommitConflict("input belongs to withdrawn Session history")
         state = InputState.pending(record)
         states[identity] = changed[identity] = state
-        pending.append(identity)
+        pending[identity] = None
     if len({change.input_id for change in request.input_changes}) != len(request.input_changes):
         raise SessionCommitConflict("input has more than one transition in a decision")
     message_ids = {message.message_id for message in messages}
@@ -479,15 +490,10 @@ def _prepare_inputs(
             raise SessionCommitConflict(
                 "Input message must be published by its consumption decision"
             )
-        expected_semantics = (
-            (input_state.role, input_state.scaffold, input_state.semantic_tag)
-            if reference.part == "body"
-            else ("user", True, "attachments")
-        )
-        if (message.role, message.scaffold, message.semantic_tag) != expected_semantics or (
-            reference.part == "attachments" and input_state.source != "user"
-        ):
-            raise SessionCommitConflict("message semantics do not match its accepted Input")
+        try:
+            validate_input_message_semantics(message, input_state)
+        except PersistenceError as exc:
+            raise SessionCommitConflict(str(exc)) from exc
     for change in request.input_changes:
         current = states.get(change.input_id)
         if current is None or current.status != "pending":
@@ -504,7 +510,7 @@ def _prepare_inputs(
                 "message_ids": change.message_ids or current.message_ids,
             }
         )
-        pending = [identity for identity in pending if identity != change.input_id]
+        del pending[change.input_id]
     for identity in withdrawn_input_ids:
         current = states.get(identity)
         if current is not None and current.status == "consumed":
@@ -516,7 +522,7 @@ def _prepare_inputs(
                 raise PersistenceError(f"pending input state not found: {identity}")
             if pending_state.history_bound or pending_state.source in {"plugin", "delegation"}:
                 changed[identity] = pending_state.model_copy(update={"status": "cancelled"})
-                pending.remove(identity)
+                del pending[identity]
     session.pending_input_ids = tuple(pending)
     return tuple(changed.values())
 

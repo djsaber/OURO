@@ -409,9 +409,7 @@ def test_repeated_selected_facts_produce_independent_message_values(store):
         else store.database
     )
     with closing(sqlite3.connect(database)) as connection:
-        messages = list(
-            resolve_messages(decoded(), connection=connection, read_input=lambda *_: None)
-        )
+        messages = list(resolve_messages(decoded(), connection=connection))
     messages[0].tool_calls[0].arguments["value"] = "changed"
     messages[1].tool_result.producer.kind = "driver"
     messages[1].content[0].text = "changed"

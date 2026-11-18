@@ -94,7 +94,6 @@ def database(
             if changed is True:
                 check_integrity(connection)
             connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            connection.execute("PRAGMA journal_mode=DELETE")
     except sqlite3.Error as exc:
         code = getattr(exc, "sqlite_errorcode", 0) & 0xFF
         error = (

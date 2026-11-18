@@ -28,7 +28,8 @@ from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolCallState, validate_call_states
 from ouro.core.tool_facts import ToolCallFacts
 from ouro.resources.media import validate_media_references
-from ouro.sessions.layout import DATA_LAYOUT_VERSION
+
+_BUNDLE_LAYOUT_VERSION = 43
 
 
 class SessionArchiveSnapshot(OuroModel):
@@ -102,13 +103,13 @@ class PortableSession(OuroModel):
 class SessionBundle(OuroModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
-    layout_version: int = DATA_LAYOUT_VERSION
+    layout_version: int = _BUNDLE_LAYOUT_VERSION
     sessions: list[PortableSession]
     delegations: list[DelegationRecord] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_bundle(self) -> Self:
-        if self.layout_version != DATA_LAYOUT_VERSION:
+        if self.layout_version != _BUNDLE_LAYOUT_VERSION:
             raise ValueError("unsupported Session data layout")
         records = {item.snapshot.session.session_id: item for item in self.sessions}
         if len(records) != len(self.sessions):

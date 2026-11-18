@@ -1,4 +1,3 @@
-import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
@@ -11,7 +10,6 @@ from ouro.core.messages import InputMessageReference, MessageRecord, SkillActiva
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_controls import HostSessionInput, SessionInputRequest
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions.backends.files.inputs import input_path
 from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.input_facts import queued_input
@@ -389,14 +387,16 @@ def test_queue_rejects_persisted_items_missing_explicit_message_semantics(tmp_pa
             execution_contract_hash="contract_1",
         ),
     )
-    path = input_path(store.sessions_dir / session.session_id, item.queue_id)
-    payload = json.loads(path.read_text())
-    del payload["item"]["role"]
-    path.write_text(json.dumps(payload))
-    before = path.read_bytes()
+    with session_connection(store, session.session_id) as connection:
+        before = connection.execute(
+            "UPDATE inputs SET payload=json_remove(payload, '$.item.role') "
+            "WHERE input_id=? RETURNING payload",
+            (item.queue_id,),
+        ).fetchone()[0]
     with pytest.raises(PersistenceError, match="could not validate"):
         queue.peek(store.load_runtime_session(session.session_id))
-    assert path.read_bytes() == before
+    with session_connection(store, session.session_id) as connection:
+        assert connection.execute("SELECT payload FROM inputs").fetchone()[0] == before
 
 
 def test_delegated_task_input_requires_and_preserves_delegation_identity(tmp_path) -> None:

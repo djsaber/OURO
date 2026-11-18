@@ -20,7 +20,6 @@ from ouro.core.state import SessionRecord
 from ouro.local_io import write_model_atomic
 from ouro.local_locks import FileOwnerLock
 from ouro.sessions.backends.files.database import connect_data
-from ouro.sessions.backends.files.inputs import input_path, read_input
 from ouro.sessions.backends.files.journal import reverse_jsonl
 from ouro.sessions.backends.files.messages import FileMessageRecords
 from ouro.sessions.catalog import (
@@ -31,6 +30,7 @@ from ouro.sessions.catalog import (
 )
 from ouro.sessions.index import SessionIndex, invalid_session_index_entry
 from ouro.sessions.sqlite_connections import ExecutionConnections
+from ouro.sessions.sqlite_inputs import read_preview_input
 from ouro.sessions.sqlite_runs import read_run
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
@@ -185,7 +185,7 @@ class LocalSessionIndex:
                 latest_run=read_run(connection, session_id, session.last_run_id)
                 if session.last_run_id is not None
                 else None,
-                latest_message=self._latest_message(session_dir / "messages.jsonl"),
+                latest_message=self._latest_message(connection, session_dir / "messages.jsonl"),
                 message_count=session.message_count,
                 run_count=session.run_count,
                 resource_count=session.resource_count,
@@ -205,7 +205,7 @@ class LocalSessionIndex:
         return catalog_entry_from_projection(session, projection)
 
     @staticmethod
-    def _latest_message(path: Path) -> MessageRecord | None:
+    def _latest_message(connection: sqlite3.Connection, path: Path) -> MessageRecord | None:
         messages = FileMessageRecords()
         directory = path.parent
         scanned = 0
@@ -217,23 +217,21 @@ class LocalSessionIndex:
                 fact = messages.entry(raw, session_id=directory.name)
                 if fact.scaffold or fact.role not in {"user", "assistant"}:
                     continue
-                record = None
                 if fact.input_id is not None:
-                    scanned += input_path(directory, fact.input_id).stat().st_size
-                    if scanned > _MAX_PREVIEW_SCAN_BYTES:
+                    selected = read_preview_input(
+                        connection,
+                        directory.name,
+                        fact.input_id,
+                        byte_limit=_MAX_PREVIEW_SCAN_BYTES - scanned,
+                    )
+                    if selected is None:
                         break
-                    record = read_input(directory, directory.name, fact.input_id)
-                # The preview uses only owned assistant text or the selected Input body.
-                # Original tool parameters and Outcomes do not contribute to this projection.
-                message = MessageRecord.model_validate(
-                    {**fact.model_dump(), **resolve_input_content(fact, record)}
-                )
-                if (
-                    not message.scaffold
-                    and message.role in {"user", "assistant"}
-                    and message.text_content
-                ):
-                    return message
+                    record, size = selected
+                    scanned += size
+                    fact = fact.model_copy(update=resolve_input_content(fact, record))
+                    fact.validate_tool_fields()
+                if fact.text_content:
+                    return fact
         return None
 
     def _corrupt_entry(

@@ -22,7 +22,6 @@ OURO_HOME/
   sessions/
     index.json
     <session_id>/
-      inputs/records/<input_key>.json
       messages.jsonl
       session-data.sqlite3
       request-content/<context_id>.json
@@ -37,10 +36,10 @@ OURO_HOME/
   trash/sessions/<trash_id>/
 ```
 
-当前 `data_layout_version` 为 43，SQLite schema 为 28；各持久记录的版本见下文 Canonical 数据与投影。
+当前 `data_layout_version` 为 44，SQLite schema 为 28；各持久记录的版本见下文 Canonical 数据与投影。
 SQLite 同样使用会话文件目录保存附件，资源元信息保存在数据库；跨后端传输使用统一归档。
 初始化只接受当前格式；不支持或缺失的版本抛出 `UnsupportedDataVersionError`，不扫描或转换历史记录。
-空数据目录/数据库初始化为当前格式。已有数据不自动清空，由用户选择新目录或清理失效测试数据。
+空数据目录/数据库初始化为当前格式。保留已有数据时，先停写，再按[数据升级指南](../guides/data-upgrade.md)检查和升级；Store 不清空数据。
 
 SQLite 初始化在数据库旁 `.<数据库文件名>.locks/initialize.lock` 下取得跨进程短锁，等待上限为 5 秒。
 schema 检查、WAL 设置和版本记录创建在同一初始化所有权内完成，防止并发启动重复创建版本；后续 Session
@@ -58,7 +57,7 @@ owner 业务状态由相应执行契约读取，不支持的 schema 明确拒绝
 
 Canonical 数据包括：
 
-- `inputs/records/<input_key>.json` 的已接受输入，以及原生 `input_states` 表的小生命周期状态；
+- `session-data.sqlite3` 中 `inputs` 的已接受输入，以及 `input_states` 的生命周期状态；
 - `session-data.sqlite3` 的 Session 头、Run、独立调用、实际执行开始、确定结果事实、资源元信息、可变 Call 状态、有序摘要记录、请求小头、当前请求定位与 Draft；
 - `messages.jsonl` 的有序消息事实；
 - root Session 下的 `delegations/*.json`；
@@ -147,10 +146,10 @@ SQLite 在同一事务中插入摘要并更新 Session。查询使用只读边�
 
 Session 的 `pending_input_ids` 只保存待处理输入的 FIFO 身份。`InputRecord` 保存接受时的原文、固定技能内容、
 附件、来源与执行归属；`InputState` 保存路由字段及 pending/consumed/cancelled/withdrawn 状态和已提交消息身份。
-两个后端共享原生 `input_states` 表；SQLite 的输入正文在 `inputs` 表，Files 的不可变正文在输入文件。
-Files 的 `input_key` 是原 input ID UTF-8 字节的 SHA-256 十六进制值，只用于确定文件名；原 ID 在记录中完整保留并校验。
-Host 身份中的分隔符、Unicode 和长身份不会成为路径，也不要求扫描映射表。这里不对输入正文或提交提案计算身份摘要。
-接受只写一次正文，消费或取消只更新对应小状态与 Session 待处理身份，不读取或重写其他已接受输入正文。
+两个后端都用 `(session_id, input_id)` 直接定位不可变的 `inputs` 正文和独立的 `input_states` 状态。
+Host 输入身份不用于构造路径。可省略的字段只在值不为默认值时编码；显式消息语义、技能内容、附件判别字段和插件自有数据完整保留。
+单独接受输入时，正文、初始状态与 Session 队列头在同一数据库事务中生效。取消不读取或重写原文。
+消息分页、尾部查询和模型上下文按所选消息分批读取引用的 Input，每批只解码一次相同身份；调用方直接取得正文，不需自行追踪引用。按完整对话帧向前翻阅时，游标按需逐条解析，不提前展开未选中的消息。
 消费与消息追加共用原生决定；撤销保留输入原文及终态，不允许旧身份复活。
 普通点查缺失或损坏时明确报告，不隐式移除队列成员。Session 头及 Harness 成对查询同样使用只读边界，
 未决 Files 决定必须通过显式 mutation 入口完成后再读取。
@@ -175,7 +174,7 @@ Host 身份中的分隔符、Unicode 和长身份不会成为路径，也不要�
 记录各自的最新修改号。相关变化与修订号在同一原生事务中生效，一个对象反复变化不积累旧状态或变更清单。
 `load_observation_changes` 按修订号与身份索引有界分页，`load_messages_after` 按已有消息位置取得后缀。
 当前请求头、委派等变化也推进会话修订号，Draft 增长只推进自身偏移。新建或导入后按当前事实建立查询索引。
-没有消息正文、输入文件、Harness 或 Manifest 文件变更时直接提交事务，不创建 `commit.json`。
+没有消息日志、Harness 或请求 Manifest 文件变更时直接提交数据库事务，不创建 `commit.json`。
 
 共享预算的 `load_run_request_counts` 只读取 Run 身份、model_round_count 和 summary_request_count。
 这些数值由 Run 拥有：两后端在原生 Run 行中同步投影两列并通过覆盖索引读取。读取不解析 Run 正文；完整转存按 Run 重建投影。该读取随相关 Session 的
@@ -230,7 +229,7 @@ Session 的 `context_selection` 拥有当前摘要身份及媒体边界；Host �
 读取边界抛出 `UnsupportedDataVersionError`。领域模型校验各自版本，未知版本不能被验证为当前记录。
 Store 不通过字段默认值猜测旧格式，也不提供历史版本转换。
 
-`data_layout_version`、SQLite schema version 和插件 manifest/state schema 是独立版本域，不能因为当前数字相同
+`data_layout_version`、SQLite schema version、会话归档格式和插件 manifest/state schema 是独立版本域，不能因为当前数字相同
 而共用版本判定。Session 资源元信息逐记录使用 ResourceRecord 版本；Session catalog 是 layout-bound 文档，不冒充核心 record 版本。
 
 `sessions/index.json` 与 SQLite `session_catalog` 表是可重建查询投影，不属于 canonical transaction。Catalog

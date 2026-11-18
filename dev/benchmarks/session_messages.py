@@ -16,7 +16,6 @@ import tracemalloc
 from pathlib import Path
 from unittest.mock import patch
 
-import ouro.sessions.backends.files.inputs as file_inputs
 import ouro.sessions.backends.files.messages as file_messages
 import ouro.sessions.backends.sqlite.store as sqlite_store
 import ouro.sessions.sqlite_inputs as sqlite_inputs
@@ -36,9 +35,8 @@ def adapter(root, backend):
 
 def sample(store, session_id, selected, operation):
     message_module = file_messages if isinstance(store, LocalSessionStore) else sqlite_store
-    input_module = file_inputs if isinstance(store, LocalSessionStore) else sqlite_inputs
     decode_message = message_module.decode_message_content
-    decode_input = input_module.decode_versioned_record_json
+    decode_input = sqlite_inputs.decode_versioned_record_json
     decoded = 0
     inputs = 0
 
@@ -56,7 +54,7 @@ def sample(store, session_id, selected, operation):
     with (
         file_reads() as reads,
         patch.object(message_module, "decode_message_content", counted_message),
-        patch.object(input_module, "decode_versioned_record_json", counted_input),
+        patch.object(sqlite_inputs, "decode_versioned_record_json", counted_input),
     ):
         tracemalloc.start()
         started = time.perf_counter()
@@ -82,7 +80,7 @@ def sample(store, session_id, selected, operation):
     }
 
 
-def experiment(root, backend, count, active, repeat):
+def experiment(root, backend, count, active, repeat, input_history):
     store = adapter(root, backend)
     store.initialize()
     session = SessionRecord(session_id="ses_bench")
@@ -96,26 +94,34 @@ def experiment(root, backend, count, active, repeat):
         ).model_copy(update={"message_id": f"msg_{index:08d}"})
         for index in range(count)
     ]
-    messages[-1].input_ref = InputMessageReference(input_id="queue_active")
-    record = InputRecord(
-        session_id=session.session_id,
-        item=QueuedInput(
-            queue_id="queue_active",
-            history_epoch=session.history_epoch,
-            prompt=messages[-1].text_content,
-            queued_at=messages[-1].created_at,
-            source="user",
-            mode="follow_up",
-            role="user",
-            scaffold=False,
-            semantic_tag=None,
-        ),
-    )
-    state = InputState.pending(record).model_copy(
-        update={"status": "consumed", "message_ids": (messages[-1].message_id,)}
-    )
+    records, states = [], []
+    for message in messages if input_history else messages[-1:]:
+        identity = "queue_active" if message is messages[-1] else f"queue_{message.sequence}"
+        message.input_ref = InputMessageReference(input_id=identity)
+        record = InputRecord(
+            session_id=session.session_id,
+            item=QueuedInput(
+                queue_id=identity,
+                history_epoch=session.history_epoch,
+                prompt=message.text_content,
+                queued_at=message.created_at,
+                source="user",
+                mode="follow_up",
+                role="user",
+                scaffold=False,
+                semantic_tag=None,
+            ),
+        )
+        records.append(record)
+        states.append(
+            InputState.pending(record).model_copy(
+                update={"status": "consumed", "message_ids": (message.message_id,)}
+            )
+        )
     setup_started = time.perf_counter()
-    store.create_session_snapshot(session, messages, inputs=(record,), input_states=(state,))
+    store.create_session_snapshot(
+        session, messages, inputs=tuple(records), input_states=tuple(states)
+    )
     setup_seconds = time.perf_counter() - setup_started
     selected = messages[-active:]
     del messages
@@ -124,6 +130,7 @@ def experiment(root, backend, count, active, repeat):
         "actual_files": len(files),
         "logical_file_bytes": sum(path.stat().st_size for path in files),
         "setup_seconds": setup_seconds,
+        "accepted_inputs": len(records),
     }
     if backend == "sqlite":
         with store._read_connection() as connection:
@@ -168,6 +175,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--counts", type=int, nargs="+", default=[1000, 10000, 100000])
     parser.add_argument("--active", type=int, default=8)
+    parser.add_argument(
+        "--input-history", action="store_true", help="back every message with an accepted input"
+    )
     parser.add_argument("--repeat", type=int, default=7)
     parser.add_argument("--backend", choices=("files", "sqlite", "all"), default="all")
     args = parser.parse_args()
@@ -190,7 +200,9 @@ def main():
     for backend in ("files", "sqlite") if args.backend == "all" else (args.backend,):
         for count in args.counts:
             with tempfile.TemporaryDirectory(prefix="ouro-msg-bench-") as temporary:
-                experiment(Path(temporary), backend, count, args.active, args.repeat)
+                experiment(
+                    Path(temporary), backend, count, args.active, args.repeat, args.input_history
+                )
 
 
 if __name__ == "__main__":

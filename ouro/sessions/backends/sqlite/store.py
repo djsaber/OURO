@@ -107,7 +107,15 @@ from ouro.sessions.sqlite_facts import (
     write_call_state,
     write_fact,
 )
-from ouro.sessions.sqlite_inputs import read_input, read_state, write_input, write_state
+from ouro.sessions.sqlite_inputs import (
+    INPUT_SCHEMA,
+    read_input,
+    read_inputs,
+    read_state,
+    read_states,
+    write_input,
+    write_state,
+)
 from ouro.sessions.sqlite_observation import (
     OBSERVATION_SCHEMA,
     advance_revision,
@@ -229,13 +237,6 @@ class SQLiteSessionStore:
                         delegation_input_id TEXT,
                         resource_refs TEXT NOT NULL,
                         payload TEXT NOT NULL,
-                        FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
-                    );
-                    CREATE TABLE IF NOT EXISTS inputs (
-                        session_id TEXT NOT NULL,
-                        input_id TEXT NOT NULL,
-                        payload TEXT NOT NULL,
-                        PRIMARY KEY(session_id, input_id),
                         FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
                     );
                     CREATE TABLE IF NOT EXISTS run_message_counts (
@@ -444,6 +445,7 @@ class SQLiteSessionStore:
                         ON messages(session_id, row_id)
                         WHERE json_extract(payload, '$.role') IN ('user', 'system');
                 """
+                + INPUT_SCHEMA
                 + OBSERVATION_SCHEMA
                 + sqlite_resources.RESOURCE_SCHEMA
             )
@@ -1214,18 +1216,8 @@ class SQLiteSessionStore:
                 latest_manifest=manifests[0] if manifests else None,
                 tool_facts=load_tool_facts(connection, session_id),
                 call_states=load_states(connection, session_id),
-                inputs=self._load_models(
-                    connection,
-                    "SELECT payload FROM inputs WHERE session_id = ? ORDER BY input_id",
-                    (session_id,),
-                    InputRecord,
-                ),
-                input_states=self._load_models(
-                    connection,
-                    "SELECT payload FROM input_states WHERE session_id = ? ORDER BY input_id",
-                    (session_id,),
-                    InputState,
-                ),
+                inputs=list(read_inputs(connection, session_id)),
+                input_states=list(read_states(connection, session_id)),
                 messages=self._load_models(
                     connection,
                     "SELECT payload FROM messages WHERE session_id = ? ORDER BY row_id",
@@ -1902,7 +1894,6 @@ class SQLiteSessionStore:
         messages = resolve_messages(
             (decode_message_content(payload, label=label) for payload in payloads),
             connection=connection,
-            read_input=lambda session_id, input_id: read_input(connection, session_id, input_id),
         )
         return [
             materialize_message_media(

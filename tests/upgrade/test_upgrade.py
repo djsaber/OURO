@@ -20,6 +20,7 @@ from ouro_upgrade.engine import upgrade
 from ouro_upgrade.errors import UpgradeError
 from ouro_upgrade.json_codec import loads
 from ouro_upgrade.workspace import digest
+from tests.session_storage import session_connection
 
 
 def hashes(home: Path) -> dict[str, str | None]:
@@ -54,6 +55,8 @@ def test_historical_home_upgrades_for_current_readers(historical_home: Path) -> 
         if backend == "files"
         else SQLiteSessionStore(home / "sessions.sqlite3")
     )
+    with session_connection(store, "ses_fixture") as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     store.initialize()
     snapshot = store.load_session("ses_fixture")
     assert snapshot.session.message_count == 3

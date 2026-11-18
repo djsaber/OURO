@@ -295,6 +295,8 @@ def test_session_round_trip_across_backends_with_attachments(
     _create_session(services._store, "ses_other")
     archive = tmp_path / "sessions.zip"
     assert transfer(source, "export", "sessions", archive, backend=source_backend).count == 2
+    with ZipFile(archive) as exported:
+        assert json.loads(exported.read("manifest.json"))["data"]["bundle"]["layout_version"] == 43
     assert transfer(target, "import", "sessions", archive, backend=target_backend).count == 2
     imported = build_local_session_services(target, session_backend=target_backend)
     assert imported._store.load_latest_context(session.session_id) == context

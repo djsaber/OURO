@@ -53,7 +53,6 @@ from ouro.sessions.backends.files.delegations import (
 from ouro.sessions.backends.files.delegations import (
     write_decision as write_delegation,
 )
-from ouro.sessions.backends.files.inputs import input_path as accepted_input_path
 from ouro.sessions.backends.files.message_locations import FileMessageReference
 from ouro.sessions.backends.files.messages import FileMessageRecords
 from ouro.sessions.sqlite_compactions import (
@@ -69,7 +68,7 @@ from ouro.sessions.sqlite_facts import (
     write_call_state,
     write_facts,
 )
-from ouro.sessions.sqlite_inputs import read_commit_input_states, write_state
+from ouro.sessions.sqlite_inputs import read_commit_input_states, write_input, write_state
 from ouro.sessions.sqlite_observation import advance_revision, read_revision
 from ouro.sessions.sqlite_requests import read_latest_header, read_request_header, write_header
 from ouro.sessions.sqlite_resources import attach_reference, insert_reference
@@ -163,39 +162,35 @@ class FileSessionCommits:
         self, request: SessionCommit, resources: tuple[SessionResourceReference, ...] = ()
     ) -> SessionCommitResult:
         session_id = request.before.session_id
-        directory = self.directory(session_id)
-        with self.connect(session_id) as connection:
-            decision = self._prepare(connection, request)
-        decision.resources = resources
-        decision.result.session.resource_count += len(resources)
-        for version in decision.versions:
-            self.save_version(version)
-        if request.request_manifest is not None:
-            manifest = request.request_manifest
-            content_path = input_path(directory, manifest.context_id)
-            if content_path.exists():
-                raise SessionCommitConflict("request input identity is already published")
-            content_path.parent.mkdir(exist_ok=True)
-            # Publish immutable input before the finite decision. The decision keeps
-            # only its header, so replay never copies or parses the full input.
-            write_model_atomic(content_path, manifest)
-        if (
-            decision.result.messages
-            or decision.result.truncation is not None
-            or decision.inputs
-            or decision.versions
-            or decision.published_context_id is not None
-            or decision.obsolete_context_id is not None
-        ):
-            self._publish_decision(session_id, decision)
-        else:
-            # No external files participate in this decision.
-            with self.connect(session_id, mode="rw") as connection:
-                self._apply_native(connection, decision)
+        manifest = request.request_manifest
+        changes_history_files = request.before_message_id is not None or manifest is not None
+        decision = None
+        if changes_history_files or request.steps:
+            with self.connect(session_id) as reader:
+                decision = self._prepare(reader, request, resources)
+            for version in decision.versions:
+                self.save_version(version)
+            if manifest is not None:
+                content_path = input_path(self.directory(session_id), manifest.context_id)
+                if content_path.exists():
+                    raise SessionCommitConflict("request input identity is already published")
+                content_path.parent.mkdir(exist_ok=True)
+                write_model_atomic(content_path, manifest)
+            if changes_history_files or decision.result.messages or decision.versions:
+                self._publish_decision(session_id, decision)
+                return decision.result
+        with self.connect(session_id, mode="rw") as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if decision is None:
+                decision = self._prepare(connection, request, resources)
+            self._apply_native(connection, decision)
         return decision.result
 
     def _prepare(
-        self, connection: sqlite3.Connection, request: SessionCommit
+        self,
+        connection: sqlite3.Connection,
+        request: SessionCommit,
+        resources: tuple[SessionResourceReference, ...],
     ) -> FileCommitDecision:
         session_id = request.before.session_id
         directory = self.directory(session_id)
@@ -311,6 +306,7 @@ class FileSessionCommits:
             pending_runs=pending_runs,
         )
         prepared.result.session.run_count += new_run_count
+        prepared.result.session.resource_count += len(resources)
         references_list = []
         if prepared.result.messages and truncation is None:
             message_offset = (directory / "messages.jsonl").stat().st_size
@@ -329,6 +325,7 @@ class FileSessionCommits:
         references = tuple(references_list)
         decision = FileCommitDecision(
             **dict(prepared),
+            resources=resources,
             message_offset=message_offset,
             removed_messages=removed_messages,
             message_references=references,
@@ -347,10 +344,6 @@ class FileSessionCommits:
             ),
         )
         self._validate_appends(connection, decision)
-        if any(
-            accepted_input_path(directory, item.item.queue_id).exists() for item in request.inputs
-        ):
-            raise SessionCommitConflict("input identity is already accepted")
         return decision
 
     def _publish_decision(self, session_id: str, decision: FileDecision) -> None:
@@ -413,8 +406,6 @@ class FileSessionCommits:
         for version in decision.versions:
             self.save_version(version)
         self.load_harness(session_id, result.session.harness_version)
-        for record in decision.inputs:
-            write_model_atomic(accepted_input_path(directory, record.item.queue_id), record)
         if result.messages or result.truncation is not None:
             self._write_suffix(
                 directory / "messages.jsonl",
@@ -431,6 +422,8 @@ class FileSessionCommits:
         result = decision.result
         session_id = result.session.session_id
         revision = advance_revision(connection, session_id)
+        for record in decision.inputs:
+            write_input(connection, record)
         for state in decision.input_states:
             write_state(connection, state, revision=revision)
         self.messages.index.apply(

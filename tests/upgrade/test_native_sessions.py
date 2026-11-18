@@ -10,10 +10,12 @@ from pathlib import Path
 
 import pytest
 
+from ouro.core.errors import UnsupportedDataVersionError
 from ouro.core.session_commits import SessionCommit
 from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.sessions.layout import DATA_LAYOUT_VERSION
+from ouro.sessions.sqlite_observation import advance_revision
 from ouro_upgrade import databases, session_records, workspace
 from ouro_upgrade.engine import upgrade
 from ouro_upgrade.errors import UpgradeError
@@ -60,7 +62,6 @@ def test_native_upgrade_converts_authority_and_preserves_other_facts(native_home
     def bounded_read(path):
         assert path.name != "messages.jsonl"
         assert "request-content" not in path.parts
-        assert path.parent.name != "records"
         return read(path)
 
     with monkeypatch.context() as patch:
@@ -121,7 +122,7 @@ def test_native_upgrade_converts_authority_and_preserves_other_facts(native_home
     assert changes.runs == (run,)
     if backend == "files":
         assert not list((home / "sessions/ses_fixture/inputs/states").glob("*.json"))
-        assert (home / "sessions/ses_fixture/inputs/records").is_dir()
+        assert not list((home / "sessions/ses_fixture/inputs/records").glob("*.json"))
 
     monkeypatch.setattr(
         databases.shutil, "copyfile", lambda *args: pytest.fail("copied current DB")
@@ -150,6 +151,41 @@ def test_native_check_does_not_publish(native_home):
     before = hashes(home)
     assert upgrade(home, session_backend=backend, check=True)["status"] == "upgrade_required"
     assert hashes(home) == before
+
+
+@pytest.mark.parametrize("native_home", ["files"], indirect=True)
+def test_layout_43_requires_every_accepted_body_before_publishing(native_home):
+    home, backend = native_home
+    directory = home / "sessions/ses_fixture/inputs/records"
+    bodies = {path: path.read_bytes() for path in directory.glob("*.json")}
+    upgrade(home, session_backend=backend)
+    expected = repository(home, backend).load_session("ses_fixture")
+    with closing(sqlite3.connect(database(home, backend))) as connection, connection:
+        connection.execute("DROP TABLE inputs")
+    for path in (home / "layout.json", home / "sessions/index.json"):
+        layout = json.loads(path.read_bytes())
+        path.write_text(json.dumps({**layout, "data_layout_version": 43}), encoding="utf-8")
+    for path, payload in bodies.items():
+        path.write_bytes(payload)
+    missing = next(iter(bodies))
+    missing.unlink()
+    before = hashes(home)
+    with pytest.raises(UnsupportedDataVersionError):
+        repository(home, backend).initialize()
+    with pytest.raises(UpgradeError, match="missing accepted input body"):
+        upgrade(home, session_backend=backend)
+    assert hashes(home) == before
+    missing.write_bytes(bodies[missing])
+    assert upgrade(home, session_backend=backend)["status"] == "upgraded"
+    assert not list(directory.glob("*.json"))
+    store = repository(home, backend)
+    assert store.load_session("ses_fixture") == expected
+    with store.session_read("ses_fixture"):
+        before_revision = store.observation_revision("ses_fixture")
+        with closing(sqlite3.connect(database(home, backend), timeout=0)) as writer, writer:
+            advance_revision(writer, "ses_fixture")
+        assert store.observation_revision("ses_fixture") == before_revision
+    assert store.observation_revision("ses_fixture") == before_revision + 1
 
 
 def test_native_wal_and_interrupted_publication_are_restorable(native_home, monkeypatch):

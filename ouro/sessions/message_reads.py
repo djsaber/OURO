@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections import Counter
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Iterable, Iterator
 from itertools import batched
 
 from ouro.core.inputs import InputRecord
@@ -12,29 +12,37 @@ from ouro.core.message_content import materialize_owned_message
 from ouro.core.messages import MessageRecord
 from ouro.core.tool_facts import ToolCallRecord, ToolOutcomeRecord
 from ouro.sessions.sqlite_facts import read_selected
+from ouro.sessions.sqlite_inputs import read_inputs
+
+
+def _messages_with_inputs(
+    connection: sqlite3.Connection, batch: tuple[MessageRecord, ...]
+) -> Iterator[tuple[MessageRecord, InputRecord | None]]:
+    identities = {item.input_ref.input_id for item in batch if item.input_ref is not None}
+    inputs = {
+        record.item.queue_id: record
+        for record in read_inputs(connection, batch[0].session_id, identities)
+    }
+    for item in batch:
+        yield item, inputs.get(item.input_ref.input_id) if item.input_ref is not None else None
 
 
 def resolve_messages(
     messages: Iterable[MessageRecord],
     *,
     connection: sqlite3.Connection,
-    read_input: Callable[[str, str], InputRecord | None],
 ) -> Iterator[MessageRecord]:
     """Join each batch once; transfer source units unless another result needs them.
 
     The returned messages never share mutable parameters, producer metadata or
-    result bodies. A source used once transfers directly; only repeated views
-    copy that source unit. No decoded facts survive the current batch.
+    result bodies. Input views own their selected skill and attachment values;
+    tool units transfer directly unless reused. No facts are cached across batches.
     """
     for batch in batched(messages, 64, strict=False):
+        selected_inputs = _messages_with_inputs(connection, batch)
         if not any(item.call_refs or item.outcome_ref is not None for item in batch):
-            for item in batch:
-                yield materialize_owned_message(
-                    item,
-                    read_input(item.session_id, item.input_ref.input_id)
-                    if item.input_ref is not None
-                    else None,
-                )
+            for item, record in selected_inputs:
+                yield materialize_owned_message(item, record)
             continue
         requests = Counter(
             (item.session_id, identity.run_id, identity.batch_id, identity.tool_call_id)
@@ -65,7 +73,7 @@ def resolve_messages(
         keys = set(requests) | set(results)
         calls = read_selected(connection, ToolCallRecord, keys, include_arguments=bool(requests))
         outcomes = read_selected(connection, ToolOutcomeRecord, set(observations))
-        for item in batch:
+        for item, record in selected_inputs:
             selected = []
             for identity in item.referenced_call_ids:
                 key = (item.session_id, identity.run_id, identity.batch_id, identity.tool_call_id)
@@ -99,9 +107,7 @@ def resolve_messages(
                     outcome = outcome.model_copy(deep=True)
             yield materialize_owned_message(
                 item,
-                read_input(item.session_id, item.input_ref.input_id)
-                if item.input_ref is not None
-                else None,
+                record,
                 calls=selected,
                 outcome=outcome,
             )

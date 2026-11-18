@@ -290,10 +290,11 @@ uv run --frozen python -m dev.benchmarks.harness_lifecycle --label current-envir
 
 ```powershell
 uv run --frozen python -m dev.benchmarks.session_messages --counts 1000 10000 100000 --active 8 --repeat 7
+uv run --frozen python -m dev.benchmarks.session_messages --counts 256 --active 256 --input-history --repeat 7
 ```
 
-两后端固定 8 条活动消息、0 个未决输入，分别测按 ID、Run、已接受输入和倒序尾部读取；每组包含同一 adapter
-与新 adapter 样本。所选末条消息引用一个已消费 Input，其他消息拥有正文；输入及其状态通过同一快照 API 创建。
+两后端按 `--active` 指定的窗口（默认 8 条）、0 个未决输入，分别测按 ID、Run、已接受输入和倒序尾部读取；每组包含同一 adapter
+与新 adapter 样本。默认仅末条消息引用已消费 Input；`--input-history` 让每条消息使用独立的已接受输入，测量窗口批量物化和存储占用。输入及其状态通过同一快照 API 创建。
 准备耗时独立报告，不进入查询计时。分别报告消息记录、InputRecord 解码数、Python
 读取字节/打开次数、tracemalloc、实际文件数/逻辑字节、SQLite 页数与输入查询计划。文件计数与计划查询不计时。
 这些观测不包含 SQLite 引擎 I/O、文件元数据 I/O、RSS 或物理设备流量；未清 OS 缓存，新 adapter 不代表冷磁盘。

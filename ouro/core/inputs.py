@@ -18,6 +18,21 @@ from ouro.core.session_controls import SessionInputMode
 QueuedInputMode = SessionInputMode
 QueuedInputSource = Literal["user", "host", "plugin", "delegation"]
 
+_ROUTING_FIELDS = (
+    "history_epoch",
+    "history_bound",
+    "mode",
+    "source",
+    "role",
+    "scaffold",
+    "semantic_tag",
+    "coalesce_key",
+    "plugin_id",
+    "contribution_id",
+    "session_control_controller_id",
+    "session_control_activation_id",
+)
+
 
 class QueuedInput(OuroModel):
     history_epoch: int = Field(default=0, ge=0)
@@ -156,41 +171,47 @@ class InputRecord(VersionedOuroModel):
     item: QueuedInput
 
 
+def validate_input_message_semantics(
+    message: MessageRecord, intent: QueuedInput | InputState
+) -> None:
+    reference = message.input_ref
+    if reference is None:
+        return
+    semantics = message.role, message.scaffold, message.semantic_tag
+    if reference.part == "body":
+        if semantics != (intent.role, intent.scaffold, intent.semantic_tag):
+            raise PersistenceError("message semantics do not match its accepted Input body")
+    elif intent.source != "user" or semantics != ("user", True, "attachments"):
+        raise PersistenceError("attachment observation does not match its accepted Input")
+
+
+def _bound_item(fact: MessageRecord, record: InputRecord | None) -> QueuedInput:
+    if (
+        record is None
+        or record.session_id != fact.session_id
+        or record.item.queue_id != fact.input_id
+    ):
+        raise PersistenceError("message references a missing or foreign Input")
+    validate_input_message_semantics(fact, record.item)
+    return record.item
+
+
 def resolve_input_content(fact: MessageRecord, record: InputRecord | None = None) -> dict[str, Any]:
-    """Resolve only this message's fixed Input units, with no providers or file reads."""
+    """Build independent display units without copying the accepted execution contract."""
     reference = fact.input_ref
+    if reference is None:
+        return {}
+    item = _bound_item(fact, record)
     values: dict[str, Any] = {}
-    if reference is not None:
-        if (
-            record is None
-            or record.session_id != fact.session_id
-            or record.item.queue_id != reference.input_id
-        ):
-            raise PersistenceError("message references a missing or foreign Input")
-        item = record.item
-        if reference.part == "body":
-            if (fact.role, fact.scaffold, fact.semantic_tag) != (
-                item.role,
-                item.scaffold,
-                item.semantic_tag,
-            ):
-                raise PersistenceError("message semantics do not match its accepted Input body")
-            values["content"] = list(item.skill_activations)
-            if item.prompt:
-                values["content"].append(TextContent(text=item.prompt))
-        elif item.source != "user" or (fact.role, fact.scaffold, fact.semantic_tag) != (
-            "user",
-            True,
-            "attachments",
-        ):
-            raise PersistenceError("attachment observation does not match its accepted Input")
-        if reference.attachments_from_input:
-            values["input_attachments"] = tuple(
-                attachment.model_copy(update={"text_offset": 0})
-                if reference.part == "attachments"
-                else attachment
-                for attachment in item.attachments
-            )
+    if reference.part == "body":
+        values["content"] = [skill.model_copy() for skill in item.skill_activations]
+        if item.prompt:
+            values["content"].append(TextContent(text=item.prompt))
+    if reference.attachments_from_input:
+        offsets = {"text_offset": 0} if reference.part == "attachments" else None
+        values["input_attachments"] = tuple(
+            file.model_copy(update=offsets) for file in item.attachments
+        )
     return values
 
 
@@ -224,29 +245,14 @@ class InputState(VersionedOuroModel):
 
     @classmethod
     def pending(cls, record: InputRecord) -> InputState:
-        fields = {
-            name: getattr(record.item, name)
-            for name in (
-                "history_epoch",
-                "history_bound",
-                "mode",
-                "source",
-                "role",
-                "scaffold",
-                "semantic_tag",
-                "coalesce_key",
-                "plugin_id",
-                "contribution_id",
-                "session_control_controller_id",
-                "session_control_activation_id",
-            )
-        }
+        fields = {name: getattr(record.item, name) for name in _ROUTING_FIELDS}
         return cls(session_id=record.session_id, input_id=record.item.queue_id, **fields)
 
     def matches_intent(self, record: InputRecord) -> bool:
-        excluded = {"status", "message_ids"}
-        return self.model_dump(exclude=excluded) == self.pending(record).model_dump(
-            exclude=excluded
+        return (
+            self.session_id == record.session_id
+            and self.input_id == record.item.queue_id
+            and all(getattr(self, name) == getattr(record.item, name) for name in _ROUTING_FIELDS)
         )
 
 
@@ -297,7 +303,7 @@ def validate_input_snapshot(
             or message.message_id not in state.message_ids
         ):
             raise ValueError("message does not belong to a consumed Input")
-        resolve_input_content(message.as_fact(), by_id[identity])
+        _bound_item(message, by_id[identity])
     message_inputs = {message.message_id: message.input_id for message in messages}
     for state in actual:
         if not state.matches_intent(by_id[state.input_id]):
