@@ -727,7 +727,7 @@ async def _services(
         session_id=root.session_id,
         status="running",
         model="capture",
-        agent_catalog=service.constrain_catalog(definitions.catalog_snapshot(tools)),
+        agent_catalog=definitions.catalog_snapshot(tools, spawn_policy=service.spawn_policy),
     )
     store.create_session(root)
     store.save_run(parent)

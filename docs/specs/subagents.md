@@ -204,9 +204,9 @@ definition 与 runtime policy 共用一个 expected revision，避免 Host 同�
 `effective_from=next_decision`。根软预算来自 `run_budget`，在 parent Run 的每轮模型请求边界更新并记录到 Run；每个 definition 的
 subagent 默认值继续复用 `RunBudgetPolicy`，不增加第二套 AgentBudget 配置或执行引擎。
 
-`AgentSpawnPolicy` 是所有 definition 共用的平台派遣上限，不是 per-definition 配置。它统一表达允许的 agent/model
-pattern、execution/lifecycle mode，以及按 effect 和 MCP 来源筛选工具；每轮 parent 决策把
-当时的全局 policy 写入 AgentCatalogSnapshot。最终 child 能力继续由全局 policy、选中 AgentDefinition、父级可下放能力和当前权限策略求交。
+`AgentSpawnPolicy` 为所有 definition 指定共同的派遣上限。它按模式限定 Agent ID 和模型，指定可用的执行模式，
+并按工具 effect 和 MCP 来源筛选能力。每轮 parent 决策将生效策略写入 AgentCatalogSnapshot。
+最终 child 能力由这份策略、选中的 AgentDefinition、父级可下放能力和当前权限策略求交。
 Application 配置 API 必须能读取和更新完整 policy；CLI、TUI 或其他 Host 可以只展示适合其产品面的字段，但不能
 在入口层复制或缩减底层 policy 语义。
 
@@ -267,17 +267,15 @@ Shell 的本地可执行文件路径不进入可移植 ToolDefinition；执行�
 
 ### AgentCatalogSnapshot 与派遣工具联动
 
-每轮 parent 模型决策在取得当前 ExtensionCatalogLease 后构造并持久化一个有界 AgentCatalogSnapshot，包含：
+每轮 parent 模型决策取得当前 ExtensionCatalogLease 后，AgentDefinitionService 按启用状态、派遣策略和工具权限
+筛选目录，一次构造本轮的 AgentCatalogSnapshot。运行时持久化这份快照，供工具声明和派遣执行共同使用。
 
-- agents section revision 与 catalog contract hash；
-- 本次决策使用的 AgentSpawnPolicy，包括 agent/model pattern、execution/lifecycle mode 与显式能力上限；
-- 所有 selectable definition 的完整冻结值和 contract hash；
-- 每项解析后的 EffectiveToolRefs 与 compatibility diagnostics；
-- builtin/user 管理来源只用于 Host 展示，不参与执行分派。
+快照保存 `agents` 配置修订号、目录契约哈希和本轮的 AgentSpawnPolicy。每个条目包含完整的 AgentDefinition
+及其契约哈希、有效工具引用和缺失的指定工具名。管理视图另行标注 builtin 或 user 来源。
 
-SpawnAgent（Host 展示名“派遣子智能体”）必须从这个同一 snapshot 生成 ToolDefinition：
+SpawnAgent（Host 展示名“派遣子智能体”）从本轮快照生成 ToolDefinition。
 
-- agent_id 参数的 JSON Schema enum/oneOf 只包含 selectable definitions；
+- `agent_id` 参数的 JSON Schema `oneOf` 只列出没有缺失工具名的条目。没有可用条目时，工具目录省略 SpawnAgent。
 - 每个选项向模型提供有界的 agent_id、name 和 description；
 - system_prompt、完整 tool list 和敏感 policy 不拼入工具描述；
 - 执行 AgentControlRequest 时按 parent Run snapshot 解析 agent_id，不重新读取 current config；
@@ -1044,8 +1042,8 @@ TUI controller 调用应用服务并展示返回的目录，不拥有运行时�
 已有显式白名单原样保留，启用开关不能越过白名单。工具兼容性、启用状态和白名单许可分别表达不同约束。
 
 应用服务的管理投影通过 `allowed_by_policy` 表达子智能体 ID 是否被白名单允许。长期运行 Host 在组合入口将
-同一份启动时派遣策略交给 AgentDefinitionService 和 AgentService，管理状态与实际执行保持一致；独立 CLI
-管理服务按当前配置展示许可。已启用但不被允许的 definition 在列表显示 Restricted by policy，管理页说明可通过
+同一份启动时派遣策略交给目录服务和执行器。目录服务按生效策略生成管理视图和决策快照，独立 CLI
+按当前配置展示许可。已启用但不被允许的 definition 在列表显示 Restricted by policy，管理页说明可通过
 框架配置或 CLI 调整；Disabled 状态仍保留在最右侧，禁止将受限状态当作另一种启用开关。
 `policy_restart_required` 表示已保存策略与当前运行策略不同；管理列表提示重启后生效，权限表单的 Save 项也说明
 其生效时间。受限判断不使用尚未生效的配置，启用/禁用仍从下一次模型决策生效。

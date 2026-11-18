@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 
 from ouro.application.runs.drivers import NativeRunDriverContext
-from ouro.core.inner_loop import TurnCompletionPolicyResult
+from ouro.core.turn_policies import TurnPolicyEvaluation
 
 
 class NativeRunTurns:
@@ -12,7 +12,7 @@ class NativeRunTurns:
     def __init__(
         self,
         context: NativeRunDriverContext,
-        evaluate_completion: Callable[..., Awaitable[TurnCompletionPolicyResult]],
+        evaluate_completion: Callable[..., Awaitable[TurnPolicyEvaluation]],
     ) -> None:
         self.context = context
         self.evaluate_completion = evaluate_completion
@@ -25,7 +25,6 @@ class NativeRunTurns:
         response = context.model_response(response_id)
         try:
             completion = await self.evaluate_completion(
-                context.sequence,
                 session=context.session,
                 run=context.run,
                 assistant_text=response.text,
@@ -34,9 +33,9 @@ class NativeRunTurns:
             )
         except Exception as exc:  # noqa: BLE001 - native turn policy boundary.
             await context.fail(f"turn policy evaluation failed: {exc}")
-        context.sequence = completion.sequence
-        if completion.blocked_reason is not None:
+        if completion.failures:
             await context.pause("turn_policy_blocked")
         if completion.should_continue:
             context.final_text = ""
-        return not completion.should_continue
+            return False
+        return True

@@ -148,18 +148,14 @@ async def test_model_port_records_requests_and_usage_without_driving_or_finishin
             emit=runtime.event_recorder.emit,
         ),
     )
-    request = RunModelRequest(session, run, 1, "first", 0, AbortSignal())
+    request = RunModelRequest(session, run, 1, "first", AbortSignal())
     try:
         first = await requests.execute(request)
         second = await requests.execute(
-            replace(
-                request, run=first.run, sequence=first.sequence, model_round=2, turn_id="second"
-            )
+            replace(request, run=first.run, model_round=2, turn_id="second")
         )
         # A caller cannot bypass the durable request budget by reusing a round number.
-        blocked = await requests.execute(
-            replace(request, run=second.run, sequence=second.sequence, turn_id="third")
-        )
+        blocked = await requests.execute(replace(request, run=second.run, turn_id="third"))
 
         assert isinstance(first.outcome, ModelExecutionResult)
         assert first.outcome.text == "answer"
@@ -247,7 +243,7 @@ async def test_abort_during_usage_commit_keeps_usage_and_closes_stream(tmp_path)
         ),
     )
     try:
-        result = await requests.execute(RunModelRequest(session, run, 1, "turn", 0, signal))
+        result = await requests.execute(RunModelRequest(session, run, 1, "turn", signal))
 
         assert isinstance(result.outcome, ModelExecutionResult)
         assert result.outcome.aborted

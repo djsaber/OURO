@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol
 
@@ -144,6 +145,11 @@ class CompactionRecord(VersionedOuroModel):
     context_metrics_after: ContextMetrics | None = None
     usage: dict[str, int | float] = Field(default_factory=dict)
     metadata: Metadata = MetadataField
+
+    def with_history_boundary(self, message_id: str) -> CompactionRecord:
+        return self.model_copy(
+            update={"history_boundary_message_id": message_id, "context_metrics_after": None}
+        )
 
     @property
     def referenced_message_ids(self) -> tuple[str, ...]:
@@ -404,38 +410,33 @@ class CompactionReference(OuroModel):
     covered_end_message_id: str
     history_boundary_message_id: str
 
-    @classmethod
-    def from_record(cls, record: CompactionRecord) -> CompactionReference:
-        return cls(
-            compaction_id=record.compaction_id,
-            previous_compaction_id=record.previous_compaction_id,
-            covered_end_message_id=record.covered_end_message_id,
-            history_boundary_message_id=record.history_boundary_message_id,
-        )
+
+@dataclass(frozen=True)
+class CompactionWithdrawal:
+    retained_ids: tuple[str, ...]
+    removed_ids: tuple[str, ...]
+    moved_anchors: dict[str, str]
 
 
-def retain_compaction_references(
+def plan_compaction_withdrawal(
     compactions: Sequence[CompactionReference],
     removed_message_ids: set[str],
     *,
     last_retained_message_id: str | None,
-) -> list[CompactionReference]:
-    """Withdraw affected coverage; a removed display anchor does not invalidate content."""
-    retained: list[CompactionReference] = []
-    removed: set[str] = set()
-    for compaction in compactions:
+) -> CompactionWithdrawal:
+    """Withdraw dependent summaries in order and move surviving display anchors."""
+    retained: list[str] = []
+    removed: dict[str, None] = {}
+    moved: dict[str, str] = {}
+    for item in compactions:
         if (
-            compaction.covered_end_message_id in removed_message_ids
-            or compaction.previous_compaction_id in removed
+            item.covered_end_message_id in removed_message_ids
+            or item.previous_compaction_id in removed
         ):
-            removed.add(compaction.compaction_id)
-        else:
-            if compaction.history_boundary_message_id in removed_message_ids:
-                assert last_retained_message_id is not None
-                compaction = compaction.model_copy(
-                    update={
-                        "history_boundary_message_id": last_retained_message_id,
-                    }
-                )
-            retained.append(compaction)
-    return retained
+            removed[item.compaction_id] = None
+            continue
+        retained.append(item.compaction_id)
+        if item.history_boundary_message_id in removed_message_ids:
+            assert last_retained_message_id is not None
+            moved[item.compaction_id] = last_retained_message_id
+    return CompactionWithdrawal(tuple(retained), tuple(removed), moved)

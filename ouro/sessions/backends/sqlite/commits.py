@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from ouro.core.compaction import CompactionRecord, retain_compaction_references
+from ouro.core.compaction import CompactionRecord, plan_compaction_withdrawal
 from ouro.core.context_snapshots import ModelRequestHeader
 from ouro.core.errors import PersistenceError
 from ouro.core.harness import HarnessVersion
@@ -31,7 +31,7 @@ from ouro.sessions.sqlite_facts import (
     write_call_state,
     write_fact,
 )
-from ouro.sessions.sqlite_inputs import read_state, write_input, write_state
+from ouro.sessions.sqlite_inputs import read_commit_input_states, write_input, write_state
 from ouro.sessions.sqlite_observation import advance_revision
 from ouro.sessions.sqlite_requests import write_header
 from ouro.sessions.sqlite_runs import read_pending_runs, write_run
@@ -84,9 +84,8 @@ class SQLiteSessionCommits:
             raise SessionCommitConflict("commit already applied; query the domain result")
         truncation = None
         restore = None
-        compaction_references = None
+        compaction_withdrawal = None
         updated_compactions: tuple[CompactionRecord, ...] = ()
-        removed_compaction_ids: tuple[str, ...] = ()
         cut_row = None
         withdrawn_inputs: tuple[str, ...] = ()
         if request.before_message_id is not None:
@@ -132,36 +131,22 @@ class SQLiteSessionCommits:
             truncation = MessageTruncation(
                 first_removed=first, last_retained=retained, removed_count=len(removed)
             )
-            records = read_references(connection, session_id)
-            compaction_references = tuple(
-                retain_compaction_references(
-                    records,
-                    removed,
-                    last_retained_message_id=retained.message_id if retained else None,
-                )
+            compaction_withdrawal = plan_compaction_withdrawal(
+                read_references(connection, session_id),
+                removed,
+                last_retained_message_id=retained.message_id if retained else None,
             )
-            retained_ids = {item.compaction_id for item in compaction_references}
-            removed_compaction_ids = tuple(
-                item.compaction_id for item in records if item.compaction_id not in retained_ids
-            )
-            previous = {item.compaction_id: item for item in records}
             updated_compactions = tuple(
                 decode_versioned_record_json(
                     CompactionRecord,
                     connection.execute(
                         "SELECT payload FROM compactions "
                         "WHERE session_id = ? AND compaction_id = ?",
-                        (session_id, item.compaction_id),
+                        (session_id, identity),
                     ).fetchone()[0],
                     label="compaction boundary",
-                ).model_copy(
-                    update={
-                        "history_boundary_message_id": item.history_boundary_message_id,
-                        "context_metrics_after": None,
-                    }
-                )
-                for item in compaction_references
-                if item != previous[item.compaction_id]
+                ).with_history_boundary(anchor)
+                for identity, anchor in compaction_withdrawal.moved_anchors.items()
             )
         compaction_sources: tuple[MessageFact, ...] = ()
         if request.compaction is not None:
@@ -205,17 +190,7 @@ class SQLiteSessionCommits:
                 media_source = decode_versioned_record_json(
                     MessageFact, row[0], label="media source"
                 )
-        input_ids = dict.fromkeys(
-            [record.item.queue_id for record in request.inputs]
-            + [change.input_id for change in request.input_changes]
-            + list(withdrawn_inputs)
-            + (list(current.pending_input_ids) if request.before_message_id is not None else [])
-        )
-        input_states = tuple(
-            state
-            for identity in input_ids
-            if (state := read_state(connection, session_id, identity)) is not None
-        )
+        input_states = read_commit_input_states(connection, request, current, withdrawn_inputs)
         current_request = None
         if (
             request.request_header is not None
@@ -250,13 +225,8 @@ class SQLiteSessionCommits:
             harness,
             truncation=truncation,
             restore=restore,
-            retained_compaction_ids=(
-                tuple(item.compaction_id for item in compaction_references)
-                if compaction_references is not None
-                else None
-            ),
+            compaction_withdrawal=compaction_withdrawal,
             updated_compactions=updated_compactions,
-            removed_compaction_ids=removed_compaction_ids,
             input_states=input_states,
             withdrawn_input_ids=withdrawn_inputs,
             tool_facts=tool_facts,

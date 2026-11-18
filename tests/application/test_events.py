@@ -113,7 +113,8 @@ async def test_event_recorder_publishes_event_and_dispatches_runtime_event_obser
     store.initialize()
     session = SessionRecord(title="Events")
     store.create_session(session)
-    store.save_run(RunRecord(session_id=session.session_id, run_id="run_1"))
+    run = RunRecord(session_id=session.session_id, run_id="run_1")
+    store.save_run(run)
     observers = ObserverRegistry()
     seen: list[str] = []
 
@@ -130,19 +131,15 @@ async def test_event_recorder_publishes_event_and_dispatches_runtime_event_obser
     )
     recorder = RuntimeEventRecorder(store=store, observers=observers)
 
-    sequence = await recorder.emit(
-        0,
-        session_id=session.session_id,
-        run_id="run_1",
+    await recorder.emit(
+        run,
         event_type="run_started",
         payload={"trigger": "user"},
     )
     await recorder.close()
-    snapshot = store.load_session(session.session_id)
 
-    assert sequence == 1
-    assert recorded_events(snapshot.session.session_id)[0].event_type == "run_started"
-    assert recorded_events(snapshot.session.session_id)[0].event_type == "run_started"
+    event = recorded_events(session.session_id)[0]
+    assert (event.event_type, event.sequence) == ("run_started", 1)
     assert seen == ["run_started"]
 
 
@@ -152,7 +149,8 @@ async def test_runtime_event_observer_receives_a_redacted_payload(tmp_path) -> N
     store.initialize()
     session = SessionRecord(title="Redacted events")
     store.create_session(session)
-    store.save_run(RunRecord(session_id=session.session_id, run_id="run_1"))
+    run = RunRecord(session_id=session.session_id, run_id="run_1")
+    store.save_run(run)
     observers = ObserverRegistry()
     seen: list[object] = []
 
@@ -170,9 +168,7 @@ async def test_runtime_event_observer_receives_a_redacted_payload(tmp_path) -> N
     recorder = RuntimeEventRecorder(store=store, observers=observers)
 
     await recorder.emit(
-        0,
-        session_id=session.session_id,
-        run_id="run_1",
+        run,
         event_type="model_text_delta",
         payload={"text": "token=observer-secret"},
     )
@@ -239,7 +235,8 @@ async def test_event_observer_retains_registry_resolved_at_publish_time(tmp_path
     store.initialize()
     session = SessionRecord(title="Catalog-bound events")
     store.create_session(session)
-    store.save_run(RunRecord(session_id=session.session_id, run_id="run_catalog"))
+    run = RunRecord(session_id=session.session_id, run_id="run_catalog")
+    store.save_run(run)
     first_observers = ObserverRegistry()
     second_observers = ObserverRegistry()
     seen: list[str] = []
@@ -269,9 +266,7 @@ async def test_event_observer_retains_registry_resolved_at_publish_time(tmp_path
 
     recorder.set_observer_registry_resolver(resolve)
     await recorder.emit(
-        0,
-        session_id=session.session_id,
-        run_id="run_catalog",
+        run,
         event_type="run_started",
         payload={"trigger": "user"},
     )
@@ -291,7 +286,8 @@ async def test_unmatched_runtime_event_skips_observation_projection(
     store.initialize()
     session = SessionRecord(title="Filtered events")
     store.create_session(session)
-    store.save_run(RunRecord(session_id=session.session_id, run_id="run_filtered"))
+    run = RunRecord(session_id=session.session_id, run_id="run_filtered")
+    store.save_run(run)
     observers = ObserverRegistry()
     observers.register(
         ObserverRegistration(
@@ -310,9 +306,7 @@ async def test_unmatched_runtime_event_skips_observation_projection(
     monkeypatch.setattr(events_module, "_runtime_event_observation", unexpected_projection)
 
     await recorder.emit(
-        0,
-        session_id=session.session_id,
-        run_id="run_filtered",
+        run,
         event_type="run_started",
         payload={"trigger": "user"},
     )
@@ -327,7 +321,8 @@ async def test_runtime_event_matcher_short_circuits_catalog_resolution(tmp_path)
     store.initialize()
     session = SessionRecord(title="Catalog matcher")
     store.create_session(session)
-    store.save_run(RunRecord(session_id=session.session_id, run_id="run_catalog"))
+    run = RunRecord(session_id=session.session_id, run_id="run_catalog")
+    store.save_run(run)
     observers = ObserverRegistry()
     observers.register(
         ObserverRegistration(
@@ -349,9 +344,7 @@ async def test_runtime_event_matcher_short_circuits_catalog_resolution(tmp_path)
     recorder.set_runtime_event_observer_matcher(lambda _run_id, _event_type: False)
 
     await recorder.emit(
-        0,
-        session_id=session.session_id,
-        run_id="run_catalog",
+        run,
         event_type="run_started",
         payload={"trigger": "user"},
     )
@@ -393,7 +386,8 @@ async def test_event_recorder_converts_observer_failure_to_failure_event(tmp_pat
     store.initialize()
     session = SessionRecord(title="Event observer failure")
     store.create_session(session)
-    store.save_run(RunRecord(session_id=session.session_id, run_id="run_1"))
+    run = RunRecord(session_id=session.session_id, run_id="run_1")
+    store.save_run(run)
     observers = ObserverRegistry()
 
     def broken_on_event(_observation) -> None:
@@ -409,17 +403,15 @@ async def test_event_recorder_converts_observer_failure_to_failure_event(tmp_pat
     )
     recorder = RuntimeEventRecorder(store=store, observers=observers)
 
-    sequence = await recorder.emit(
-        0,
-        session_id=session.session_id,
-        run_id="run_1",
+    await recorder.emit(
+        run,
         event_type="run_started",
         payload={},
     )
     await recorder.close()
     snapshot = store.load_session(session.session_id)
 
-    assert sequence == 1
+    assert recorded_events(session.session_id)[0].sequence == 1
     assert [event.event_type for event in recorded_events(session.session_id)[:1]] == [
         "run_started"
     ]
@@ -438,7 +430,8 @@ async def test_event_sequences_belong_to_each_online_publisher(
     store.initialize()
     session = SessionRecord(title="Concurrent events")
     store.create_session(session)
-    store.save_run(RunRecord(session_id=session.session_id, run_id="run_1"))
+    run = RunRecord(session_id=session.session_id, run_id="run_1")
+    store.save_run(run)
     sink_entered = asyncio.Event()
     release_sink = asyncio.Event()
 
@@ -456,32 +449,24 @@ async def test_event_sequences_belong_to_each_online_publisher(
 
     first_emit = asyncio.create_task(
         first.emit(
-            0,
-            session_id=session.session_id,
-            run_id="run_1",
+            run,
             event_type="run_started",
             payload={},
         )
     )
     await sink_entered.wait()
-    second_sequence = await second.emit(
-        0,
-        session_id=session.session_id,
-        run_id="run_1",
+    await second.emit(
+        run,
         event_type="model_request_started",
         payload={},
     )
     release_sink.set()
-    first_sequence = await first_emit
+    await first_emit
     await first.close()
     await second.close()
 
     snapshot = store.load_session(session.session_id)
     assert [event.sequence for event in recorded_events(snapshot.session.session_id)] == [1, 1]
-    assert recorded_events(snapshot.session.session_id)[0].sequence == 1
-    assert recorded_events(snapshot.session.session_id)[1].sequence == 1
-    assert first_sequence == 1
-    assert second_sequence == 1
 
 
 @pytest.mark.asyncio
@@ -490,7 +475,8 @@ async def test_observer_timeout_cannot_block_event_delivery(tmp_path) -> None:
     store.initialize()
     session = SessionRecord(title="Observer timeout")
     store.create_session(session)
-    store.save_run(RunRecord(session_id=session.session_id, run_id="run_1"))
+    run = RunRecord(session_id=session.session_id, run_id="run_1")
+    store.save_run(run)
     observers = ObserverRegistry()
 
     async def never_returns(_observation) -> None:
@@ -507,11 +493,9 @@ async def test_observer_timeout_cannot_block_event_delivery(tmp_path) -> None:
     )
     recorder = RuntimeEventRecorder(store=store, observers=observers)
 
-    sequence = await asyncio.wait_for(
+    await asyncio.wait_for(
         recorder.emit(
-            0,
-            session_id=session.session_id,
-            run_id="run_1",
+            run,
             event_type="run_started",
             payload={},
         ),
@@ -519,7 +503,7 @@ async def test_observer_timeout_cannot_block_event_delivery(tmp_path) -> None:
     )
     await recorder.close()
 
-    assert sequence == 1
+    assert recorded_events(session.session_id)[0].sequence == 1
     snapshot = store.load_session(session.session_id)
     assert [event.event_type for event in recorded_events(snapshot.session.session_id)] == [
         "run_started",
@@ -534,7 +518,8 @@ async def test_event_recorder_close_applies_observer_shutdown_deadline(tmp_path)
     store.initialize()
     session = SessionRecord(title="Observer shutdown")
     store.create_session(session)
-    store.save_run(RunRecord(session_id=session.session_id, run_id="run_1"))
+    run = RunRecord(session_id=session.session_id, run_id="run_1")
+    store.save_run(run)
     observers = ObserverRegistry()
     started = asyncio.Event()
 
@@ -558,9 +543,7 @@ async def test_event_recorder_close_applies_observer_shutdown_deadline(tmp_path)
     )
 
     await recorder.emit(
-        0,
-        session_id=session.session_id,
-        run_id="run_1",
+        run,
         event_type="run_started",
         payload={},
     )
@@ -575,14 +558,13 @@ async def test_stable_runtime_event_payload_is_validated_before_delivery(tmp_pat
     store.initialize()
     session = SessionRecord(title="Invalid event")
     store.create_session(session)
-    store.save_run(RunRecord(session_id=session.session_id, run_id="run_1"))
+    run = RunRecord(session_id=session.session_id, run_id="run_1")
+    store.save_run(run)
     recorder = RuntimeEventRecorder(store=store, observers=ObserverRegistry())
 
     with pytest.raises(ValueError, match="requires string payload field text"):
         await recorder.emit(
-            0,
-            session_id=session.session_id,
-            run_id="run_1",
+            run,
             event_type="model_text_delta",
             payload={},
         )
@@ -597,15 +579,14 @@ async def test_tool_output_with_malformed_url_does_not_break_event_delivery(tmp_
     store.initialize()
     session = SessionRecord(title="Untrusted tool output")
     store.create_session(session)
-    store.save_run(RunRecord(session_id=session.session_id, run_id="run_1"))
+    run = RunRecord(session_id=session.session_id, run_id="run_1")
+    store.save_run(run)
     recorder = RuntimeEventRecorder(store=store, observers=ObserverRegistry())
     seen: list[str] = []
     recorder.add_event_sink(lambda event: seen.append(event.event_type))
 
-    sequence = await recorder.emit(
-        0,
-        session_id=session.session_id,
-        run_id="run_1",
+    await recorder.emit(
+        run,
         event_type="tool_call_completed",
         payload={
             "tool_call_id": "call_1",
@@ -619,7 +600,7 @@ async def test_tool_output_with_malformed_url_does_not_break_event_delivery(tmp_
     )
     await recorder.drain()
 
-    assert sequence == 1
+    assert recorded_events(session.session_id)[0].sequence == 1
     assert [event.event_type for event in recorded_events(session.session_id)[:1]] == [
         "tool_call_completed"
     ]
@@ -672,7 +653,8 @@ async def test_host_sink_worker_starts_with_eager_task_factory(tmp_path) -> None
     store.initialize()
     session = SessionRecord(title="Eager host")
     store.create_session(session)
-    store.save_run(RunRecord(session_id=session.session_id, run_id="run_eager"))
+    run = RunRecord(session_id=session.session_id, run_id="run_eager")
+    store.save_run(run)
     recorder = RuntimeEventRecorder(store=store, observers=ObserverRegistry())
     seen: list[str] = []
 
@@ -685,9 +667,7 @@ async def test_host_sink_worker_starts_with_eager_task_factory(tmp_path) -> None
     loop.set_task_factory(asyncio.eager_task_factory)
     try:
         await recorder.emit(
-            0,
-            session_id=session.session_id,
-            run_id="run_eager",
+            run,
             event_type="run_started",
             payload={"trigger": "user"},
         )

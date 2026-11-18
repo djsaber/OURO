@@ -10,6 +10,7 @@ from ouro.application.inputs.requests import UserInputRequest
 from ouro.application.supervisor import RuntimeSupervisor
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ProviderStreamEvent
+from ouro.providers.faux import FauxProvider
 from tests.tui.test_tasks import streaming_application
 
 
@@ -34,6 +35,17 @@ class HeldProvider:
         finally:
             self.active -= 1
             self.closed.set()
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_first_user_run_preserves_entry_origin(tmp_path, backend):
+    async with streaming_application(tmp_path, FauxProvider(), backend=backend) as app:
+        direct = await app.runtime.run("first")
+        submission = await app.supervisor.submit_user_input(UserInputRequest(prompt="first"))
+        queued = await submission.wait()
+        for result, origin in ((direct, "user"), (queued, "follow_up")):
+            run = app.runtime.store.load_run(result.session.session_id, result.run.run_id)
+            assert (run.origin, run.trigger, run.status) == (origin, "user", "completed")
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])

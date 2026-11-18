@@ -1002,11 +1002,9 @@ async def test_controller_manages_subagent_policy_and_definitions(
         agent_id = created.definitions[-1].agent_id
         assert created.definitions[-1].allowed_by_policy is (allowed_agents == ("*",))
         assert created.policy_restart_required
-        assert application.agents is not None
         assert application.agent_definitions is not None
-        dispatch_catalog = application.agents.constrain_catalog(
-            application.agent_definitions.catalog_snapshot(application.runtime.tools)
-        )
+        dispatch_catalog = application.agent_definitions.catalog_snapshot(application.runtime.tools)
+        assert dispatch_catalog.spawn_policy == runtime.spawn_policy
         assert (agent_id in {entry.definition.agent_id for entry in dispatch_catalog.entries}) is (
             allowed_agents == ("*",)
         )

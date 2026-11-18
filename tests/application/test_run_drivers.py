@@ -315,7 +315,6 @@ async def test_driver_cannot_leave_a_native_operation_running_after_return(tmp_p
     context = NativeRunDriverContext(
         session=session,
         run=run,
-        sequence=0,
         abort_signal=AbortSignal(),
         request_model=native_request,
         request_tools=unused_tools,

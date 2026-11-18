@@ -15,6 +15,7 @@ from ouro.providers.http_transport import HttpxProviderHTTPTransport
 from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
+from tests.event_capture import recorded_events
 
 
 class CorrectingProvider(FauxProvider):
@@ -208,13 +209,14 @@ async def test_cancel_after_correction_does_not_dispatch_retry(store, tmp_path, 
         original = runtime.run_lifecycle.correct_model_output
 
         async def correct(*args):
-            result = await original(*args)
+            session, run = await original(*args)
+            events = recorded_events(session.session_id)
             repeated = await original(*args)
-            assert repeated[:2] == result[:2]
-            assert repeated[2] == ()
+            assert repeated == (session, run)
+            assert recorded_events(session.session_id) == events
             committed.set()
             await release.wait()
-            return result
+            return session, run
 
         monkeypatch.setattr(runtime.run_lifecycle, "correct_model_output", correct)
         task = asyncio.create_task(runtime.run("act"))

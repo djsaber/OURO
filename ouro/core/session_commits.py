@@ -5,7 +5,7 @@ from typing import Self
 from pydantic import Field, model_validator
 
 from ouro.core.base import OuroModel, VersionedOuroModel, new_id, utc_now
-from ouro.core.compaction import CompactionRecord, validate_compaction_sources
+from ouro.core.compaction import CompactionRecord, CompactionWithdrawal, validate_compaction_sources
 from ouro.core.content import media_resource_ids
 from ouro.core.context_selection import validate_media_selection
 from ouro.core.context_snapshots import ModelRequestHeader, RequestManifestRecord
@@ -186,9 +186,8 @@ def prepare_session_commit(
     *,
     truncation: MessageTruncation | None = None,
     restore: HarnessVersion | None = None,
-    retained_compaction_ids: tuple[str, ...] | None = None,
+    compaction_withdrawal: CompactionWithdrawal | None = None,
     updated_compactions: tuple[CompactionRecord, ...] = (),
-    removed_compaction_ids: tuple[str, ...] = (),
     input_states: tuple[InputState, ...] = (),
     withdrawn_input_ids: tuple[str, ...] = (),
     tool_facts: ToolCallFacts | None = None,
@@ -317,12 +316,14 @@ def prepare_session_commit(
             truncation.last_retained
         )
         if (
-            retained_compaction_ids is not None
+            compaction_withdrawal is not None
             and session.context_selection.compaction_id is not None
-            and session.context_selection.compaction_id not in retained_compaction_ids
+            and session.context_selection.compaction_id not in compaction_withdrawal.retained_ids
         ):
             session.context_selection.compaction_id = (
-                retained_compaction_ids[-1] if retained_compaction_ids else None
+                compaction_withdrawal.retained_ids[-1]
+                if compaction_withdrawal.retained_ids
+                else None
             )
 
     changed_inputs = _prepare_inputs(
@@ -370,7 +371,6 @@ def prepare_session_commit(
     events = tuple(
         event.model_copy(
             update={
-                "sequence": index + 1,
                 "history_epoch": next(
                     (run.history_epoch for run in request.runs if run.run_id == event.run_id),
                     session.history_epoch,
@@ -378,7 +378,7 @@ def prepare_session_commit(
                 "metadata": {**event.metadata, "operation_id": request.operation_id},
             },
         )
-        for index, event in enumerate(proposed_events)
+        for event in proposed_events
     )
     request_header = request.request_header
     response_header = request_header or current_request
@@ -417,7 +417,7 @@ def prepare_session_commit(
         tool_facts=tool_facts or ToolCallFacts(),
         call_states=request.call_states,
         updated_compactions=updated_compactions,
-        removed_compaction_ids=removed_compaction_ids,
+        removed_compaction_ids=compaction_withdrawal.removed_ids if compaction_withdrawal else (),
         compaction=request.compaction,
         request_header=request_header,
         clear_response_draft=(

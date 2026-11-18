@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal, Protocol, Self
 
 from pydantic import ConfigDict, Field, JsonValue, model_validator
@@ -93,15 +93,6 @@ class DriverFinished:
 @dataclass(frozen=True)
 class DriverSuspended:
     pass
-
-
-@dataclass(frozen=True)
-class DriverInputDelivery:
-    sequence: int
-    messages: list[MessageRecord] = field(default_factory=list)
-
-
-DriverInputConsumer = Callable[..., Awaitable[DriverInputDelivery]]
 
 
 class RunDriverContext(Protocol):

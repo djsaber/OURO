@@ -47,7 +47,6 @@ from ouro.application.sessions.recovery import SessionRecoveryService
 from ouro.application.usage import UsageService
 from ouro.core.agents import (
     AgentCatalogEntry,
-    AgentCatalogSnapshot,
     AgentControlRequest,
     AgentControlResult,
     AgentSpawnPolicy,
@@ -220,33 +219,6 @@ class AgentService:
                 raise ValueError("system default model is not allowed by the subagent policy")
             return route
         return configured or inherited
-
-    def constrain_catalog(self, catalog: AgentCatalogSnapshot) -> AgentCatalogSnapshot:
-        """Freeze the exact definitions and tool capabilities this service can spawn."""
-
-        entries = tuple(
-            entry.model_copy(
-                update={
-                    "effective_tools": tuple(
-                        tool
-                        for tool in entry.effective_tools
-                        if self.spawn_policy.allows_tool(tool)
-                    )
-                }
-            )
-            for entry in catalog.entries
-            if self.spawn_policy.allows_agent(entry.definition.agent_id)
-            and (
-                entry.definition.model == DEFAULT_MODEL
-                or self.spawn_policy.allows_model(entry.definition.model)
-            )
-        )
-        return AgentCatalogSnapshot(
-            revision=catalog.revision,
-            entries=entries,
-            spawn_policy=self.spawn_policy,
-            created_at=catalog.created_at,
-        )
 
     async def execute_control(
         self,

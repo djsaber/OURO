@@ -48,12 +48,11 @@ async def test_context_building_and_recording_do_not_require_a_summary(tmp_path,
     preparation = runtime.context_preparation
     saved = store.load_session(session.session_id).messages
     try:
-        built = await preparation.build(0, session=session, run=run, tools=[], model_round=1)
+        built = await preparation.build(session=session, run=run, tools=[], model_round=1)
         assert built.view.metrics.over_budget
         assert not strategy.requests and not provider.calls
         with pytest.raises(ContextBlockedError):
             await preparation.finalize(
-                built.sequence,
                 session=built.session,
                 run=run,
                 turn_id="turn_rebuild",
@@ -77,8 +76,7 @@ async def test_context_building_and_recording_do_not_require_a_summary(tmp_path,
             adapter=runtime.adapter,
             prompt_context=built.prompt_context,
         )
-        ready, _ = await preparation.finalize(
-            built.sequence,
+        ready = await preparation.finalize(
             session=built.session,
             run=run,
             turn_id="turn_rebuild",
@@ -211,7 +209,6 @@ async def test_auto_compaction_reuses_views_and_reloads_only_changed_history(
     monkeypatch.setattr(preparation.context_builder, "build", track_view)
     task = asyncio.create_task(
         runtime.context_compaction.prepare(
-            0,
             session=session,
             run=run,
             tools=[],
@@ -238,7 +235,7 @@ async def test_auto_compaction_reuses_views_and_reloads_only_changed_history(
             current = store.load_session_record(session.session_id)
             store.save_session(current.model_copy(update={"title": "renamed during summary"}))
         release.set()
-        view, _ = await asyncio.wait_for(task, 10)
+        view = await asyncio.wait_for(task, 10)
         assert tails == ([11, 2] if change == "append" else [11])
         # Initial Agent projection, canonical summary material, then accepted tail.
         # An actual append needs one further projection; a title change does not.
@@ -310,8 +307,7 @@ async def test_skipped_compaction_keeps_the_already_prepared_request(
     monkeypatch.setattr(preparation.context_builder, "build", track_view)
     monkeypatch.setattr(store, "load_messages_tail", tail)
     try:
-        view, _ = await runtime.context_compaction.prepare(
-            0,
+        view = await runtime.context_compaction.prepare(
             session=session,
             run=run,
             tools=[],

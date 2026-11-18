@@ -108,10 +108,7 @@ from ouro.core.errors import (
 from ouro.core.events import EventRecord
 from ouro.core.harness import HarnessState
 from ouro.core.harness_calls import HarnessCallSnapshot
-from ouro.core.inner_loop import (
-    InnerAgentLoop,
-    TurnCompletionPolicyResult,
-)
+from ouro.core.inner_loop import InnerAgentLoop
 from ouro.core.input_content import (
     InputAttachment,
     InputContent,
@@ -140,7 +137,7 @@ from ouro.core.reasoning import ReasoningRequest
 from ouro.core.redaction import redact_text
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy, RunPauseReason
-from ouro.core.run_drivers import DEFAULT_DRIVER_ID, DriverInputDelivery, RunDriverBinding
+from ouro.core.run_drivers import DEFAULT_DRIVER_ID, RunDriverBinding
 from ouro.core.run_transitions import prepare_run_continuation
 from ouro.core.session_commits import SessionCommitConflict
 from ouro.core.session_controls import (
@@ -159,6 +156,7 @@ from ouro.core.session_ports import RuntimeSessionSnapshot, SessionStore
 from ouro.core.session_titles import normalize_session_title, with_session_title
 from ouro.core.state import (
     RunContinuationCheckpoint,
+    RunOrigin,
     RunRecord,
     SessionContinuationRequest,
     SessionRecord,
@@ -173,7 +171,11 @@ from ouro.core.tool_requests import (
     ToolBatchHandlingResult,
 )
 from ouro.core.tools import PermissionMode, ToolDefinition
-from ouro.core.turn_policies import TurnCompletionCandidate, TurnPolicyRegistry
+from ouro.core.turn_policies import (
+    TurnCompletionCandidate,
+    TurnPolicyEvaluation,
+    TurnPolicyRegistry,
+)
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT, render_agent_skills_prompt
 from ouro.skills import SkillMetadata
 from ouro.tools import ToolExecutor, ToolRegistry, ToolResult
@@ -1464,6 +1466,7 @@ class RuntimeService:
             raise ValueError("Driver selection cannot steer an existing Run")
         return await self._run_input(
             prompt,
+            origin="user",
             session_id=session_id,
             title=title,
             queue_mode=queue_mode,
@@ -1494,6 +1497,8 @@ class RuntimeService:
         self,
         prompt: str,
         *,
+        origin: RunOrigin,
+        initiator_id: str | None = None,
         session_id: str | None = None,
         title: str | None = None,
         queue_mode: QueuedInputMode = "follow_up",
@@ -1632,15 +1637,6 @@ class RuntimeService:
         ):
             raise ValueError("delegated task input must target its child Session")
 
-        queued_attributed_input = next(
-            (item for item in (queued_inputs or []) if item.source != "user"),
-            None,
-        )
-        attributed_source = (
-            _attributed_input_source(attribution)
-            if attribution is not None
-            else (queued_attributed_input.source if queued_attributed_input is not None else None)
-        )
         run = (
             prepared_run
             or preapproved_new_run
@@ -1655,11 +1651,7 @@ class RuntimeService:
                 session_id=session.session_id,
                 history_epoch=session.history_epoch,
                 status="running",
-                origin=(
-                    attributed_source
-                    if attributed_source is not None
-                    else ("follow_up" if queued_inputs else "user")
-                ),
+                origin=origin,
                 parent_run_id=(
                     next(
                         (
@@ -1670,12 +1662,8 @@ class RuntimeService:
                         None,
                     )
                 ),
-                initiator_id=(
-                    _attributed_input_initiator(attribution)
-                    if attribution is not None
-                    else _queued_input_initiator(queued_attributed_input)
-                ),
-                trigger=attributed_source or "user",
+                initiator_id=initiator_id,
+                trigger="user" if origin == "follow_up" else origin,
             )
         )
         if input_driver is not None:
@@ -1850,7 +1838,6 @@ class RuntimeService:
                 )
 
             await self.event_recorder.publish_committed(committed_events)
-            sequence = committed_events[-1].sequence
             for _ in pending_inputs:
                 if on_input_accepted is not None:
                     on_input_accepted()
@@ -1862,7 +1849,6 @@ class RuntimeService:
             result = await self._continue_run_driver(
                 session=session,
                 run=run,
-                sequence=sequence,
                 abort_signal=abort_signal,
                 adapter=active_adapter,
                 on_provider_stream_start=on_provider_stream_start,
@@ -2040,14 +2026,12 @@ class RuntimeService:
             )
             started = True
             await self.event_recorder.publish_committed(committed_events)
-            sequence = committed_events[-1].sequence
             if not fresh and self._agent_controls is not None:
                 await self._agent_controls.continue_children(run)
             signal = await self.run_ownership.activate_signal(session_id, run.run_id)
             result = await self._continue_run_driver(
                 session=session,
                 run=run,
-                sequence=sequence,
                 abort_signal=signal,
                 adapter=self.adapter,
                 resuming_driver=not fresh,
@@ -2101,6 +2085,7 @@ class RuntimeService:
         try:
             return await self._run_input(
                 session_input.prompt,
+                origin=run.origin,
                 session_id=run.session_id,
                 title=session_input.title,
                 queue_mode=session_input.mode,
@@ -2120,7 +2105,6 @@ class RuntimeService:
         *,
         session: SessionRecord,
         run: RunRecord,
-        sequence: int,
         abort_signal: AbortSignal,
         adapter: RuntimeAdapter,
         on_provider_stream_start: Callable[[], None] | None = None,
@@ -2160,7 +2144,6 @@ class RuntimeService:
             context = NativeRunDriverContext(
                 session=session,
                 run=run,
-                sequence=sequence,
                 abort_signal=abort_signal,
                 request_model=model_requests.execute,
                 request_tools=self._execute_model_tool_batch,
@@ -2216,7 +2199,6 @@ class RuntimeService:
         )
         session = await run_blocking(self.store.load_session_record, run.session_id)
         return await self._tool_calls_for_run(run.run_id).handle_driver_batch(
-            request.sequence,
             session=session,
             run=run,
             tool_calls=request.calls,
@@ -2232,7 +2214,6 @@ class RuntimeService:
         session = await run_blocking(self.store.load_session_record, request.session.session_id)
         response = request.response
         return await self._tool_calls_for_run(request.run.run_id).handle_batch(
-            request.sequence,
             session,
             request.run,
             list(response.tool_calls),
@@ -2310,7 +2291,6 @@ class RuntimeService:
         abort_signal = None
         terminal_run = run
         try:
-            sequence = 0
             abort_signal = await self.run_ownership.activate_signal(session_id, run.run_id)
             snapshot = await run_blocking(self.store.load_runtime_session, session_id)
             if (
@@ -2332,10 +2312,8 @@ class RuntimeService:
                 snapshot=snapshot,
             )
             await self.event_recorder.publish_committed(committed_events)
-            sequence = committed_events[-1].sequence
             try:
                 execution = await self.context_compaction.compact(
-                    sequence,
                     session=active_session,
                     run=run,
                     tools=self._tools_for_run(run.run_id).definitions(),
@@ -2383,7 +2361,7 @@ class RuntimeService:
                 session=completed.session,
                 run=completed.run,
                 compaction=execution.record,
-                skipped=execution.skipped,
+                skipped=execution.record is None,
             )
         finally:
             try:
@@ -2474,6 +2452,8 @@ class RuntimeService:
 
         return await self._run_input(
             session_input.prompt,
+            origin="plugin",
+            initiator_id=session_input.plugin_id,
             session_id=session_id,
             title=session_input.title,
             queue_mode=session_input.mode,
@@ -2513,11 +2493,9 @@ class RuntimeService:
             if not pending:
                 break
             try:
-                result = await self._run_input(
-                    pending[0].prompt,
-                    session_id=session_id,
-                    title=pending[0].title,
-                    queued_inputs=pending,
+                result = await self._run_queued_inputs(
+                    session_id,
+                    pending,
                 )
             except _QueuedInputSelectionChanged:
                 continue
@@ -2581,11 +2559,9 @@ class RuntimeService:
             if not pending:
                 break
             try:
-                return await self._run_input(
-                    pending[0].prompt,
-                    session_id=receipt.session_id,
-                    title=pending[0].title,
-                    queued_inputs=pending,
+                return await self._run_queued_inputs(
+                    receipt.session_id,
+                    pending,
                     continuation_request=_continuation_request,
                 )
             except _QueuedInputSelectionChanged:
@@ -2842,15 +2818,34 @@ class RuntimeService:
             if not pending:
                 return None
             try:
-                return await self._run_input(
-                    pending[0].prompt,
-                    session_id=session_id,
-                    title=pending[0].title,
-                    queued_inputs=pending,
+                return await self._run_queued_inputs(
+                    session_id,
+                    pending,
                     on_provider_stream_start=on_provider_stream_start,
                 )
             except _QueuedInputSelectionChanged:
                 continue
+
+    async def _run_queued_inputs(
+        self,
+        session_id: str,
+        inputs: list[QueuedInput],
+        *,
+        continuation_request: SessionContinuationRequest | None = None,
+        on_provider_stream_start: Callable[[], None] | None = None,
+    ) -> RunResult:
+        first = inputs[0]
+        producer = next((item for item in inputs if item.source != "user"), None)
+        return await self._run_input(
+            first.prompt,
+            origin=producer.source if producer else "follow_up",
+            initiator_id=_queued_input_initiator(producer),
+            session_id=session_id,
+            title=first.title,
+            queued_inputs=inputs,
+            continuation_request=continuation_request,
+            on_provider_stream_start=on_provider_stream_start,
+        )
 
     async def _queued_input_units(
         self, session: SessionRecord, *, mode: QueuedInputMode | None = None
@@ -2893,27 +2888,17 @@ class RuntimeService:
             raise ValueError("plugin Run drivers require an extension catalog")
         return self._extension_catalog.select_driver(driver_id)
 
-    async def _consume_driver_inputs(
-        self,
-        sequence: int,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        turn_id: str,
-    ) -> DriverInputDelivery:
-        latest_session = await run_blocking(
-            self.store.load_session_record,
-            session.session_id,
-        )
-        units = await self._queued_input_units(latest_session, mode="steer")
+    async def _consume_driver_inputs(self, run: RunRecord, turn_id: str) -> list[MessageRecord]:
+        session = await run_blocking(self.store.load_session_record, run.session_id)
+        units = await self._queued_input_units(session, mode="steer")
         eligible = [item for unit in units for item in unit]
         if not eligible:
-            return DriverInputDelivery(sequence=sequence)
+            return []
 
         current = self._extension_catalog.snapshot() if self._extension_catalog else None
         try:
             await self._evaluate_prompt_policies(
-                session=latest_session,
+                session=session,
                 run=run,
                 inputs=eligible,
                 catalog_snapshot=current,
@@ -2926,7 +2911,6 @@ class RuntimeService:
         for unit in units:
             consumed, events = await run_blocking(
                 self._consume_queued_turn_inputs,
-                session=session,
                 run=run,
                 inputs=unit,
                 turn_id=turn_id,
@@ -2935,13 +2919,10 @@ class RuntimeService:
                 continue
             appended.extend(consumed)
             await self.event_recorder.publish_committed(events)
-            if events:
-                sequence = events[-1].sequence
-        return DriverInputDelivery(sequence=sequence, messages=appended)
+        return appended
 
     async def _evaluate_turn_completion(
         self,
-        sequence: int,
         *,
         session: SessionRecord,
         run: RunRecord,
@@ -2949,7 +2930,7 @@ class RuntimeService:
         assistant_reasoning: str,
         turn_id: str,
         policies: TurnPolicyRegistry,
-    ) -> TurnCompletionPolicyResult:
+    ) -> TurnPolicyEvaluation:
         evaluation = await policies.evaluate(
             TurnCompletionCandidate(
                 harness=await run_blocking(
@@ -2968,21 +2949,9 @@ class RuntimeService:
                 assistant_reasoning=assistant_reasoning,
             )
         )
-        sequence = await self.event_recorder.record_turn_policy_failures(
-            sequence,
-            evaluation.failures,
-        )
-        if evaluation.failures:
-            failure = evaluation.failures[-1]
-            return TurnCompletionPolicyResult(
-                sequence=sequence,
-                blocked_reason=(
-                    f"turn policy failed: {failure.plugin_id}:{failure.policy_id}: "
-                    f"{failure.error_type}"
-                ),
-            )
-        if not evaluation.should_continue:
-            return TurnCompletionPolicyResult(sequence=sequence)
+        await self.event_recorder.record_turn_policy_failures(evaluation.failures)
+        if evaluation.failures or not evaluation.should_continue:
+            return evaluation
 
         controllers = [
             {
@@ -3028,12 +2997,7 @@ class RuntimeService:
             ),
         )
         await self.event_recorder.publish_committed(events)
-        if events:
-            sequence = events[-1].sequence
-        return TurnCompletionPolicyResult(
-            sequence=sequence,
-            should_continue=True,
-        )
+        return evaluation
 
     def _prepare_input_messages(
         self,
@@ -3179,15 +3143,14 @@ class RuntimeService:
     def _consume_queued_turn_inputs(
         self,
         *,
-        session: SessionRecord,
         run: RunRecord,
         inputs: tuple[QueuedInput, ...],
         turn_id: str,
     ) -> tuple[list[MessageRecord], tuple[EventRecord, ...]]:
         """Consume one complete unit and its queue identities in one durable decision."""
 
-        with self.store.session_mutation(session.session_id):
-            latest = self.store.load_session_record(session.session_id)
+        with self.store.session_mutation(run.session_id):
+            latest = self.store.load_session_record(run.session_id)
             if not self.queued_inputs.matches_pending(latest, inputs):
                 return [], ()
             messages = self._prepare_input_messages(
@@ -3345,7 +3308,6 @@ class RuntimeService:
             )
             await self.event_recorder.publish_committed(committed_events)
             assert batch is not None
-            sequence = 0
             if suspension is not None:
                 result = RunResult(session=session, run=run)
             else:
@@ -3353,7 +3315,6 @@ class RuntimeService:
                     session=session,
                     run=run,
                     batch=batch,
-                    sequence=sequence,
                 )
         # Execution release precedes scheduling the Session's next input unit.
         return await self._finalize_run_boundary(result)
@@ -3391,10 +3352,8 @@ class RuntimeService:
                 run=run,
                 usage_service=self.usage,
             )
-            sequence = 0
-            batch, sequence = await self._tool_calls_for_run(run.run_id).resolve_user_answer(
+            batch = await self._tool_calls_for_run(run.run_id).resolve_user_answer(
                 batch,
-                sequence=sequence,
                 run=run,
                 session=session,
                 tool_call_id=waiting_call.request.id,
@@ -3452,14 +3411,11 @@ class RuntimeService:
                 events=tuple(pending_events),
             )
             await self.event_recorder.publish_committed(committed_events)
-            if committed_events:
-                sequence = committed_events[-1].sequence
             assert batch is not None
             result = await self._continue_resolved_batch(
                 session=session,
                 run=run,
                 batch=batch,
-                sequence=sequence,
             )
         # Keep the same post-lock Run boundary as normal runs and approval
         # recovery; a follow-up must acquire a fresh Session run lock.
@@ -3568,12 +3524,10 @@ class RuntimeService:
             )
             await self.event_recorder.publish_committed(committed_events)
             assert batch is not None
-            sequence = 0
             resumed = await self._continue_resolved_batch(
                 session=session,
                 run=run,
                 batch=batch,
-                sequence=sequence,
             )
         return await self._finalize_run_boundary(resumed)
 
@@ -3583,7 +3537,6 @@ class RuntimeService:
         session: SessionRecord,
         run: RunRecord,
         batch: ToolCallBatchRecord,
-        sequence: int,
     ) -> RunResult:
         suspension = tool_batch_suspension(batch)
         if suspension is not None:
@@ -3607,7 +3560,6 @@ class RuntimeService:
             try:
                 await self._ensure_extension_snapshot(run)
                 handling = await self._tool_calls_for_run(run.run_id).execute_batch(
-                    sequence,
                     session=session,
                     run=run,
                     batch=batch,
@@ -3652,7 +3604,6 @@ class RuntimeService:
             resumed = await self._continue_run_driver(
                 session=session,
                 run=run,
-                sequence=handling.sequence,
                 abort_signal=active_signal,
                 adapter=active_adapter,
                 resuming_driver=True,
@@ -3892,9 +3843,12 @@ class RuntimeService:
                     permission_overrides=self._permission_overrides,
                     plugin_permission_overrides=self._plugin_permission_overrides,
                     approval_mode=session.approval_mode,
+                    spawn_policy=(
+                        self._agent_controls.spawn_policy
+                        if self._agent_controls is not None
+                        else None
+                    ),
                 )
-                if self._agent_controls is not None:
-                    catalog = self._agent_controls.constrain_catalog(catalog)
                 update["agent_catalog"] = catalog
                 if self._agent_controls is not None:
                     resources.bind_agent_catalog(catalog)
@@ -4039,16 +3993,6 @@ def _attributed_input_source(
     if isinstance(attribution, DelegatedTaskInput):
         return "delegation"
     return "plugin"
-
-
-def _attributed_input_initiator(
-    attribution: AttributedSessionInput | HostSessionInput | DelegatedTaskInput,
-) -> str:
-    if isinstance(attribution, HostSessionInput):
-        return attribution.host_source_id
-    if isinstance(attribution, DelegatedTaskInput):
-        return f"ouro.subagents/{attribution.delegation_id}"
-    return attribution.plugin_id
 
 
 def _input_role(

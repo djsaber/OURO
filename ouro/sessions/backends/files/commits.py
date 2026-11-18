@@ -13,10 +13,7 @@ from pydantic import Field
 
 from ouro.core.agents import DelegationRecord
 from ouro.core.base import OuroModel
-from ouro.core.compaction import (
-    CompactionRecord,
-    retain_compaction_references,
-)
+from ouro.core.compaction import CompactionRecord, plan_compaction_withdrawal
 from ouro.core.errors import PersistenceError
 from ouro.core.harness import HarnessVersion
 from ouro.core.message_frames import MessageTruncation
@@ -72,7 +69,7 @@ from ouro.sessions.sqlite_facts import (
     write_call_state,
     write_facts,
 )
-from ouro.sessions.sqlite_inputs import read_state, write_state
+from ouro.sessions.sqlite_inputs import read_commit_input_states, write_state
 from ouro.sessions.sqlite_observation import advance_revision, read_revision
 from ouro.sessions.sqlite_requests import read_latest_header, read_request_header, write_header
 from ouro.sessions.sqlite_resources import attach_reference, insert_reference
@@ -209,9 +206,8 @@ class FileSessionCommits:
         message_offset = 0
         truncation = None
         restore = None
-        compaction_references = None
+        compaction_withdrawal = None
         updated_compactions: tuple[CompactionRecord, ...] = ()
-        removed_compaction_ids: tuple[str, ...] = ()
         removed_messages: tuple[FileMessageReference, ...] = ()
         if request.before_message_id is not None:
             truncation, message_offset, removed_messages = self._locate_cut(connection, request)
@@ -219,30 +215,16 @@ class FileSessionCommits:
             if version_id is None:
                 raise HistoryBoundaryUnavailable("message has no Harness checkpoint")
             restore = self.load_harness(session_id, version_id)
-            existing = read_references(connection, session_id)
-            compaction_references = tuple(
-                retain_compaction_references(
-                    existing,
-                    {item.message_id for item in removed_messages},
-                    last_retained_message_id=(
-                        truncation.last_retained.message_id if truncation.last_retained else None
-                    ),
-                )
+            compaction_withdrawal = plan_compaction_withdrawal(
+                read_references(connection, session_id),
+                {item.message_id for item in removed_messages},
+                last_retained_message_id=(
+                    truncation.last_retained.message_id if truncation.last_retained else None
+                ),
             )
-            retained_ids = {item.compaction_id for item in compaction_references}
-            removed_compaction_ids = tuple(
-                item.compaction_id for item in existing if item.compaction_id not in retained_ids
-            )
-            previous = {item.compaction_id: item for item in existing}
             updated_compactions = tuple(
-                read_compaction(connection, directory, item.compaction_id).model_copy(
-                    update={
-                        "history_boundary_message_id": item.history_boundary_message_id,
-                        "context_metrics_after": None,
-                    }
-                )
-                for item in compaction_references
-                if item != previous[item.compaction_id]
+                read_compaction(connection, directory, identity).with_history_boundary(anchor)
+                for identity, anchor in compaction_withdrawal.moved_anchors.items()
             )
         compaction_sources: tuple[MessageFact, ...] = ()
         if request.compaction is not None:
@@ -274,17 +256,7 @@ class FileSessionCommits:
         withdrawn_inputs = tuple(
             dict.fromkeys(item.queued_input_id for item in removed_messages if item.queued_input_id)
         )
-        input_ids = dict.fromkeys(
-            [item.item.queue_id for item in request.inputs]
-            + [change.input_id for change in request.input_changes]
-            + list(withdrawn_inputs)
-            + (list(current.pending_input_ids) if request.before_message_id is not None else [])
-        )
-        input_states = tuple(
-            state
-            for identity in input_ids
-            if (state := read_state(connection, session_id, identity)) is not None
-        )
+        input_states = read_commit_input_states(connection, request, current, withdrawn_inputs)
         latest_context = (
             read_latest_header(connection, session_id)
             if request.request_manifest is not None
@@ -327,13 +299,8 @@ class FileSessionCommits:
             harness,
             truncation=truncation,
             restore=restore,
-            retained_compaction_ids=(
-                tuple(item.compaction_id for item in compaction_references)
-                if compaction_references is not None
-                else None
-            ),
+            compaction_withdrawal=compaction_withdrawal,
             updated_compactions=updated_compactions,
-            removed_compaction_ids=removed_compaction_ids,
             input_states=input_states,
             withdrawn_input_ids=withdrawn_inputs,
             tool_facts=tool_facts,

@@ -20,9 +20,9 @@ from ouro.application.session_controls import (
 )
 from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.agents import (
-    AgentCatalogSnapshot,
     AgentControlRequest,
     AgentControlResult,
+    AgentSpawnPolicy,
     AgentWaitRequest,
 )
 from ouro.core.base import new_id, utc_now
@@ -94,7 +94,8 @@ class AgentControlExecutor(Protocol):
 
         ...
 
-    def constrain_catalog(self, catalog: AgentCatalogSnapshot) -> AgentCatalogSnapshot: ...
+    @property
+    def spawn_policy(self) -> AgentSpawnPolicy: ...
 
     def budget_reason(
         self,
@@ -176,7 +177,6 @@ class ToolCallCoordinator:
 
     async def handle_batch(
         self,
-        sequence: int,
         session: SessionRecord,
         run: RunRecord,
         tool_calls: list[ToolCallRequest],
@@ -219,7 +219,6 @@ class ToolCallCoordinator:
             for request in sorted(tool_calls, key=lambda request: request.source_index)
         )
         return await self._handle_batch(
-            sequence,
             session=session,
             run=run,
             batch=batch,
@@ -230,7 +229,6 @@ class ToolCallCoordinator:
 
     async def handle_driver_batch(
         self,
-        sequence: int,
         *,
         session: SessionRecord,
         run: RunRecord,
@@ -252,7 +250,6 @@ class ToolCallCoordinator:
             calls=[ToolBatchCall(request=request) for request in tool_calls],
         )
         return await self._handle_batch(
-            sequence,
             session=session,
             run=run,
             batch=batch,
@@ -263,7 +260,6 @@ class ToolCallCoordinator:
 
     async def _handle_batch(
         self,
-        sequence: int,
         *,
         session: SessionRecord,
         run: RunRecord,
@@ -285,8 +281,6 @@ class ToolCallCoordinator:
             assistant_message=prefix_messages[0] if prefix_messages else None,
         )
         await self.events.publish_committed(committed_events)
-        if committed_events:
-            sequence = committed_events[-1].sequence
 
         exclusive_tools = self._exclusive_tools_in_mixed_batch(tool_calls)
         if exclusive_tools:
@@ -325,7 +319,6 @@ class ToolCallCoordinator:
                 },
             )
             executed = await self.execute_batch(
-                sequence,
                 session=session,
                 run=run,
                 batch=batch,
@@ -337,8 +330,7 @@ class ToolCallCoordinator:
         calls: list[ToolBatchCall] = []
         pending_events: list[EventRecord] = []
         for request in tool_calls:
-            call, sequence, call_events = await self._preflight_call(
-                sequence,
+            call, call_events = await self._preflight_call(
                 session=session,
                 run=run,
                 batch_id=batch.batch_id,
@@ -366,8 +358,6 @@ class ToolCallCoordinator:
                 events=tuple(pending_events),
             )
             await self.events.publish_committed(committed_events)
-            if committed_events:
-                sequence = committed_events[-1].sequence
             return ToolBatchHandlingResult(
                 session=session,
                 run=run,
@@ -375,7 +365,6 @@ class ToolCallCoordinator:
                 batch=batch,
                 messages=prefix_messages,
                 input_request=suspension.call.input_request,
-                sequence=sequence,
             )
 
         batch = batch.model_copy(update={"phase": "ready", "updated_at": utc_now()})
@@ -389,10 +378,7 @@ class ToolCallCoordinator:
             events=tuple(pending_events),
         )
         await self.events.publish_committed(committed_events)
-        if committed_events:
-            sequence = committed_events[-1].sequence
         executed = await self.execute_batch(
-            sequence,
             session=session,
             run=run,
             batch=batch,
@@ -402,7 +388,6 @@ class ToolCallCoordinator:
 
     async def execute_batch(
         self,
-        sequence: int,
         *,
         session: SessionRecord,
         run: RunRecord,
@@ -422,8 +407,6 @@ class ToolCallCoordinator:
             events=events,
         )
         await self.events.publish_committed(committed_events)
-        if committed_events:
-            sequence = committed_events[-1].sequence
         checkpoint_batch = batch
         checkpoint_lock = asyncio.Lock()
         aborted_events: list[EventRecord] = []
@@ -434,7 +417,6 @@ class ToolCallCoordinator:
         async def recheck_before_execute(
             invocation: ToolInvocation,
         ) -> ToolExecutionOutcome:
-            nonlocal sequence
             async with checkpoint_lock:
                 call = next(
                     (
@@ -450,9 +432,7 @@ class ToolCallCoordinator:
                     invocation,
                     policy_mode,
                     policy_reason,
-                    sequence,
                 ) = await self._evaluate_tool_policies(
-                    sequence,
                     session=session,
                     run=run,
                     invocation=invocation,
@@ -486,7 +466,7 @@ class ToolCallCoordinator:
                 return prepared
 
         async def checkpoint_started(invocation: ToolInvocation) -> None:
-            nonlocal checkpoint_batch, sequence
+            nonlocal checkpoint_batch
             async with checkpoint_lock:
                 started_call: ToolBatchCall | None = None
                 calls: list[ToolBatchCall] = []
@@ -518,8 +498,6 @@ class ToolCallCoordinator:
                     started_call_ids=frozenset({invocation.tool_call_id}),
                 )
                 await self.events.publish_committed(committed_events)
-                if committed_events:
-                    sequence = committed_events[-1].sequence
                 execution_started_at[invocation.tool_call_id] = (utc_now(), monotonic())
 
         async def preserve_late_result(invocation: ToolInvocation, value: ToolResultValue) -> None:
@@ -539,7 +517,7 @@ class ToolCallCoordinator:
             )
 
         async def checkpoint_outcome(outcome: ToolExecutionOutcome) -> None:
-            nonlocal checkpoint_batch, sequence
+            nonlocal checkpoint_batch
             call_harness = resumed_harness.pop(
                 outcome.invocation.tool_call_id, execution_context.harness
             )
@@ -739,8 +717,6 @@ class ToolCallCoordinator:
                         events=tuple(pending_events),
                     )
                     await self.events.publish_committed(committed_events)
-                    if committed_events:
-                        sequence = committed_events[-1].sequence
                 except SessionBusyError:
                     if not abort_signal.is_aborted():
                         raise
@@ -751,7 +727,7 @@ class ToolCallCoordinator:
                     )
 
         async def resolve_outcome(outcome: ToolExecutionOutcome) -> ToolExecutionOutcome:
-            nonlocal checkpoint_batch, sequence
+            nonlocal checkpoint_batch
             if outcome.status != "waiting_user" or session.interaction_mode != "unattended":
                 return outcome
             request = outcome.input_request
@@ -817,8 +793,6 @@ class ToolCallCoordinator:
                     started_call_ids=frozenset({outcome.invocation.tool_call_id}),
                 )
                 await self.events.publish_committed(committed_events)
-                if committed_events:
-                    sequence = committed_events[-1].sequence
                 resume_harness = await run_blocking(
                     capture_harness,
                     self.runs.store,
@@ -873,14 +847,11 @@ class ToolCallCoordinator:
                 events=tuple(aborted_events),
             )
             await self.events.publish_committed(committed_events)
-            if committed_events:
-                sequence = committed_events[-1].sequence
             return ToolBatchHandlingResult(
                 session=session,
                 run=run,
                 status="completed",
                 batch=aborted_batch,
-                sequence=sequence,
             )
         suspension = tool_batch_suspension(checkpoint_batch)
         if suspension is not None:
@@ -896,8 +867,6 @@ class ToolCallCoordinator:
                 phase=suspension.run_phase,
             )
             await self.events.publish_committed(committed_events)
-            if committed_events:
-                sequence = committed_events[-1].sequence
             if suspension.status == "waiting_child":
                 assert suspension.call.agent_wait is not None
                 if self.agent_controls is None:
@@ -915,7 +884,6 @@ class ToolCallCoordinator:
                 status=suspension.status,
                 batch=waiting_batch,
                 input_request=suspension.call.input_request,
-                sequence=sequence,
             )
         batch = checkpoint_batch.model_copy(
             update={
@@ -933,8 +901,6 @@ class ToolCallCoordinator:
                 phase="result_commit",
             )
             await self.events.publish_committed(committed_events)
-            if committed_events:
-                sequence = committed_events[-1].sequence
         except SessionBusyError:
             if not abort_signal.is_aborted():
                 raise
@@ -948,8 +914,6 @@ class ToolCallCoordinator:
             batch=batch,
         )
         await self.events.publish_committed(committed_events)
-        if committed_events:
-            sequence = committed_events[-1].sequence
         for call in completed_batch.calls:
             assert call.result is not None
             await self.after(session, run, call.result, invocation=call.invocation)
@@ -960,7 +924,6 @@ class ToolCallCoordinator:
             batch=completed_batch,
             messages=messages,
             results=results,
-            sequence=sequence,
         )
 
     async def _apply_agent_control(
@@ -1088,12 +1051,11 @@ class ToolCallCoordinator:
         *,
         session: SessionRecord,
         run: RunRecord,
-        sequence: int,
         tool_call_id: str,
         answer: JsonValue,
         harness: HarnessCallSnapshot,
         workspace: str | None = None,
-    ) -> tuple[ToolCallBatchRecord, int]:
+    ) -> ToolCallBatchRecord:
         answer = _JSON_VALUE_ADAPTER.validate_python(answer)
         resolution = AnswerResolution(value=answer)
         resolved_calls: list[ToolBatchCall] = []
@@ -1122,8 +1084,7 @@ class ToolCallCoordinator:
                     )
                 )
                 continue
-            invocation, policy_mode, policy_reason, sequence = await self._evaluate_tool_policies(
-                sequence,
+            invocation, policy_mode, policy_reason = await self._evaluate_tool_policies(
                 session=session,
                 run=run,
                 invocation=call.invocation,
@@ -1192,8 +1153,6 @@ class ToolCallCoordinator:
                     started_call_ids=frozenset({tool_call_id}),
                 )
                 await self.events.publish_committed(committed_events)
-                if committed_events:
-                    sequence = committed_events[-1].sequence
                 attempt = next(
                     item.attempt for item in started_batch.calls if item.request.id == tool_call_id
                 )
@@ -1294,7 +1253,7 @@ class ToolCallCoordinator:
         )
         return batch.model_copy(
             update={"calls": resolved_calls, "phase": phase, "updated_at": utc_now()}
-        ), sequence
+        )
 
     async def _resolve_unattended_input(
         self,
@@ -1387,7 +1346,6 @@ class ToolCallCoordinator:
 
     async def _preflight_call(
         self,
-        sequence: int,
         *,
         session: SessionRecord,
         run: RunRecord,
@@ -1396,7 +1354,7 @@ class ToolCallCoordinator:
         request: ToolCallRequest,
         producer: ToolCallProducer,
         abort_signal: AbortSignal,
-    ) -> tuple[ToolBatchCall, int, tuple[EventRecord, ...]]:
+    ) -> tuple[ToolBatchCall, tuple[EventRecord, ...]]:
         pending_events: list[EventRecord] = []
         try:
             definition = self.registry.get(request.name).definition
@@ -1476,12 +1434,10 @@ class ToolCallCoordinator:
                 ToolBatchCall(
                     request=request, status="aborted", invocation=invocation, result=result
                 ),
-                sequence,
                 tuple(pending_events),
             )
 
-        invocation, policy_mode, policy_reason, sequence = await self._evaluate_tool_policies(
-            sequence,
+        invocation, policy_mode, policy_reason = await self._evaluate_tool_policies(
             session=session,
             run=run,
             invocation=invocation,
@@ -1560,7 +1516,6 @@ class ToolCallCoordinator:
                         approval=approval,
                         result=prepared.result,
                     ),
-                    sequence,
                     tuple(pending_events),
                 )
             return (
@@ -1570,7 +1525,6 @@ class ToolCallCoordinator:
                     invocation=outcome.invocation,
                     approval=outcome.approval,
                 ),
-                sequence,
                 tuple(pending_events),
             )
         if outcome.status == "waiting_user":
@@ -1598,13 +1552,11 @@ class ToolCallCoordinator:
                     invocation=outcome.invocation,
                     input_request=outcome.input_request,
                 ),
-                sequence,
                 tuple(pending_events),
             )
         if outcome.status == "ready":
             return (
                 ToolBatchCall(request=request, status="ready", invocation=outcome.invocation),
-                sequence,
                 tuple(pending_events),
             )
         return (
@@ -1614,20 +1566,18 @@ class ToolCallCoordinator:
                 invocation=outcome.invocation,
                 result=outcome.result,
             ),
-            sequence,
             tuple(pending_events),
         )
 
     async def _evaluate_tool_policies(
         self,
-        sequence: int,
         *,
         session: SessionRecord,
         run: RunRecord,
         invocation: ToolInvocation,
         phase: str,
         harness: HarnessCallSnapshot | None = None,
-    ) -> tuple[ToolInvocation, ToolPolicyMode | None, str | None, int]:
+    ) -> tuple[ToolInvocation, ToolPolicyMode | None, str | None]:
         # Current controls may activate a previously hidden policy at this boundary.
         has_policies = bool(self.tool_policies.snapshot())
         if harness is None and has_policies:
@@ -1648,15 +1598,15 @@ class ToolCallCoordinator:
             )
             control_error = self.refresh_controls(controls)
             if control_error:
-                return invocation, "deny", control_error, sequence
+                return invocation, "deny", control_error
         if not has_policies:
-            return invocation, None, None, sequence
+            return invocation, None, None
         try:
             definition = self.registry.get(invocation.tool_name).definition
         except KeyError:
-            return invocation, None, None, sequence
+            return invocation, None, None
         if tool_argument_error(definition, invocation.arguments) is not None:
-            return invocation, None, None, sequence
+            return invocation, None, None
         policy = await self.tool_policies.evaluate(
             ToolPolicyCall(
                 harness=harness,
@@ -1684,10 +1634,8 @@ class ToolCallCoordinator:
                 f"{item.plugin_id}/tool_policies/{item.policy_id}" for item in policy.failures
             )
         if policy.mode is not None or policy.failures:
-            sequence = await self.events.emit(
-                sequence,
-                session_id=session.session_id,
-                run_id=run.run_id,
+            await self.events.emit(
+                run,
                 event_type="tool_policy_evaluated",
                 payload={
                     "tool_call_id": invocation.tool_call_id,
@@ -1705,7 +1653,7 @@ class ToolCallCoordinator:
                 "tool_policy_reason": policy.reason or invocation.tool_policy_reason,
             }
         )
-        return invocation, policy.mode, policy.reason, sequence
+        return invocation, policy.mode, policy.reason
 
     def _exclusive_tools_in_mixed_batch(self, calls: list[ToolCallRequest]) -> list[str]:
         if len(calls) < 2:

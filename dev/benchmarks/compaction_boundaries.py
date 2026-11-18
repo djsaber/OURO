@@ -84,8 +84,7 @@ async def experiment(root, backend, history_size, summary_count, repeat):
                     tracemalloc.start()
                     started = time.perf_counter()
                     try:
-                        prepared, _ = await runtime.context_compaction.prepare(
-                            0,
+                        prepared = await runtime.context_compaction.prepare(
                             session=session,
                             run=run,
                             tools=[],

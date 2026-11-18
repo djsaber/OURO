@@ -368,12 +368,12 @@ class RunLifecycle:
 
     async def correct_model_output(
         self, run: RunRecord, turn_id: str, response: ModelExecutionResult
-    ) -> tuple[SessionRecord, RunRecord, tuple[EventRecord, ...]]:
+    ) -> tuple[SessionRecord, RunRecord]:
         session, latest, events = await run_blocking(
             commit_model_correction, self.store, run, turn_id, response
         )
         await self.events.publish_committed(events)
-        return session, latest, events
+        return session, latest
 
     def append_assistant_message(
         self,

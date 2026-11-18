@@ -444,13 +444,13 @@ async def test_empty_policy_registry_preserves_control_refresh_failures(tmp_path
         session_id=session.session_id, run_id=run.run_id, tool_name="Example"
     )
     try:
-        _, mode, reason, sequence = await coordinator._evaluate_tool_policies(
-            0, session=session, run=run, invocation=invocation, phase="execution_boundary"
+        _, mode, reason = await coordinator._evaluate_tool_policies(
+            session=session, run=run, invocation=invocation, phase="execution_boundary"
         )
         assert refreshed == [session.controls]
         assert mode == "deny"
         assert reason == "Required Session controls are unavailable"
-        assert sequence == 0
+        assert not recorded_events(session.session_id)
     finally:
         await runtime.close()
 

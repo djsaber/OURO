@@ -26,6 +26,7 @@ from ouro.core.observers import (
 from ouro.core.redaction import redact_data, redact_text
 from ouro.core.response_drafts import ResponseStreamPosition
 from ouro.core.session_ports import SessionRepository
+from ouro.core.state import RunRecord
 from ouro.core.turn_policies import TurnPolicyFailure
 
 RuntimeEventSink = Callable[[EventRecord], None | Awaitable[None]]
@@ -95,7 +96,7 @@ class RuntimeEventRecorder:
         if sink_timeout_seconds <= 0:
             raise ValueError("sink_timeout_seconds must be positive")
         self.store = store
-        # Run history ownership is immutable; avoid reading a Run for every delta.
+        # ID-only notifications share the Run's immutable history epoch.
         self._run_history_epoch = lru_cache(maxsize=128)(self._load_run_history_epoch)
         self.usage_service = usage_service
         self.observers = observers
@@ -185,38 +186,23 @@ class RuntimeEventRecorder:
 
     async def emit(
         self,
-        sequence: int,
+        run: RunRecord,
         *,
-        session_id: str,
-        run_id: str,
         event_type: str,
         payload: dict[str, Any],
         stream: ResponseStreamPosition | None = None,
-        history_epoch: int | None = None,
-    ) -> int:
+    ) -> None:
         validate_runtime_event_payload(event_type, payload)
         event = EventRecord(
-            session_id=session_id,
-            run_id=run_id,
+            session_id=run.session_id,
+            run_id=run.run_id,
+            history_epoch=run.history_epoch,
             turn_id=(payload.get("turn_id") if isinstance(payload.get("turn_id"), str) else None),
             event_type=event_type,
-            sequence=sequence + 1,
             payload=payload,
             stream=stream,
         )
-        if stream is not None:
-            if history_epoch is None:
-                raise ValueError("stream publication requires its Run history epoch")
-            event = event.model_copy(
-                update={
-                    "sequence": sequence,
-                    "history_epoch": history_epoch,
-                }
-            )
-            await self._publish(event, notify_observers=True)
-            return sequence
-        event = await self._record_event(event, notify_observers=True)
-        return event.sequence
+        await self._publish(event, notify_observers=True)
 
     async def publish(
         self,
@@ -257,42 +243,34 @@ class RuntimeEventRecorder:
 
     async def record_context_provider_failures(
         self,
-        sequence: int,
         failures: Sequence[ContextProviderFailure],
-    ) -> int:
+    ) -> None:
         for failure in failures:
-            event = await self._record_event(
+            await self._record_event(
                 EventRecord(
                     session_id=failure.session_id,
                     run_id=failure.run_id,
                     event_type="context_provider_failed",
-                    sequence=sequence + 1,
                     payload=failure.model_dump(mode="json"),
                 ),
                 notify_observers=False,
             )
-            sequence = event.sequence
-        return sequence
 
     async def record_turn_policy_failures(
         self,
-        sequence: int,
         failures: Sequence[TurnPolicyFailure],
-    ) -> int:
+    ) -> None:
         for failure in failures:
-            event = await self._record_event(
+            await self._record_event(
                 EventRecord(
                     session_id=failure.session_id,
                     run_id=failure.run_id,
                     turn_id=failure.turn_id,
                     event_type="turn_policy_failed",
-                    sequence=sequence + 1,
                     payload=failure.model_dump(mode="json"),
                 ),
                 notify_observers=False,
             )
-            sequence = event.sequence
-        return sequence
 
     async def drain(self) -> None:
         """Wait until all observations and generated diagnostics have settled."""

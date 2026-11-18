@@ -76,7 +76,6 @@ class PreparedContext:
     view: ContextView
     added_context: Sequence[str | ContextFragment]
     prompt_context: PromptContext
-    sequence: int
 
 
 class ContextPreparationService:
@@ -138,7 +137,6 @@ class ContextPreparationService:
 
     async def build(
         self,
-        sequence: int,
         *,
         session: SessionRecord,
         run: RunRecord,
@@ -150,7 +148,7 @@ class ContextPreparationService:
         prompt: str = "",
     ) -> PreparedContext:
         session, active, messages = await run_blocking(self.load_history, session.session_id)
-        prompt_context = await self.resolve_prompt_context(sequence, session, run)
+        prompt_context = await self.resolve_prompt_context(run)
         active_adapter = adapter or self.adapter
         active_context_providers = context_providers or self.context_providers
         provider_result = await active_context_providers.evaluate(
@@ -171,8 +169,7 @@ class ContextPreparationService:
                 workspace=session.workspace,
             )
         )
-        sequence = await self.events.record_context_provider_failures(
-            sequence,
+        await self.events.record_context_provider_failures(
             provider_result.failures,
         )
         if provider_result.blocked:
@@ -217,7 +214,6 @@ class ContextPreparationService:
             view=view,
             added_context=added_context,
             prompt_context=prompt_context,
-            sequence=sequence,
         )
 
     def record_request_settlement(
@@ -327,7 +323,6 @@ class ContextPreparationService:
 
     async def finalize(
         self,
-        sequence: int,
         *,
         session: SessionRecord,
         run: RunRecord,
@@ -335,7 +330,7 @@ class ContextPreparationService:
         model_round: int,
         adapter: RuntimeAdapter,
         view: ContextView,
-    ) -> tuple[ContextView, int]:
+    ) -> ContextView:
         if view.metrics.over_budget:
             raise ContextBlockedError("context exceeds the model input budget")
         context_id = new_id("ctx")
@@ -355,7 +350,7 @@ class ContextPreparationService:
             view=prepared,
             model_round=model_round,
         )
-        return prepared, sequence
+        return prepared
 
     def _save_prepared_context(
         self,
@@ -409,12 +404,7 @@ class ContextPreparationService:
                 )
             )
 
-    async def resolve_prompt_context(
-        self,
-        sequence: int,
-        session: SessionRecord,
-        run: RunRecord,
-    ) -> PromptContext:
+    async def resolve_prompt_context(self, run: RunRecord) -> PromptContext:
         if self.prompt_context_resolver is None:
             return PromptContext(system_prompt=self.system_prompt)
         try:
@@ -422,9 +412,7 @@ class ContextPreparationService:
         except ConfigError as exc:
             message = f"Cannot prepare system instructions: {exc}"
             await self.events.emit(
-                sequence,
-                session_id=session.session_id,
-                run_id=run.run_id,
+                run,
                 event_type="diagnostic",
                 payload={
                     "code": "prompt_configuration_invalid",

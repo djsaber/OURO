@@ -197,6 +197,11 @@ async def test_runtime_stream_fragments_are_current_only_and_live_sinks_still_re
             event.event_type == "model_text_delta" and event.stream is not None
             for event in observed
         )
+        sequence = 0
+        for event in observed:
+            if event.stream is None:
+                sequence += 1
+            assert event.sequence == sequence
         assert all(
             event.event_type not in MODEL_STREAM_DELTA_EVENT_TYPES
             for event in recorded_events(snapshot.session.session_id)

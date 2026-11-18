@@ -63,7 +63,7 @@ async def request_host(tmp_path, store, *, reports=None, with_ledger=True):
         snapshot=store.load_runtime_session(session.session_id),
     )
     try:
-        yield runtime, RunModelRequest(session, run, 1, "first", 0, AbortSignal())
+        yield runtime, RunModelRequest(session, run, 1, "first", AbortSignal())
     finally:
         await runtime.close()
 
@@ -269,7 +269,6 @@ async def test_missing_report_does_not_become_known_zero_after_prior_usage(tmp_p
             request = replace(
                 request,
                 run=result.run,
-                sequence=result.sequence,
                 model_round=index + 2,
                 turn_id=f"request-{index + 2}",
             )

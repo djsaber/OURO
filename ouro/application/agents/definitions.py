@@ -27,6 +27,7 @@ from ouro.core.approvals import (
 )
 from ouro.core.base import new_id
 from ouro.core.errors import ConfigError
+from ouro.core.model_selection import DEFAULT_MODEL
 from ouro.core.tools import tool_definition_contract_hash
 from ouro.tools import ToolDefinition, ToolRegistry
 
@@ -59,10 +60,13 @@ class AgentDefinitionService:
     def default_model_route(self) -> str:
         return self._default_model_route()
 
+    def _active_policy(self, config: AgentDefinitionsConfig) -> AgentSpawnPolicy:
+        return self._spawn_policy or config.runtime.spawn_policy
+
     def list(self, *, tools: ToolRegistry) -> AgentDefinitionCatalogView:
         config = self.config.snapshot()
         entries = self._entries(tools, config=config)
-        policy = self._spawn_policy or config.runtime.spawn_policy
+        policy = self._active_policy(config)
         return AgentDefinitionCatalogView(
             revision=config.revision,
             policy_restart_required=policy != config.runtime.spawn_policy,
@@ -98,9 +102,7 @@ class AgentDefinitionService:
             entry,
             source=source,
             enabled=agent_id not in config.disabled_agent_ids,
-            allowed_by_policy=(self._spawn_policy or config.runtime.spawn_policy).allows_agent(
-                agent_id
-            ),
+            allowed_by_policy=self._active_policy(config).allows_agent(agent_id),
         )
         return AgentDefinitionDetail(
             **view.model_dump(), system_prompt=entry.definition.system_prompt
@@ -228,21 +230,21 @@ class AgentDefinitionService:
         permission_overrides: Mapping[str, PermissionMode] | None = None,
         plugin_permission_overrides: Mapping[str, PermissionMode] | None = None,
         approval_mode: SessionApprovalMode = "inherit",
+        spawn_policy: AgentSpawnPolicy | None = None,
     ) -> AgentCatalogSnapshot:
         config = self.config.snapshot()
+        policy = spawn_policy or self._active_policy(config)
         return AgentCatalogSnapshot(
             revision=config.revision,
-            entries=tuple(
-                entry
-                for entry in self._entries(
-                    tools,
-                    config=config,
-                    permission_overrides=permission_overrides,
-                    plugin_permission_overrides=plugin_permission_overrides,
-                    approval_mode=approval_mode,
-                )
-                if entry.definition.agent_id not in config.disabled_agent_ids
+            entries=self._entries(
+                tools,
+                config=config,
+                permission_overrides=permission_overrides,
+                plugin_permission_overrides=plugin_permission_overrides,
+                approval_mode=approval_mode,
+                dispatch_policy=policy,
             ),
+            spawn_policy=policy,
         )
 
     def _entries(
@@ -253,6 +255,7 @@ class AgentDefinitionService:
         permission_overrides: Mapping[str, PermissionMode] | None = None,
         plugin_permission_overrides: Mapping[str, PermissionMode] | None = None,
         approval_mode: SessionApprovalMode = "inherit",
+        dispatch_policy: AgentSpawnPolicy | None = None,
     ) -> tuple[AgentCatalogEntry, ...]:
         overrides = permission_overrides or {}
         plugin_overrides = plugin_permission_overrides or {}
@@ -262,6 +265,15 @@ class AgentDefinitionService:
         }
         entries: list[AgentCatalogEntry] = []
         for definition in definitions:
+            if dispatch_policy is not None and (
+                definition.agent_id in config.disabled_agent_ids
+                or not dispatch_policy.allows_agent(definition.agent_id)
+                or (
+                    definition.model != DEFAULT_MODEL
+                    and not dispatch_policy.allows_model(definition.model)
+                )
+            ):
+                continue
             selected_names = (
                 tuple(candidates)
                 if definition.tool_selection.mode == "all"
@@ -290,13 +302,9 @@ class AgentDefinitionService:
                 )
                 if permission == "deny":
                     continue
-                effective.append(
-                    self.tool_reference(
-                        tools,
-                        tool,
-                        minimum_permission_mode=permission,
-                    )
-                )
+                reference = self.tool_reference(tools, tool, minimum_permission_mode=permission)
+                if dispatch_policy is None or dispatch_policy.allows_tool(reference):
+                    effective.append(reference)
             entries.append(
                 AgentCatalogEntry(
                     definition=definition,

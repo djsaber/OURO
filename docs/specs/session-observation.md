@@ -22,7 +22,8 @@
 4. child 导航身份必须至少包含 `parent_session_id`、`parent_run_id`、`parent_batch_id`、`parent_tool_call_id`、`delegation_id` 和
    `child_session_id`；缺失或不一致时 fail closed。
 5. ToolCall 身份必须在所属 parent Session/Run/batch 内解释，不能假设 `tool_call_id` 跨批次唯一。
-6. 在线 event sequence 只在当前进程的交付来源内排序，不是持久游标，也不得跨 Session 或进程比较。
+6. 在线通知由当前进程的发布器按 Session 编号。普通通知推进 `sequence`，流式分片沿用当前值。
+   执行中发出的通知携带所属 Run 的历史代次。跨进程补齐使用提交修订号、消息位置和草稿偏移。
 7. 状态与成果先提交，再发布在线通知；不永久保存 EventRecord。实时队列有界，遗漏可以检测。
 8. 快照的事实、修订号和草稿在同一只读边界内取得；后续观察按已确认位置读取新增正文和变化后的状态。
 9. 本地通知与补齐重叠时，按提交位置、消息身份和请求偏移去重；一个提交的最后一项通知才确认完整提交。

@@ -227,7 +227,6 @@ async def test_preparation_checks_selection_dependency_but_accepts_unrelated_cha
     monkeypatch.setattr(runtime.context_preparation, "resolve_prompt_context", paused)
     task = asyncio.create_task(
         runtime.context_compaction.prepare(
-            0,
             session=session,
             run=run,
             tools=[],

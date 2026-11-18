@@ -344,6 +344,11 @@ Session 继续的整体前提。持久 ToolInvocation、控制 activation 和 De
 - `delegation`：只允许专用 `DelegatedTaskInput` 启动已准备好的 child Run，必须携带 `delegation_id`，
   该提供方显式声明 `role=user, scaffold=true`。
 
+`InputRecord.source` 标识每条输入的生产者，`Run.origin` 标识本次运行的启动方式。直接执行用户输入并启动
+新 Run 时记为 `origin=user`。调度器消费纯用户输入批次时记为 `origin=follow_up`，首次消费也遵循这条规则。
+两种入口都记录 `trigger=user`。批次含其他来源时，由首条非用户输入确定新 Run 的来源与发起者。
+交付给已有 Run 的 steer 沿用该 Run 的身份与来源。
+
 role 不改变 producer provenance，也不授予直接用户权限。Host 和插件输入不能携带未经对应 use case 验证的用户资源
 引用；delegation 输入可携带 Spawn 时已验证并复制到 child Session 的资源引用。未知来源、Host 来源缺少 source id、
 插件来源缺少完整执行归属、delegation 来源缺少 relation identity，或缺少消息三维契约字段的持久化项均明确报错，

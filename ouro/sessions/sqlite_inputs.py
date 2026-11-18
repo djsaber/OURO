@@ -5,6 +5,8 @@ import sqlite3
 from ouro.core.errors import PersistenceError
 from ouro.core.inputs import InputRecord, InputState
 from ouro.core.persistence import decode_versioned_record_json
+from ouro.core.session_commits import SessionCommit
+from ouro.core.state import SessionRecord
 
 
 def read_input(
@@ -32,6 +34,24 @@ def read_state(connection: sqlite3.Connection, session_id: str, input_id: str) -
     if record.session_id != session_id or record.input_id != input_id:
         raise PersistenceError("input state has a foreign identity")
     return record
+
+
+def read_commit_input_states(
+    connection: sqlite3.Connection,
+    request: SessionCommit,
+    session: SessionRecord,
+    withdrawn_ids: tuple[str, ...],
+) -> tuple[InputState, ...]:
+    identities = [record.item.queue_id for record in request.inputs]
+    identities.extend(change.input_id for change in request.input_changes)
+    identities.extend(withdrawn_ids)
+    if request.before_message_id is not None:
+        identities.extend(session.pending_input_ids)
+    return tuple(
+        state
+        for identity in dict.fromkeys(identities)
+        if (state := read_state(connection, session.session_id, identity)) is not None
+    )
 
 
 def write_input(connection: sqlite3.Connection, record: InputRecord) -> None:

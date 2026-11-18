@@ -283,7 +283,6 @@ async def test_queue_consumption_failure_is_one_native_decision(
                     )
                 else:
                     runtime._consume_queued_turn_inputs(
-                        session=session,
                         run=run,
                         inputs=inputs,
                         turn_id="turn-consume",
@@ -316,7 +315,6 @@ async def test_queue_consumption_failure_is_one_native_decision(
                     store.find_queued_input_message(session.session_id, item.queue_id) is not None
                 )
             assert runtime._consume_queued_turn_inputs(
-                session=session,
                 run=run,
                 inputs=inputs,
                 turn_id="turn-consume",

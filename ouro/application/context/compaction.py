@@ -52,9 +52,7 @@ from ouro.core.tools import ToolDefinition
 @dataclass(frozen=True)
 class CompactionExecution:
     record: CompactionRecord | None
-    sequence: int
     view: ContextView
-    skipped: bool = False
 
 
 async def _compact_until_aborted(
@@ -132,7 +130,6 @@ class ContextCompactionService:
 
     async def prepare(
         self,
-        sequence: int,
         *,
         session: SessionRecord,
         run: RunRecord,
@@ -145,10 +142,9 @@ class ContextCompactionService:
         strategies: CompactionStrategyRegistry | None = None,
         skill_instructions: str = "",
         prompt: str = "",
-    ) -> tuple[ContextView, int]:
+    ) -> ContextView:
         config = self.config.model_copy(deep=True)
         prepared = await self.preparation.build(
-            sequence,
             session=session,
             run=run,
             tools=tools,
@@ -159,7 +155,7 @@ class ContextCompactionService:
             prompt=prompt,
         )
         session, active, messages = prepared.session, prepared.active, prepared.messages
-        view, sequence = prepared.view, prepared.sequence
+        view = prepared.view
         added_context, prompt_context = prepared.added_context, prepared.prompt_context
         active_adapter = adapter or self.preparation.adapter
         budget = active_adapter.model.context_budget.input_tokens
@@ -168,7 +164,6 @@ class ContextCompactionService:
         if config.policy.auto_enabled and estimated >= trigger_tokens:
             try:
                 execution = await self.compact(
-                    sequence,
                     session=session,
                     run=run,
                     tools=tools,
@@ -186,7 +181,6 @@ class ContextCompactionService:
             except CompactionError as exc:
                 if isinstance(exc, CompactionAbortedError):
                     raise
-                sequence = 0
                 if view.metrics.over_budget:
                     raise ContextBlockedError(
                         f"context compaction is required before the run can continue: {exc}"
@@ -203,7 +197,6 @@ class ContextCompactionService:
                 )
                 final_view = view.model_copy(update={"context_metadata": metadata})
                 return await self.preparation.finalize(
-                    sequence,
                     session=session,
                     run=run,
                     turn_id=turn_id,
@@ -211,7 +204,6 @@ class ContextCompactionService:
                     adapter=active_adapter,
                     view=final_view,
                 )
-            sequence = execution.sequence
             if execution.record is None and view.metrics.over_budget:
                 raise ContextBlockedError(
                     "context is over budget and no complete older context frame is eligible "
@@ -247,7 +239,6 @@ class ContextCompactionService:
                 )
 
         return await self.preparation.finalize(
-            sequence,
             session=session,
             run=run,
             turn_id=turn_id,
@@ -263,7 +254,6 @@ class ContextCompactionService:
 
     async def compact(
         self,
-        sequence: int,
         *,
         session: SessionRecord,
         run: RunRecord,
@@ -288,7 +278,7 @@ class ContextCompactionService:
             active, messages = prepared.active, prepared.messages
         # Auto compaction shares the request snapshot; a manual command resolves its own.
         if prompt_context is None:
-            prompt_context = await self.preparation.resolve_prompt_context(sequence, session, run)
+            prompt_context = await self.preparation.resolve_prompt_context(run)
         active_adapter = adapter or self.preparation.adapter
         budget = active_adapter.model.context_budget.input_tokens
         initial_view = (
@@ -332,24 +322,18 @@ class ContextCompactionService:
                 raise ContextOverflowError(
                     "context is over budget and no complete older turn is eligible for compaction"
                 )
-            sequence = await self.events.emit(
-                sequence,
-                session_id=session.session_id,
-                run_id=run.run_id,
+            await self.events.emit(
+                run,
                 event_type="compaction_skipped",
                 payload={"trigger": trigger, "reason": "no_eligible_closed_turn"},
             )
-            return CompactionExecution(
-                record=None, sequence=sequence, view=initial_view, skipped=True
-            )
+            return CompactionExecution(record=None, view=initial_view)
 
         compaction_id = new_id("cmp")
         compaction_started_clock = monotonic()
         await run_blocking(self._mark_compaction, session.session_id, run.run_id, compaction_id)
-        sequence = await self.events.emit(
-            sequence,
-            session_id=session.session_id,
-            run_id=run.run_id,
+        await self.events.emit(
+            run,
             event_type="compaction_started",
             payload={
                 "compaction_id": compaction_id,
@@ -361,10 +345,8 @@ class ContextCompactionService:
                 "configured_model_endpoint": config.model.endpoint_id,
             },
         )
-        sequence = await self.events.emit(
-            sequence,
-            session_id=session.session_id,
-            run_id=run.run_id,
+        await self.events.emit(
+            run,
             event_type="compaction_progress",
             payload={"compaction_id": compaction_id, "trigger": trigger, "phase": "generating"},
         )
@@ -392,9 +374,7 @@ class ContextCompactionService:
                 signal=abort_signal,
                 strategies=strategies,
             )
-            sequence = await self._record_model_outputs(
-                sequence,
-                session=session,
+            await self._record_model_outputs(
                 run=run,
                 compaction_id=compaction_id,
                 outputs=artifact.model_outputs,
@@ -476,9 +456,7 @@ class ContextCompactionService:
             )
         except Exception as exc:
             if isinstance(exc, CompactionStrategyError):
-                sequence = await self._record_model_outputs(
-                    sequence,
-                    session=session,
+                await self._record_model_outputs(
                     run=run,
                     compaction_id=compaction_id,
                     outputs=exc.model_outputs,
@@ -486,10 +464,8 @@ class ContextCompactionService:
             await run_blocking(self._mark_compaction, session.session_id, run.run_id, None)
             if isinstance(exc, CompactionAbortedError):
                 raise
-            sequence = await self.events.emit(
-                sequence,
-                session_id=session.session_id,
-                run_id=run.run_id,
+            await self.events.emit(
+                run,
                 event_type="compaction_failed",
                 payload={
                     "compaction_id": compaction_id,
@@ -504,9 +480,7 @@ class ContextCompactionService:
             raise CompactionError(f"summary compaction failed: {exc}") from exc
 
         await self.events.publish_committed(events)
-        if events:
-            sequence = events[-1].sequence
-        return CompactionExecution(record=record, sequence=sequence, view=final_view)
+        return CompactionExecution(record=record, view=final_view)
 
     async def _execute_strategy(
         self,
@@ -569,25 +543,20 @@ class ContextCompactionService:
 
     async def _record_model_outputs(
         self,
-        sequence: int,
         *,
-        session: SessionRecord,
         run: RunRecord,
         compaction_id: str,
         outputs: Sequence[CompactionModelOutput],
-    ) -> int:
+    ) -> None:
         for output in outputs:
-            sequence = await self.events.emit(
-                sequence,
-                session_id=session.session_id,
-                run_id=run.run_id,
+            await self.events.emit(
+                run,
                 event_type="compaction_model_output",
                 payload={
                     "compaction_id": compaction_id,
                     **output.model_dump(mode="json"),
                 },
             )
-        return sequence
 
     def _commit_compaction(
         self,

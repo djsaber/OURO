@@ -1,16 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Protocol
 
 from ouro.core.run_drivers import DriverFinished, DriverResume, DriverSuspended, RunDriverContext
-
-
-@dataclass(frozen=True)
-class TurnCompletionPolicyResult:
-    sequence: int
-    should_continue: bool = False
-    blocked_reason: str | None = None
 
 
 class DefaultRunTurns(Protocol):

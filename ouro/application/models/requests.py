@@ -40,7 +40,6 @@ class ContextPreparer(Protocol):
 
     async def __call__(
         self,
-        sequence: int,
         *,
         session: SessionRecord,
         run: RunRecord,
@@ -50,7 +49,7 @@ class ContextPreparer(Protocol):
         abort_signal: AbortSignal,
         adapter: RuntimeAdapter,
         prompt: str = "",
-    ) -> tuple[ContextView, int]: ...
+    ) -> ContextView: ...
 
 
 class RequestSettlementRecorder(Protocol):
@@ -98,15 +97,12 @@ class ModelRoundCommitter(Protocol):
 class ModelEventEmitter(Protocol):
     async def __call__(
         self,
-        sequence: int,
+        run: RunRecord,
         *,
-        session_id: str,
-        run_id: str,
         event_type: EventType,
         payload: Metadata,
         stream: ResponseStreamPosition | None = None,
-        history_epoch: int | None = None,
-    ) -> int: ...
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -154,14 +150,14 @@ class RunModelRequests:
             raise ValueError("Token consumption budgets require a usage ledger")
 
     async def execute(self, request: RunModelRequest) -> RunModelResult:
-        session, run, sequence = request.session, request.run, request.sequence
+        session, run = request.session, request.run
         model_round = request.model_round
         adapter = self.adapter
         try:
             if self.ports.prepare_configuration is not None:
                 self.run_budget = await self.ports.prepare_configuration(run)
             if reason := await self._budget_reason(run, model_round):
-                return RunModelResult(session, run, sequence, ModelRequestBlocked(reason))
+                return RunModelResult(session, run, ModelRequestBlocked(reason))
             if self.ports.begin_model_round is not None:
                 run = await self.ports.begin_model_round(
                     session=session, run=run, model_round=model_round
@@ -181,8 +177,7 @@ class RunModelRequests:
                 if unknown:
                     raise ValueError(f"requested tools are unavailable: {sorted(unknown)}")
                 definitions = [item for item in definitions if item.name in selected]
-            context, sequence = await self.ports.prepare_context(
-                sequence,
+            context = await self.ports.prepare_context(
                 session=session,
                 run=run,
                 tools=definitions,
@@ -196,10 +191,10 @@ class RunModelRequests:
             if context_id is None:
                 raise ValueError("prepared model context is missing its identity")
         except ContextBlockedError:
-            return RunModelResult(session, run, sequence, ModelRequestBlocked("context_blocked"))
+            return RunModelResult(session, run, ModelRequestBlocked("context_blocked"))
         except Exception as exc:  # noqa: BLE001 - context preparation boundary.
             return RunModelResult(
-                session, run, sequence, ModelRequestFailed(f"context preparation failed: {exc}")
+                session, run, ModelRequestFailed(f"context preparation failed: {exc}")
             )
 
         started = (utc_now(), monotonic())
@@ -236,7 +231,6 @@ class RunModelRequests:
         if run.abort_requested or run.status not in ACTIVE_RUN_STATUSES:
             request.abort_signal.abort("Run no longer owns the model request")
         if events:
-            sequence = events[-1].sequence
             await self.ports.publish_committed(events)
 
         provider_done_seen = False
@@ -266,7 +260,7 @@ class RunModelRequests:
         draft_cursor = 0
 
         async def observe(progress: ModelExecutionEvent) -> None:
-            nonlocal sequence, draft_cursor
+            nonlocal draft_cursor
             if request.abort_signal.is_aborted():
                 return
             event = progress.event
@@ -294,14 +288,11 @@ class RunModelRequests:
             publication = _model_event(progress, context_id=context_id)
             if publication is not None:
                 event_type, payload = publication
-                sequence = await self.ports.emit(
-                    sequence,
-                    session_id=session.session_id,
-                    run_id=run.run_id,
+                await self.ports.emit(
+                    run,
                     event_type=event_type,
                     payload={**payload, "round": model_round, "turn_id": request.turn_id},
                     stream=stream,
-                    history_epoch=run.history_epoch,
                 )
 
         output = await execute_model_request(
@@ -330,10 +321,9 @@ class RunModelRequests:
             return RunModelResult(
                 session,
                 run,
-                sequence,
                 ModelRequestFailed("model requested a tool outside this request's selected tools"),
             )
-        return RunModelResult(session, run, sequence, output)
+        return RunModelResult(session, run, output)
 
     async def _budget_reason(self, run: RunRecord, model_round: int) -> RunPauseReason | None:
         if self.ports.run_usage is None and (

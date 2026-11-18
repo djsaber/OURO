@@ -21,7 +21,6 @@ class ModelToolBatchRequest:
     run: RunRecord
     response: ModelExecutionResult
     turn_id: str
-    sequence: int
     abort_signal: AbortSignal
     driver_checkpoint: DriverCheckpoint | None = None
 
@@ -36,7 +35,6 @@ class ToolBatchHandlingResult(OuroModel):
     messages: list[MessageRecord] = Field(default_factory=list)
     results: list[ToolResult] = Field(default_factory=list)
     input_request: ToolInputRequest | None = None
-    sequence: int = 0
 
 
 ModelToolBatchRequester = Callable[[ModelToolBatchRequest], Awaitable[ToolBatchHandlingResult]]
@@ -48,7 +46,6 @@ class DriverToolBatchRequest:
     run: RunRecord
     calls: tuple[ToolCallRequest, ...]
     turn_id: str
-    sequence: int
     abort_signal: AbortSignal
     checkpoint: DriverCheckpoint
 

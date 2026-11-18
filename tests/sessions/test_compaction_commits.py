@@ -189,6 +189,9 @@ def test_activation_rejects_invalid_fixed_references(store, invalid):
 def test_tail_withdrawal_preserves_summary_and_moves_only_its_display_anchor(store):
     session, messages = history(store)
     candidate = summary(session, messages)
+    candidate.context_metrics_after = ContextMetrics(
+        estimated_input_tokens=40, estimated_fixed_tokens=5
+    )
     commit_summary(store, candidate)
     store.truncate_messages(
         session.session_id,
@@ -200,6 +203,7 @@ def test_tail_withdrawal_preserves_summary_and_moves_only_its_display_anchor(sto
     assert active.summary == candidate.summary
     assert active.covered_end_message_id == candidate.covered_end_message_id
     assert active.history_boundary_message_id == messages[1].message_id
+    assert active.context_metrics_after is None
     assert store.load_session_record(session.session_id).history_epoch == session.history_epoch + 1
     store.truncate_messages(
         session.session_id,

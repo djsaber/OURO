@@ -15,7 +15,6 @@ class RunModelRequest:
     run: RunRecord
     model_round: int
     turn_id: str
-    sequence: int
     abort_signal: AbortSignal
     prompt: str = ""
     tools: tuple[str, ...] | None = None
@@ -35,7 +34,6 @@ class ModelRequestFailed:
 class RunModelResult:
     session: SessionRecord
     run: RunRecord
-    sequence: int
     outcome: ModelExecutionResult | ModelRequestBlocked | ModelRequestFailed
 
 

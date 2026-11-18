@@ -577,7 +577,6 @@ async def test_newly_active_tool_policy_receives_current_harness_at_preflight(st
             controllers=controllers,
         )
         await coordinator._evaluate_tool_policies(
-            0,
             session=session,
             run=run,
             phase="preflight",

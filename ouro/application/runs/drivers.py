@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import Never
@@ -27,7 +27,6 @@ from ouro.core.run_budget import RunPauseReason
 from ouro.core.run_drivers import (
     DriverCheckpoint,
     DriverFinished,
-    DriverInputConsumer,
     DriverModelResponse,
     DriverResume,
     DriverSuspended,
@@ -57,18 +56,16 @@ class NativeRunDriverContext:
         *,
         session: SessionRecord,
         run: RunRecord,
-        sequence: int,
         abort_signal: AbortSignal,
         request_model: RunModelRequester,
         request_tools: ModelToolBatchRequester,
         request_driver_tools: DriverToolBatchRequester,
-        consume_inputs: DriverInputConsumer,
+        consume_inputs: Callable[[RunRecord, str], Awaitable[list[MessageRecord]]],
         runs: RunLifecycle,
         workspace: str | None = None,
         resume_turn_id: str | None = None,
     ) -> None:
         self.session, self.run = session, run
-        self.sequence = sequence
         self.signal = abort_signal
         self.workspace = workspace or session.workspace
         self._request_model, self._request_tools, self._runs = request_model, request_tools, runs
@@ -174,13 +171,12 @@ class NativeRunDriverContext:
                     run=self.run,
                     model_round=self.run.model_round_count + 1,
                     turn_id=turn_id,
-                    sequence=self.sequence,
                     abort_signal=self.signal,
                     prompt=prompt,
                     tools=tools,
                 )
             )
-            self.session, self.run, self.sequence = result.session, result.run, result.sequence
+            self.session, self.run = result.session, result.run
             response = result.outcome
             if isinstance(response, ModelRequestBlocked):
                 await self.pause(response.reason)
@@ -192,12 +188,11 @@ class NativeRunDriverContext:
             if response.aborted or self.is_aborted:
                 raise asyncio.CancelledError
             if response.tool_call_failure is not None:
-                self.session, self.run, events = await self._runs.correct_model_output(
+                self.session, self.run = await self._runs.correct_model_output(
                     self.run, turn_id, response
                 )
                 self.final_text = ""
-                if events:
-                    self.sequence = events[-1].sequence
+
                 if self.is_aborted or self.run.abort_requested:
                     raise asyncio.CancelledError
                 if (
@@ -236,17 +231,11 @@ class NativeRunDriverContext:
             return []
         if self.turn_id is None:
             self.turn_id = new_id("turn")
-        delivered = await self._consume_inputs(
-            self.sequence,
-            session=self.session,
-            run=self.run,
-            turn_id=self.turn_id,
-        )
-        self.sequence = delivered.sequence
+        delivered = await self._consume_inputs(self.run, self.turn_id)
         self._inputs_checked = True
-        if delivered.messages:
+        if delivered:
             self.final_text = ""
-        return delivered.messages
+        return delivered
 
     async def execute_model_tools(
         self, response_id: str, *, checkpoint: JsonValue
@@ -263,7 +252,6 @@ class NativeRunDriverContext:
                     run=self.run,
                     response=response,
                     turn_id=turn_id,
-                    sequence=self.sequence,
                     abort_signal=self.signal,
                     driver_checkpoint=durable,
                 )
@@ -285,7 +273,6 @@ class NativeRunDriverContext:
                     run=self.run,
                     calls=calls,
                     turn_id=new_id("turn"),
-                    sequence=self.sequence,
                     abort_signal=self.signal,
                     checkpoint=DriverCheckpoint(batch_id=new_id("batch"), payload=checkpoint),
                 )
@@ -293,7 +280,7 @@ class NativeRunDriverContext:
             return await self._accept_tool_result(result)
 
     async def _accept_tool_result(self, result: ToolBatchHandlingResult) -> DriverToolResult:
-        self.session, self.run, self.sequence = result.session, result.run, result.sequence
+        self.session, self.run = result.session, result.run
         self.had_tool_error |= any(item.is_error for item in result.results)
         self._inputs_checked = False
         self.final_text = ""
