@@ -5,6 +5,10 @@ using `LocalSessionStore` / `SQLiteSessionStore`, `LocalTaskRepository` /
 `SQLiteTaskRepository`, and `LocalUsageLedger`. These are frozen writer outputs,
 not target models with edited version numbers. They contain no user data.
 
+`records/message-without-checkpoint.json` is the native fixture's accepted input
+message serialized by the v0.4.9 writer with a null checkpoint. That writer
+omits the optional field. Both native backends use this same persisted shape.
+
 `records/context-v3.json` is serialized by the unmodified `ContextSnapshotRecord`
 at `aa94cc5`. Its synthetic inputs share the Session, Run and messages of the
 file fixture, with `supports_vision=true`, an inline PNG and opaque context

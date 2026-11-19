@@ -189,6 +189,15 @@ class Workspace:
         """Read a record and fingerprint the exact bytes being parsed in one pass."""
         return self._observe(relative, safe_path(self.home, relative).read_bytes())
 
+    def read_lines(self, relative: str) -> Iterator[bytes]:
+        """Remember the source fingerprint only after the entire journal has been read."""
+        checksum = hashlib.sha256()
+        with self.path(relative).open("rb") as stream:
+            for line in stream:
+                checksum.update(line)
+                yield line
+        self.observed.setdefault(relative, checksum.hexdigest())
+
     def read_many(self, relatives: Iterable[str]) -> Iterator[tuple[str, bytes]]:
         """Prefetch independent files; observation and all mutations stay on the caller."""
 

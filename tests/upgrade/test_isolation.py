@@ -287,7 +287,12 @@ def test_structural_database_error_offers_its_container_and_preserves_other_doma
 
 
 @pytest.mark.parametrize(
-    "filename,content", [("context.json", b"\xff"), ("resources/index.json", b'{"resources":null}')]
+    "filename,content",
+    [
+        ("session.json", b'{"schema_version":2}'),
+        ("context.json", b"\xff"),
+        ("resources/index.json", b'{"resources":null}'),
+    ],
 )
 def test_malformed_record_data_is_isolated_without_leaking_contents(
     historical_home, filename, content

@@ -244,6 +244,8 @@ def _harness_role(value: dict[str, Any]) -> None:
 
 
 def _message_v8_to_v9(value: dict[str, Any]) -> None:
+    # The v8 writer omitted a null checkpoint when serializing message facts.
+    value.setdefault("before_harness_version", None)
     _harness_role(value)
     metadata = value.get("metadata", {})
     if metadata.get("kind") == "context_provider" and "context_provider_delivery_key" in metadata:

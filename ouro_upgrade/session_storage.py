@@ -188,14 +188,13 @@ def authority_records(connection: sqlite3.Connection, *, include_delegations: bo
 
 
 def _file_history(work: Workspace, connection: sqlite3.Connection, journal: str) -> None:
-    source = work.source(journal)
     target = work.temporary()
     connection.execute("DROP INDEX IF EXISTS context_deliveries")
     connection.execute("DROP INDEX IF EXISTS input_messages")
     connection.execute("DROP INDEX IF EXISTS assistant_runs")
     connection.execute("ALTER TABLE locations RENAME COLUMN role TO kind")
-    with source.open("rb") as reader, target.open("wb") as writer:
-        for line in reader:
+    with target.open("wb") as writer:
+        for line in work.read_lines(journal):
             raw = decode(line)
             value = convert("message", raw)
             delivery_key = value.get("metadata", {}).get("context_provider_delivery_key")

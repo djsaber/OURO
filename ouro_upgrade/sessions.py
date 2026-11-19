@@ -183,7 +183,9 @@ def file_session(work: Workspace, directory: Path) -> SessionIndexEntry:
             old_paths.append(path)
     require(len(data["session"]) == 1, relative, "missing Session record")
     require(
-        data["session"][0]["session_id"] == directory.name, relative, "Session identity mismatch"
+        data["session"][0].get("session_id") == directory.name,
+        relative,
+        "Session identity mismatch",
     )
     for folder, kind in (("runs", "run"), ("harness", "harness"), ("delegations", "delegation")):
         for source_path in children(directory / folder, "*.json"):

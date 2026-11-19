@@ -174,6 +174,28 @@ def test_native_check_does_not_publish(native_home):
     assert hashes(home) == before
 
 
+def test_native_message_with_omitted_checkpoint_remains_readable(native_home):
+    home, backend = native_home
+    message = (FIXTURES / "records/message-without-checkpoint.json").read_text("utf-8").strip()
+    if backend == "files":
+        journal = home / "sessions/ses_fixture/messages.jsonl"
+        lines = journal.read_bytes().splitlines(keepends=True)
+        assert json.loads(lines[-1])["message_id"] == "msg_input"
+        lines[-1] = message.encode() + b"\n"
+        journal.write_bytes(b"".join(lines))
+    else:
+        with closing(sqlite3.connect(database(home, backend))) as connection, connection:
+            connection.execute(
+                "UPDATE messages SET payload=? WHERE message_id='msg_input'", (message,)
+            )
+
+    assert upgrade(home, session_backend=backend)["status"] == "upgraded"
+    stored = repository(home, backend).load_message("ses_fixture", "msg_input")
+    assert stored.before_harness_version is None
+    assert stored.text_content == "Accepted input input_consumed"
+    assert upgrade(home, session_backend=backend, check=True)["status"] == "current"
+
+
 @pytest.mark.parametrize("native_home", ["files"], indirect=True)
 def test_layout_43_requires_every_accepted_body_before_publishing(native_home):
     home, backend = native_home

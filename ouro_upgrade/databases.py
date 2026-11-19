@@ -8,21 +8,13 @@ from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
 
-from ouro.billing.local import (
-    _APPLICATION_ID as USAGE_APPLICATION_ID,
-)
-from ouro.billing.local import (
-    _SCHEMA_VERSION as USAGE_SCHEMA_VERSION,
-)
-from ouro.billing.local import (
-    LocalUsageLedger,
-)
-from ouro.billing.schema import USAGE_SCHEMA
-from ouro.core.billing import ProviderUsageEntry
+from ouro.billing.local import _APPLICATION_ID as USAGE_APPLICATION_ID
+from ouro.billing.local import _SCHEMA_VERSION as USAGE_SCHEMA_VERSION
 from ouro_upgrade.errors import UpgradeDataError, UpgradeError, require
 from ouro_upgrade.json_codec import dumps, loads
-from ouro_upgrade.records import convert, convert_task, validate
+from ouro_upgrade.records import convert, convert_task
 from ouro_upgrade.steps import UpgradeStep, plan
+from ouro_upgrade.usage import rebuild_v5_requests
 from ouro_upgrade.workspace import Workspace
 
 # The task repository has no exported container-version constant.
@@ -165,29 +157,7 @@ def payloads(
 def _usage_requests(connection: sqlite3.Connection) -> None:
     payloads(connection, "entry_records", "usage")
     payloads(connection, "events", "usage_event")
-    # Preserve the effective ledger; derive raw request totals only from original reports.
-    connection.execute(USAGE_SCHEMA[0].replace("CREATE TABLE entries", "CREATE TABLE new_entries"))
-    columns = [row[1] for row in connection.execute("PRAGMA table_info(entries)")]
-    names = ",".join(columns)
-    connection.execute(f"INSERT INTO new_entries ({names}) SELECT {names} FROM entries")
-    connection.execute("DROP TABLE entries")
-    connection.execute("ALTER TABLE new_entries RENAME TO entries")
-    connection.execute("ALTER TABLE entry_records DROP COLUMN source_event_id")
-    for statement in USAGE_SCHEMA[4:]:
-        connection.execute(statement)
-    with closing(
-        connection.execute("SELECT event_id, payload FROM events ORDER BY sequence")
-    ) as rows:
-        for row in rows:
-            event = loads(row["payload"])
-            if event["event_type"] != "record":
-                continue
-            entry = validate(ProviderUsageEntry, event["entry"])
-            connection.execute(
-                "INSERT INTO raw_requests VALUES (?, ?)", (entry.entry_id, row["event_id"])
-            )
-            if entry.run_id is not None:
-                LocalUsageLedger._add_run_usage(connection, entry)
+    rebuild_v5_requests(connection)
 
 
 def _task_owners(connection: sqlite3.Connection) -> None:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -66,18 +65,14 @@ def resolve_file_parents(work: Workspace, root: str, records: list[dict[str, Any
             missing = wanted - found.keys()
             journal = f"sessions/{parent}/messages.jsonl"
             if missing and work.path(journal).exists():
-                checksum = hashlib.sha256()
-                with work.path(journal).open("rb") as stream:
-                    for line in stream:
-                        checksum.update(line)
-                        if not line.strip():
-                            continue
-                        message = decode(line)
-                        for call in message.get("tool_calls", ()):
-                            key = (message.get("run_id"), call["id"])
-                            if key in missing:
-                                found[key] = message["message_id"]
-                work.observed[journal] = checksum.hexdigest()
+                for line in work.read_lines(journal):
+                    if not line.strip():
+                        continue
+                    message = decode(line)
+                    for call in message.get("tool_calls", ()):
+                        key = (message.get("run_id"), call["id"])
+                        if key in missing:
+                            found[key] = message["message_id"]
         for record in children:
             bind_parent(record, found.get((record["parent_run_id"], record["parent_tool_call_id"])))
 
