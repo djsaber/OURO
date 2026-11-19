@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from ouro.config.endpoints import ProviderEndpointConfig
+from ouro.config.endpoints import ProviderEndpointConfig, endpoint_config_from_mapping
 from ouro.config.provider_templates.schema import ProviderTemplate
 from ouro.config.reasoning import openai_responses_effort_reasoning
 from ouro.core.reasoning import ReasoningRequest
 
-_VERIFIED_ON = "2026-10-10"
+_VERIFIED_ON = "2026-11-19"
+_DEFAULT_MODEL = "gpt-6.2-sol"
 
 _OPENAI_55_REASONING = openai_responses_effort_reasoning(
     supported_summaries=("auto",),
@@ -28,16 +29,37 @@ _OPENAI_ALWAYS_ON_REASONING = openai_responses_effort_reasoning(
     supported_efforts=("low", "medium", "high", "xhigh", "max"),
 )
 
-_OPENAI_MODEL_DISPLAY_NAMES = {
-    "gpt-6-astra": "GPT-6 Astra",
-    "gpt-6.1-sol": "GPT-6.1 Sol",
-    "gpt-6-sol": "GPT-6 Sol",
-    "gpt-6-luna": "GPT-6 Luna",
-    "gpt-5.6-sol": "GPT-5.6 Sol",
-    "gpt-5.6-terra": "GPT-5.6 Terra",
-    "gpt-5.6-luna": "GPT-5.6 Luna",
-    "gpt-5.5": "GPT-5.5",
+
+_MODEL_DEFAULTS = {"context_window": 1_050_000, "supports_image_input": True}
+
+_MODELS: dict[str, dict[str, object]] = {
+    "gpt-6.2-astra": {"display_name": "GPT-6.2 Astra", "reasoning": _OPENAI_ALWAYS_ON_REASONING},
+    _DEFAULT_MODEL: {"display_name": "GPT-6.2 Sol", "reasoning": _OPENAI_ALWAYS_ON_REASONING},
+    "gpt-6-astra": {"display_name": "GPT-6 Astra", "reasoning": _OPENAI_ALWAYS_ON_REASONING},
+    "gpt-6.1-sol": {"display_name": "GPT-6.1 Sol", "reasoning": _OPENAI_ALWAYS_ON_REASONING},
+    "gpt-6-sol": {"display_name": "GPT-6 Sol", "reasoning": _OPENAI_56_REASONING},
+    "gpt-6-luna": {"display_name": "GPT-6 Luna", "reasoning": _OPENAI_56_REASONING},
+    "gpt-5.6-sol": {"display_name": "GPT-5.6 Sol", "reasoning": _OPENAI_56_REASONING},
+    "gpt-5.6-terra": {"display_name": "GPT-5.6 Terra", "reasoning": _OPENAI_56_REASONING},
+    "gpt-5.6-luna": {"display_name": "GPT-5.6 Luna", "reasoning": _OPENAI_56_REASONING},
+    "gpt-5.5": {
+        "display_name": "GPT-5.5",
+        "reasoning": _OPENAI_55_REASONING,
+        "api_only": True,
+    },
 }
+
+
+def _endpoints(*, codex: bool) -> tuple[ProviderEndpointConfig, ...]:
+    endpoints = []
+    for model_id, settings in _MODELS.items():
+        options = {**_MODEL_DEFAULTS, **settings, "model_id": model_id}
+        if options.pop("api_only", False) and codex:
+            continue
+        if codex:
+            options.update(reasoning=_OPENAI_ALWAYS_ON_REASONING, supports_structured_output=False)
+        endpoints.append(endpoint_config_from_mapping(model_id, options))
+    return tuple(endpoints)
 
 
 TEMPLATES: tuple[ProviderTemplate, ...] = (
@@ -56,39 +78,17 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         auth_driver="openai-codex",
         base_url="https://chatgpt.com/backend-api/codex",
         api_path="/responses",
-        default_endpoint="gpt-6.1-sol",
-        endpoints=tuple(
-            ProviderEndpointConfig(
-                endpoint_id=model_id,
-                display_name=_OPENAI_MODEL_DISPLAY_NAMES[model_id],
-                model_id=model_id,
-                context_window=1_050_000,
-                supports_tools=True,
-                supports_image_input=True,
-                supports_streaming=True,
-                supports_structured_output=False,
-                reasoning=_OPENAI_ALWAYS_ON_REASONING,
-            )
-            for model_id in (
-                "gpt-6-astra",
-                "gpt-6.1-sol",
-                "gpt-6-sol",
-                "gpt-6-luna",
-                "gpt-5.6-sol",
-                "gpt-5.6-terra",
-                "gpt-5.6-luna",
-            )
-        ),
+        default_endpoint=_DEFAULT_MODEL,
+        endpoints=_endpoints(codex=True),
         documentation_url="https://learn.chatgpt.com/docs/models",
-        verified_on="2026-11-11",
-        revision=14,
+        verified_on=_VERIFIED_ON,
+        revision=15,
     ),
     ProviderTemplate(
         template_id="openai",
         display_name="OpenAI",
         description=(
-            "OpenAI Responses API with GPT-6.1 Sol, GPT-6 Astra/Sol/Luna, GPT-5.6 Sol/Terra/Luna "
-            "and GPT-5.5. "
+            "OpenAI Responses API with GPT-6.2 Astra and Sol, GPT-6.1 Sol, and earlier models. "
             "Local context window 1050000 with no configured output limit. "
             "GPT-6 tool calling requires Responses. "
             "Image input is supported by the OURO Responses adapter."
@@ -98,32 +98,10 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         credential_env="OPENAI_API_KEY",
         base_url="https://api.openai.com/v1",
         api_path="/responses",
-        default_endpoint="gpt-6.1-sol",
-        endpoints=tuple(
-            ProviderEndpointConfig(
-                endpoint_id=model_id,
-                display_name=_OPENAI_MODEL_DISPLAY_NAMES[model_id],
-                model_id=model_id,
-                context_window=1_050_000,
-                supports_tools=True,
-                supports_image_input=True,
-                supports_streaming=True,
-                supports_structured_output=True,
-                reasoning=reasoning,
-            )
-            for model_id, reasoning in (
-                ("gpt-6-astra", _OPENAI_ALWAYS_ON_REASONING),
-                ("gpt-6.1-sol", _OPENAI_ALWAYS_ON_REASONING),
-                ("gpt-6-sol", _OPENAI_56_REASONING),
-                ("gpt-6-luna", _OPENAI_56_REASONING),
-                ("gpt-5.6-sol", _OPENAI_56_REASONING),
-                ("gpt-5.6-terra", _OPENAI_56_REASONING),
-                ("gpt-5.6-luna", _OPENAI_56_REASONING),
-                ("gpt-5.5", _OPENAI_55_REASONING),
-            )
-        ),
+        default_endpoint=_DEFAULT_MODEL,
+        endpoints=_endpoints(codex=False),
         documentation_url="https://developers.openai.com/api/docs/models",
         verified_on=_VERIFIED_ON,
-        revision=12,
+        revision=13,
     ),
 )

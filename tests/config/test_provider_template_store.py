@@ -141,20 +141,15 @@ def test_qwen_revision_upgrade_replaces_incomplete_cached_template(tmp_path, mon
     store = ProviderTemplateStore(tmp_path)
     initial = store.catalog()
     initial_qwen = next(entry for entry in initial.entries if entry.template.template_id == "qwen")
-    assert {endpoint.endpoint_id for endpoint in initial_qwen.template.endpoints} == {
-        "qwen3.8-max",
-        "qwen3.8-flash",
-    }
+    assert initial_qwen.template.endpoints == incomplete.endpoints
+    assert "qwen3.7-plus" not in {endpoint.endpoint_id for endpoint in incomplete.endpoints}
 
     _fake_inline(monkeypatch, provider_templates())
     upgraded = store.catalog()
 
     qwen = next(entry for entry in upgraded.entries if entry.template.template_id == "qwen")
-    assert {endpoint.endpoint_id for endpoint in qwen.template.endpoints} == {
-        "qwen3.8-max",
-        "qwen3.8-flash",
-        "qwen3.7-plus",
-    }
+    assert qwen.template.endpoints == latest.endpoints
+    assert qwen.template.endpoint("qwen3.7-plus").model_id == "qwen3.7-plus"
     assert any("updated to inline revision" in notice for notice in upgraded.notices)
     entry = _read_json(tmp_path)["templates"]["qwen"]
     assert entry["meta"]["baseline_revision"] == latest.revision

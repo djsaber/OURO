@@ -3,7 +3,7 @@
 > 文档类型：配置参考
 > 配置事实来源：[模板目录](../../ouro/config/provider_templates/)、[OpenCode Go 端点](../../ouro/config/provider_templates/opencode_go.py)；各模板通过 `verified_on` 记录核对日期。
 
-预置目录包含 16 个模板、78 个模型端点，覆盖通用、编程、多模态及成本敏感场景。
+预置目录覆盖通用、编程、多模态及成本敏感场景。CLI 的 `ouro provider templates` 显示当前目录。
 端点声明模型 ID、上下文预算、输出预算、工具调用、图像/音频/视频输入、流式输出、结构化输出与思考配置。
 启用条件与配置方式见[输入模态契约](provider-configuration.md#输入模态契约)。
 OpenRouter 等聚合平台通过 `custom` 与兼容协议配置。
@@ -14,17 +14,17 @@ OpenRouter 等聚合平台通过 `custom` 与兼容协议配置。
 
 | 模板 | 默认模型 | 官方依据 |
 |---|---|---|
-| OpenAI / Codex | `gpt-6.1-sol` | [API 模型](https://developers.openai.com/api/docs/models/gpt-6.1-sol)、[订阅目录](https://learn.chatgpt.com/docs/models) |
+| OpenAI / Codex | `gpt-6.2-sol` | [API 模型](https://developers.openai.com/api/docs/models/gpt-6.2-sol)、[订阅目录](https://learn.chatgpt.com/docs/models) |
 | Anthropic | `claude-sonnet-5-5` | [模型目录](https://platform.claude.com/docs/en/models/overview)、[思考模式](https://platform.claude.com/docs/en/build-with-claude/thinking) |
-| Gemini | `gemini-3.8-flash` | [模型目录](https://ai.google.dev/gemini-api/docs/models)、[思考档位](https://ai.google.dev/gemini-api/docs/thinking) |
+| Gemini | `gemini-4-hydrogen` | [模型目录](https://aistudio.google.com/docs/models)、[思考档位](https://aistudio.google.com/docs/thinking)、[兼容接口](https://aistudio.google.com/docs/openai) |
 | DeepSeek | `deepseek-v4-pro` | [模型与限制](https://api-docs.deepseek.com/quick_start/pricing/)、[思考模式](https://api-docs.deepseek.com/guides/thinking_mode/) |
-| Qwen | `qwen3.8-max` | [模型选择](https://help.aliyun.com/zh/model-studio/text-generation-model)、[视觉能力](https://help.aliyun.com/zh/model-studio/vision-model/) |
+| Qwen | `qwen4-max` | [Qwen4 Max](https://help.aliyun.com/zh/model-studio/qwen4-max)、[模型选择](https://help.aliyun.com/zh/model-studio/text-generation-model)、[视觉能力](https://help.aliyun.com/zh/model-studio/vision) |
 | Kimi | `kimi-k3.1-pro` | [模型目录](https://platform.kimi.ai/docs/models)、[K3 档位](https://platform.kimi.ai/docs/guide/use-reasoning-effort) |
 | GLM | `glm-5.3` | [模型目录](https://docs.bigmodel.cn/cn/guide/start/model-overview) |
 | Grok | `grok-4.7` | [模型说明](https://docs.x.ai/developers/grok-4-7)、[Chat Completions](https://docs.x.ai/developers/model-capabilities/legacy/chat-completions) |
 | Mistral | `mistral-large-4-0` | [模型目录](https://docs.mistral.ai/models)、[Large 4](https://docs.mistral.ai/models/mistral-large-4-0)、[推理格式](https://docs.mistral.ai/studio/conversations/reasoning) |
 | MiniMax | `MiniMax-M3` | [OpenAI 接口](https://platform.minimax.cn/docs/api-reference/text-openai-api)、[参数与预算](https://platform.minimax.cn/docs/api-reference/text-chat-openai) |
-| Doubao | `doubao-seed-2-1-pro-260915` | [模型目录](https://docs.volcengine.com/docs/ark/model-list?lang=zh)、[思考模式](https://docs.volcengine.com/docs/ark/deep-thinking?lang=zh) |
+| Doubao | `doubao-seed-2-1-pro-260915` | [模型目录](https://console.volcengine.com/ark/region:cn-beijing/docs/model-list)、[思考模式](https://console.volcengine.com/ark/region:cn-beijing/docs/deep-thinking) |
 | Cohere | `command-a-plus-05-2026` | [模型说明](https://docs.cohere.com/docs/command-a-plus)、[OpenAI 接口](https://docs.cohere.com/docs/compatibility-api) |
 | OpenCode Go（三个协议） | `kimi-k3` / `gpt-6-luna` / `minimax-m3` | [Go 端点与客户端要求](https://opencode.ai/docs/go/)、[Models.dev Go 目录](https://models.dev/api.json) |
 
@@ -69,12 +69,14 @@ API Key 必须与模板所选平台、区域匹配。MiniMax 使用中国站，�
 
 ## OpenAI API 与订阅
 
-`openai`（API Key）提供八个模型，`openai-codex`（浏览器订阅）提供七个。两个模板默认使用 `gpt-6.1-sol`。
+`openai`（API Key）提供十个模型，`openai-codex`（浏览器订阅）提供九个。两个模板默认使用 `gpt-6.2-sol`。
 
 表中的模型 ID 与实例 Endpoint ID 不同：创建实例时 OURO 生成 `provider_...` 和 `endpoint_...`，模板模型 ID 作为 `model_id` 保存，不能直接拼成实例路由。
 
 | 模型 ID / 官方参考资料 | API 模板声明的 effort | 订阅模板声明的 effort |
 |---|---|---|
+| [gpt-6.2-astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra) | low、medium、high、xhigh、max | low、medium、high、xhigh、max |
+| [gpt-6.2-sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol) | low、medium、high、xhigh、max | low、medium、high、xhigh、max |
 | [gpt-5.5](https://developers.openai.com/api/docs/models/gpt-5.5) | none、low、medium、high、xhigh | 已退役 |
 | [gpt-5.6-luna](https://developers.openai.com/api/docs/models/gpt-5.6-luna) | none、low、medium、high、xhigh、max | low、medium、high、xhigh、max |
 | [gpt-5.6-terra](https://developers.openai.com/api/docs/models/gpt-5.6-terra) | none、low、medium、high、xhigh、max | low、medium、high、xhigh、max |
@@ -84,7 +86,7 @@ API Key 必须与模板所选平台、区域匹配。MiniMax 使用中国站，�
 | [gpt-6-sol](https://developers.openai.com/api/docs/models/gpt-6-sol) | none、low、medium、high、xhigh、max | low、medium、high、xhigh、max |
 | [gpt-6-luna](https://developers.openai.com/api/docs/models/gpt-6-luna) | none、low、medium、high、xhigh、max | low、medium、high、xhigh、max |
 
-API 模板的 none 映射到 OURO 的 reasoning disabled；Astra 和 GPT-6.1 Sol 模板不提供关闭思考。
+API 模板的 `none` 映射到 OURO 的 reasoning disabled。GPT-6.2 Astra、GPT-6.2 Sol、GPT-6 Astra 和 GPT-6.1 Sol 始终开启思考。
 两套模板默认使用 medium，订阅模板不提供关闭思考选项。Codex 的 Ultra 涉及多代理执行，不属于单请求 effort；见[官方模型与等级说明](https://learn.chatgpt.com/docs/models)。
 模板独立声明 `supported_summaries=["auto"]` 与 `default.summary="auto"`；统一编码器按 profile 将摘要请求和 effort 组合为原生
 `reasoning: {effort: ..., summary: "auto"}`，展示返回的摘要，完整加密 reasoning 由 opaque 续接保存。
@@ -96,7 +98,7 @@ API 模板的 none 映射到 OURO 的 reasoning disabled；Astra 和 GPT-6.1 Sol
 
 | 配置 | API Key 模板 | 订阅模板 |
 |---|---|---|
-| context_window | 1,050,000，本地规划值 | 1,050,000，本地规划值；未验证订阅后端极限 |
+| context_window | 1,050,000，本地规划值 | 1,050,000，本地规划值 |
 | max_output_tokens | 不限制，省略请求字段 | 不限制，省略请求字段 |
 | 文本 / 流式 / 函数工具 | 开启 | 开启 |
 | 结构化输出 | 开启，Responses text.format | 未声明支持 |
@@ -104,7 +106,7 @@ API 模板的 none 映射到 OURO 的 reasoning disabled；Astra 和 GPT-6.1 Sol
 | 音频 / 视频输入 | 关闭 | 关闭 |
 | 计费 | API 用量计费 | 订阅归属，未取得价格时金额未知 |
 
-模板数值用于 OURO 的上下文规划与请求控制，不推算服务端额度。
+模板数值用于 OURO 的上下文规划与请求控制。两套模板的 GPT-6.2 端点均采用模型原生上下文窗口。
 
 static 认证的 opaque 重放绑定认证实例生命周期；重建 API Key adapter 后通过通用聊天与工具帧继续任务，
 不发送旧 opaque 状态。浏览器订阅使用稳定账户 scope，跨进程可重放兼容状态。详细边界见
@@ -133,16 +135,20 @@ OURO 遇到失败不会自动回退到付费 API 或其他模型。
 
 | 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `gemini-4-carbon` | 1,048,576 | 不限制 | 图片、音频 | 开启 | 始终开启 / high | low、medium、high |
-| `gemini-4-argon` | 1,048,576 | 不限制 | 图片、音频 | 开启 | 始终开启 / high | low、medium、high |
-| `gemini-3.8-flash`（默认） | 1,048,576 | 不限制 | 图片、音频 | 开启 | 始终开启 / medium | low、medium、high |
+| `gemini-4-carbon` | 1,048,576 | 不限制 | 图片、音频 | 开启 | 始终开启 / medium | low、medium、high |
+| `gemini-4-neon` | 1,048,576 | 不限制 | 图片、音频 | 开启 | 始终开启 / high | low、medium、high、xhigh |
+| `gemini-4-hydrogen`（默认） | 1,048,576 | 不限制 | 图片、音频 | 开启 | 始终开启 / high | low、medium、high、xhigh |
+| `gemini-4-argon` | 1,048,576 | 不限制 | 图片、音频 | 开启 | 始终开启 / medium | low、medium、high |
+| `gemini-3.8-flash` | 1,048,576 | 不限制 | 图片、音频 | 开启 | 始终开启 / medium | low、medium、high |
 | `gemini-3.1-pro-preview` | 1,048,576 | 不限制 | 图片、音频 | 开启 | 始终开启 / high | low、medium、high |
 | `gemini-3.5-flash-lite` | 1,048,576 | 不限制 | 图片、音频 | 开启 | 始终开启 / minimal | minimal、low、medium、high |
 
 Gemini 端点均启用 WAV/MP3 音频输入，使用官方 Chat Completions 兼容接口的 `input_audio`。
 视频输入关闭：官方兼容接口未声明 `video_url` 输入。
-能力依据：[兼容接口音频输入](https://ai.google.dev/gemini-api/docs/openai#audio_understanding)、
+能力依据：[兼容接口音频输入](https://aistudio.google.com/docs/openai#audio-understanding)、
 [4 Carbon](https://aistudio.google.com/docs/models/gemini-4-carbon)、
+[4 Neon](https://aistudio.google.com/docs/models/gemini-4-neon)、
+[4 Hydrogen](https://aistudio.google.com/docs/models/gemini-4-hydrogen)、
 [4 Argon](https://aistudio.google.com/docs/models/gemini-4-argon)、
 [3.8 Flash](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash)、
 [3.1 Pro](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview)、
@@ -168,15 +174,16 @@ Gemini 端点均启用 WAV/MP3 音频输入，使用官方 Chat Completions 兼�
 
 | 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `qwen3.8-max`（默认） | 1,000,000 | 不限制 | 图片、视频 | 开启 | 可切换，默认开启 / xhigh | low、medium、xhigh |
+| `qwen4-max`（默认） | 1,000,000 | 不限制 | 图片、视频 | 开启 | 可切换，默认开启 / high | low、high、xhigh |
+| `qwen3.8-max` | 1,000,000 | 不限制 | 图片、视频 | 开启 | 可切换，默认开启 / xhigh | low、medium、xhigh |
 | `qwen3.8-flash` | 1,000,000 | 不限制 | 图片、视频 | 开启 | 可切换，默认开启 / xhigh | low、medium、xhigh |
 | `qwen3.7-plus` | 1,000,000 | 不限制 | 图片、视频 | 开启 | 可切换，默认开启 | — |
 
-三个 Qwen 端点均启用 MP4 视频输入，使用 `video_url` 扩展；音频输入关闭。
+Qwen 端点均通过 `video_url` 扩展启用 MP4 视频输入。
 [视频接口文档](https://www.alibabacloud.com/help/en/model-studio/vision)规定 Base64 视频小于 10 MB，
 服务端还限制时长、分辨率与帧数；OURO 本地准备上限不替代这些限制。
 
-使用 `enable_thinking` 控制开关，`preserve_thinking` 随开关设置为相同布尔值；3.8 Max 与 Flash 通过
+使用 `enable_thinking` 控制开关，`preserve_thinking` 随开关设置为相同布尔值。4 Max、3.8 Max 与 3.8 Flash 通过
 `reasoning_effort` 选择等级。思考输出为文本，普通多轮与工具轮次通过 `reasoning_content` 续接。
 
 ## Kimi
@@ -200,17 +207,18 @@ K2.6 和 K2.7 Code 系列已停止向新注册用户开放，存量账户仍可�
 |---|---:|---:|---|---|---|---|
 | `glm-5.3`（默认） | 1,000,000 | 不限制 | — | 开启 | 始终开启 / max | low、high、max |
 | `glm-5.3-flash` | 1,000,000 | 不限制 | 图片 | 开启 | 始终开启 / max | low、high、max |
+| `glm-5.3-flashx` | 1,000,000 | 不限制 | 图片 | 开启 | 始终开启 / max | low、high、max |
 | `glm-5.2` | 1,000,000 | 不限制 | — | 开启 | 可切换，默认开启 | — |
 | `glm-5-turbo` | 200,000 | 不限制 | — | 开启 | 可切换，默认开启 | — |
 | `glm-5v-turbo` | 200,000 | 不限制 | 图片 | 关闭 | 可切换，默认开启 | — |
 
-[GLM-5.3-Flash](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash) 和
+[GLM-5.3-Flash 与 FlashX](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash) 和
 [GLM-5V-Turbo](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5v-turbo) 原生支持视频，
 但官方[接口文档](https://docs.bigmodel.cn/api-reference/模型-api/对话补全)仅声明视频 URL，
 [示例仓库](https://github.com/zai-org/GLM-V/blob/main/skills/glmv-caption/SKILL.md#supported-input-types)明确视频不接受 Base64。
 预置视频输入关闭，以匹配 OURO 本地附件的编码方式。
 
-使用 `thinking.type=enabled/disabled`；5.3 与 5.3 Flash 固定 enabled，并通过 `reasoning_effort` 选择等级。
+使用 `thinking.type=enabled/disabled`。5.3、5.3 Flash 与 FlashX 固定 enabled，并通过 `reasoning_effort` 选择等级。
 除 5.3 外，端点在开启思考时设置 `thinking.clear_thinking=false`。思考输出为文本，普通多轮与工具轮次通过 `reasoning_content` 续接。
 
 ## Grok
@@ -226,11 +234,11 @@ K2.6 和 K2.7 Code 系列已停止向新注册用户开放，存量账户仍可�
 
 | 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `mistral-medium-3-5`（已弃用） | 256,000 | 不限制 | 图片 | 开启 | 固定关闭 | — |
-| `mistral-small-2603` | 256,000 | 不限制 | 图片 | 开启 | 固定关闭 | — |
-| `mistral-large-4-0`（默认） | 1,000,000 | 不限制 | 图片 | 开启 | 固定 low | — |
+| `mistral-medium-3-5`（已弃用） | 256,000 | 不限制 | 图片 | 开启 | 可切换，默认关闭 | high |
+| `mistral-small-2603` | 256,000 | 不限制 | 图片 | 开启 | 可切换，默认关闭 | high |
+| `mistral-large-4-0`（默认） | 1,000,000 | 不限制 | 图片 | 开启 | 始终开启 / low | low、medium、high |
 
-Small 4 和 Medium 3.5 发送 `reasoning_effort=none`。Large 4 发送 `reasoning_effort=low`，这是正式版支持的最低档位。
+Small 4 和 Medium 3.5 在关闭思考时发送 `reasoning_effort=none`。Large 4 默认使用正式版支持的最低档位 `low`。
 Mistral 的思考续接使用 `content` 内的 thinking chunk，当前适配器仅提取其中的回答文本。
 
 ## MiniMax
@@ -251,17 +259,19 @@ M3 使用 `thinking.type=adaptive/disabled`；M3.1 Flash 使用 `reasoning_effor
 
 | 模型 ID | 上下文 | 输出预算 | 输入模态 | 结构化输出 | 思考开关 / 默认 | effort |
 |---|---:|---:|---|---|---|---|
-| `doubao-seed-2-1-pro-260915`（默认） | 1,048,576 | 不限制 | 图片、视频 | 开启 | 可切换，默认开启 / high | minimal、low、medium、high |
-| `doubao-seed-2-1-lite-260915` | 1,048,576 | 不限制 | 图片、音频、视频 | 开启 | 可切换，默认开启 / high | minimal、low、medium、high |
+| `doubao-seed-2-1-pro-260915`（默认） | 1,048,576 | 不限制 | 图片、视频 | 开启 | 可切换，默认开启 / high | low、medium、high |
+| `doubao-seed-evolving` | 1,048,576 | 不限制 | 图片、视频 | 开启 | 可切换，默认开启 / high | low、medium、high |
+| `doubao-seed-2-1-lite-260915` | 1,048,576 | 不限制 | 图片、音频、视频 | 开启 | 可切换，默认开启 / high | low、medium、high |
+| `doubao-seed-2-1-turbo-260628` | 262,144 | 不限制 | 图片、视频 | 开启 | 可切换，默认开启 / high | low、medium、high |
 
-Pro 与 Lite 均通过 `video_url` 接收视频；Lite 另通过 `input_audio.data` 和 `format=wav/mp3` 接收音频。
-Pro 的音频输入关闭，能力范围以[模型目录](https://docs.volcengine.com/docs/ark/model-list?lang=zh)为准。
+各端点通过 `video_url` 接收视频。Lite 另通过 `input_audio.data` 和 `format=wav/mp3` 接收音频。
+Seed Evolving 是方舟持续更新的模型。能力范围见[模型目录](https://console.volcengine.com/ark/region:cn-beijing/docs/model-list)和
+[Seed Evolving 技术说明](https://console.volcengine.com/ark/region:cn-beijing/docs/latest-model)。
 编码依据：[Chat API](https://docs.volcengine.com/docs/ark/chat-api?lang=zh)、
 [音频输入](https://docs.volcengine.com/docs/ark/audio-understanding?lang=zh)。
 
-使用 `thinking.type=enabled/disabled` 切换思考，开启时通过 `reasoning_effort` 选择等级。
-展示并回传 `reasoning_content` 思考摘要；Chat Completions adapter 不保存 `encrypted_content` 加密原文，
-多轮工具调用的推理效果受此限制。
+使用 `thinking.type=enabled/disabled` 切换思考，开启时通过 `reasoning_effort` 选择等级。方舟将 `minimal` 解释为关闭思考。
+Chat Completions adapter 展示并回传 `reasoning_content`。对于返回加密思考原文的模型，多轮工具调用使用摘要续接，推理效果受此限制。
 
 ## Cohere
 
@@ -286,9 +296,8 @@ uv run --frozen ouro provider list --home ./.ouro-dev --json
 
 ## OpenCode Go
 
-三个模板按 OpenCode Go 官方端点表划分，核对日期为 2026-11-11。仅收录当前 Go 文档列出的模型；
-模型列表 API 中额外的别名、旧型号和未公开路由不自动加入。Gemini 4 Argon 使用 Google 原生协议，
-不属于这三个模板支持的协议。目录为本地预制数据，启动与模型调用不访问远程模型目录。
+三个模板按 OpenCode Go 公布的原生协议划分，核对日期为 2026-11-19。模板收录三个协议下可用的当前模型。
+Gemini 4 Argon 的原生路由使用 Google 协议。目录为本地预制数据，启动与模型调用不访问远程模型目录。
 
 模型 ID、协议和服务地址来自 [Go 官方文档](https://opencode.ai/docs/go/)；上下文、
 工具、输入模态和结构化输出声明来自 OpenCode 使用的 [Models.dev](https://opencode.ai/docs/models/)
@@ -333,6 +342,7 @@ Responses 与 Messages 端点沿用各自的原生续接格式。
 | `mimo-v2.5-pro` | 1,048,576 | 不限制 | 关闭 | 关闭 |
 | `minimax-m3.1-flash` | 1,000,000 | 不限制 | 开启 | 关闭 |
 | `hy4` | 1,048,576 | 不限制 | 开启 | 关闭 |
+| `hy4-flash-free` | 1,048,576 | 不限制 | 开启 | 关闭 |
 | `hy4-preview` | 1,024,000 | 不限制 | 关闭 | 关闭 |
 | `hy3` | 256,000 | 不限制 | 关闭 | 关闭 |
 | `step-5-preview` | 1,000,000 | 不限制 | 开启 | 开启 |
@@ -360,6 +370,7 @@ Responses 与 Messages 端点沿用各自的原生续接格式。
 |---|---:|---:|---|---|
 | `claude-haiku-5-5` | 1,000,000 | 32,768 | 开启 | 关闭 |
 | `minimax-m3` | 1,000,000 | 32,768 | 开启 | 关闭 |
+| `qwen4-max` | 1,000,000 | 32,768 | 开启 | 关闭 |
 | `qwen3.8-max` | 1,000,000 | 32,768 | 开启 | 关闭 |
 | `qwen3.8-flash` | 1,000,000 | 32,768 | 开启 | 关闭 |
 | `qwen3.7-plus` | 1,000,000 | 32,768 | 开启 | 关闭 |

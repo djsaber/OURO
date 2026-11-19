@@ -43,26 +43,7 @@ def test_protocol_encoding_limits_apply_to_every_declared_input_modality(protoco
 
 
 def test_presets_only_enable_media_supported_by_the_configured_connection():
-    audio_models = {
-        "gemini-4-carbon",
-        "gemini-4-argon",
-        "gemini-3.8-flash",
-        "gemini-3.1-pro-preview",
-        "gemini-3.5-flash-lite",
-        "doubao-seed-2-1-lite-260915",
-    }
-    video_models = {
-        "qwen3.8-max",
-        "qwen3.8-flash",
-        "qwen3.7-plus",
-        "kimi-k3",
-        "kimi-k3.1-pro",
-        "kimi-k3.1-pro-highspeed",
-        "MiniMax-M3",
-        "MiniMax-M3.1-Flash",
-        "doubao-seed-2-1-pro-260915",
-        "doubao-seed-2-1-lite-260915",
-    }
+    video_templates = {"qwen", "kimi", "minimax", "doubao"}
     text_only_models = {
         "deepseek-v4-pro",
         "glm-5.3",
@@ -70,13 +51,17 @@ def test_presets_only_enable_media_supported_by_the_configured_connection():
         "glm-5-turbo",
     }
     for template in provider_templates():
-        if template.template_id.startswith("opencode-go"):
-            # Go's gateway contracts are covered separately from direct-provider presets.
-            continue
         for endpoint in template.endpoints:
-            assert endpoint.supports_image_input == (endpoint.model_id not in text_only_models)
-            assert endpoint.supports_audio_input == (endpoint.model_id in audio_models)
-            assert endpoint.supports_video_input == (endpoint.model_id in video_models)
+            if not template.template_id.startswith("opencode-go"):
+                assert endpoint.supports_image_input == (endpoint.model_id not in text_only_models)
+            assert endpoint.supports_audio_input == (
+                template.template_id == "gemini"
+                or (
+                    template.template_id == "doubao"
+                    and endpoint.model_id == "doubao-seed-2-1-lite-260915"
+                )
+            )
+            assert endpoint.supports_video_input == (template.template_id in video_templates)
 
 
 @pytest.mark.parametrize("protocol", ["openai-responses", "anthropic-messages"])

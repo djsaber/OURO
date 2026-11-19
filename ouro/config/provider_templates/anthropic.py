@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from ouro.config.endpoints import ProviderEndpointConfig
+from ouro.config.endpoints import endpoint_config_from_mapping
 from ouro.config.provider_templates.schema import ProviderTemplate
 from ouro.config.reasoning import mapped_reasoning
 from ouro.core.reasoning import ReasoningRequest
 
-_VERIFIED_ON = "2026-11-11"
+_VERIFIED_ON = "2026-11-19"
+_DEFAULT_MODEL = "claude-sonnet-5-5"
 
 _ANTHROPIC_SONNET_REASONING = mapped_reasoning(
     name="anthropic-always-on-adaptive-effort-high",
@@ -90,6 +91,37 @@ _ANTHROPIC_HAIKU_REASONING = mapped_reasoning(
 )
 
 
+_MODEL_DEFAULTS = {
+    "context_window": 1_000_000,
+    "max_output_tokens": 32_768,
+    "supports_image_input": True,
+    "supports_structured_output": False,
+}
+
+_MODELS: dict[str, dict[str, object]] = {
+    "claude-fable-5-2": {
+        "display_name": "Claude Fable 5.2",
+        "reasoning": _ANTHROPIC_SONNET_REASONING,
+    },
+    "claude-fable-5-1": {
+        "display_name": "Claude Fable 5.1",
+        "reasoning": _ANTHROPIC_SONNET_REASONING,
+    },
+    _DEFAULT_MODEL: {
+        "display_name": "Claude Sonnet 5.5",
+        "reasoning": _ANTHROPIC_SONNET_REASONING,
+    },
+    "claude-opus-5-5": {
+        "display_name": "Claude Opus 5.5",
+        "reasoning": _ANTHROPIC_OPUS_REASONING,
+    },
+    "claude-haiku-5-5": {
+        "display_name": "Claude Haiku 5.5",
+        "reasoning": _ANTHROPIC_HAIKU_REASONING,
+    },
+}
+
+
 TEMPLATES: tuple[ProviderTemplate, ...] = (
     ProviderTemplate(
         template_id="anthropic",
@@ -100,71 +132,15 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         credential_env="ANTHROPIC_API_KEY",
         base_url="https://api.anthropic.com",
         api_path="/v1/messages",
-        default_endpoint="claude-sonnet-5-5",
-        endpoints=(
-            ProviderEndpointConfig(
-                endpoint_id="claude-fable-5-2",
-                display_name="Claude Fable 5.2",
-                model_id="claude-fable-5-2",
-                context_window=1_000_000,
-                max_output_tokens=32_768,
-                supports_tools=True,
-                supports_image_input=True,
-                supports_streaming=True,
-                supports_structured_output=False,
-                reasoning=_ANTHROPIC_SONNET_REASONING,
-            ),
-            ProviderEndpointConfig(
-                endpoint_id="claude-fable-5-1",
-                display_name="Claude Fable 5.1",
-                model_id="claude-fable-5-1",
-                context_window=1_000_000,
-                max_output_tokens=32_768,
-                supports_tools=True,
-                supports_image_input=True,
-                supports_streaming=True,
-                supports_structured_output=False,
-                reasoning=_ANTHROPIC_SONNET_REASONING,
-            ),
-            ProviderEndpointConfig(
-                endpoint_id="claude-sonnet-5-5",
-                display_name="Claude Sonnet 5.5",
-                model_id="claude-sonnet-5-5",
-                context_window=1_000_000,
-                max_output_tokens=32_768,
-                supports_tools=True,
-                supports_image_input=True,
-                supports_streaming=True,
-                supports_structured_output=False,
-                reasoning=_ANTHROPIC_SONNET_REASONING,
-            ),
-            ProviderEndpointConfig(
-                endpoint_id="claude-opus-5-5",
-                display_name="Claude Opus 5.5",
-                model_id="claude-opus-5-5",
-                context_window=1_000_000,
-                max_output_tokens=32_768,
-                supports_tools=True,
-                supports_image_input=True,
-                supports_streaming=True,
-                supports_structured_output=False,
-                reasoning=_ANTHROPIC_OPUS_REASONING,
-            ),
-            ProviderEndpointConfig(
-                endpoint_id="claude-haiku-5-5",
-                display_name="Claude Haiku 5.5",
-                model_id="claude-haiku-5-5",
-                context_window=1_000_000,
-                max_output_tokens=32_768,
-                supports_tools=True,
-                supports_image_input=True,
-                supports_streaming=True,
-                supports_structured_output=False,
-                reasoning=_ANTHROPIC_HAIKU_REASONING,
-            ),
+        default_endpoint=_DEFAULT_MODEL,
+        endpoints=tuple(
+            endpoint_config_from_mapping(
+                model_id, {**_MODEL_DEFAULTS, **settings, "model_id": model_id}
+            )
+            for model_id, settings in _MODELS.items()
         ),
         documentation_url="https://platform.claude.com/docs/en/models/overview",
         verified_on=_VERIFIED_ON,
-        revision=10,
+        revision=11,
     ),
 )

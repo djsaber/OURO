@@ -18,16 +18,7 @@ from tests.providers.responses_fixtures import message, terminal
 
 @pytest.mark.parametrize(
     "model_id",
-    [
-        "gpt-5.5",
-        "gpt-5.6-luna",
-        "gpt-5.6-terra",
-        "gpt-5.6-sol",
-        "gpt-6-astra",
-        "gpt-6-sol",
-        "gpt-6.1-sol",
-        "gpt-6-luna",
-    ],
+    [endpoint.model_id for endpoint in get_provider_template("openai").endpoints],
 )
 async def test_openai_preset_sends_native_responses_tools_and_reasoning(
     tmp_path, monkeypatch, model_id
@@ -100,26 +91,36 @@ async def test_openai_preset_sends_native_responses_tools_and_reasoning(
 @pytest.mark.parametrize("template_id", ["openai", "openai-codex"])
 def test_model_effort_limits_are_enforced_before_requests(template_id):
     template = get_provider_template(template_id)
-    astra = template.endpoint("gpt-6-astra").reasoning.capability
-    with pytest.raises(ValueError, match="always on"):
-        resolve_reasoning(astra, ReasoningRequest(mode="disabled"))
-    if template_id == "openai":
-        old = template.endpoint("gpt-5.5").reasoning.capability
-        with pytest.raises(ValueError, match="not supported"):
-            resolve_reasoning(old, ReasoningRequest(effort="max"))
-    for model_id in (
-        "gpt-6-astra",
-        "gpt-6-sol",
-        "gpt-6.1-sol",
-        "gpt-6-luna",
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-    ):
+    for model_id in ("gpt-6-astra", "gpt-6.2-astra", "gpt-6.2-sol"):
         capability = template.endpoint(model_id).reasoning.capability
-        assert resolve_reasoning(capability, ReasoningRequest(effort="max")).effort_variant == "max"
+        with pytest.raises(ValueError, match="always on"):
+            resolve_reasoning(capability, ReasoningRequest(mode="disabled"))
+    max_effort = ReasoningRequest(effort="max")
+    for endpoint in template.endpoints:
+        capability = endpoint.reasoning.capability
+        if endpoint.model_id == "gpt-5.5":
+            with pytest.raises(ValueError, match="not supported"):
+                resolve_reasoning(capability, max_effort)
+        else:
+            assert resolve_reasoning(capability, max_effort).effort_variant == "max"
         with pytest.raises(ValueError, match="not supported"):
             resolve_reasoning(capability, ReasoningRequest(effort="minimal"))
+
+
+@pytest.mark.parametrize("model_id", ["gpt-6.2-astra", "gpt-6.2-sol"])
+@pytest.mark.parametrize(
+    ("template_id", "structured_output"), [("openai", True), ("openai-codex", False)]
+)
+def test_gpt_62_templates_use_native_context_and_provider_capabilities(
+    template_id, model_id, structured_output
+):
+    endpoint = get_provider_template(template_id).endpoint(model_id)
+    assert endpoint.context_window == 1_050_000
+    assert endpoint.max_output_tokens is None
+    assert endpoint.supports_tools
+    assert endpoint.supports_image_input
+    assert endpoint.supports_streaming
+    assert endpoint.supports_structured_output is structured_output
 
 
 def test_api_none_is_not_assumed_to_be_a_subscription_capability():

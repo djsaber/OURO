@@ -1,129 +1,19 @@
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 from pydantic import ValidationError
 
 from ouro.config import (
     ProviderEndpointConfig,
     ProviderTemplate,
+    get_provider_template,
     provider_templates,
 )
+from ouro.config.provider_models import INTEGRATED_PROVIDER_TYPES
 from ouro.core.errors import ConfigError
-
-_EXPECTED_ENDPOINTS = {
-    "openai-codex": (
-        "gpt-6.1-sol",
-        {
-            "gpt-5.6-luna",
-            "gpt-5.6-terra",
-            "gpt-5.6-sol",
-            "gpt-6-astra",
-            "gpt-6-sol",
-            "gpt-6.1-sol",
-            "gpt-6-luna",
-        },
-    ),
-    "openai": (
-        "gpt-6.1-sol",
-        {
-            "gpt-5.5",
-            "gpt-5.6-luna",
-            "gpt-5.6-terra",
-            "gpt-5.6-sol",
-            "gpt-6-astra",
-            "gpt-6-sol",
-            "gpt-6.1-sol",
-            "gpt-6-luna",
-        },
-    ),
-    "anthropic": (
-        "claude-sonnet-5-5",
-        {
-            "claude-fable-5-2",
-            "claude-fable-5-1",
-            "claude-sonnet-5-5",
-            "claude-opus-5-5",
-            "claude-haiku-5-5",
-        },
-    ),
-    "gemini": (
-        "gemini-3.8-flash",
-        {
-            "gemini-4-carbon",
-            "gemini-4-argon",
-            "gemini-3.8-flash",
-            "gemini-3.1-pro-preview",
-            "gemini-3.5-flash-lite",
-        },
-    ),
-    "deepseek": ("deepseek-v4-pro", {"deepseek-v4-pro", "deepseek-flash"}),
-    "qwen": ("qwen3.8-max", {"qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus"}),
-    "kimi": (
-        "kimi-k3.1-pro",
-        {"kimi-k3.1-pro", "kimi-k3.1-pro-highspeed", "kimi-k3"},
-    ),
-    "glm": (
-        "glm-5.3",
-        {"glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5-turbo", "glm-5v-turbo"},
-    ),
-    "grok": ("grok-4.7", {"grok-4.7"}),
-    "mistral": (
-        "mistral-large-4-0",
-        {"mistral-medium-3-5", "mistral-small-2603", "mistral-large-4-0"},
-    ),
-    "minimax": ("MiniMax-M3", {"MiniMax-M3", "MiniMax-M3.1-Flash"}),
-    "doubao": (
-        "doubao-seed-2-1-pro-260915",
-        {"doubao-seed-2-1-pro-260915", "doubao-seed-2-1-lite-260915"},
-    ),
-    "cohere": ("command-a-plus-05-2026", {"command-a-plus-05-2026"}),
-    "opencode-go": (
-        "kimi-k3",
-        {
-            "glm-5.3-flash",
-            "glm-5.3",
-            "glm-5.2",
-            "kimi-k3.1-pro",
-            "kimi-k3",
-            "kimi-k2.7-code",
-            "longcat-2.0",
-            "deepseek-v4.1-flash",
-            "deepseek-v4-pro",
-            "mimo-v2.6-flash",
-            "mimo-v2.6-pro",
-            "mimo-v2.5",
-            "mimo-v2.5-pro",
-            "minimax-m3.1-flash",
-            "hy4",
-            "hy4-preview",
-            "hy3",
-            "step-5-preview",
-            "beam-free",
-            "iceman-contributor-free",
-            "longcat-2.5-free",
-        },
-    ),
-    "opencode-go-responses": (
-        "gpt-6-luna",
-        {
-            "grok-4.7",
-            "gpt-6-luna",
-            "gpt-5.6-luna",
-            "muse-spark-1.3-contributor",
-            "muse-spark-1.2-contributor",
-        },
-    ),
-    "opencode-go-messages": (
-        "minimax-m3",
-        {
-            "claude-haiku-5-5",
-            "minimax-m3",
-            "qwen3.8-max",
-            "qwen3.8-flash",
-            "qwen3.7-plus",
-        },
-    ),
-}
+from ouro.core.reasoning import ReasoningRequest, resolve_reasoning
 
 
 def _template(**updates: object) -> ProviderTemplate:
@@ -146,44 +36,55 @@ def _template(**updates: object) -> ProviderTemplate:
     return ProviderTemplate.model_validate(values)
 
 
-def test_builtin_provider_templates_expose_reviewed_endpoint_sets() -> None:
+def test_builtin_provider_templates_materialize_model_catalogs() -> None:
     templates = {template.template_id: template for template in provider_templates()}
+    assert set(templates) == set(INTEGRATED_PROVIDER_TYPES)
 
-    assert set(templates) == set(_EXPECTED_ENDPOINTS)
-    for template_id, (default_endpoint, endpoint_ids) in _EXPECTED_ENDPOINTS.items():
-        template = templates[template_id]
-        assert template.default_endpoint == default_endpoint
+    for template_id, template in templates.items():
         assert template.provider_type == template_id
         assert template.protocol in {
             "openai-chat-completions",
             "anthropic-messages",
             "openai-responses",
         }
-        assert {endpoint.endpoint_id for endpoint in template.endpoints} == endpoint_ids
         assert template.display_name.strip()
-        assert all(endpoint.display_name for endpoint in template.endpoints)
-        assert template.verified_on == (
-            "2026-10-10" if template_id in {"openai", "cohere", "grok"} else "2026-11-11"
-        )
+        assert template.endpoint().model_id == template.default_endpoint
+        assert date.fromisoformat(template.verified_on).isoformat() == template.verified_on
         for endpoint in template.endpoints:
-            expects_text_field = template_id in {
-                "deepseek",
-                "doubao",
-                "glm",
-                "kimi",
-                "minimax",
-                "qwen",
-            }
-            if template_id == "opencode-go":
-                expects_text_field = endpoint.model_id not in {
-                    "hy4",
-                    "hy4-preview",
-                    "hy3",
-                    "iceman-contributor-free",
-                }
-            assert endpoint.reasoning_text_field == (
-                "reasoning_content" if expects_text_field else None
-            )
+            assert endpoint.display_name
+            assert endpoint.endpoint_id == endpoint.model_id
+            if template_id in {"deepseek", "doubao", "glm", "kimi", "minimax", "qwen"}:
+                assert endpoint.reasoning_text_field == "reasoning_content"
+
+
+def test_openai_templates_project_api_only_and_subscription_endpoints() -> None:
+    api = get_provider_template("openai")
+    codex = get_provider_template("openai-codex")
+    api_model_ids = {endpoint.model_id for endpoint in api.endpoints}
+    codex_model_ids = {endpoint.model_id for endpoint in codex.endpoints}
+    assert api.default_endpoint == codex.default_endpoint == "gpt-6.2-sol"
+    assert "gpt-6.2-astra" in codex_model_ids
+    assert api_model_ids - codex_model_ids == {"gpt-5.5"}
+    assert codex_model_ids <= api_model_ids
+
+
+def test_go_catalog_uses_documented_native_routes() -> None:
+    chat = get_provider_template("opencode-go")
+    responses = get_provider_template("opencode-go-responses")
+    messages = get_provider_template("opencode-go-messages")
+    routes = {
+        endpoint.model_id: template.template_id
+        for template in (chat, responses, messages)
+        for endpoint in template.endpoints
+    }
+    assert len(routes) == sum(len(template.endpoints) for template in (chat, responses, messages))
+    assert routes["hy4-flash-free"] == chat.template_id
+    assert routes["gpt-6-luna"] == responses.template_id
+    assert routes["qwen4-max"] == messages.template_id
+    assert chat.endpoint("hy4-flash-free").metadata["provider_input_limit"] == 983_040
+    assert chat.endpoint("hy4-flash-free").reasoning_text_field is None
+    assert chat.endpoint().reasoning_text_field == "reasoning_content"
+    assert messages.endpoint("qwen4-max").max_output_tokens == 32_768
 
 
 def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
@@ -232,7 +133,7 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
 
     qwen = templates["qwen"]
     qwen_max = qwen.endpoint()
-    assert qwen_max.model_id == "qwen3.8-max"
+    assert qwen_max.model_id == "qwen4-max"
     assert qwen_max.context_window == 1_000_000
     assert qwen_max.max_output_tokens is None
     assert qwen_max.supports_tools is True
@@ -241,6 +142,7 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     assert qwen_max.supports_structured_output is True
     qwen_reasoning = qwen_max.reasoning
     assert qwen_reasoning.capability.activation == "toggle"
+    assert qwen_reasoning.capability.supported_efforts == ("low", "high", "xhigh")
     assert qwen_reasoning.profile is not None
     assert qwen_reasoning.profile.effort["enabled"]["preserve_thinking"] is True
     qwen_flash = qwen.endpoint("qwen3.8-flash")
@@ -323,6 +225,37 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     assert grok.reasoning.capability.default.effort == "high"
     assert grok.reasoning.profile is not None
     assert grok.reasoning.profile.effort["enabled"] == {"reasoning_effort": "high"}
+
+
+def test_refreshed_reasoning_controls_match_provider_modes() -> None:
+    gemini = get_provider_template("gemini")
+    assert gemini.default_endpoint == "gemini-4-hydrogen"
+    for endpoint in (gemini.endpoint(), gemini.endpoint("gemini-4-neon")):
+        assert endpoint.context_window == 1_048_576
+        assert endpoint.supports_audio_input
+        reasoning = endpoint.reasoning
+        assert reasoning.capability.default.effort == "high"
+        assert reasoning.profile is not None
+        assert reasoning.profile.effort["xhigh"] == {"reasoning_effort": "xhigh"}
+    assert gemini.endpoint("gemini-4-carbon").reasoning.capability.default.effort == "medium"
+
+    doubao = get_provider_template("doubao")
+    evolving = doubao.endpoint("doubao-seed-evolving")
+    assert evolving.context_window == 1_048_576
+    assert evolving.supports_video_input and not evolving.supports_audio_input
+    assert doubao.endpoint("doubao-seed-2-1-turbo-260628").context_window == 262_144
+    with pytest.raises(ValueError, match="not supported"):
+        resolve_reasoning(evolving.reasoning.capability, ReasoningRequest(effort="minimal"))
+
+    mistral = get_provider_template("mistral")
+    large = mistral.endpoint().reasoning
+    assert resolve_reasoning(large.capability).effort_variant == "low"
+    assert large.profile is not None
+    assert large.profile.effort["high"] == {"reasoning_effort": "high"}
+    small = mistral.endpoint("mistral-small-2603").reasoning
+    assert resolve_reasoning(small.capability).effort_variant == "disabled"
+    assert small.profile is not None
+    assert small.profile.effort["disabled"] == {"reasoning_effort": "none"}
 
 
 def test_provider_template_requires_a_resolvable_default_endpoint() -> None:

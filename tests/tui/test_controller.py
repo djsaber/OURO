@@ -808,6 +808,7 @@ async def test_controller_configures_preset_and_custom_providers(
     try:
         templates = await controller.provider_templates()
         assert {item.template_id for item in templates} >= {"openai", "anthropic", "kimi"}
+        openai_template = next(item for item in templates if item.template_id == "openai")
 
         preset = await controller.add_provider(
             TuiProviderConfiguration(
@@ -823,7 +824,7 @@ async def test_controller_configures_preset_and_custom_providers(
             )
         )
         assert preset.default is True
-        assert preset.endpoint_count == 8
+        assert preset.endpoint_count == openai_template.endpoint_count
         assert preset.credential.reference == "env:PRIVATE_OPENAI_KEY"
         assert preset.provider_options == {"service_tier": "flex"}
         primary_id = preset.provider_id

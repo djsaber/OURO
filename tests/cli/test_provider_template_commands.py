@@ -11,15 +11,15 @@ from ouro.config.provider_templates import get_provider_template
 
 
 @pytest.mark.parametrize(
-    "provider_type,protocol,count",
+    "provider_type,protocol",
     [
-        ("opencode-go", "openai-chat-completions", 21),
-        ("opencode-go-responses", "openai-responses", 5),
-        ("opencode-go-messages", "anthropic-messages", 5),
+        ("opencode-go", "openai-chat-completions"),
+        ("opencode-go-responses", "openai-responses"),
+        ("opencode-go-messages", "anthropic-messages"),
     ],
 )
 def test_add_go_preset_creates_matching_route_and_automatic_headers(
-    tmp_path, capsys, provider_type, protocol, count
+    tmp_path, capsys, provider_type, protocol
 ):
     assert (
         main(
@@ -41,7 +41,10 @@ def test_add_go_preset_creates_matching_route_and_automatic_headers(
     capsys.readouterr()
     provider = ProviderConfigManager(tmp_path).snapshot(include_builtin=False).providers[0]
     assert provider.protocol == protocol
-    assert len(provider.endpoints) == count
+    template = get_provider_template(provider_type)
+    assert {endpoint.model_id for endpoint in provider.endpoints} == {
+        endpoint.model_id for endpoint in template.endpoints
+    }
     assert provider.template.template_id == provider_type
     assert provider.headers["x-opencode-session"].key == "session.id"
     assert provider.credential_ref.name == "OPENCODE_API_KEY"
@@ -318,7 +321,7 @@ def test_duplicate_display_names_create_independent_integrated_providers(tmp_pat
     assert payload["provider"]["provider_id"] == first["provider_id"]
     assert payload["provider"]["display_name"] == "Primary API"
     assert payload["provider"]["provider_type"] == "openai"
-    assert payload["provider"]["endpoint_count"] == 8
+    assert payload["provider"]["endpoint_count"] == len(get_provider_template("openai").endpoints)
     assert ProviderConfigManager(tmp_path).get_provider(second["provider_id"]).provider_type == (
         "openai"
     )

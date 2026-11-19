@@ -436,15 +436,15 @@ def test_provider_templates_are_typed_and_apply_provider_endpoint_atomically(
     assert configured.default_provider_id == provider_id
     assert configured.change is not None
     assert configured.change.action == "created"
+    template = facade.provider_template("gemini")
     assert {endpoint.model_id for endpoint in provider.endpoints} == {
-        "gemini-4-carbon",
-        "gemini-4-argon",
-        "gemini-3.8-flash",
-        "gemini-3.1-pro-preview",
-        "gemini-3.5-flash-lite",
+        endpoint.model_id for endpoint in template.endpoints
     }
     assert provider.default_endpoint is not None
-    assert facade.endpoint(provider_id, provider.default_endpoint).model_id == "gemini-3.8-flash"
+    assert (
+        facade.endpoint(provider_id, provider.default_endpoint).model_id
+        == template.default_endpoint
+    )
     assert provider.credential.reference == "none"
     assert (
         build_local_configuration(tmp_path).system_prompt().config.system_prompt
@@ -464,23 +464,18 @@ def test_provider_template_reapply_preserves_other_endpoints_and_credential(tmp_
     legacy = facade.add_endpoint(provider_id, display_name="Legacy", model="gpt-legacy")
     assert legacy.changed_endpoint_id is not None
     facade.update_provider(provider_id, enabled=False)
+    before = facade.provider(provider_id)
+    assert before.default_endpoint is not None
+    expected_models = {endpoint.endpoint_id: endpoint.model_id for endpoint in before.endpoints}
+    expected_models[before.default_endpoint] = "gpt-custom"
 
     facade.update_provider(provider_id, model="gpt-custom")
     provider = facade.provider(provider_id)
 
     assert provider.credential.reference == "env:CUSTOM_OPENAI_KEY"
     assert provider.enabled is False
-    assert {endpoint.model_id for endpoint in provider.endpoints} == {
-        "gpt-custom",
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-        "gpt-5.5",
-        "gpt-6-astra",
-        "gpt-6-sol",
-        "gpt-6-luna",
-        "gpt-legacy",
-    }
+    actual_models = {endpoint.endpoint_id: endpoint.model_id for endpoint in provider.endpoints}
+    assert actual_models == expected_models
     assert provider.default_endpoint is not None
     assert facade.endpoint(provider_id, provider.default_endpoint).model_id == "gpt-custom"
 
@@ -640,6 +635,7 @@ def test_provider_template_model_override_keeps_generated_endpoint_registry(
     tmp_path,
 ) -> None:
     facade = build_local_configuration(tmp_path)
+    template = facade.provider_template("openai")
 
     created = facade.add_provider(
         display_name="OpenAI",
@@ -652,15 +648,13 @@ def test_provider_template_model_override_keeps_generated_endpoint_registry(
 
     assert provider.default_endpoint is not None
     assert provider.default_endpoint.startswith("endpoint_")
-    assert {endpoint.model_id for endpoint in provider.endpoints} == {
-        "gpt-custom",
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-        "gpt-5.5",
-        "gpt-6-astra",
-        "gpt-6-sol",
-        "gpt-6-luna",
+    non_default_models = {
+        endpoint.model_id
+        for endpoint in template.endpoints
+        if endpoint.endpoint_id != template.default_endpoint
+    }
+    assert {endpoint.model_id for endpoint in provider.endpoints} == non_default_models | {
+        "gpt-custom"
     }
     assert facade.endpoint(provider_id, provider.default_endpoint).model_id == "gpt-custom"
 
@@ -722,15 +716,9 @@ def test_provider_create_and_explicit_replace_keep_internal_identity(tmp_path) -
     assert provider.display_name == "Primary OpenAI"
     assert provider.provider_type == "openai"
     assert provider.protocol == "openai-responses"
+    template = facade.provider_template("openai")
     assert {endpoint.model_id for endpoint in provider.endpoints} == {
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-        "gpt-5.5",
-        "gpt-6-astra",
-        "gpt-6-sol",
-        "gpt-6.1-sol",
-        "gpt-6-luna",
+        endpoint.model_id for endpoint in template.endpoints
     }
 
 

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from ouro.config.endpoints import ProviderEndpointConfig
+from ouro.config.endpoints import endpoint_config_from_mapping
 from ouro.config.provider_templates.schema import ProviderTemplate
 from ouro.config.reasoning import mapped_reasoning
 from ouro.core.reasoning import ReasoningRequest
 
-_VERIFIED_ON = "2026-11-11"
+_VERIFIED_ON = "2026-11-19"
+_DEFAULT_MODEL = "deepseek-v4-pro"
 
 _DEEPSEEK_REASONING = mapped_reasoning(
     name="deepseek-thinking-effort",
@@ -24,6 +25,21 @@ _DEEPSEEK_REASONING = mapped_reasoning(
 )
 
 
+_MODEL_DEFAULTS = {
+    "context_window": 1_000_000,
+    "reasoning": _DEEPSEEK_REASONING,
+    "reasoning_text_field": "reasoning_content",
+}
+
+_MODELS: dict[str, dict[str, object]] = {
+    _DEFAULT_MODEL: {"display_name": "DeepSeek V4 Pro"},
+    "deepseek-flash": {
+        "display_name": "DeepSeek V4.1 Flash 1017",
+        "supports_image_input": True,
+    },
+}
+
+
 TEMPLATES: tuple[ProviderTemplate, ...] = (
     ProviderTemplate(
         template_id="deepseek",
@@ -37,35 +53,15 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         credential_env="DEEPSEEK_API_KEY",
         base_url="https://api.deepseek.com",
         api_path="/chat/completions",
-        default_endpoint="deepseek-v4-pro",
-        endpoints=(
-            ProviderEndpointConfig(
-                endpoint_id="deepseek-v4-pro",
-                display_name="DeepSeek V4 Pro",
-                model_id="deepseek-v4-pro",
-                context_window=1_000_000,
-                supports_tools=True,
-                supports_image_input=False,
-                supports_streaming=True,
-                supports_structured_output=True,
-                reasoning=_DEEPSEEK_REASONING,
-                reasoning_text_field="reasoning_content",
-            ),
-            ProviderEndpointConfig(
-                endpoint_id="deepseek-flash",
-                display_name="DeepSeek V4.1 Flash 1017",
-                model_id="deepseek-flash",
-                context_window=1_000_000,
-                supports_tools=True,
-                supports_image_input=True,
-                supports_streaming=True,
-                supports_structured_output=True,
-                reasoning=_DEEPSEEK_REASONING,
-                reasoning_text_field="reasoning_content",
-            ),
+        default_endpoint=_DEFAULT_MODEL,
+        endpoints=tuple(
+            endpoint_config_from_mapping(
+                model_id, {**_MODEL_DEFAULTS, **settings, "model_id": model_id}
+            )
+            for model_id, settings in _MODELS.items()
         ),
         documentation_url="https://api-docs.deepseek.com/quick_start/pricing/",
         verified_on=_VERIFIED_ON,
-        revision=12,
+        revision=13,
     ),
 )

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from ouro.config.endpoints import ProviderEndpointConfig
+from ouro.config.endpoints import endpoint_config_from_mapping
 from ouro.config.provider_templates.schema import ProviderTemplate
 from ouro.config.reasoning import mapped_reasoning, toggle_reasoning
 from ouro.core.reasoning import ReasoningRequest
 
-_VERIFIED_ON = "2026-11-11"
+_VERIFIED_ON = "2026-11-19"
+_DEFAULT_MODEL = "glm-5.3"
 
 _GLM_REASONING = toggle_reasoning(
     name="glm-thinking-toggle",
@@ -53,6 +54,46 @@ _GLM_53_FLASH_REASONING = mapped_reasoning(
 )
 
 
+_MODEL_DEFAULTS = {"reasoning_text_field": "reasoning_content"}
+
+_MODELS: dict[str, dict[str, object]] = {
+    _DEFAULT_MODEL: {
+        "display_name": "GLM-5.3",
+        "context_window": 1_000_000,
+        "reasoning": _GLM_53_REASONING,
+    },
+    "glm-5.3-flash": {
+        "display_name": "GLM-5.3 Flash",
+        "context_window": 1_000_000,
+        "supports_image_input": True,
+        "reasoning": _GLM_53_FLASH_REASONING,
+    },
+    "glm-5.3-flashx": {
+        "display_name": "GLM-5.3 FlashX",
+        "context_window": 1_000_000,
+        "supports_image_input": True,
+        "reasoning": _GLM_53_FLASH_REASONING,
+    },
+    "glm-5.2": {
+        "display_name": "GLM-5.2",
+        "context_window": 1_000_000,
+        "reasoning": _GLM_REASONING,
+    },
+    "glm-5-turbo": {
+        "display_name": "GLM-5 Turbo",
+        "context_window": 200_000,
+        "reasoning": _GLM_REASONING,
+    },
+    "glm-5v-turbo": {
+        "display_name": "GLM-5V Turbo",
+        "context_window": 200_000,
+        "supports_image_input": True,
+        "supports_structured_output": False,
+        "reasoning": _GLM_REASONING,
+    },
+}
+
+
 TEMPLATES: tuple[ProviderTemplate, ...] = (
     ProviderTemplate(
         template_id="glm",
@@ -63,71 +104,15 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         credential_env="ZAI_API_KEY",
         base_url="https://open.bigmodel.cn/api/paas/v4",
         api_path="/chat/completions",
-        default_endpoint="glm-5.3",
-        endpoints=(
-            ProviderEndpointConfig(
-                endpoint_id="glm-5.3",
-                display_name="GLM-5.3",
-                model_id="glm-5.3",
-                context_window=1_000_000,
-                supports_tools=True,
-                supports_image_input=False,
-                supports_streaming=True,
-                supports_structured_output=True,
-                reasoning=_GLM_53_REASONING,
-                reasoning_text_field="reasoning_content",
-            ),
-            ProviderEndpointConfig(
-                endpoint_id="glm-5.3-flash",
-                display_name="GLM-5.3 Flash",
-                model_id="glm-5.3-flash",
-                context_window=1_000_000,
-                supports_tools=True,
-                supports_image_input=True,
-                supports_streaming=True,
-                supports_structured_output=True,
-                reasoning=_GLM_53_FLASH_REASONING,
-                reasoning_text_field="reasoning_content",
-            ),
-            ProviderEndpointConfig(
-                endpoint_id="glm-5.2",
-                display_name="GLM-5.2",
-                model_id="glm-5.2",
-                context_window=1_000_000,
-                supports_tools=True,
-                supports_image_input=False,
-                supports_streaming=True,
-                supports_structured_output=True,
-                reasoning=_GLM_REASONING,
-                reasoning_text_field="reasoning_content",
-            ),
-            ProviderEndpointConfig(
-                endpoint_id="glm-5-turbo",
-                display_name="GLM-5 Turbo",
-                model_id="glm-5-turbo",
-                context_window=200_000,
-                supports_tools=True,
-                supports_image_input=False,
-                supports_streaming=True,
-                supports_structured_output=True,
-                reasoning=_GLM_REASONING,
-                reasoning_text_field="reasoning_content",
-            ),
-            ProviderEndpointConfig(
-                endpoint_id="glm-5v-turbo",
-                display_name="GLM-5V Turbo",
-                model_id="glm-5v-turbo",
-                context_window=200_000,
-                supports_tools=True,
-                supports_image_input=True,
-                supports_streaming=True,
-                supports_structured_output=False,
-                reasoning=_GLM_REASONING,
-                reasoning_text_field="reasoning_content",
-            ),
+        default_endpoint=_DEFAULT_MODEL,
+        endpoints=tuple(
+            endpoint_config_from_mapping(
+                model_id, {**_MODEL_DEFAULTS, **settings, "model_id": model_id}
+            )
+            for model_id, settings in _MODELS.items()
         ),
         documentation_url="https://docs.bigmodel.cn/cn/guide/start/model-overview",
         verified_on=_VERIFIED_ON,
-        revision=11,
+        revision=12,
     ),
 )

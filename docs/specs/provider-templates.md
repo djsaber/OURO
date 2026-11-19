@@ -10,9 +10,11 @@
 [Provider 类型与协议](provider-protocols.md)定义。内联模板目录由
 `ouro/config/provider_templates/` 维护。
 
-该包的 `schema.py` 定义 `ProviderTemplate` 及其校验；每个供应商模块集中维护连接参数、模型端点、
-思考映射、核验日期和修订号。OpenAI API 与 Codex 订阅共用 `openai.py`，OpenCode Go 的三个协议模板
-共用 `opencode_go.py`，使同一服务的相关配置在一处维护。供应商模块只依赖公共模型和配置能力，彼此不导入。
+该包的 `schema.py` 定义 `ProviderTemplate` 及其校验。每个供应商模块集中维护连接参数、默认模型、
+模型目录、思考映射、核验日期和修订号。模型目录以模型 ID 为键，值包含该模型的端点设置。模板叠加公共默认值后，
+通过现有端点解析器按目录顺序构造端点，目录键同时用作稳定的模板端点 ID 和供应商请求模型 ID。
+同一供应商的多个模板共用模型目录，通过条目中的可用性或协议字段选择各自的端点。
+供应商模块只依赖公共模型和配置能力，彼此不导入。
 `__init__.py` 显式汇总各模块的 `TEMPLATES`，确定目录顺序并提供查询接口，不扫描目录或动态注册。
 调用方通过 `ouro.config.provider_templates` 导入 `ProviderTemplate`、`provider_templates` 和
 `get_provider_template`。
@@ -51,18 +53,18 @@
       "auth_driver": "static",
       "credential_env": "OPENAI_API_KEY",
       "base_url": "https://api.openai.com/v1",
-      "default_endpoint": "gpt-6.1-sol",
-      "revision": 6,
+      "default_endpoint": "gpt-6.2-sol",
+      "revision": 13,
       "endpoints": [
         {
-          "endpoint_id": "gpt-6.1-sol",
-          "display_name": "GPT-6.1 Sol",
-          "model_id": "gpt-6.1-sol"
+          "endpoint_id": "gpt-6.2-sol",
+          "display_name": "GPT-6.2 Sol",
+          "model_id": "gpt-6.2-sol"
         }
       ],
       "meta": {
         "origin": "inline",
-        "baseline_revision": 6,
+        "baseline_revision": 13,
         "baseline_fingerprint": "sha256:…",
         "deprecated": false,
         "enabled": true
