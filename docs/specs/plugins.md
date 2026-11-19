@@ -484,7 +484,8 @@ Host 提交用例经 Runtime 结算已接受的取消意图，不重复发起取
 `role` 只表达 `system | user | assistant | tool_result` 四种模型消息角色；`scaffold` 只表达 Harness 是否有意注入，
 `semantic_tag` 只表达可选的模型可见语义，producer provenance 独立保存。插件必须定义这些值，Application 仅校验
 和传递，不根据任何一个维度推导另一个。任意 role 都可作为脚手架并可选择语义标签；这不会把 producer 改成直接
-用户，也不会自动授予用户权限。只有标签存在时，模型投影才使用统一 semantic envelope renderer。可选
+用户，也不会自动授予用户权限。`SessionInput.semantic_attributes` 保存标签的字符串属性。输入可仅用标签属性表达状态，
+此时 `prompt` 为空字符串。模型投影将属性写入起始标签。可选
 `coalesce_key` 只允许新批次替换同一 Session、plugin owner 和 contribution 下
 尚未消费的旧控制投影；不能删除 canonical message、跨 owner 搜索、重排或建立通用优先级。
 

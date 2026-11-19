@@ -107,8 +107,8 @@ SDK `context.inputs.consume()` 允许算法显式声明一个安全决策边界�
 
 工具批次、调用与 canonical 结果记录 `producer`。模型批次绑定真实 assistant 消息；程序化批次记录 Driver 身份，
 不创建 assistant tool call、不增加模型计数。两种来源共用原生 preflight、权限、审批、执行和恢复链路。
-Provider 边界将程序化结果投影为带 `driver-tool-result` 来源标记的用户角色输入，保留协议支持的媒体、降级不支持的
-媒体，不生成模型工具请求或 function output。上下文与压缩不要求程序化结果具有配对的模型请求。
+Provider 边界将程序化结果投影为 `driver-tool-result` 用户角色输入。标签属性 `tool_name`、`tool_call_id`
+和 `is_error` 标明调用及错误状态。正文按协议能力呈现工具内容和媒体。程序化结果可独立参与上下文与压缩。
 
 Agent 端口将类型化的 spawn、send、interrupt 请求交给原生工具边界，复用 Agent catalog、Delegation、子 Session
 和同步等待。批次遵循 Host 工具并发配置，子任务遵循原生调度并发限制。重启后加载会话会恢复其有限 Agent 聚合，
@@ -174,7 +174,8 @@ application 用例负责取得 mutation lock 并准备业务字段。预留与�
   scaffold。
 - 脚手架输入、Context Fragment 与续跑决策的默认 role 为 `user`；显式 role 原样传递，持久消息按已保存的角色读取。
 - `semantic_tag` 是可选模型可见语义标记；它与 role、scaffold 和 producer provenance 都正交。只有提供方显式
-  声明标签时，统一 renderer 才形成语义包络。
+  声明标签时，统一 renderer 才形成语义包络。`semantic_attributes` 是该标签的字符串属性。
+  模型请求在起始标签中编码属性值，canonical 正文保留原文。
 - 消息提供方必须显式定义 role、scaffold 和 semantic tag；Core、队列、Store 和 Provider adapter 只校验并传递，
   不根据来源、role、标签或正文猜测、补全或改写其他维度。
 - 用户、assistant、Harness 和工具结果消息都可以属于 canonical history。
@@ -327,7 +328,8 @@ Session 继续的整体前提。持久 ToolInvocation、控制 activation 和 De
 ## 排队输入
 
 输入接受写入独立 `InputRecord`，Session 的 `pending_input_ids` 保存 FIFO 身份。每项完整保存 `source` provenance、`role`、
-`scaffold`、可选 `semantic_tag` 和交付模式；这些字段分别由输入提供方定义，队列不互相推断：
+`scaffold`、可选 `semantic_tag` 及其属性和交付模式。带属性的输入可以使用空正文表达状态。
+输入提供方分别声明这些字段。队列按交付模式消费输入。
 
 - `follow_up`：当前 Run 完整结束后交付，每次消费创建一个后续 Run；
 - `steer`：当前 model turn 完整结束后交付，作为同一 Run 下一轮模型请求的新 canonical 消息。

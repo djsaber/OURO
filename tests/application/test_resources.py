@@ -12,6 +12,7 @@ from ouro.application.events import RuntimeEventRecorder
 from ouro.application.resources import ResourceService
 from ouro.application.runs.lifecycle import RunLifecycle
 from ouro.application.sessions.service import SessionService
+from ouro.core.context import ContextBuilder
 from ouro.core.errors import (
     MediaCapacityError,
     PersistenceError,
@@ -22,7 +23,13 @@ from ouro.core.errors import (
     UnsafeResourcePathError,
     UnsupportedMediaTypeError,
 )
-from ouro.core.messages import ImageContent, MessageRecord, ModelMessage, ToolResultReference
+from ouro.core.messages import (
+    ImageContent,
+    MessageRecord,
+    TextContent,
+    ToolResultReference,
+    model_visible_message,
+)
 from ouro.core.observers import ObserverRegistry
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolResult
@@ -760,6 +767,43 @@ def test_image_resource_projection_is_request_local_data_uri(tmp_path) -> None:
     assert all(not isinstance(block, ImageContent) for block in canonical.content)
 
 
+def test_referenced_files_preserve_tool_results_and_batch_order(tmp_path) -> None:
+    _, _, resources, service = _services(tmp_path)
+    session_id = service.create().session.session_id
+    path = tmp_path / "report.txt"
+    path.write_text("reported evidence", encoding="utf-8")
+    resource = resources.import_resource(session_id, path).resource
+    results = [
+        MessageRecord(
+            session_id=session_id,
+            role="tool_result",
+            tool_result=ToolResultReference(tool_name="Report", tool_call_id=call),
+            content=[TextContent(text=json.dumps({"result": call}))],
+            resource_refs=[resource.resource_id],
+        )
+        for call in ("one", "two")
+    ]
+    question = MessageRecord.text(session_id=session_id, role="user", text="continue")
+    history = [*results, question]
+    prepared = resources.prepare_model_messages(history, input_modalities=frozenset())
+    assert [item.message_id for item in prepared.materialize()] == [
+        item.message_id for item in history
+    ]
+    projected = prepared.request_messages()
+    view = ContextBuilder().build(messages=projected, source_messages=history, tools=[])
+    wire = encode("chat", view.provider_context.messages, image_input=False)
+    assert [message["role"] for message in wire] == ["tool", "tool", "user", "user", "user"]
+    for index, source in enumerate(results):
+        assert wire[index]["content"] == source.text_content
+        attached = wire[2 + index]["content"]
+        assert f'<attachments tool_call_id="{wire[index]["tool_call_id"]}">' in attached
+        assert path.name in attached
+    assert wire[-1]["content"] == "continue"
+    assert view.manifest.materialize(session_id, {m.message_id: m for m in history}) == (
+        view.provider_context.messages
+    )
+
+
 def test_repeated_media_resource_preserves_each_occurrence_and_elides_without_encoding(
     tmp_path,
     monkeypatch,
@@ -827,17 +871,17 @@ def test_resource_preparation_preserves_eligible_tool_content_for_provider_place
 
     projected = resources.project_model_messages(
         [message], input_modalities=frozenset({"image"}) if image_input else frozenset()
-    )[0]
+    )
 
-    images = [part for part in projected.content if isinstance(part, ImageContent)]
+    content = [part for item in projected for part in item.content]
+    images = [part for part in content if isinstance(part, ImageContent)]
     assert [part.uri for part in images] == ([uri] if keeps_image else [])
     assert message == before
     if role == "tool_result":
-        assert ("not sent" in projected.text_content) == (not image_input)
+        assert any("not sent" in item.text_content for item in projected) == (not image_input)
+        messages = [model_visible_message(item) for item in projected]
         for protocol in ("responses", "messages", "chat"):
-            wire = str(
-                encode(protocol, [ModelMessage.from_record(projected)], image_input=image_input)
-            )
+            wire = str(encode(protocol, messages, image_input=image_input))
             assert (uri.partition(",")[2] in wire) == image_input
             if not image_input:
                 assert wire.count("This model cannot view images.") == 1

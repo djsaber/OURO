@@ -282,6 +282,7 @@ class SessionInput:
     scaffold: bool = True
     semantic_tag: str | None = None
     driver_id: str | None = None
+    semantic_attributes: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.driver_id is not None and (not self.driver_id.strip() or self.mode != "follow_up"):

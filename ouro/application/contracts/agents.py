@@ -61,7 +61,7 @@ class SpawnAgentRequest(ApplicationDTO):
     nickname: str | None = Field(default=None, max_length=80)
     parent_batch_id: str | None = Field(default=None, min_length=1)
     parent_tool_call_id: str | None = Field(default=None, min_length=1)
-    execution_mode: ExecutionMode = "sync"
+    execution_mode: ExecutionMode = "async"
     unattended: bool = False
     resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
 

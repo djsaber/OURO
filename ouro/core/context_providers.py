@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
@@ -38,29 +38,17 @@ class ContextFragment(OuroModel):
     semantic_tag: SemanticTag | None = None
 
     @model_validator(mode="after")
-    def validate_target_persistence(self) -> ContextFragment:
+    def validate_target_persistence(self) -> Self:
         if self.target == "system_prompt" and self.persistence != "ephemeral":
             raise ValueError("system prompt context fragments must be ephemeral")
         return self
 
 
-class AttributedContextFragment(OuroModel):
+class AttributedContextFragment(ContextFragment):
     plugin_id: str
     provider_id: str
     generation_id: str | None = None
     fragment_index: int = Field(ge=0)
-    text: str = Field(min_length=1)
-    persistence: ContextFragmentPersistence = "ephemeral"
-    target: ContextFragmentTarget = "message"
-    role: MessageRole = "user"
-    scaffold: bool = True
-    semantic_tag: SemanticTag | None = None
-
-    @model_validator(mode="after")
-    def validate_target_persistence(self) -> AttributedContextFragment:
-        if self.target == "system_prompt" and self.persistence != "ephemeral":
-            raise ValueError("system prompt context fragments must be ephemeral")
-        return self
 
 
 class ContextProviderResult(OuroModel):
@@ -181,16 +169,11 @@ class ContextProviderRegistry:
                     raise TypeError("context provider must return ContextProviderResult")
                 evaluation.fragments.extend(
                     AttributedContextFragment(
+                        **fragment.model_dump(include=set(ContextFragment.model_fields)),
                         plugin_id=registration.plugin_id,
                         provider_id=registration.provider_id,
                         generation_id=registration.generation_id,
                         fragment_index=index,
-                        text=fragment.text,
-                        persistence=fragment.persistence,
-                        target=fragment.target,
-                        role=fragment.role,
-                        scaffold=fragment.scaffold,
-                        semantic_tag=fragment.semantic_tag,
                     )
                     for index, fragment in enumerate(result.fragments)
                 )

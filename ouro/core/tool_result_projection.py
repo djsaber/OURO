@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from ouro.core.content import ContentPart, TextContent
+from ouro.core.content import ContentPart
 from ouro.core.messages import ModelMessage, model_visible_message
 
 
@@ -49,6 +48,7 @@ def project_tool_result_messages(
         if reference is None:
             raise ValueError("tool_result message is missing its tool result reference")
         presentation = project_result(message)
+        attributes = {"tool_name": reference.tool_name, "tool_call_id": reference.tool_call_id}
         if reference.producer.kind == "driver":
             projected.extend(context)
             context.clear()
@@ -57,15 +57,11 @@ def project_tool_result_messages(
                     ModelMessage(
                         role="user",
                         semantic_tag="driver-tool-result",
+                        semantic_attributes={
+                            **attributes,
+                            "is_error": "true" if reference.is_error else "false",
+                        },
                         content=[
-                            TextContent(
-                                text=(
-                                    "Automatically executed tool "
-                                    f"{json.dumps(reference.tool_name)} "
-                                    f"(call {json.dumps(reference.tool_call_id)}, "
-                                    f"error={reference.is_error}):\n"
-                                )
-                            ),
                             *presentation.content,
                             *(part for fragment in presentation.context for part in fragment),
                         ],
@@ -80,16 +76,8 @@ def project_tool_result_messages(
                     ModelMessage(
                         role="user",
                         semantic_tag="tool-context",
-                        content=[
-                            TextContent(
-                                text=(
-                                    "Supplemental output from tool "
-                                    f"{json.dumps(reference.tool_name)} "
-                                    f"(call {json.dumps(reference.tool_call_id)}):\n"
-                                )
-                            ),
-                            *fragment,
-                        ],
+                        semantic_attributes=attributes,
+                        content=list(fragment),
                     )
                 )
             )

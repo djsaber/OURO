@@ -106,6 +106,9 @@ def test_accepted_input_owns_sparse_body_and_history_materializes_independent_vi
     assert payload["schema_version"] == record.schema_version
     assert payload["item"]["semantic_tag"] is None
     assert not {"driver", "skill_activations", "plugin_id"} & payload["item"].keys()
+    del payload["item"]["semantic_tag"]
+    with pytest.raises(ValueError, match="semantic_tag"):
+        InputRecord.model_validate(payload)
     assert store.load_input(session.session_id, record.item.queue_id) == record
     monkeypatch.setattr(InputRecord, "__deepcopy__", lambda *_: pytest.fail("copied full input"))
     recent, earlier, observation = store.load_messages_tail(session.session_id, limit=3)

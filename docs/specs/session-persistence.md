@@ -147,7 +147,8 @@ SQLite 在同一事务中插入摘要并更新 Session。查询使用只读边�
 Session 的 `pending_input_ids` 只保存待处理输入的 FIFO 身份。`InputRecord` 保存接受时的原文、固定技能内容、
 附件、来源与执行归属；`InputState` 保存路由字段及 pending/consumed/cancelled/withdrawn 状态和已提交消息身份。
 两个后端都用 `(session_id, input_id)` 直接定位不可变的 `inputs` 正文和独立的 `input_states` 状态。
-Host 输入身份不用于构造路径。可省略的字段只在值不为默认值时编码；显式消息语义、技能内容、附件判别字段和插件自有数据完整保留。
+Host 输入身份不用于构造路径。可省略的字段只在值不为默认值时编码。已接受输入始终保存 `role`、`scaffold` 和 `semantic_tag`，无标签时 `semantic_tag` 为 `null`。
+技能内容、附件判别字段和插件自有数据完整保留。
 单独接受输入时，正文、初始状态与 Session 队列头在同一数据库事务中生效。取消不读取或重写原文。
 消息分页、尾部查询和模型上下文按所选消息分批读取引用的 Input，每批只解码一次相同身份；调用方直接取得正文，不需自行追踪引用。按完整对话帧向前翻阅时，游标按需逐条解析，不提前展开未选中的消息。
 消费与消息追加共用原生决定；撤销保留输入原文及终态，不允许旧身份复活。
@@ -421,8 +422,8 @@ CLI/TUI 自行决定参数、文字和展示样式，框架只返回类型化摘
 而不只是复制方法签名。
 
 `MessageRecord` 显式保存封闭的 `role=system|user|assistant|tool_result`、独立的 `scaffold` 布尔值和可选
-`semantic_tag`。这些消息语义字段原样往返，不从其他字段猜测；tool_calls/tool_result 按前述固定事实引用物化。旧字段
-严格拒绝，不提供转换或兼容读取。
+`semantic_tag`。引用 Input 的正文消息从同一接受记录物化正文和 `semantic_attributes`。
+独立消息自行保存标签属性。tool_calls/tool_result 按前述固定事实引用物化。
 
 Harness 是 Session 内可撤销状态，统一包含原生 controls 与按 owner 绑定的 JSON 状态。`harness_version`
 指向唯一当前版本；`controls` 与 extension 查询只是该版本的投影，没有独立可写副本。状态变更创建新版本，

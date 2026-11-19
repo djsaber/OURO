@@ -366,7 +366,7 @@ class AgentControlRequest(OuroModel):
     task: str | None = Field(default=None, max_length=20_000)
     description: str | None = Field(default=None, max_length=500)
     nickname: str | None = Field(default=None, max_length=80)
-    execution_mode: ExecutionMode = "sync"
+    execution_mode: ExecutionMode = "async"
     delegation_id: str | None = None
     message: str | None = Field(default=None, max_length=20_000)
     input_mode: Literal["steer", "follow_up"] = "steer"

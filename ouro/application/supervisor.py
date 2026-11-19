@@ -518,8 +518,6 @@ class RuntimeSupervisor:
         await self.start()
         if run.status != "queued":
             raise ValueError("prepared supervised run must be queued")
-        if not session_input.prompt.strip():
-            raise ValueError("run prompt cannot be empty")
         session_id = run.session_id
         previous_job = self._jobs_by_session.get(session_id)
         if previous_job is not None:

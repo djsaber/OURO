@@ -267,12 +267,7 @@ class AgentService:
                 return AgentControlResult(
                     wait=state.agent_wait,
                 )
-            structured = {"handle": handle.model_dump(mode="json")}
-            return AgentControlResult(
-                content=_async_spawn_content(handle),
-                structured=structured,
-            )
-        if request.action == "send":
+        elif request.action == "send":
             assert request.delegation_id is not None
             assert request.message is not None
             handle = await self.send_agent_message(
@@ -282,20 +277,19 @@ class AgentService:
                 mode=request.input_mode,
                 parent_session_id=session.session_id,
             )
-            return AgentControlResult(
-                content=_send_agent_message_content(handle),
-                structured={"handle": handle.model_dump(mode="json")},
+        else:
+            assert request.action == "interrupt"
+            assert request.delegation_id is not None
+            await run_blocking(self._require_parent, request.delegation_id, session.session_id)
+            handle = await self.interrupt_agent(
+                request.delegation_id,
+                reason=request.reason or "Agent interrupted by parent",
             )
-        assert request.action == "interrupt"
-        assert request.delegation_id is not None
-        await run_blocking(self._require_parent, request.delegation_id, session.session_id)
-        handle = await self.interrupt_agent(
-            request.delegation_id,
-            reason=request.reason or "Agent interrupted by parent",
-        )
+        handle_data = handle.model_dump(mode="json")
+        fields = handle_data if request.action == "interrupt" else _agent_message_fields(handle)
         return AgentControlResult(
-            content=json.dumps(handle.model_dump(mode="json"), ensure_ascii=False),
-            structured={"handle": handle.model_dump(mode="json")},
+            content=json.dumps(fields, ensure_ascii=False),
+            structured={"handle": handle_data},
         )
 
     async def wait_parked(
@@ -642,7 +636,13 @@ class AgentService:
             task=arguments["task"],
             description=arguments["description"],
             nickname=arguments.get("nickname") or None,
-            execution_mode=arguments.get("execution_mode", "sync"),
+            execution_mode=arguments.get(
+                "execution_mode",
+                "sync"
+                if run.agent_catalog
+                and run.agent_catalog.spawn_policy.allowed_execution_modes == ("sync",)
+                else "async",
+            ),
             resource_refs=tuple(arguments.get("resource_refs", ())),
         )
         if request != expected:
@@ -1833,31 +1833,12 @@ class AgentService:
 
         lock = self._result_locks.setdefault(relation.delegation_id, asyncio.Lock())
         async with lock:
-            relation, parent_resource_refs, should_route = await run_blocking(
-                self._prepare_result_delivery,
-                relation,
-            )
-            if not should_route:
+            relation, request = await run_blocking(self._prepare_result_delivery, relation)
+            if request is None:
                 return relation
-            result = relation.result
-            assert result is not None
-            prompt = await run_blocking(self._delivery_prompt, relation)
-            parent_run = await run_blocking(
-                self.store.load_run, relation.parent_session_id, relation.parent_run_id
-            )
             try:
                 receipt = await self.scheduler.route_host_input(
-                    HostSessionInput(
-                        prompt=prompt,
-                        role="user",
-                        mode="steer",
-                        host_source_id=f"ouro.subagents/results/{result.delivery.delivery_id}",
-                        semantic_tag="subagent-result",
-                        queue_id=result.delivery.delivery_id,
-                        resource_refs=parent_resource_refs,
-                        history_epoch=parent_run.history_epoch,
-                    ),
-                    session_id=relation.parent_session_id,
+                    request, session_id=relation.parent_session_id
                 )
             except SessionCommitConflict:
                 return await run_blocking(self._skip_withdrawn_delivery, relation)
@@ -1871,24 +1852,41 @@ class AgentService:
     def _prepare_result_delivery(
         self,
         observed: DelegationRecord,
-    ) -> tuple[DelegationRecord, tuple[str, ...], bool]:
+    ) -> tuple[DelegationRecord, HostSessionInput | None]:
         relation = self.store.load_delegation(observed.root_session_id, observed.delegation_id)
         if relation.current_child_run_id != observed.current_child_run_id:
-            return relation, (), False
+            return relation, None
         result = relation.result
-        if result is None or result.delivery.status != "pending":
-            return relation, (), False
-        if result.delivery.policy in {"notify_only", "resume_waiter"}:
-            return relation, (), False
+        if (
+            result is None
+            or result.delivery.status != "pending"
+            or result.delivery.policy != "next_boundary"
+        ):
+            return relation, None
         parent = self.store.load_session_record(relation.parent_session_id)
         parent_run = self.store.load_run(relation.parent_session_id, relation.parent_run_id)
         if parent_run.history_epoch != parent.history_epoch:
-            return self._skip_withdrawn_delivery(relation), (), False
+            return self._skip_withdrawn_delivery(relation), None
         parent_resource_refs = self._copy_result_resources_to_parent(
             (relation,),
             parent_session_id=relation.parent_session_id,
         )
-        return relation, parent_resource_refs, True
+        attributes = _agent_message_fields(
+            self._handle(relation, status=result.terminal_status), error=result.error
+        )
+        if parent_resource_refs:
+            attributes["resource_refs"] = " ".join(parent_resource_refs)
+        return relation, HostSessionInput(
+            prompt=self._result_text(relation),
+            role="user",
+            mode="steer",
+            host_source_id=f"ouro.subagents/results/{result.delivery.delivery_id}",
+            semantic_tag="subagent-result",
+            semantic_attributes=attributes,
+            queue_id=result.delivery.delivery_id,
+            resource_refs=parent_resource_refs,
+            history_epoch=parent_run.history_epoch,
+        )
 
     def _skip_withdrawn_delivery(self, relation: DelegationRecord) -> DelegationRecord:
         with self.store.session_mutation(relation.root_session_id):
@@ -1912,14 +1910,6 @@ class AgentService:
                 ),
                 expected_revision=latest.revision,
             )
-
-    def _delivery_prompt(self, relation: DelegationRecord) -> str:
-        assert relation.result is not None
-        return _subagent_result_content(
-            self._handle(relation),
-            relation,
-            self._result_text(relation)[:8_000],
-        )
 
     async def _record_delivery(
         self,
@@ -2228,8 +2218,13 @@ class AgentService:
     ) -> ToolResult:
         if relation.result is None:
             raise ValueError("synchronous SpawnAgent subagent has no terminal result")
-        final_text = self._result_text(relation)[:8_000]
-        handle = self._handle(relation)
+        handle = self._handle(relation, status=relation.result.terminal_status)
+        content: dict[str, object] = {
+            **_agent_message_fields(handle, error=relation.result.error),
+            "result": self._result_text(relation),
+        }
+        if resource_refs:
+            content["resource_refs"] = resource_refs
         structured = {
             "handle": handle.model_dump(mode="json"),
             "result": {
@@ -2244,7 +2239,7 @@ class AgentService:
             tool_call_id=tool_call_id,
             tool_name="SpawnAgent",
             is_error=relation.result.terminal_status != "completed",
-            content=_subagent_result_content(handle, relation, final_text),
+            content=json.dumps(content, ensure_ascii=False),
             structured=structured,
             resource_refs=list(resource_refs),
             started_at=relation.created_at,
@@ -2405,7 +2400,7 @@ class AgentService:
         del next_model_round
         return shared_budget_reason(self.store, self.usage, run)
 
-    def _handle(self, relation: DelegationRecord) -> AgentHandleView:
+    def _handle(self, relation: DelegationRecord, *, status: str | None = None) -> AgentHandleView:
         return AgentHandleView(
             revision=relation.revision,
             delegation_id=relation.delegation_id,
@@ -2419,7 +2414,7 @@ class AgentService:
             agent_id=relation.agent_id,
             agent_name=relation.definition.name,
             nickname=relation.nickname,
-            status=self._status(relation),
+            status=status if status is not None else self._status(relation),
             execution_mode=relation.execution_mode,
             control_state=relation.control_state,
         )
@@ -2461,55 +2456,14 @@ def _delegation_call_identity(relation: DelegationRecord) -> ToolCallIdentity | 
     )
 
 
-def _async_spawn_content(handle: AgentHandleView) -> str:
-    """Render the model-facing Markdown result of an asynchronous SpawnAgent call."""
-
-    return (
-        "## Subagent Dispatched (Async)\n\n"
-        f"- **Agent**: {handle.agent_name} (`{handle.agent_id}`)\n"
-        f"- **Delegation ID**: `{handle.delegation_id}`\n"
-        f"- **Status**: {handle.status}\n\n"
-        "The task was accepted and may wait for capacity before starting. "
-        "Its result will be delivered automatically; continue independent work without polling."
+def _agent_message_fields(handle: AgentHandleView, *, error: str | None = None) -> dict[str, str]:
+    fields = handle.model_dump(
+        include={"agent_id", "agent_name", "nickname", "delegation_id", "status"},
+        exclude_none=True,
     )
-
-
-def _subagent_result_content(
-    handle: AgentHandleView,
-    relation: DelegationRecord,
-    final_text: str,
-) -> str:
-    """Render the model-facing Markdown result shared by sync SpawnAgent results
-    and async subagent result deliveries."""
-
-    assert relation.result is not None
-    lines = [
-        "## Subagent Result",
-        "",
-        f"- **Agent**: {handle.agent_name} (`{handle.agent_id}`)",
-        f"- **Delegation ID**: `{handle.delegation_id}`",
-        f"- **Status**: {relation.result.terminal_status}",
-    ]
-    if relation.result.resource_refs:
-        refs = ", ".join(f"`{ref}`" for ref in relation.result.resource_refs)
-        lines.append(f"- **Resources**: {refs}")
-    if relation.result.error:
-        lines.extend(["", "### Error", "", relation.result.error])
-    lines.extend(["", "### Final Output", "", final_text or "(no final output)"])
-    return "\n".join(lines)
-
-
-def _send_agent_message_content(handle: AgentHandleView) -> str:
-    """Render the model-facing Markdown result of a SendAgentMessage call."""
-
-    return (
-        "## Message Sent to Subagent\n\n"
-        f"- **Agent**: {handle.agent_name} (`{handle.agent_id}`)\n"
-        f"- **Delegation ID**: `{handle.delegation_id}`\n"
-        f"- **Status**: {handle.status}\n\n"
-        "Your message was accepted. The subagent's result will be delivered automatically; "
-        "continue independent work without polling."
-    )
+    if error is not None:
+        fields["error"] = error
+    return fields
 
 
 __all__ = ["AgentService", "RunScheduler"]

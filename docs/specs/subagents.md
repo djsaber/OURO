@@ -68,7 +68,9 @@ Delegation 不是 Session branch：
 ### Agent handle
 
 `AgentHandleView` 是 AgentService 返回给 Host 的有界 DTO，包含 delegation_id、child_session_id、当前
-child_run_id 和状态。异步 SpawnAgent 将该视图转换为 Markdown 回执，并在结构化结果中保留 handle。
+child_run_id 和状态。异步 SpawnAgent 和 SendAgentMessage 的工具回执以 JSON 文本返回，字段包括
+`agent_id`、`agent_name`、`delegation_id`、`status` 及已设置的 `nickname`。父智能体使用
+`delegation_id` 继续交互。工具的 `structured.handle` 保存完整句柄。
 Handle 是控制引用，不是 canonical 运行事实。
 
 ## 强制架构不变量
@@ -279,7 +281,7 @@ SpawnAgent（Host 展示名“派遣子智能体”）从本轮快照生成 Tool
 - 每个选项向模型提供有界的 agent_id、name 和 description；
 - system_prompt、完整 tool list 和敏感 policy 不拼入工具描述；
 - 执行 AgentControlRequest 时按 parent Run snapshot 解析 agent_id，不重新读取 current config；
-- execution_mode schema 与 Host handler 都按同一 snapshot 校验；
+- `execution_mode` 的工具声明和执行均使用本轮快照的派遣策略。省略时默认使用 `async`，仅允许同步时使用 `sync`。
 - Run/Tool invocation 保存 agent catalog contract hash，Delegation 再嵌入实际选中的完整 definition 和 EffectiveToolRefs。
 
 配置 CRUD 返回 effective_from=next_decision。已发出的 Provider 请求及其调用使用该轮 schema；下一轮生成当前参数。
@@ -355,9 +357,10 @@ DelegationResult 至少包含：
 
 最终文本从 result_message_id 指向的 canonical child message 读取；DelegationResult 不复制完整最终消息。只有产品
 明确产生了独立的蒸馏摘要时，才以单独 message identity 保存，而不是在 relation 中再存一份文本。
-同步 SpawnAgent 的模型可见摘要由父 Call 的 Outcome.content 保存，structured.result 只保留终态、消息引用、
-资源、计量及错误字段，不再重复保存 final_text。父消息引用该 Outcome；异步交付的展示包络由固定 delivery ID
-对应的 Host Input 保存。完整子正文仍通过 result_message_id 显式查询。
+同步 SpawnAgent 的父消息引用原 Call 的 Outcome。`Outcome.content` 以 JSON 文本保存智能体身份字段和
+子 Run 的终态 `status`。`result` 是子智能体最终消息的完整文本，保留空白和换行，无正文时为空字符串。
+错误和资源引用分别使用可选的 `error` 和 `resource_refs` 字段。`structured.result` 保存终态、消息引用、
+资源、计量及错误。异步交付由固定 delivery ID 对应的 Host Input 持有原始结果文本和语义标签属性。
 
 终态收集读取子 Run 的已发布消息成员引用：首条匹配本 Delegation 的 user 输入、最后一条 assistant
 （包含工具调用帧），以及 assistant/tool_result 按历史顺序去重的 resource refs。该步骤不读取历史消息正文、
@@ -616,17 +619,18 @@ DeliveryPolicy 是 application 内部持久化事实，不是模型参数：
 - resume_waiter：只用于 sync 原 ToolCall 恢复；每个结果的策略在结果固化时按当时状态确定：首个结果沿用派遣时
   冻结的策略，sync 派遣后续 follow_up Run 的结果在父 Run 未 aborted/failed 时按 next_boundary 交付。
 
-next_boundary 应复用现有 durable queued input：
+next_boundary 通过 durable queued input 交付。
 
-- producer=host；
-- host_source_id=ouro.subagents/results/<delivery_id>；
-- role=user，scaffold=true；
-- queue id 与 delivery_id 稳定关联；
+- 输入来源为 `host`，`host_source_id` 为 `ouro.subagents/results/<delivery_id>`。
+- 消息使用 `role=user`、`scaffold=true` 和 `semantic_tag=subagent-result`。
+- `prompt` 保存子智能体最终消息的完整原文。
+- 标签属性包含 `agent_id`、`agent_name`、`delegation_id`、终态 `status`，以及可选的 `nickname` 和 `error`。
+  模型请求通过 `<subagent-result …>` 的起始标签读取这些字段，空正文也可传达终态。
+- queue id 与 delivery_id 稳定关联。有资源时，输入的 `resource_refs` 引用已复制到父 Session 的资源。
+  同名标签属性以空格分隔这些 ID，供父智能体后续派遣时引用。
 
 `submit_host_input` 只负责持久接收并返回 receipt，`consume_host_input` 才把已接收项推进普通 Run 路径。异步 child
 结果不得等待整个父 Run 完成后才确认 delivery，也不得用进程内 future 代替 queue identity 的去重与恢复。
-- 内容包含 child/delegation/run provenance；
-- 不携带未经父 Session 验证的用户 resource refs。
 
 恢复时若 queue id 已进入 canonical messages，只确认 delivery，不重复追加或启动 Run。
 
@@ -675,15 +679,8 @@ delegated-task user message 携带这些引用，因而资源内容和 Agent 专
 child 结果只收集 assistant/tool-result 输出引用，不回显初始输入引用；结果经 Host list、sync ToolResult 或 async delivery
 进入父 Session 前，校验 child 的资源归属与完整性，将所需文件复制为 parent 拥有的副本，随后写入父 canonical message。
 
-child final result 建议结构化包含：
-
-- summary；
-- evidence/message/resource refs；
-- changed files/diff refs；
-- verification；
-- unresolved questions；
-- terminal status；
-- usage。
+子智能体按委派任务组织最终正文，可包含结论、证据、已改文件、验证结果和待解问题。
+DelegationResult 记录运行终态、资源引用和用量。
 
 父 Agent 把 child 输出视为有来源的协作者结果，不视为系统真相；执行写操作或高影响结论前仍需验证。
 

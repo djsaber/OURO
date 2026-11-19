@@ -142,8 +142,10 @@ def test_driver_result_preserves_media_as_input_without_fabricated_model_calls(
     if not image_input:
         assert "This model cannot view images" in str(wire)
     assert "Rendered evidence" in str(wire)
-    assert "<driver-tool-result>" in str(wire)
-    assert "native-call" in str(wire)
+    assert (
+        '<driver-tool-result tool_name="Render" tool_call_id="native-call" is_error="false">'
+        in str(wire)
+    )
     assert [item["role"] for item in wire] == ["user"]
     assert all(not item.tool_calls for item in messages)
     assert not any(item.get("type") == "function_call_output" for item in wire)

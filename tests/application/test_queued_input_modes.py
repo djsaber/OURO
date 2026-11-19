@@ -84,6 +84,26 @@ def _user_texts(messages: Sequence[MessageRecord | ModelMessage]) -> list[str]:
     return [message.text_content for message in messages if message.role == "user"]
 
 
+@pytest.mark.parametrize(
+    ("change", "error"),
+    [
+        ({"mode": "steer"}, "same mode"),
+        ({"driver_id": "other"}, "same Driver"),
+        ({"generation_id": "other"}, "one owner"),
+    ],
+)
+def test_attributed_batch_requires_consistent_delivery_and_owner(change, error):
+    item = AttributedSessionInput(
+        prompt="continue",
+        plugin_id="dev.example.goal",
+        contribution_id="goal",
+        generation_id="generation_1",
+        execution_contract_hash="contract_1",
+    )
+    with pytest.raises(ValueError, match=error):
+        AttributedSessionInputBatch(inputs=(item, item.model_copy(update=change)))
+
+
 @pytest.mark.asyncio
 async def test_one_by_one_consumption_persists_an_attributed_input_batch_together(
     tmp_path,

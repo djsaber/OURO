@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from contextlib import AsyncExitStack
 from contextvars import ContextVar
 from threading import Event, get_ident
+from xml.etree import ElementTree
 
 import pytest
 
@@ -90,7 +90,8 @@ class CapturingChildProvider:
 class SyncAgentProvider:
     provider_id = "sync"
 
-    def __init__(self) -> None:
+    def __init__(self, child_text: str = "child evidence") -> None:
+        self.child_text = child_text
         self.root_round = 0
         self.root_tool_schemas: list[list[dict[str, object]]] = []
         self.child_tool_names: list[str] = []
@@ -101,7 +102,7 @@ class SyncAgentProvider:
         names = [item["name"] for item in definitions]
         if "SpawnAgent" not in names:
             self.child_tool_names = names
-            yield ProviderStreamEvent(type="text_delta", text="child evidence")
+            yield ProviderStreamEvent(type="text_delta", text=self.child_text)
             yield ProviderStreamEvent(type="done")
             return
 
@@ -304,14 +305,15 @@ class SpawnAndChildApprovalProvider:
 class AsyncFollowUpProvider:
     provider_id = "async"
 
-    def __init__(self) -> None:
+    def __init__(self, child_text: str) -> None:
+        self.child_text = child_text
         self.root_round = 0
 
     async def stream(self, *, model, system_prompt="", messages, tools=None, request_context=None):
         del model, system_prompt, messages
         names = [item["name"] for item in (tools or [])]
         if "SpawnAgent" not in names:
-            yield ProviderStreamEvent(type="text_delta", text="async child result")
+            yield ProviderStreamEvent(type="text_delta", text=self.child_text)
             yield ProviderStreamEvent(type="done")
             return
         if self.root_round == 0:
@@ -324,7 +326,7 @@ class AsyncFollowUpProvider:
                         "agent_id": "reader",
                         "task": "Inspect later.",
                         "description": "Async inspection",
-                        "execution_mode": "async",
+                        "nickname": 'A&B "一"',
                     },
                 },
             )
@@ -351,10 +353,8 @@ class AsyncFollowUpProvider:
 
 def _delegation_id_from(messages) -> str:
     for message in messages:
-        text = str(getattr(message, "text_content", ""))
-        match = re.search(r"\*\*Delegation ID\*\*: `(dlg_[^`]+)`", text)
-        if match:
-            return match.group(1)
+        if message.tool_result is not None and message.tool_result.tool_name == "SpawnAgent":
+            return json.loads(message.text_content)["delegation_id"]
     raise AssertionError("delegation id missing from parent context")
 
 
@@ -1247,7 +1247,9 @@ async def test_agent_task_resources_are_explicitly_copied(
     child_snapshot = store.load_session(handle.child_session_id)
     assert child_snapshot.messages[0].resource_refs == [imported.resource.resource_id]
     assert imported.resource.resource_id in resources.session_resource_ids(handle.child_session_id)
-    assert "delegated resource contents" in provider.messages[0][0].text_content
+    task, attachments = provider.messages[0]
+    assert task.text_content == "<subagent-task>\nInspect the delegated resource.\n</subagent-task>"
+    assert "delegated resource contents" in attachments.text_content
     relation = store.load_delegation("ses_root", handle.delegation_id)
     assert relation.result is not None
     assert relation.result.resource_refs == ()
@@ -1635,7 +1637,7 @@ async def test_active_child_message_uses_steer_without_new_run(
 
 
 @pytest.mark.asyncio
-async def test_send_control_result_is_markdown_without_internal_ids(tmp_path) -> None:
+async def test_send_control_returns_agent_identity_and_status(tmp_path) -> None:
     service, supervisor, store, _ = await _services(tmp_path)
     handle = await service.spawn_agent(
         SpawnAgentRequest(
@@ -1673,13 +1675,12 @@ async def test_send_control_result_is_markdown_without_internal_ids(tmp_path) ->
         run=run,
     )
 
-    assert "## Message Sent to Subagent" in result.content
-    assert f"**Delegation ID**: `{handle.delegation_id}`" in result.content
-    assert "result will be delivered automatically" in result.content
-    assert handle.child_session_id not in result.content
-    relation = store.load_delegation("ses_root", handle.delegation_id)
-    assert relation.current_child_run_id is not None
-    assert relation.current_child_run_id not in result.content
+    assert json.loads(result.content) == {
+        "agent_id": handle.agent_id,
+        "agent_name": handle.agent_name,
+        "delegation_id": handle.delegation_id,
+        "status": result.structured["handle"]["status"],
+    }
     assert result.structured["handle"]["child_session_id"] == handle.child_session_id
     await service.close()
     await supervisor.shutdown()
@@ -2165,6 +2166,7 @@ async def test_spawn_approval_does_not_approve_the_child_tool_call(tmp_path) -> 
         definitions=definitions,
         scheduler=supervisor,
         events=runtime.event_recorder,
+        spawn_policy=AgentSpawnPolicy(allowed_execution_modes=("sync",)),
     )
     runtime.bind_extensions(agent_definitions=definitions, agent_controls=service)
     await service.start()
@@ -3112,7 +3114,8 @@ async def test_sync_spawn_releases_parent_worker_and_resumes_original_tool_call(
         ),
         expected_revision=0,
     )
-    provider = SyncAgentProvider()
+    child_text = '  "子结果"\n' + "x" * 8_001 + "\n  "
+    provider = SyncAgentProvider(child_text)
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
@@ -3156,14 +3159,14 @@ async def test_sync_spawn_releases_parent_worker_and_resumes_original_tool_call(
         assert len(spawn_result_messages) == 1
         assert spawn_result_messages[0].tool_result is not None
         assert spawn_result_messages[0].tool_result.tool_call_id == "spawn_call"
-        spawn_content = spawn_result_messages[0].text_content
         delegation = store.list_delegations(root_session_id)[0]
-        assert "## Subagent Result" in spawn_content
-        assert f"**Delegation ID**: `{delegation.delegation_id}`" in spawn_content
-        assert "**Status**: completed" in spawn_content
-        assert "child evidence" in spawn_content
-        assert delegation.child_session_id not in spawn_content
-        assert delegation.current_child_run_id not in spawn_content
+        assert json.loads(spawn_result_messages[0].text_content) == {
+            "agent_id": "reader",
+            "agent_name": "Reader",
+            "delegation_id": delegation.delegation_id,
+            "status": "completed",
+            "result": child_text,
+        }
         assert snapshot.messages[-1].text_content == "parent resumed"
         assert provider.child_tool_names == ["Read"]
         spawn_definition = next(
@@ -3852,7 +3855,8 @@ async def test_async_result_delivery_is_exact_once(tmp_path) -> None:
         ),
         expected_revision=0,
     )
-    provider = AsyncFollowUpProvider()
+    child_text = "  子结果\n" + "x" * 8_001 + "\n</subagent-result>\n  "
+    provider = AsyncFollowUpProvider(child_text)
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
@@ -3910,14 +3914,25 @@ async def test_async_result_delivery_is_exact_once(tmp_path) -> None:
         == f"ouro.subagents/results/{relation.result.delivery.delivery_id}"
     ]
     assert len(delivered_messages) == 1
-    assert delivered_messages[0].role == "user"
-    delivered_content = delivered_messages[0].text_content
-    assert "## Subagent Result" in delivered_content
-    assert f"**Delegation ID**: `{relation.delegation_id}`" in delivered_content
-    assert "**Status**: completed" in delivered_content
-    assert "async child result" in delivered_content
-    assert relation.child_session_id not in delivered_content
-    assert relation.current_child_run_id not in delivered_content
+    delivered = delivered_messages[0]
+    assert delivered.role == "user" and delivered.scaffold
+    assert delivered.semantic_tag == "subagent-result"
+    assert delivered.text_content == child_text
+    identity = {
+        "agent_id": "reader",
+        "agent_name": "Reader",
+        "nickname": 'A&B "一"',
+        "delegation_id": relation.delegation_id,
+    }
+    assert delivered.semantic_attributes == {**identity, "status": "completed"}
+    context = store.load_latest_context(root_session_id)
+    envelope = next(
+        ElementTree.fromstring(message.text_content)
+        for message in context.provider_context.messages
+        if message.text_content.startswith("<subagent-result ")
+    )
+    assert envelope.attrib == delivered.semantic_attributes
+    assert envelope.text == f"\n{child_text}\n"
     assert snapshot.messages[-1].text_content == "parent received follow-up"
     spawn_results = [
         message
@@ -3927,12 +3942,9 @@ async def test_async_result_delivery_is_exact_once(tmp_path) -> None:
         and message.tool_result.tool_call_id == "async_spawn"
     ]
     assert len(spawn_results) == 1
-    async_content = spawn_results[0].text_content
-    assert "## Subagent Dispatched (Async)" in async_content
-    assert f"**Delegation ID**: `{relation.delegation_id}`" in async_content
-    assert "result will be delivered automatically" in async_content
-    assert relation.child_session_id not in async_content
-    assert relation.current_child_run_id not in async_content
+    receipt = json.loads(spawn_results[0].text_content)
+    assert receipt.pop("status") == "queued"
+    assert receipt == identity
     assert not any(
         event.event_type == "agent_wait_requested" for event in recorded_events(root_session_id)
     )

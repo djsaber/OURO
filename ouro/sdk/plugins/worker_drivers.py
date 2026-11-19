@@ -59,6 +59,7 @@ class WorkerRunPorts:
                 item["semantic_tag"],
                 item["metadata"],
                 tuple(item["resource_refs"]),
+                item["semantic_attributes"],
             )
             for item in raw
         )

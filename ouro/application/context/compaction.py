@@ -298,12 +298,11 @@ class ContextCompactionService:
         )
         # Activation/withdrawal establish validity. Project only the uncovered suffix.
         covered_count = active.covered_message_count if active else 0
-        materialized_messages, _ = await run_blocking(
-            self.preparation.materialize_messages,
+        materialized_messages = await run_blocking(
+            self.preparation.materialize_history,
+            session,
             messages,
             active_adapter,
-            session=session,
-            history=messages,
         )
         before_tokens = initial_view.metrics.estimated_input_tokens
         target_tokens = int(budget * config.policy.target_ratio)

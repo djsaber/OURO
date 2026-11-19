@@ -28,16 +28,14 @@ class MediaContextPreparation:
     def __init__(self, prepare_messages: ModelMessagePreparer | None) -> None:
         self.prepare_messages = prepare_messages
 
-    def project(
+    def prepare(
         self,
         messages: list[MessageRecord],
         *,
         session: SessionRecord,
-        history: list[MessageRecord],
         input_modalities: frozenset[MediaModality],
         input_budget_tokens: int,
-    ) -> tuple[list[MessageRecord], ContextSelection]:
-        state = session.context_selection
+    ) -> tuple[PreparedFileInputs, ContextSelection]:
         prepared = (
             self.prepare_messages(
                 messages,
@@ -47,5 +45,7 @@ class MediaContextPreparation:
             if self.prepare_messages is not None
             else prepare_inline_messages(messages, input_modalities=input_modalities)
         )
-        state = plan_media_elision(history, prepared.media_sizes, state, limit=prepared.media_limit)
-        return prepared.materialize(state.elided_ids(history)), state
+        state = plan_media_elision(
+            messages, prepared.media_sizes, session.context_selection, limit=prepared.media_limit
+        )
+        return prepared, state

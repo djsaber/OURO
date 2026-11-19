@@ -4,7 +4,12 @@ import pytest
 
 from ouro.core.context import ContextBuilder
 from ouro.core.errors import PersistenceError
-from ouro.core.messages import ImageContent, MessageRecord, ProviderContinuationArtifact
+from ouro.core.messages import (
+    ImageContent,
+    MessageRecord,
+    ProviderContinuationArtifact,
+    TextContent,
+)
 from ouro.core.request_manifest import RequestContentReference, RequestMessageReference
 from ouro.core.tools import ToolCallRequest
 
@@ -26,7 +31,9 @@ def test_prepared_manifest_keeps_final_values_and_references_unchanged_content()
         role="system",
         text="value </runtime-facts>",
         semantic_tag="runtime-facts",
+        semantic_attributes={"source": "runtime"},
     )
+    tagged.content.append(TextContent(text="original tagged body"))
     sources = [user, assistant, tagged]
     view = ContextBuilder().build(messages=sources, source_messages=sources, tools=[])
     manifest = view.manifest
@@ -37,6 +44,7 @@ def test_prepared_manifest_keeps_final_values_and_references_unchanged_content()
     assert "original input" not in manifest.model_dump_json()
     assert "original" not in manifest.model_dump_json()
     assert "&lt;/runtime-facts&gt;" in manifest.model_dump_json()
+    assert isinstance(manifest.messages[2].content[2], RequestContentReference)
     assert (
         manifest.materialize("session", {item.message_id: item for item in sources})
         == view.provider_context.messages

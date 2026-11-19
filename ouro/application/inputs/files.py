@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -25,7 +25,7 @@ from ouro.core.errors import MediaCapacityError
 from ouro.core.input_content import InputFileReference
 from ouro.core.media_context import historical_media_text, media_chars, require_media_capacity
 from ouro.core.message_roles import MessageRole
-from ouro.core.messages import ContentBlock, ImageContent, MessageRecord, TextContent
+from ouro.core.messages import ContentBlock, ImageContent, MessageRecord, ModelMessage, TextContent
 from ouro.core.resources import ResourceRecord
 from ouro.resources import ResourceStore
 from ouro.resources.media import materialize_media
@@ -62,6 +62,7 @@ class _PreparedMessage:
     message: MessageRecord
     content: Blocks
     paths: tuple[Path, ...]
+    attachment_offset: int | None = None
 
     def materialize(self, *, elided: bool = False) -> MessageRecord:
         content = [
@@ -88,7 +89,9 @@ class PreparedFileInputs:
             if (size := _media_size(item.content))
         }
 
-    def materialize(self, elided_ids: frozenset[str] = frozenset()) -> list[MessageRecord]:
+    def _materialized(
+        self, elided_ids: frozenset[str]
+    ) -> Iterator[tuple[MessageRecord, int | None]]:
         require_media_capacity(
             sum(
                 _media_size(item.content)
@@ -97,9 +100,41 @@ class PreparedFileInputs:
             ),
             self.media_limit,
         )
-        return [
-            item.materialize(elided=item.message.message_id in elided_ids) for item in self.messages
-        ]
+        for item in self.messages:
+            yield (
+                item.materialize(elided=item.message.message_id in elided_ids),
+                item.attachment_offset,
+            )
+
+    def materialize(self, elided_ids: frozenset[str] = frozenset()) -> list[MessageRecord]:
+        """Keep one materialized record per source for compaction and history coverage."""
+        return [message for message, _ in self._materialized(elided_ids)]
+
+    def request_messages(
+        self, elided_ids: frozenset[str] = frozenset()
+    ) -> list[MessageRecord | ModelMessage]:
+        messages: list[MessageRecord | ModelMessage] = []
+        tool_attachments: list[ModelMessage] = []
+        for message, start in self._materialized(elided_ids):
+            if message.role != "tool_result" and tool_attachments:
+                messages.extend(tool_attachments)
+                tool_attachments.clear()
+            if start is None:
+                messages.append(message)
+                continue
+            messages.append(message.model_copy(update={"content": message.content[:start]}))
+            call = message.tool_result
+            target = tool_attachments if call is not None else messages
+            target.append(
+                ModelMessage(
+                    role="user",
+                    semantic_tag="attachments",
+                    semantic_attributes={"tool_call_id": call.tool_call_id} if call else {},
+                    content=message.content[start:],
+                )
+            )
+        messages.extend(tool_attachments)
+        return messages
 
 
 def with_attachment_read_paths(message: MessageRecord, paths: Iterable[Path]) -> MessageRecord:
@@ -404,6 +439,7 @@ class FileInputProjector:
                 modalities=input_modalities,
                 prepare_media=partial(self._prepare_owned_media, message.session_id),
             )
+            body_size = len(content)
             paths = {}
             for identity in message.resource_refs:
                 source = self._upload_source(message.session_id, identity)
@@ -418,7 +454,10 @@ class FileInputProjector:
                 content.extend(blocks)
                 content_left -= used
                 seen.add(key)
-            prepared.append(_PreparedMessage(message, content, tuple(paths.values())))
+            # A tool response or a labeled body has its own boundary in the model request.
+            separate = message.tool_result is not None or message.semantic_tag is not None
+            offset = body_size if separate and len(content) > body_size else None
+            prepared.append(_PreparedMessage(message, content, tuple(paths.values()), offset))
         prepared.reverse()
         return PreparedFileInputs(prepared, DEFAULT_REQUEST_MEDIA_CHARS)
 
@@ -440,12 +479,12 @@ class FileInputProjector:
         *,
         input_modalities: frozenset[MediaModality],
         input_budget_tokens: int | None,
-    ) -> list[MessageRecord]:
+    ) -> list[MessageRecord | ModelMessage]:
         return self.prepare(
             messages,
             input_modalities=input_modalities,
             input_budget_tokens=input_budget_tokens,
-        ).materialize()
+        ).request_messages()
 
     @staticmethod
     def _reference_only(item: InputFileReference, reason: str) -> Blocks:

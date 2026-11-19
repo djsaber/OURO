@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from ouro.core.context_providers import (
+    AttributedContextFragment,
     ContextFragment,
     ContextProviderCall,
     ContextProviderRegistration,
@@ -42,10 +43,13 @@ async def test_context_providers_order_by_priority_and_identity() -> None:
                 priority=10,
                 handler=lambda _call: ContextProviderResult(
                     fragments=[
-                        ContextFragment(
+                        AttributedContextFragment(
                             text="first",
                             persistence="message",
                             semantic_tag="plugin-context",
+                            plugin_id="previous.plugin",
+                            provider_id="previous-provider",
+                            fragment_index=4,
                         )
                     ]
                 ),

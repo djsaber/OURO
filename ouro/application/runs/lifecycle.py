@@ -20,7 +20,7 @@ from ouro.core.events import EventRecord
 from ouro.core.harness_calls import HarnessCallSnapshot, HarnessStateChange, accept_state_changes
 from ouro.core.inputs import InputRecord
 from ouro.core.message_roles import MessageRole
-from ouro.core.message_semantics import SemanticTag
+from ouro.core.message_semantics import SemanticAttributes, SemanticTag
 from ouro.core.messages import (
     ContentBlock,
     MessageRecord,
@@ -248,6 +248,7 @@ class RunLifecycle:
         resource_refs: Iterable[str] = (),
         metadata: dict[str, Any] | None = None,
         semantic_tag: SemanticTag | None = None,
+        semantic_attributes: SemanticAttributes | None = None,
     ) -> MessageRecord:
         message = self.create_input_message(
             session=session,
@@ -260,6 +261,7 @@ class RunLifecycle:
             resource_refs=resource_refs,
             metadata=metadata,
             semantic_tag=semantic_tag,
+            semantic_attributes=semantic_attributes,
         )
         self._append_message(session=session, run=run, message=message)
         return message
@@ -277,6 +279,7 @@ class RunLifecycle:
         resource_refs: Iterable[str] = (),
         metadata: dict[str, Any] | None = None,
         semantic_tag: SemanticTag | None = None,
+        semantic_attributes: SemanticAttributes | None = None,
     ) -> MessageRecord:
         """Validate and construct an input without crossing a persistence boundary."""
 
@@ -287,24 +290,21 @@ class RunLifecycle:
             )
         if self._validate_resource_refs is not None:
             self._validate_resource_refs(session.session_id, unique_resource_refs)
-        content: list[ContentBlock] = []
-        content.extend(skill_activations)
+        content: list[ContentBlock] = list(skill_activations)
         if prompt:
             content.append(TextContent(text=prompt))
-        message = MessageRecord(
+        return MessageRecord(
             session_id=session.session_id,
             run_id=run.run_id,
             role=role,
             sequence=sequence,
             content=content,
             semantic_tag=semantic_tag,
+            semantic_attributes=semantic_attributes or {},
             scaffold=scaffold,
+            resource_refs=unique_resource_refs,
+            metadata=metadata or {},
         )
-        if unique_resource_refs:
-            message = message.model_copy(update={"resource_refs": unique_resource_refs})
-        if metadata:
-            message = message.model_copy(update={"metadata": dict(metadata)})
-        return message
 
     def save_budget(self, run: RunRecord, policy: dict[str, object]) -> None:
         with self.store.session_mutation(run.session_id):

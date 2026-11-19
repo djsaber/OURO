@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import multiprocessing
 
 import pytest
@@ -316,10 +317,12 @@ async def test_sync_parent_wakes_when_child_finishes_on_another_host(tmp_path, b
         results = [m for m in messages if m.tool_result and m.tool_result.tool_call_id == "spawn"]
         assert len(results) == 1
         assert results[0].tool_result.is_error == (scenario == "provider_failure")
-        expected = (
-            "Child provider unavailable" if scenario == "provider_failure" else "Child completed"
-        )
-        assert expected in results[0].text_content
+        receipt = json.loads(results[0].text_content)
+        if scenario == "provider_failure":
+            assert receipt["status"] == "failed" and receipt["result"] == ""
+            assert "Child provider unavailable" in receipt["error"]
+        else:
+            assert receipt["status"] == "completed" and receipt["result"] == "Child completed"
         assert_child_outcome(first, root.session_id, scenario)
 
 

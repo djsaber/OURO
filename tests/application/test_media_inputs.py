@@ -350,8 +350,10 @@ def test_unsupported_tool_media_neither_encodes_nor_displaces_supported_input(
         [earlier, latest], input_modalities=frozenset({supported.type})
     )
     assert projected[0].content == [supported]
-    assert not any(isinstance(part, MediaContent) for part in projected[1].content)
-    assert "was not sent" in projected[1].text_content
+    assert not any(
+        isinstance(part, MediaContent) for item in projected[1:] for part in item.content
+    )
+    assert "was not sent" in projected[-1].text_content
     assert [earlier, latest] == before
 
 
@@ -446,13 +448,13 @@ def test_mixed_media_elision_uses_one_budget_and_keeps_text_without_encoding_old
         pytest.fail("elided resource media must not be encoded")
 
     monkeypatch.setattr(file_inputs.base64, "b64encode", fail_encode)
-    projected, _ = MediaContextPreparation(resources.prepare_model_messages).project(
+    prepared, selection = MediaContextPreparation(resources.prepare_model_messages).prepare(
         history,
         session=session,
-        history=history,
         input_modalities=frozenset({"image", "audio", "video"}),
         input_budget_tokens=100000,
     )
+    projected = prepared.request_messages(selection.elided_ids(history))
     assert "[Historical audio]" in projected[0].text_content
     assert "[Historical video]" in projected[2].text_content
     assert projected[1] == history[1] and projected[3] == history[3]

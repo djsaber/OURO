@@ -72,6 +72,7 @@ class RunInput:
     semantic_tag: str | None
     metadata: dict[str, JsonValue]
     resource_refs: tuple[str, ...] = ()
+    semantic_attributes: dict[str, str] = field(default_factory=dict)
 
     @property
     def text(self) -> str:

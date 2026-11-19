@@ -483,7 +483,13 @@ def test_host_receipt_is_atomic_across_pending_and_consumed_input(tmp_path, back
     session = SessionRecord()
     first.create_session(session)
     queues = [QueuedInputQueue(first), QueuedInputQueue(second)]
-    request = HostSessionInput(prompt="result", host_source_id="test/result", queue_id="delivery")
+    request = HostSessionInput(
+        prompt="result",
+        semantic_tag="report",
+        semantic_attributes={"status": "completed"},
+        host_source_id="test/result",
+        queue_id="delivery",
+    )
     selecting = Barrier(4)
 
     def select_driver(identity):
@@ -502,7 +508,12 @@ def test_host_receipt_is_atomic_across_pending_and_consumed_input(tmp_path, back
         )
     assert sum(item is not None for _, item, _, _ in accepted) == 1
     assert len(queues[0].eligible_session(first.load_session_record(session.session_id))) == 1
-    for change in ({"prompt": "changed"}, {"title": "changed"}, {"history_epoch": 0}):
+    for change in (
+        {"prompt": "changed"},
+        {"title": "changed"},
+        {"history_epoch": 0},
+        {"semantic_attributes": {"status": "failed"}},
+    ):
         with pytest.raises(ValueError, match="already bound"):
             queues[1].accept_host(session.session_id, request.model_copy(update=change))
     message = MessageRecord.text(
@@ -511,6 +522,7 @@ def test_host_receipt_is_atomic_across_pending_and_consumed_input(tmp_path, back
         role=request.role,
         scaffold=request.scaffold,
         semantic_tag=request.semantic_tag,
+        semantic_attributes=request.semantic_attributes,
         text=request.prompt,
     ).model_copy(
         update={
@@ -530,6 +542,9 @@ def test_host_receipt_is_atomic_across_pending_and_consumed_input(tmp_path, back
                 steps=(SessionCommitStep(message=message),),
             )
         )
+    assert "semantic_attributes" not in message.as_fact().model_dump()
+    persisted = second.load_message(session.session_id, message.message_id)
+    assert persisted.semantic_attributes == request.semantic_attributes
     with ThreadPoolExecutor(max_workers=4) as executor:
         retried = list(
             executor.map(

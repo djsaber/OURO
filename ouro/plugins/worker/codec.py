@@ -9,12 +9,14 @@ from typing import Any
 from pydantic import TypeAdapter, ValidationError
 
 from ouro.core.message_semantics import validate_semantic_tag
+from ouro.core.session_controls import SessionInputRequest
 from ouro.plugins.tool_content import decode_worker_content
 from ouro.sdk.plugins import v5 as sdk
 
 _TOOL = TypeAdapter(sdk.ToolOutput)
 _CONTEXT = TypeAdapter(sdk.ContextOutput)
 _COMMAND = TypeAdapter(sdk.CommandOutput)
+_SESSION_INPUTS = TypeAdapter(list[SessionInputRequest])
 _CONTROLLER = TypeAdapter(sdk.SessionControllerOutput)
 _COMPACTION = TypeAdapter(sdk.CompactionOutput)
 _CONTINUATION = TypeAdapter(sdk.ContinuationDecision)
@@ -230,9 +232,9 @@ def _decode_worker_command(result: dict[str, Any], method: str) -> sdk.CommandOu
         result = {**result, "session_control_transitions": _worker_control_transitions(result)}
     output = _decode(_COMMAND, result, method)
     if output.session_inputs:
-        _validate_session_inputs(result["session_inputs"])
+        _decode(_SESSION_INPUTS, result["session_inputs"], method, strict=True)
     for batch in result.get("session_input_batches", ()):
-        _validate_session_inputs(batch["inputs"])
+        _decode(_SESSION_INPUTS, batch["inputs"], method, strict=True)
     return output
 
 
@@ -273,9 +275,11 @@ def _decode_worker_turn_policy(result: dict[str, Any], method: str) -> sdk.TurnP
     return _decode(_TURN_POLICY, result, method)
 
 
-def _decode[T](adapter: TypeAdapter[T], raw: object, method: str) -> T:
+def _decode[T](
+    adapter: TypeAdapter[T], raw: object, method: str, *, strict: bool | None = None
+) -> T:
     try:
-        return adapter.validator.validate_python(raw)
+        return adapter.validator.validate_python(raw, strict=strict)
     except ValidationError as exc:
         details = "; ".join(
             f"{'.'.join(map(str, error['loc']))}: {error['msg']}"
@@ -312,16 +316,6 @@ def _worker_control_transitions(result: dict[str, Any]) -> tuple[sdk.SessionCont
                 f"worker session control transition is invalid: {exc}"
             ) from exc
     return tuple(transitions)
-
-
-def _validate_session_inputs(values: list[dict[str, Any]]) -> None:
-    for item in values:
-        if not item["prompt"].strip():
-            raise WorkerProtocolError("worker session input prompt must not be empty")
-        if "scaffold" in item:
-            _worker_scaffold(item["scaffold"])
-        if "semantic_tag" in item:
-            _worker_semantic_tag(item["semantic_tag"])
 
 
 def _worker_scaffold(value: object) -> bool:

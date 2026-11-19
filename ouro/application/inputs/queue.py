@@ -119,6 +119,7 @@ class QueuedInputQueue:
                     role=request.role,
                     scaffold=request.scaffold,
                     semantic_tag=request.semantic_tag,
+                    semantic_attributes=request.semantic_attributes,
                     host_source_id=request.host_source_id,
                     caused_by_run_id=session.active_run_id,
                 ),
@@ -243,6 +244,7 @@ class QueuedInputQueue:
                 role=item.role,
                 scaffold=item.scaffold,
                 semantic_tag=item.semantic_tag,
+                semantic_attributes=item.semantic_attributes,
                 batch_id=batch_id,
                 batch_index=index,
                 batch_size=len(inputs),
@@ -631,6 +633,7 @@ def same_queued_input(first: QueuedInput, second: QueuedInput) -> bool:
         "role",
         "scaffold",
         "semantic_tag",
+        "semantic_attributes",
         "host_source_id",
         "delegation_id",
         "plugin_id",
@@ -658,6 +661,7 @@ def validate_host_input(record: InputRecord, request: HostSessionInput) -> None:
         or existing.role != request.role
         or existing.scaffold != request.scaffold
         or existing.semantic_tag != request.semantic_tag
+        or existing.semantic_attributes != request.semantic_attributes
         or existing.history_bound != (request.history_epoch is not None)
         or (existing.driver.driver_id if existing.driver else None) != request.driver_id
     ):

@@ -10,7 +10,7 @@ from ouro.core.base import OuroModel, VersionedOuroModel
 from ouro.core.errors import PersistenceError
 from ouro.core.input_content import InputContent, InputFile
 from ouro.core.message_roles import MessageRole
-from ouro.core.message_semantics import SemanticTag
+from ouro.core.message_semantics import MessageSemantics, SemanticTag
 from ouro.core.messages import MessageRecord, SkillActivationContent, TextContent
 from ouro.core.run_drivers import RunDriverBinding
 from ouro.core.session_controls import SessionInputMode
@@ -34,7 +34,7 @@ _ROUTING_FIELDS = (
 )
 
 
-class QueuedInput(OuroModel):
+class QueuedInput(MessageSemantics):
     history_epoch: int = Field(default=0, ge=0)
     history_bound: bool = False
     queue_id: str = Field(min_length=1)
@@ -151,12 +151,13 @@ class QueuedInput(OuroModel):
             if content.resource_refs != self.resource_refs:
                 raise ValueError("Attachment identities must match resource references")
         if (
-            not self.prompt.strip()
+            not self.semantic_attributes
+            and not self.prompt.strip()
             and not self.skill_activations
             and not self.resource_refs
             and not self.attachments
         ):
-            raise ValueError("queued input requires a prompt or skill activation")
+            raise ValueError("queued input requires content or semantic attributes")
         if self.skill_activations and (
             self.source != "user" or self.role != "user" or self.scaffold
         ):
@@ -204,6 +205,7 @@ def resolve_input_content(fact: MessageRecord, record: InputRecord | None = None
     item = _bound_item(fact, record)
     values: dict[str, Any] = {}
     if reference.part == "body":
+        values["semantic_attributes"] = item.semantic_attributes.copy()
         values["content"] = [skill.model_copy() for skill in item.skill_activations]
         if item.prompt:
             values["content"].append(TextContent(text=item.prompt))

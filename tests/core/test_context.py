@@ -311,6 +311,12 @@ def test_semantic_tags_are_optional_and_independent_from_message_roles() -> None
         )
     with pytest.raises(ValueError, match="lowercase letter"):
         ContextFragment(text="invalid", semantic_tag="Not XML Safe")
+    with pytest.raises(ValueError, match="require a semantic tag"):
+        ModelMessage.text(role="user", text="body", semantic_attributes={"status": "completed"})
+    with pytest.raises(ValueError, match="pattern"):
+        ModelMessage.text(
+            role="user", text="body", semantic_tag="report", semantic_attributes={"x >": "bad"}
+        )
     with pytest.raises(ValueError, match="structured state must use typed message fields"):
         MessageRecord(
             session_id="ses_1",

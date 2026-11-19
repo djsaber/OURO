@@ -8,7 +8,7 @@ from pydantic import Field, JsonValue, field_validator, model_validator
 
 from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.message_roles import MessageRole
-from ouro.core.message_semantics import SemanticTag
+from ouro.core.message_semantics import MessageSemantics
 
 SessionInputMode = Literal["follow_up", "steer"]
 SessionInputRole = MessageRole
@@ -22,33 +22,27 @@ _CONTROL_DOMAIN = re.compile(
 _LOCAL_CONTROLLER_ID = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
 
 
-class SessionInputRequest(OuroModel):
+class SessionInputRequest(MessageSemantics):
     """A request for the application layer to add one session input.
 
     Extensions describe the requested input, while the application runtime
     remains the only owner of persistence, locking, and execution.
     """
 
-    prompt: str = Field(min_length=1)
+    prompt: str
     mode: SessionInputMode = "follow_up"
     title: str | None = None
     role: SessionInputRole = "user"
     scaffold: bool = True
-    semantic_tag: SemanticTag | None = None
     driver_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
-    def validate_driver_selection(self) -> Self:
+    def validate_input(self) -> Self:
+        if not self.semantic_attributes and not self.prompt.strip():
+            raise ValueError("session input requires a prompt or semantic attributes")
         if self.driver_id is not None and (not self.driver_id.strip() or self.mode != "follow_up"):
             raise ValueError("Driver selection requires a nonempty identity and follow-up input")
         return self
-
-    @field_validator("prompt")
-    @classmethod
-    def validate_prompt(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("session input prompt cannot be blank")
-        return value
 
 
 class AttributedSessionInput(SessionInputRequest):
@@ -67,7 +61,7 @@ class SessionInputBatchRequest(OuroModel):
     coalesce_key: str | None = Field(default=None, min_length=1, max_length=128)
 
     @model_validator(mode="after")
-    def validate_delivery_mode(self) -> SessionInputBatchRequest:
+    def validate_delivery_mode(self) -> Self:
         modes = {item.mode for item in self.inputs}
         if len(modes) != 1:
             raise ValueError("all inputs in a session input batch must use the same mode")
@@ -76,19 +70,13 @@ class SessionInputBatchRequest(OuroModel):
         return self
 
 
-class AttributedSessionInputBatch(OuroModel):
+class AttributedSessionInputBatch(SessionInputBatchRequest):
     """An atomic input unit bound to the extension generation that produced it."""
 
     inputs: tuple[AttributedSessionInput, ...] = Field(min_length=1)
-    coalesce_key: str | None = Field(default=None, min_length=1, max_length=128)
 
     @model_validator(mode="after")
-    def validate_batch(self) -> AttributedSessionInputBatch:
-        modes = {item.mode for item in self.inputs}
-        if len(modes) != 1:
-            raise ValueError("all inputs in a session input batch must use the same mode")
-        if len({item.driver_id for item in self.inputs}) != 1:
-            raise ValueError("all inputs in a session input batch must select the same Driver")
+    def validate_owner(self) -> Self:
         owners = {
             (
                 item.plugin_id,
@@ -109,7 +97,6 @@ class HostSessionInput(SessionInputRequest):
     scaffold: Literal[True] = True
     history_epoch: int | None = Field(default=None, ge=0)
     host_source_id: str = Field(min_length=1)
-    semantic_tag: SemanticTag | None = None
     queue_id: str | None = Field(default=None, min_length=1, max_length=256)
     resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
 

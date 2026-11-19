@@ -2459,6 +2459,10 @@ for line in sys.stdin:
                     'mode': 'follow_up',
                     'role': 'user',
                     'semantic_tag': 'goal-create',
+                }, {
+                    'prompt': '',
+                    'semantic_tag': 'goal-state',
+                    'semantic_attributes': {'status': 'active'},
                 }],
             }],
         }
@@ -2540,6 +2544,9 @@ for line in sys.stdin:
     assert command.session_input_batches[0].inputs[0].prompt == "Goal: ship"
     assert command.session_input_batches[0].inputs[0].role == "user"
     assert command.session_input_batches[0].inputs[0].semantic_tag == "goal-create"
+    state = command.session_input_batches[0].inputs[1]
+    assert state.prompt == ""
+    assert state.semantic_attributes == {"status": "active"}
     snapshot = runtime.snapshot()
     policy = snapshot.continuations.registered()[0]
     decision = await policy.handler(

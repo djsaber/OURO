@@ -182,33 +182,11 @@ def _adapt_command(contribution: sdk.CommandContribution, *, owner_id: str) -> P
                 run_action=raw.run_action,
                 data=dict(raw.data),
                 session_inputs=[
-                    SessionInputRequest(
-                        prompt=item.prompt,
-                        mode=item.mode,
-                        title=item.title,
-                        role=item.role,
-                        scaffold=item.scaffold,
-                        semantic_tag=item.semantic_tag,
-                        driver_id=item.driver_id,
-                    )
+                    SessionInputRequest.model_validate(item, from_attributes=True)
                     for item in raw.session_inputs
                 ],
                 session_input_batches=[
-                    SessionInputBatchRequest(
-                        inputs=tuple(
-                            SessionInputRequest(
-                                prompt=item.prompt,
-                                mode=item.mode,
-                                title=item.title,
-                                role=item.role,
-                                scaffold=item.scaffold,
-                                semantic_tag=item.semantic_tag,
-                                driver_id=item.driver_id,
-                            )
-                            for item in batch.inputs
-                        ),
-                        coalesce_key=batch.coalesce_key,
-                    )
+                    SessionInputBatchRequest.model_validate(batch, from_attributes=True)
                     for batch in raw.session_input_batches
                 ],
                 session_control_transitions=[

@@ -11,7 +11,7 @@ from ouro.core.base import OuroModel
 from ouro.core.content import MediaContent, media_reference, media_resource_ids
 from ouro.core.errors import PersistenceError
 from ouro.core.message_roles import MessageRole
-from ouro.core.message_semantics import SemanticTag
+from ouro.core.message_semantics import MessageSemantics
 from ouro.core.messages import (
     ContentBlock,
     MessageRecord,
@@ -36,14 +36,13 @@ class RequestContentReference(RequestMessageReference):
 RequestContent = Annotated[ContentBlock | RequestContentReference, Field(discriminator="type")]
 
 
-class RequestMessage(OuroModel):
+class RequestMessage(MessageSemantics):
     """Final fields; references never ask the reader to run a projection."""
 
     model_config = ConfigDict(extra="forbid")
 
     role: MessageRole
     content: list[RequestContent] = Field(default_factory=list)
-    semantic_tag: SemanticTag | None = None
     tool_calls: list[ToolCallRequest] | RequestMessageReference = Field(default_factory=list)
     tool_result: ToolResultReference | None = None
     reasoning_content: str | RequestMessageReference = ""
@@ -98,6 +97,7 @@ class RequestMessage(OuroModel):
                 for block in value.content
             ],
             semantic_tag=value.semantic_tag,
+            semantic_attributes=value.semantic_attributes,
             tool_calls=calls,
             tool_result=value.tool_result,
             reasoning_content=reasoning,
@@ -134,6 +134,7 @@ class RequestMessage(OuroModel):
             role=self.role,
             content=content,
             semantic_tag=self.semantic_tag,
+            semantic_attributes=self.semantic_attributes,
             tool_calls=calls,
             tool_result=self.tool_result,
             reasoning_content=reasoning,

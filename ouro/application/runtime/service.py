@@ -1758,6 +1758,7 @@ class RuntimeService:
                     role=_input_role(attribution),
                     scaffold=_input_scaffold(attribution),
                     semantic_tag=(attribution.semantic_tag if attribution is not None else None),
+                    semantic_attributes=(attribution.semantic_attributes if attribution else {}),
                     host_source_id=(
                         attribution.host_source_id
                         if isinstance(attribution, HostSessionInput)
@@ -2661,6 +2662,7 @@ class RuntimeService:
                 role=role,
                 scaffold=scaffold,
                 semantic_tag=(attribution.semantic_tag if attribution is not None else None),
+                semantic_attributes=(attribution.semantic_attributes if attribution else {}),
                 host_source_id=(
                     attribution.host_source_id
                     if isinstance(attribution, HostSessionInput)
@@ -3081,6 +3083,7 @@ class RuntimeService:
             resource_refs=item.resource_refs,
             metadata=metadata,
             semantic_tag=item.semantic_tag,
+            semantic_attributes=item.semantic_attributes,
         )
         message.input_ref = InputMessageReference(
             input_id=item.queue_id, attachments_from_input=bool(item.attachments)

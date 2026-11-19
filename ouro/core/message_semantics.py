@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import re
-from typing import Annotated
+from typing import Annotated, Self
+from xml.sax.saxutils import quoteattr
 
-from pydantic import AfterValidator, Field
+from pydantic import AfterValidator, Field, model_validator
+
+from ouro.core.base import OuroModel
 
 _RESERVED_SEMANTIC_TAGS = frozenset(
     {
@@ -48,22 +51,49 @@ def _escape_semantic_envelope_delimiters(text: str, tag: str) -> str:
     )
 
 
-def render_semantic_envelope(text: str, semantic_tag: str) -> str:
-    """Project raw provider-owned text through one validated semantic envelope."""
-
-    tag = validate_semantic_tag(semantic_tag)
-    escaped = _escape_semantic_envelope_delimiters(text, tag)
-    return f"<{tag}>\n{escaped}\n</{tag}>"
-
-
 SemanticTag = Annotated[
     str,
     Field(min_length=1, max_length=64),
     AfterValidator(validate_semantic_tag),
 ]
 
+SemanticAttributes = dict[Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]*$")], str]
+
+
+class MessageSemantics(OuroModel):
+    """Model-visible envelope fields, independent of the message body and provenance."""
+
+    semantic_tag: SemanticTag | None = None
+    semantic_attributes: SemanticAttributes = Field(
+        default_factory=dict, exclude_if=lambda attributes: not attributes
+    )
+
+    @model_validator(mode="after")
+    def require_tag_for_attributes(self) -> Self:
+        if self.semantic_attributes and self.semantic_tag is None:
+            raise ValueError("semantic attributes require a semantic tag")
+        return self
+
+    def opening_tag(self) -> str:
+        assert self.semantic_tag is not None
+        fields = "".join(
+            f" {key}={quoteattr(value)}" for key, value in self.semantic_attributes.items()
+        )
+        return f"<{self.semantic_tag}{fields}>"
+
+
+def render_semantic_envelope(
+    text: str, semantic_tag: str, attributes: SemanticAttributes | None = None
+) -> str:
+    """Project raw provider-owned text through one validated semantic envelope."""
+    semantics = MessageSemantics(semantic_tag=semantic_tag, semantic_attributes=attributes or {})
+    escaped = _escape_semantic_envelope_delimiters(text, semantic_tag)
+    return f"{semantics.opening_tag()}\n{escaped}\n</{semantic_tag}>"
+
 
 __all__ = [
+    "MessageSemantics",
+    "SemanticAttributes",
     "SemanticTag",
     "escape_semantic_envelope_delimiters",
     "render_semantic_envelope",

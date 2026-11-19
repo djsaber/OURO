@@ -332,9 +332,9 @@ def _spawn_agent_preview_status(tool: RuntimeToolCallActivity) -> str:
     if tool.status in _FAILED_TOOL_STATUSES:
         return "failed"
     if tool.status == "completed":
-        if tool.arguments.get("execution_mode") != "async":
+        if tool.arguments.get("execution_mode", "async") != "async":
             return "done"
-    return _subagent_execution_status(tool.arguments.get("execution_mode", "sync"))
+    return _subagent_execution_status(tool.arguments.get("execution_mode", "async"))
 
 
 def _append_subagent_preview(
@@ -348,7 +348,7 @@ def _append_subagent_preview(
         return
     if tool.status in _FAILED_TOOL_STATUSES:
         label = "Failed"
-    elif tool.status == "completed" and tool.arguments.get("execution_mode") != "async":
+    elif tool.status == "completed" and tool.arguments.get("execution_mode", "async") != "async":
         label = "Done"
     else:
         label = "Dispatching"

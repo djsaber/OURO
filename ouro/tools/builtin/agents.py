@@ -29,7 +29,8 @@ def agent_control_tools(catalog: AgentCatalogSnapshot) -> tuple[Tool, ...]:
                 name="SendAgentMessage",
                 description=(
                     "Send new guidance to an existing subagent or continue its work. Use "
-                    "SpawnAgent for a new independent task. Avoid duplicate messages."
+                    "SpawnAgent for a new independent task. Avoid duplicate messages. "
+                    "The subagent's result is delivered automatically."
                 ),
                 parameters_schema={
                     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -117,6 +118,7 @@ def _spawn_control_tool(
     options: list[dict[str, str]],
     metadata: dict[str, object],
 ) -> Tool:
+    default_mode = "async" if "async" in catalog.spawn_policy.allowed_execution_modes else "sync"
     spawn_schema: dict[str, Any] = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -149,11 +151,7 @@ def _spawn_control_tool(
             "execution_mode": {
                 "type": "string",
                 "enum": list(catalog.spawn_policy.allowed_execution_modes),
-                "default": (
-                    "sync"
-                    if "sync" in catalog.spawn_policy.allowed_execution_modes
-                    else catalog.spawn_policy.allowed_execution_modes[0]
-                ),
+                "default": default_mode,
                 "description": (
                     "Use 'sync' when the result is needed before your next step; it waits. "
                     "'async' returns delegation_id immediately "
@@ -189,20 +187,19 @@ def _spawn_control_tool(
             effect="state_changing",
             metadata=metadata,
         ),
-        handler=_spawn,
+        handler=lambda invocation, _: _spawn(invocation, default_mode),
     )
 
 
-def _spawn(invocation: ToolInvocation, context: ToolExecutionContext) -> AgentControlRequest:
+def _spawn(invocation: ToolInvocation, default_mode: str) -> AgentControlRequest:
     arguments = invocation.arguments
-    execution_mode = arguments.get("execution_mode", "sync")
     return AgentControlRequest(
         action="spawn",
         agent_id=str(arguments["agent_id"]),
         task=str(arguments["task"]),
         description=str(arguments["description"]),
         nickname=_optional_string(arguments.get("nickname")),
-        execution_mode=execution_mode,
+        execution_mode=arguments.get("execution_mode", default_mode),
         resource_refs=tuple(str(item) for item in arguments.get("resource_refs", ())),
     )
 

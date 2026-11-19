@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from xml.etree import ElementTree
 
 import pytest
 
@@ -139,14 +140,21 @@ async def test_async_cross_host_result_retries_without_duplicate_parent_input(
         messages = first.runtime.store.load_run_messages(session.session_id, runs[-1].run_id)
         feedback = [message for message in messages if message.semantic_tag == "subagent-result"]
         assert len(feedback) == 1
-        evidence = "child diagnostic evidence" if failed else "Child completed"
-        assert evidence in feedback[0].text_content
-        assert any(
-            evidence in content
+        message = feedback[0]
+        assert message.text_content == ("" if failed else "Child completed")
+        assert message.semantic_attributes["status"] == ("failed" if failed else "completed")
+        assert message.semantic_attributes["delegation_id"] == pending.delegation_id
+        if failed:
+            assert "child diagnostic evidence" in message.semantic_attributes["error"]
+        envelope = next(
+            ElementTree.fromstring(content)
             for provider in providers
             for inputs in provider.parent_inputs
             for content in inputs
+            if content.startswith("<subagent-result ")
         )
+        assert envelope.attrib == message.semantic_attributes
+        assert envelope.text == f"\n{message.text_content}\n"
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])

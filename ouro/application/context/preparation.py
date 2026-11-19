@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Protocol, cast
 
@@ -8,6 +9,7 @@ from ouro.application.context.media import MediaContextPreparation, ModelMessage
 from ouro.application.context.prompts import PromptContext, PromptContextResolver
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.harness import capture_harness
+from ouro.application.inputs.files import PreparedFileInputs
 from ouro.application.inputs.skills import compacted_skill_context
 from ouro.application.usage import UsageService
 from ouro.core.adapter import RuntimeAdapter
@@ -244,15 +246,7 @@ class ContextPreparationService:
         ephemeral: list[ContextFragment] = []
         for fragment in fragments:
             if fragment.persistence == "ephemeral":
-                ephemeral.append(
-                    ContextFragment(
-                        text=fragment.text,
-                        target=fragment.target,
-                        role=fragment.role,
-                        scaffold=fragment.scaffold,
-                        semantic_tag=fragment.semantic_tag,
-                    )
-                )
+                ephemeral.append(fragment)
                 continue
             delivery_key = (
                 f"{run.run_id}:{model_round}:{fragment.plugin_id}:"
@@ -466,12 +460,8 @@ class ContextPreparationService:
             for message in complete_messages
         ]
         source_messages = project_recovery_messages(complete_messages)
-        effective_messages, media_state = self.materialize_messages(
-            source_messages,
-            adapter,
-            session=session,
-            history=source_messages,
-        )
+        with self._prepared_files(session, source_messages, adapter) as (files, media_state):
+            effective_messages = files.request_messages(media_state.elided_ids(source_messages))
         view = self.build_view(
             messages=effective_messages,
             source_messages=messages,
@@ -526,19 +516,26 @@ class ContextPreparationService:
             budget=adapter.model.context_budget,
         )
 
-    def materialize_messages(
+    def materialize_history(
         self,
+        session: SessionRecord,
         messages: list[MessageRecord],
         adapter: RuntimeAdapter,
-        *,
+    ) -> list[MessageRecord]:
+        with self._prepared_files(session, messages, adapter) as (files, selection):
+            return files.materialize(selection.elided_ids(messages))
+
+    @contextmanager
+    def _prepared_files(
+        self,
         session: SessionRecord,
-        history: list[MessageRecord],
-    ) -> tuple[list[MessageRecord], ContextSelection]:
+        messages: list[MessageRecord],
+        adapter: RuntimeAdapter,
+    ) -> Iterator[tuple[PreparedFileInputs, ContextSelection]]:
         with self.store.session_read(session.session_id):
-            return self.media_context.project(
+            yield self.media_context.prepare(
                 messages,
                 session=session,
-                history=history,
                 input_modalities=adapter.model.input_modalities,
                 input_budget_tokens=adapter.model.context_budget.input_tokens,
             )

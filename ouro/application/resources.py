@@ -28,7 +28,7 @@ from ouro.core.errors import (
     SessionBusyError,
 )
 from ouro.core.input_content import InputFile, InputFileReference
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.resources import (
     ResourceRecord,
     ResourceSource,
@@ -334,7 +334,7 @@ class ResourceService:
         *,
         input_modalities: frozenset[MediaModality],
         input_budget_tokens: int | None = None,
-    ) -> list[MessageRecord]:
+    ) -> list[MessageRecord | ModelMessage]:
         with ExitStack() as reads:
             for identity in sorted({message.session_id for message in messages}):
                 reads.enter_context(self._sessions.session_read(identity))

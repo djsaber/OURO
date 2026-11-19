@@ -99,6 +99,7 @@ async def test_live_inputs_and_loaded_history_share_scaffold_projection(tmp_path
             text="Subagent completed the task",
             scaffold=True,
             semantic_tag="subagent-result",
+            semantic_attributes={"delegation_id": "dlg_child", "status": "completed"},
             sequence=len(messages) + 1,
         ).model_copy(
             update={

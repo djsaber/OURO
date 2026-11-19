@@ -400,7 +400,7 @@ async def test_unselected_real_model_keeps_draft_instead_of_running_faux(tmp_pat
         composer = app.query_one(Composer)
         composer.load_text("Choose a real model first")
         await pilot.press("enter")
-        await pilot.pause()
+        await _wait_for_worker_group(app, pilot, group="run")
 
         assert app._controller.session_id is None
         assert composer.text == "Choose a real model first"

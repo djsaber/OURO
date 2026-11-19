@@ -226,6 +226,7 @@ async def execute_plugin_command(
                     role=item.role,
                     scaffold=item.scaffold,
                     semantic_tag=item.semantic_tag,
+                    semantic_attributes=item.semantic_attributes,
                     plugin_id=item.plugin_id,
                     contribution_id=item.contribution_id,
                     generation_id=item.generation_id,

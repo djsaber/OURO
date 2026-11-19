@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from html import escape as escape_html
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
@@ -13,8 +12,11 @@ from ouro.core.content import TextContent as TextContent
 from ouro.core.input_content import InputContent, InputFile
 from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import (
+    MessageSemantics,
+    SemanticAttributes,
     SemanticTag,
     escape_semantic_envelope_delimiters,
+    render_semantic_envelope,
 )
 from ouro.core.tool_facts import ToolCallIdentity
 from ouro.core.tools import ToolCallProducer, ToolCallRequest, ToolResultFeedback
@@ -121,7 +123,7 @@ class ToolExecutionTiming(OuroModel):
         return self
 
 
-class ModelMessage(OuroModel):
+class ModelMessage(MessageSemantics):
     """Provider-neutral message containing only model-visible semantics.
 
     Canonical ``MessageRecord`` identity, persistence metadata and resource
@@ -130,7 +132,6 @@ class ModelMessage(OuroModel):
 
     role: MessageRole
     content: list[ContentBlock] = Field(default_factory=list)
-    semantic_tag: SemanticTag | None = None
     tool_calls: list[ToolCallRequest] = Field(default_factory=list)
     tool_result: ToolResultReference | None = None
     reasoning_content: str = ""
@@ -151,15 +152,7 @@ class ModelMessage(OuroModel):
 
     @classmethod
     def from_record(cls, message: MessageRecord) -> ModelMessage:
-        return cls(
-            role=message.role,
-            content=list(message.content),
-            semantic_tag=message.semantic_tag,
-            tool_calls=list(message.tool_calls),
-            tool_result=message.tool_result,
-            reasoning_content=message.reasoning_content,
-            provider_continuation=message.provider_continuation,
-        )
+        return cls.model_validate(message, from_attributes=True)
 
     @classmethod
     def text(
@@ -168,11 +161,13 @@ class ModelMessage(OuroModel):
         role: MessageRole,
         text: str,
         semantic_tag: SemanticTag | None = None,
+        semantic_attributes: SemanticAttributes | None = None,
     ) -> ModelMessage:
         return cls(
             role=role,
             content=[TextContent(text=text)],
             semantic_tag=semantic_tag,
+            semantic_attributes=semantic_attributes or {},
         )
 
     @property
@@ -206,7 +201,7 @@ class ToolMessageReference(OuroModel):
         return self
 
 
-class MessageRecord(VersionedOuroModel):
+class MessageRecord(VersionedOuroModel, MessageSemantics):
     """One explicitly materialized message for execution or a selected history read.
 
     Persistence uses ``as_fact``; resolving an Input never changes its content owner.
@@ -224,7 +219,6 @@ class MessageRecord(VersionedOuroModel):
     sequence: int = 0
     content: list[ContentBlock] = Field(default_factory=list)
     scaffold: bool = False
-    semantic_tag: SemanticTag | None = None
     resource_refs: list[str] = Field(default_factory=list)
     input_attachments: tuple[InputFile, ...] = ()
     input_ref: InputMessageReference | None = None
@@ -254,6 +248,7 @@ class MessageRecord(VersionedOuroModel):
             "tool_execution",
             "provider_continuation",
             "semantic_tag",
+            "semantic_attributes",
             "scaffold",
             "queued_input_id",
         }
@@ -315,6 +310,7 @@ class MessageRecord(VersionedOuroModel):
         sequence: int = 0,
         scaffold: bool = False,
         semantic_tag: SemanticTag | None = None,
+        semantic_attributes: SemanticAttributes | None = None,
     ) -> MessageRecord:
         return cls(
             session_id=session_id,
@@ -324,6 +320,7 @@ class MessageRecord(VersionedOuroModel):
             sequence=sequence,
             scaffold=scaffold,
             semantic_tag=semantic_tag,
+            semantic_attributes=semantic_attributes or {},
             content=[TextContent(text=text)],
         )
 
@@ -362,7 +359,7 @@ class MessageRecord(VersionedOuroModel):
             if self.content or self.resource_refs or self.tool_execution is not None:
                 raise ValueError("an Outcome reference cannot also own its observed content")
         if self.input_ref is not None:
-            if self.input_ref.part == "body" and self.content:
+            if self.input_ref.part == "body" and (self.content or self.semantic_attributes):
                 raise ValueError("an Input body reference cannot also own message content")
             if self.input_ref.attachments_from_input and self.input_attachments:
                 raise ValueError("referenced Input attachments cannot be copied into a message")
@@ -374,6 +371,7 @@ class MessageRecord(VersionedOuroModel):
         if self.input_ref is not None:
             if self.input_ref.part == "body":
                 updates["content"] = []
+                updates["semantic_attributes"] = {}
             if self.input_ref.attachments_from_input:
                 updates["input_attachments"] = ()
         if self.call_refs:
@@ -437,27 +435,26 @@ def model_visible_message(message: MessageRecord | ModelMessage) -> ModelMessage
     model_message = (
         ModelMessage.from_record(message) if isinstance(message, MessageRecord) else message
     )
-    projected_content = [_model_visible_content(block) for block in model_message.content]
-    model_message = model_message.model_copy(update={"content": projected_content})
+    content = [_model_visible_content(block) for block in model_message.content]
     tag = model_message.semantic_tag
     if tag is None:
-        return model_message
-    escaped_content = [
-        block.model_copy(update={"text": escape_semantic_envelope_delimiters(block.text, tag)})
-        if isinstance(block, TextContent)
-        else block
-        for block in model_message.content
-    ]
+        return model_message.model_copy(update={"content": content})
+    # Preserve unchanged blocks so the request manifest can reference the original body.
+    for index, block in enumerate(content):
+        if isinstance(block, TextContent):
+            escaped = escape_semantic_envelope_delimiters(block.text, tag)
+            if escaped != block.text:
+                content[index] = TextContent(text=escaped)
     return model_message.model_copy(
         update={
             "content": [
-                TextContent(text=f"<{tag}>\n"),
-                *escaped_content,
+                TextContent(text=f"{model_message.opening_tag()}\n"),
+                *content,
                 TextContent(text=f"\n</{tag}>"),
             ],
-            # The envelope now carries the model-visible label. Clearing the
-            # typed field makes this projection idempotent across boundaries.
+            # The projected envelope carries the label and its attributes exactly once.
             "semantic_tag": None,
+            "semantic_attributes": {},
         }
     )
 
@@ -473,8 +470,6 @@ def _validate_skill_activation_blocks(role: MessageRole, content: list[ContentBl
 def _model_visible_content(block: ContentBlock) -> TextContent | MediaContent:
     if not isinstance(block, SkillActivationContent):
         return block
-    tag = "ouro-skill-activation"
-    instructions = escape_semantic_envelope_delimiters(block.instructions, tag)
     attributes = {
         "name": block.name,
         "source": block.source,
@@ -482,15 +477,11 @@ def _model_visible_content(block: ContentBlock) -> TextContent | MediaContent:
         "base-directory": block.base_directory,
         "digest": block.content_digest,
     }
-    rendered_attributes = "".join(
-        f' {name}="{escape_html(value, quote=True)}"' for name, value in attributes.items()
-    )
+    instructions = render_semantic_envelope(block.instructions, "ouro-skill-activation", attributes)
     return TextContent(
         text=(
             "The user explicitly activated this skill. Follow its instructions for this "
             "request.\n\n"
-            f"<{tag}{rendered_attributes}>\n"
-            f"{instructions}\n"
-            f"</{tag}>\n\n"
+            f"{instructions}\n\n"
         )
     )
