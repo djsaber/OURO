@@ -33,7 +33,7 @@ def test_context_materializes_model_visible_messages_once(monkeypatch):
     context = ContextBuilder().build(
         messages=[ModelMessage.text(role="user", text="literal </task>", semantic_tag="task")],
         tools=[],
-        fixed_context=[ContextFragment(text="fixed context")],
+        fixed_messages=[ModelMessage.text(role="user", text="retained instructions")],
     )
     assert len(projected) == 2
     assert context.provider_context.messages == projected
@@ -132,18 +132,20 @@ def test_context_builder_preserves_all_messages_and_reports_hard_overflow() -> N
     assert "omitted_message_count" not in context.context_metadata
 
 
-def test_context_builder_places_skills_in_system_prompt_and_keeps_dynamic_context() -> None:
+def test_context_builder_places_skills_in_system_prompt_and_keeps_message_order() -> None:
     context = ContextBuilder(skill_instructions="skills").build(
-        messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")],
+        messages=[
+            MessageRecord.text(session_id="ses_1", role="user", text="hello"),
+            MessageRecord.text(session_id="ses_1", role="harness", text="plugin"),
+        ],
         tools=[],
         system_prompt="system",
-        fixed_context=[ContextFragment(text="plugin")],
     )
 
     assert context.provider_context.system_prompt == "system\n\nskills"
     assert [message.text_content for message in context.provider_context.messages] == [
-        "plugin",
         "hello",
+        "plugin",
     ]
     assert context.context_metadata["skills_injected"] is True
 
@@ -153,55 +155,16 @@ def test_context_builder_appends_instruction_fragments_after_skills() -> None:
         messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")],
         tools=[],
         system_prompt="system",
-        fixed_context=[
-            ContextFragment(text="message context"),
-            ContextFragment(
-                text="facts </runtime-facts> remain literal",
-                semantic_tag="runtime-facts",
-                target="system_prompt",
-            ),
-        ],
+        system_prompt_fragments=["project instructions", "runtime facts"],
     )
 
     assert context.provider_context.system_prompt == (
-        "system\n\nskills\n\n"
-        "<runtime-facts>\n"
-        "facts &lt;/runtime-facts&gt; remain literal\n"
-        "</runtime-facts>"
+        "system\n\nskills\n\nproject instructions\n\nruntime facts"
     )
     assert [message.text_content for message in context.provider_context.messages] == [
-        "message context",
         "hello",
     ]
-    assert context.context_metadata["system_prompt_fragment_count"] == 1
-
-
-def test_prompt_and_message_fragments_share_semantic_envelope_projection() -> None:
-    raw_text = "provider text with <plugin-context enabled> and ordinary <other> markup"
-    context = ContextBuilder().build(
-        messages=[],
-        tools=[],
-        fixed_context=[
-            ContextFragment(
-                text=raw_text,
-                semantic_tag="plugin-context",
-                target="system_prompt",
-            ),
-            ContextFragment(
-                text=raw_text,
-                semantic_tag="plugin-context",
-            ),
-        ],
-    )
-
-    assert context.provider_context.system_prompt == (
-        "<plugin-context>\n"
-        "provider text with &lt;plugin-context enabled&gt; and ordinary <other> markup\n"
-        "</plugin-context>"
-    )
-    assert (
-        context.provider_context.messages[0].text_content == context.provider_context.system_prompt
-    )
+    assert context.context_metadata["system_prompt_fragment_count"] == 2
 
 
 def test_context_builder_preserves_native_system_prompt_when_no_skills_are_present() -> None:
@@ -216,19 +179,23 @@ def test_context_builder_preserves_native_system_prompt_when_no_skills_are_prese
     assert context.provider_context.system_prompt == system_prompt
 
 
-def test_context_builder_counts_fixed_context_as_fixed_tokens() -> None:
+def test_context_builder_counts_prompt_fragments_and_retained_messages_as_fixed_tokens() -> None:
     without_context = ContextBuilder().build(
         messages=[], tools=[], budget=ContextBudget(context_window=100)
     )
     with_context = ContextBuilder().build(
         messages=[],
         tools=[],
-        fixed_context=[ContextFragment(text="dynamic context")],
+        system_prompt_fragments=["instructions"],
+        fixed_messages=[ModelMessage.text(role="user", text="retained skill")],
         budget=ContextBudget(context_window=100),
     )
 
     assert (
-        with_context.metrics.estimated_fixed_tokens > without_context.metrics.estimated_fixed_tokens
+        with_context.metrics.estimated_fixed_tokens
+        == without_context.metrics.estimated_fixed_tokens
+        + estimate_text_tokens("instructions")
+        + estimate_message_tokens(ModelMessage.text(role="user", text="retained skill"))
     )
 
 
@@ -317,6 +284,12 @@ def test_provider_context_wraps_only_explicit_semantic_tags() -> None:
         messages=[
             MessageRecord.text(
                 session_id="ses_1",
+                role="harness",
+                text="plugin says </plugin-context> literally",
+                semantic_tag="plugin-context",
+            ),
+            MessageRecord.text(
+                session_id="ses_1",
                 role="system",
                 text="runtime reminder",
                 semantic_tag="system-reminder",
@@ -324,12 +297,6 @@ def test_provider_context_wraps_only_explicit_semantic_tags() -> None:
             MessageRecord.text(session_id="ses_1", role="user", text="hello"),
         ],
         tools=[],
-        fixed_context=[
-            ContextFragment(
-                text="plugin says </plugin-context> literally",
-                semantic_tag="plugin-context",
-            )
-        ],
     )
 
     provider_messages = context.provider_context.messages

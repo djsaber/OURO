@@ -27,6 +27,7 @@ from ouro.plugins.worker.codec import (
     _decode_worker_observer,
     _decode_worker_prompt_policy,
     _decode_worker_session_controller,
+    _decode_worker_system_prompt,
     _decode_worker_tool,
     _decode_worker_tool_policy,
     _decode_worker_turn_policy,
@@ -402,11 +403,23 @@ class WorkerPluginInstance:
                         "run_id": call.run_id,
                         "message_count": call.message_count,
                         "model_round": call.model_round,
+                        "workspace": call.workspace,
                     },
                 },
                 decode=_decode_worker_context,
                 state_view=call.session_state,
             )
+
+        return handler
+
+    def _system_prompt_handler(self, identity: str):
+        async def handler(call: sdk.SystemPromptCall) -> sdk.SystemPromptFragment:
+            method = "system_prompt.call"
+            raw = await self.client.request(
+                method,
+                {"contribution_id": identity, "call": {"workspace": call.workspace}},
+            )
+            return self._result(raw, method, _decode_worker_system_prompt)
 
         return handler
 

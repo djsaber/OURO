@@ -1,4 +1,4 @@
-"""Immutable personal instructions resolved at a request preparation boundary."""
+"""System prompt sources resolved at a request preparation boundary."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ class PromptContext:
     revision: int | None = None
     replacement_id: str | None = None
     addition_ids: tuple[str, ...] = ()
+    fragments: tuple[str, ...] = ()
 
     def metadata(self) -> Metadata:
         return {

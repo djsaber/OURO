@@ -18,6 +18,7 @@ from ouro.core.errors import ContextBlockedError
 from ouro.core.input_content import InputFileReference
 from ouro.core.messages import ImageContent, MessageRecord, ModelMessage
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.system_prompts import SystemPromptFragment, SystemPromptRegistration
 from tests.application.test_compaction import RecordingProvider, RecordingStrategy, _runtime
 from tests.application.test_resources import _services
 from tests.event_capture import recorded_events
@@ -74,7 +75,6 @@ async def test_context_building_and_recording_do_not_require_a_summary(tmp_path,
             messages=[context_note, *built.messages[-2:]],
             source_messages=built.messages,
             tools=[],
-            fixed_context=built.fixed_context,
             adapter=runtime.adapter,
             prompt_context=built.prompt_context,
         )
@@ -185,6 +185,16 @@ async def test_auto_compaction_reuses_views_and_reloads_only_changed_history(
         views.append(weakref.ref(view.provider_context))
         return view
 
+    prompt_calls = []
+
+    def instructions(call):
+        prompt_calls.append(call)
+        return SystemPromptFragment(text="Fixed instructions")
+
+    runtime.system_prompt_providers.replace_owner(
+        "test", (SystemPromptRegistration("test", "rules", instructions),)
+    )
+
     def dynamic(call):
         fragments.append(call.message_count)
         return ContextProviderResult(
@@ -243,6 +253,8 @@ async def test_auto_compaction_reuses_views_and_reloads_only_changed_history(
         assert len(reads) == (4 if change == "append" else 3)
         assert len(views) == (3 if change == "append" else 2)
         assert views[-1]() is view.provider_context
+        assert len(prompt_calls) == 1
+        assert view.provider_context.system_prompt.endswith("Fixed instructions")
         assert fragments == [covered + 11]
         texts = [message.text_content for message in view.provider_context.messages]
         assert any("replacement summary" in text for text in texts)

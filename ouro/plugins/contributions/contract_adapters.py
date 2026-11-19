@@ -14,6 +14,7 @@ from ouro.core.observers import ObserverRegistration
 from ouro.core.prompt_policies import PromptPolicyRegistration
 from ouro.core.run_drivers import RunDriverRegistration
 from ouro.core.session_controller_registry import SessionController
+from ouro.core.system_prompts import SystemPromptRegistration
 from ouro.core.tool_policies import ToolPolicyRegistration
 from ouro.core.turn_policies import TurnPolicyRegistration
 from ouro.plugins.manifest import PluginManifest
@@ -36,6 +37,7 @@ class ContributionContractContext:
     tools: tuple[Tool, ...]
     observers: tuple[ObserverRegistration, ...]
     context_providers: tuple[ContextProviderRegistration, ...]
+    system_prompt_providers: tuple[SystemPromptRegistration, ...]
     commands: tuple[PluginCommand, ...]
     compaction: tuple[CompactionStrategy, ...]
     background_services: tuple[ContractBackgroundService, ...]
@@ -84,18 +86,18 @@ class _ObserverContractAdapter:
 
 
 @dataclass(frozen=True)
-class _ContextContractAdapter:
-    kind: str = "context_providers"
+class _RequestProviderContractAdapter:
+    kind: str
 
     def contracts(self, context: ContributionContractContext) -> dict[str, object]:
         return {
-            f"{context.manifest.plugin_id}/context_providers/{provider.provider_id}": {
+            f"{context.manifest.plugin_id}/{self.kind}/{provider.provider_id}": {
                 "priority": provider.priority,
                 "timeout_seconds": provider.timeout_seconds,
                 "failure_mode": provider.failure_mode,
                 "active_when_controller_id": provider.active_when_controller_id,
             }
-            for provider in context.context_providers
+            for provider in getattr(context, self.kind)
         }
 
 
@@ -235,7 +237,8 @@ OBSERVER_CONTRACT_ADAPTER = _ObserverContractAdapter()
 COMMAND_CONTRACT_ADAPTER = _CommandContractAdapter()
 
 
-CONTEXT_CONTRACT_ADAPTER = _ContextContractAdapter()
+CONTEXT_CONTRACT_ADAPTER = _RequestProviderContractAdapter("context_providers")
+SYSTEM_PROMPT_CONTRACT_ADAPTER = _RequestProviderContractAdapter("system_prompt_providers")
 
 
 COMPACTION_CONTRACT_ADAPTER = _CompactionContractAdapter()

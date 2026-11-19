@@ -20,6 +20,7 @@ _CONTRIBUTION_LABELS = {
     "commands": "command",
     "observers": "observer",
     "context_providers": "context",
+    "system_prompt_providers": "system prompt",
     "compaction_strategies": "compaction",
     "skills": "skill",
     "mcp_servers": "mcp",

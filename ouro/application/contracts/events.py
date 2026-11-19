@@ -184,6 +184,7 @@ def _event_category(event_type: str) -> RuntimeEventCategory:
         "persistence_warning",
         "plugin_observer_failed",
         "context_provider_failed",
+        "system_prompt_provider_failed",
         "turn_policy_continued",
         "turn_policy_failed",
         "diagnostic",

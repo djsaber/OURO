@@ -46,6 +46,11 @@ from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.session_controls import AttributedSessionInput, SessionControlTransitionRequest
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.system_prompts import (
+    SystemPromptFragment,
+    SystemPromptRegistration,
+    SystemPromptRegistry,
+)
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest, ToolInvocation
 from ouro.core.turn_policies import (
@@ -1651,31 +1656,24 @@ async def test_runtime_context_provider_adds_context_to_provider(tmp_path) -> No
 
 
 @pytest.mark.asyncio
-async def test_runtime_context_provider_appends_system_prompt_without_creating_message(
+async def test_system_prompt_provider_composes_tagged_text_without_creating_message(
     tmp_path,
+    monkeypatch,
 ) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     provider = CapturingProvider()
-    seen_calls = []
-    context_providers = ContextProviderRegistry()
+    workspaces = []
+    system_prompt_providers = SystemPromptRegistry()
 
-    def provide(call):
-        seen_calls.append(call)
-        return ContextProviderResult(
-            fragments=[
-                ContextFragment(
-                    text="facts",
-                    semantic_tag="runtime-facts",
-                    target="system_prompt",
-                )
-            ]
-        )
+    def provide(workspace):
+        workspaces.append(workspace)
+        return SystemPromptFragment(text="facts </runtime-facts>", semantic_tag="runtime-facts")
 
-    context_providers.replace_owner(
+    system_prompt_providers.replace_owner(
         "ctx",
         (
-            ContextProviderRegistration(
+            SystemPromptRegistration(
                 plugin_id="dev.ouro.runtime",
                 provider_id="facts",
                 handler=provide,
@@ -1689,15 +1687,30 @@ async def test_runtime_context_provider_appends_system_prompt_without_creating_m
             ModelMetadata(model_id="capture", provider_id="capture"),
         ),
         tools=_tools(),
-        context_providers=context_providers,
+        system_prompt_providers=system_prompt_providers,
         default_workspace=tmp_path / "workspace",
         environment=RuntimeEnvironment.local(tmp_path),
     )
 
+    def unexpected_capture(*args, **kwargs):
+        pytest.fail("system prompt preparation captured Session harness state")
+
+    monkeypatch.setattr("ouro.application.context.preparation.capture_harness", unexpected_capture)
+    lookups = []
+    find_observation = store.find_context_provider_message
+
+    def record_lookup(session_id, delivery_key):
+        lookups.append(delivery_key)
+        return find_observation(session_id, delivery_key)
+
+    monkeypatch.setattr(store, "find_context_provider_message", record_lookup)
     result = await runtime.run("Use runtime facts")
 
-    assert provider.system_prompt.endswith("<runtime-facts>\nfacts\n</runtime-facts>")
-    assert seen_calls[0].workspace == str((tmp_path / "workspace").resolve())
+    assert provider.system_prompt.endswith(
+        "<runtime-facts>\nfacts &lt;/runtime-facts&gt;\n</runtime-facts>"
+    )
+    assert workspaces == [str((tmp_path / "workspace").resolve())]
+    assert "dev.ouro.runtime:facts:0" not in lookups
     snapshot = store.load_session(result.session.session_id)
     assert [message.role for message in snapshot.messages] == ["user", "assistant"]
     context_snapshot = store.load_latest_context(result.session.session_id)
@@ -1711,6 +1724,7 @@ async def test_runtime_persists_context_provider_message_with_provenance(tmp_pat
     store = LocalSessionStore(tmp_path)
     store.initialize()
     provider = CapturingProvider()
+    observation = "durable harness context"
     context_providers = ContextProviderRegistry()
     context_providers.replace_owner(
         "ctx",
@@ -1722,7 +1736,7 @@ async def test_runtime_persists_context_provider_message_with_provenance(tmp_pat
                 handler=lambda _call: ContextProviderResult(
                     fragments=[
                         ContextFragment(
-                            text="durable harness context",
+                            text=observation,
                             semantic_tag="plugin-context",
                         )
                     ]
@@ -1740,6 +1754,18 @@ async def test_runtime_persists_context_provider_message_with_provenance(tmp_pat
         context_providers=context_providers,
     )
 
+    runtime.system_prompt_providers.replace_owner(
+        "ctx",
+        (
+            SystemPromptRegistration(
+                plugin_id="dev.ouro.harness",
+                provider_id="harness",
+                handler=lambda _: SystemPromptFragment(
+                    text="Workspace rule", semantic_tag="plugin-context"
+                ),
+            ),
+        ),
+    )
     result = await runtime.run("Use durable context")
 
     snapshot = store.load_session(result.session.session_id)
@@ -1773,6 +1799,23 @@ async def test_runtime_persists_context_provider_message_with_provenance(tmp_pat
         == 1
     )
     assert all(not hasattr(message, "message_id") for message in provider.messages)
+
+    first_prompt, first_messages = provider.system_prompt, provider.messages
+    assert first_prompt.endswith("<plugin-context>\nWorkspace rule\n</plugin-context>")
+    observation = "updated harness context"
+    await runtime.run("Check again", session_id=result.session.session_id)
+    assert provider.system_prompt == first_prompt
+    assert provider.messages[: len(first_messages)] == first_messages
+    assert (
+        provider.messages[-1].text_content
+        == "<plugin-context>\nupdated harness context\n</plugin-context>"
+    )
+    assert [
+        m.text_content
+        for m in store.load_session(result.session.session_id).messages
+        if m.role == "harness"
+    ] == ["durable harness context", "updated harness context"]
+    await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -1967,26 +2010,23 @@ async def test_runtime_merges_context_builder_skills_before_provider_context(tmp
 
 
 @pytest.mark.asyncio
-async def test_required_context_provider_failure_pauses_before_model_request(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("registry_name", "registration", "event_type"),
+    [
+        ("context_providers", ContextProviderRegistration, "context_provider_failed"),
+        ("system_prompt_providers", SystemPromptRegistration, "system_prompt_provider_failed"),
+    ],
+)
+async def test_required_provider_failure_pauses_before_model_request(
+    tmp_path, registry_name, registration, event_type
+) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     provider = CapturingProvider()
-    context_providers = ContextProviderRegistry()
 
     def fail(_call):
         raise RuntimeError("required state unavailable")
 
-    context_providers.replace_owner(
-        "required",
-        (
-            ContextProviderRegistration(
-                plugin_id="dev.ouro.required",
-                provider_id="state",
-                handler=fail,
-                failure_mode="block",
-            ),
-        ),
-    )
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
@@ -1994,16 +2034,28 @@ async def test_required_context_provider_failure_pauses_before_model_request(tmp
             ModelMetadata(model_id="capture", provider_id="capture"),
         ),
         tools=_tools(),
-        context_providers=context_providers,
     )
-
+    getattr(runtime, registry_name).replace_owner(
+        "required",
+        (
+            registration(
+                plugin_id="dev.ouro.required",
+                provider_id="state",
+                handler=fail,
+                failure_mode="block",
+            ),
+        ),
+    )
     result = await runtime.run("Use required context")
     events = recorded_events(result.session.session_id)
 
     assert result.run.status == "paused"
     assert result.run.metadata["pause"]["reason"] == "context_blocked"
     assert provider.messages == []
-    assert any(event.event_type == "context_provider_failed" for event in events)
+    (failure,) = (event for event in events if event.event_type == event_type)
+    assert failure.payload["session_id"] == failure.session_id == result.session.session_id
+    assert failure.payload["run_id"] == failure.run_id == result.run.run_id
+    assert failure.payload["provider_id"] == "state"
 
 
 @pytest.mark.asyncio

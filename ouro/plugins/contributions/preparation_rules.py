@@ -15,8 +15,10 @@ from ouro.core.continuations import ContinuationPolicyRegistration
 from ouro.core.extensions import PluginSource
 from ouro.core.observers import ObserverRegistration
 from ouro.core.prompt_policies import PromptPolicyRegistration
+from ouro.core.request_providers import RequestProviderRegistration
 from ouro.core.run_drivers import RunDriverRegistration
 from ouro.core.session_controller_registry import SessionController
+from ouro.core.system_prompts import SystemPromptRegistration
 from ouro.core.tool_policies import ToolPolicyRegistration
 from ouro.core.turn_policies import TurnPolicyRegistration
 from ouro.plugins.contributions.models import (
@@ -49,6 +51,7 @@ class _PreparedBuilder:
     tools: tuple[Tool, ...] = ()
     observers: tuple[ObserverRegistration, ...] = ()
     context_providers: tuple[ContextProviderRegistration, ...] = ()
+    system_prompt_providers: tuple[SystemPromptRegistration, ...] = ()
     commands: tuple[PluginCommand, ...] = ()
     compaction_strategies: tuple[CompactionStrategy, ...] = ()
     background_services: tuple[PreparedBackgroundService, ...] = ()
@@ -408,17 +411,18 @@ def _prepare_observers(
     return tuple(prepared)
 
 
-def _prepare_context_providers(
+def _prepare_request_providers[R: RequestProviderRegistration](
+    kind: str,
     manifest: PluginManifest,
     owner: ContributionOwner,
-    providers: list[ContextProviderRegistration],
-) -> tuple[ContextProviderRegistration, ...]:
-    declarations = {item.id: item for item in manifest.contributes.context_providers}
+    providers: list[R],
+) -> tuple[R, ...]:
+    declarations = {item.id: item for item in getattr(manifest.contributes, kind)}
     actual = _unique_contribution_map(
-        "context provider",
+        kind,
         ((provider.provider_id, provider) for provider in providers),
     )
-    _validate_declared_set("context provider", declarations, actual)
+    _validate_declared_set(kind, declarations, actual)
     return tuple(
         replace(
             provider,

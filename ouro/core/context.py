@@ -11,9 +11,7 @@ from pydantic import ConfigDict, Field, model_validator
 from ouro.core.base import Metadata, MetadataField, OuroModel
 from ouro.core.content import MEDIA_CONTENT_COST, MediaContent
 from ouro.core.context_budget import ContextBudget
-from ouro.core.context_providers import ContextFragment
 from ouro.core.context_selection import ContextSelection
-from ouro.core.message_semantics import render_semantic_envelope
 from ouro.core.messages import (
     MessageRecord,
     ModelMessage,
@@ -135,7 +133,8 @@ class ContextBuilder:
         tools: list[ToolDefinition],
         system_prompt: str = "",
         supports_inline_system_messages: bool = False,
-        fixed_context: Sequence[ContextFragment] = (),
+        system_prompt_fragments: Sequence[str] = (),
+        fixed_messages: Sequence[ModelMessage] = (),
         additional_skill_instructions: str = "",
         budget: ContextBudget | None = None,
         source_messages: Sequence[MessageRecord] = (),
@@ -146,29 +145,11 @@ class ContextBuilder:
             self.skill_instructions,
             additional_skill_instructions,
         )
-        prompt_fragments = [
-            (
-                render_semantic_envelope(fragment.text, fragment.semantic_tag)
-                if fragment.semantic_tag is not None
-                else fragment.text
-            )
-            for fragment in fixed_context
-            if fragment.target == "system_prompt"
-        ]
         composed_prompt = compose_system_prompt(
             system_prompt,
             skill_instructions,
-            *prompt_fragments,
+            *system_prompt_fragments,
         )
-        context_messages = [
-            ModelMessage.text(
-                role=fragment.role,
-                text=fragment.text,
-                semantic_tag=fragment.semantic_tag,
-            )
-            for fragment in fixed_context
-            if fragment.target == "message"
-        ]
         model_tools = [_project_tool_definition(tool).model_dump(mode="json") for tool in tools]
         sources = {message.message_id: message for message in source_messages}
         reuse_estimates = self.token_estimator is estimate_text_tokens
@@ -180,7 +161,7 @@ class ContextBuilder:
         summary_tokens = 0
         prepared_messages = []
         manifest_messages = []
-        for index, original in enumerate(chain(context_messages, messages)):
+        for index, original in enumerate(chain(fixed_messages, messages)):
             source = (
                 sources.get(original.message_id) if isinstance(original, MessageRecord) else None
             )
@@ -197,7 +178,7 @@ class ContextBuilder:
                 if key is not None:
                     estimates[key] = cost
                 estimated_tokens += cost
-                if index < len(context_messages):
+                if index < len(fixed_messages):
                     fixed_tokens += cost
                 if original.semantic_tag == "conversation-summary":
                     summary_tokens += cost
@@ -220,7 +201,7 @@ class ContextBuilder:
             ),
             context_metadata={
                 "skills_injected": bool(skill_instructions),
-                "system_prompt_fragment_count": len(prompt_fragments),
+                "system_prompt_fragment_count": len(system_prompt_fragments),
             },
             estimated_summary_tokens=summary_tokens,
         )

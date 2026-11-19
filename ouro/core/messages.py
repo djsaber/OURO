@@ -44,6 +44,23 @@ class SkillActivationContent(OuroModel):
             raise ValueError("skill activation fields must not be blank")
         return value
 
+    def render(self) -> str:
+        attributes = {
+            "name": self.name,
+            "source": self.source,
+            "location": self.location,
+            "base-directory": self.base_directory,
+            "digest": self.content_digest,
+        }
+        instructions = render_semantic_envelope(
+            self.instructions, "ouro-skill-activation", attributes
+        )
+        return (
+            "The user explicitly activated this skill. Follow its instructions for this "
+            "request.\n\n"
+            f"{instructions}\n\n"
+        )
+
 
 ContentBlock = Annotated[
     TextContent | MediaContent | SkillActivationContent,
@@ -453,7 +470,10 @@ def model_visible_message(
             if role == model_message.role
             else model_message.model_copy(update={"role": role})
         )
-    content = [_model_visible_content(block) for block in model_message.content]
+    content = [
+        TextContent(text=block.render()) if isinstance(block, SkillActivationContent) else block
+        for block in model_message.content
+    ]
     if tag is None:
         return model_message.model_copy(update={"role": role, "content": content})
     # Preserve unchanged blocks so the request manifest can reference the original body.
@@ -503,23 +523,3 @@ def _validate_skill_activation_blocks(role: MessageRole, content: list[ContentBl
         raise ValueError("skill activation content is only valid on user messages")
     if len({item.name for item in activations}) != len(activations):
         raise ValueError("skill activations must have unique names")
-
-
-def _model_visible_content(block: ContentBlock) -> TextContent | MediaContent:
-    if not isinstance(block, SkillActivationContent):
-        return block
-    attributes = {
-        "name": block.name,
-        "source": block.source,
-        "location": block.location,
-        "base-directory": block.base_directory,
-        "digest": block.content_digest,
-    }
-    instructions = render_semantic_envelope(block.instructions, "ouro-skill-activation", attributes)
-    return TextContent(
-        text=(
-            "The user explicitly activated this skill. Follow its instructions for this "
-            "request.\n\n"
-            f"{instructions}\n\n"
-        )
-    )

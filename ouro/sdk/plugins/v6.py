@@ -52,7 +52,6 @@ ToolBatchBehavior = Literal["compatible", "exclusive"]
 SessionInputMode = Literal["follow_up", "steer"]
 PromptInputSource = Literal["user", "host", "plugin", "delegation"]
 SessionKind = Literal["primary", "subagent"]
-ContextFragmentTarget = Literal["message", "system_prompt"]
 RunStatus = Literal[
     "queued",
     "running",
@@ -731,15 +730,9 @@ class ContextOutput:
 
 @dataclass(frozen=True, slots=True)
 class ContextFragment:
-    """A provider observation for the dialogue or the fixed system prompt.
-
-    The Host appends changed message fragments in delivery order and renders
-    each declared semantic envelope once. An optional revision distinguishes
-    separate observations with identical model-visible content.
-    """
+    """An ordered session observation. A revision distinguishes equal-text updates."""
 
     text: str
-    target: ContextFragmentTarget = "message"
     role: SessionInputRole = "harness"
     semantic_tag: str | None = None
     revision: str | None = None
@@ -758,6 +751,27 @@ ContextHandler = Callable[
 class ContextContribution:
     id: str
     handler: ContextHandler
+    priority: int = 100
+    timeout_seconds: float = 10.0
+    failure_mode: Literal["omit", "block"] = "omit"
+    active_when: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SystemPromptCall:
+    workspace: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SystemPromptFragment:
+    text: str
+    semantic_tag: str | None = None
+
+
+@dataclass(frozen=True)
+class SystemPromptContribution:
+    id: str
+    handler: Callable[[SystemPromptCall], SystemPromptFragment | Awaitable[SystemPromptFragment]]
     priority: int = 100
     timeout_seconds: float = 10.0
     failure_mode: Literal["omit", "block"] = "omit"
@@ -811,6 +825,7 @@ class ContributionSet:
     observers: list[ObserverContribution] = field(default_factory=list)
     commands: list[CommandContribution] = field(default_factory=list)
     context_providers: list[ContextContribution] = field(default_factory=list)
+    system_prompt_providers: list[SystemPromptContribution] = field(default_factory=list)
     compaction_strategies: list[CompactionContribution] = field(default_factory=list)
     background_services: list[BackgroundServiceContribution] = field(default_factory=list)
     providers: list[ProviderContribution] = field(default_factory=list)
@@ -869,7 +884,9 @@ __all__ = [
     "ContextContribution",
     "ContextCall",
     "ContextFragment",
-    "ContextFragmentTarget",
+    "SystemPromptCall",
+    "SystemPromptContribution",
+    "SystemPromptFragment",
     "ContextPreparedObservation",
     "ContextOutput",
     "ContributionSet",

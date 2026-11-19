@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from ouro.core.context_providers import AttributedContextFragment, ContextFragment
+from ouro.core.context_providers import ContextFragment, ContextObservation
 from ouro.core.continuations import ContinuationDecision
 from ouro.core.session_controls import HostSessionInput, SessionInputRequest
 from ouro.core.state import RunContinuationSettlementPlan
@@ -16,7 +16,7 @@ from ouro.sdk.plugins import v6 as sdk
         (HostSessionInput, {"prompt": "Continue", "host_source_id": "test"}),
         (ContextFragment, {"text": "Context"}),
         (
-            AttributedContextFragment,
+            ContextObservation,
             {"text": "Context", "plugin_id": "test", "provider_id": "context", "fragment_index": 0},
         ),
         (ContinuationDecision, {}),

@@ -591,10 +591,7 @@ class StreamingTaskProvider:
             next(
                 m.text_content
                 for m in reversed(messages)
-                if m.role == "user"
-                and not m.text_content.startswith(
-                    ("<ouro-system-information>", "<unattended-mode-reminder>")
-                )
+                if m.role == "user" and not m.text_content.startswith("<unattended-mode-reminder>")
             )
         )
         yield ProviderStreamEvent(type="text_delta", text="Before attachment. ")

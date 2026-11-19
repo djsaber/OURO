@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from time import monotonic
 
 from ouro.application.context.preparation import ContextPreparationService, PreparedContext
-from ouro.application.context.prompts import PromptContext
 from ouro.application.context.summary import LLMSummaryCompactionStrategy
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.harness import capture_harness
@@ -32,10 +31,7 @@ from ouro.core.context import (
     ContextView,
     estimate_text_tokens,
 )
-from ouro.core.context_providers import (
-    ContextFragment,
-    ContextProviderRegistry,
-)
+from ouro.core.context_providers import ContextProviderRegistry
 from ouro.core.context_selection import ContextSelection
 from ouro.core.errors import (
     CompactionError,
@@ -46,6 +42,7 @@ from ouro.core.events import EventRecord
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict
 from ouro.core.session_ports import SessionStore
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.system_prompts import SystemPromptRegistry
 from ouro.core.tools import ToolDefinition
 
 
@@ -139,6 +136,7 @@ class ContextCompactionService:
         abort_signal: AbortSignal,
         adapter: RuntimeAdapter | None = None,
         context_providers: ContextProviderRegistry | None = None,
+        system_prompt_providers: SystemPromptRegistry | None = None,
         strategies: CompactionStrategyRegistry | None = None,
         skill_instructions: str = "",
         prompt: str = "",
@@ -152,12 +150,12 @@ class ContextCompactionService:
             model_round=model_round,
             adapter=adapter,
             context_providers=context_providers,
+            system_prompt_providers=system_prompt_providers,
             skill_instructions=skill_instructions,
             prompt=prompt,
         )
         session, active, messages = prepared.session, prepared.active, prepared.messages
         view = prepared.view
-        fixed_context, prompt_context = prepared.fixed_context, prepared.prompt_context
         active_adapter = adapter or self.preparation.adapter
         budget = active_adapter.model.context_budget.input_tokens
         trigger_tokens = int(budget * config.policy.trigger_ratio)
@@ -168,14 +166,12 @@ class ContextCompactionService:
                     session=session,
                     run=run,
                     tools=tools,
-                    fixed_context=fixed_context,
                     trigger="auto",
                     force=False,
                     abort_signal=abort_signal,
                     adapter=active_adapter,
                     strategies=strategies,
                     skill_instructions=skill_instructions,
-                    prompt_context=prompt_context,
                     prepared=prepared,
                     config=config,
                 )
@@ -233,10 +229,9 @@ class ContextCompactionService:
                     messages=messages,
                     active=active,
                     tools=tools,
-                    fixed_context=fixed_context,
                     adapter=active_adapter,
                     skill_instructions=skill_instructions,
-                    prompt_context=prompt_context,
+                    prompt_context=prepared.prompt_context,
                 )
 
         return await self.preparation.finalize(
@@ -259,44 +254,40 @@ class ContextCompactionService:
         session: SessionRecord,
         run: RunRecord,
         tools: list[ToolDefinition],
-        fixed_context: Sequence[ContextFragment],
         trigger: CompactionTrigger,
         force: bool,
         abort_signal: AbortSignal,
         adapter: RuntimeAdapter | None = None,
         strategies: CompactionStrategyRegistry | None = None,
         skill_instructions: str = "",
-        prompt_context: PromptContext | None = None,
         prepared: PreparedContext | None = None,
+        system_prompt_providers: SystemPromptRegistry | None = None,
         config: CompactionConfig | None = None,
     ) -> CompactionExecution:
         config = config if config is not None else self.config.model_copy(deep=True)
+        active_adapter = adapter or self.preparation.adapter
         if prepared is None:
             session, active, messages = await run_blocking(
                 self.preparation.load_history, session.session_id
             )
-        else:
-            active, messages = prepared.active, prepared.messages
-        # Auto compaction shares the request snapshot; a manual command resolves its own.
-        if prompt_context is None:
-            prompt_context = await self.preparation.resolve_prompt_context(run)
-        active_adapter = adapter or self.preparation.adapter
-        budget = active_adapter.model.context_budget.input_tokens
-        initial_view = (
-            prepared.view
-            if prepared is not None
-            else await run_blocking(
+            prompt_context = await self.preparation.resolve_prompt_context(
+                session, run, system_prompt_providers
+            )
+            initial_view = await run_blocking(
                 self.preparation.project,
                 session=session,
                 messages=messages,
                 active=active,
                 tools=tools,
-                fixed_context=fixed_context,
                 adapter=active_adapter,
                 skill_instructions=skill_instructions,
                 prompt_context=prompt_context,
             )
-        )
+        else:
+            active, messages = prepared.active, prepared.messages
+            prompt_context = prepared.prompt_context
+            initial_view = prepared.view
+        budget = active_adapter.model.context_budget.input_tokens
         # Activation/withdrawal establish validity. Project only the uncovered suffix.
         covered_count = active.covered_message_count if active else 0
         materialized_messages = await run_blocking(
@@ -424,7 +415,6 @@ class ContextCompactionService:
                 messages=messages[newly_covered:],
                 active=record,
                 tools=tools,
-                fixed_context=fixed_context,
                 adapter=active_adapter,
                 skill_instructions=skill_instructions,
                 prompt_context=prompt_context,

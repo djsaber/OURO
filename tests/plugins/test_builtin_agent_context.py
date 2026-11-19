@@ -31,23 +31,29 @@ from ouro.tools import ToolRegistry
 PLUGIN_ID = "dev.ouro.agent_context"
 
 
-def test_agent_context_manifest_is_default_enabled_context_contract() -> None:
+def test_agent_context_declares_two_default_enabled_system_prompt_providers() -> None:
     manifest = AGENT_CONTEXT_PLUGIN.manifest
 
     assert manifest.plugin_id == PLUGIN_ID
     assert manifest.name == "Agent Context"
-    assert [item.id for item in manifest.contributes.context_providers] == [
+    assert [item.id for item in manifest.contributes.system_prompt_providers] == [
         "agent-instructions",
         "runtime-facts",
     ]
-    assert [item.priority for item in manifest.contributes.context_providers] == [9_000, 10_000]
-    assert all(item.failure_mode == "omit" for item in manifest.contributes.context_providers)
+    assert [item.priority for item in manifest.contributes.system_prompt_providers] == [
+        9_000,
+        10_000,
+    ]
+    assert all(item.failure_mode == "omit" for item in manifest.contributes.system_prompt_providers)
+    assert not manifest.contributes.context_providers
     assert manifest.permissions == []
     assert AGENT_CONTEXT_PLUGIN.default_enabled is True
     assert LOCAL_BUILTIN_PLUGINS.require(PLUGIN_ID) is AGENT_CONTEXT_PLUGIN
 
 
 def test_system_information_is_tagged_prompt_tail_with_day_precision() -> None:
+    day = datetime(2026, 7, 31, tzinfo=timezone(timedelta(hours=8), name="CST"))
+    times = iter((day, day.replace(hour=23, minute=59, second=58), day + timedelta(days=1)))
     plugin = AgentContextPlugin(
         environment=PluginEnvironmentService(
             AgentInstructionLoader(ouro_home="/missing", user_home="/missing"),
@@ -61,25 +67,14 @@ def test_system_information_is_tagged_prompt_tail_with_day_precision() -> None:
             preferred_encoding="UTF-8",
             path_style="POSIX",
         ),
-        clock=lambda: datetime(
-            2026,
-            7,
-            31,
-            23,
-            59,
-            58,
-            tzinfo=timezone(timedelta(hours=8), name="CST"),
-        ),
+        clock=times.__next__,
         fallback_working_directory="/fallback",
     )
 
-    output = plugin.system_information(_context_call(workspace="/work & project"))
+    call = sdk.SystemPromptCall(workspace="/work & project")
+    fragment = plugin.system_information(call)
 
-    assert len(output.fragments) == 1
-    fragment = output.fragments[0]
-    assert isinstance(fragment, sdk.ContextFragment)
-    assert fragment.target == "message"
-    assert fragment.role == "harness"
+    assert isinstance(fragment, sdk.SystemPromptFragment)
     assert fragment.semantic_tag == "ouro-system-information"
     assert fragment.text == (
         "System platform: Test OS <1>\n"
@@ -93,7 +88,8 @@ def test_system_information_is_tagged_prompt_tail_with_day_precision() -> None:
         "System preferred encoding: UTF-8\n"
         "Command tools may use a different shell or encoding; follow their descriptions."
     )
-    assert "23:59" not in fragment.text
+    assert plugin.system_information(call) == fragment
+    assert plugin.system_information(call).text == fragment.text.replace("2026-07-31", "2026-08-01")
 
 
 def test_system_information_uses_process_directory_when_session_has_no_workspace() -> None:
@@ -114,10 +110,9 @@ def test_system_information_uses_process_directory_when_session_has_no_workspace
         fallback_working_directory="/fallback",
     )
 
-    output = plugin.system_information(_context_call())
+    fragment = plugin.system_information(sdk.SystemPromptCall())
 
-    fragment = output.fragments[0]
-    assert isinstance(fragment, sdk.ContextFragment)
+    assert isinstance(fragment, sdk.SystemPromptFragment)
     assert "Workspace: /fallback" in fragment.text
 
 
@@ -261,19 +256,15 @@ async def test_agent_instructions_keep_nested_discovery_contract_without_current
         )
     )
 
-    output = await plugin.agent_instructions(_context_call(workspace=str(workspace)))
+    fragment = await plugin.agent_instructions(sdk.SystemPromptCall(workspace=str(workspace)))
 
-    assert len(output.fragments) == 1
-    fragment = output.fragments[0]
-    assert isinstance(fragment, sdk.ContextFragment)
+    assert isinstance(fragment, sdk.SystemPromptFragment)
     assert fragment.semantic_tag == "ouro-agent-instructions"
-    assert fragment.target == "system_prompt"
-    assert fragment.role == "system"
     assert "check for a more specific AGENTS.md" in fragment.text
 
 
 @pytest.mark.asyncio
-async def test_default_builtin_prepares_instructions_and_records_runtime_facts(
+async def test_default_builtin_composes_instructions_and_runtime_facts_in_the_system_prompt(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -315,23 +306,29 @@ async def test_default_builtin_prepares_instructions_and_records_runtime_facts(
         assert application.plugins.show(PLUGIN_ID).status == "active"
         result = await runtime.run("Inspect the environment")
         context = runtime.sessions.context(result.session.session_id)
+        snapshot = store.load_session(result.session.session_id)
+
+        (workspace / "AGENTS.md").write_bytes(b"\xff")
+        continued = await runtime.run("Continue", session_id=result.session.session_id)
+        assert continued.run.status == "completed"
+        assert "<ouro-agent-instructions>" not in system_prompts[1]
+        assert f"Workspace: {workspace}" in system_prompts[1]
 
     prompt = system_prompts[0]
     assert "Always validate the final result." in prompt
     assert "Run the workspace tests." in prompt
-    assert prompt.endswith("</ouro-agent-instructions>")
-    snapshot = store.load_session(result.session.session_id)
-    fact = next(m for m in snapshot.messages if m.semantic_tag == "ouro-system-information")
-    assert fact.role == "harness" and f"Workspace: {workspace}" in fact.text_content
+    assert (
+        prompt.count("<ouro-agent-instructions>") == prompt.count("<ouro-system-information>") == 1
+    )
+    assert "</ouro-agent-instructions>\n\n<ouro-system-information>" in prompt
+    assert f"Workspace: {workspace}" in prompt
+    assert prompt.endswith("</ouro-system-information>")
+    assert [m.role for m in snapshot.messages] == ["user", "assistant"]
     assert context is not None
     prepared = context.provider_context
-    question, facts = prepared.messages
-    assert question.text_content == "Inspect the environment"
-    assert (
-        facts.text_content
-        == f"<ouro-system-information>\n{fact.text_content}\n</ouro-system-information>"
-    )
-    dialogue = [{"role": "user", "content": m.text_content} for m in prepared.messages]
+    assert prepared.system_prompt == prompt
+    assert [m.text_content for m in prepared.messages] == ["Inspect the environment"]
+    dialogue = [{"role": "user", "content": "Inspect the environment"}]
     arguments = {
         "system_prompt": prepared.system_prompt,
         "provider_id": "faux",
@@ -353,16 +350,6 @@ async def test_default_builtin_prepares_instructions_and_records_runtime_facts(
         }
         for message in prepared.messages
     ]
-
-
-def _context_call(*, workspace: str | None = None) -> sdk.ContextCall:
-    return sdk.ContextCall(
-        session_id="ses_1",
-        run_id="run_1",
-        message_count=1,
-        model_round=1,
-        workspace=workspace,
-    )
 
 
 def _write(path: Path, content: str) -> None:

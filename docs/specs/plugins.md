@@ -568,35 +568,19 @@ shell；cwd 遵守当前调用的 workspace 约束。调用取消、代次撤销
 这是进程生命周期管理，具体 Windows 约束见 [AssignProcessToJobObject](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject)。
 
 `context.environment.agent_instructions(workspace)` 返回带来源路径、user/project 作用域和内容的只读文档。
-文档读取在调用时完成，保留大小和编码检查；Agent Context 使用同一公开端口生成自己的上下文贡献。
+环境端口在调用时读取文档并校验大小和编码。Agent Context 通过该端口生成工作区指令片段。
 
 ### 9.1 目标稳定 contribution
 
-- `tools`；
-- `commands`；
-- `observers`；
-- `context_providers`；
-- `prompt_policies`；
-- `turn_policies`；
-- `compaction_strategies`；
-- `skills`；
-- `mcp_servers`；
-- `background_services`；
-- `continuation_policies`；
-- `run_drivers`；
-- `providers`；
-- `tool_policies`；
-- `session_controllers`。
-
-Host capability 清单由以下 15 类组成。这里的“消费者”指真正解释该类型语义的 Host 边界，Catalog projection
-本身不算消费者；“证据”至少包含 builtin、可运行 example 或跨 SDK/worker/application 的契约测试。
+每种 capability 都由具体的 Host 用例消费。下表列出生命周期、提供方或契约测试，以及解释其语义的 Host 组件。
 
 | capability | 生命周期 | producer / contract 证据 | Host 语义消费者 | 等级 |
 |---|---|---|---|---|
 | `tools` | snapshot | Goal/Plan builtin、worker-tool example | `ToolCallCoordinator` / `ToolBatchExecutor` | stable |
 | `commands` | snapshot | Goal builtin、inprocess-command example | `PluginService.execute_command` 与 Host command route | stable |
 | `observers` | snapshot | inprocess-observer example、observer contract tests | `ObserverDispatcher` 的有界 mailbox | stable |
-| `context_providers` | snapshot | System Information/Goal builtin、worker semantic contract | `ContextPreparationService` | stable |
+| `system_prompt_providers` | snapshot | Agent Context、worker 提示词提供方 | 系统提示词组装与摘要背景 | stable |
+| `context_providers` | snapshot | Goal、Plan、worker 消息提供方 | 模型轮次的会话消息提交 | stable |
 | `compaction_strategies` | snapshot | SDK/worker/contract adapter 与 compaction tests | `ContextCompactionService` 的 strategy selection | stable |
 | `skills` | snapshot | declarative-skill example、plugin skill catalog tests | Runtime prompt/context preparation | stable |
 | `mcp_servers` | snapshot | generation resource/MCP catalog contract tests | MCP runtime 投影到 Run-local `ToolRegistry`，随后走 Tool consumer | stable |
@@ -611,8 +595,7 @@ Host capability 清单由以下 15 类组成。这里的“消费者”指真正
 
 Context Provider 的消息片段以会话、提供方和片段位置标识。可选的 `ContextFragment.revision` 区分文案相同的不同状态，只参与重复投递判定。
 
-每种 capability 必须同时具备 Manifest/SDK 表达、Host adapter 和真实语义消费者。系统保持 15 类 capability；
-新类型必须由真实 builtin 或最小可运行 user plugin 驱动。失去消费者的类型应同步从 Manifest、SDK、worker、
+每种 capability 必须同时具备 Manifest/SDK 表达、Host adapter 和真实语义消费者。新类型必须由真实 builtin 或最小可运行 user plugin 驱动。失去消费者的类型应同步从 Manifest、SDK、worker、
 prepare、contract、projection 与文档删除，不保留空 adapter 或迁移别名。
 
 观察型扩展只公开 `observers`；`prompt_policies` 是独立语义边界。Manifest schema 3 不接受 `hooks` 字段；
@@ -732,7 +715,8 @@ Session 状态视图。状态返回与 Host 接受保持分离；只读与失效
 | 类型 | 示例 | 组合 | 失败 |
 |---|---|---|---|
 | observation | runtime_event、context/tool/run facts | 每个 registration 独立 FIFO，不改变语义 | 异步隔离 |
-| enrich | context provider | 追加带 owner 的 typed fragment | optional 省略，required 阻断 |
+| system prompt | System Prompt Provider | 按提供方顺序拼接固定指令 | `omit` 省略，`block` 阻断 |
+| session context | Context Provider | 按投递顺序向会话追加变化的观察 | `omit` 省略，`block` 阻断 |
 | transform | 当前未开放；未来只允许具体 typed patch | 字段级授权、重新校验 | 拒绝无效 patch |
 | guard | prompt/tool policy | allow/deny 或只允许收紧 | fail-closed |
 | turn guard | turn policy | allow 或带 feedback 的同 Run continue | fail-closed |
@@ -747,14 +731,16 @@ Observer provenance 只用于归属、过滤、诊断和 contract，不建立不
 精确 `event_types` allowlist；Host 在入队前过滤和脱敏。队列项持有精确 generation lease，处理、丢弃或取消后恰好
 释放一次；generation retire 和 Host shutdown 按 deadline drain，随后取消并回收。
 
-Context Provider、Prompt Policy、Tool Policy 和 Turn Policy 是独立 registry，不通过 Observer 承载语义。只有在
+System Prompt Provider、Context Provider、Prompt Policy、Tool Policy 和 Turn Policy 各有独立 registry，不通过 Observer 承载语义。只有在
 producer、typed input/output、组合、失败和授权规则同时明确时才增加新的 observation 或 semantic contribution。
 
-### 10.2 Context Provider
+### 10.2 系统提示词与会话观察
 
-Context Fragment 使用 `target=message` 或 `target=system_prompt`。默认的 `message` 目标按来源、提供方及片段位置识别观察。Application 在模型调用前将变化的正文、角色和标签追加为 canonical 消息，并保存 generation provenance。持久化失败会阻断本次请求。插件通过一条新观察说明状态结束。
+`system_prompt_providers` 注册 `SystemPromptContribution`。提供方接收含 workspace 的 `SystemPromptCall`，返回一份 `SystemPromptFragment`，包含正文和可选的 `semantic_tag`。宿主在基础提示词与 Skills 之后按优先级、插件 ID 和提供方 ID 拼接正文，将结果保存到请求快照的系统提示词中。自动压缩复用当前请求的片段，手动压缩独立解析系统提示词，供摘要策略使用。
 
-`system_prompt` 目标用于固定指令，Application 按提供方顺序将正文与基础 system prompt、Skills 组合。两种目标都接受可选 `semantic_tag`，标签仅渲染一次。
+`context_providers` 注册 `ContextContribution`。提供方可以读取本轮的 Run、model round 和只读会话状态，返回有序的消息片段。每个片段默认使用 `harness` 角色。宿主在模型调用前按会话、插件、提供方和片段位置查找最近记录，仅在正文、角色、标签或 `revision` 变化时追加消息。提交失败会阻断本次请求。
+
+两类提供方使用同一套 Catalog 生命周期、排序、超时及 `omit` / `block` 失败规则。失败分别通过 `system_prompt_provider_failed` 和 `context_provider_failed` 报告，诊断携带 Session、Run 和提供方身份。宿主对声明了标签的正文包裹一次。
 
 ### 10.3 Prompt Policy
 
@@ -837,7 +823,7 @@ JSON。Controller 使用 `<plugin_id>/session_controllers/<local_id>` canonical 
 - Harness 版本只发布已经完成准备的 activation，包含 activation id、controller id、
   release/generation/execution contract、claims、创建时间和回调数据；控制集合持有修订号。activate/deactivate 在提交前生成提案，
   失败不产生半激活状态，启动和 undo 不重放 Controller 回调；
-- Tool、Context Provider、Prompt Policy、Tool Policy、Turn Policy、Continuation Policy 和 Observer 可用
+- Tool、System Prompt Provider、Context Provider、Prompt Policy、Tool Policy、Turn Policy、Continuation Policy 和 Observer 可用
   Manifest/SDK 的
   `active_when=<controller-local-id>` 绑定 activation；Manifest 引用未知 controller 时拒绝；
 - Runtime 在每个模型轮次开始时把 active activation refs 写入 Run metadata，并以该快照筛选本轮贡献。工具在本轮

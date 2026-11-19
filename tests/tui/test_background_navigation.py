@@ -74,11 +74,7 @@ class NavigationProvider:
         self.started = asyncio.Queue()
 
     async def stream(self, *, model, messages, system_prompt="", tools=None, request_context=None):
-        prompt = next(
-            m.text_content
-            for m in reversed(messages)
-            if m.role == "user" and not m.text_content.startswith("<ouro-system-information>")
-        )
+        prompt = next(m.text_content for m in reversed(messages) if m.role == "user")
         queue = self.streams[prompt] = asyncio.Queue()
         self.started.put_nowait(prompt)
         yield ProviderStreamEvent(type="text_delta", text=f"{prompt} prefix. ")

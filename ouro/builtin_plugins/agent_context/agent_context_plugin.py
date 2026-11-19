@@ -14,12 +14,11 @@ from pathlib import Path
 from ouro import __version__
 from ouro.sdk.plugins.environment import PluginEnvironment
 from ouro.sdk.plugins.v6 import (
-    ContextCall,
-    ContextContribution,
-    ContextFragment,
-    ContextOutput,
     ContributionSet,
     PluginContext,
+    SystemPromptCall,
+    SystemPromptContribution,
+    SystemPromptFragment,
 )
 
 from .instructions import render_agent_instructions
@@ -73,15 +72,15 @@ class AgentContextPlugin:
 
     async def prepare(self) -> ContributionSet:
         return ContributionSet(
-            context_providers=[
-                ContextContribution(
+            system_prompt_providers=[
+                SystemPromptContribution(
                     id="agent-instructions",
                     handler=self.agent_instructions,
                     priority=9_000,
                     timeout_seconds=5,
                     failure_mode="omit",
                 ),
-                ContextContribution(
+                SystemPromptContribution(
                     id="runtime-facts",
                     handler=self.system_information,
                     priority=10_000,
@@ -97,30 +96,17 @@ class AgentContextPlugin:
     async def stop(self, reason, deadline) -> None:
         del reason, deadline
 
-    async def agent_instructions(self, call: ContextCall) -> ContextOutput:
+    async def agent_instructions(self, call: SystemPromptCall) -> SystemPromptFragment:
         text = render_agent_instructions(await self._environment.agent_instructions(call.workspace))
-        return ContextOutput(
-            fragments=(
-                ContextFragment(
-                    text=text,
-                    role="system",
-                    semantic_tag="ouro-agent-instructions",
-                    target="system_prompt",
-                ),
-            )
+        return SystemPromptFragment(text=text, semantic_tag="ouro-agent-instructions")
+
+    def system_information(self, call: SystemPromptCall) -> SystemPromptFragment:
+        return SystemPromptFragment(
+            text=self._render_system_information(call, self._clock()),
+            semantic_tag="ouro-system-information",
         )
 
-    def system_information(self, call: ContextCall) -> ContextOutput:
-        return ContextOutput(
-            fragments=(
-                ContextFragment(
-                    text=self._render_system_information(call, self._clock()),
-                    semantic_tag="ouro-system-information",
-                ),
-            )
-        )
-
-    def _render_system_information(self, call: ContextCall, current: datetime) -> str:
+    def _render_system_information(self, call: SystemPromptCall, current: datetime) -> str:
         timezone = _timezone_description(current)
         working_directory = call.workspace or self._fallback_working_directory
         values = (

@@ -72,8 +72,8 @@ async def test_personal_prompts_reach_prepared_requests_in_order(tmp_path, overr
         prompt = snapshot.provider_context.system_prompt
         assert prompt.startswith(expected + "\n\n")
         assert "<ouro-agent-instructions>" in prompt
-        assert "<ouro-system-information>" not in prompt
-        assert "<ouro-system-information>" in snapshot.provider_context.messages[-1].text_content
+        assert prompt.endswith("</ouro-system-information>")
+        assert [m.text_content for m in snapshot.provider_context.messages] == ["hello"]
         assert "DISPLAY-ONLY-ANNOTATION" not in prompt
         assert "DISABLED-CONTENT" not in prompt
         # A separate configuration client updates the already running session.

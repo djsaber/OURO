@@ -2,8 +2,7 @@
 
 ## Overview
 
-`dev.ouro.agent_context` supplies Agent instructions in the system prompt and runtime observations in the dialogue. It implements the product-neutral `AGENTS.md` convention and keeps reusable
-instructions separate from environment information.
+`dev.ouro.agent_context` contributes two ordered fragments to the system prompt. The first contains the applicable `AGENTS.md` instructions. The second describes the execution environment for the Session workspace.
 
 ## Plugin Metadata
 
@@ -24,11 +23,10 @@ It does not use the user-plugin installation lifecycle.
 
 | Type | ID / Public Name | Contract |
 |---|---|---|
-| Context Provider | `agent-instructions` | Priority 9,000; reloads canonical `AGENTS.md` documents for each model request; failure mode `omit` |
-| Context Provider | `runtime-facts` | Priority 10,000; appends system, workspace, and clock facts after Agent instructions; failure mode `omit` |
+| System Prompt Provider | `agent-instructions` | Loads applicable `AGENTS.md` documents at priority 9,000 |
+| System Prompt Provider | `runtime-facts` | Appends environment facts after Agent instructions at priority 10,000 |
 
-The two providers remain independent. A failure in instruction discovery does not suppress the
-runtime-facts provider. Exact manifest declarations are defined in [`definition.py`](definition.py).
+Both providers use the `omit` failure mode. If instruction discovery fails, the Host records a diagnostic and continues preparing runtime facts. [Manifest](definition.py).
 
 ## Behavior
 
@@ -54,7 +52,7 @@ Discovery applies the following safety and consistency rules:
 - UTF-8 and UTF-8 with BOM are accepted;
 - combined source bytes may not exceed 32 KiB;
 - unreadable, invalid, or oversized instruction sets fail that provider and are reported through the
-  framework's Context Provider diagnostics.
+  framework's system prompt provider diagnostics.
 
 `CLAUDE.md`, `GEMINI.md`, `MEMORY.md`, `SYSTEM.md`, and `SKILL.md` are not aliases for
 `AGENTS.md`. Those names have different authority and lifecycle semantics; Agent Skills remain
@@ -66,20 +64,19 @@ owned by `ouro.skills`.
 OURO/Python runtime, shell, path style, and preferred encoding. Platform-level facts are captured
 when the plugin instance is created; date, time zone, and workspace are resolved for each request.
 
-The Host appends changed observations as `harness` messages with the `ouro-system-information` tag.
+The `ouro-system-information` fragment follows `ouro-agent-instructions`. Its date has day precision. With the same documents, environment and local date, the plugin contributes identical text across requests.
 
 ## State and Boundaries
 
-- `agent-instructions` supplies the fixed system prompt. Both providers use the Session workspace.
+- Both providers return request-scoped system prompt fragments. The prepared request records their text in its system prompt.
 - The plugin does not activate Skills, reinterpret vendor-specific instruction files, or search
   below the current workspace.
-- Context Provider execution uses the framework callback boundary; synchronous file discovery does
-  not run directly on the Runtime event loop.
+- The Host runs synchronous instruction discovery outside the Runtime event loop.
 
 ## Source Layout
 
 - [`definition.py`](definition.py): built-in definition and manifest.
-- [`agent_context_plugin.py`](agent_context_plugin.py): Context Provider contributions and runtime
+- [`agent_context_plugin.py`](agent_context_plugin.py): system prompt contributions and runtime
   fact rendering.
 - [`instructions.py`](instructions.py): render instruction documents supplied by the environment port.
 - [`ouro/plugins/instructions.py`](../../plugins/instructions.py): deployment-owned discovery,

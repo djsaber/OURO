@@ -11,6 +11,7 @@ from ouro.core.continuations import RunContinuationRegistry
 from ouro.core.observers import ObserverRegistry
 from ouro.core.prompt_policies import PromptPolicyRegistry
 from ouro.core.session_controller_registry import SessionControllerRegistry
+from ouro.core.system_prompts import SystemPromptRegistry
 from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistry
 from ouro.plugins.contributions.models import PreparedContributionSet
@@ -28,6 +29,7 @@ class CatalogProjectionTargets:
     tools: ToolRegistry
     observers: ObserverRegistry
     context_providers: ContextProviderRegistry
+    system_prompt_providers: SystemPromptRegistry
     commands: PluginCommandRegistry
     compaction: CompactionStrategyRegistry
     providers: ProviderRegistry
@@ -121,9 +123,10 @@ OBSERVER_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
 
 
 CONTEXT_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
-    "context_providers",
-    "context_providers",
-    "context_providers",
+    "context_providers", "context_providers", "context_providers"
+)
+SYSTEM_PROMPT_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
+    "system_prompt_providers", "system_prompt_providers", "system_prompt_providers"
 )
 
 

@@ -21,6 +21,7 @@ from ouro.core.compaction import (
 )
 from ouro.core.context import ContextBuilder
 from ouro.core.context_budget import ContextBudget
+from ouro.core.context_providers import ContextProviderRegistration
 from ouro.core.errors import CompactionError
 from ouro.core.messages import (
     ImageContent,
@@ -37,6 +38,7 @@ from ouro.core.provider import (
 )
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.core.state import SessionRecord
+from ouro.core.system_prompts import SystemPromptFragment, SystemPromptRegistration
 from ouro.local_configuration import RuntimeConfigurationResolver, build_local_configuration
 from ouro.resources import LocalResourceStore
 from ouro.sessions.backends.files.store import LocalSessionStore
@@ -1176,6 +1178,18 @@ async def test_manual_compaction_uses_same_pipeline_without_adding_messages(tmp_
     _append_turns(store, session.session_id, 3)
     strategy = RecordingStrategy()
     runtime = _runtime(store, RecordingProvider(), strategy, strategy_id=strategy.strategy_id)
+    runtime.system_prompt_providers.replace_owner(
+        "test",
+        (SystemPromptRegistration("test", "rules", lambda _: SystemPromptFragment(text="Rules")),),
+    )
+    runtime.context_providers.replace_owner(
+        "test",
+        (
+            ContextProviderRegistration(
+                "test", "state", lambda _: pytest.fail("unexpected observation")
+            ),
+        ),
+    )
     before = store.load_session(session.session_id)
 
     result = await runtime.compact(session_id=session.session_id)
@@ -1188,6 +1202,7 @@ async def test_manual_compaction_uses_same_pipeline_without_adding_messages(tmp_
     assert result.compaction.duration_seconds is not None
     assert result.compaction.duration_seconds >= 0
     assert result.compaction.trigger == "manual"
+    assert strategy.requests[0].agent_system_prompt.endswith("Rules")
     assert before.messages == after.messages
     assert after.active_compaction == result.compaction
     assert [event.event_type for event in run_events(store, result)] == [

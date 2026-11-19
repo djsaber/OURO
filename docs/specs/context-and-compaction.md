@@ -37,8 +37,7 @@ Skills 指令、恢复投影、媒体整理、摘要压缩和模型 token 预算
 Manifest 与该值在同一次构建中产生；来源限定为本次已读取的 canonical 活动消息。未变内容按消息身份和块位置引用，
 思考文本、工具参数及 opaque continuation 按所属消息引用；已变内容保存实际字面值，不通过正文 hash 或重新投影决定引用。
 
-准备服务在一次 `session_read` 中读取 Session 当前选择、活动摘要与未覆盖尾部；读取结束后才执行动态
-Context Provider 和投影。Core 的摘要投影接收已经选定的尾部，不接收或切片完整 canonical 历史。
+准备服务在一次 `session_read` 中读取 Session 当前选择、活动摘要与未覆盖尾部。随后解析系统提示词，仅在本轮有会话观察提供方时为这些回调读取一份 Harness 快照，再投影选定的尾部。Core 的摘要投影只接收这段尾部。
 再次摘要只处理本次尾部，生成的覆盖终点仍使用 canonical 位置；准备完成后释放本次已覆盖材料。
 动态 Provider 的 `message_count` 仍为 Session 的规范消息总数，自定义 estimator 仍接收完整实际请求。
 
@@ -57,14 +56,11 @@ Context Provider 和投影。Core 的摘要投影接收已经选定的尾部，�
 OpenAI Chat Completions、OpenAI Responses 与 Anthropic Messages 均由公共上下文路径取得描述，codec 只转换协议格式，
 不生成调用规则。工具目录中的结构化契约保持原样。
 
-基础系统提示词保持原始内容；有 Skills 指令时使用稳定空行拼接。Context Provider 返回
-`target="system_prompt"` 的指令片段时，只有 fragment 显式提供 `semantic_tag`，Core 才使用统一
-semantic envelope renderer 包裹原始正文；未提供标签时直接拼接正文。投影按稳定顺序位于基础提示词和 Skills
-之后，进入 token 估算和请求快照，但不构造消息。恢复投影只在模型上下文中标记 incomplete assistant 尝试，
+基础系统提示词、Skills 指令和 System Prompt Provider 的片段按顺序用空行拼接。提供方返回的 `SystemPromptFragment` 包含原始正文和可选的 `semantic_tag`。宿主对带标签的正文应用统一的语义包络，纯文本直接进入系统提示词。提示词计入固定 token 预算，并保存在请求快照中。恢复投影只在模型上下文中标记 incomplete assistant 尝试，
 不把它升级为 canonical 完成消息。
 
-Host 和插件通过 `harness` 投递框架消息。运行环境、模式变化和 Driver 指引按首次投递顺序追加到会话。同一提供方、同一位置的状态片段按正文、角色、标签和可选的生产方 `revision` 去重。相同文案代表新的状态变化时，生产方可以指定新的 revision，该值只写入会话元数据。Driver 显式发起的请求指令按 Run 和模型轮次记录。重试、恢复和撤回查询当前保留的最近一次投递。
-基础系统指令、Skills 和面向系统提示词的 AGENTS.md 保持独立。端点配置 `supports_inline_system_messages` 决定 `harness` 在原位置编码为 `system` 或 `user`。并行调用与全部原生结果构成完整批次，期间收到的消息在批次之后交付。端点、指令和工具目录稳定时，连续请求保留已呈现的消息前缀。压缩、撤回、媒体预算裁剪和切换模型可以重新选择上下文。
+Host 和插件通过 `harness` 投递框架消息。会话状态观察、模式变化和 Driver 指引按首次投递顺序追加到会话。同一提供方、同一位置的状态片段按正文、角色、标签和可选的生产方 `revision` 去重。相同文案代表新的状态变化时，生产方可以指定新的 revision，该值只写入会话元数据。Driver 显式发起的请求指令按 Run 和模型轮次记录。重试、恢复和撤回查询当前保留的最近一次投递。
+Agent Context 的 `AGENTS.md` 指令与运行环境信息属于系统提示词。端点配置 `supports_inline_system_messages` 决定 `harness` 在原位置编码为 `system` 或 `user`。并行调用与全部原生结果构成完整批次，期间收到的消息在批次之后交付。端点、指令和工具目录稳定时，连续请求保留已呈现的消息前缀。压缩、撤回、媒体预算裁剪和切换模型可以重新选择上下文。
 输入显式采用 `assistant` 角色时，历史保留其输入身份。同一轮的模型回复独立提交，并由请求记录引用。
 
 系统提示词、补充提示词、Skills 目录与请求级注入不被压缩改写。压缩前后使用同一次请求已解析的固定上下文，
@@ -159,7 +155,7 @@ data URI 按 Base64 正文长度计量，外部 URI 按 URI 长度计量；当�
 `SessionService.context` 在一致读边界内取得骨架和所引用消息，返回完整 `ProviderContext`。没有准备过 Provider 请求时应明确返回
 “尚无已准备上下文”，不能用 prospective projection 冒充真实请求。
 
-查询不执行 Context Provider、Observer 或自动压缩，也不写入 canonical history。手动压缩保存摘要自身的小请求记录，并激活新的
+查询直接读取已记录的请求。手动压缩按工作区解析系统提示词供摘要策略使用，跳过会话观察提供方。它保存摘要自身的小请求记录，并激活新的
 `CompactionRecord`，不得替换最近普通请求的输入；新摘要会在下一次模型请求准备后自然进入新的快照。
 
 工具描述按请求准备时的完整文本保存。快照读取直接使用该文本，不根据当前契约呈现逻辑追加或更新说明；
@@ -188,8 +184,7 @@ Manifest schema 10 保存最终 provider-neutral 骨架，独立请求头 schema
 Session/message/block 身份、最终 role/工具结果小字段及思考/Call/continuation 成员引用；不保存正文或参数，不散列正文。
 每次构建替换此小成本表，移出的成员不再保留。协议成员变化重新估算；纯媒体使用内置固定成本，与媒体字节无关。
 变换后的字面文本、动态片段、提示和工具定义均重新估算。只有明确采用内置 estimator 才使用这一复用；
-自定义文本 estimator 仍按原契约处理当前全部组成字符串，自定义构建器的整请求处理入口和参数保持不变。
-复用不省略最终输入的构建与发送，也不改变动态 Context Provider 调用次数。
+自定义文本 estimator 处理当前请求的全部组成字符串。每次模型请求都解析本轮启用的提供方、构建并发送完整输入。
 
 `over_budget` 只判断本次输入估算是否超过输入容量，不预测生成长度。上下文超预算时不能静默截断 message 或拆开工具交换。`RunBudgetPolicy` 负责整个 Run 的累计软额度，用实际用量记账；其输出额度不作为单次请求或摘要的输出参数。
 

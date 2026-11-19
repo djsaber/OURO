@@ -12,7 +12,6 @@ from ouro.application.harness import capture_harness
 from ouro.application.observers import ObserverDispatcher
 from ouro.application.usage import UsageService
 from ouro.core.callbacks import run_blocking
-from ouro.core.context_providers import ContextProviderFailure
 from ouro.core.events import EventRecord
 from ouro.core.observers import (
     FrozenJson,
@@ -24,6 +23,7 @@ from ouro.core.observers import (
     freeze_json,
 )
 from ouro.core.redaction import redact_data, redact_text
+from ouro.core.request_providers import RequestProviderFailure
 from ouro.core.response_drafts import ResponseStreamPosition
 from ouro.core.session_ports import SessionRepository
 from ouro.core.state import RunRecord
@@ -241,17 +241,23 @@ class RuntimeEventRecorder:
             notify_observers=False,
         )
 
-    async def record_context_provider_failures(
+    async def record_provider_failures(
         self,
-        failures: Sequence[ContextProviderFailure],
+        run: RunRecord,
+        failures: Sequence[RequestProviderFailure],
+        event_type: str,
     ) -> None:
         for failure in failures:
             await self._record_event(
                 EventRecord(
-                    session_id=failure.session_id,
-                    run_id=failure.run_id,
-                    event_type="context_provider_failed",
-                    payload=failure.model_dump(mode="json"),
+                    session_id=run.session_id,
+                    run_id=run.run_id,
+                    event_type=event_type,
+                    payload={
+                        "session_id": run.session_id,
+                        "run_id": run.run_id,
+                        **failure.model_dump(mode="json"),
+                    },
                 ),
                 notify_observers=False,
             )

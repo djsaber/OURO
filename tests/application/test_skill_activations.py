@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 from ouro.application.inputs.requests import UserInputRequest
-from ouro.application.inputs.skills import SkillActivationService, SkillInvocationRequest
+from ouro.application.inputs.skills import (
+    SkillActivationService,
+    SkillInvocationRequest,
+    compacted_skill_messages,
+)
 from ouro.application.runtime.service import RuntimeService
 from ouro.config.queued_inputs import QueuedInputConfig
 from ouro.core.adapter import RuntimeAdapter
@@ -382,6 +386,9 @@ async def test_multiple_skills_are_accepted_as_one_input_after_all_policies_allo
         assert [item.name for item in inputs[0].skill_activations] == ["reviewer", "writer"]
         for name in ("reviewer", "writer"):
             assert provider.calls[0][-1].text_content.count(f"Instructions for {name}.") == 1
+        assert compacted_skill_messages(inputs) == [
+            ModelMessage.text(role="user", text=provider.calls[0][-1].text_content)
+        ]
     assert seen == ["reviewer", "writer"]
 
 

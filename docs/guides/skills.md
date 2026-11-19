@@ -33,8 +33,7 @@ uv run --frozen ouro skills remove skill-name --home ./.ouro-dev
 `<user-home>/.agents/AGENTS.md`、`OURO_HOME/AGENTS.md`，再从 Git 项目根目录到当前 Session workspace
 逐层拼接 `AGENTS.md`。越靠后的项目规则越具体并在冲突时优先；合计上限为 32 KiB。没有 Git 根时不会向
 workspace 外继续搜索。该机制只接受 `AGENTS.md`，不会把产品私有的 `CLAUDE.md`、`GEMINI.md`，或具有不同
-生命周期的 `MEMORY.md`、`SYSTEM.md`、`SKILL.md` 当作别名。它追加规则而不替换基础 system prompt，并保留
-原有请求级系统环境信息注入。
+生命周期的 `MEMORY.md`、`SYSTEM.md`、`SKILL.md` 当作别名。Agent Context 将这些规则和运行环境信息依次追加到当前请求的系统提示词。
 
 Skills 使用标准 `SKILL.md` YAML frontmatter。用户级原生目录是 `OURO_HOME/skills`，工作区原生目录是
 `./.ouro/skills`；也可扫描 `.agents`、`.claude`、`.github`、`.copilot` 和 `.codex` 的 Skills 目录。

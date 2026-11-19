@@ -63,6 +63,7 @@ from ouro.core.errors import ConfigError, OuroError
 from ouro.core.observers import ObserverRegistry
 from ouro.core.prompt_policies import PromptPolicyRegistry
 from ouro.core.session_ports import SessionStore
+from ouro.core.system_prompts import SystemPromptRegistry
 from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistry
 from ouro.deployment import (
@@ -264,6 +265,7 @@ class LocalApplication:
             tools=runtime.tools,
             observers=runtime.observers,
             context_providers=runtime.context_providers,
+            system_prompt_providers=runtime.system_prompt_providers,
             compaction=runtime.compaction_strategies,
             continuations=runtime.continuations,
             prompt_policies=runtime.prompt_policies,
@@ -514,6 +516,7 @@ async def open_local_plugins(
         tools=ToolRegistry(),
         observers=ObserverRegistry(),
         context_providers=ContextProviderRegistry(),
+        system_prompt_providers=SystemPromptRegistry(),
         compaction=CompactionStrategyRegistry(),
         continuations=RunContinuationRegistry(),
         prompt_policies=PromptPolicyRegistry(),
@@ -585,6 +588,7 @@ async def open_local_agent_definitions(
         tools=tools,
         observers=ObserverRegistry(),
         context_providers=ContextProviderRegistry(),
+        system_prompt_providers=SystemPromptRegistry(),
         compaction=CompactionStrategyRegistry(),
         continuations=RunContinuationRegistry(),
         prompt_policies=PromptPolicyRegistry(),
@@ -833,6 +837,7 @@ def _build_local_plugin_runtime(
     tools: ToolRegistry,
     observers: ObserverRegistry,
     context_providers: ContextProviderRegistry,
+    system_prompt_providers: SystemPromptRegistry,
     compaction: CompactionStrategyRegistry,
     continuations: RunContinuationRegistry,
     prompt_policies: PromptPolicyRegistry,
@@ -850,6 +855,7 @@ def _build_local_plugin_runtime(
         tools=tools,
         observers=observers,
         context_providers=context_providers,
+        system_prompt_providers=system_prompt_providers,
         commands=commands,
         compaction=compaction,
         continuations=continuations,

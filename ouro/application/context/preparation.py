@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol, cast
 
 from ouro.application.context.media import MediaContextPreparation, ModelMessagePreparer
@@ -10,7 +10,7 @@ from ouro.application.context.prompts import PromptContext, PromptContextResolve
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.harness import capture_harness
 from ouro.application.inputs.files import PreparedFileInputs
-from ouro.application.inputs.skills import compacted_skill_context
+from ouro.application.inputs.skills import compacted_skill_messages
 from ouro.application.usage import UsageService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import new_id, utc_now
@@ -25,8 +25,7 @@ from ouro.core.context import (
     project_recovery_messages,
 )
 from ouro.core.context_providers import (
-    AttributedContextFragment,
-    ContextFragment,
+    ContextObservation,
     ContextProviderCall,
     ContextProviderRegistry,
 )
@@ -44,9 +43,11 @@ from ouro.core.events import EventRecord
 from ouro.core.message_frames import project_tool_exchanges
 from ouro.core.messages import MessageRecord, ModelMessage, TextContent
 from ouro.core.observers import ContextPreparedObservation, FrozenJson, freeze_json
+from ouro.core.request_providers import ProviderEvaluation
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict
 from ouro.core.session_ports import SessionStore
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.system_prompts import SystemPromptRegistry
 from ouro.core.tools import ToolDefinition
 from ouro.prompts import AFK_CONTEXT_PROMPT
 
@@ -72,7 +73,6 @@ class PreparedContext:
     active: CompactionRecord | None
     messages: list[MessageRecord]
     view: ContextView
-    fixed_context: Sequence[ContextFragment]
     prompt_context: PromptContext
 
 
@@ -85,6 +85,7 @@ class ContextPreparationService:
         store: SessionStore,
         adapter: RuntimeAdapter,
         context_providers: ContextProviderRegistry,
+        system_prompt_providers: SystemPromptRegistry,
         events: RuntimeEventRecorder,
         context_builder: ContextBuilder,
         system_prompt: str,
@@ -96,6 +97,7 @@ class ContextPreparationService:
         self.store = store
         self.adapter = adapter
         self.context_providers = context_providers
+        self.system_prompt_providers = system_prompt_providers
         self.events = events
         self.context_builder = context_builder
         self.system_prompt = system_prompt
@@ -143,43 +145,37 @@ class ContextPreparationService:
         model_round: int,
         adapter: RuntimeAdapter | None = None,
         context_providers: ContextProviderRegistry | None = None,
+        system_prompt_providers: SystemPromptRegistry | None = None,
         skill_instructions: str = "",
         prompt: str = "",
     ) -> PreparedContext:
         session, active, messages = await run_blocking(self.load_history, session.session_id)
-        prompt_context = await self.resolve_prompt_context(run)
+        prompt_context = await self.resolve_prompt_context(session, run, system_prompt_providers)
         active_adapter = adapter or self.adapter
         active_context_providers = context_providers or self.context_providers
-        provider_result = await active_context_providers.evaluate(
-            ContextProviderCall(
-                harness=await run_blocking(
-                    capture_harness,
-                    self.store,
-                    session.session_id,
-                    run=run,
-                    usage_service=self.usage_service,
+        observations: list[ContextObservation] = []
+        if active_context_providers.snapshot():
+            evaluation = await active_context_providers.evaluate(
+                ContextProviderCall(
+                    harness=await run_blocking(
+                        capture_harness,
+                        self.store,
+                        session.session_id,
+                        run=run,
+                        usage_service=self.usage_service,
+                    ),
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    message_count=session.message_count,
+                    model_round=model_round,
+                    workspace=session.workspace,
                 )
-                if active_context_providers.registered()
-                else None,
-                session_id=session.session_id,
-                run_id=run.run_id,
-                message_count=session.message_count,
-                model_round=model_round,
-                workspace=session.workspace,
             )
-        )
-        await self.events.record_context_provider_failures(
-            provider_result.failures,
-        )
-        if provider_result.blocked:
-            failure = provider_result.failures[-1]
-            raise ContextBlockedError(
-                "required context provider failed: "
-                f"{failure.plugin_id}:{failure.provider_id}: {failure.error_type}"
-            )
-        fixed_context, appended, events = await run_blocking(
-            self._materialize_context_fragments,
-            provider_result.fragments,
+            await self._check_provider_failures(run, evaluation, "context_provider_failed")
+            observations = evaluation.fragments
+        appended, events = await run_blocking(
+            self._commit_context_observations,
+            observations,
             session=session,
             run=run,
             turn_id=turn_id,
@@ -198,7 +194,6 @@ class ContextPreparationService:
             messages=messages,
             active=active,
             tools=tools,
-            fixed_context=fixed_context,
             adapter=active_adapter,
             skill_instructions=skill_instructions,
             prompt_context=prompt_context,
@@ -209,7 +204,6 @@ class ContextPreparationService:
             active=active,
             messages=messages,
             view=view,
-            fixed_context=fixed_context,
             prompt_context=prompt_context,
         )
 
@@ -229,23 +223,20 @@ class ContextPreparationService:
             usage_entry_id=usage_entry_id,
         )
 
-    def _materialize_context_fragments(
+    def _commit_context_observations(
         self,
-        fragments: list[AttributedContextFragment],
+        provider_observations: Sequence[ContextObservation],
         *,
         session: SessionRecord,
         run: RunRecord,
         turn_id: str,
         model_round: int,
         driver_prompt: str,
-    ) -> tuple[list[ContextFragment], list[MessageRecord], tuple[EventRecord, ...]]:
-        fixed: list[ContextFragment] = [
-            fragment for fragment in fragments if fragment.target == "system_prompt"
-        ]
-        observations = [fragment for fragment in fragments if fragment.target == "message"]
+    ) -> tuple[list[MessageRecord], tuple[EventRecord, ...]]:
+        observations = list(provider_observations)
         if driver_prompt:
             observations.append(
-                AttributedContextFragment(
+                ContextObservation(
                     plugin_id="ouro.runtime",
                     provider_id="driver",
                     fragment_index=0,
@@ -255,7 +246,7 @@ class ContextPreparationService:
                 )
             )
         unattended = session.interaction_mode == "unattended"
-        mode = AttributedContextFragment(
+        mode = ContextObservation(
             plugin_id="ouro.runtime",
             provider_id="interaction-mode",
             fragment_index=0,
@@ -303,7 +294,7 @@ class ContextPreparationService:
                 )
             )
         if not pending:
-            return fixed, pending, ()
+            return pending, ()
         try:
             events = self.append_context_messages(
                 session=session,
@@ -324,7 +315,7 @@ class ContextPreparationService:
             raise ContextBlockedError(
                 "context provider message could not be persisted before model execution"
             ) from exc
-        return fixed, pending, events
+        return pending, events
 
     async def _observe_built_context(
         self,
@@ -432,11 +423,26 @@ class ContextPreparationService:
                 )
             )
 
-    async def resolve_prompt_context(self, run: RunRecord) -> PromptContext:
-        if self.prompt_context_resolver is None:
-            return PromptContext(system_prompt=self.system_prompt)
+    async def _check_provider_failures[T](
+        self, run: RunRecord, evaluation: ProviderEvaluation[T], event_type: str
+    ) -> None:
+        await self.events.record_provider_failures(run, evaluation.failures, event_type)
+        if evaluation.blocked:
+            failure = evaluation.failures[-1]
+            raise ContextBlockedError(
+                f"required provider failed: {failure.plugin_id}:{failure.provider_id}: "
+                f"{failure.error_type}"
+            )
+
+    async def resolve_prompt_context(
+        self, session: SessionRecord, run: RunRecord, providers: SystemPromptRegistry | None
+    ) -> PromptContext:
         try:
-            return await run_blocking(self.prompt_context_resolver)
+            personal = (
+                await run_blocking(self.prompt_context_resolver)
+                if self.prompt_context_resolver is not None
+                else PromptContext(system_prompt=self.system_prompt)
+            )
         except ConfigError as exc:
             message = f"Cannot prepare system instructions: {exc}"
             await self.events.emit(
@@ -452,6 +458,12 @@ class ContextPreparationService:
                 },
             )
             raise ContextBlockedError(message) from exc
+        registry = providers or self.system_prompt_providers
+        if not registry.snapshot():
+            return personal
+        evaluation = await registry.evaluate(session.workspace)
+        await self._check_provider_failures(run, evaluation, "system_prompt_provider_failed")
+        return replace(personal, fragments=(*personal.fragments, *evaluation.fragments))
 
     def project(
         self,
@@ -460,7 +472,6 @@ class ContextPreparationService:
         messages: list[MessageRecord],
         active: CompactionRecord | None,
         tools: list[ToolDefinition],
-        fixed_context: Sequence[ContextFragment],
         adapter: RuntimeAdapter,
         skill_instructions: str,
         prompt_context: PromptContext,
@@ -469,17 +480,16 @@ class ContextPreparationService:
             project_compacted_messages(messages, active)
         )
         # The durable compaction boundary fixes this prefix, including after recovery.
-        fixed_context = [
-            *fixed_context,
-            *compacted_skill_context(
+        fixed_messages = (
+            compacted_skill_messages(
                 [
                     self.store.load_message(session.session_id, identity)
                     for identity in active.retained_skill_message_ids
                 ]
-                if active is not None
-                else []
-            ),
-        ]
+            )
+            if active is not None
+            else []
+        )
         # Artifact source identity bounds the budget candidate. Protocol and
         # account compatibility belong to the codec. A retained response does
         # not depend on its Run's execution authority, including on a branch.
@@ -500,7 +510,7 @@ class ContextPreparationService:
             messages=effective_messages,
             source_messages=messages,
             tools=tools,
-            fixed_context=fixed_context,
+            fixed_messages=fixed_messages,
             adapter=adapter,
             skill_instructions=skill_instructions,
             prompt_context=prompt_context,
@@ -534,7 +544,7 @@ class ContextPreparationService:
         messages: Sequence[MessageRecord | ModelMessage],
         source_messages: Sequence[MessageRecord] = (),
         tools: list[ToolDefinition],
-        fixed_context: Sequence[ContextFragment],
+        fixed_messages: Sequence[ModelMessage] = (),
         adapter: RuntimeAdapter,
         prompt_context: PromptContext,
         skill_instructions: str = "",
@@ -545,7 +555,8 @@ class ContextPreparationService:
             source_messages=source_messages,
             tools=tools,
             system_prompt=prompt_context.system_prompt,
-            fixed_context=fixed_context,
+            system_prompt_fragments=prompt_context.fragments,
+            fixed_messages=fixed_messages,
             additional_skill_instructions=skill_instructions,
             budget=adapter.model.context_budget,
             supports_inline_system_messages=adapter.model.supports_inline_system_messages,

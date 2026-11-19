@@ -156,15 +156,12 @@ def test_session_context_reports_latest_request_status_and_provider_content(
         == 0
     )
     content_payload = json.loads(capsys.readouterr().out)
-    assert "<ouro-system-information>" not in content_payload["provider_context"]["system_prompt"]
+    assert "<ouro-system-information>" in content_payload["provider_context"]["system_prompt"]
     assert content_payload["provider_context"]["messages"][0]["role"] == "user"
     assert content_payload["provider_context"]["messages"][0]["content"][0]["text"] == (
         "hello context"
     )
-    assert len(content_payload["provider_context"]["messages"]) == 2
-    assert content_payload["provider_context"]["messages"][1]["content"][0]["text"].startswith(
-        "<ouro-system-information>"
-    )
+    assert len(content_payload["provider_context"]["messages"]) == 1
     assert "message_id" not in content_payload["provider_context"]["messages"][0]
     assert "context_digest" not in content_payload
 
@@ -363,7 +360,7 @@ def test_session_message_command_exposes_page_cursor(tmp_path, capsys) -> None:
         "--json",
     ]
     cursor = None
-    for role in ("user", "harness", "assistant"):
+    for role in ("user", "assistant"):
         args = [*command, "--cursor", str(cursor)] if cursor is not None else command
         assert main(args) == 0
         page = json.loads(capsys.readouterr().out)

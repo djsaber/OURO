@@ -161,6 +161,7 @@ from ouro.core.state import (
     SessionContinuationRequest,
     SessionRecord,
 )
+from ouro.core.system_prompts import SystemPromptRegistry
 from ouro.core.tool_batch_transitions import resolve_tool_approval, tool_batch_suspension
 from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tool_facts import ToolCallIdentity
@@ -209,6 +210,7 @@ class RuntimeService:
         tools: ToolRegistry,
         observers: ObserverRegistry | None = None,
         context_providers: ContextProviderRegistry | None = None,
+        system_prompt_providers: SystemPromptRegistry | None = None,
         context_builder: ContextBuilder | None = None,
         run_budget: RunBudgetPolicy | None = None,
         system_prompt: str | None = None,
@@ -282,6 +284,7 @@ class RuntimeService:
         self._tool_execution_config = tool_execution_config or ToolExecutionConfig()
         self.observers = observers or ObserverRegistry()
         self.context_providers = context_providers or ContextProviderRegistry()
+        self.system_prompt_providers = system_prompt_providers or SystemPromptRegistry()
         self.continuations = continuations or RunContinuationRegistry()
         self.prompt_policies = prompt_policies or PromptPolicyRegistry()
         self.tool_policies = tool_policies or ToolPolicyRegistry()
@@ -338,6 +341,7 @@ class RuntimeService:
             store=store,
             adapter=adapter,
             context_providers=self.context_providers,
+            system_prompt_providers=self.system_prompt_providers,
             events=self.event_recorder,
             context_builder=self.context_builder,
             system_prompt=compose_system_prompt(
@@ -509,7 +513,16 @@ class RuntimeService:
     def _context_providers_for_run(self, run_id: str) -> ContextProviderRegistry:
         snapshot = self._extension_snapshot_for_run(run_id)
         registry = snapshot.context_providers if snapshot is not None else self.context_providers
-        return registry.scoped(lambda: self._active_controller_ids_for_run(run_id))
+        return registry.scoped(self._active_controller_ids_for_run(run_id))
+
+    def _system_prompt_providers_for_run(self, run_id: str) -> SystemPromptRegistry:
+        snapshot = self._extension_snapshot_for_run(run_id)
+        registry = (
+            snapshot.system_prompt_providers
+            if snapshot is not None
+            else self.system_prompt_providers
+        )
+        return registry.scoped(self._active_controller_ids_for_run(run_id))
 
     def _prompt_policies_for_run(self, run_id: str) -> PromptPolicyRegistry:
         snapshot = self._extension_snapshot_for_run(run_id)
@@ -2119,6 +2132,7 @@ class RuntimeService:
                     prepare_context=lambda *args, **kwargs: self.context_compaction.prepare(
                         *args,
                         context_providers=self._context_providers_for_run(run.run_id),
+                        system_prompt_providers=self._system_prompt_providers_for_run(run.run_id),
                         strategies=self._compaction_for_run(run.run_id),
                         skill_instructions=self._instructions_for_run(run),
                         **kwargs,
@@ -2316,7 +2330,7 @@ class RuntimeService:
                     session=active_session,
                     run=run,
                     tools=self._tools_for_run(run.run_id).definitions(),
-                    fixed_context=[],
+                    system_prompt_providers=self._system_prompt_providers_for_run(run.run_id),
                     trigger="manual",
                     force=True,
                     abort_signal=abort_signal,

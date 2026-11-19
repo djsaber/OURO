@@ -7,7 +7,6 @@ import pytest
 
 import ouro.core.context as contexts
 from ouro.core.context_budget import ContextBudget
-from ouro.core.context_providers import ContextFragment
 from ouro.core.messages import MessageRecord, ProviderContinuationArtifact, TextContent
 from ouro.core.tools import ToolCallRequest, ToolDefinition
 
@@ -91,13 +90,13 @@ def test_default_reuse_keeps_dynamic_fragments_tools_and_budget_current():
         messages=[source],
         source_messages=[source],
         tools=[tool],
-        fixed_context=[ContextFragment(text="first dynamic")],
+        system_prompt_fragments=["first dynamic"],
     )
     changed = dict(
         messages=[source],
         source_messages=[source],
         tools=[tool.model_copy(update={"description": "different capability " * 20})],
-        fixed_context=[ContextFragment(text="second dynamic " * 20)],
+        system_prompt_fragments=["second dynamic " * 20],
         system_prompt="new instructions",
         budget=ContextBudget(context_window=10000),
     )
@@ -105,7 +104,7 @@ def test_default_reuse_keeps_dynamic_fragments_tools_and_budget_current():
     fresh = contexts.ContextBuilder().build(**changed)
     assert reused == fresh
     assert reused.metrics != first.metrics
-    assert "second dynamic" in reused.provider_context.messages[0].text_content
+    assert "second dynamic" in reused.provider_context.system_prompt
     assert reused.metrics.budget.context_window == 10000
 
 

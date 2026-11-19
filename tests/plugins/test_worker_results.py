@@ -101,6 +101,8 @@ def worker(monkeypatch, tmp_path):
 
         monkeypatch.setattr(instance.client, "request", respond)
         handler = getattr(instance, f"_{kind}_handler")("example")
+        if kind == "system_prompt":
+            return await handler(sdk.SystemPromptCall(workspace="/project"))
         return await handler(replace(CALLS[kind], session_state=view))
 
     return invoke, diagnostics
@@ -211,6 +213,10 @@ async def test_worker_preserves_control_payloads_and_native_defaults(worker, kin
         ("tool", {"session_control_transitions": [{}]}, "transition"),
         ("observer", {"output": "unexpected"}, "empty"),
         ("context", {"fragments": {}}, "fragments"),
+        ("context", {"text": "system prompt body"}, "text"),
+        ("context", {"fragments": [{"text": "body", "target": "system_prompt"}]}, "target"),
+        ("system_prompt", {"text": "rules", "role": "harness"}, "role"),
+        ("system_prompt", {"text": "rules"}, "requires a Session invocation"),
         ("context", {"fragments": [{"text": "ok"}, {"text": "bad", "role": "invalid"}]}, "role"),
         (
             "context",

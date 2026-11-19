@@ -12,6 +12,7 @@ from ouro.core.observers import ObserverRegistration
 from ouro.core.prompt_policies import PromptPolicyRegistration
 from ouro.core.run_drivers import RunDriverRegistration
 from ouro.core.session_controller_registry import SessionController
+from ouro.core.system_prompts import SystemPromptRegistration
 from ouro.core.tool_policies import ToolPolicyRegistration
 from ouro.core.turn_policies import TurnPolicyRegistration
 from ouro.plugins.models import PluginClass
@@ -54,6 +55,7 @@ class PluginContributions:
     observers: list[ObserverRegistration] = field(default_factory=list)
     commands: list[PluginCommand] = field(default_factory=list)
     context_providers: list[ContextProviderRegistration] = field(default_factory=list)
+    system_prompt_providers: list[SystemPromptRegistration] = field(default_factory=list)
     compaction_strategies: list[CompactionStrategy] = field(default_factory=list)
     background_services: list[BackgroundService] = field(default_factory=list)
     providers: list[ProviderRegistration] = field(default_factory=list)
@@ -84,6 +86,7 @@ class PreparedContributionSet:
     tools: tuple[Tool, ...] = ()
     observers: tuple[ObserverRegistration, ...] = ()
     context_providers: tuple[ContextProviderRegistration, ...] = ()
+    system_prompt_providers: tuple[SystemPromptRegistration, ...] = ()
     commands: tuple[PluginCommand, ...] = ()
     compaction_strategies: tuple[CompactionStrategy, ...] = ()
     background_services: tuple[PreparedBackgroundService, ...] = ()

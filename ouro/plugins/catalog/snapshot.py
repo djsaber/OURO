@@ -19,6 +19,7 @@ from ouro.core.run_drivers import RunDriverBinding, RunDriverRegistration
 from ouro.core.session_controller_registry import SessionController, SessionControllerRegistry
 from ouro.core.session_controls import SessionControlState
 from ouro.core.state import RunContinuationControllerRef
+from ouro.core.system_prompts import SystemPromptRegistration, SystemPromptRegistry
 from ouro.core.tool_policies import ToolPolicyRegistration, ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistration, TurnPolicyRegistry
 from ouro.plugins.catalog.bindings import bind_generation_gate
@@ -83,7 +84,8 @@ class ExtensionCatalogBase:
     tools: tuple[dict[str, Tool], dict[str, str]]
     tool_registry_revision: int
     observers: list[ObserverRegistration]
-    context_providers: list[ContextProviderRegistration]
+    context_providers: tuple[ContextProviderRegistration, ...]
+    system_prompt_providers: tuple[SystemPromptRegistration, ...]
     commands: dict[str, PluginCommand]
     compaction: tuple[dict[str, CompactionStrategy], dict[str, str]]
     continuations: list[ContinuationPolicyRegistration]
@@ -100,6 +102,7 @@ class ExtensionCatalogBase:
         tools: ToolRegistry,
         observers: ObserverRegistry,
         context_providers: ContextProviderRegistry | None = None,
+        system_prompt_providers: SystemPromptRegistry | None = None,
         commands: PluginCommandRegistry | None,
         compaction: CompactionStrategyRegistry | None,
         continuations: RunContinuationRegistry | None,
@@ -118,6 +121,7 @@ class ExtensionCatalogBase:
             tool_registry_revision=tools.revision,
             observers=observers.snapshot(),
             context_providers=(context_providers or ContextProviderRegistry()).snapshot(),
+            system_prompt_providers=(system_prompt_providers or SystemPromptRegistry()).snapshot(),
             commands=commands.snapshot() if commands is not None else {},
             compaction=(compaction or CompactionStrategyRegistry()).snapshot(),
             continuations=(continuations or RunContinuationRegistry()).snapshot(),
@@ -139,6 +143,7 @@ class ExtensionCatalog:
         tools: ToolRegistry,
         observers: ObserverRegistry,
         context_providers: ContextProviderRegistry,
+        system_prompt_providers: SystemPromptRegistry,
         commands: PluginCommandRegistry,
         compaction: CompactionStrategyRegistry,
         providers: ProviderRegistry,
@@ -164,6 +169,7 @@ class ExtensionCatalog:
         self.tools = tools
         self.observers = observers
         self.context_providers = context_providers
+        self.system_prompt_providers = system_prompt_providers
         self.commands = commands
         self.compaction = compaction
         self.providers = providers
@@ -432,6 +438,10 @@ class ExtensionCatalogLease:
         return self.catalog.context_providers
 
     @property
+    def system_prompt_providers(self) -> SystemPromptRegistry:
+        return self.catalog.system_prompt_providers
+
+    @property
     def commands(self) -> PluginCommandRegistry:
         return self.catalog.commands
 
@@ -500,7 +510,9 @@ def build_extension_catalog(
     observers = ObserverRegistry()
     observers.restore(base.observers)
     context_providers = ContextProviderRegistry()
+    system_prompt_providers = SystemPromptRegistry()
     context_providers.restore(base.context_providers)
+    system_prompt_providers.restore(base.system_prompt_providers)
     commands = PluginCommandRegistry()
     commands.restore(base.commands)
     compaction = CompactionStrategyRegistry()
@@ -523,6 +535,7 @@ def build_extension_catalog(
         tools=tools,
         observers=observers,
         context_providers=context_providers,
+        system_prompt_providers=system_prompt_providers,
         commands=commands,
         compaction=compaction,
         providers=providers,
@@ -569,6 +582,7 @@ def build_extension_catalog(
     tools.freeze()
     observers.freeze()
     context_providers.freeze()
+    system_prompt_providers.freeze()
     commands.freeze()
     compaction.freeze()
     providers.freeze()
@@ -583,6 +597,7 @@ def build_extension_catalog(
         tools=tools,
         observers=observers,
         context_providers=context_providers,
+        system_prompt_providers=system_prompt_providers,
         commands=commands,
         compaction=compaction,
         providers=providers,
@@ -627,18 +642,22 @@ def _base_owner_records(
                 }
             ),
         )
-    for provider in base.context_providers:
-        identity = f"ouro.host/context_providers/{provider.plugin_id}:{provider.provider_id}"
-        records[identity] = _host_owner(
-            identity,
-            _hash(
-                {
-                    "priority": provider.priority,
-                    "timeout_seconds": provider.timeout_seconds,
-                    "failure_mode": provider.failure_mode,
-                }
-            ),
-        )
+    for kind, registrations in (
+        ("context_providers", base.context_providers),
+        ("system_prompt_providers", base.system_prompt_providers),
+    ):
+        for provider in registrations:
+            identity = f"ouro.host/{kind}/{provider.plugin_id}:{provider.provider_id}"
+            records[identity] = _host_owner(
+                identity,
+                _hash(
+                    {
+                        "priority": provider.priority,
+                        "timeout_seconds": provider.timeout_seconds,
+                        "failure_mode": provider.failure_mode,
+                    }
+                ),
+            )
     for identity, command in base.commands.items():
         canonical = f"ouro.host/commands/{identity}"
         records[canonical] = _host_owner(

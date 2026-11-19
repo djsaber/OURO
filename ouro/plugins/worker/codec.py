@@ -4,17 +4,19 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import fields
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import TypeAdapter, ValidationError
 
 from ouro.core.message_semantics import validate_semantic_tag
 from ouro.core.session_controls import SessionInputRequest
+from ouro.core.system_prompts import SystemPromptFragment
 from ouro.plugins.tool_content import decode_worker_content
 from ouro.sdk.plugins import v6 as sdk
 
 _TOOL = TypeAdapter(sdk.ToolOutput)
 _CONTEXT = TypeAdapter(sdk.ContextOutput)
+_SYSTEM_PROMPT = TypeAdapter(SystemPromptFragment)
 _COMMAND = TypeAdapter(sdk.CommandOutput)
 _SESSION_INPUTS = TypeAdapter(list[SessionInputRequest])
 _CONTROLLER = TypeAdapter(sdk.SessionControllerOutput)
@@ -215,7 +217,7 @@ def _decode_worker_observer(result: dict[str, Any], method: str) -> None:
 
 
 def _decode_worker_context(result: dict[str, Any], method: str) -> sdk.ContextOutput:
-    output = _decode(_CONTEXT, result, method)
+    output = _decode(_CONTEXT, result, method, extra="forbid")
     for fragment in result.get("fragments", ()):
         if isinstance(fragment, dict):
             if not fragment["text"]:
@@ -223,6 +225,11 @@ def _decode_worker_context(result: dict[str, Any], method: str) -> sdk.ContextOu
             if "semantic_tag" in fragment:
                 _worker_semantic_tag(fragment["semantic_tag"])
     return output
+
+
+def _decode_worker_system_prompt(result: dict[str, Any], method: str) -> sdk.SystemPromptFragment:
+    part = _decode(_SYSTEM_PROMPT, result, method)
+    return sdk.SystemPromptFragment(text=part.text, semantic_tag=part.semantic_tag)
 
 
 def _decode_worker_command(result: dict[str, Any], method: str) -> sdk.CommandOutput:
@@ -272,10 +279,15 @@ def _decode_worker_turn_policy(result: dict[str, Any], method: str) -> sdk.TurnP
 
 
 def _decode[T](
-    adapter: TypeAdapter[T], raw: object, method: str, *, strict: bool | None = None
+    adapter: TypeAdapter[T],
+    raw: object,
+    method: str,
+    *,
+    strict: bool | None = None,
+    extra: Literal["forbid"] | None = None,
 ) -> T:
     try:
-        return adapter.validator.validate_python(raw, strict=strict)
+        return adapter.validator.validate_python(raw, strict=strict, extra=extra)
     except ValidationError as exc:
         details = "; ".join(
             f"{'.'.join(map(str, error['loc']))}: {error['msg']}"

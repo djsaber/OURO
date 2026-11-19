@@ -36,6 +36,7 @@ from ouro.core.session_controls import (
     SessionInputBatchRequest,
     SessionInputRequest,
 )
+from ouro.core.system_prompts import SystemPromptFragment, SystemPromptRegistration
 from ouro.plugins.harness_calls import bind_context_callback, invoke_plugin_callback
 from ouro.plugins.inprocess.policies import (
     _adapt_continuation_policy,
@@ -44,6 +45,7 @@ from ouro.plugins.inprocess.policies import (
     _adapt_turn_policy,
 )
 from ouro.plugins.inprocess.tools import _adapt_tool
+from ouro.plugins.invocation import plugin_invocation
 from ouro.plugins.providers import adapt_provider
 from ouro.plugins.registry import PluginCommand, PluginCommandRequest, PluginCommandResult
 from ouro.plugins.run_drivers import adapt_run_driver
@@ -287,7 +289,6 @@ def _adapt_context(
             fragments=[
                 ContextFragment(
                     text=value.text,
-                    target=value.target,
                     revision=value.revision,
                     role=value.role,
                     semantic_tag=value.semantic_tag,
@@ -300,6 +301,33 @@ def _adapt_context(
         )
 
     return ContextProviderRegistration(
+        plugin_id="",
+        provider_id=contribution.id,
+        handler=handler,
+        priority=contribution.priority,
+        timeout_seconds=contribution.timeout_seconds,
+        failure_mode=contribution.failure_mode,
+        active_when_controller_id=contribution.active_when,
+    )
+
+
+def _adapt_system_prompt(
+    contribution: sdk.SystemPromptContribution, *, owner_id: str
+) -> SystemPromptRegistration:
+    async def handler(workspace: str | None) -> SystemPromptFragment:
+        with plugin_invocation(
+            owner_id, writable=False, workspace=workspace, inherit_run_ports=False
+        ) as invocation:
+            fragment = await invoke_owned_callback(
+                contribution.handler,
+                sdk.SystemPromptCall(workspace=workspace),
+                on_cancel=invocation.close,
+            )
+        if not isinstance(fragment, sdk.SystemPromptFragment):
+            raise TypeError("system prompt provider must return SystemPromptFragment")
+        return SystemPromptFragment(text=fragment.text, semantic_tag=fragment.semantic_tag)
+
+    return SystemPromptRegistration(
         plugin_id="",
         provider_id=contribution.id,
         handler=handler,
@@ -404,6 +432,7 @@ COMMAND_SDK_ADAPTER = SDKContributionAdapter("commands", _adapt_command)
 
 
 CONTEXT_SDK_ADAPTER = SDKContributionAdapter("context_providers", _adapt_context)
+SYSTEM_PROMPT_SDK_ADAPTER = SDKContributionAdapter("system_prompt_providers", _adapt_system_prompt)
 
 
 COMPACTION_SDK_ADAPTER = SDKContributionAdapter(

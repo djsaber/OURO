@@ -2399,6 +2399,7 @@ async def test_worker_supports_session_inputs_and_semantic_policies(tmp_path) ->
                 {"id": "finished", "event": "tool_call_finished"},
                 {"id": "runs", "event": "run_finished"},
             ],
+            "system_prompt_providers": [{"id": "workspace_rules"}],
             "context_providers": [
                 {
                     "id": "goal_context",
@@ -2441,6 +2442,7 @@ for line in sys.stdin:
         result = {
             'commands': ['goal'],
             'observers': ['events', 'context', 'requested', 'finished', 'runs'],
+            'system_prompt_providers': ['workspace_rules'],
             'context_providers': ['goal_context'],
             'continuation_policies': ['goal'],
             'prompt_policies': ['prompt_guard'],
@@ -2493,6 +2495,11 @@ for line in sys.stdin:
             'session_kind': call['session_kind'],
             'payload': call['payload'],
         }}
+    elif method == 'system_prompt.call':
+        assert request['params']['contribution_id'] == 'workspace_rules'
+        assert request['params']['call'] == {'workspace': '/project'}
+        assert 'session_state' not in request['params']
+        result = {'text': 'Workspace rules', 'semantic_tag': 'workspace-rules'}
     elif method == 'context.call':
         result = {
             'fragments': [
@@ -2597,7 +2604,10 @@ for line in sys.stdin:
         "session_kind": "subagent",
         "payload": {"phase": "end"},
     }
-    context_provider = snapshot.context_providers.registered()[0]
+    instructions = await snapshot.system_prompt_providers.evaluate("/project")
+    assert instructions.failures == []
+    assert instructions.fragments == ["<workspace-rules>\nWorkspace rules\n</workspace-rules>"]
+    context_provider = snapshot.context_providers.snapshot()[0]
     context_result = await context_provider.handler(
         ContextProviderCall(
             session_id="ses_worker",

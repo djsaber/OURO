@@ -8,13 +8,11 @@ from pathlib import Path
 from pydantic import Field, field_validator
 
 from ouro.core.base import OuroModel
-from ouro.core.context_providers import ContextFragment
 from ouro.core.errors import SkillActivationError
 from ouro.core.messages import (
     MessageRecord,
     ModelMessage,
     SkillActivationContent,
-    model_visible_message,
 )
 from ouro.skills import SkillMetadata, load_skill_from_metadata
 
@@ -98,16 +96,14 @@ class SkillActivationService:
         return tuple(self.resolve_user_activation(skills, request) for request in requests)
 
 
-def compacted_skill_context(
+def compacted_skill_messages(
     messages: Sequence[MessageRecord],
-) -> list[ContextFragment]:
+) -> list[ModelMessage]:
     """Render the skill sources fixed by summary activation, without scanning history."""
     return [
-        ContextFragment(
+        ModelMessage.text(
             role="user",
-            text=model_visible_message(
-                ModelMessage(role="user", content=list(message.skill_activations))
-            ).text_content,
+            text="".join(skill.render() for skill in message.skill_activations),
         )
         for message in messages
     ]
@@ -127,4 +123,4 @@ def _skill_content_digest(metadata: SkillMetadata, instructions: str) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
-__all__ = ["SkillActivationService", "SkillInvocationRequest", "compacted_skill_context"]
+__all__ = ["SkillActivationService", "SkillInvocationRequest", "compacted_skill_messages"]

@@ -151,10 +151,7 @@ configuration、插件私有 data 或 canonical Session 数据。没有本地用
 `PluginContext.environment.agent_instructions(workspace)` 读取 Host 配置与 workspace 对应的指令文档。
 结果包含来源路径、作用域和文本，插件不接收整个 Host home。Agent Context 与用户插件使用同一公开端口。
 
-原生 contribution 包括 Tool、Command、Observer、Context Provider、Prompt Policy、Turn Policy、Compaction
-Strategy、Skill、MCP Server、Background Service、Continuation Policy、Tool Policy 和 Session Controller。
-这些类型对应明确的 Host 语义消费者；新业务通过独立的 `exports` 服务声明扩展，无需增加原生 contribution 类型。
-完整 producer/consumer/contract 证据见[插件系统规格](../specs/plugins.md#91-目标稳定-contribution)。
+Manifest 的 `contributes` 声明由 Host 直接消费的能力，例如工具、系统提示词、会话观察和策略。插件之间的业务服务通过 `exports` 声明。各类能力及其消费方见[插件系统规格](../specs/plugins.md#91-目标稳定-contribution)。
 
 Tool 可选择接收 Host-owned `ToolExecutionContext`，使用其中的 workspace、Host artifact 受约束路径解析、取消与
 输出限制。Tool / resume 以及 Compaction 的可选上下文回调在 contribution 装配时绑定；签名不满足调用契约时
@@ -207,35 +204,33 @@ TUI 按 `plan_confirmation` 的公开结构提供计划预览与选择，不要�
 呈现类型不授予权限，不激活或释放 Session controller，也不改变无人值守处理。这种映射保留 `ToolInputRequest`
 的 Host-neutral Core 契约。
 
-Context Provider 返回的字符串或普通 `ContextFragment` 默认只影响本次模型请求。如果 Harness 指令必须进入可审计、
-可恢复的 canonical history，显式返回持久 fragment：
+### 扩展系统提示词或提交会话观察
+
+在 manifest 的 `contributes.system_prompt_providers` 声明提示词提供方，在 `ContributionSet.system_prompt_providers` 返回同 ID 的 `SystemPromptContribution`。回调接收 Session workspace，返回一份带可选标签的原始正文。
+
+```python
+from ouro.sdk.plugins.v6 import SystemPromptCall, SystemPromptContribution, SystemPromptFragment
+
+def workspace_rules(call: SystemPromptCall) -> SystemPromptFragment:
+    return SystemPromptFragment(text="Use project-relative paths.", semantic_tag="workspace-rules")
+
+rules = SystemPromptContribution(id="workspace-rules", handler=workspace_rules)
+```
+
+同一组输入应产生相同正文。宿主按提供方顺序把片段拼在基础提示词和 Skills 之后，并将完整系统提示词交给模型及摘要策略。
+
+在 `contributes.context_providers` 声明会话观察提供方，用 `ContextContribution` 注册回调。回调可读取 `ContextCall` 的轮次和会话状态。返回单条文本可直接使用字符串，多条观察放入 `ContextOutput.fragments`。片段支持字符串和 `ContextFragment`，默认角色为 `harness`。
 
 ```python
 from ouro.sdk.plugins.v6 import ContextFragment, ContextOutput
 
 def plan_context(call):
-    return ContextOutput(
-        fragments=(
-            ContextFragment(
-                text="Plan mode is active for this Session.",
-                role="harness",
-                semantic_tag="plan-context",
-            ),
-        )
-    )
+    return ContextOutput(fragments=(
+        ContextFragment(text="Plan mode is active.", semantic_tag="plan-context"),
+    ))
 ```
 
-Host 在调用模型前按 fragment 声明的 role/tag 写入带 plugin/provider/generation provenance 的 canonical
-消息；同一 Run/model round 的恢复不会重复写入。`semantic_tag` 默认是 `None`，可设置为小写字母、数字和连字符
-组成的具体语义名。只有设置标签时，构建 ProviderContext 才把正文包装为
-`<plan-context>...</plan-context>`；标签不会改变 role、来源或协议权限。不要把瞬时状态快照无差别持久化。
-
-如果片段属于完整 system prompt 而不是 canonical message，显式使用
-`ContextFragment(target="system_prompt")`。Application 会在基础 system prompt 与 Skills 指令之后按 Context
-Provider 顺序追加它；该目标进入固定系统指令。
-提供方可通过 `semantic_tag` 声明片段语义，正文只返回未包裹的原始文本；标签存在时 Core 与 message target
-共用同一 semantic envelope 投影，验证标签、转义正文中的同名包络分隔符并构造标签；标签不存在时原样投影。
-`ContextCall.workspace` 提供本次 Session 中 Agent 的工作目录。
+宿主在调用模型前将新观察提交到会话，保存插件、提供方及 generation 来源。同一位置的正文、角色、标签和可选 `revision` 与上次投递相同时，直接沿用已有记录。端点能力决定模型看到的消息角色。两类提供方都返回原始正文，宿主负责标签校验、包裹和转义。
 
 ### Observer 与 Prompt Policy
 
@@ -721,9 +716,7 @@ worker tool 以 `{"input_request": <任意 JSON 值>}` 返回同一种挂起请�
 `answer` 字段时协议校验失败。
 协议 `3.0` 在 `session_controller.call` 输入中提供 `session_kind`，允许 `continuation.call` 输出
 `session_control_transitions`，与 in-process Plugin API `6.0.0` 使用相同状态及结算语义。
-`context.call` 的 `fragments` 既接受字符串，也接受带 `text`、`target`、`role` 和
-可选 `semantic_tag` 的对象。Worker 应传递自己选择的字段；Host 不从 target 或 provenance 反推
-消息属性。
+`system_prompt.call` 接收 `call.workspace`，返回含 `text` 和可选 `semantic_tag` 的对象。`context.call` 接收轮次、workspace 和会话状态视图，返回 `fragments`。其中每项可以是字符串，也可以是含 `text`、可选 `role`、`semantic_tag` 和 `revision` 的消息对象。
 
 ## 8. 社区资源导入前审查
 

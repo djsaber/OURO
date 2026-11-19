@@ -142,6 +142,24 @@ def _worker_context_providers(
     ]
 
 
+def _worker_system_prompts(
+    instance: WorkerPluginInstance, raw: object, available: dict[str, set[str]]
+) -> list[sdk.SystemPromptContribution]:
+    del raw
+    return [
+        sdk.SystemPromptContribution(
+            id=item.id,
+            handler=instance._system_prompt_handler(item.id),
+            priority=item.priority,
+            timeout_seconds=item.timeout_seconds,
+            failure_mode=item.failure_mode,
+            active_when=item.active_when,
+        )
+        for item in instance.manifest.contributes.system_prompt_providers
+        if item.id in available.get("system_prompt_providers", set())
+    ]
+
+
 def _worker_compaction_strategies(
     instance: WorkerPluginInstance,
     raw: object,
@@ -280,6 +298,10 @@ COMPACTION_WORKER_ADAPTER = WorkerContributionAdapter(
     "compaction_strategies",
     "compaction_strategies",
     _worker_compaction_strategies,
+)
+
+SYSTEM_PROMPT_WORKER_ADAPTER = WorkerContributionAdapter(
+    "system_prompt_providers", "system_prompt_providers", _worker_system_prompts
 )
 
 

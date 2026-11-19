@@ -434,13 +434,11 @@ async def test_plugin_continuation_creates_attributed_harness_follow_up(
     assert snapshot.runs[1].parent_run_id == snapshot.runs[0].run_id
     assert [message.role for message in snapshot.messages] == [
         "user",
-        "harness",
         "assistant",
         "harness",
         "assistant",
     ]
-    assert snapshot.messages[1].semantic_tag == "ouro-system-information"
-    harness = snapshot.messages[3]
+    harness = snapshot.messages[2]
     assert harness.metadata["plugin_id"] == TEST_GOAL_PLUGIN_ID
     assert harness.metadata["contribution_id"] == "goal"
     assert harness.metadata["continuation_decision_id"]

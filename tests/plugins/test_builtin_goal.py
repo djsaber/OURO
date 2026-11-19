@@ -64,9 +64,6 @@ class _EndToEndGoalProvider:
         call = self.calls
         self.calls += 1
         if call == 0:
-            messages = [
-                m for m in messages if not m.text_content.startswith("<ouro-system-information>")
-            ]
             assert messages[-1].role == "user"
             assert messages[-2].text_content == "Ship end to end"
             assert "<goal-create>" in messages[-3].text_content

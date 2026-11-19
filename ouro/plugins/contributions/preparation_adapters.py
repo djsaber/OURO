@@ -11,11 +11,11 @@ from ouro.plugins.contributions.preparation_rules import (
     _PreparationContext,
     _prepare_commands,
     _prepare_compaction,
-    _prepare_context_providers,
     _prepare_continuation_policies,
     _prepare_discovered_tools,
     _prepare_observers,
     _prepare_prompt_policies,
+    _prepare_request_providers,
     _prepare_session_controllers,
     _prepare_tool_policies,
     _prepare_turn_policies,
@@ -106,19 +106,18 @@ class _ObserverPreparationAdapter:
 
 
 @dataclass(frozen=True)
-class _ContextPreparationAdapter:
-    kind: str = "context_providers"
+class _RequestProviderPreparationAdapter:
+    kind: str
 
     def prepare(
         self,
         context: _PreparationContext,
         builder: _PreparedBuilder,
     ) -> None:
-        builder.context_providers = _prepare_context_providers(
-            context.manifest,
-            context.owner,
-            context.contributions.context_providers,
+        providers = _prepare_request_providers(
+            self.kind, context.manifest, context.owner, getattr(context.contributions, self.kind)
         )
+        setattr(builder, self.kind, providers)
 
     def missing_optional(
         self,
@@ -126,9 +125,9 @@ class _ContextPreparationAdapter:
         builder: _PreparedBuilder,
     ) -> tuple[str, ...]:
         return _missing_optional(
-            "context_providers",
-            context.manifest.contributes.context_providers,
-            {provider.provider_id for provider in builder.context_providers},
+            self.kind,
+            getattr(context.manifest.contributes, self.kind),
+            {provider.provider_id for provider in getattr(builder, self.kind)},
         )
 
 
@@ -418,7 +417,8 @@ COMMAND_PREPARATION_ADAPTER = _CommandPreparationAdapter()
 SESSION_CONTROLLER_PREPARATION_ADAPTER = _SessionControllerPreparationAdapter()
 
 
-CONTEXT_PREPARATION_ADAPTER = _ContextPreparationAdapter()
+CONTEXT_PREPARATION_ADAPTER = _RequestProviderPreparationAdapter("context_providers")
+SYSTEM_PROMPT_PREPARATION_ADAPTER = _RequestProviderPreparationAdapter("system_prompt_providers")
 
 
 COMPACTION_PREPARATION_ADAPTER = _CompactionPreparationAdapter()

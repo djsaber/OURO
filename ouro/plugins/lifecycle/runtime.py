@@ -27,6 +27,7 @@ from ouro.core.run_drivers import (
     RunDriverRegistration,
 )
 from ouro.core.session_ports import SessionRepository
+from ouro.core.system_prompts import SystemPromptRegistry
 from ouro.core.task_ports import TaskServicePort
 from ouro.core.tasks import AgentTaskTarget
 from ouro.core.tool_policies import ToolPolicyRegistry
@@ -132,6 +133,7 @@ class PluginRuntimeResource:
         tools: ToolRegistry,
         observers: ObserverRegistry,
         context_providers: ContextProviderRegistry | None = None,
+        system_prompt_providers: SystemPromptRegistry | None = None,
         commands: PluginCommandRegistry | None = None,
         compaction: CompactionStrategyRegistry | None = None,
         continuations: RunContinuationRegistry | None = None,
@@ -148,6 +150,7 @@ class PluginRuntimeResource:
         self.tools = tools
         self.observers = observers
         self.context_providers = context_providers or ContextProviderRegistry()
+        self.system_prompt_providers = system_prompt_providers or SystemPromptRegistry()
         self.commands = commands
         self.compaction = compaction
         self.continuations = continuations
@@ -1326,6 +1329,7 @@ class PluginRuntimeResource:
             tools=self.tools,
             observers=self.observers,
             context_providers=self.context_providers,
+            system_prompt_providers=self.system_prompt_providers,
             commands=self.commands,
             compaction=self.compaction,
             continuations=self.continuations,

@@ -1,20 +1,18 @@
+"""Request-time observations delivered to the session before a model response."""
+
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field, replace
-from typing import Literal
-
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from ouro.core.base import OuroModel
-from ouro.core.callbacks import invoke_bounded_callback
 from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import SemanticTag
-from ouro.core.redaction import redact_text
-
-ContextProviderFailureMode = Literal["omit", "block"]
-ContextFragmentTarget = Literal["message", "system_prompt"]
+from ouro.core.request_providers import (
+    OrderedProviderRegistry,
+    ProviderEvaluation,
+    RequestProviderRegistration,
+)
 
 
 class ContextProviderCall(OuroModel):
@@ -27,16 +25,17 @@ class ContextProviderCall(OuroModel):
 
 
 class ContextFragment(OuroModel):
-    """Raw provider-owned context with independently declared message semantics."""
+    """An observation delivered at its position in the dialogue."""
+
+    model_config = ConfigDict(extra="forbid")
 
     text: str = Field(min_length=1)
-    target: ContextFragmentTarget = "message"
     role: MessageRole = "harness"
     semantic_tag: SemanticTag | None = None
     revision: str | None = None
 
 
-class AttributedContextFragment(ContextFragment):
+class ContextObservation(ContextFragment):
     plugin_id: str
     provider_id: str
     generation_id: str | None = None
@@ -47,170 +46,30 @@ class ContextProviderResult(OuroModel):
     fragments: list[ContextFragment] = Field(default_factory=list)
 
 
-ContextProviderHandler = Callable[
-    [ContextProviderCall],
-    ContextProviderResult | Awaitable[ContextProviderResult],
-]
+class ContextProviderRegistration(
+    RequestProviderRegistration[ContextProviderCall, ContextProviderResult]
+):
+    """Produce ordered observations for one model turn."""
 
 
-@dataclass(frozen=True)
-class ContextProviderRegistration:
-    plugin_id: str
-    provider_id: str
-    handler: ContextProviderHandler
-    priority: int = 100
-    timeout_seconds: float = 10.0
-    failure_mode: ContextProviderFailureMode = "omit"
-    owner: str | None = None
-    generation_id: str | None = None
-    active_when_controller_id: str | None = None
+class ContextProviderRegistry(OrderedProviderRegistry[ContextProviderRegistration]):
+    async def evaluate(self, call: ContextProviderCall) -> ProviderEvaluation[ContextObservation]:
+        return await self._evaluate(call, ContextProviderResult, _attribute_observations)
 
 
-class ContextProviderFailure(OuroModel):
-    plugin_id: str
-    provider_id: str
-    session_id: str
-    run_id: str
-    failure_mode: ContextProviderFailureMode
-    error_type: str
-    message: str
-
-
-@dataclass
-class ContextProviderEvaluation:
-    fragments: list[AttributedContextFragment] = field(default_factory=list)
-    failures: list[ContextProviderFailure] = field(default_factory=list)
-    blocked: bool = False
-
-
-class ContextProviderRegistry:
-    """Deterministic registry for context that participates in model semantics."""
-
-    def __init__(self) -> None:
-        self._registrations: list[ContextProviderRegistration] = []
-        self._frozen = False
-        self._active_controller_ids: Callable[[], set[str]] | None = None
-
-    def freeze(self) -> None:
-        self._frozen = True
-
-    def _require_mutable(self) -> None:
-        if self._frozen:
-            raise RuntimeError("context provider registry structure is frozen")
-
-    def replace_owner(
-        self,
-        owner: str,
-        registrations: tuple[ContextProviderRegistration, ...],
-    ) -> None:
-        self._require_mutable()
-        identities = [(item.plugin_id, item.provider_id) for item in registrations]
-        if len(identities) != len(set(identities)):
-            raise ValueError("replacement contains duplicate context provider identities")
-        if any(item.timeout_seconds <= 0 for item in registrations):
-            raise ValueError("context provider timeout must be positive")
-        retained = [item for item in self._registrations if item.owner != owner]
-        self._registrations = [
-            *retained,
-            *(replace(item, owner=owner) for item in registrations),
-        ]
-
-    def unregister_owner(self, owner: str) -> None:
-        self.replace_owner(owner, ())
-
-    def snapshot(self) -> list[ContextProviderRegistration]:
-        return list(self._registrations)
-
-    def restore(self, snapshot: list[ContextProviderRegistration]) -> None:
-        self._require_mutable()
-        self._registrations = list(snapshot)
-
-    def registered(self) -> list[ContextProviderRegistration]:
-        active = self._active_controller_ids() if self._active_controller_ids is not None else None
-        return sorted(
-            (
-                item
-                for item in self._registrations
-                if active is None
-                or item.active_when_controller_id is None
-                or item.active_when_controller_id in active
-            ),
-            key=lambda item: (item.priority, item.plugin_id, item.provider_id, item.owner or ""),
+def _attribute_observations(
+    provider: ContextProviderRegistration, result: ContextProviderResult
+) -> list[ContextObservation]:
+    return [
+        ContextObservation(
+            text=fragment.text,
+            role=fragment.role,
+            semantic_tag=fragment.semantic_tag,
+            revision=fragment.revision,
+            plugin_id=provider.plugin_id,
+            provider_id=provider.provider_id,
+            generation_id=provider.generation_id,
+            fragment_index=index,
         )
-
-    def scoped(
-        self,
-        active_controller_ids: Callable[[], set[str]],
-    ) -> ContextProviderRegistry:
-        scoped = ContextProviderRegistry()
-        scoped.restore(self.snapshot())
-        scoped._active_controller_ids = active_controller_ids
-        scoped.freeze()
-        return scoped
-
-    async def evaluate(self, call: ContextProviderCall) -> ContextProviderEvaluation:
-        evaluation = ContextProviderEvaluation()
-        for registration in self.registered():
-            try:
-                result = await invoke_bounded_callback(
-                    registration.handler,
-                    call,
-                    timeout_seconds=registration.timeout_seconds,
-                )
-                if not isinstance(result, ContextProviderResult):
-                    raise TypeError("context provider must return ContextProviderResult")
-                evaluation.fragments.extend(
-                    AttributedContextFragment(
-                        **fragment.model_dump(include=set(ContextFragment.model_fields)),
-                        plugin_id=registration.plugin_id,
-                        provider_id=registration.provider_id,
-                        generation_id=registration.generation_id,
-                        fragment_index=index,
-                    )
-                    for index, fragment in enumerate(result.fragments)
-                )
-            except TimeoutError:
-                failure = ContextProviderFailure(
-                    plugin_id=registration.plugin_id,
-                    provider_id=registration.provider_id,
-                    session_id=call.session_id,
-                    run_id=call.run_id,
-                    failure_mode=registration.failure_mode,
-                    error_type="TimeoutError",
-                    message=(
-                        f"context provider timed out after {registration.timeout_seconds:g} seconds"
-                    ),
-                )
-                evaluation.failures.append(failure)
-                if registration.failure_mode == "block":
-                    evaluation.blocked = True
-                    return evaluation
-            except Exception as exc:  # noqa: BLE001 - extension isolation boundary.
-                failure = ContextProviderFailure(
-                    plugin_id=registration.plugin_id,
-                    provider_id=registration.provider_id,
-                    session_id=call.session_id,
-                    run_id=call.run_id,
-                    failure_mode=registration.failure_mode,
-                    error_type=type(exc).__name__,
-                    message=redact_text(str(exc)),
-                )
-                evaluation.failures.append(failure)
-                if registration.failure_mode == "block":
-                    evaluation.blocked = True
-                    return evaluation
-        return evaluation
-
-
-__all__ = [
-    "AttributedContextFragment",
-    "ContextFragment",
-    "ContextFragmentTarget",
-    "ContextProviderCall",
-    "ContextProviderEvaluation",
-    "ContextProviderFailure",
-    "ContextProviderFailureMode",
-    "ContextProviderRegistration",
-    "ContextProviderRegistry",
-    "ContextProviderResult",
-]
+        for index, fragment in enumerate(result.fragments)
+    ]

@@ -16,7 +16,7 @@ AGENT_CONTEXT_PLUGIN = BuiltinPluginDefinition(
             "author": {"name": "ouro"},
             "version": "1.0.0",
             "description": (
-                "Supplies hierarchical AGENTS.md instructions and ordered runtime observations."
+                "Adds hierarchical AGENTS.md instructions and runtime facts to the system prompt."
             ),
             "namespace": "agent_context",
             "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
@@ -25,7 +25,7 @@ AGENT_CONTEXT_PLUGIN = BuiltinPluginDefinition(
                 "entrypoint": "agent_context_plugin:create_plugin",
             },
             "contributes": {
-                "context_providers": [
+                "system_prompt_providers": [
                     {
                         "id": "agent-instructions",
                         "priority": 9_000,

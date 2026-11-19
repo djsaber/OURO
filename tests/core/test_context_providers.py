@@ -3,12 +3,17 @@ from __future__ import annotations
 import pytest
 
 from ouro.core.context_providers import (
-    AttributedContextFragment,
     ContextFragment,
+    ContextObservation,
     ContextProviderCall,
     ContextProviderRegistration,
     ContextProviderRegistry,
     ContextProviderResult,
+)
+from ouro.core.system_prompts import (
+    SystemPromptFragment,
+    SystemPromptRegistration,
+    SystemPromptRegistry,
 )
 
 
@@ -22,6 +27,28 @@ def _call() -> ContextProviderCall:
     )
 
 
+async def test_scoped_prompt_providers_keep_the_rounds_order_and_controller_selection():
+    registry = SystemPromptRegistry()
+    rules = SystemPromptRegistration(
+        "plugin", "rules", lambda _: SystemPromptFragment(text="rules")
+    )
+    mode = SystemPromptRegistration(
+        "plugin",
+        "mode",
+        lambda _: SystemPromptFragment(text="mode"),
+        priority=1,
+        active_when_controller_id="plan",
+    )
+    registry.replace_owner("plugin", (rules, mode))
+    active = registry.scoped({"plan"})
+    inactive = registry.scoped(set())
+    registry.replace_owner("plugin", ())
+
+    assert (await active.evaluate(None)).fragments == ["mode", "rules"]
+    assert (await inactive.evaluate(None)).fragments == ["rules"]
+    assert (await registry.evaluate(None)).fragments == []
+
+
 @pytest.mark.asyncio
 async def test_context_providers_order_by_priority_and_identity() -> None:
     registry = ContextProviderRegistry()
@@ -33,7 +60,7 @@ async def test_context_providers_order_by_priority_and_identity() -> None:
                 provider_id="later",
                 priority=20,
                 handler=lambda _call: ContextProviderResult(
-                    fragments=[ContextFragment(text="later", target="system_prompt")]
+                    fragments=[ContextFragment(text="later")]
                 ),
             ),
             ContextProviderRegistration(
@@ -43,7 +70,7 @@ async def test_context_providers_order_by_priority_and_identity() -> None:
                 priority=10,
                 handler=lambda _call: ContextProviderResult(
                     fragments=[
-                        AttributedContextFragment(
+                        ContextObservation(
                             text="first",
                             semantic_tag="plugin-context",
                             plugin_id="previous.plugin",
@@ -58,16 +85,19 @@ async def test_context_providers_order_by_priority_and_identity() -> None:
 
     result = await registry.evaluate(_call())
 
-    assert [fragment.text for fragment in result.fragments] == ["first", "later"]
-    assert result.fragments[0].plugin_id == "dev.ouro.alpha"
-    assert result.fragments[0].provider_id == "first"
-    assert result.fragments[0].generation_id == "gen_alpha"
-    assert result.fragments[0].fragment_index == 0
-    assert result.fragments[0].target == "message"
-    assert result.fragments[0].semantic_tag == "plugin-context"
-    assert result.fragments[1].role == "harness"
-    assert result.fragments[1].semantic_tag is None
-    assert result.fragments[1].target == "system_prompt"
+    assert result.fragments == [
+        ContextObservation(
+            text="first",
+            semantic_tag="plugin-context",
+            plugin_id="dev.ouro.alpha",
+            provider_id="first",
+            generation_id="gen_alpha",
+            fragment_index=0,
+        ),
+        ContextObservation(
+            text="later", plugin_id="dev.ouro.zeta", provider_id="later", fragment_index=0
+        ),
+    ]
     assert result.failures == []
     assert result.blocked is False
 

@@ -23,6 +23,7 @@ PluginCapability = Literal[
     "commands",
     "observers",
     "context_providers",
+    "system_prompt_providers",
     "compaction_strategies",
     "skills",
     "mcp_servers",
@@ -312,7 +313,7 @@ class PromptPolicyContributionSpec(OuroModel):
         return _validate_local_id(value) if value is not None else None
 
 
-class ContextProviderContributionSpec(OuroModel):
+class RequestProviderSpec(OuroModel):
     id: str
     priority: int = Field(default=100, ge=-10_000, le=10_000)
     timeout_seconds: float = Field(default=10.0, gt=0, le=30)
@@ -361,7 +362,8 @@ class PluginContributes(OuroModel):
     tools: list[ToolContributionSpec] = Field(default_factory=list)
     commands: list[CommandContributionSpec] = Field(default_factory=list)
     observers: list[ObserverContributionSpec] = Field(default_factory=list)
-    context_providers: list[ContextProviderContributionSpec] = Field(default_factory=list)
+    context_providers: list[RequestProviderSpec] = Field(default_factory=list)
+    system_prompt_providers: list[RequestProviderSpec] = Field(default_factory=list)
     compaction_strategies: list[NamedContributionSpec] = Field(default_factory=list)
     skills: list[PathContributionSpec] = Field(default_factory=list)
     mcp_servers: list[PathContributionSpec] = Field(default_factory=list)
@@ -390,6 +392,7 @@ class PluginContributes(OuroModel):
                 self.tools,
                 self.observers,
                 self.context_providers,
+                self.system_prompt_providers,
                 self.continuation_policies,
                 self.prompt_policies,
                 self.turn_policies,
@@ -411,6 +414,7 @@ class PluginContributes(OuroModel):
             "commands": list(self.commands),
             "observers": list(self.observers),
             "context_providers": list(self.context_providers),
+            "system_prompt_providers": list(self.system_prompt_providers),
             "compaction_strategies": list(self.compaction_strategies),
             "skills": list(self.skills),
             "mcp_servers": list(self.mcp_servers),

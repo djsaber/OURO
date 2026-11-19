@@ -15,6 +15,7 @@ from ouro.core.run_drivers import RunDriverBinding, RunDriverContext, RunDriverR
 from ouro.core.session_controller_registry import SessionControllerRegistry
 from ouro.core.session_controls import SessionControlState
 from ouro.core.state import RunContinuationControllerRef
+from ouro.core.system_prompts import SystemPromptRegistry
 from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistry
 from ouro.skills import SkillMetadata
@@ -42,6 +43,9 @@ class RuntimeCapabilities(Protocol):
 
     @property
     def context_providers(self) -> ContextProviderRegistry: ...
+
+    @property
+    def system_prompt_providers(self) -> SystemPromptRegistry: ...
 
     @property
     def compaction(self) -> CompactionStrategyRegistry: ...

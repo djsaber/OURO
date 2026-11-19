@@ -8,11 +8,6 @@ from typing import Any
 
 from ouro.core.callbacks import invoke_owned_callback
 from ouro.core.compaction import CompactionArtifact, CompactionRequest, CompactionStrategy
-from ouro.core.context_providers import (
-    ContextProviderCall,
-    ContextProviderRegistration,
-    ContextProviderResult,
-)
 from ouro.core.continuations import ContinuationDecision, ContinuationPolicyRegistration
 from ouro.core.observers import Observation, ObserverRegistration
 from ouro.core.prompt_policies import (
@@ -20,6 +15,7 @@ from ouro.core.prompt_policies import (
     PromptPolicyDecision,
     PromptPolicyRegistration,
 )
+from ouro.core.request_providers import RequestProviderRegistration
 from ouro.core.run_drivers import (
     DriverFinished,
     DriverResume,
@@ -53,7 +49,10 @@ def bind_generation_gate(
         tools=tuple(_gated_tool(item, gate) for item in prepared.tools),
         observers=tuple(_gated_observer(item, gate) for item in prepared.observers),
         context_providers=tuple(
-            _gated_context_provider(item, gate) for item in prepared.context_providers
+            _gated_request_provider(item, gate) for item in prepared.context_providers
+        ),
+        system_prompt_providers=tuple(
+            _gated_request_provider(item, gate) for item in prepared.system_prompt_providers
         ),
         commands=tuple(_gated_command(item, gate) for item in prepared.commands),
         compaction_strategies=tuple(
@@ -152,11 +151,10 @@ def _gated_observer(
     return replace(registration, handler=invoke)
 
 
-def _gated_context_provider(
-    registration: ContextProviderRegistration,
-    gate: GenerationGate,
-) -> ContextProviderRegistration:
-    async def invoke(call: ContextProviderCall) -> ContextProviderResult:
+def _gated_request_provider[R: RequestProviderRegistration](
+    registration: R, gate: GenerationGate
+) -> R:
+    async def invoke(call: Any) -> Any:
         async with gate.invocation():
             return await _invoke_callback(registration.handler, call)
 

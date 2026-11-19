@@ -490,8 +490,8 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         assert [
             (choice.label, choice.group, choice.trailing) for choice in plugin_screen._choices
         ] == [
-            ("agent-instructions", "CONTRIBUTIONS", "context"),
-            ("runtime-facts", "CONTRIBUTIONS", "context"),
+            ("agent-instructions", "CONTRIBUTIONS", "system prompt"),
+            ("runtime-facts", "CONTRIBUTIONS", "system prompt"),
             ("Disable", "ACTIONS", "active"),
             ("Restart", "ACTIONS", ""),
         ]
