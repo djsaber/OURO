@@ -582,6 +582,7 @@ def _add_endpoint_capability_args(
         (("audio-input",), "supports_audio_input", "audio input"),
         (("video-input",), "supports_video_input", "video input"),
         (("streaming",), "supports_streaming", "streaming output"),
+        (("inline-system-messages",), "supports_inline_system_messages", "inline system messages"),
         (("structured-output",), "supports_structured_output", "structured output"),
     ):
         parser.add_argument(

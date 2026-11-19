@@ -15,7 +15,7 @@ from pydantic import Field
 
 from ouro.core.base import OuroModel
 from ouro.core.errors import PersistenceError
-from ouro.core.message_roles import MessageRole
+from ouro.core.message_roles import RunMessageKind
 from ouro.core.message_statistics import (
     InputOrigin,
     RunMessageCounts,
@@ -40,7 +40,7 @@ class FileMessageReference(OuroModel):
     message_id: str
     position: int = Field(ge=1)
     offset: int = Field(ge=0)
-    role: MessageRole
+    kind: RunMessageKind
     run_id: str | None = None
     queued_input_id: str | None = None
     assistant_turn_id: str | None = None
@@ -60,14 +60,15 @@ class FileMessageReference(OuroModel):
         resource_refs: tuple[str, ...] | None = None,
     ) -> FileMessageReference:
         delivery = message.metadata.get("context_provider_delivery_key")
+        kind = message.run_message_kind
         return cls(
             message_id=message.message_id,
             position=message.sequence if position is None else position,
             offset=offset,
-            role=message.role,
+            kind=kind,
             run_id=message.run_id,
             queued_input_id=message.input_id,
-            assistant_turn_id=message.turn_id if message.role == "assistant" else None,
+            assistant_turn_id=message.turn_id if kind == "assistant_response" else None,
             context_delivery_key=delivery if isinstance(delivery, str) else None,
             call_keys=message_call_keys(message),
             input_origin=message_input_origin(message),
@@ -76,7 +77,7 @@ class FileMessageReference(OuroModel):
         )
 
 
-_SELECT = """SELECT message_id, position, offset, role, run_id, queued_input_id,
+_SELECT = """SELECT message_id, position, offset, kind, run_id, queued_input_id,
     assistant_turn_id, context_delivery_key, input_origin, delegation_input_id, resource_refs,
     (SELECT json_group_array(call_key) FROM call_memberships
      WHERE call_memberships.position = locations.position)
@@ -88,7 +89,7 @@ def _reference(row: tuple) -> FileMessageReference:
         message_id=row[0],
         position=row[1],
         offset=row[2],
-        role=row[3],
+        kind=row[3],
         run_id=row[4],
         queued_input_id=row[5],
         assistant_turn_id=row[6],
@@ -130,7 +131,7 @@ class FileMessageIndex:
             "INSERT INTO locations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(position) DO UPDATE SET "
             "message_id = excluded.message_id, offset = excluded.offset, "
-            "role = excluded.role, run_id = excluded.run_id, "
+            "kind = excluded.kind, run_id = excluded.run_id, "
             "queued_input_id = excluded.queued_input_id, "
             "assistant_turn_id = excluded.assistant_turn_id, "
             "context_delivery_key = excluded.context_delivery_key, "
@@ -142,7 +143,7 @@ class FileMessageIndex:
                     item.position,
                     item.message_id,
                     item.offset,
-                    item.role,
+                    item.kind,
                     item.run_id,
                     item.queued_input_id,
                     item.assistant_turn_id,
@@ -200,18 +201,19 @@ class FileMessageIndex:
         if kind == "calls":
             where = "position IN (SELECT position FROM call_memberships WHERE call_key = ?)"
         elif kind == "input_messages":
-            where = "role IN ('user', 'system')"
+            where = "kind = 'input'"
             parameters = ()
-        elif kind in {"assistant_turns", "context_deliveries"}:
-            field = "assistant_turn_id" if kind == "assistant_turns" else "context_delivery_key"
-            where = f"run_id = ? AND {field} = ?"
+        elif kind == "context_deliveries":
+            where = "context_delivery_key = ?"
+        elif kind == "assistant_turns":
+            where = "run_id = ? AND assistant_turn_id = ?"
             parameters = tuple(json.loads(identity))
         elif kind == "inputs":
             where = "queued_input_id = ?"
         else:
             where = "run_id = ?"
             if kind == "assistant_runs":
-                where += " AND role = 'assistant'"
+                where += " AND kind = 'assistant_response'"
         order = " DESC LIMIT 1" if last else ""
         return [
             _reference(row)

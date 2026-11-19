@@ -11,7 +11,7 @@ from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.plugins.harness_calls import invoke_plugin_callback
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.worker.instance import WorkerPluginInstance
-from ouro.sdk.plugins import v5 as sdk
+from ouro.sdk.plugins import v6 as sdk
 
 
 @pytest.fixture

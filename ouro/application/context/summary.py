@@ -578,6 +578,7 @@ def _serialize_messages(messages: Sequence[MessageRecord]) -> str:
     for message in messages:
         label = {
             "system": "System",
+            "harness": "Harness",
             "user": "User",
             "assistant": "Assistant",
             "tool_result": "Tool result",

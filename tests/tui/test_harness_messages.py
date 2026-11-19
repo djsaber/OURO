@@ -27,7 +27,7 @@ from tests.tui.test_background_navigation import NavigationProvider, submit
 from tests.tui.test_tasks import streaming_application
 
 
-def test_scaffold_frame_preserves_user_message_layout_and_targets():
+def test_harness_frame_preserves_user_message_layout_and_targets():
     console = Console(force_terminal=True, color_system="truecolor", width=36)
     options = dict(
         text="Long wrapped message with 中文 and **literal markup**\nSecond line",
@@ -35,9 +35,9 @@ def test_scaffold_frame_preserves_user_message_layout_and_targets():
         created_at=datetime(2026, 10, 19, tzinfo=UTC),
     )
     user = console.render_lines(_MessageContent(**options))
-    scaffold = console.render_lines(_MessageContent(**options, lowlight=True))
-    assert len(user) == len(scaffold)
-    for normal, internal in zip(user, scaffold, strict=True):
+    harness = console.render_lines(_MessageContent(**options, lowlight=True))
+    assert len(user) == len(harness)
+    for normal, internal in zip(user, harness, strict=True):
         for normal_segment, internal_segment in zip(normal[1:], internal[1:], strict=True):
             assert normal_segment.text == internal_segment.text
             assert internal_segment.style.meta == normal_segment.style.meta
@@ -46,7 +46,7 @@ def test_scaffold_frame_preserves_user_message_layout_and_targets():
 
 
 @pytest.mark.parametrize("prompt", ["", "Read this file"])
-def test_revealing_attachment_scaffolds_preserves_file_labels_and_user_targets(prompt):
+def test_revealing_attachment_notices_preserves_file_labels_and_user_targets(prompt):
     messages = tuple(
         separate_attachments(
             MessageRecord.text(session_id="s", role="user", text=prompt),
@@ -60,7 +60,7 @@ def test_revealing_attachment_scaffolds_preserves_file_labels_and_user_targets(p
             (),
             (),
             mutable_tool_call_keys=frozenset(),
-            show_scaffold_messages=enabled,
+            show_harness_messages=enabled,
         )
         assert len([entry for entry in entries if entry.kind == "user"]) == 1
         assert all("notes.txt" in entry.text for entry in entries)
@@ -70,7 +70,7 @@ def test_revealing_attachment_scaffolds_preserves_file_labels_and_user_targets(p
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-async def test_live_inputs_and_loaded_history_share_scaffold_projection(tmp_path, enabled):
+async def test_live_inputs_and_loaded_history_share_harness_projection(tmp_path, enabled):
     application = _application(tmp_path)
     application.runtime.sessions.create(session_id="ses_inputs")
     app = OuroTuiApp(home=tmp_path, application=application)
@@ -79,15 +79,15 @@ async def test_live_inputs_and_loaded_history_share_scaffold_projection(tmp_path
             session_id="ses_inputs",
             role=role,
             text=text,
-            scaffold=scaffold,
             sequence=index,
         )
-        for index, (role, text, scaffold) in enumerate(
+        for index, (role, text) in enumerate(
             (
-                ("system", "Environment instructions", True),
-                ("user", "Goal instructions", True),
-                ("assistant", "Internal assistant scaffold", True),
-                ("user", "Actual input", False),
+                ("harness", "Environment instructions"),
+                ("harness", "Goal instructions"),
+                ("harness", "Internal runtime notice"),
+                ("assistant", "Previously supplied answer"),
+                ("user", "Actual input"),
             ),
             start=1,
         )
@@ -95,9 +95,8 @@ async def test_live_inputs_and_loaded_history_share_scaffold_projection(tmp_path
     messages += (
         MessageRecord.text(
             session_id="ses_inputs",
-            role="user",
+            role="harness",
             text="Subagent completed the task",
-            scaffold=True,
             semantic_tag="subagent-result",
             semantic_attributes={"delegation_id": "dlg_child", "status": "completed"},
             sequence=len(messages) + 1,
@@ -111,12 +110,14 @@ async def test_live_inputs_and_loaded_history_share_scaffold_projection(tmp_path
         ),
     )
     async with run_ready_app(app):
-        await app._set_scaffold_messages(enabled)
+        await app._set_harness_messages(enabled)
         app._projection = TuiSessionProjection("ses_inputs")
         events = tuple(
             EventRecord(
                 session_id=message.session_id,
-                event_type="plugin_message_added",
+                event_type="context_message_added"
+                if message.role == "assistant"
+                else "plugin_message_added",
                 payload={"message_id": message.message_id},
                 sequence=index,
             )
@@ -131,11 +132,11 @@ async def test_live_inputs_and_loaded_history_share_scaffold_projection(tmp_path
             (),
             (),
             mutable_tool_call_keys=frozenset(),
-            show_scaffold_messages=enabled,
+            show_harness_messages=enabled,
         )
         assert history.entries == expected
         assert [entry.text for entry in expected] == [
-            message.text_content for message in messages if enabled or not message.scaffold
+            message.text_content for message in messages if enabled or message.role != "harness"
         ]
         await history.wait_until_rendered()
         assert history.user_turns == ("Actual input",)
@@ -155,7 +156,9 @@ async def test_settings_toggle_refreshes_visible_session_and_survives_navigation
         application.runtime.store.append_messages(
             [
                 MessageRecord.text(
-                    session_id=session_id, role="user", text=f"Internal {session_id}", scaffold=True
+                    session_id=session_id,
+                    role="harness",
+                    text=f"Internal {session_id}",
                 ),
                 MessageRecord.text(session_id=session_id, role="user", text=f"User {session_id}"),
             ]
@@ -165,7 +168,7 @@ async def test_settings_toggle_refreshes_visible_session_and_survives_navigation
         await app._open_session(root_id)
         await app._show_observed_session(target_id)
         history = app.query_one(ConversationHistory)
-        assert not any(entry.scaffold for entry in history.entries)
+        assert not any((entry.kind == "harness") for entry in history.entries)
         controlled_id = app._controller.session_id
         await pilot.press("ctrl+p")
         if session_kind == "subagent":
@@ -182,36 +185,38 @@ async def test_settings_toggle_refreshes_visible_session_and_survives_navigation
         await choose_menu(pilot, "Display", title="DISPLAY")
         menu = app.screen
         assert menu._choices[1].enabled_state is False
-        await choose_menu(pilot, "Scaffold messages")
+        await choose_menu(pilot, "Harness messages")
         await wait_until(
-            lambda: any(entry.scaffold for entry in history.entries),
+            lambda: any((entry.kind == "harness") for entry in history.entries),
             pilot,
-            description="scaffold messages displayed",
+            description="harness messages displayed",
         )
         assert app.screen is menu
         assert app._controller.session_id == controlled_id
         assert app._visible_session_id() == target_id
         assert app.query_one(Composer).disabled is (session_kind == "subagent")
-        assert TuiPreferencesStore(tmp_path).load().show_scaffold_messages
+        assert TuiPreferencesStore(tmp_path).load().show_harness_messages
         await pilot.press("escape", "escape")
         for session_id in (root_id, child_id, task.session_id, target_id):
             await app._show_observed_session(session_id)
             assert f"Internal {session_id}" in [entry.text for entry in history.entries]
-        assert await app._set_scaffold_messages(False)
+        assert await app._set_harness_messages(False)
         for session_id in (root_id, child_id, task.session_id, target_id):
             await app._show_observed_session(session_id)
-            assert not any(entry.scaffold for entry in history.entries)
-        assert await app._set_scaffold_messages(True)
+            assert not any((entry.kind == "harness") for entry in history.entries)
+        assert await app._set_harness_messages(True)
 
     restarted = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
     async with run_ready_app(restarted):
         await restarted._open_session(target_id)
-        assert any(entry.scaffold for entry in restarted.query_one(ConversationHistory).entries)
+        assert any(
+            (entry.kind == "harness") for entry in restarted.query_one(ConversationHistory).entries
+        )
 
 
-@pytest.mark.parametrize("all_scaffold", [False, True])
+@pytest.mark.parametrize("all_harness", [False, True])
 async def test_toggle_preserves_loaded_history_window_and_projects_earlier_pages(
-    tmp_path, all_scaffold
+    tmp_path, all_harness
 ):
     application = _application(tmp_path)
     session = application.runtime.sessions.create(title="Long history").session
@@ -219,9 +224,8 @@ async def test_toggle_preserves_loaded_history_window_and_projects_earlier_pages
         [
             MessageRecord.text(
                 session_id=session.session_id,
-                role="user",
+                role="harness" if all_harness or index % 2 == 0 else "user",
                 text=f"Message {index}",
-                scaffold=all_scaffold or index % 2 == 0,
             )
             for index in range(405)
         ]
@@ -229,17 +233,17 @@ async def test_toggle_preserves_loaded_history_window_and_projects_earlier_pages
     app = OuroTuiApp(home=tmp_path, application=application)
     async with run_ready_app(app):
         await app._open_session(session.session_id)
-        assert await app._set_scaffold_messages(True)
+        assert await app._set_harness_messages(True)
         assert await app._prepend_history_window(app._view_revision)
         history = app.query_one(ConversationHistory)
         texts = [entry.text for entry in history.entries]
         assert len(texts) == 400
-        assert await app._set_scaffold_messages(False)
+        assert await app._set_harness_messages(False)
         assert [entry.text for entry in history.entries] == [
-            text for text in texts if not all_scaffold and int(text.split()[-1]) % 2
+            text for text in texts if not all_harness and int(text.split()[-1]) % 2
         ]
         await app._new_session()
-        assert await app._set_scaffold_messages(True)
+        assert await app._set_harness_messages(True)
         await app._open_session(session.session_id)
         assert [entry.text for entry in history.entries] == texts
         assert await app._prepend_history_window(app._view_revision)
@@ -248,7 +252,7 @@ async def test_toggle_preserves_loaded_history_window_and_projects_earlier_pages
         ]
 
 
-async def test_failed_preference_save_keeps_scaffold_visibility_unchanged(tmp_path, monkeypatch):
+async def test_failed_preference_save_keeps_harness_visibility_unchanged(tmp_path, monkeypatch):
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
     async with run_ready_app(app):
 
@@ -256,18 +260,18 @@ async def test_failed_preference_save_keeps_scaffold_visibility_unchanged(tmp_pa
             raise ConfigError("Cannot save preferences")
 
         monkeypatch.setattr(app._preferences_store, "save", fail_save)
-        assert not await app._set_scaffold_messages(True)
-        assert not app._preferences.show_scaffold_messages
-        assert not app.query_one(ConversationView).show_scaffold_messages
+        assert not await app._set_harness_messages(True)
+        assert not app._preferences.show_harness_messages
+        assert not app.query_one(ConversationView).show_harness_messages
 
 
-async def test_closing_menu_does_not_interrupt_scaffold_preference_commit(tmp_path, monkeypatch):
+async def test_closing_menu_does_not_interrupt_harness_preference_commit(tmp_path, monkeypatch):
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
     entered, release = Event(), Event()
     save = app._preferences_store.save
 
     def held_save(preferences):
-        if preferences.show_scaffold_messages:
+        if preferences.show_harness_messages:
             entered.set()
             assert release.wait(10)
         save(preferences)
@@ -278,18 +282,18 @@ async def test_closing_menu_does_not_interrupt_scaffold_preference_commit(tmp_pa
         await choose_menu(pilot, "Display", title="DISPLAY")
         monkeypatch.setattr(app._preferences_store, "save", held_save)
         try:
-            await choose_menu(pilot, "Scaffold messages")
+            await choose_menu(pilot, "Harness messages")
             await wait_until(entered.is_set, pilot, description="preference write started")
             await pilot.press("escape", "escape")
             assert not isinstance(app.screen, ChoiceScreen)
         finally:
             release.set()
         await wait_until(
-            lambda: app.query_one(ConversationView).show_scaffold_messages,
+            lambda: app.query_one(ConversationView).show_harness_messages,
             pilot,
             description="preference applied after closing menu",
         )
-        assert TuiPreferencesStore(tmp_path).load().show_scaffold_messages
+        assert TuiPreferencesStore(tmp_path).load().show_harness_messages
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
@@ -299,7 +303,9 @@ async def test_toggle_during_stream_preserves_tail_draft_and_event_handoff(tmp_p
     session = application.runtime.sessions.create(title="Streaming").session
     application.runtime.store.append_message(
         MessageRecord.text(
-            session_id=session.session_id, role="user", text="Internal context", scaffold=True
+            session_id=session.session_id,
+            role="harness",
+            text="Internal context",
         )
     )
     app = OuroTuiApp(home=tmp_path, application=application)
@@ -310,7 +316,7 @@ async def test_toggle_during_stream_preserves_tail_draft_and_event_handoff(tmp_p
         composer.load_text("Unsent draft")
         try:
             for enabled in (True, False, True):
-                assert await app._set_scaffold_messages(enabled)
+                assert await app._set_harness_messages(enabled)
                 assert composer.text == "Unsent draft"
                 assert app._projection.assistant_text == "Work prefix. "
                 assert (
@@ -325,7 +331,7 @@ async def test_toggle_during_stream_preserves_tail_draft_and_event_handoff(tmp_p
             await wait_until(
                 lambda: "Continued after toggle." in app._projection.assistant_text,
                 pilot,
-                description="stream after scaffold setting change",
+                description="stream after harness setting change",
             )
         finally:
             provider.finish("Work")

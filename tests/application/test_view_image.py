@@ -66,7 +66,7 @@ async def test_builtin_view_image_reaches_model_through_normal_execution_and_pro
         snapshot = app.runtime.store.load_session(result.session.session_id)
         results = [message for message in snapshot.messages if message.role == "tool_result"]
         assert [message.tool_result.tool_call_id for message in results] == ["image-0", "image-1"]
-        assert not any(message.role == "user" and message.scaffold for message in snapshot.messages)
+        assert not any(message.role == "harness" for message in snapshot.messages)
         image = next(part for part in results[0].content if isinstance(part, ImageContent))
         assert (image.uri.partition(",")[2] in str(provider.requests[-1])) == image_input
         if not image_input:

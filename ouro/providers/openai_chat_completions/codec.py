@@ -15,7 +15,7 @@ from ouro.core.content import (
 )
 from ouro.core.messages import ImageContent, ModelMessage, TextContent
 from ouro.core.provider import ToolCallDelta, Usage
-from ouro.core.tool_result_projection import project_tool_result_messages
+from ouro.core.tool_result_projection import project_provider_messages
 from ouro.providers.tool_content import ToolContentPolicy
 
 ChatCompletionsMessageContent = str | list[dict[str, Any]]
@@ -25,6 +25,7 @@ def messages_to_chat_completions(
     messages: list[ModelMessage],
     *,
     system_prompt: str,
+    supports_inline_system_messages: bool = False,
     supports_image_input: bool,
     supports_audio_input: bool = False,
     supports_video_input: bool = False,
@@ -32,10 +33,8 @@ def messages_to_chat_completions(
     model_id: str,
     reasoning_text_field: Literal["reasoning_content", "reasoning"] | None = None,
 ) -> list[dict[str, Any]]:
-    """Encode one request with at most one leading Chat Completions system message."""
+    """Encode the fixed instructions and ordered Chat Completions dialogue."""
 
-    system_contents: list[ChatCompletionsMessageContent] = [system_prompt] if system_prompt else []
-    converted_messages: list[dict[str, Any]] = []
     modalities = input_modalities(
         supports_image_input=supports_image_input,
         supports_audio_input=supports_audio_input,
@@ -45,7 +44,16 @@ def messages_to_chat_completions(
         native=frozenset({"text"}),
         contextual=modalities,
     )
-    for message in project_tool_result_messages(messages, policy):
+    instructions, dialogue = project_provider_messages(
+        messages,
+        policy,
+        system_prompt=system_prompt,
+        supports_inline_system_messages=supports_inline_system_messages,
+    )
+    converted_messages: list[dict[str, Any]] = (
+        [{"role": "system", "content": instructions}] if instructions else []
+    )
+    for message in dialogue:
         converted = _message_to_chat_completions(
             message,
             modalities=modalities,
@@ -53,35 +61,9 @@ def messages_to_chat_completions(
             model_id=model_id,
             reasoning_text_field=reasoning_text_field,
         )
-        if converted is None:
-            continue
-        if converted["role"] == "system":
-            system_contents.append(converted["content"])
-        else:
+        if converted is not None:
             converted_messages.append(converted)
-    if system_contents:
-        converted_messages.insert(
-            0,
-            {"role": "system", "content": _merge_system_contents(system_contents)},
-        )
     return converted_messages
-
-
-def _merge_system_contents(
-    contents: list[ChatCompletionsMessageContent],
-) -> ChatCompletionsMessageContent:
-    if all(isinstance(content, str) for content in contents):
-        return "\n\n".join(content for content in contents if isinstance(content, str))
-
-    merged: list[dict[str, Any]] = []
-    for index, content in enumerate(contents):
-        if index:
-            merged.append({"type": "text", "text": "\n\n"})
-        if isinstance(content, str):
-            merged.append({"type": "text", "text": content})
-        else:
-            merged.extend(content)
-    return merged
 
 
 def _message_to_chat_completions(

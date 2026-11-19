@@ -14,6 +14,15 @@ from ouro.sessions.sqlite_inputs import INPUT_SCHEMA
 from ouro.sessions.sqlite_observation import OBSERVATION_SCHEMA
 from ouro.sessions.sqlite_resources import RESOURCE_SCHEMA
 
+HISTORY_INDEXES = """
+CREATE INDEX IF NOT EXISTS context_provider_history
+ON locations(context_delivery_key, position) WHERE context_delivery_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS input_messages ON locations(position)
+WHERE kind = 'input';
+CREATE INDEX IF NOT EXISTS assistant_responses
+ON locations(run_id, position) WHERE kind = 'assistant_response';
+"""
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (session_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS runs (
@@ -37,7 +46,7 @@ CREATE TABLE IF NOT EXISTS locations (
     position INTEGER PRIMARY KEY,
     message_id TEXT NOT NULL UNIQUE,
     offset INTEGER NOT NULL,
-    role TEXT NOT NULL,
+    kind TEXT NOT NULL,
     run_id TEXT,
     queued_input_id TEXT,
     assistant_turn_id TEXT,
@@ -59,12 +68,6 @@ CREATE INDEX IF NOT EXISTS input_locations
 ON locations(queued_input_id, position) WHERE queued_input_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS assistant_turns
 ON locations(run_id, assistant_turn_id, position) WHERE assistant_turn_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS context_deliveries
-ON locations(run_id, context_delivery_key, position) WHERE context_delivery_key IS NOT NULL;
-CREATE INDEX IF NOT EXISTS assistant_runs
-ON locations(run_id, position) WHERE role = 'assistant';
-CREATE INDEX IF NOT EXISTS input_messages ON locations(position)
-WHERE role IN ('user', 'system');
 CREATE TABLE IF NOT EXISTS tool_calls (
     session_id TEXT NOT NULL,
     run_id TEXT NOT NULL,
@@ -186,6 +189,7 @@ def initialize_index(connection: sqlite3.Connection) -> None:
     connection.executescript(
         "BEGIN;\n"
         + _SCHEMA
+        + HISTORY_INDEXES
         + INPUT_SCHEMA
         + OBSERVATION_SCHEMA
         + DRAFT_SCHEMA

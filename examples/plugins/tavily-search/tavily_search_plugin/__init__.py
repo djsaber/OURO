@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ouro.sdk.plugins.v5 import PluginContext
+from ouro.sdk.plugins.v6 import PluginContext
 
 from .plugin import TavilySearchPlugin
 

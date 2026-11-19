@@ -84,7 +84,7 @@ async def test_estimation_record_send_and_query_share_prepared_provider_values(
         context_providers=providers,
     )
     build = runtime.context_preparation.context_builder.build
-    project = contexts.model_visible_message
+    project = contexts.model_visible_messages
 
     def forbidden(*args, **kwargs):
         pytest.fail("prepared input was projected again")
@@ -92,7 +92,7 @@ async def test_estimation_record_send_and_query_share_prepared_provider_values(
     def prepare_once(**kwargs):
         view = build(**kwargs)
         prepared.append(view)
-        monkeypatch.setattr(contexts, "model_visible_message", forbidden)
+        monkeypatch.setattr(contexts, "model_visible_messages", forbidden)
         return view
 
     monkeypatch.setattr(runtime.context_preparation.context_builder, "build", prepare_once)
@@ -109,7 +109,8 @@ async def test_estimation_record_send_and_query_share_prepared_provider_values(
         assert saved_input.manifest.referenced_message_ids
         assert "first request" not in saved_input.model_dump_json()
         assert first_record.provider_context == prepared[0].provider_context
-        assert first_record.provider_context.messages[0].text_content == (
+        assert first_record.provider_context.messages[0].text_content == "first request"
+        assert first_record.provider_context.messages[1].text_content == (
             "<runtime-facts>\nfacts 1 &lt;/runtime-facts&gt;\n</runtime-facts>"
         )
         assert (
@@ -117,14 +118,14 @@ async def test_estimation_record_send_and_query_share_prepared_provider_values(
             == first_record.provider_context
         )
         assert len(dynamic_calls) == len(prepared) == 1
-        monkeypatch.setattr(contexts, "model_visible_message", project)
+        monkeypatch.setattr(contexts, "model_visible_messages", project)
         second = await runtime.run("second request", session_id=first.session.session_id)
         assert second.run.status == "completed"
         assert len(dynamic_calls) == len(prepared) == 2
         current = runtime.sessions.context(first.session.session_id)
         assert current.provider_context == prepared[1].provider_context
-        assert "facts 2" in current.provider_context.messages[0].text_content
-        assert "facts 1" in first_record.provider_context.messages[0].text_content
+        assert current.provider_context.messages[:2] == first_record.provider_context.messages
+        assert "facts 2" in current.provider_context.messages[-1].text_content
         assert estimated_messages.count("first request") == 1
         assert estimated_messages.count("second request") == 1
     finally:

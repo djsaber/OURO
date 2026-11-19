@@ -83,7 +83,7 @@ async def test_projection_uses_selected_tail_without_old_prefix_or_last_request(
             messages=messages[2:],
             active=summary,
             tools=[],
-            added_context=[],
+            fixed_context=[],
             adapter=runtime.adapter,
             skill_instructions="",
             prompt_context=PromptContext(""),

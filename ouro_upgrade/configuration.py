@@ -121,6 +121,8 @@ def _previous_endpoint_fingerprint(
 ) -> str:
     """Reconstruct the source schema's normalized hash without inferring template content."""
     business = endpoint.model_dump(mode="json")
+    if "supports_inline_system_messages" not in source:
+        business.pop("supports_inline_system_messages")
     business["endpoint_id"] = template_endpoint_id
     previous = source.get("reasoning") or {}
     source_capability = previous.get("capability") or {}
@@ -270,3 +272,14 @@ def agents(work: Workspace) -> None:
     converted = convert_agents(raw)
     if converted != raw:
         work.json(path, converted)
+
+
+def tui(work: Workspace) -> None:
+    path = "config/tui.json"
+    if work.path(path).exists():
+        preferences = read_json(work, path)
+        if "show_scaffold_messages" in preferences:
+            preferences.setdefault(
+                "show_harness_messages", preferences.pop("show_scaffold_messages")
+            )
+            work.json(path, preferences)

@@ -200,7 +200,7 @@ class NativeRunDriverContext:
                     <= MAX_TOOL_ARGUMENT_RETRIES
                 ):
                     continue
-                # The rejected response is already recorded on the scaffold. Never
+                # The rejected response is already recorded on the correction. Never
                 # append it as assistant history, even when recovery is exhausted.
                 await self.fail(
                     response.error or "invalid tool arguments",

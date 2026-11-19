@@ -54,7 +54,7 @@ from ouro.core.errors import (
     PersistenceError,
     UnsupportedDataVersionError,
 )
-from ouro.core.events import EventRecord
+from ouro.core.events import SESSION_INPUT_MESSAGE_EVENTS, SESSION_MESSAGE_ADDED_EVENTS, EventRecord
 from ouro.core.input_content import InputContent, InputFile, InputSkillReference
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
@@ -212,7 +212,7 @@ class CachedSessionHistory:
     state: ConversationHistoryState | None
     anchor: SessionHistoryAnchor | None
     snapshot_sequence: int
-    show_scaffold_messages: bool
+    show_harness_messages: bool
     run_ids: frozenset[str]
     # Application cursors are opaque; a Files cursor is not a message sequence.
     before_cursor: int | None
@@ -235,11 +235,6 @@ _RUNTIME_RENDER_BOUNDARY_EVENTS = {
     "run_failed",
     "run_paused",
 }
-_SESSION_INPUT_MESSAGE_EVENTS = {
-    "user_message_added",
-    "host_message_added",
-    "plugin_message_added",
-}
 _TOOL_PRESENTATION_BOUNDARY_EVENTS = {
     "run_started",
     "model_request_started",
@@ -248,8 +243,7 @@ _TOOL_PRESENTATION_BOUNDARY_EVENTS = {
     "tool_batch_planned",
     "tool_batch_completed",
     "compaction_completed",
-    "queued_input_consumed",
-    *_SESSION_INPUT_MESSAGE_EVENTS,
+    *SESSION_MESSAGE_ADDED_EVENTS,
 }
 _AGENT_INTERACTION_EVENTS = {
     "agent_spawned",
@@ -535,7 +529,7 @@ class OuroTuiApp(App[int]):
         self._session_history_states: OrderedDict[str, CachedSessionHistory] = OrderedDict()
         self._history_anchor: SessionHistoryAnchor | None = None
         self._history_snapshot_sequence = 0
-        self._history_show_scaffold_messages = self._preferences.show_scaffold_messages
+        self._history_show_harness_messages = self._preferences.show_harness_messages
         self._history_before_cursor: int | None = None
         self._history_run_ids: set[str] = set()
         self._history_request: HistoryLoadRequest | None = None
@@ -700,7 +694,7 @@ class OuroTuiApp(App[int]):
         with Vertical(id="main"):
             yield ConversationView(
                 reasoning_expanded=self._preferences.reasoning_expanded,
-                show_scaffold_messages=self._preferences.show_scaffold_messages,
+                show_harness_messages=self._preferences.show_harness_messages,
                 collapse_traces=self._preferences.collapse_traces,
                 welcome_state_changed=self._apply_welcome_mode,
                 system_status_changed=self._set_welcome_system_status,
@@ -1480,7 +1474,8 @@ class OuroTuiApp(App[int]):
                 continue
             if message.run_id is not None:
                 await history.reopen_run(message.run_id)
-            if message.role == "assistant":
+            kind = message.run_message_kind
+            if kind == "assistant_response":
                 if not projection.is_current_response(message):
                     await conversation.finish_assistant()
                 conversation.begin_model_request(run_id=message.run_id)
@@ -1508,12 +1503,12 @@ class OuroTuiApp(App[int]):
                             for call in message.tool_calls
                         )
                     )
-            elif message.role == "tool_result":
+            elif kind == "tool_result":
                 conversation.begin_model_request(run_id=message.run_id)
                 await conversation.apply_tool_result(message)
             else:
                 await conversation.finish_assistant()
-                await conversation.add_user_message(message)
+                await conversation.add_input_message(message)
             projection.remember_message(message.message_id, message.sequence)
         if projection.apply_facts(facts):
             await conversation.finish_assistant()
@@ -1633,13 +1628,13 @@ class OuroTuiApp(App[int]):
                 await flush_stream()
                 await conversation.finish_assistant()
                 conversation.begin_model_request(run_id=event.run_id)
-            if event.event_type in {*_SESSION_INPUT_MESSAGE_EVENTS, "queued_input_consumed"}:
+            if event.event_type in SESSION_MESSAGE_ADDED_EVENTS:
                 await flush_stream()
                 message_id = event.payload.get("message_id")
                 if isinstance(message_id, str):
                     input_message = input_messages[message_id]
                     if not projection.has_message(input_message.message_id, input_message.sequence):
-                        await conversation.add_user_message(input_message)
+                        await conversation.add_input_message(input_message)
                         projection.remember_message(
                             input_message.message_id, input_message.sequence
                         )
@@ -1675,8 +1670,7 @@ class OuroTuiApp(App[int]):
                 "follow_up_input_queued",
                 "steering_input_queued",
                 "queued_input_cancelled",
-                *_SESSION_INPUT_MESSAGE_EVENTS,
-                "queued_input_consumed",
+                *SESSION_INPUT_MESSAGE_EVENTS,
             }:
                 queue_changed = True
             if update.reasoning_delta:
@@ -3701,7 +3695,7 @@ class OuroTuiApp(App[int]):
             state,
             self._history_anchor,
             self._history_snapshot_sequence,
-            self._history_show_scaffold_messages,
+            self._history_show_harness_messages,
             frozenset(self._history_run_ids),
             self._history_before_cursor,
         )
@@ -3714,14 +3708,14 @@ class OuroTuiApp(App[int]):
         if self._projection is not None and self._projection.session_id == session_id:
             return (
                 self._history_anchor
-                if self._history_show_scaffold_messages != self._preferences.show_scaffold_messages
+                if self._history_show_harness_messages != self._preferences.show_harness_messages
                 else None
             )
         cached = self._session_history_states.get(session_id)
         return (
             cached.anchor
             if cached is not None
-            and cached.show_scaffold_messages != self._preferences.show_scaffold_messages
+            and cached.show_harness_messages != self._preferences.show_harness_messages
             else None
         )
 
@@ -3738,18 +3732,18 @@ class OuroTuiApp(App[int]):
             entries = self.query_one(ConversationHistory).entries
             anchor = self._history_anchor
             through = self._history_snapshot_sequence
-            scaffold = self._history_show_scaffold_messages
+            harness = self._history_show_harness_messages
         elif cached is not None:
             entries = cached.state.entries if cached.state is not None else ()
             anchor = cached.anchor
             through = cached.snapshot_sequence
-            scaffold = cached.show_scaffold_messages
+            harness = cached.show_harness_messages
         else:
             return snapshot, (), None
         if (
             anchor is None
             or anchor.history_epoch != session.history_epoch
-            or scaffold != self._preferences.show_scaffold_messages
+            or harness != self._preferences.show_harness_messages
             or not snapshot.messages
         ):
             return snapshot, (), None
@@ -4155,7 +4149,7 @@ class OuroTuiApp(App[int]):
             self._prepare_loaded_session,
             snapshot,
             self._models,
-            show_scaffold_messages=self._preferences.show_scaffold_messages,
+            show_harness_messages=self._preferences.show_harness_messages,
         )
         if retained_prefix:
             transcript = (*retained_prefix, *transcript)
@@ -4280,7 +4274,7 @@ class OuroTuiApp(App[int]):
                     self._history_snapshot_sequence = (
                         snapshot.messages[-1].sequence if snapshot.messages else 0
                     )
-                    self._history_show_scaffold_messages = self._preferences.show_scaffold_messages
+                    self._history_show_harness_messages = self._preferences.show_harness_messages
                     self._history_before_cursor = (
                         retained_before_cursor
                         if retained_anchor is not None
@@ -4475,7 +4469,7 @@ class OuroTuiApp(App[int]):
             window,
             frozenset(self._history_run_ids) | self.query_one(ConversationView).presented_run_ids,
             self._models,
-            show_scaffold_messages=self._preferences.show_scaffold_messages,
+            show_harness_messages=self._preferences.show_harness_messages,
         )
         async with self._runtime_event_apply_lock:
             if (
@@ -4501,7 +4495,7 @@ class OuroTuiApp(App[int]):
         newer_run_ids: frozenset[str],
         models: tuple[AvailableModel, ...],
         *,
-        show_scaffold_messages: bool = False,
+        show_harness_messages: bool = False,
     ) -> tuple[TranscriptEntry, ...]:
         presentations = project_run_presentations(
             (run for run in window.runs if run.kind == "agent"), window.messages, models=models
@@ -4511,7 +4505,7 @@ class OuroTuiApp(App[int]):
             window.compactions,
             presentations,
             mutable_tool_call_keys=frozenset(),
-            show_scaffold_messages=show_scaffold_messages,
+            show_harness_messages=show_harness_messages,
         )
         return tuple(
             entry for entry in entries if entry.kind != "run" or entry.run_id not in newer_run_ids
@@ -4675,7 +4669,7 @@ class OuroTuiApp(App[int]):
         snapshot: SessionObservationSnapshot,
         models: tuple[AvailableModel, ...],
         *,
-        show_scaffold_messages: bool = False,
+        show_harness_messages: bool = False,
     ) -> tuple[
         TuiSessionProjection,
         tuple[TranscriptEntry, ...],
@@ -4698,7 +4692,7 @@ class OuroTuiApp(App[int]):
                 for tool in tools
                 if not terminal_tools
             ),
-            show_scaffold_messages=show_scaffold_messages,
+            show_harness_messages=show_harness_messages,
         )
         prepared = list(entries)
         if tools and terminal_tools:
@@ -5426,7 +5420,7 @@ class OuroTuiApp(App[int]):
                 Choice(value, label, enabled_state=shown)
                 for value, label, shown in (
                     ("thinking", "Thinking", self._preferences.reasoning_expanded),
-                    ("scaffold", "Scaffold messages", self._preferences.show_scaffold_messages),
+                    ("harness", "Harness messages", self._preferences.show_harness_messages),
                     ("traces", "Execution traces", not self._preferences.collapse_traces),
                 )
             )
@@ -5437,9 +5431,9 @@ class OuroTuiApp(App[int]):
                     self._set_reasoning_expanded,
                     "collapse" if self._preferences.reasoning_expanded else "expand",
                 )
-            elif value == "scaffold":
+            elif value == "harness":
                 apply = partial(
-                    self._set_scaffold_messages, not self._preferences.show_scaffold_messages
+                    self._set_harness_messages, not self._preferences.show_harness_messages
                 )
             elif value == "traces":
                 apply = partial(self._set_collapse_traces, not self._preferences.collapse_traces)
@@ -5471,18 +5465,18 @@ class OuroTuiApp(App[int]):
         await self.query_one(ConversationView).set_collapse_traces(collapsed)
         return True
 
-    async def _set_scaffold_messages(self, enabled: bool) -> bool:
+    async def _set_harness_messages(self, enabled: bool) -> bool:
         async with self._preferences_save_lock:
-            if enabled == self._preferences.show_scaffold_messages:
+            if enabled == self._preferences.show_harness_messages:
                 return True
-            preferences = self._preferences.model_copy(update={"show_scaffold_messages": enabled})
+            preferences = self._preferences.model_copy(update={"show_harness_messages": enabled})
             try:
                 await asyncio.to_thread(self._preferences_store.save, preferences)
             except OuroError as exc:
                 self.notify(str(exc), severity="error", markup=False)
                 return False
             self._preferences = preferences
-        self.query_one(ConversationView).show_scaffold_messages = enabled
+        self.query_one(ConversationView).show_harness_messages = enabled
         session_id = self._visible_session_id()
         if session_id is not None:
             # Reload through observation so retained pages, active streams and

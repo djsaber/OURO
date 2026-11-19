@@ -867,7 +867,7 @@ async def test_spawn_runs_child_as_independent_session_with_frozen_tools(tmp_pat
     assert child_run.origin == "delegation"
     assert child_run.initiator_id == f"ouro.subagents/{handle.delegation_id}"
     messages = store.load_session(child.session_id).messages
-    assert messages[0].role == "user"
+    assert messages[0].role == "harness"
     input_id = messages[0].input_id
     accepted_input = store.load_input(child.session_id, input_id)
     input_state = store.load_input_state(child.session_id, input_id)
@@ -978,7 +978,7 @@ async def test_continue_reuses_interrupted_child_run_and_refreshes_its_result(
         assert after.runs[0].status == "completed"
         assert after.messages[0] == before.messages[0]
         assert relation.result.terminal_status == "completed"
-        assert [m.text_content for m in after.messages if m.role == "user"] == [
+        assert [m.text_content for m in after.messages if m.semantic_tag == "subagent-task"] == [
             "Inspect the repository."
         ]
         assert attempts == 2
@@ -1490,7 +1490,7 @@ async def test_idle_child_follow_up_reuses_session_and_creates_new_run(tmp_path)
     assert resumed.child_run_id != first.child_run_id
     child_snapshot = store.load_session(first.child_session_id)
     assert len(child_snapshot.runs) == 2
-    assert child_snapshot.messages[-2].role == "user"
+    assert child_snapshot.messages[-2].role == "harness"
     assert child_snapshot.messages[-2].semantic_tag == "subagent-message"
     assert (
         child_snapshot.messages[-2]
@@ -1630,7 +1630,7 @@ async def test_active_child_message_uses_steer_without_new_run(
         if message.metadata.get("host_source_id", "").endswith("/messages/host/steer-1")
     ]
     assert len(steer_messages) == 1
-    assert steer_messages[0].role == "user"
+    assert steer_messages[0].role == "harness"
     assert snapshot.messages[-1].text_content == "steered child complete"
     await service.close()
     await supervisor.shutdown()
@@ -3823,7 +3823,7 @@ async def test_next_boundary_delivery_racing_parent_round_is_committed_once(tmp_
                 == f"ouro.subagents/results/{delivered.result.delivery.delivery_id}"
             ]
             assert len(delivery_messages) == 1
-            assert delivery_messages[0].role == "user"
+            assert delivery_messages[0].role == "harness"
             assert len(snapshot.runs) == 1
             assert snapshot.messages[-1].text_content == "parent consumed child result"
             await service.reconcile()
@@ -3915,7 +3915,7 @@ async def test_async_result_delivery_is_exact_once(tmp_path) -> None:
     ]
     assert len(delivered_messages) == 1
     delivered = delivered_messages[0]
-    assert delivered.role == "user" and delivered.scaffold
+    assert delivered.role == "harness"
     assert delivered.semantic_tag == "subagent-result"
     assert delivered.text_content == child_text
     identity = {

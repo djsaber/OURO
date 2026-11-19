@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Sequence
+from itertools import chain
 from math import ceil
 from typing import Any
 
@@ -18,6 +19,7 @@ from ouro.core.messages import (
     ModelMessage,
     TextContent,
     model_visible_message,
+    model_visible_messages,
 )
 from ouro.core.request_manifest import (
     RequestContentReference,
@@ -132,7 +134,8 @@ class ContextBuilder:
         messages: Sequence[MessageRecord | ModelMessage],
         tools: list[ToolDefinition],
         system_prompt: str = "",
-        added_context: Sequence[str | ContextFragment] | None = None,
+        supports_inline_system_messages: bool = False,
+        fixed_context: Sequence[ContextFragment] = (),
         additional_skill_instructions: str = "",
         budget: ContextBudget | None = None,
         source_messages: Sequence[MessageRecord] = (),
@@ -143,18 +146,13 @@ class ContextBuilder:
             self.skill_instructions,
             additional_skill_instructions,
         )
-        context_fragments = [
-            value if isinstance(value, ContextFragment) else ContextFragment(text=value)
-            for value in (added_context or [])
-            if value
-        ]
         prompt_fragments = [
             (
                 render_semantic_envelope(fragment.text, fragment.semantic_tag)
                 if fragment.semantic_tag is not None
                 else fragment.text
             )
-            for fragment in context_fragments
+            for fragment in fixed_context
             if fragment.target == "system_prompt"
         ]
         composed_prompt = compose_system_prompt(
@@ -168,47 +166,42 @@ class ContextBuilder:
                 text=fragment.text,
                 semantic_tag=fragment.semantic_tag,
             )
-            for fragment in context_fragments
+            for fragment in fixed_context
             if fragment.target == "message"
         ]
-        model_messages = [
-            ModelMessage.from_record(message) if isinstance(message, MessageRecord) else message
-            for message in messages
-        ]
         model_tools = [_project_tool_definition(tool).model_dump(mode="json") for tool in tools]
-        originals = [*context_messages, *model_messages]
-        prepared_messages = [model_visible_message(message) for message in originals]
         sources = {message.message_id: message for message in source_messages}
-        manifest_sources = [None] * len(context_messages) + [
-            sources.get(message.message_id) if isinstance(message, MessageRecord) else None
-            for message in messages
-        ]
-        manifest_messages = [
-            RequestMessage.prepared(message, source)
-            for message, source in zip(prepared_messages, manifest_sources, strict=True)
-        ]
-        previous = self._message_estimates if self.token_estimator is estimate_text_tokens else {}
+        reuse_estimates = self.token_estimator is estimate_text_tokens
         estimates: dict[str, int] = {}
-        message_tokens = []
-        for message, manifest in zip(prepared_messages, manifest_messages, strict=True):
-            key = (
-                _message_estimate_key(manifest, sources)
-                if self.token_estimator is estimate_text_tokens
-                else None
-            )
-            cost = previous.get(key) if key is not None else None
-            if cost is None:
-                cost = _estimate_visible_message_tokens(message, self.token_estimator)
-            message_tokens.append(cost)
-            if key is not None:
-                estimates[key] = cost
-        self._message_estimates = estimates
-        fixed_tokens = self.token_estimator(composed_prompt)
-        fixed_tokens += sum(
+        fixed_tokens = self.token_estimator(composed_prompt) + sum(
             _estimate_tool_tokens(tool, self.token_estimator) for tool in model_tools
         )
-        fixed_tokens += sum(message_tokens[: len(context_messages)])
-        estimated_tokens = fixed_tokens + sum(message_tokens[len(context_messages) :])
+        estimated_tokens = fixed_tokens
+        summary_tokens = 0
+        prepared_messages = []
+        manifest_messages = []
+        for index, original in enumerate(chain(context_messages, messages)):
+            source = (
+                sources.get(original.message_id) if isinstance(original, MessageRecord) else None
+            )
+            for message in model_visible_messages(
+                original, supports_inline_system_messages=supports_inline_system_messages
+            ):
+                manifest = RequestMessage.prepared(message, source)
+                prepared_messages.append(message)
+                manifest_messages.append(manifest)
+                key = _message_estimate_key(manifest, sources) if reuse_estimates else None
+                cost = self._message_estimates.get(key) if key is not None else None
+                if cost is None:
+                    cost = _estimate_visible_message_tokens(message, self.token_estimator)
+                if key is not None:
+                    estimates[key] = cost
+                estimated_tokens += cost
+                if index < len(context_messages):
+                    fixed_tokens += cost
+                if original.semantic_tag == "conversation-summary":
+                    summary_tokens += cost
+        self._message_estimates = estimates
         return ContextView(
             provider_context=ProviderContext(
                 messages=prepared_messages,
@@ -229,11 +222,7 @@ class ContextBuilder:
                 "skills_injected": bool(skill_instructions),
                 "system_prompt_fragment_count": len(prompt_fragments),
             },
-            estimated_summary_tokens=sum(
-                cost
-                for message, cost in zip(originals, message_tokens, strict=True)
-                if message.semantic_tag == "conversation-summary"
-            ),
+            estimated_summary_tokens=summary_tokens,
         )
 
 
@@ -418,7 +407,7 @@ def project_recovery_messages(messages: list[MessageRecord]) -> list[MessageReco
             session_id=message.session_id,
             run_id=message.run_id,
             turn_id=message.turn_id,
-            role="system",
+            role="harness",
             text=(
                 "The previous assistant response was interrupted. The text below is "
                 "unfinished and does not confirm that any planned action succeeded. "
@@ -426,7 +415,6 @@ def project_recovery_messages(messages: list[MessageRecord]) -> list[MessageReco
                 f"{message.text_content}"
             ),
             sequence=message.sequence,
-            scaffold=True,
             semantic_tag="interrupted-assistant-attempt",
         ).model_copy(
             update={

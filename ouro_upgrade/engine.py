@@ -79,6 +79,7 @@ def upgrade(
             for path, converter in (
                 ("config/providers.json", configuration.providers),
                 ("config/agents.json", configuration.agents),
+                ("config/tui.json", configuration.tui),
                 (plugins.PATH, plugins.state),
             ):
                 units.run(
@@ -144,7 +145,8 @@ def upgrade(
                 "preserved_outside_scope": [
                     "unselected session/task backends",
                     "trash and maintenance backups",
-                    "configuration other than config/providers.json and config/agents.json",
+                    "configuration other than config/providers.json, config/agents.json "
+                    "and config/tui.json",
                     "credentials, plugin packages, audit and plugin-private data",
                 ],
                 **units.report(),

@@ -643,6 +643,7 @@ class ProviderRuntimeOptions(OuroModel):
     supports_image_input: bool | None = None
     supports_audio_input: bool | None = None
     supports_video_input: bool | None = None
+    supports_inline_system_messages: bool | None = None
     supports_streaming: bool | None = None
     supports_structured_output: bool | None = None
     reasoning: EndpointReasoningConfig | None = None

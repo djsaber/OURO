@@ -4,7 +4,7 @@ import pytest
 
 from ouro.core.content import TextContent
 from ouro.core.messages import ModelMessage, ToolResultReference
-from ouro.core.tool_result_projection import ToolResultPresentation, project_tool_result_messages
+from ouro.core.tool_result_projection import ToolResultPresentation, project_provider_messages
 from ouro.core.tools import ToolCallRequest
 
 
@@ -31,7 +31,8 @@ def test_text_only_projection_can_expand_results_without_interleaving_a_batch():
             ),
         )
 
-    projected = project_tool_result_messages(messages, project)
+    fixed, projected = project_provider_messages(messages, project, system_prompt="instructions")
+    assert fixed == "instructions"
     assert [message.role for message in projected] == [
         "assistant",
         "tool_result",
@@ -51,12 +52,13 @@ def test_text_only_projection_can_expand_results_without_interleaving_a_batch():
     assert "call-1" in projected[5].text_content
     assert projected[-1].text_content == "continue"
     assert messages == before
-    assert project_tool_result_messages(messages, project) == projected
+    assert project_provider_messages(messages, project, system_prompt=fixed) == (fixed, projected)
 
 
 def test_projection_rejects_an_unattributed_result():
     with pytest.raises(ValueError, match="reference"):
-        project_tool_result_messages(
+        project_provider_messages(
             [ModelMessage(role="tool_result")],
             lambda _: ToolResultPresentation(content=()),
+            system_prompt="",
         )

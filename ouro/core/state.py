@@ -111,8 +111,7 @@ class RunContinuationSettlementPlan(OuroModel):
     prompt: str | None = None
     mode: SessionInputMode = "follow_up"
     title: str | None = None
-    role: SessionInputRole = "user"
-    scaffold: bool = True
+    role: SessionInputRole = "harness"
     semantic_tag: SemanticTag | None = None
     coalesce_key: str | None = Field(default=None, min_length=1, max_length=128)
     reason: str | None = None
@@ -274,7 +273,7 @@ class RunRequestCounts(OuroModel):
 
 
 class RunRecord(VersionedOuroModel):
-    schema_version: Literal[11] = 11
+    schema_version: Literal[12] = 12
     history_epoch: int = Field(default=0, ge=0)
     run_id: str = Field(default_factory=lambda: new_id("run"))
     session_id: str

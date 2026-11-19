@@ -106,7 +106,7 @@ async def test_correction_is_append_only_accounted_and_bounded(store, tmp_path, 
         assert [m.metadata["model_correction_attempt"] for m in corrections] == list(
             range(1, failures + 1)
         )
-        assert all(m.role == "user" and m.scaffold for m in corrections)
+        assert all(m.role == "harness" for m in corrections)
         assert (
             corrections[0].metadata["rejected_response"]["tool_call_failure"]["arguments"]
             == '{"value":"line\nbreak"}'

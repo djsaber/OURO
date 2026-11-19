@@ -34,7 +34,7 @@ from ouro.local_application import LocalApplication
 from ouro.plugins.harness_calls import invoke_plugin_callback
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.plugins.resources import ScopedPluginDataStore
-from ouro.sdk.plugins import v5 as sdk
+from ouro.sdk.plugins import v6 as sdk
 from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
@@ -64,6 +64,9 @@ class _EndToEndGoalProvider:
         call = self.calls
         self.calls += 1
         if call == 0:
+            messages = [
+                m for m in messages if not m.text_content.startswith("<ouro-system-information>")
+            ]
             assert messages[-1].role == "user"
             assert messages[-2].text_content == "Ship end to end"
             assert "<goal-create>" in messages[-3].text_content
@@ -379,7 +382,7 @@ async def test_tool_schemas_use_objective_and_implicit_update_identity(tmp_path)
     assert {item.permission_mode for item in tools.values()} == {"auto"}
 
 
-async def test_create_command_returns_one_atomic_user_message_pair(goal_session) -> None:
+async def test_create_command_returns_atomic_guidance_and_user_objective(goal_session) -> None:
     result = await goal_session.command("--token-budget 1200 Preserve this objective exactly")
 
     goal = goal_session.goal()
@@ -391,7 +394,7 @@ async def test_create_command_returns_one_atomic_user_message_pair(goal_session)
     assert len(result.session_input_batches) == 1
     batch = result.session_input_batches[0]
     assert batch.coalesce_key == "goal-lifecycle"
-    assert [item.role for item in batch.inputs] == ["user", "user"]
+    assert [item.role for item in batch.inputs] == ["harness", "user"]
     assert [item.semantic_tag for item in batch.inputs] == ["goal-create", None]
     assert batch.inputs[1].prompt == "Preserve this objective exactly"
     assert "Preserve this objective exactly" not in batch.inputs[0].prompt
@@ -506,17 +509,21 @@ async def test_goal_runs_end_to_end_and_retains_final_usage(tmp_path) -> None:
         assert runtime.store.load_session(session.session_id).runs[-1].status == "completed"
 
         messages = store.load_session(session.session_id).messages
-        by_tag = {message.semantic_tag: message for message in messages if message.semantic_tag}
+        by_tag = {
+            message.semantic_tag: message
+            for message in messages
+            if message.semantic_tag and message.semantic_tag.startswith("goal-")
+        }
         assert set(by_tag) == {"goal-create", "goal-continue", "goal-context"}
-        for scaffold in by_tag.values():
-            assert scaffold.role == "user"
-            assert scaffold.scaffold is True
+        for harness in by_tag.values():
+            assert harness.role == "harness"
+
         objective = next(
             message for message in messages if message.text_content == "Ship end to end"
         )
         assert objective.role == "user"
         assert objective.semantic_tag is None
-        assert objective.scaffold is False
+
     finally:
         await application.close()
 
@@ -853,7 +860,7 @@ async def test_system_stop_reports_and_context_use_agent_interfaces(goal_session
     assert len(context.fragments) == 1
     notice = context.fragments[0]
     assert notice.semantic_tag == "goal-context"
-    assert notice.scaffold and notice.role == "user"
+    assert notice.role == "harness"
     assert g.goal().report in result.content
     assert g.goal().report in notice.text
     for text in (result.content, notice.text):

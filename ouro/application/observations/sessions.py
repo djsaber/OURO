@@ -14,13 +14,9 @@ from ouro.application.contracts.sessions import (
 )
 from ouro.application.sessions.service import SessionService
 from ouro.core.callbacks import run_blocking
-from ouro.core.events import EventRecord
+from ouro.core.events import SESSION_MESSAGE_ADDED_EVENTS, EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.session_observation import SessionObservationPosition
-
-_INPUT_EVENTS = frozenset(
-    {"user_message_added", "host_message_added", "plugin_message_added", "queued_input_consumed"}
-)
 
 
 class ObservationSource(Protocol):
@@ -272,7 +268,7 @@ class SessionObservation(AsyncIterator[SessionObservationBatch]):
                 dict.fromkeys(
                     identity
                     for event in events
-                    if event.event_type in _INPUT_EVENTS
+                    if event.event_type in SESSION_MESSAGE_ADDED_EVENTS
                     if isinstance((identity := event.data.get("message_id")), str)
                 )
             )

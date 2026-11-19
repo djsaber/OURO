@@ -79,6 +79,7 @@ class ProviderModel:
     max_output_tokens: int | None
     temperature: float | None
     supports_tools: bool
+    supports_inline_system_messages: bool
     supports_streaming: bool
     supports_structured_output: bool
     input_modalities: tuple[Literal["image", "audio", "video"], ...]

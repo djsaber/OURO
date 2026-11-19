@@ -1,4 +1,4 @@
-from ouro.sdk.plugins import v5 as sdk
+from ouro.sdk.plugins import v6 as sdk
 from ouro.sdk.plugins.models import ModelInput, ModelRequest, PluginModels
 
 

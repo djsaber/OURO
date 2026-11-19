@@ -68,7 +68,7 @@ async def test_acceptance_and_retries_do_not_wait_for_execution_capacity(tmp_pat
         assert len(queued) == 1
         assert queued[0].source == "user"
         assert queued[0].role == "user"
-        assert not queued[0].scaffold
+        assert queued[0].role == "user"
         ready = app.runtime.pending_user_inputs(second.receipt.session_id)
         assert len(ready) == 1
         assert ready[0].waiting_on_run_id is None

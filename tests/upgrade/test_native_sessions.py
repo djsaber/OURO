@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from ouro.core.errors import UnsupportedDataVersionError
+from ouro.core.messages import MessageFact
 from ouro.core.session_commits import SessionCommit
 from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
@@ -74,28 +75,48 @@ def test_native_upgrade_converts_authority_and_preserves_other_facts(native_home
     with closing(sqlite3.connect(path)) as connection:
         assert not connection.execute("SELECT 1 FROM sqlite_master WHERE name='events'").fetchone()
         for table, (columns, rows) in retained.items():
-            actual = connection.execute(f"SELECT {columns} FROM {table}").fetchall()
+            selected = (
+                columns.replace("role", "kind") if table in {"locations", "messages"} else columns
+            )
+            actual = connection.execute(f"SELECT {selected} FROM {table}").fetchall()
             kind = {
+                "messages": "message",
+                "inputs": "input",
+                "input_states": "input_state",
                 "sessions": "session",
                 "runs": "run",
                 "delegations": "delegation",
                 "tool_call_states": "tool_state",
                 "harness_versions": "harness",
             }.get(table)
-            if kind is None and table != "session_catalog":
+            if table == "locations":
+                journal = home / "sessions/ses_fixture/messages.jsonl"
+                with journal.open("rb") as stream:
+                    for before, after in zip(rows, actual, strict=True):
+                        assert before[:2] == after[:2] and before[4:] == after[4:]
+                        stream.seek(after[2])
+                        fact = MessageFact.model_validate_json(stream.readline())
+                        assert (fact.message_id, fact.run_message_kind) == (after[1], after[3])
+            elif kind is None and table != "session_catalog":
                 assert actual == rows
             else:
                 payload_index = columns.split(",").index("payload")
                 for before, after in zip(rows, actual, strict=True):
-                    assert before[:payload_index] == after[:payload_index]
-                    assert before[payload_index + 1 :] == after[payload_index + 1 :]
                     expected = json.loads(before[payload_index])
                     if kind is not None:
                         expected = convert(kind, expected)
                     else:
                         expected.pop("workspace_trusted", None)
                         expected.pop("title_locked", None)
-                    assert json.loads(after[payload_index]) == expected
+                    expected_row = list(before)
+                    if table == "messages":
+                        expected_row[columns.split(",").index("role")] = MessageFact.model_validate(
+                            expected
+                        ).run_message_kind
+                    expected_row[payload_index] = expected
+                    actual_row = list(after)
+                    actual_row[payload_index] = json.loads(after[payload_index])
+                    assert actual_row == expected_row
         assert connection.execute("PRAGMA foreign_key_check").fetchone() is None
 
     store = repository(home, backend)
@@ -308,6 +329,33 @@ def test_corrupt_native_database_can_be_removed_at_its_own_boundary(native_home)
     repository(home, backend).initialize()
 
 
+@pytest.mark.parametrize("native_home", ["files"], indirect=True)
+def test_file_upgrade_retires_assistant_turn_membership_for_harness_input(native_home):
+    home, backend = native_home
+    journal = home / "sessions/ses_fixture/messages.jsonl"
+    records = [json.loads(line) for line in journal.read_bytes().splitlines()]
+    records[0].update(role="assistant", scaffold=True, run_id="run_fixture", turn_id="turn_input")
+    with (
+        closing(sqlite3.connect(database(home, backend))) as connection,
+        journal.open("wb") as stream,
+    ):
+        for record in records:
+            connection.execute(
+                "UPDATE locations SET offset=? WHERE message_id=?",
+                (stream.tell(), record["message_id"]),
+            )
+            stream.write(json.dumps(record).encode() + b"\n")
+        connection.execute(
+            "UPDATE locations SET role='assistant', run_id='run_fixture', "
+            "assistant_turn_id='turn_input' WHERE message_id='msg_user'"
+        )
+        connection.commit()
+    upgrade(home, session_backend=backend)
+    store = repository(home, backend)
+    assert store.load_message("ses_fixture", "msg_user").role == "harness"
+    assert store.find_assistant_message("ses_fixture", "run_fixture", "turn_input") is None
+
+
 def test_native_authority_upgrade_preserves_catalog_grants_from_existing_container(native_home):
     home, backend = native_home
     upgrade(home, session_backend=backend)
@@ -321,6 +369,7 @@ def test_native_authority_upgrade_preserves_catalog_grants_from_existing_contain
             "UPDATE runs SET payload=? WHERE run_id=?", (json.dumps(run), run["run_id"])
         )
         if backend == "sqlite":
+            connection.execute("ALTER TABLE messages RENAME COLUMN kind TO role")
             connection.execute("UPDATE metadata SET value='27' WHERE key='sqlite_schema_version'")
             connection.execute(
                 "UPDATE session_catalog SET payload=json_set(payload, '$.workspace_trusted', 1)"

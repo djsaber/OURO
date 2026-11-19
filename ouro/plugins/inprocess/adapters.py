@@ -47,7 +47,7 @@ from ouro.plugins.inprocess.tools import _adapt_tool
 from ouro.plugins.providers import adapt_provider
 from ouro.plugins.registry import PluginCommand, PluginCommandRequest, PluginCommandResult
 from ouro.plugins.run_drivers import adapt_run_driver
-from ouro.sdk.plugins import v5 as sdk
+from ouro.sdk.plugins import v6 as sdk
 
 
 @dataclass(frozen=True)
@@ -287,10 +287,9 @@ def _adapt_context(
             fragments=[
                 ContextFragment(
                     text=value.text,
-                    persistence=value.persistence,
                     target=value.target,
+                    revision=value.revision,
                     role=value.role,
-                    scaffold=value.scaffold,
                     semantic_tag=value.semantic_tag,
                 )
                 if isinstance(value, sdk.ContextFragment)

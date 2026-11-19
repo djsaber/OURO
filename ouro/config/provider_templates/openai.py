@@ -58,6 +58,8 @@ def _endpoints(*, codex: bool) -> tuple[ProviderEndpointConfig, ...]:
             continue
         if codex:
             options.update(reasoning=_OPENAI_ALWAYS_ON_REASONING, supports_structured_output=False)
+        else:
+            options["supports_inline_system_messages"] = True
         endpoints.append(endpoint_config_from_mapping(model_id, options))
     return tuple(endpoints)
 
@@ -102,6 +104,6 @@ TEMPLATES: tuple[ProviderTemplate, ...] = (
         endpoints=_endpoints(codex=False),
         documentation_url="https://developers.openai.com/api/docs/models",
         verified_on=_VERIFIED_ON,
-        revision=13,
+        revision=14,
     ),
 )

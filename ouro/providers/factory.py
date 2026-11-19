@@ -260,6 +260,7 @@ def _model_metadata(
             supports_video_input=False
             if options.supports_video_input is None
             else options.supports_video_input,
+            supports_inline_system_messages=bool(options.supports_inline_system_messages),
             supports_streaming=True
             if options.supports_streaming is None
             else options.supports_streaming,

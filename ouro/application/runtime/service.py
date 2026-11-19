@@ -345,7 +345,7 @@ class RuntimeService:
                 self.additional_system_prompt,
             ),
             prompt_context_resolver=prompt_context_resolver,
-            append_context_message=self.run_lifecycle.append_input_message,
+            append_context_messages=self.run_lifecycle.append_messages,
             usage_service=usage_service,
             prepare_model_messages=(
                 resources.prepare_model_messages if resources is not None else None
@@ -1383,7 +1383,6 @@ class RuntimeService:
                 queued_at=utc_now(),
                 source="user",
                 role="user",
-                scaffold=False,
                 semantic_tag=None,
                 skill_activations=resolved_skill_activations,
             )
@@ -1756,7 +1755,6 @@ class RuntimeService:
                         _attributed_input_source(attribution) if attribution is not None else "user"
                     ),
                     role=_input_role(attribution),
-                    scaffold=_input_scaffold(attribution),
                     semantic_tag=(attribution.semantic_tag if attribution is not None else None),
                     semantic_attributes=(attribution.semantic_attributes if attribution else {}),
                     host_source_id=(
@@ -2318,7 +2316,7 @@ class RuntimeService:
                     session=active_session,
                     run=run,
                     tools=self._tools_for_run(run.run_id).definitions(),
-                    added_context=[],
+                    fixed_context=[],
                     trigger="manual",
                     force=True,
                     abort_signal=abort_signal,
@@ -2515,7 +2513,7 @@ class RuntimeService:
         *,
         session_id: str,
     ) -> HostInputReceipt:
-        """Durably accept an OURO-owned scaffold input without awaiting execution."""
+        """Durably accept an OURO-owned harness input without awaiting execution."""
 
         await self._synchronize_extensions()
         session = await run_blocking(self.store.load_session_record, session_id)
@@ -2606,7 +2604,6 @@ class RuntimeService:
             raise SessionCommitConflict("Host input belongs to withdrawn Session history")
         source = _attributed_input_source(attribution) if attribution is not None else "user"
         role = _input_role(attribution)
-        scaffold = _input_scaffold(attribution)
         if skill_invocations and source != "user":
             raise ValueError("skill invocation is only valid on direct user input")
         queue_id = (
@@ -2660,7 +2657,6 @@ class RuntimeService:
                 queue_id=queue_id,
                 source=source,
                 role=role,
-                scaffold=scaffold,
                 semantic_tag=(attribution.semantic_tag if attribution is not None else None),
                 semantic_attributes=(attribution.semantic_attributes if attribution else {}),
                 host_source_id=(
@@ -2969,8 +2965,7 @@ class RuntimeService:
             session=session,
             run=run,
             prompt=evaluation.feedback,
-            role="system",
-            scaffold=True,
+            role="harness",
             metadata={
                 "session_input_source": "turn_policy",
                 "turn_id": turn_id,
@@ -3077,7 +3072,6 @@ class RuntimeService:
             run=run,
             prompt=item.prompt,
             role=item.role,
-            scaffold=item.scaffold,
             skill_activations=item.skill_activations,
             sequence=sequence,
             resource_refs=item.resource_refs,
@@ -4004,14 +3998,6 @@ def _input_role(
     if attribution is None:
         return "user"
     return attribution.role
-
-
-def _input_scaffold(
-    attribution: AttributedSessionInput | HostSessionInput | DelegatedTaskInput | None,
-) -> bool:
-    if attribution is None:
-        return False
-    return attribution.scaffold
 
 
 def _queued_input_initiator(item: QueuedInput | None) -> str | None:

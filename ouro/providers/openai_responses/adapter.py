@@ -131,6 +131,7 @@ class OpenAIResponsesProvider:
                         provider_id=self.provider_id,
                         model_id=model.model_id,
                         scope=snapshot.scope,
+                        supports_inline_system_messages=model.supports_inline_system_messages,
                         supports_image_input=model.supports_image_input,
                     )
                 )

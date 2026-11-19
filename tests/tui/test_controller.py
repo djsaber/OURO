@@ -1188,7 +1188,7 @@ async def test_controller_installs_and_configures_user_plugin(tmp_path: Path) ->
                 "name": "TUI configuration",
                 "version": "1.0.0",
                 "namespace": "tui_config",
-                "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
+                "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
                 "runtime": {"kind": "declarative"},
                 "contributes": {},
                 "permissions": [],
@@ -1551,7 +1551,7 @@ async def test_controller_skill_catalog_tracks_live_plugin_skills(tmp_path: Path
                 "name": "TUI Skill",
                 "version": "1.0.0",
                 "namespace": "tui_skill",
-                "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
+                "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
                 "runtime": {"kind": "declarative"},
                 "contributes": {"skills": [{"id": "calendar", "path": "./skills/calendar"}]},
                 "permissions": [],
@@ -1823,15 +1823,13 @@ async def test_controller_submits_plugin_input_batch_as_one_run(tmp_path: Path) 
                         inputs=(
                             AttributedSessionInput(
                                 prompt="create",
-                                role="user",
-                                scaffold=True,
+                                role="harness",
                                 semantic_tag="goal-create",
                                 **common,
                             ),
                             AttributedSessionInput(
                                 prompt=argument,
                                 role="user",
-                                scaffold=False,
                                 **common,
                             ),
                         )
@@ -1854,9 +1852,9 @@ async def test_controller_submits_plugin_input_batch_as_one_run(tmp_path: Path) 
         assert len(result.run_results) == 1
         assert controller.session_id is not None
         snapshot = application.runtime.store.load_session(controller.session_id)
-        messages = [message for message in snapshot.messages if message.role == "user"]
+        messages = [message for message in snapshot.messages if message.input_id is not None]
         assert [message.text_content for message in messages] == ["create", "ship"]
-        assert [message.scaffold for message in messages] == [True, False]
+        assert [message.role for message in messages] == ["harness", "user"]
         assert [message.semantic_tag for message in messages] == ["goal-create", None]
         assert len({message.run_id for message in messages}) == 1
         added = [

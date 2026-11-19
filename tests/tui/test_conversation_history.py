@@ -289,14 +289,14 @@ class _ConversationApp(App[None]):
         yield Input()
 
 
-@pytest.mark.parametrize("show_scaffolds", [False, True])
+@pytest.mark.parametrize("show_harnesss", [False, True])
 @pytest.mark.parametrize("width", [32, 100])
-async def test_command_output_preserves_literal_content_when_resized(show_scaffolds, width):
+async def test_command_output_preserves_literal_content_when_resized(show_harnesss, width):
     app = _ConversationApp()
     source = 'Goal: active\n\n{\n    "value": "**中文**"\n}\n```literal```'
     async with app.run_test(size=(width, 30)) as pilot:
         conversation = app.query_one(ConversationView)
-        conversation.show_scaffold_messages = show_scaffolds
+        conversation.show_harness_messages = show_harnesss
         await conversation.add_user("Real input")
         await conversation.append_assistant("Answer before command")
         await conversation.add_command_output(source)
@@ -311,7 +311,7 @@ async def test_command_output_preserves_literal_content_when_resized(show_scaffo
         ]
         command = history.entries[2]
         assert command.text == source
-        assert command.created_at is None and not command.scaffold
+        assert command.created_at is None and command.kind == "command"
         assert history.user_turns == ("Real input",)
         assert len(history.user_lines) == 1
         assert "▣ Done" in history.rendered_text

@@ -24,7 +24,7 @@ from ouro.plugins.semver import version_satisfies
 OURO_VERSION = __version__
 
 
-PLUGIN_API_VERSION = "5.0.0"
+PLUGIN_API_VERSION = "6.0.0"
 
 
 WORKER_PROTOCOL_VERSION = "3.0"

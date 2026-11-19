@@ -30,10 +30,10 @@ It does not use the user-plugin installation lifecycle.
 | Tool | `exit` / `ExitPlanMode` | Auto-approved, state-changing, exclusive-batch resumable Plan review; supports unattended resolution |
 | Command | `/plan` | Enters, leaves, or reports Plan mode for the current Session |
 | Session Controller | `mode` | Owns the Plan lifecycle and exclusively claims `ouro.session.primary_behavior` |
-| Context Provider | `plan-scaffold` | Injects Plan instructions while the controller is active; failure mode `block` |
+| Context Provider | `plan-context` | Records Plan activation and exit notices |
 | Tool Policy | `plan-tool-gate` | Enforces read-only investigation and restricts writes to the designated Plan file |
 
-Plan mode does not register a Turn Policy. Completion behavior is driven by the injected scaffold,
+Plan mode does not register a Turn Policy. Completion behavior is driven by the Plan instructions,
 the tool policy, `ExitPlanMode`, and the framework's resumable tool protocol. Exact contribution
 declarations are defined in [`definition.py`](definition.py) and
 [`plan_plugin.py`](plan_plugin.py).
@@ -53,9 +53,8 @@ Activation creates a unique Markdown artifact under:
 ```
 
 The Context Provider tells the Agent to investigate, design, verify, write that file, and call
-`ExitPlanMode` before implementation. At each model request boundary it appends these instructions
-as a persistent user scaffold with the `plan-context` semantic tag. Plan state leaves system
-instructions and earlier conversation messages intact.
+`ExitPlanMode` before implementation. At the next model request, activation and exit each produce a `harness` message tagged
+`plan-context`. Subsequent requests reuse the recorded notice while the state stays the same.
 
 ### Tool Restrictions
 

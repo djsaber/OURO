@@ -148,7 +148,7 @@ async def test_skill_menu_loading_keeps_composer_responsive_and_discards_closed_
 
 
 @pytest.mark.parametrize("submit_key", ("enter", "ctrl+g"))
-async def test_mixed_references_survive_restart_and_form_one_complete_attachment_scaffold(
+async def test_mixed_references_survive_restart_and_form_one_complete_attachment_harness(
     tmp_path, monkeypatch, submit_key
 ):
     app = OuroTuiApp(application=application_with_skills(tmp_path))
@@ -186,14 +186,11 @@ async def test_mixed_references_survive_restart_and_form_one_complete_attachment
         await pilot.pause()
         assert not errors
         snapshot = application.runtime.store.load_session(restarted._controller.session_id)
-        user_messages = [item for item in snapshot.messages if item.role == "user"]
-        scaffolds = [item for item in user_messages if item.scaffold]
-        assert len(user_messages) == 2 and len(scaffolds) == 1
-        assert scaffolds[0].semantic_tag == "attachments"
-        assert len(scaffolds[0].input_attachments) == 2
+        [receipt] = [item for item in snapshot.messages if item.semantic_tag == "attachments"]
+        assert receipt.role == "harness" and len(receipt.input_attachments) == 2
         for directory in ("one", "two"):
-            assert f"Contents from {directory}." in scaffolds[0].text_content
-        body = next(item for item in user_messages if not item.scaffold)
+            assert f"Contents from {directory}." in receipt.text_content
+        [body] = [item for item in snapshot.messages if item.role == "user"]
         assert body.text_content == "inspect"
         assert [item.name for item in body.skill_activations] == ["reviewer", "writer"]
         assert len({item.path for item in body.input_attachments}) == 2

@@ -10,7 +10,7 @@ from ouro.core.content import ImageContent as ImageContent
 from ouro.core.content import MediaContent, media_reference, media_resource_ids
 from ouro.core.content import TextContent as TextContent
 from ouro.core.input_content import InputContent, InputFile
-from ouro.core.message_roles import MessageRole
+from ouro.core.message_roles import MessageRole, RunMessageKind, run_message_kind
 from ouro.core.message_semantics import (
     MessageSemantics,
     SemanticAttributes,
@@ -208,7 +208,7 @@ class MessageRecord(VersionedOuroModel, MessageSemantics):
     This value has no loader, lazy collection, or implicit storage access.
     """
 
-    schema_version: Literal[8] = 8
+    schema_version: Literal[9] = 9
     message_id: str = Field(default_factory=lambda: new_id("msg"))
     before_harness_version: str | None = None
     session_id: str
@@ -218,7 +218,6 @@ class MessageRecord(VersionedOuroModel, MessageSemantics):
     created_at: datetime = Field(default_factory=utc_now)
     sequence: int = 0
     content: list[ContentBlock] = Field(default_factory=list)
-    scaffold: bool = False
     resource_refs: list[str] = Field(default_factory=list)
     input_attachments: tuple[InputFile, ...] = ()
     input_ref: InputMessageReference | None = None
@@ -249,7 +248,6 @@ class MessageRecord(VersionedOuroModel, MessageSemantics):
             "provider_continuation",
             "semantic_tag",
             "semantic_attributes",
-            "scaffold",
             "queued_input_id",
         }
         misplaced = sorted(reserved_metadata.intersection(self.metadata))
@@ -286,8 +284,8 @@ class MessageRecord(VersionedOuroModel, MessageSemantics):
             raise ValueError("tool execution timing requires a tool_result message")
         _validate_skill_activation_blocks(self.role, self.content)
         if self.input_attachments:
-            if self.role != "user":
-                raise ValueError("input attachments require a user-role message")
+            if self.role not in {"user", "harness"}:
+                raise ValueError("input attachments require a user or harness message")
             # Offsets into a referenced body are checked when that body is materialized.
             if not (
                 self.input_ref is not None and self.input_ref.part == "body" and not self.content
@@ -308,7 +306,6 @@ class MessageRecord(VersionedOuroModel, MessageSemantics):
         run_id: str | None = None,
         turn_id: str | None = None,
         sequence: int = 0,
-        scaffold: bool = False,
         semantic_tag: SemanticTag | None = None,
         semantic_attributes: SemanticAttributes | None = None,
     ) -> MessageRecord:
@@ -318,7 +315,6 @@ class MessageRecord(VersionedOuroModel, MessageSemantics):
             turn_id=turn_id,
             role=role,
             sequence=sequence,
-            scaffold=scaffold,
             semantic_tag=semantic_tag,
             semantic_attributes=semantic_attributes or {},
             content=[TextContent(text=text)],
@@ -335,6 +331,14 @@ class MessageRecord(VersionedOuroModel, MessageSemantics):
     @property
     def input_id(self) -> str | None:
         return self.input_ref.input_id if self.input_ref is not None else None
+
+    @property
+    def run_message_kind(self) -> RunMessageKind:
+        return run_message_kind(
+            self.role,
+            supplied=self.input_ref is not None
+            or self.metadata.get("context_provider_delivery_key") is not None,
+        )
 
     @property
     def referenced_call_ids(self) -> tuple[ToolCallIdentity, ...]:
@@ -429,16 +433,29 @@ class MessageFact(MessageRecord):
         return self.validate_persisted_content()
 
 
-def model_visible_message(message: MessageRecord | ModelMessage) -> ModelMessage:
+def model_visible_message(
+    message: MessageRecord | ModelMessage, *, supports_inline_system_messages: bool = False
+) -> ModelMessage:
     """Project one canonical message into the exact semantics sent to a model."""
 
     model_message = (
         ModelMessage.from_record(message) if isinstance(message, MessageRecord) else message
     )
-    content = [_model_visible_content(block) for block in model_message.content]
+    role = model_message.role
+    if role == "harness":
+        role = "system" if supports_inline_system_messages else "user"
     tag = model_message.semantic_tag
+    if tag is None and not any(
+        isinstance(block, SkillActivationContent) for block in model_message.content
+    ):
+        return (
+            model_message
+            if role == model_message.role
+            else model_message.model_copy(update={"role": role})
+        )
+    content = [_model_visible_content(block) for block in model_message.content]
     if tag is None:
-        return model_message.model_copy(update={"content": content})
+        return model_message.model_copy(update={"role": role, "content": content})
     # Preserve unchanged blocks so the request manifest can reference the original body.
     for index, block in enumerate(content):
         if isinstance(block, TextContent):
@@ -447,6 +464,7 @@ def model_visible_message(message: MessageRecord | ModelMessage) -> ModelMessage
                 content[index] = TextContent(text=escaped)
     return model_message.model_copy(
         update={
+            "role": role,
             "content": [
                 TextContent(text=f"{model_message.opening_tag()}\n"),
                 *content,
@@ -457,6 +475,26 @@ def model_visible_message(message: MessageRecord | ModelMessage) -> ModelMessage
             "semantic_attributes": {},
         }
     )
+
+
+def model_visible_messages(
+    message: MessageRecord | ModelMessage, *, supports_inline_system_messages: bool
+) -> tuple[ModelMessage, ...]:
+    """Present harness text at the declared role and its media in native user content."""
+    visible = model_visible_message(
+        message, supports_inline_system_messages=supports_inline_system_messages
+    )
+    if message.role == "harness" and supports_inline_system_messages:
+        media: list[ContentBlock] = [
+            block for block in visible.content if isinstance(block, MediaContent)
+        ]
+        if media:
+            attachment = ModelMessage(role="user", content=media)
+            text = [block for block in visible.content if not isinstance(block, MediaContent)]
+            if text:
+                return attachment, visible.model_copy(update={"content": text})
+            return (attachment,)
+    return (visible,)
 
 
 def _validate_skill_activation_blocks(role: MessageRole, content: list[ContentBlock]) -> None:

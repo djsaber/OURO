@@ -18,7 +18,7 @@ def commit_model_correction(
 ) -> tuple[SessionRecord, RunRecord, tuple[EventRecord, ...]]:
     """Close a rejected response and append its correction in one native commit.
 
-    Only the scaffold enters model history. Rejected content stays in metadata,
+    Only the correction enters model history. Rejected content stays in metadata,
     outside provider projection. Round-based counting survives pause/resume and
     resets after an intervening successful request without a success-path write.
     """
@@ -48,7 +48,7 @@ def commit_model_correction(
             session_id=run.session_id,
             run_id=run.run_id,
             turn_id=turn_id,
-            role="user",
+            role="harness",
             text=(
                 "The previous response contained invalid tool arguments. "
                 "No tool calls from that response were executed.\n"
@@ -61,7 +61,6 @@ def commit_model_correction(
             ),
         ).model_copy(
             update={
-                "scaffold": True,
                 "semantic_tag": "model-output-correction",
                 "metadata": {
                     "model_correction_attempt": attempt,

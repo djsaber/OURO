@@ -45,7 +45,6 @@ async def test_context_providers_order_by_priority_and_identity() -> None:
                     fragments=[
                         AttributedContextFragment(
                             text="first",
-                            persistence="message",
                             semantic_tag="plugin-context",
                             plugin_id="previous.plugin",
                             provider_id="previous-provider",
@@ -64,10 +63,9 @@ async def test_context_providers_order_by_priority_and_identity() -> None:
     assert result.fragments[0].provider_id == "first"
     assert result.fragments[0].generation_id == "gen_alpha"
     assert result.fragments[0].fragment_index == 0
-    assert result.fragments[0].persistence == "message"
+    assert result.fragments[0].target == "message"
     assert result.fragments[0].semantic_tag == "plugin-context"
-    assert result.fragments[1].role == "user"
-    assert result.fragments[1].scaffold is True
+    assert result.fragments[1].role == "harness"
     assert result.fragments[1].semantic_tag is None
     assert result.fragments[1].target == "system_prompt"
     assert result.failures == []

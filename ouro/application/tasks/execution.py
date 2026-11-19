@@ -197,7 +197,7 @@ class TaskExecutionCoordinator:
                 run,
                 HostSessionInput(
                     prompt=target.prompt,
-                    role="user",
+                    role="harness",
                     semantic_tag="scheduled-task",
                     title=config.display_title,
                     host_source_id=f"ouro.tasks/{task.task_id}",

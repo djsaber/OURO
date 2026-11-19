@@ -32,6 +32,7 @@ from .run_drivers import (
     RunModels,
     RunToolCall,
     RunTools,
+    SessionInputRole,
     ToolBatchResult,
 )
 from .scheduling import PluginScheduler
@@ -49,10 +50,8 @@ ToolPermissionControl = Literal["host", "tool"]
 ToolEffect = Literal["read_only", "state_changing", "unknown"]
 ToolBatchBehavior = Literal["compatible", "exclusive"]
 SessionInputMode = Literal["follow_up", "steer"]
-SessionInputRole = Literal["system", "user", "assistant", "tool_result"]
 PromptInputSource = Literal["user", "host", "plugin", "delegation"]
 SessionKind = Literal["primary", "subagent"]
-ContextFragmentPersistence = Literal["ephemeral", "message"]
 ContextFragmentTarget = Literal["message", "system_prompt"]
 RunStatus = Literal[
     "queued",
@@ -270,16 +269,14 @@ ToolResumeHandler = (
 class SessionInput:
     """Request a provenance-bearing input through the Host runtime.
 
-    Model role, scaffold origin and semantic labeling are independent. The
-    producer declares each field; the Host preserves them without inference.
+    The role identifies the speaker. The optional semantic tag labels its content.
     ``driver_id`` selects the algorithm of a follow-up Run at input acceptance.
     """
 
     prompt: str
     mode: SessionInputMode = "follow_up"
     title: str | None = None
-    role: SessionInputRole = "user"
-    scaffold: bool = True
+    role: SessionInputRole = "harness"
     semantic_tag: str | None = None
     driver_id: str | None = None
     semantic_attributes: dict[str, str] = field(default_factory=dict)
@@ -628,8 +625,7 @@ class ContinuationDecision:
     prompt: str | None = None
     mode: SessionInputMode = "follow_up"
     title: str | None = None
-    role: SessionInputRole = "user"
-    scaffold: bool = True
+    role: SessionInputRole = "harness"
     semantic_tag: str | None = None
     coalesce_key: str | None = None
     reason: str | None = None
@@ -735,19 +731,18 @@ class ContextOutput:
 
 @dataclass(frozen=True, slots=True)
 class ContextFragment:
-    """Model context supplied for one request or persisted as a canonical message.
+    """A provider observation for the dialogue or the fixed system prompt.
 
-    Supply raw ``text`` and independently declare its message role, scaffold
-    origin and optional semantic label. The Host validates and renders a label
-    only when ``semantic_tag`` is present.
+    The Host appends changed message fragments in delivery order and renders
+    each declared semantic envelope once. An optional revision distinguishes
+    separate observations with identical model-visible content.
     """
 
     text: str
-    persistence: ContextFragmentPersistence = "ephemeral"
     target: ContextFragmentTarget = "message"
-    role: SessionInputRole = "user"
-    scaffold: bool = True
+    role: SessionInputRole = "harness"
     semantic_tag: str | None = None
+    revision: str | None = None
 
 
 ContextHandler = Callable[
@@ -874,7 +869,6 @@ __all__ = [
     "ContextContribution",
     "ContextCall",
     "ContextFragment",
-    "ContextFragmentPersistence",
     "ContextFragmentTarget",
     "ContextPreparedObservation",
     "ContextOutput",

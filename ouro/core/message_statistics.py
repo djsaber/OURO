@@ -9,7 +9,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from ouro.core.base import OuroModel
-from ouro.core.message_roles import MessageRole
+from ouro.core.message_roles import RunMessageKind
 from ouro.core.messages import MessageRecord
 
 InputOrigin = Literal["automatic", "other"]
@@ -25,26 +25,25 @@ def delegation_input_id(message: MessageRecord) -> str | None:
     identity = message.metadata.get("delegation_id")
     return (
         identity
-        if message.role == "user"
-        and message.metadata.get("session_input_source") == "delegation"
+        if message.metadata.get("session_input_source") == "delegation"
         and isinstance(identity, str)
         else None
     )
 
 
 def collect_run_result_references(
-    records: Iterable[tuple[str, MessageRole, str | None, Sequence[str]]],
+    records: Iterable[tuple[str, RunMessageKind, str | None, Sequence[str]]],
     *,
     delegation_id: str,
 ) -> RunResultReferences:
     initial = result = None
     resources: dict[str, None] = {}
-    for message_id, role, source, resource_refs in records:
-        if initial is None and role == "user" and source == delegation_id:
+    for message_id, kind, source, resource_refs in records:
+        if initial is None and source == delegation_id:
             initial = message_id
-        if role == "assistant":
+        if kind == "assistant_response":
             result = message_id
-        if role in {"assistant", "tool_result"}:
+        if kind != "input":
             resources.update(dict.fromkeys(resource_refs))
     return RunResultReferences(
         initial_message_id=initial, result_message_id=result, resource_refs=tuple(resources)

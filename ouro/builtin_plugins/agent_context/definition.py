@@ -16,11 +16,10 @@ AGENT_CONTEXT_PLUGIN = BuiltinPluginDefinition(
             "author": {"name": "ouro"},
             "version": "1.0.0",
             "description": (
-                "Injects hierarchical AGENTS.md instructions and request-time runtime facts "
-                "into the complete Agent system prompt."
+                "Supplies hierarchical AGENTS.md instructions and ordered runtime observations."
             ),
             "namespace": "agent_context",
-            "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
+            "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
             "runtime": {
                 "kind": "python-inprocess",
                 "entrypoint": "agent_context_plugin:create_plugin",

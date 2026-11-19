@@ -21,7 +21,7 @@ PLAN_PLUGIN = BuiltinPluginDefinition(
             "version": "1.0.0",
             "description": "Implements plan mode as composable OURO harness contributions.",
             "namespace": "plan",
-            "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
+            "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
             "runtime": {
                 "kind": "python-inprocess",
                 "entrypoint": "plan_plugin:create_plugin",
@@ -87,11 +87,10 @@ PLAN_PLUGIN = BuiltinPluginDefinition(
                 ],
                 "context_providers": [
                     {
-                        "id": "plan-scaffold",
+                        "id": "plan-context",
                         "priority": 10,
                         "timeout_seconds": 5,
                         "failure_mode": "block",
-                        "active_when": "mode",
                     }
                 ],
                 "tool_policies": [

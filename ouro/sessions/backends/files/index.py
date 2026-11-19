@@ -215,7 +215,7 @@ class LocalSessionIndex:
                 if scanned > _MAX_PREVIEW_SCAN_BYTES:
                     break
                 fact = messages.entry(raw, session_id=directory.name)
-                if fact.scaffold or fact.role not in {"user", "assistant"}:
+                if fact.role not in {"user", "assistant"}:
                     continue
                 if fact.input_id is not None:
                     selected = read_preview_input(

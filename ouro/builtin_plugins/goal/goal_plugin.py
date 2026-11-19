@@ -5,7 +5,7 @@ from dataclasses import replace
 from typing import cast
 from uuid import uuid4
 
-from ouro.sdk.plugins.v5 import (
+from ouro.sdk.plugins.v6 import (
     CommandContribution,
     CommandOutput,
     ContextCall,
@@ -455,9 +455,8 @@ class GoalPlugin:
             fragments=(
                 ContextFragment(
                     text=goal_context(goal),
-                    persistence="message",
-                    role="user",
-                    scaffold=True,
+                    revision=f"{goal.goal_id}:{goal.updated_at}",
+                    role="harness",
                     semantic_tag="goal-context",
                 ),
             ),
@@ -521,8 +520,7 @@ class GoalPlugin:
             action="continue",
             prompt=continuation_prompt(goal, tokens_used=tokens_used),
             title="Continue Goal",
-            role="user",
-            scaffold=True,
+            role="harness",
             semantic_tag="goal-continue",
             coalesce_key="goal-continuation",
             reason="goal_active",

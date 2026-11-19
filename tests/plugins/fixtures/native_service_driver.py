@@ -1,4 +1,4 @@
-from ouro.sdk.plugins import v5 as sdk
+from ouro.sdk.plugins import v6 as sdk
 
 SERVICE = "dev.ouro.examples.review_service"
 

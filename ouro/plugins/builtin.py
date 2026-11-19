@@ -11,7 +11,7 @@ from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.models import PluginStateDocument
 
 if TYPE_CHECKING:
-    from ouro.sdk.plugins.v5 import PluginContext
+    from ouro.sdk.plugins.v6 import PluginContext
 
 
 BuiltinPluginFactory = Callable[["PluginContext"], object]

@@ -74,9 +74,7 @@ async def system(tmp_path, request):
             if handler is not None:
                 return handler(call)
             items = [
-                SessionInputRequest(
-                    prompt="first prompt", role="user", scaffold=True, semantic_tag="setup"
-                ),
+                SessionInputRequest(prompt="first prompt", role="harness", semantic_tag="setup"),
                 SessionInputRequest(prompt="second prompt", role="user"),
             ]
             return PluginCommandResult(
@@ -449,12 +447,16 @@ async def test_command_inputs_keep_fifo_batch_boundaries_and_attribution(system,
     results = [result async for result in consume_plugin_command(system.runtime, submitted)]
     assert all(result.run.status == "completed" for result in results)
     snapshot = system.store.load_session(submitted.session_id)
-    messages = [message for message in snapshot.messages if message.role == "user"]
+    messages = [
+        message
+        for message in snapshot.messages
+        if message.metadata.get("plugin_id") == "dev.example"
+    ]
     assert [message.text_content for message in messages] == (
         ["first prompt"] if kind == "single" else ["first prompt", "second prompt"]
     )
     assert len({message.run_id for message in messages}) == (2 if kind == "multiple" else 1)
-    assert messages[0].scaffold and messages[0].semantic_tag == "setup"
+    assert (messages[0].role == "harness") and messages[0].semantic_tag == "setup"
     assert all(message.metadata["plugin_id"] == "dev.example" for message in messages)
     if not existing:
         queued_events = [

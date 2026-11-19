@@ -2,8 +2,7 @@
 
 ## Overview
 
-`dev.ouro.agent_context` adds request-scoped Agent instructions and runtime facts to the complete
-system prompt. It implements the product-neutral `AGENTS.md` convention and keeps reusable
+`dev.ouro.agent_context` supplies Agent instructions in the system prompt and runtime observations in the dialogue. It implements the product-neutral `AGENTS.md` convention and keeps reusable
 instructions separate from environment information.
 
 ## Plugin Metadata
@@ -67,13 +66,11 @@ owned by `ouro.skills`.
 OURO/Python runtime, shell, path style, and preferred encoding. Platform-level facts are captured
 when the plugin instance is created; date, time zone, and workspace are resolved for each request.
 
-The provider runs after `agent-instructions`, so the `ouro-system-information` fragment remains at
-the end of the complete system prompt.
+The Host appends changed observations as `harness` messages with the `ouro-system-information` tag.
 
 ## State and Boundaries
 
-- Neither provider creates a canonical Session message or durable plugin state.
-- Both providers explicitly declare `role=system` and target only the request-local system prompt.
+- `agent-instructions` supplies the fixed system prompt. Both providers use the Session workspace.
 - The plugin does not activate Skills, reinterpret vendor-specific instruction files, or search
   below the current workspace.
 - Context Provider execution uses the framework callback boundary; synchronous file discovery does

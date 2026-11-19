@@ -882,7 +882,7 @@ async def test_prompt_policy_excludes_plugin_input_and_human_resolutions(tmp_pat
 
     plugin_result = await runtime.submit_plugin_input(
         AttributedSessionInput(
-            prompt="Scaffold command output",
+            prompt="Harness command output",
             plugin_id="dev.ouro.command",
             contribution_id="start",
             generation_id="gen_command",
@@ -893,7 +893,7 @@ async def test_prompt_policy_excludes_plugin_input_and_human_resolutions(tmp_pat
     assert plugin_result.run.status == "completed"
     assert inspected_prompts == ["Write the approved file", "Ask for a file"]
     plugin_snapshot = store.load_session(plugin_result.session.session_id)
-    assert plugin_snapshot.messages[0].role == "user"
+    assert plugin_snapshot.messages[0].role == "harness"
 
 
 @pytest.mark.asyncio
@@ -933,7 +933,7 @@ async def test_prompt_policy_denies_before_active_run_queue_persistence(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_runtime_persists_prepared_resource_content_in_attachment_scaffold(tmp_path) -> None:
+async def test_runtime_persists_prepared_resource_content_in_attachment_harness(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     resource_store = LocalResourceStore(store.root)
@@ -1323,7 +1323,7 @@ async def test_next_run_projects_interrupted_assistant_as_recovery_context(tmp_p
     assert resumed.run.status == "completed"
     assert [message.role for message in provider.messages] == [
         "user",
-        "system",
+        "user",
         "user",
     ]
     assert "unfinished" in provider.messages[1].text_content
@@ -1642,10 +1642,11 @@ async def test_runtime_context_provider_adds_context_to_provider(tmp_path) -> No
 
     assert seen_system_prompts == [DEFAULT_SYSTEM_PROMPT]
     assert seen_messages[0].role == "user"
-    assert seen_messages[0].text_content == "extra context"
+    assert [m.text_content for m in seen_messages] == ["Use context", "extra context"]
     snapshot = store.load_session(result.session.session_id)
-    assert not any(
-        message.metadata.get("kind") == "context_provider" for message in snapshot.messages
+    assert any(
+        message.role == "harness" and message.text_content == "extra context"
+        for message in snapshot.messages
     )
 
 
@@ -1716,13 +1717,12 @@ async def test_runtime_persists_context_provider_message_with_provenance(tmp_pat
         (
             ContextProviderRegistration(
                 plugin_id="dev.ouro.harness",
-                provider_id="scaffold",
+                provider_id="harness",
                 generation_id="gen_harness",
                 handler=lambda _call: ContextProviderResult(
                     fragments=[
                         ContextFragment(
                             text="durable harness context",
-                            persistence="message",
                             semantic_tag="plugin-context",
                         )
                     ]
@@ -1745,20 +1745,20 @@ async def test_runtime_persists_context_provider_message_with_provenance(tmp_pat
     snapshot = store.load_session(result.session.session_id)
     context_snapshot = store.load_latest_context(result.session.session_id)
     assert context_snapshot is not None
-    scaffold = next(
+    harness = next(
         message
         for message in snapshot.messages
         if message.metadata.get("kind") == "context_provider"
     )
-    assert scaffold.role == "user"
-    assert scaffold.scaffold is True
-    assert scaffold.semantic_tag == "plugin-context"
-    assert scaffold.text_content == "durable harness context"
-    assert scaffold.metadata == {
+    assert harness.role == "harness"
+
+    assert harness.semantic_tag == "plugin-context"
+    assert harness.text_content == "durable harness context"
+    assert harness.metadata == {
         "kind": "context_provider",
-        "context_provider_delivery_key": (f"{result.run.run_id}:1:dev.ouro.harness:scaffold:0"),
+        "context_provider_delivery_key": "dev.ouro.harness:harness:0",
         "plugin_id": "dev.ouro.harness",
-        "contribution_id": "scaffold",
+        "contribution_id": "harness",
         "model_round": 1,
         "fragment_index": 0,
         "generation_id": "gen_harness",
@@ -1781,7 +1781,6 @@ async def test_runtime_persists_context_provider_message_with_provenance(tmp_pat
     [
         {"text": "State B"},
         {"role": "system"},
-        {"scaffold": False},
         {"semantic_tag": "updated-state"},
     ],
 )
@@ -1793,7 +1792,7 @@ async def test_context_provider_retry_appends_changes_without_rewriting_history(
     provider = CapturingProvider()
     model = ModelMetadata(model_id="capture", provider_id="capture")
     adapter = RuntimeAdapter(provider, model.model_copy(update={"context_window": 1}))
-    initial = ContextFragment(text="State A", persistence="message", semantic_tag="test-state")
+    initial = ContextFragment(text="State A", semantic_tag="test-state")
     fragment = initial
     context_providers = ContextProviderRegistry()
     context_providers.replace_owner(
@@ -1837,12 +1836,11 @@ async def test_context_provider_retry_appends_changes_without_rewriting_history(
             assert retried.run.model_round_count == 0
             messages = store.load_session(session_id).messages
             assert messages[: len(before)] == before
-            scaffolds = [m for m in messages if m.metadata.get("kind") == "context_provider"]
-            assert len(scaffolds) == len(expected)
-            for message, value in zip(scaffolds, expected, strict=True):
+            notices = [m for m in messages if m.metadata.get("kind") == "context_provider"]
+            assert len(notices) == len(expected)
+            for message, value in zip(notices, expected, strict=True):
                 assert message.text_content == value.text
                 assert message.role == value.role
-                assert message.scaffold == value.scaffold
                 assert message.semantic_tag == value.semantic_tag
             before = messages
 
@@ -1871,25 +1869,25 @@ async def test_context_provider_message_persistence_failure_blocks_model_request
         (
             ContextProviderRegistration(
                 plugin_id="dev.ouro.harness",
-                provider_id="required-scaffold",
+                provider_id="required-harness",
                 failure_mode="block",
                 handler=lambda _call: ContextProviderResult(
-                    fragments=[ContextFragment(text="must be durable", persistence="message")]
+                    fragments=[ContextFragment(text="must be durable")]
                 ),
             ),
         ),
     )
     commit_session = store.commit_session
 
-    def fail_scaffold(request):
+    def fail_harness(request):
         if any(
             step.message is not None and step.message.metadata.get("kind") == "context_provider"
             for step in request.steps
         ):
-            raise PersistenceError("simulated scaffold persistence failure")
+            raise PersistenceError("simulated harness persistence failure")
         return commit_session(request)
 
-    monkeypatch.setattr(store, "commit_session", fail_scaffold)
+    monkeypatch.setattr(store, "commit_session", fail_harness)
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
@@ -1900,7 +1898,7 @@ async def test_context_provider_message_persistence_failure_blocks_model_request
         context_providers=context_providers,
     )
 
-    result = await runtime.run("Do not lose the scaffold")
+    result = await runtime.run("Do not lose the harness")
 
     assert result.run.status == "paused"
     assert result.run.metadata["pause"]["reason"] == "context_blocked"
@@ -1962,10 +1960,10 @@ async def test_runtime_merges_context_builder_skills_before_provider_context(tmp
     assert provider.system_prompt.startswith(DEFAULT_SYSTEM_PROMPT.strip())
     assert "<skills_instructions>" in provider.system_prompt
     assert "<name>pdf</name>" in provider.system_prompt
-    scaffold_messages = [
-        message.text_content for message in provider.messages if message.role == "user"
+    assert [message.text_content for message in provider.messages] == [
+        "Use context",
+        "plugin context",
     ]
-    assert scaffold_messages == ["plugin context", "Use context"]
 
 
 @pytest.mark.asyncio
@@ -2091,7 +2089,7 @@ async def test_turn_policy_continues_inside_same_run_before_completion(
     assert [message.role for message in snapshot.messages] == [
         "user",
         "assistant",
-        "system",
+        "harness",
         "assistant",
     ]
     assert snapshot.messages[1].text_content == "candidate"
@@ -3644,7 +3642,7 @@ async def test_runtime_automatically_compacts_and_persists_context_projection(tm
     assert snapshot.session.context_selection.compaction_id is not None
     assert snapshot.active_compaction is not None
     assert len(snapshot.messages) == 26
-    assert provider.business_messages[0].role == "system"
+    assert provider.business_messages[0].role == "user"
     assert provider.business_messages[0].text_content.startswith(
         "<conversation-summary>\ndurable summary"
     )

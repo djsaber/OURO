@@ -31,6 +31,15 @@ def hashes(home: Path) -> dict[str, str | None]:
     }
 
 
+def test_tui_harness_visibility_keeps_saved_preferences(tmp_path):
+    path = tmp_path / "config/tui.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"show_scaffold_messages": True, "theme": "custom"}), "utf-8")
+    assert upgrade(tmp_path)["status"] == "upgraded"
+    assert json.loads(path.read_text("utf-8")) == {"show_harness_messages": True, "theme": "custom"}
+    assert upgrade(tmp_path)["status"] == "current"
+
+
 @pytest.mark.parametrize("historical_home", ["files", "sqlite"], indirect=True)
 def test_historical_home_upgrades_for_current_readers(historical_home: Path) -> None:
     home = historical_home

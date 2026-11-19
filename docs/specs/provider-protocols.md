@@ -97,6 +97,14 @@ Endpoint 通过三个 `supports_<modality>_input` 字段独立声明具体服务
 插件协议的输入编码由其公开贡献契约负责，不套用内置协议的编码集合。
 格式、角色、配置入口和降级规则见[输入模态契约](provider-configuration.md#输入模态契约)。
 
+三个协议共用会话角色投影。端点声明 `supports_inline_system_messages=true` 时，框架通知在原位置呈现为 `system`，随通知交付的媒体使用相邻的 `user` 内容块。默认值 `false` 将整条通知呈现为 `user`。基础系统指令使用各协议的原生入口。Anthropic Messages 将同批原生工具结果编码在一个用户回合中。
+
+显式原生 `system` 消息保留指令角色。仅支持前置指令的端点把开头的系统消息计入指令区，在对话开始后收到显式系统消息会报告协议不匹配。
+
+OpenAI 公共 Responses 预设开启对话内系统消息。Claude 公共 Messages 对系统消息的前后角色有额外约束，其预设采用默认值。[Responses 输入类型](https://developers.openai.com/api/reference/resources/responses/methods/create/) · [Claude 系统消息位置](https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages)
+
+Claude Messages 的服务端提示缓存可通过端点 `request_options.cache_control` 配置为 `{"type":"ephemeral"}`。会话前缀提供可复用的输入，实际读写量来自响应的 usage。[Claude 提示缓存](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+
 ## 命名约定
 
 协议标识使用 API 的完整名称，Python 模块使用对应的 snake_case，公开实现类保留 Provider 后缀：

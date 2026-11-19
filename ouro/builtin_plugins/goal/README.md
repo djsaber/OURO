@@ -47,7 +47,7 @@ Resume starts a fresh blocker assessment.
 Goal exposes information where the model needs it:
 
 - The creation batch labels the request as a Goal and preserves the raw objective as a separate
-  non-scaffold user message. It tells the model that the user has already created the goal, so
+  native user message. It tells the model that the user has already created the goal, so
   CreateGoal is unnecessary. Replacement supplies the new objective and reassessment guidance.
 - Successful CreateGoal and UpdateGoal results provide status and next-action guidance, plus usage
   when budgeted. They do not echo the objective, timestamps, or the model's report.
@@ -63,8 +63,8 @@ Goal exposes information where the model needs it:
 Command syntax and help belong to the user interface. Model instructions and system stop reports
 describe state, causes and tool actions without slash commands. A paused or blocked goal requires a
 successful UpdateGoal(active) before goal work resumes; increasing or removing a budget requires
-the user. Each scaffold carries its semantic tag: goal-create, goal-updated, goal-cancelled,
-goal-context or goal-continue. Tool results use the tool protocol; the raw objective is not a scaffold.
+the user. Each harness notice carries one of the tags goal-create, goal-updated, goal-cancelled,
+goal-context or goal-continue. Tool results retain their native call identity.
 
 The plugin remembers the latest notice and preparation boundary in memory. Goal identity and notice
 content determine whether another notice is needed; timestamp-only changes, normal tool rounds and
@@ -72,14 +72,14 @@ ordinary conversation do not. A tool transition records its expected Goal record
 only when preparation reads that exact committed record. Tool feedback and state commit together.
 Preparation retries are deduplicated by the Host. Earlier messages and system instructions stay intact.
 
-Reloading the plugin supplies a concise state notice. Compaction alone does not: the model uses the
+The Host reuses the last recorded notice across plugin reloads. Compaction alone does not: the model uses the
 summary and retained history, calling GetGoal when precise information is needed. Pending creation,
 replacement and cancellation batches coalesce.
 
 Pause commits goal state with the framework's generic stop intent and cancels the current execution.
 Resume uses the generic continue intent to resume retained work or consume the initial pending input.
 Neither operation queues an additional execution input. The next model request supplies any state
-not already conveyed as a user scaffold. The framework owns cancellation, settlement and checkpoint recovery;
+not already conveyed as a harness notice. The framework owns cancellation, settlement and checkpoint recovery;
 completed tool results are retained without replaying their execution.
 
 Stopped goals allow normal conversation, tools and /continue without automatic goal resumption.
@@ -124,4 +124,4 @@ uv run pytest tests/plugins/test_builtin_goal.py tests/plugins/test_goal_interac
 ```
 
 Targeted Application and SDK tests cover command atomicity, continuation facts, coalescing,
-request-local context, and recovery.
+context delivery and recovery.

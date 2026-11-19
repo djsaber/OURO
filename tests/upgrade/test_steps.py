@@ -29,21 +29,21 @@ from tests.upgrade.conftest import FIXTURES
 
 def test_future_run_version_retains_the_entire_historical_upgrade_path(monkeypatch) -> None:
     class FutureRun(RunRecord):
-        schema_version: int = 12
+        schema_version: int = 13
         future_checkpoint: str | None
 
-    def from_v11(value: dict) -> None:
-        assert value["schema_version"] == 11
+    def from_v12(value: dict) -> None:
+        assert value["schema_version"] == 12
         assert value["driver"]["driver_id"] == "ouro.default"
         value["future_checkpoint"] = None
 
     monkeypatch.setitem(records.MODELS, "run", FutureRun)
-    monkeypatch.setitem(records.VERSION_STEPS["run"], 11, UpgradeStep(12, from_v11))
+    monkeypatch.setitem(records.VERSION_STEPS["run"], 12, UpgradeStep(13, from_v12))
     raw = loads((FIXTURES / "files/sessions/ses_fixture/runs/run_fixture.json").read_text("utf-8"))
     raw["active_tool_batch"] = None
     before = copy.deepcopy(raw)
     result = convert("run", raw)
-    assert result["schema_version"] == 12
+    assert result["schema_version"] == 13
     assert result["future_checkpoint"] is None
     assert result["run_id"] == raw["run_id"]
     assert raw == before
@@ -313,3 +313,23 @@ def test_task_container_target_matches_the_storage_writer(tmp_path):
     SQLiteTaskRepository(tmp_path).initialize()
     with closing(sqlite3.connect(tmp_path / "tasks.sqlite3")) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == TASK_SCHEMA_VERSION
+
+
+def test_message_role_conversion_preserves_native_tool_facts_and_tagged_observations():
+    journal = FIXTURES / "native/files/sessions/ses_fixture/messages.jsonl"
+    question, assistant, tool_result, _ = [
+        loads(line) for line in journal.read_text("utf-8").splitlines()
+    ]
+    notice = {**question, "semantic_tag": "environment", "scaffold": True}
+    for original, role in [
+        (question, "user"),
+        (notice, "harness"),
+        ({**notice, "semantic_tag": "harness"}, "harness"),
+        (assistant, "assistant"),
+        ({**tool_result, "scaffold": True}, "tool_result"),
+    ]:
+        result = convert("message", original)
+        assert result["role"] == role and "scaffold" not in result
+        assert result["message_id"] == original["message_id"]
+        assert result.get("semantic_tag") == original.get("semantic_tag")
+        assert result.get("outcome_ref") == original.get("outcome_ref")

@@ -48,7 +48,7 @@ daemon。任务之间的依赖图、工作流步骤、独立预算策略、自�
 |---|---|---|
 | 标题 `title` | 可选 | 最多 160 字符；用于会话标题及任务展示。未填写时，将指令中的空白折叠后取前 60 字符作为展示标题 |
 | 目标类型 `target.kind` | 必填，`agent` | 持久化记录必须显式声明受支持的目标类型 |
-| 指令 `target.prompt` | 必填 | 去除首尾空白后为 1–100000 字符，保留内部换行；以用户角色提交，表达自然语言目标和要求 |
+| 指令 `target.prompt` | 必填 | 去除首尾空白后为 1–100000 字符，保留内部换行，由调度器随 `scheduled-task` 通知提交 |
 | 工作空间 `target.workspace` | 必填 | 必须是存在的绝对目录；保存时规范化路径，保存与派发时均校验 |
 | 审批 `target.approval_mode` | 可选，默认 `afk` | 支持 `inherit`、`auto`、`approval`、`deny`、`afk`，沿用会话审批语义 |
 | 模型 `target.model` | 必填 | 保存指定模型路由或符号值 `default`；后者必须有用户配置的系统默认端点，并在保存和每次派发时解析。TUI 新建任务在有系统默认端点时预选 `default`，否则要求用户指定端点；不从模型列表排序或当前会话的模型选择推断 |
@@ -255,7 +255,7 @@ Agent 中断使用 Supervisor 或精确 Run 的通用取消入口，插件中断
 任务新建会话使用 `namespace=task`，普通用户会话使用 `default`；子会话和分支继承会话域。域是持久化的
 通用分类，不替代 Run 身份、父子关系或权限边界。计划运行使用 `origin=host`、`trigger=scheduled`，
 `initiator_id` 关联 `ouro.tasks/<task_id>`，便于追踪来源。
-任务输入由调度入口显式声明 `role=user, scaffold=true, semantic_tag=scheduled-task`，正文保留任务配置中的
+任务输入由调度入口显式声明 `role=harness, semantic_tag=scheduled-task`，正文保留任务配置中的
 原始指令；模型可见的语义标签标识其定时任务来源，不改变消息角色或授权范围。
 
 Host 创建新用户会话时通过显式创建回调绑定身份，不从并发事件推测会话归属。打开任务会话遵循公共

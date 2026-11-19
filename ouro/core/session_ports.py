@@ -350,7 +350,7 @@ class SessionRepository(Protocol):
         ...
 
     def has_input_messages(self, session_id: str) -> bool:
-        """Whether canonical history retains any user/system input, including scaffolds."""
+        """Whether canonical history retains an input to continue from."""
         ...
 
     def find_last_assistant_message(self, session_id: str, run_id: str) -> MessageRecord | None:
@@ -364,7 +364,7 @@ class SessionRepository(Protocol):
         ...
 
     def find_context_provider_message(
-        self, session_id: str, run_id: str, delivery_key: str
+        self, session_id: str, delivery_key: str
     ) -> MessageRecord | None:
         """Read the last durable value for one provider-fragment delivery identity."""
         ...

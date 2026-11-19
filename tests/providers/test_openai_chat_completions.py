@@ -469,9 +469,8 @@ async def test_openai_endpoint_options_and_system_prompt_shape_request() -> None
             messages=[
                 MessageRecord.text(
                     session_id="ses_1",
-                    role="system",
+                    role="harness",
                     text="Compacted conversation.",
-                    scaffold=True,
                     semantic_tag="conversation-summary",
                 ),
                 MessageRecord.text(session_id="ses_1", role="user", text="hello"),
@@ -483,14 +482,10 @@ async def test_openai_endpoint_options_and_system_prompt_shape_request() -> None
     request = transport.requests[0]
     assert request["url"] == "https://example.test/v1/responses/chat"
     assert request["payload"]["messages"] == [
+        {"role": "system", "content": "System instructions."},
         {
-            "role": "system",
-            "content": (
-                "System instructions.\n\n"
-                "<conversation-summary>\n"
-                "Compacted conversation.\n"
-                "</conversation-summary>"
-            ),
+            "role": "user",
+            "content": ("<conversation-summary>\nCompacted conversation.\n</conversation-summary>"),
         },
         {"role": "user", "content": "hello"},
     ]

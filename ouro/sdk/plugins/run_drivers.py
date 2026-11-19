@@ -7,6 +7,8 @@ from typing import Literal, Protocol
 from .content import ToolContent
 from .state import JsonValue
 
+SessionInputRole = Literal["system", "user", "assistant", "tool_result", "harness"]
+
 
 @dataclass(frozen=True)
 class ModelToolCall:
@@ -66,9 +68,9 @@ class RunInput:
     """A detached view of one committed input message, including its provenance."""
 
     message_id: str
-    role: Literal["system", "user", "assistant", "tool_result"]
+    role: SessionInputRole
     content: tuple[dict[str, JsonValue], ...]
-    scaffold: bool
+
     semantic_tag: str | None
     metadata: dict[str, JsonValue]
     resource_refs: tuple[str, ...] = ()

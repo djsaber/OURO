@@ -243,6 +243,7 @@ class OpenAIChatCompletionsProvider:
         converted_messages = messages_to_chat_completions(
             messages,
             system_prompt=system_prompt,
+            supports_inline_system_messages=model.supports_inline_system_messages,
             supports_image_input=model.supports_image_input,
             supports_audio_input=model.supports_audio_input,
             supports_video_input=model.supports_video_input,

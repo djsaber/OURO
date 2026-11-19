@@ -156,7 +156,6 @@ def test_queued_input_queue_rejects_host_item_without_source_attribution(tmp_pat
                 store.load_runtime_session(session.session_id).session,
                 prompt="anonymous",
                 role="user",
-                scaffold=False,
                 source="host",
             ),
         )
@@ -213,7 +212,6 @@ def test_queue_cancels_only_the_selected_direct_user_input(tmp_path, backend: st
             prompt="Framework continuation",
             source="host",
             role="system",
-            scaffold=True,
             host_source_id="ouro.runtime/test",
         ),
     )
@@ -291,7 +289,6 @@ def test_host_queued_input_requires_and_preserves_source_attribution(tmp_path) -
                 prompt="anonymous framework input",
                 source="host",
                 role="system",
-                scaffold=True,
             ),
         )
     _, queued, _, _ = queue.enqueue(
@@ -302,7 +299,6 @@ def test_host_queued_input_requires_and_preserves_source_attribution(tmp_path) -
             title="Recovery",
             source="host",
             role="system",
-            scaffold=True,
             host_source_id="ouro.runtime/recovery",
             resource_refs=("resource_1",),
         ),
@@ -331,7 +327,6 @@ def test_plugin_queue_preserves_message_role_independently_from_provenance(tmp_p
             prompt="The user's explicit command intent",
             source="plugin",
             role="user",
-            scaffold=True,
             semantic_tag="plugin-intent",
             plugin_id="dev.example.plugin",
             contribution_id="command",
@@ -343,28 +338,26 @@ def test_plugin_queue_preserves_message_role_independently_from_provenance(tmp_p
 
     assert queued.source == "plugin"
     assert queued.role == "user"
-    assert queued.scaffold is True
+
     assert queued.semantic_tag == "plugin-intent"
     assert restored is not None
     assert restored.source == "plugin"
     assert restored.role == "user"
-    assert restored.scaffold is True
+
     assert restored.semantic_tag == "plugin-intent"
     assert restored.plugin_id == "dev.example.plugin"
     _, host_user_message, _, _ = queue.enqueue(
         session_id=session.session_id,
         item=queued_input(
             store.load_session(session.session_id).session,
-            prompt="Host-owned user-role scaffold",
+            prompt="Host-owned user-role harness",
             source="host",
             role="user",
-            scaffold=True,
             host_source_id="ouro.runtime/test",
         ),
     )
     assert host_user_message.source == "host"
     assert host_user_message.role == "user"
-    assert host_user_message.scaffold is True
 
 
 def test_queue_rejects_persisted_items_missing_explicit_message_semantics(tmp_path) -> None:
@@ -379,7 +372,6 @@ def test_queue_rejects_persisted_items_missing_explicit_message_semantics(tmp_pa
             store.load_runtime_session(session.session_id).session,
             prompt="plugin",
             role="user",
-            scaffold=True,
             source="plugin",
             plugin_id="dev.example.plugin",
             contribution_id="continuation",
@@ -415,7 +407,6 @@ def test_delegated_task_input_requires_and_preserves_delegation_identity(tmp_pat
                 prompt="Inspect the target.",
                 source="delegation",
                 role="user",
-                scaffold=True,
             ),
         )
 
@@ -426,7 +417,6 @@ def test_delegated_task_input_requires_and_preserves_delegation_identity(tmp_pat
             prompt="Inspect the target.",
             source="delegation",
             role="user",
-            scaffold=True,
             delegation_id="dlg_task",
         ),
     )
@@ -520,7 +510,6 @@ def test_host_receipt_is_atomic_across_pending_and_consumed_input(tmp_path, back
         session_id=session.session_id,
         run_id="run_result",
         role=request.role,
-        scaffold=request.scaffold,
         semantic_tag=request.semantic_tag,
         semantic_attributes=request.semantic_attributes,
         text=request.prompt,

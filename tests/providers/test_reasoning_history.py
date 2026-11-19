@@ -118,13 +118,8 @@ def test_omitted_reasoning_does_not_leave_an_empty_assistant_message(target, con
     else:
         _, wire = messages_to_anthropic_messages(history, supports_image_input=False, **options)
         assert wire == [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Question."},
-                    {"type": "text", "text": "Continue."},
-                ],
-            }
+            {"role": "user", "content": [{"type": "text", "text": "Question."}]},
+            {"role": "user", "content": [{"type": "text", "text": "Continue."}]},
         ]
     assert history[1].reasoning_content == "Unfinished thought."
 

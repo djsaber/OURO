@@ -380,10 +380,9 @@ def project_compacted_messages(
     covered_count = active.covered_message_count
     summary = MessageRecord.text(
         session_id=active.session_id,
-        role="system",
+        role="harness",
         text=active.summary,
         sequence=-1,
-        scaffold=True,
         semantic_tag="conversation-summary",
     ).model_copy(
         update={

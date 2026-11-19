@@ -82,8 +82,12 @@ from ouro.resources.media import (
 from ouro.resources.prepared import validate_prepared_resources
 from ouro.sessions import sqlite_resources
 from ouro.sessions.backends.sqlite.commits import SQLiteSessionCommits
+from ouro.sessions.backends.sqlite.messages import (
+    HISTORY_INDEXES,
+    read_result_references,
+    write_messages,
+)
 from ouro.sessions.backends.sqlite.messages import read_counts as read_message_counts
-from ouro.sessions.backends.sqlite.messages import read_result_references, write_messages
 from ouro.sessions.catalog import (
     SessionCatalogProjection,
     catalog_entry_from_projection,
@@ -134,7 +138,7 @@ from ouro.sessions.sqlite_runs import (
 from ouro.sessions.sqlite_sessions import read_session
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
-SQLITE_SCHEMA_VERSION = 28
+SQLITE_SCHEMA_VERSION = 30
 
 
 class SQLiteSessionStore:
@@ -234,7 +238,7 @@ class SQLiteSessionStore:
                         sequence INTEGER NOT NULL,
                         run_id TEXT,
                         input_origin TEXT,
-                        role TEXT NOT NULL,
+                        kind TEXT NOT NULL,
                         delegation_input_id TEXT,
                         resource_refs TEXT NOT NULL,
                         payload TEXT NOT NULL,
@@ -319,9 +323,6 @@ class SQLiteSessionStore:
                         FOREIGN KEY(session_id, input_id) REFERENCES inputs(session_id, input_id)
                             ON DELETE CASCADE
                     );
-                    CREATE INDEX IF NOT EXISTS messages_run_result_references
-                        ON messages(session_id, run_id, row_id, message_id, role,
-                                    delegation_input_id, resource_refs);
                     CREATE INDEX IF NOT EXISTS messages_sequence ON messages(session_id, sequence);
                     CREATE INDEX IF NOT EXISTS messages_session_order
                         ON messages(session_id, row_id);
@@ -429,23 +430,8 @@ class SQLiteSessionStore:
                         ON delegations(spawn_state);
                     CREATE INDEX IF NOT EXISTS delegations_delivery_status
                         ON delegations(delivery_status);
-                    CREATE INDEX IF NOT EXISTS messages_assistant_turn
-                        ON messages(session_id, run_id,
-                            json_extract(payload, '$.turn_id'), row_id)
-                        WHERE json_extract(payload, '$.role') = 'assistant';
-                    CREATE INDEX IF NOT EXISTS messages_context_delivery
-                        ON messages(session_id, run_id,
-                            json_extract(payload, '$.metadata.context_provider_delivery_key'),
-                            row_id)
-                        WHERE json_extract(payload, '$.metadata.context_provider_delivery_key')
-                            IS NOT NULL;
-                    CREATE INDEX IF NOT EXISTS messages_assistant_run
-                        ON messages(session_id, run_id, row_id)
-                        WHERE json_extract(payload, '$.role') = 'assistant';
-                    CREATE INDEX IF NOT EXISTS messages_input_history
-                        ON messages(session_id, row_id)
-                        WHERE json_extract(payload, '$.role') IN ('user', 'system');
                 """
+                + HISTORY_INDEXES
                 + INPUT_SCHEMA
                 + OBSERVATION_SCHEMA
                 + sqlite_resources.RESOURCE_SCHEMA
@@ -1491,8 +1477,7 @@ class SQLiteSessionStore:
             self._require_session(connection, session_id)
             return (
                 connection.execute(
-                    "SELECT 1 FROM messages WHERE session_id = ? "
-                    "AND json_extract(payload, '$.role') IN ('user', 'system') LIMIT 1",
+                    "SELECT 1 FROM messages WHERE session_id = ? AND kind = 'input' LIMIT 1",
                     (session_id,),
                 ).fetchone()
                 is not None
@@ -1504,7 +1489,7 @@ class SQLiteSessionStore:
             row = connection.execute(
                 "SELECT payload FROM messages WHERE session_id = ? "
                 "AND run_id = ? "
-                "AND json_extract(payload, '$.role') = 'assistant' ORDER BY row_id DESC LIMIT 1",
+                "AND kind = 'assistant_response' ORDER BY row_id DESC LIMIT 1",
                 (session_id, run_id),
             ).fetchone()
             return (
@@ -1522,7 +1507,7 @@ class SQLiteSessionStore:
                 "SELECT payload FROM messages WHERE session_id = ? "
                 "AND run_id = ? "
                 "AND json_extract(payload, '$.turn_id') = ? "
-                "AND json_extract(payload, '$.role') = 'assistant' "
+                "AND kind = 'assistant_response' "
                 "ORDER BY row_id DESC LIMIT 1",
                 (session_id, run_id, turn_id),
             ).fetchone()
@@ -1531,16 +1516,15 @@ class SQLiteSessionStore:
             )
 
     def find_context_provider_message(
-        self, session_id: str, run_id: str, delivery_key: str
+        self, session_id: str, delivery_key: str
     ) -> MessageRecord | None:
         with self.session_read(session_id) as connection:
             self._require_session(connection, session_id)
             row = connection.execute(
                 "SELECT payload FROM messages WHERE session_id = ? "
-                "AND run_id = ? "
                 "AND json_extract(payload, '$.metadata.context_provider_delivery_key') = ? "
                 "ORDER BY row_id DESC LIMIT 1",
-                (session_id, run_id, delivery_key),
+                (session_id, delivery_key),
             ).fetchone()
             return (
                 self._materialize_message(connection, row[0], "context provider delivery")
@@ -1736,8 +1720,6 @@ class SQLiteSessionStore:
             "(SELECT m.payload FROM messages m WHERE m.session_id = s.session_id "
             "AND CASE WHEN json_valid(m.payload) "
             "THEN json_extract(m.payload, '$.role') END IN ('user', 'assistant') "
-            "AND COALESCE(CASE WHEN json_valid(m.payload) "
-            "THEN json_extract(m.payload, '$.scaffold') END, 0) = 0 "
             "ORDER BY m.row_id DESC LIMIT 1), "
             "(SELECT r.payload FROM runs r WHERE r.session_id = s.session_id "
             "ORDER BY r.started_at DESC, r.run_id DESC LIMIT 1) "

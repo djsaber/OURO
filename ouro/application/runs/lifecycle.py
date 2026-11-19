@@ -236,36 +236,6 @@ class RunLifecycle:
                     )
                 )
 
-    def append_input_message(
-        self,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        prompt: str,
-        role: MessageRole,
-        scaffold: bool,
-        skill_activations: tuple[SkillActivationContent, ...] = (),
-        resource_refs: Iterable[str] = (),
-        metadata: dict[str, Any] | None = None,
-        semantic_tag: SemanticTag | None = None,
-        semantic_attributes: SemanticAttributes | None = None,
-    ) -> MessageRecord:
-        message = self.create_input_message(
-            session=session,
-            run=run,
-            prompt=prompt,
-            role=role,
-            scaffold=scaffold,
-            skill_activations=skill_activations,
-            sequence=0,
-            resource_refs=resource_refs,
-            metadata=metadata,
-            semantic_tag=semantic_tag,
-            semantic_attributes=semantic_attributes,
-        )
-        self._append_message(session=session, run=run, message=message)
-        return message
-
     def create_input_message(
         self,
         *,
@@ -273,7 +243,6 @@ class RunLifecycle:
         run: RunRecord,
         prompt: str,
         role: MessageRole,
-        scaffold: bool,
         skill_activations: tuple[SkillActivationContent, ...] = (),
         sequence: int,
         resource_refs: Iterable[str] = (),
@@ -301,7 +270,6 @@ class RunLifecycle:
             content=content,
             semantic_tag=semantic_tag,
             semantic_attributes=semantic_attributes or {},
-            scaffold=scaffold,
             resource_refs=unique_resource_refs,
             metadata=metadata or {},
         )
@@ -605,7 +573,6 @@ class RunLifecycle:
                     run_id=run.run_id,
                     turn_id=batch.turn_id,
                     role="tool_result",
-                    scaffold=batch.producer.kind == "driver",
                     content=[*result.content_blocks],
                     resource_refs=list(result.resource_refs),
                     tool_result=ToolResultReference(

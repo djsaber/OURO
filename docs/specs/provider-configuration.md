@@ -66,6 +66,8 @@ Endpoint 表示一个具体可调用模型：
 框架拥有完成事件校验、取消、用量归属及账本；插件报告实际响应事实，不能另行提交框架用量。
 请求异常和插件诊断使用本代次的凭证脱敏器。只有实际请求绑定的插件会收到该连接的 API key 和已解析 header。
 
+Endpoint 的 `supports_inline_system_messages` 声明对话内系统消息能力。Endpoint 编辑器和 CLI 的 `--inline-system-messages` 开关配置该字段。未声明能力的端点使用有序 user 消息承载框架通知。
+
 ## 输入模态契约
 
 Endpoint 用三个相互独立、默认为 `false` 的字段声明服务实际接受的对话输入：

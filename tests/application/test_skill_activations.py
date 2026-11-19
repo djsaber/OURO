@@ -378,7 +378,7 @@ async def test_multiple_skills_are_accepted_as_one_input_after_all_policies_allo
         result = await runtime.run("", skill_invocations=invocations)
         messages = runtime.store.load_session(result.session.session_id).messages
         inputs = [item for item in messages if item.role == "user"]
-        assert len(inputs) == 1 and not inputs[0].scaffold
+        assert len(inputs) == 1
         assert [item.name for item in inputs[0].skill_activations] == ["reviewer", "writer"]
         for name in ("reviewer", "writer"):
             assert provider.calls[0][-1].text_content.count(f"Instructions for {name}.") == 1
@@ -429,7 +429,7 @@ async def test_queued_skills_and_text_share_consumption_boundaries(
         await active
     snapshot = runtime.store.load_session(session.session_id)
     activated = [item for item in snapshot.messages if item.skill_activations]
-    assert len(activated) == 1 and not activated[0].scaffold
+    assert len(activated) == 1
     assert [item.instructions for item in activated[0].skill_activations] == originals
     expected_calls = 2 if consumption_mode == "all_at_once" else 3
     assert len(provider.calls) == expected_calls

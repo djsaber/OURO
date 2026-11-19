@@ -91,13 +91,13 @@ def test_default_reuse_keeps_dynamic_fragments_tools_and_budget_current():
         messages=[source],
         source_messages=[source],
         tools=[tool],
-        added_context=[ContextFragment(text="first dynamic")],
+        fixed_context=[ContextFragment(text="first dynamic")],
     )
     changed = dict(
         messages=[source],
         source_messages=[source],
         tools=[tool.model_copy(update={"description": "different capability " * 20})],
-        added_context=[ContextFragment(text="second dynamic " * 20)],
+        fixed_context=[ContextFragment(text="second dynamic " * 20)],
         system_prompt="new instructions",
         budget=ContextBudget(context_window=10000),
     )

@@ -11,7 +11,7 @@ from pydantic import TypeAdapter, ValidationError
 from ouro.core.message_semantics import validate_semantic_tag
 from ouro.core.session_controls import SessionInputRequest
 from ouro.plugins.tool_content import decode_worker_content
-from ouro.sdk.plugins import v5 as sdk
+from ouro.sdk.plugins import v6 as sdk
 
 _TOOL = TypeAdapter(sdk.ToolOutput)
 _CONTEXT = TypeAdapter(sdk.ContextOutput)
@@ -220,8 +220,6 @@ def _decode_worker_context(result: dict[str, Any], method: str) -> sdk.ContextOu
         if isinstance(fragment, dict):
             if not fragment["text"]:
                 raise WorkerProtocolError("worker context fragment text must not be empty")
-            if "scaffold" in fragment:
-                _worker_scaffold(fragment["scaffold"])
             if "semantic_tag" in fragment:
                 _worker_semantic_tag(fragment["semantic_tag"])
     return output
@@ -254,8 +252,6 @@ def _decode_worker_compaction(result: dict[str, Any], method: str) -> sdk.Compac
 
 
 def _decode_worker_continuation(result: dict[str, Any], method: str) -> sdk.ContinuationDecision:
-    if "scaffold" in result:
-        _worker_scaffold(result["scaffold"])
     if result.get("session_control_transitions"):
         result = {**result, "session_control_transitions": _worker_control_transitions(result)}
     decision = _decode(_CONTINUATION, result, method)
@@ -316,12 +312,6 @@ def _worker_control_transitions(result: dict[str, Any]) -> tuple[sdk.SessionCont
                 f"worker session control transition is invalid: {exc}"
             ) from exc
     return tuple(transitions)
-
-
-def _worker_scaffold(value: object) -> bool:
-    if not isinstance(value, bool):
-        raise WorkerProtocolError("worker message scaffold must be a boolean")
-    return value
 
 
 def _worker_semantic_tag(value: object) -> str | None:

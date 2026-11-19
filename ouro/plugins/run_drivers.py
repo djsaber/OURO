@@ -89,7 +89,6 @@ class SDKRunDriverContext:
                 message.message_id,
                 message.role,
                 tuple(block.model_dump(mode="json") for block in message.content),
-                message.scaffold,
                 message.semantic_tag,
                 message.model_dump(mode="json", include={"metadata"})["metadata"],
                 tuple(message.resource_refs),

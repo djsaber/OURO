@@ -24,7 +24,7 @@ from ouro.providers import FauxProvider
 from ouro.providers.anthropic_messages.codec import messages_to_anthropic_messages
 from ouro.providers.openai_chat_completions.codec import messages_to_chat_completions
 from ouro.providers.openai_responses.codec import responses_input
-from ouro.sdk.plugins import v5 as sdk
+from ouro.sdk.plugins import v6 as sdk
 from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import ToolRegistry
 
@@ -78,9 +78,8 @@ def test_system_information_is_tagged_prompt_tail_with_day_precision() -> None:
     assert len(output.fragments) == 1
     fragment = output.fragments[0]
     assert isinstance(fragment, sdk.ContextFragment)
-    assert fragment.target == "system_prompt"
-    assert fragment.role == "system"
-    assert fragment.persistence == "ephemeral"
+    assert fragment.target == "message"
+    assert fragment.role == "harness"
     assert fragment.semantic_tag == "ouro-system-information"
     assert fragment.text == (
         "System platform: Test OS <1>\n"
@@ -274,7 +273,7 @@ async def test_agent_instructions_keep_nested_discovery_contract_without_current
 
 
 @pytest.mark.asyncio
-async def test_default_builtin_injects_instructions_then_runtime_facts_without_persistence(
+async def test_default_builtin_prepares_instructions_and_records_runtime_facts(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -320,19 +319,19 @@ async def test_default_builtin_injects_instructions_then_runtime_facts_without_p
     prompt = system_prompts[0]
     assert "Always validate the final result." in prompt
     assert "Run the workspace tests." in prompt
-    assert prompt.index("<ouro-agent-instructions>") < prompt.index("<ouro-system-information>")
-    assert prompt.endswith("</ouro-system-information>")
-    assert f"Workspace: {workspace}" in prompt
+    assert prompt.endswith("</ouro-agent-instructions>")
     snapshot = store.load_session(result.session.session_id)
-    assert not any(
-        message.metadata.get("kind") == "context_provider" for message in snapshot.messages
-    )
+    fact = next(m for m in snapshot.messages if m.semantic_tag == "ouro-system-information")
+    assert fact.role == "harness" and f"Workspace: {workspace}" in fact.text_content
     assert context is not None
-    assert "<ouro-agent-instructions>" in context.provider_context.system_prompt
-    assert "<ouro-system-information>" in context.provider_context.system_prompt
     prepared = context.provider_context
-    assert [message.text_content for message in prepared.messages] == ["Inspect the environment"]
-    assert [message.role for message in prepared.messages] == ["user"]
+    question, facts = prepared.messages
+    assert question.text_content == "Inspect the environment"
+    assert (
+        facts.text_content
+        == f"<ouro-system-information>\n{fact.text_content}\n</ouro-system-information>"
+    )
+    dialogue = [{"role": "user", "content": m.text_content} for m in prepared.messages]
     arguments = {
         "system_prompt": prepared.system_prompt,
         "provider_id": "faux",
@@ -340,18 +339,19 @@ async def test_default_builtin_injects_instructions_then_runtime_facts_without_p
     }
     responses = responses_input(prepared.messages, scope=(), **arguments)
     assert responses["instructions"] == prompt
-    assert responses["input"] == [{"role": "user", "content": "Inspect the environment"}]
+    assert responses["input"] == dialogue
     chat = messages_to_chat_completions(prepared.messages, supports_image_input=False, **arguments)
-    assert chat == [
-        {"role": "system", "content": prompt},
-        {"role": "user", "content": "Inspect the environment"},
-    ]
+    assert chat == [{"role": "system", "content": prompt}, *dialogue]
     system, messages = messages_to_anthropic_messages(
         prepared.messages, supports_image_input=False, **arguments
     )
     assert system == prompt
     assert messages == [
-        {"role": "user", "content": [{"type": "text", "text": "Inspect the environment"}]}
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": part.text} for part in message.content],
+        }
+        for message in prepared.messages
     ]
 
 

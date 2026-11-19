@@ -91,6 +91,7 @@ def test_endpoint_media_flags_persist_and_update_independently(tmp_path, capsys)
                 "av",
                 "--audio-input",
                 "--video-input",
+                "--inline-system-messages",
                 "--no-image-input",
                 *common,
             ]
@@ -100,7 +101,8 @@ def test_endpoint_media_flags_persist_and_update_independently(tmp_path, capsys)
     capsys.readouterr()
     endpoint = facade.provider(provider_id).endpoints[0]
     assert (
-        endpoint.supports_audio_input
+        endpoint.supports_inline_system_messages
+        and endpoint.supports_audio_input
         and endpoint.supports_video_input
         and not endpoint.supports_image_input
     )
@@ -113,6 +115,7 @@ def test_endpoint_media_flags_persist_and_update_independently(tmp_path, capsys)
                 provider_id,
                 endpoint.endpoint_id,
                 "--no-audio-input",
+                "--no-inline-system-messages",
                 *common,
             ]
         )
@@ -121,6 +124,7 @@ def test_endpoint_media_flags_persist_and_update_independently(tmp_path, capsys)
     capsys.readouterr()
     updated = facade.provider(provider_id).endpoints[0]
     assert not updated.supports_audio_input and updated.supports_video_input
+    assert not updated.supports_inline_system_messages
 
 
 @pytest.mark.parametrize(

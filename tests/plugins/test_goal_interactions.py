@@ -78,8 +78,7 @@ def _assert_goal_model_messages(g):
     messages = g.runtime.store.load_session(g.session.session_id).messages
     envelopes = set()
     for message in messages:
-        if message.scaffold:
-            assert message.role == "user"
+        if message.role == "harness" and message.semantic_tag.startswith("goal-"):
             assert message.semantic_tag in {
                 "goal-create",
                 "goal-context",
@@ -125,7 +124,11 @@ def _assert_goal_model_messages(g):
             for envelope in envelopes:
                 count = sum(message.text_content == envelope for message in request)
                 assert user_text.count(envelope) == count
-            for tag in {message.semantic_tag for message in messages if message.scaffold}:
+            for tag in {
+                message.semantic_tag
+                for message in messages
+                if message.role == "harness" and message.semantic_tag.startswith("goal-")
+            }:
                 for delimiter in (f"<{tag}>", f"</{tag}>"):
                     assert user_text.count(delimiter) == sum(
                         projected.text_content.count(delimiter)
@@ -292,7 +295,7 @@ async def test_goal_creation_and_completion_preserve_the_provider_input_prefix(g
     messages = g.runtime.store.load_session(g.session.session_id).messages
     snapshots = [message for message in messages if message.semantic_tag == "goal-context"]
     assert snapshots
-    assert all(message.role == "user" and message.scaffold for message in snapshots)
+    assert all(message.role == "harness" for message in snapshots)
     assert len(snapshots) == 1
     assert "Status: complete" in g.provider.requests[-1][-1].text_content
     assert g.provider.requests[-1][-1].role == "tool_result"
@@ -339,7 +342,9 @@ async def test_goal_context_refreshes_when_resuming_a_context_blocked_round(goal
     assert g.provider.requests == []
     assert (await g.goal())["status"] == "paused"
     before = g.runtime.store.load_session(g.session.session_id).messages
-    assert "Status: active" in before[-1].text_content
+    assert "Status: active" in next(
+        m.text_content for m in reversed(before) if m.semantic_tag == "goal-context"
+    )
 
     g.runtime.adapter.model = model
     g.provider.responses.append("The goal is paused.")
@@ -350,8 +355,7 @@ async def test_goal_context_refreshes_when_resuming_a_context_blocked_round(goal
     messages = g.runtime.store.load_session(g.session.session_id).messages
     assert messages[: len(before)] == before
     assert messages[-2].semantic_tag == "goal-context"
-    assert messages[-2].role == "user"
-    assert messages[-2].scaffold is True
+    assert messages[-2].role == "harness"
     assert "Status: paused" in g.provider.requests[-1][-1].text_content
 
 
@@ -696,7 +700,10 @@ async def test_pause_during_model_request_discards_uncommitted_tool_calls(goal_a
     assert result.run.status == "aborted"
     assert g.executed_tools == []
     assert (await g.goal())["status"] == "paused"
-    assert "Status: active" in g.provider.requests[0][-1].text_content
+    assert any(
+        "<goal-context>" in m.text_content and "Status: active" in m.text_content
+        for m in g.provider.requests[0]
+    )
     assert len(g.provider.requests) == 1
     assert g.pending() == []
 
@@ -901,4 +908,42 @@ async def test_replacement_delivers_objective_once_and_only_notifies_changed_sta
     assert "<goal-context>" in messages[-1].text_content
     assert "Status: active" in messages[-1].text_content
     assert g.provider.requests[-1][-1].role == "tool_result"
+    _assert_provider_input_prefix(g.provider)
+
+
+async def test_command_resume_delivers_active_notice_after_tool_reported_block(goal_app):
+    g = goal_app
+    await g.command("Investigate")
+    g.provider.responses.extend(
+        [
+            ToolCallRequest(
+                id="block",
+                name="UpdateGoal",
+                arguments={"status": "blocked", "report": "Waiting for data."},
+            ),
+            "Waiting for data.",
+        ]
+    )
+    await g.consume()
+    assert (await g.goal())["status"] == "blocked"
+
+    resume = await g.submit("resume")
+    g.provider.responses.extend(
+        [
+            ToolCallRequest(
+                id="done",
+                name="UpdateGoal",
+                arguments={"status": "complete", "report": "Verified."},
+            ),
+            "Done.",
+        ]
+    )
+    results = [item async for item in consume_plugin_command(g.runtime, resume)]
+    assert results[-1].run.status == "completed"
+    notices = [
+        message for message in g.provider.requests[-2] if "<goal-context>" in message.text_content
+    ]
+    assert len(notices) == 2
+    assert notices[0].text_content == notices[1].text_content
+    assert g.provider.requests[-2][-1] == notices[-1]
     _assert_provider_input_prefix(g.provider)

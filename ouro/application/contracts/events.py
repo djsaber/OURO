@@ -176,6 +176,7 @@ def _event_category(event_type: str) -> RuntimeEventCategory:
         "user_message_added",
         "host_message_added",
         "plugin_message_added",
+        "context_message_added",
         "model_request_started",
         "model_message_completed",
         "model_response_committed",

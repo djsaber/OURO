@@ -108,7 +108,6 @@ def experiment(root, backend, count, active, repeat, input_history):
                 source="user",
                 mode="follow_up",
                 role="user",
-                scaffold=False,
                 semantic_tag=None,
             ),
         )

@@ -12,7 +12,7 @@ from ouro.sdk.plugins.interactions import (
     PlanConfirmationRequest,
     PlanOption,
 )
-from ouro.sdk.plugins.v5 import (
+from ouro.sdk.plugins.v6 import (
     CommandContribution,
     CommandOutput,
     ContextContribution,
@@ -58,8 +58,9 @@ EXIT_PLAN_MODE_DESCRIPTION = (
     "not approval actions."
 )
 
-_SCAFFOLD = """Plan mode is active. Investigate with read-only tools. Use Write or Edit only
-for the exact plan file below; no other file may be changed. Shell commands and other tools
+_PLAN_ENDED = "Plan mode ended. Other tool permissions still apply."
+_PLAN_INSTRUCTIONS = """Plan mode is active. Investigate with read-only tools. Use Write or Edit
+only for the exact plan file below; no other file may be changed. Shell commands and other tools
 that can make changes, or whose effects are unspecified, are unavailable in this mode.
 Tool approval does not override these restrictions.
 
@@ -183,12 +184,11 @@ class PlanPlugin:
             ],
             context_providers=[
                 ContextContribution(
-                    id="plan-scaffold",
+                    id="plan-context",
                     handler=self.plan_context,
                     priority=10,
                     timeout_seconds=5,
                     failure_mode="block",
-                    active_when="mode",
                 )
             ],
             tool_policies=[
@@ -272,7 +272,7 @@ class PlanPlugin:
         repository = PlanStateRepository(call.session_state)
         state = repository.load()
         return SessionControllerOutput(
-            output="Plan mode ended. Other tool permissions still apply.",
+            output=_PLAN_ENDED,
             data={
                 "phase": "inactive",
                 "plan_path": state.plan_path,
@@ -284,14 +284,12 @@ class PlanPlugin:
         state = repository.load()
         if state.plan_path is None:
             return ContextOutput()
-        scaffold = _SCAFFOLD.format(plan_path=state.plan_path)
         return ContextOutput(
             fragments=(
                 ContextFragment(
-                    text=scaffold,
-                    persistence="message",
-                    role="user",
-                    scaffold=True,
+                    text=_PLAN_INSTRUCTIONS.format(plan_path=state.plan_path)
+                    if repository.active
+                    else _PLAN_ENDED,
                     semantic_tag="plan-context",
                 ),
             )

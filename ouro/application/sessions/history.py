@@ -51,7 +51,7 @@ def _shares_history_frame(older: MessageRecord, newer: MessageRecord) -> bool:
     batch = older.metadata.get("session_input_batch_id")
     if batch is not None and batch == newer.metadata.get("session_input_batch_id"):
         return True
-    return older.role == "user" and newer.turn_id is not None
+    return older.turn_id is None and older.role in {"user", "harness"} and newer.turn_id is not None
 
 
 def branch_input_boundary(

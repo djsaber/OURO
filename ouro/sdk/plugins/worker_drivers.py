@@ -55,7 +55,6 @@ class WorkerRunPorts:
                 item["message_id"],
                 item["role"],
                 tuple(item["content"]),
-                item["scaffold"],
                 item["semantic_tag"],
                 item["metadata"],
                 tuple(item["resource_refs"]),

@@ -34,7 +34,7 @@ async def test_input_is_atomic_and_snapshot_keeps_its_projection(tmp_path, backe
     assert result.run.status == "completed"
     messages = runtime.store.load_session(session.session_id).messages
     receipt, user = messages[:2]
-    assert receipt.scaffold and receipt.semantic_tag == "attachments"
+    assert receipt.role == "harness" and receipt.semantic_tag == "attachments"
     assert receipt.resource_refs == [resource.resource_id]
     assert user.text_content == "read this" and not user.resource_refs
     assert user.input_attachments == (item,)
@@ -213,7 +213,7 @@ async def test_preview_preserves_supported_unicode_encodings(tmp_path, encoding)
     await app.close()
 
 
-async def test_shared_attachment_budget_prioritizes_latest_material_and_retains_references(
+async def test_shared_attachment_budget_preserves_presented_prefix_and_later_references(
     tmp_path,
 ):
     app = application_at(tmp_path)
@@ -230,12 +230,21 @@ async def test_shared_attachment_budget_prioritizes_latest_material_and_retains_
     projected = runtime.resources.project_model_messages(
         messages, input_modalities=frozenset(), input_budget_tokens=16000
     )
-    assert "full text" in projected[-1].text_content
-    assert "2" * 3000 in projected[-1].text_content
-    for original, earlier in zip(messages[:-1], projected[:-1], strict=True):
-        assert earlier.resource_refs == original.resource_refs
-        assert "too much text to include at once" in earlier.text_content
-        assert "full text" not in earlier.text_content
+    previous = runtime.resources.project_model_messages(
+        messages[:1], input_modalities=frozenset(), input_budget_tokens=16000
+    )
+    assert projected[:1] == previous
+    assert "full text" in projected[0].text_content
+    assert "0" * 3000 in projected[0].text_content
+    for index, later in enumerate(projected[1:], start=1):
+        assert later.semantic_tag == "attachments"
+        assert f'File: "{index}.txt"' in later.text_content
+        assert "too much text to include at once" in later.text_content
+    repeated = runtime.resources.project_model_messages(
+        [*messages, messages[0]], input_modalities=frozenset(), input_budget_tokens=16000
+    )
+    assert repeated[:-1] == projected
+    assert "earlier file entry" in repeated[-1].text_content
     assert not any(message.text_content for message in messages)
     await app.close()
 

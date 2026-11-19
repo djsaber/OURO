@@ -84,7 +84,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
     collapse_traces: bool,
 ) -> None:
     TuiPreferencesStore(tmp_path).save(
-        TuiPreferences(collapse_traces=collapse_traces, show_scaffold_messages=True)
+        TuiPreferences(collapse_traces=collapse_traces, show_harness_messages=True)
     )
     provider = MultiChildStreamingProvider()
     application = _multi_child_streaming_application(tmp_path, provider)
@@ -208,7 +208,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         assert composer.text == ""
         assert app._input_drafts.draft_for(root_session_id) == "pending root draft"
         assert any(
-            entry.kind == "scaffold" and entry.text == "first child task"
+            entry.kind == "harness" and entry.text == "first child task"
             for entry in app.query_one(ConversationHistory).entries
         )
 
@@ -425,21 +425,19 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enabled", [False, True])
-async def test_child_communication_uses_shared_scaffold_visibility(tmp_path: Path, enabled: bool):
+async def test_child_communication_uses_shared_harness_visibility(tmp_path: Path, enabled: bool):
     app = OuroTuiApp(application=_application(tmp_path))
     delegated = MessageRecord(
         session_id="ses_child",
-        role="user",
+        role="harness",
         content=[TextContent(text="Inspect the delegated target")],
-        scaffold=True,
         semantic_tag="subagent-task",
         metadata={"session_input_source": "delegation", "delegation_id": "dlg_child"},
     )
     follow_up = MessageRecord(
         session_id="ses_child",
-        role="user",
+        role="harness",
         content=[TextContent(text="Check one more file")],
-        scaffold=True,
         semantic_tag="subagent-message",
         metadata={
             "session_input_source": "host",
@@ -448,13 +446,13 @@ async def test_child_communication_uses_shared_scaffold_visibility(tmp_path: Pat
     )
 
     async with run_ready_app(app):
-        await app._set_scaffold_messages(enabled)
+        await app._set_harness_messages(enabled)
         conversation = app.query_one(ConversationView)
         await conversation.load_messages((delegated,))
-        await conversation.add_user_message(follow_up)
+        await conversation.add_input_message(follow_up)
         history = conversation.query_one(ConversationHistory)
         expected = (
-            [("scaffold", delegated.text_content), ("scaffold", follow_up.text_content)]
+            [("harness", delegated.text_content), ("harness", follow_up.text_content)]
             if enabled
             else []
         )

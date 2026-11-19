@@ -1330,7 +1330,7 @@ class LocalSessionStore:
             )
             if found is None:
                 return False
-            if found.role not in {"user", "system"}:
+            if found.kind != "input":
                 raise PersistenceError("input history lookup has a non-input message")
             return True
 
@@ -1342,7 +1342,7 @@ class LocalSessionStore:
             )
             if found is None:
                 return None
-            if found.run_id != run_id or found.role != "assistant":
+            if found.run_id != run_id or found.kind != "assistant_response":
                 raise PersistenceError("assistant lookup has a foreign message")
             return self._messages.resolve(
                 reader.connection(), directory, found, session_id=session_id
@@ -1352,26 +1352,26 @@ class LocalSessionStore:
         self, session_id: str, run_id: str, turn_id: str
     ) -> MessageRecord | None:
         with self.session_read(session_id) as reader:
-            return self._messages.run_message(
+            return self._messages.assistant_turn(
                 reader.connection(),
                 self._require_session_dir(session_id),
                 session_id=session_id,
                 run_id=run_id,
-                kind="assistant_turns",
                 identity=turn_id,
             )
 
     def find_context_provider_message(
-        self, session_id: str, run_id: str, delivery_key: str
+        self, session_id: str, delivery_key: str
     ) -> MessageRecord | None:
         with self.session_read(session_id) as reader:
-            return self._messages.run_message(
-                reader.connection(),
-                self._require_session_dir(session_id),
-                session_id=session_id,
-                run_id=run_id,
-                kind="context_deliveries",
-                identity=delivery_key,
+            connection = reader.connection()
+            reference = self._messages.index.last_reference(
+                connection, "context_deliveries", delivery_key
+            )
+            if reference is None:
+                return None
+            return self._messages.resolve(
+                connection, self._require_session_dir(session_id), reference, session_id=session_id
             )
 
     def find_queued_input_message(self, session_id: str, queue_id: str) -> MessageRecord | None:

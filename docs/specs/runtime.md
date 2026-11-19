@@ -107,7 +107,7 @@ SDK `context.inputs.consume()` 允许算法显式声明一个安全决策边界�
 
 工具批次、调用与 canonical 结果记录 `producer`。模型批次绑定真实 assistant 消息；程序化批次记录 Driver 身份，
 不创建 assistant tool call、不增加模型计数。两种来源共用原生 preflight、权限、审批、执行和恢复链路。
-Provider 边界将程序化结果投影为 `driver-tool-result` 用户角色输入。标签属性 `tool_name`、`tool_call_id`
+Provider 边界将程序化结果呈现为带 `driver-tool-result` 标签的 `harness` 通知。标签属性 `tool_name`、`tool_call_id`
 和 `is_error` 标明调用及错误状态。正文按协议能力呈现工具内容和媒体。程序化结果可独立参与上下文与压缩。
 
 Agent 端口将类型化的 spawn、send、interrupt 请求交给原生工具边界，复用 Agent catalog、Delegation、子 Session
@@ -169,15 +169,9 @@ application 用例负责取得 mutation lock 并准备业务字段。预留与�
 
 ### Message 与 model turn
 
-- `MessageRole` 是封闭枚举：`system | user | assistant | tool_result`，只表达模型看到的上下文身份。
-- `scaffold: bool` 只表达消息是否由 Harness 有意构造并注入；它与 role 正交，四种 role 都可以是或不是
-  scaffold。
-- 脚手架输入、Context Fragment 与续跑决策的默认 role 为 `user`；显式 role 原样传递，持久消息按已保存的角色读取。
-- `semantic_tag` 是可选模型可见语义标记；它与 role、scaffold 和 producer provenance 都正交。只有提供方显式
-  声明标签时，统一 renderer 才形成语义包络。`semantic_attributes` 是该标签的字符串属性。
-  模型请求在起始标签中编码属性值，canonical 正文保留原文。
-- 消息提供方必须显式定义 role、scaffold 和 semantic tag；Core、队列、Store 和 Provider adapter 只校验并传递，
-  不根据来源、role、标签或正文猜测、补全或改写其他维度。
+- `MessageRole` 包含 `system`、`user`、`assistant`、`tool_result` 和 `harness`。框架通知使用 `harness`，用户原文与工具结果使用各自的原生角色。
+- Host 及插件输入、Context Fragment 与续跑决策的默认角色为 `harness`。持久消息保留角色、生产来源和可选的 `semantic_tag` 与 `semantic_attributes`。
+- 请求构建时，标签及属性形成一次语义包络。支持 `supports_inline_system_messages` 的端点原位接收 `system`，其他端点原位接收 `user`。基础系统指令通过独立的 system prompt 提供。
 - 用户、assistant、Harness 和工具结果消息都可以属于 canonical history。
 - assistant 工具请求写入类型化 `tool_calls`。
 - 工具消息保存固定 Call/Outcome 引用；执行与查询显式物化类型化 `tool_result`，结果正文由 Outcome 拥有。
@@ -197,7 +191,7 @@ application 用例负责取得 mutation lock 并准备业务字段。预留与�
    将已写前缀固化为 partial；不读取旧模型事件或把工具参数片段当成可执行调用。
 3. 取得 session run lock；锁竞争失败时返回 active Run 或明确的 `SessionBusyError`。
 4. `RunLifecycle.start` 持久化 active Session/Run。
-5. 输入消息按提供方给出的 role、scaffold、semantic tag 和 provenance 原样持久化并产生事件。
+5. 输入消息按提供方给出的 role、semantic tag 和 provenance 原样持久化并产生事件。
 6. `InnerAgentLoop` 通过 `RunModelRequests` 请求模型。宿主复用已加载的 canonical messages 准备上下文，
    检查预算、提交请求计数并调用 request-local `RuntimeAdapter`；正常模型轮次不得重新加载完整 Session 历史。
 7. 模型文本和 reasoning 先追加当前 Draft，再通知观察者；工具参数片段只作实时观察。
@@ -301,7 +295,7 @@ Session 继续的整体前提。持久 ToolInvocation、控制 activation 和 De
   工具名和原始参数；整批调用不执行，原生 continuation 不进入上下文。身份错误、传输错误和输出截断不属于参数纠错。
 - Native Driver 的模型请求边界最多自动纠正两次连续参数错误，普通会话、子智能体和插件 Driver 共用此路径。
   每次尝试重新经过正常请求准备、预算、计费和取消边界，具有独立 turn/request 身份；不在 Provider 内重试生成。
-- 纠错通过一次 SessionCommit 关闭失败请求、清理 Draft，并追加 `role=user`、`scaffold=true`、
+- 纠错通过一次 SessionCommit 关闭失败请求、清理 Draft，并追加 `role=harness`、
   `semantic_tag=model-output-correction` 的消息。消息明确整批未执行，包含首个错误及最多 1024 字符的参数片段，
   要求重新生成完整调用。错误参数不被修复，也不伪装成 assistant 调用或 tool 结果。
 - 纠错消息持久保留，成功后不删除；既有历史消息不修改。失败正文、推理和首个非法调用的诊断保存在该消息 metadata，
@@ -328,7 +322,7 @@ Session 继续的整体前提。持久 ToolInvocation、控制 activation 和 De
 ## 排队输入
 
 输入接受写入独立 `InputRecord`，Session 的 `pending_input_ids` 保存 FIFO 身份。每项完整保存 `source` provenance、`role`、
-`scaffold`、可选 `semantic_tag` 及其属性和交付模式。带属性的输入可以使用空正文表达状态。
+可选 `semantic_tag` 及其属性和交付模式。带属性的输入可以使用空正文表达状态。
 输入提供方分别声明这些字段。队列按交付模式消费输入。
 
 - `follow_up`：当前 Run 完整结束后交付，每次消费创建一个后续 Run；
@@ -344,7 +338,7 @@ Session 继续的整体前提。持久 ToolInvocation、控制 activation 和 De
 - `host`：OURO Host/Application 产生的输入，必须携带稳定 `host_source_id`；
 - `plugin`：插件产生的输入，必须携带完整 plugin/contribution/generation/contract provenance；
 - `delegation`：只允许专用 `DelegatedTaskInput` 启动已准备好的 child Run，必须携带 `delegation_id`，
-  该提供方显式声明 `role=user, scaffold=true`。
+  该提供方显式声明 `role=harness`。
 
 `InputRecord.source` 标识每条输入的生产者，`Run.origin` 标识本次运行的启动方式。直接执行用户输入并启动
 新 Run 时记为 `origin=user`。调度器消费纯用户输入批次时记为 `origin=follow_up`，首次消费也遵循这条规则。
@@ -410,7 +404,7 @@ SessionStore 定点恢复；Host 的历史展示读取不触发恢复，进程�
 
 普通交互输入使用 `UserInputRequest` 和 `submit_user_input`：先校验并持久化输入，再复用既有队列调度消费。
 受理不等待 execution permit；活动 Session 的追加输入交由现有执行者按队列策略消费。输入保持 `source=user`、
-`role=user`、`scaffold=False`，模型、推理、workspace、权限/交互模式、附件、资源引用、技能及队列模式保留原有语义。
+`role=user`，模型、推理、workspace、权限/交互模式、附件、资源引用、技能及队列模式保留原有语义。
 已有空闲会话的审批与交互模式选项随输入受理原子提交；直接运行时随首次输入与 Run 启动提交。
 Prompt Policy 拒绝或受理提交失败时，不改变这两项模式。提交时重读会话，活动会话不接受随输入改变模式；
 相同模式的追加输入沿用现有队列规则。独立的会话设置命令具有自己的提交边界。

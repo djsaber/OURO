@@ -5,7 +5,7 @@ import os
 import sqlite3
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import BinaryIO, Literal
+from typing import BinaryIO
 
 from ouro.core.errors import PersistenceError
 from ouro.core.message_content import decode_message_content, materialize_owned_message
@@ -202,7 +202,7 @@ class FileMessageRecords:
         references = self.index.selected(connection, "runs", run_id)
         return collect_run_result_references(
             (
-                (item.message_id, item.role, item.delegation_input_id, item.resource_refs)
+                (item.message_id, item.kind, item.delegation_input_id, item.resource_refs)
                 for item in references
             ),
             delegation_id=delegation_id,
@@ -218,25 +218,21 @@ class FileMessageRecords:
             raise PersistenceError("input message lookup has a foreign identity")
         return self.resolve(connection, directory, reference, session_id=session_id)
 
-    def run_message(
+    def assistant_turn(
         self,
         connection: sqlite3.Connection,
         directory: Path,
         *,
         session_id: str,
         run_id: str,
-        kind: Literal["assistant_turns", "context_deliveries"],
         identity: str,
     ) -> MessageRecord | None:
-        reference = self.index.last_reference(connection, kind, _run_key(run_id, identity))
+        reference = self.index.last_reference(
+            connection, "assistant_turns", _run_key(run_id, identity)
+        )
         if reference is None:
             return None
-        selected = (
-            reference.assistant_turn_id
-            if kind == "assistant_turns"
-            else reference.context_delivery_key
-        )
-        if reference.run_id != run_id or selected != identity:
+        if reference.run_id != run_id or reference.assistant_turn_id != identity:
             raise PersistenceError("Run message lookup has a foreign identity")
         return self.resolve(connection, directory, reference, session_id=session_id)
 

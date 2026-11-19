@@ -200,7 +200,7 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         hovered = self._hovered_entry
         if hovered is not None and self._entry_at_row(source_y) == hovered:
             kind = self._entries[hovered].kind
-            if kind in {"assistant", "user", "scaffold", "command"}:
+            if kind in {"assistant", "user", "harness", "command"}:
                 line = _highlight_message_row(
                     line, reasoning=kind == "assistant", theme=theme_for(self)
                 )
@@ -267,7 +267,7 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         if entry_index is None:
             return
         entry = self._entries[entry_index]
-        if entry.kind not in {"user", "scaffold", "command"}:
+        if entry.kind not in {"user", "harness", "command"}:
             return
         event.prevent_default()
         event.stop()
@@ -1172,7 +1172,7 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         """Find terminal text suffixes at completed Run boundaries.
 
         Markdown blocks and thinking in the final response stay together.
-        Earlier assistant output and tools form the trace; user/scaffold/notice
+        Earlier assistant output and tools form the trace; user/harness/notice
         entries are never swallowed. A tool or thinking-only ending has no reply.
         """
         previous = self._trace_run_by_entry

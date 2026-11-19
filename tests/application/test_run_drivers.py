@@ -522,7 +522,7 @@ async def test_programmatic_tool_wait_preserves_driver_provenance_without_model_
         history = store.load_session(result.session.session_id)
         receipt = next(item for item in history.messages if item.tool_result is not None)
         assert receipt.tool_result.producer == batch.producer
-        assert receipt.scaffold
+        assert receipt.role == "tool_result"
         projected, excluded = project_tool_exchanges(history.messages)
         assert excluded == ()
         view = ContextBuilder().build(messages=projected, tools=[])

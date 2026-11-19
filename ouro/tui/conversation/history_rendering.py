@@ -85,7 +85,7 @@ def _reasoning_label_text(
 
 @dataclass(frozen=True)
 class _MessageContent:
-    """Share a literal text frame across user, scaffold and command messages."""
+    """Share a literal text frame across user, harness and command messages."""
 
     text: str
     theme: TuiTheme
@@ -586,7 +586,7 @@ def _entry_renderables(
 
     entry = request.entry
     theme = request.theme
-    if entry.kind in {"user", "scaffold", "command"}:
+    if entry.kind in {"user", "harness", "command"}:
         return [
             (
                 Padding(
@@ -594,7 +594,7 @@ def _entry_renderables(
                         entry.text,
                         theme,
                         created_at=entry.created_at,
-                        lowlight=entry.scaffold or entry.kind in {"scaffold", "command"},
+                        lowlight=entry.kind in {"harness", "command"},
                         reference_start=entry.reference_start,
                     ),
                     (1, 0, 1, 0),

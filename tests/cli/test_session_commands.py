@@ -156,12 +156,15 @@ def test_session_context_reports_latest_request_status_and_provider_content(
         == 0
     )
     content_payload = json.loads(capsys.readouterr().out)
-    assert "<ouro-system-information>" in content_payload["provider_context"]["system_prompt"]
+    assert "<ouro-system-information>" not in content_payload["provider_context"]["system_prompt"]
     assert content_payload["provider_context"]["messages"][0]["role"] == "user"
     assert content_payload["provider_context"]["messages"][0]["content"][0]["text"] == (
         "hello context"
     )
-    assert len(content_payload["provider_context"]["messages"]) == 1
+    assert len(content_payload["provider_context"]["messages"]) == 2
+    assert content_payload["provider_context"]["messages"][1]["content"][0]["text"].startswith(
+        "<ouro-system-information>"
+    )
     assert "message_id" not in content_payload["provider_context"]["messages"][0]
     assert "context_digest" not in content_payload
 
@@ -349,41 +352,24 @@ def test_session_message_command_exposes_page_cursor(tmp_path, capsys) -> None:
     run_payload = json.loads(capsys.readouterr().out)
     assert run_code == 0
 
-    first_code = main(
-        [
-            "session",
-            "messages",
-            run_payload["session_id"],
-            "--home",
-            str(tmp_path),
-            "--limit",
-            "1",
-            "--json",
-        ]
-    )
-    first = json.loads(capsys.readouterr().out)
-    assert first_code == 0
-    assert len(first["messages"]) == 1
-    assert first["next_cursor"] is not None
-
-    second_code = main(
-        [
-            "session",
-            "messages",
-            run_payload["session_id"],
-            "--home",
-            str(tmp_path),
-            "--cursor",
-            str(first["next_cursor"]),
-            "--limit",
-            "1",
-            "--json",
-        ]
-    )
-    second = json.loads(capsys.readouterr().out)
-    assert second_code == 0
-    assert len(second["messages"]) == 1
-    assert second["next_cursor"] is None
+    command = [
+        "session",
+        "messages",
+        run_payload["session_id"],
+        "--home",
+        str(tmp_path),
+        "--limit",
+        "1",
+        "--json",
+    ]
+    cursor = None
+    for role in ("user", "harness", "assistant"):
+        args = [*command, "--cursor", str(cursor)] if cursor is not None else command
+        assert main(args) == 0
+        page = json.loads(capsys.readouterr().out)
+        assert [message["role"] for message in page["messages"]] == [role]
+        cursor = page["next_cursor"]
+        assert (cursor is None) == (role == "assistant")
 
 
 class _DummyProvider:

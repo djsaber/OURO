@@ -40,12 +40,16 @@ def test_run_lookups_preserve_scope_latest_value_and_withdrawal(store):
     ]
     store.create_session_snapshot(session, values[:2])
     store.append_messages(values[2:])
-    assert (
-        store.find_context_provider_message(session.session_id, "run_a", "shared/key").text_content
-        == "new state"
+    example = message(
+        session.session_id, "run_b", "example answer", turn_id="shared/turn", delivery="example/key"
     )
+    example.resource_refs = ["resource_input_only"]
+    store.append_message(example)
+    result = store.load_run_result_references(session.session_id, "run_b", delegation_id="job")
+    assert result.result_message_id == values[3].message_id
+    assert result.resource_refs == ()
     assert (
-        store.find_context_provider_message(session.session_id, "run_b", "shared/key").text_content
+        store.find_context_provider_message(session.session_id, "shared/key").text_content
         == "foreign state"
     )
     assert (
@@ -68,13 +72,13 @@ def test_run_lookups_preserve_scope_latest_value_and_withdrawal(store):
     store.truncate_messages(
         session.session_id,
         before_message_id=values[2].message_id,
-        expected_last_message_id=values[-1].message_id,
+        expected_last_message_id=example.message_id,
     )
     assert (
-        store.find_context_provider_message(session.session_id, "run_a", "shared/key").text_content
+        store.find_context_provider_message(session.session_id, "shared/key").text_content
         == "first state"
     )
-    assert store.find_context_provider_message(session.session_id, "run_b", "shared/key") is None
+    assert store.find_context_provider_message(session.session_id, "missing/key") is None
     assert store.find_assistant_message(session.session_id, "run_b", "shared/turn") is None
     assert store.find_last_assistant_message(session.session_id, "run_b") is None
     assert (
@@ -102,7 +106,7 @@ def test_run_lookup_work_does_not_expand_unrelated_message_bodies(store, monkeyp
             return selected
 
         monkeypatch.setattr(store._messages, "entry", counted)
-        found = store.find_context_provider_message(session.session_id, "run_a", "delivery")
+        found = store.find_context_provider_message(session.session_id, "delivery")
         assistant = store.find_assistant_message(session.session_id, "run_a", "turn_0")
         assert reads == [target.message_id, history[0].message_id]
     else:
@@ -116,7 +120,7 @@ def test_run_lookup_work_does_not_expand_unrelated_message_bodies(store, monkeyp
         with store.session_read(session.session_id) as connection:
             connection.set_progress_handler(progress, 1)
             try:
-                found = store.find_context_provider_message(session.session_id, "run_a", "delivery")
+                found = store.find_context_provider_message(session.session_id, "delivery")
                 assistant = store.find_assistant_message(session.session_id, "run_a", "turn_0")
             finally:
                 connection.set_progress_handler(None, 0)
@@ -130,7 +134,7 @@ def test_run_lookup_work_does_not_expand_unrelated_message_bodies(store, monkeyp
 
 
 @pytest.mark.parametrize("history_size", [32, 2048])
-@pytest.mark.parametrize("input_role", [None, "user", "system"])
+@pytest.mark.parametrize("input_role", [None, "user", "system", "harness", "assistant"])
 def test_result_and_input_membership_read_only_selected_metadata(
     store, monkeypatch, history_size, input_role
 ):
@@ -140,9 +144,9 @@ def test_result_and_input_membership_read_only_selected_metadata(
         for index in range(history_size)
     ]
     if input_role:
-        history.insert(
-            0, MessageRecord.text(session_id=session.session_id, role=input_role, text="input")
-        )
+        item = MessageRecord.text(session_id=session.session_id, role=input_role, text="input")
+        item.metadata["context_provider_delivery_key"] = "provider/input"
+        history.insert(0, item)
     store.create_session_snapshot(session, history)
 
     def query():

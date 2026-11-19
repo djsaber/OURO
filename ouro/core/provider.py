@@ -42,6 +42,7 @@ class ModelMetadata(OuroModel):
     supports_image_input: bool = False
     supports_audio_input: bool = False
     supports_video_input: bool = False
+    supports_inline_system_messages: bool = False
     supports_streaming: bool = True
     supports_structured_output: bool = False
     reasoning: ReasoningCapability = Field(default_factory=ReasoningCapability)

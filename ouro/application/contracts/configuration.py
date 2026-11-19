@@ -79,6 +79,7 @@ class ProviderEndpointView(ApplicationDTO):
     supports_image_input: bool
     supports_audio_input: bool
     supports_video_input: bool
+    supports_inline_system_messages: bool
     supports_streaming: bool
     supports_structured_output: bool
     reasoning_text_field: Literal["reasoning_content", "reasoning"] | None = None

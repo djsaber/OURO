@@ -70,20 +70,12 @@ def test_default_driver_uses_the_native_checkpoint_contract():
 
 
 @pytest.mark.parametrize(
-    ("record_type", "schema", "current"),
-    [
-        (RunRecord, 2, 11),
-        (RunRecord, 3, 11),
-        (RunRecord, 4, 11),
-        (RunRecord, 5, 11),
-        (MessageRecord, 2, 8),
-        (MessageRecord, 3, 8),
-        (MessageRecord, 4, 8),
-    ],
+    ("record_type", "schema"),
+    [(RunRecord, version) for version in (2, 3, 4, 5, 11)]
+    + [(MessageRecord, version) for version in (2, 3, 4, 8)],
 )
-def test_decoder_rejects_records_without_current_driver_provenance_schema(
-    record_type, schema, current
-):
+def test_decoder_rejects_records_without_current_driver_provenance_schema(record_type, schema):
+    current = record_type.model_fields["schema_version"].default
     with pytest.raises(UnsupportedDataVersionError, match=f"expected {current}"):
         decode_versioned_record_json(
             record_type,

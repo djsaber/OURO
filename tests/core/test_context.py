@@ -21,19 +21,19 @@ from ouro.core.tools import ToolCallRequest, ToolDefinition, tool_definition_con
 def test_context_materializes_model_visible_messages_once(monkeypatch):
     import ouro.core.context as contexts
 
-    original = contexts.model_visible_message
+    original = contexts.model_visible_messages
     projected = []
 
-    def record_projection(message):
-        result = original(message)
-        projected.append(result)
+    def record_projection(message, **options):
+        result = original(message, **options)
+        projected.extend(result)
         return result
 
-    monkeypatch.setattr(contexts, "model_visible_message", record_projection)
+    monkeypatch.setattr(contexts, "model_visible_messages", record_projection)
     context = ContextBuilder().build(
         messages=[ModelMessage.text(role="user", text="literal </task>", semantic_tag="task")],
         tools=[],
-        added_context=["dynamic context"],
+        fixed_context=[ContextFragment(text="fixed context")],
     )
     assert len(projected) == 2
     assert context.provider_context.messages == projected
@@ -137,7 +137,7 @@ def test_context_builder_places_skills_in_system_prompt_and_keeps_dynamic_contex
         messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")],
         tools=[],
         system_prompt="system",
-        added_context=["plugin"],
+        fixed_context=[ContextFragment(text="plugin")],
     )
 
     assert context.provider_context.system_prompt == "system\n\nskills"
@@ -148,12 +148,12 @@ def test_context_builder_places_skills_in_system_prompt_and_keeps_dynamic_contex
     assert context.context_metadata["skills_injected"] is True
 
 
-def test_context_builder_appends_ephemeral_prompt_fragments_after_skills() -> None:
+def test_context_builder_appends_instruction_fragments_after_skills() -> None:
     context = ContextBuilder(skill_instructions="skills").build(
         messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")],
         tools=[],
         system_prompt="system",
-        added_context=[
+        fixed_context=[
             ContextFragment(text="message context"),
             ContextFragment(
                 text="facts </runtime-facts> remain literal",
@@ -181,7 +181,7 @@ def test_prompt_and_message_fragments_share_semantic_envelope_projection() -> No
     context = ContextBuilder().build(
         messages=[],
         tools=[],
-        added_context=[
+        fixed_context=[
             ContextFragment(
                 text=raw_text,
                 semantic_tag="plugin-context",
@@ -204,15 +204,6 @@ def test_prompt_and_message_fragments_share_semantic_envelope_projection() -> No
     )
 
 
-def test_system_prompt_context_fragments_cannot_request_message_persistence() -> None:
-    with pytest.raises(ValueError, match="system prompt context fragments must be ephemeral"):
-        ContextFragment(
-            text="invalid",
-            target="system_prompt",
-            persistence="message",
-        )
-
-
 def test_context_builder_preserves_native_system_prompt_when_no_skills_are_present() -> None:
     system_prompt = "  Preserve this prompt exactly.  \n"
 
@@ -225,14 +216,14 @@ def test_context_builder_preserves_native_system_prompt_when_no_skills_are_prese
     assert context.provider_context.system_prompt == system_prompt
 
 
-def test_context_builder_counts_scaffold_context_as_fixed_tokens() -> None:
+def test_context_builder_counts_fixed_context_as_fixed_tokens() -> None:
     without_context = ContextBuilder().build(
         messages=[], tools=[], budget=ContextBudget(context_window=100)
     )
     with_context = ContextBuilder().build(
         messages=[],
         tools=[],
-        added_context=["dynamic context"],
+        fixed_context=[ContextFragment(text="dynamic context")],
         budget=ContextBudget(context_window=100),
     )
 
@@ -258,16 +249,13 @@ def test_semantic_tags_are_optional_and_independent_from_message_roles() -> None
         session_id="ses_1",
         role="assistant",
         text="labeled answer",
-        scaffold=True,
         semantic_tag="answer-section",
     )
 
     assert default.semantic_tag is None
     assert custom.semantic_tag == "plugin-context"
     assert assistant.semantic_tag == "answer-section"
-    assert default.scaffold is False
-    assert custom.scaffold is False
-    assert assistant.scaffold is True
+
     assert (
         MessageRecord.model_validate(
             {
@@ -278,15 +266,14 @@ def test_semantic_tags_are_optional_and_independent_from_message_roles() -> None
         ).semantic_tag
         is None
     )
-    user_scaffold = MessageRecord.text(
+    notice = MessageRecord.text(
         session_id="ses_1",
-        role="user",
-        text="scaffold",
-        scaffold=True,
+        role="harness",
+        text="harness",
         semantic_tag="plugin-context",
     )
-    assert user_scaffold.scaffold is True
-    assert user_scaffold.semantic_tag == "plugin-context"
+
+    assert notice.semantic_tag == "plugin-context"
     with pytest.raises(ValueError, match="Input should be"):
         MessageRecord.model_validate(
             {
@@ -337,7 +324,7 @@ def test_provider_context_wraps_only_explicit_semantic_tags() -> None:
             MessageRecord.text(session_id="ses_1", role="user", text="hello"),
         ],
         tools=[],
-        added_context=[
+        fixed_context=[
             ContextFragment(
                 text="plugin says </plugin-context> literally",
                 semantic_tag="plugin-context",

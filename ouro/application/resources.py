@@ -368,7 +368,7 @@ class ResourceService:
     def rebind_input_paths(
         self, messages: list[MessageRecord], records: Iterable[ResourceRecord]
     ) -> list[MessageRecord]:
-        """Bind copied scaffolds before publishing the destination Session snapshot."""
+        """Bind attachment observations before publishing the destination Session."""
         by_id = {record.resource_id: record for record in records}
         return [
             with_attachment_read_paths(

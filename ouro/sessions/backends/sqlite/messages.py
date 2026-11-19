@@ -17,6 +17,25 @@ from ouro.core.message_statistics import (
 )
 from ouro.core.messages import MessageRecord
 
+HISTORY_INDEXES = """
+CREATE INDEX IF NOT EXISTS messages_context_delivery
+    ON messages(session_id,
+        json_extract(payload, '$.metadata.context_provider_delivery_key'),
+        row_id)
+    WHERE json_extract(payload, '$.metadata.context_provider_delivery_key')
+        IS NOT NULL;
+CREATE INDEX IF NOT EXISTS messages_input_history
+    ON messages(session_id) WHERE kind = 'input';
+CREATE INDEX IF NOT EXISTS messages_run_result_references
+    ON messages(session_id, run_id, row_id, message_id, kind,
+                delegation_input_id, resource_refs);
+CREATE INDEX IF NOT EXISTS messages_assistant_turn
+    ON messages(session_id, run_id, json_extract(payload, '$.turn_id'), row_id)
+    WHERE kind = 'assistant_response';
+CREATE INDEX IF NOT EXISTS messages_assistant_run
+    ON messages(session_id, run_id, row_id) WHERE kind = 'assistant_response';
+"""
+
 
 def read_counts(connection: sqlite3.Connection, session_id: str, run_id: str) -> RunMessageCounts:
     row = connection.execute(
@@ -65,7 +84,7 @@ def read_result_references(
     connection: sqlite3.Connection, session_id: str, run_id: str, *, delegation_id: str
 ) -> RunResultReferences:
     rows = connection.execute(
-        "SELECT message_id, role, delegation_input_id, resource_refs FROM messages "
+        "SELECT message_id, kind, delegation_input_id, resource_refs FROM messages "
         "WHERE session_id = ? AND run_id = ? ORDER BY row_id",
         (session_id, run_id),
     )
@@ -84,7 +103,7 @@ def write_messages(
     """Publish one batch and update each affected Run's counts once."""
     connection.executemany(
         "INSERT INTO messages(session_id, message_id, sequence, run_id, input_origin, "
-        "role, delegation_input_id, resource_refs, payload) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "kind, delegation_input_id, resource_refs, payload) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             (
                 message.session_id,
@@ -92,7 +111,7 @@ def write_messages(
                 message.sequence,
                 message.run_id,
                 message_input_origin(message),
-                message.role,
+                message.run_message_kind,
                 delegation_input_id(message),
                 json.dumps(
                     message.resource_refs

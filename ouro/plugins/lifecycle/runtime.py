@@ -100,8 +100,8 @@ from ouro.plugins.services import ServiceEndpoint
 from ouro.plugins.tasks import PluginTaskBinding, bind_plugin_task
 from ouro.plugins.tool_groups import PluginToolGroups, ToolGroupPublication, ToolGroupVersion
 from ouro.plugins.worker.instance import WorkerPluginInstance
-from ouro.sdk.plugins import v5 as sdk
-from ouro.sdk.plugins.v5 import StopReason
+from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins.v6 import StopReason
 from ouro.skills import SkillMetadata
 from ouro.tools.registry import ToolRegistry
 

@@ -367,7 +367,7 @@ def _summary_request() -> CompactionRequest:
     )
 
 
-async def test_summary_receives_agent_system_and_history_only_as_user_scaffolding():
+async def test_summary_receives_agent_instructions_and_role_labeled_history_as_input():
     provider = SummaryRouteProvider()
     strategy = LLMSummaryCompactionStrategy(
         _summary_adapter(provider, provider_id="runtime", endpoint_id="chat")
@@ -379,6 +379,15 @@ async def test_summary_receives_agent_system_and_history_only_as_user_scaffoldin
         protocol="private",
         model_id="source",
         blocks=({"ciphertext": "opaque-state-must-not-be-summarized"},),
+    )
+    request.messages.insert(
+        1,
+        MessageRecord.text(
+            session_id=request.session_id,
+            role="harness",
+            text="Workspace ready",
+            semantic_tag="environment",
+        ),
     )
     saved = request.model_dump_json()
 
@@ -393,6 +402,7 @@ async def test_summary_receives_agent_system_and_history_only_as_user_scaffoldin
     assert "Earlier progress" in history.text_content
     assert "old question" in history.text_content
     assert "old answer" in history.text_content
+    assert "[Harness (environment)] <environment>\nWorkspace ready" in history.text_content
     assert "[Assistant reasoning] A useful reasoning observation." in history.text_content
     assert "opaque-state-must-not-be-summarized" not in history.text_content
     assert request.model_dump_json() == saved
@@ -1099,7 +1109,7 @@ async def test_auto_compaction_persists_and_is_reused_by_new_runtime(tmp_path) -
         store.load_session(session.session_id).session.context_selection.compaction_id == active_id
     )
     assert canonical_after_first[:10] == first_snapshot.messages[:10]
-    assert second_provider.calls[0][0].role == "system"
+    assert second_provider.calls[0][0].role == "user"
     assert second_provider.calls[0][0].text_content == (
         "<conversation-summary>\nsummary-1\n</conversation-summary>"
     )

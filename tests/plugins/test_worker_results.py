@@ -11,7 +11,7 @@ from ouro.plugins.harness_calls import PluginStateView
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.worker.codec import WorkerProtocolError
 from ouro.plugins.worker.instance import WorkerPluginInstance
-from ouro.sdk.plugins import v5 as sdk
+from ouro.sdk.plugins import v6 as sdk
 
 CALLS = {
     "tool": sdk.ToolCall("call", "session", "run", "echo", {}),
@@ -129,9 +129,7 @@ async def test_worker_defaults_and_unchanged_state(worker, view, kind):
 
 @pytest.mark.parametrize("role", [None, "system"])
 @pytest.mark.parametrize("kind", ["context", "command", "continuation"])
-async def test_worker_scaffold_role_defaults_to_user_and_preserves_explicit_role(
-    worker, kind, role
-):
+async def test_worker_harness_role_default_and_preserves_explicit_role(worker, kind, role):
     invoke, _ = worker
     fields = {} if role is None else {"role": role}
     if kind == "context":
@@ -142,7 +140,7 @@ async def test_worker_scaffold_role_defaults_to_user_and_preserves_explicit_role
         message = output.session_inputs[0]
     else:
         message = await invoke(kind, {"action": "continue", "prompt": "Continue", **fields})
-    assert message.role == (role or "user")
+    assert message.role == (role or "harness")
 
 
 @pytest.mark.parametrize("kind", ["tool", "tool_resume"])
@@ -219,7 +217,6 @@ async def test_worker_preserves_control_payloads_and_native_defaults(worker, kin
             {"fragments": [{"text": "bad", "semantic_tag": "invalid tag"}]},
             "semantic_tag",
         ),
-        ("context", {"fragments": [{"text": "bad", "scaffold": 1}]}, "scaffold"),
         ("command", {"data": []}, "data"),
         ("command", {"run_action": "invalid"}, "run_action"),
         ("command", {"session_inputs": [{"prompt": ""}]}, "prompt"),
@@ -231,7 +228,6 @@ async def test_worker_preserves_control_payloads_and_native_defaults(worker, kin
         ("continuation", {"mode": "invalid"}, "mode"),
         ("continuation", {"role": "invalid"}, "role"),
         ("continuation", {"semantic_tag": "invalid tag"}, "semantic_tag"),
-        ("continuation", {"scaffold": 1}, "scaffold"),
         ("tool_policy", {"action": "allow"}, "action"),
         ("prompt_policy", {"reason": 1}, "reason"),
         ("turn_policy", {"feedback": []}, "feedback"),

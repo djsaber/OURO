@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ouro.sdk.plugins import v5 as sdk
+from ouro.sdk.plugins import v6 as sdk
 
 
 def request_review(call: sdk.CommandCall) -> sdk.CommandOutput:

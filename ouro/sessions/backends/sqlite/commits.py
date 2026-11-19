@@ -196,7 +196,7 @@ class SQLiteSessionCommits:
             request.request_header is not None
             or any(run.status not in ACTIVE_RUN_STATUSES for run in request.runs)
             or any(
-                step.message is not None and step.message.role == "assistant"
+                step.message is not None and step.message.run_message_kind == "assistant_response"
                 for step in request.steps
             )
         ):

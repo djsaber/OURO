@@ -7,7 +7,7 @@
 
 ## 请求内容
 
-`responses_input` 返回 instructions 和 input：system_prompt 与 system 消息依次合并为 instructions；普通 user/assistant 文本转为消息输入。先复用 model_visible_message，保留 OURO 的语义标签与技能内容投影。
+`responses_input` 返回 `instructions` 和 `input`。固定系统指令写入 `instructions`。支持对话内系统消息的端点在 `input` 中保留 `system` 项，其他端点将开头的原生系统指令合入 `instructions`。共享投影保留语义标签和技能正文，按端点能力将 `harness` 呈现为 `system` 或 `user`。
 
 canonical tool calls 转成 function_call，其 call_id 来自 ToolCallRequest.id；工具结果转成 function_call_output，其 call_id 来自 ToolResultReference。供应商 item id 不用作工具结果关联。工具 JSON 不允许非有限数字；缺少引用的工具结果明确失败。
 

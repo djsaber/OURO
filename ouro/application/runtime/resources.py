@@ -45,10 +45,11 @@ class RunResources:
         else:
             registry = self.host_tools if self.host_tools is not None else host_tools
         scoped = registry.scoped(active_controller_ids)
+        tool_names = self.tool_names
         selected = (
             scoped
-            if self.tool_names is None
-            else scoped.selected(self.tool_names.intersection(scoped.names()))
+            if tool_names is None
+            else scoped.selected(name for name in scoped.names() if name in tool_names)
         )
         if self.tool_refs:
             ceilings = {reference.public_name: reference for reference in self.tool_refs}

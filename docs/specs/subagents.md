@@ -79,14 +79,14 @@ Handle 是控制引用，不是 canonical 运行事实。
 2. child 继续使用正常 RuntimeService/InnerAgentLoop；不得创建 SubagentLoop 分叉实现。
 3. 并发、等待、取消、结果交付和恢复由 application/RuntimeSupervisor 编排。
 4. 模型工具只产生类型化 Agent control request；只有 application 可以创建 Session/Run、修改 Delegation
-   或排队带显式 role/scaffold/provenance 的 Host input。
+   或排队带显式 role/provenance 的 Host input。
 5. user plugin 和 builtin plugin 都不得直接持有 RuntimeService、SessionStore、Supervisor 或可变 Agent registry。
 6. 同一 child Session 同时最多一个 active Run；根 Session 与不同 child Session 可并发运行。
 7. sync 等待是 spawn 后的 durable join，不是另一套执行路径。
 8. waiting child、waiting approval 和 waiting user 不占用模型/工具执行 permit。
 9. Delegation、child Session、child Run、result delivery 和 interaction 都有可重建的 durable identity。
 10. child terminal 状态不能由 UI、内存 task、进程退出码或缺失事件单独推断。
-11. async result 使用 role=user、scaffold=true，并保留 Host/Agent provenance；模型角色不代表直接用户来源。
+11. async result 使用 role=harness，并保留 Host/Agent provenance；模型角色不代表直接用户来源。
 12. 权限求值先应用不可突破的 capability cap，再应用 auto/approval/deny。
 13. 恢复不得自动重放 running 或 unknown_outcome 的 child 工具调用。
 14. Host 只能通过 application service/DTO 订阅和控制 child，不直接读取 delegation 文件。
@@ -362,8 +362,8 @@ DelegationResult 至少包含：
 错误和资源引用分别使用可选的 `error` 和 `resource_refs` 字段。`structured.result` 保存终态、消息引用、
 资源、计量及错误。异步交付由固定 delivery ID 对应的 Host Input 持有原始结果文本和语义标签属性。
 
-终态收集读取子 Run 的已发布消息成员引用：首条匹配本 Delegation 的 user 输入、最后一条 assistant
-（包含工具调用帧），以及 assistant/tool_result 按历史顺序去重的 resource refs。该步骤不读取历史消息正文、
+终态收集从子 Run 的已发布消息成员中选择首条匹配本 Delegation 的输入、最后一条助手回复（含工具调用帧），
+以及助手回复和工具结果按历史顺序去重的资源引用。该步骤不读取历史消息正文、
 Call 参数、Outcome 正文或媒体字节。未发布或已撤销的 Outcome 不贡献资源；后续文本展示和资源复制按所选引用执行。
 
 result terminal 与 result delivery 是两个状态。child completed 不等于结果已经进入父上下文。
@@ -465,9 +465,9 @@ RuntimeService -> AgentService -> RuntimeSupervisor -> RuntimeService 的实现�
 - CLI、Desktop 和未来 API 复用同一 supervised composition，不各自创建 Agent 调度路径。
 
 RuntimeSupervisor.submit/job 必须区分 `DelegatedTaskInput` 与普通 `HostSessionInput`。child 初始任务携带稳定
-`delegation_id` provenance，并由该提供方显式声明 `role=user, scaffold=true, semantic_tag=subagent-task`
+`delegation_id` provenance，并由该提供方显式声明 `role=harness, semantic_tag=subagent-task`
 进入 child canonical history；不得调用裸 `runtime.run(prompt)` 丢失委派身份。
-普通 Host/插件输入保留各自 provenance 和提供方声明的 role/scaffold，不能借
+普通 Host/插件输入保留各自 provenance 和提供方声明的 role，不能借
 委派入口取得 delegation 身份或直接用户授权。
 
 已启动 Run 的模型循环初始化，包括工具契约绑定，必须纳入普通 Runtime 的失败结算边界。初始化失败通过
@@ -622,7 +622,7 @@ DeliveryPolicy 是 application 内部持久化事实，不是模型参数：
 next_boundary 通过 durable queued input 交付。
 
 - 输入来源为 `host`，`host_source_id` 为 `ouro.subagents/results/<delivery_id>`。
-- 消息使用 `role=user`、`scaffold=true` 和 `semantic_tag=subagent-result`。
+- 消息使用 `role=harness` 和 `semantic_tag=subagent-result`。
 - `prompt` 保存子智能体最终消息的完整原文。
 - 标签属性包含 `agent_id`、`agent_name`、`delegation_id`、终态 `status`，以及可选的 `nickname` 和 `error`。
   模型请求通过 `<subagent-result …>` 的起始标签读取这些字段，空正文也可传达终态。
@@ -670,12 +670,12 @@ initial_message_id 与 prompt_digest，不复制 prompt。child 的文本上下�
 - 必需的项目规则、Skills 和工具 contract。
 
 父 Session history、CompactionRecord、tool result、assistant tool call、reasoning/provider continuation 和各类
-脚手架消息均不投影到 child。模型工具与 Host API 都不接受 canonical message ids；主智能体必须
+框架消息均不投影到 child。模型工具与 Host API 都不接受 canonical message ids；主智能体必须
 在 task 中显式写出 child 完成任务所需的文本上下文。这样只有一条派遣语义，不建立第二套上下文选择、摘要或消息引用协议。
 
 资源不随父子关系隐式继承。Spawn 请求必须显式列出父 Session 已可达的 resource refs；ResourceService 在持有源
 Session mutation boundary 时重新验证不可变内容并把带 `copied_from_session_id` 的引用附加到 child。child 初始
-delegated-task user message 携带这些引用，因而资源内容和 Agent 专用 system prompt 一并进入正常 ContextView token 预算。
+delegated-task harness message 携带这些引用，因而资源内容和 Agent 专用 system prompt 一并进入正常 ContextView token 预算。
 child 结果只收集 assistant/tool-result 输出引用，不回显初始输入引用；结果经 Host list、sync ToolResult 或 async delivery
 进入父 Session 前，校验 child 的资源归属与完整性，将所需文件复制为 parent 拥有的副本，随后写入父 canonical message。
 
@@ -772,7 +772,7 @@ TUI 持续订阅 root AgentTree，通过 interaction inbox 呈现子会话审批
 root 的交互面板处理；文本、思考和工具流通过子会话 observation 查看，不复制业务状态或读取 Store 文件。
 
 主、子会话通过各自的 canonical history 展示通信。首次任务、后续指令和异步回传结果保留
-`scaffold=true` 及真实来源，统一受 TUI 的 `Display` → `Scaffold messages` 设置控制：Hidden 隐藏，Shown 显示完整正文。
+`role=harness` 及真实来源，统一受 TUI 的 `Display` → `Harness messages` 设置控制：Hidden 隐藏，Shown 显示完整正文。
 子智能体的普通 assistant 回复沿用正常消息展示。主会话的 `SendAgentMessage` 工具详情以单行展示发送内容，
 随可用宽度省略。TUI 不为通信另建消息副本、聚合容器或跨会话流式同步管线。
 

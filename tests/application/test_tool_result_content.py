@@ -91,7 +91,7 @@ async def test_rich_results_survive_execution_storage_replay_and_route_projectio
     assert all(
         any(isinstance(part, ImageContent) for part in message.content) for message in outputs
     )
-    assert not any(message.scaffold and message.role == "user" for message in snapshot.messages)
+    assert not any(message.role == "harness" for message in snapshot.messages)
     await app.close()
 
     replay_provider = RecordingProvider("responses", request_tools=False)

@@ -9,7 +9,7 @@ from ouro.core.session_controller_registry import SessionControllerRegistry
 from ouro.core.state import SessionRecord
 from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_catalog
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
-from ouro.sdk.plugins import v5 as sdk
+from ouro.sdk.plugins import v6 as sdk
 from tests.application.tool_runtime import runtime
 from tests.application.tool_runtime import store as store
 from tests.run_facts import run_tool_results

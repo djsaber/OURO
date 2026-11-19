@@ -349,7 +349,7 @@ def prepare_session_commit(
             message
             for message in messages
             if current_request is not None
-            and message.role == "assistant"
+            and message.run_message_kind == "assistant_response"
             and message.run_id == current_request.run_id
             and message.turn_id == current_request.turn_id
         ),
@@ -389,7 +389,7 @@ def prepare_session_commit(
     if response_header is not None:
         for message in messages:
             if (
-                message.role == "assistant"
+                message.run_message_kind == "assistant_response"
                 and message.run_id == response_header.run_id
                 and message.turn_id == response_header.turn_id
             ):

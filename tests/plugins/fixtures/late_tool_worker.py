@@ -6,7 +6,7 @@ import asyncio
 import threading
 from pathlib import Path
 
-from ouro.sdk.plugins import v5 as sdk
+from ouro.sdk.plugins import v6 as sdk
 from ouro.sdk.plugins.worker import HostRequestError, WorkerPeer
 from ouro.sdk.plugins.worker_tools import WorkerSessionState, invoke_worker_tool
 

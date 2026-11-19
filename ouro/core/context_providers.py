@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
-from typing import Literal, Self
+from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from ouro.core.base import OuroModel
 from ouro.core.callbacks import invoke_bounded_callback
@@ -14,7 +14,6 @@ from ouro.core.message_semantics import SemanticTag
 from ouro.core.redaction import redact_text
 
 ContextProviderFailureMode = Literal["omit", "block"]
-ContextFragmentPersistence = Literal["ephemeral", "message"]
 ContextFragmentTarget = Literal["message", "system_prompt"]
 
 
@@ -31,17 +30,10 @@ class ContextFragment(OuroModel):
     """Raw provider-owned context with independently declared message semantics."""
 
     text: str = Field(min_length=1)
-    persistence: ContextFragmentPersistence = "ephemeral"
     target: ContextFragmentTarget = "message"
-    role: MessageRole = "user"
-    scaffold: bool = True
+    role: MessageRole = "harness"
     semantic_tag: SemanticTag | None = None
-
-    @model_validator(mode="after")
-    def validate_target_persistence(self) -> Self:
-        if self.target == "system_prompt" and self.persistence != "ephemeral":
-            raise ValueError("system prompt context fragments must be ephemeral")
-        return self
+    revision: str | None = None
 
 
 class AttributedContextFragment(ContextFragment):
@@ -213,7 +205,6 @@ class ContextProviderRegistry:
 __all__ = [
     "AttributedContextFragment",
     "ContextFragment",
-    "ContextFragmentPersistence",
     "ContextFragmentTarget",
     "ContextProviderCall",
     "ContextProviderEvaluation",

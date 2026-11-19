@@ -40,7 +40,7 @@ from ouro.application.contracts.execution import (
     SupervisorStartResult,
 )
 from ouro.application.events import ApplicationEventPublisher
-from ouro.application.inputs.queue import validate_host_input
+from ouro.application.inputs.queue import queued_host_input, validate_host_input
 from ouro.application.runs.lifecycle import reserve_run
 from ouro.application.runs.tool_batches import load_batch_states, load_tool_batch
 from ouro.application.sessions.recovery import SessionRecoveryService
@@ -66,7 +66,7 @@ from ouro.core.errors import (
     PersistenceError,
     SessionBusyError,
 )
-from ouro.core.inputs import InputRecord, QueuedInput
+from ouro.core.inputs import InputRecord
 from ouro.core.model_selection import DEFAULT_MODEL
 from ouro.core.redaction import redact_text
 from ouro.core.run_budget import RunPauseReason
@@ -1028,7 +1028,7 @@ class AgentService:
         source_id = f"ouro.subagents/{delegation_id}/messages/{request_id}"
         session_input = HostSessionInput(
             prompt=message,
-            role="user",
+            role="harness",
             mode=mode,
             host_source_id=source_id,
             queue_id=f"queued_{uuid5(NAMESPACE_URL, source_id).hex}",
@@ -1118,18 +1118,7 @@ class AgentService:
         item = None
         if session_input is not None:
             assert session_input.queue_id is not None
-            item = QueuedInput(
-                history_epoch=child.history_epoch,
-                queue_id=session_input.queue_id,
-                prompt=session_input.prompt,
-                mode="follow_up",
-                queued_at=utc_now(),
-                source="host",
-                role="user",
-                scaffold=True,
-                semantic_tag="subagent-message",
-                host_source_id=session_input.host_source_id,
-            )
+            item = queued_host_input(child, session_input, queue_id=session_input.queue_id)
             accepted = self.store.load_input(child.session_id, item.queue_id)
             if accepted is not None:
                 validate_host_input(accepted, session_input)
@@ -1878,7 +1867,7 @@ class AgentService:
             attributes["resource_refs"] = " ".join(parent_resource_refs)
         return relation, HostSessionInput(
             prompt=self._result_text(relation),
-            role="user",
+            role="harness",
             mode="steer",
             host_source_id=f"ouro.subagents/results/{result.delivery.delivery_id}",
             semantic_tag="subagent-result",

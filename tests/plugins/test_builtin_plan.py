@@ -73,12 +73,12 @@ class PlanBuildProvider:
         if self.stream_count == 0:
             call = ToolCallRequest(id="call_enter", name="EnterPlanMode", arguments={})
         elif self.stream_count == 1:
-            scaffold = next(
+            harness = next(
                 message.text_content
                 for message in reversed(messages)
                 if message.role == "user" and "<plan-context>" in message.text_content
             )
-            match = re.search(r"Plan file: (.+)", scaffold)
+            match = re.search(r"Plan file: (.+)", harness)
             assert match is not None
             self.plan_path = Path(match.group(1))
             call = ToolCallRequest(
@@ -351,7 +351,7 @@ async def test_plan_command_creates_and_binds_a_session(tmp_path) -> None:
 @pytest.mark.parametrize(
     "change", ["documentation", "implementation", "runtime_resource", "version", "contract"]
 )
-async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes_after_restart(
+async def test_plan_transitions_and_shared_write_survive_restart(
     tmp_path,
     monkeypatch,
     change,
@@ -410,16 +410,16 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
     assert not (workspace / ".ouro").exists()
     assert first_provider.plan_path.read_text(encoding="utf-8").startswith("# Proposed plan")
     waiting_snapshot = first_store.load_session(waiting.session.session_id)
-    scaffolds = [
+    notices = [
         message
         for message in waiting_snapshot.messages
         if message.metadata.get("kind") == "context_provider"
         and message.metadata.get("plugin_id") == PLUGIN_ID
     ]
-    assert len(scaffolds) == 3
-    assert all(message.role == "user" for message in scaffolds)
-    assert all(message.semantic_tag == "plan-context" for message in scaffolds)
-    assert all(str(first_provider.plan_path) in message.text_content for message in scaffolds)
+    assert len(notices) == 1
+    assert all(message.role == "harness" for message in notices)
+    assert all(message.semantic_tag == "plan-context" for message in notices)
+    assert all(str(first_provider.plan_path) in message.text_content for message in notices)
     assert all(
         {"EnterPlanMode", "ExitPlanMode"} <= tool_names for tool_names in first_provider.tool_names
     )
@@ -504,23 +504,13 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
     )
     assert "The user accepted the plan. Plan mode has ended" in exit_result.text_content
     assert "Selected option: Direct implementation" in exit_result.text_content
-    assert (
-        len(
-            [
-                message
-                for message in completed_snapshot.messages
-                if message.metadata.get("kind") == "context_provider"
-                and message.metadata.get("plugin_id") == PLUGIN_ID
-            ]
-        )
-        == 3
-    )
-    assert not any(
-        message.metadata.get("kind") == "context_provider"
-        and message.run_id == completed.run.run_id
-        and message.sequence > exit_result.sequence
-        for message in completed_snapshot.messages
-    )
+    notices = [
+        message for message in completed_snapshot.messages if message.semantic_tag == "plan-context"
+    ]
+    assert len(notices) == 2
+    assert notices[0].text_content.startswith("Plan mode is active")
+    assert notices[1].text_content.startswith("Plan mode ended")
+    assert notices[0].sequence < exit_result.sequence < notices[1].sequence
     assert not second_store.load_session_record(completed.session.session_id).controls.activations
     await second_application.close()
 

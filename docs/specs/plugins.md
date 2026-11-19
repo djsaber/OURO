@@ -69,7 +69,7 @@ OURO 是强扩展的个人智能体。插件是系统级扩展模块，不是项
 12. Observer 只能异步读取不可变事实，不能阻断、改写或同步反压 canonical Session/Run、durable sequence
     或用户消息来源。
 13. Command 和 Continuation 只返回类型化意图，只有 application 层可以持久化消息、排队和创建 Run。
-14. 插件输入的 producer provenance、model role、`scaffold` 和可选 `semantic_tag` 必须分离：始终保留 plugin、
+14. 插件输入的 producer provenance、model role 和可选 `semantic_tag` 必须分离：始终保留 plugin、
     contribution 和 execution contract 来源；每个消息属性由插件输入显式声明，Host 不相互推断。
 15. 所有 task、进程、MCP、listener 和 connection 都属于一个可关闭 generation owner。
 16. Disable 后的每次插件调用必须经过 generation gate；关闭 gate 后不得开始新调用。
@@ -245,7 +245,7 @@ calendar-plugin/
   "namespace": "calendar",
   "engines": {
     "ouro": ">=0.4.0",
-    "plugin_api": "^5.0.0"
+    "plugin_api": "^6.0.0"
   },
   "runtime": {
     "kind": "python-inprocess",
@@ -384,14 +384,14 @@ Host 缓存针对 SDK dataclass 的原生类型适配器，由类型声明提供
 其不透明 payload 沿用传输层解析的 JSON 值；控制语义和 payload 验证由共享的 SDK 到 core 边界负责。
 固定结构的 `SessionInput`、`SessionInputBatch`、`ContextFragment` 与 `SessionControlTransition` 使用冻结的
 slots dataclass；字段反射、导出和替换使用 `dataclasses.fields`、`asdict` 与 `replace`。
-消息 scaffold 与工具错误标志必须是布尔值，消息语义标签、非空输入及批次约束保持各自的领域语义。
+工具错误标志必须是布尔值，消息语义标签、非空输入及批次约束保持各自的领域语义。
 Host 的类型化 RPC 输出使用原生序列化处理器转换为 JSON 值。
 Provider 输出从 SDK 事件属性直接验证为核心事件；不透明 continuation 块在交付前取得独立副本。
 外部类型、默认值、互斥输出和语义约束仍在 worker 边界检查，SDK 到 core 的转换保留各层职责。
 
 ## 8. Plugin API
 
-插件只依赖 `ouro.sdk.plugins.v5`，不依赖 `ouro.core.*`、`ouro.application.*`、具体 registry
+插件只依赖 `ouro.sdk.plugins.v6`，不依赖 `ouro.core.*`、`ouro.application.*`、具体 registry
 或 Host 类型。
 
 ```python
@@ -481,10 +481,7 @@ Host 提交用例经 Runtime 结算已接受的取消意图，不重复发起取
 合并不同的契约。`steer` 不能指定 Driver。命令在调用嵌套 Session Controller 前解析全部 Driver 选择；解析失败
 不提交命令状态、控制变更或输入。排队输入通过原生 Run 所有权、预算、审批和 checkpoint 执行。
 
-`role` 只表达 `system | user | assistant | tool_result` 四种模型消息角色；`scaffold` 只表达 Harness 是否有意注入，
-`semantic_tag` 只表达可选的模型可见语义，producer provenance 独立保存。插件必须定义这些值，Application 仅校验
-和传递，不根据任何一个维度推导另一个。任意 role 都可作为脚手架并可选择语义标签；这不会把 producer 改成直接
-用户，也不会自动授予用户权限。`SessionInput.semantic_attributes` 保存标签的字符串属性。输入可仅用标签属性表达状态，
+会话角色包括 `system | user | assistant | tool_result | harness`。插件默认以 `harness` 投递框架消息。代用户提交的原话使用 `user`，生产方 provenance 独立保存。`SessionInput.semantic_attributes` 保存标签的字符串属性。输入可仅用标签属性表达状态，
 此时 `prompt` 为空字符串。模型投影将属性写入起始标签。可选
 `coalesce_key` 只允许新批次替换同一 Session、plugin owner 和 contribution 下
 尚未消费的旧控制投影；不能删除 canonical message、跨 owner 搜索、重排或建立通用优先级。
@@ -555,7 +552,7 @@ canonical 历史、预算、计数和用量仍属于调用者的 Run。跨 worke
 `CompactionCall` 提供 session/run 身份、可选只读状态视图、`agent_system_prompt` 固定系统背景、已有压缩结果与
 待压缩材料，不传入主请求预算。`CompactionOutput.summary` 是继续执行的非空背景上下文；插件自行定义策略、
 提示词、原始格式与解析过程，正文无需使用内置策略的 XML 标签。使用 LLM 摘要策略时，Agent 系统背景与会话材料
-应作为 user 脚手架传入，摘要模型的 system 只放压缩指令。框架保留 Agent 固定系统上下文，仅替换上一轮压缩结果。
+应作为摘要模型的 user 输入传入，摘要模型的 system 只放压缩指令。框架保留 Agent 固定系统上下文，仅替换上一轮压缩结果。
 
 Host 用实际正文重新投影主上下文，通过容量和状态校验后提交。策略可报告用量，失败或取消不激活部分摘要。具体边界见[上下文与压缩](context-and-compaction.md#摘要执行)。
 
@@ -612,12 +609,14 @@ Host capability 清单由以下 15 类组成。这里的“消费者”指真正
 | `tool_policies` | snapshot | Plan builtin、SDK/worker semantic contract | `ToolCallCoordinator` preflight 与 execution recheck | stable |
 | `session_controllers` | snapshot | Goal/Plan builtin、worker semantic contract | `SessionControlCoordinator` 及 Run resume/settlement | stable |
 
+Context Provider 的消息片段以会话、提供方和片段位置标识。可选的 `ContextFragment.revision` 区分文案相同的不同状态，只参与重复投递判定。
+
 每种 capability 必须同时具备 Manifest/SDK 表达、Host adapter 和真实语义消费者。系统保持 15 类 capability；
 新类型必须由真实 builtin 或最小可运行 user plugin 驱动。失去消费者的类型应同步从 Manifest、SDK、worker、
 prepare、contract、projection 与文档删除，不保留空 adapter 或迁移别名。
 
 观察型扩展只公开 `observers`；`prompt_policies` 是独立语义边界。Manifest schema 3 不接受 `hooks` 字段；
-Plugin API 使用 5.0.0，worker protocol 使用 3.0；Python SDK 入口为 `ouro.sdk.plugins.v5`。
+Plugin API 使用 6.0.0，worker protocol 使用 3.0；Python SDK 入口为 `ouro.sdk.plugins.v6`。
 
 公开交互 DTO 位于 `ouro.sdk.plugins.interactions`。计划确认请求包含预览文本、计划引用、可选方案和明确的动作，
 答案包含动作及用户选择或反馈。Host 按 DTO 类型呈现，不以 builtin 身份或工具显示名赋予特殊界面；请求来源仍
@@ -753,19 +752,9 @@ producer、typed input/output、组合、失败和授权规则同时明确时才
 
 ### 10.2 Context Provider
 
-Context Fragment 显式声明 `persistence = ephemeral | message`，默认 `ephemeral`，并独立携带 role、scaffold 与
-可选 semantic tag（SDK 默认值是显式契约值 `role=user, scaffold=true, semantic_tag=None`）。`message` 表示该
-片段必须在模型请求前由 application 以提供方给出的消息属性和 provider/generation provenance 持久化为 canonical
-message。Run/model round/provider/fragment index 标识请求边界内的片段位置；重试时，正文、role、scaffold 和
-semantic tag 与该位置最近一次持久消息一致才跳过。内容或消息属性变化时追加新消息，不改写已有历史；
-恢复为更早的值也按新变化追加。持久化失败阻断模型请求，不能退化为临时注入。
-该机制服务需要审计和恢复的 Harness 消息，不把所有动态 Context Provider 输出强制写入历史。
+Context Fragment 使用 `target=message` 或 `target=system_prompt`。默认的 `message` 目标按来源、提供方及片段位置识别观察。Application 在模型调用前将变化的正文、角色和标签追加为 canonical 消息，并保存 generation provenance。持久化失败会阻断本次请求。插件通过一条新观察说明状态结束。
 
-Fragment 的 `target = message | system_prompt` 默认是 `message`。`system_prompt` target 只允许 ephemeral：
-Application 在基础 system prompt 和 Skills 之后按 provider/fragment 稳定顺序追加片段，但不得为它构造 canonical
-message。两种 target 都可以由 producer 通过可选 `semantic_tag` 声明语义；标签存在时由 Core 的同一 renderer
-校验、转义正文中的同名包络分隔符并构造 model-visible envelope，不存在时正文保持原样。producer 不得把包络
-写入 `text`。投影结果计入 token 预算，并由最近请求 Manifest 保存实际值。Context Provider call 可以读取 Host 提供的 Session workspace。
+`system_prompt` 目标用于固定指令，Application 按提供方顺序将正文与基础 system prompt、Skills 组合。两种目标都接受可选 `semantic_tag`，标签仅渲染一次。
 
 ### 10.3 Prompt Policy
 
@@ -905,7 +894,7 @@ Permission id 必须由 OURO 核心注册表定义。每个 id 都要有真实�
 - `process.spawn`：披露并授权插件 MCP/Host service 启动子进程；
 - `network.outbound`：披露并授权插件 MCP/Host service 建立远程连接；
 - `models.request`：允许不属于活跃 Run 的独立模型请求，并按插件身份记录供应商用量；
-- `sessions.write`：允许请求带完整插件 provenance，以及显式 role、scaffold、semantic tag 契约的 Session input；
+- `sessions.write`：允许请求带完整插件 provenance，以及显式 role、semantic tag 契约的 Session input；
 - `sessions.prompt.inspect`：允许 Prompt Policy 接收用户提示正文和附件的安全 metadata；
 - `background.run`：允许请求 continuation/background Run。
 
@@ -1273,7 +1262,7 @@ correlation id，并经过敏感值脱敏。每个 generation 的 diagnostic 必
 | `ouro/plugins/catalog/` | 不可变目录、贡献绑定与调用门控 |
 | `ouro/plugins/lifecycle/` | 候选构建、激活、资源交接、退役及关闭 |
 | `ouro/plugins/inprocess/`、`ouro/plugins/worker/` | 同一公开契约的进程内适配与 worker 协议实现 |
-| `ouro/sdk/plugins/v5.py` | 面向插件作者的公开接口 |
+| `ouro/sdk/plugins/v6.py` | 面向插件作者的公开接口 |
 | `ouro/application/plugins/` | Host 中立的管理、命令和配置用例 |
 | `ouro/builtin_plugins/` | 产品自带的插件实现，由应用组合根装配 |
 

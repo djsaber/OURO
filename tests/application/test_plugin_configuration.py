@@ -53,7 +53,7 @@ def _package(root, *, runtime=False, fail_default=False):
     if runtime:
         (root / "echo_plugin.py").write_text(
             """
-from ouro.sdk.plugins.v5 import ContributionSet
+from ouro.sdk.plugins.v6 import ContributionSet
 class Plugin:
     def __init__(self, context): self.context = context
     async def prepare(self):

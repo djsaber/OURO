@@ -24,7 +24,6 @@ from ouro.tui.conversation.reasoning import ReasoningLabel
 from ouro.tui.conversation.tools import ToolActivityRow, _tool_activity_text, is_terminal_tool
 from ouro.tui.conversation.transcript import (
     _compaction_presentation,
-    _input_transcript_entry,
     project_transcript_entries,
 )
 from ouro.tui.conversation.turn import AssistantTurn
@@ -76,13 +75,13 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         reasoning_expanded: bool = True,
         welcome_state_changed: Callable[[bool], None] | None = None,
         system_status_changed: Callable[[TuiSystemStatus], None] | None = None,
-        show_scaffold_messages: bool = False,
+        show_harness_messages: bool = False,
         collapse_traces: bool = True,
     ) -> None:
         super().__init__(id="conversation")
         self._follow_tail = True
         self._reasoning_expanded = reasoning_expanded
-        self.show_scaffold_messages = show_scaffold_messages
+        self.show_harness_messages = show_harness_messages
         self._welcome_state_changed = welcome_state_changed
         self._system_status_changed = system_status_changed
         self._history = ConversationHistory(
@@ -343,7 +342,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                 compaction_records,
                 run_presentations,
                 mutable_tool_call_keys=mutable_tool_call_keys,
-                show_scaffold_messages=self.show_scaffold_messages,
+                show_harness_messages=self.show_harness_messages,
             )
         else:
             transcript = project_transcript_entries(
@@ -351,7 +350,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
                 compaction_records,
                 run_presentations,
                 mutable_tool_call_keys=mutable_tool_call_keys,
-                show_scaffold_messages=self.show_scaffold_messages,
+                show_harness_messages=self.show_harness_messages,
             )
         await self.load_transcript(
             transcript,
@@ -456,16 +455,19 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             )
         )
 
-    async def add_user_message(self, message: MessageRecord) -> None:
-        """Append user or scaffold input using the persisted-history projection."""
-        entry = _input_transcript_entry(
-            message,
-            show_scaffold_messages=self.show_scaffold_messages,
+    async def add_input_message(self, message: MessageRecord) -> None:
+        """Append a committed input with the same role and layout as restored history."""
+        entries = project_transcript_entries(
+            (message,),
+            (),
+            (),
+            mutable_tool_call_keys=frozenset(),
+            show_harness_messages=self.show_harness_messages,
         )
-        if entry is not None:
+        if entries:
             await self._dismiss_welcome()
             await self.finish_assistant()
-            self._history.append(entry)
+            self._history.append_many(entries)
 
     async def append_assistant(self, text: str) -> None:
         await self._dismiss_welcome()

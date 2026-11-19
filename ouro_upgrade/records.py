@@ -18,6 +18,7 @@ from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextMetrics
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.harness import HarnessVersion
+from ouro.core.inputs import InputRecord, InputState
 from ouro.core.messages import MessageRecord
 from ouro.core.resources import SessionResourceReference
 from ouro.core.state import RunRecord, SessionRecord
@@ -30,6 +31,8 @@ MODELS: dict[str, type[BaseModel]] = {
     "session": SessionRecord,
     "run": RunRecord,
     "message": MessageRecord,
+    "input": InputRecord,
+    "input_state": InputState,
     "context": ContextSnapshotRecord,
     "compaction": CompactionRecord,
     "harness": HarnessVersion,
@@ -222,6 +225,41 @@ def _message_v4_to_v8(value: dict[str, Any]) -> None:
         raise UpgradeDataError("historical tool message requires Session conversion")
 
 
+def _harness_role(value: dict[str, Any]) -> None:
+    if (
+        value.pop("scaffold", False)
+        and value["role"] != "tool_result"
+        and not any(
+            value.get(key)
+            for key in (
+                "tool_calls",
+                "call_refs",
+                "reasoning_content",
+                "model_response",
+                "provider_continuation",
+            )
+        )
+    ):
+        value["role"] = "harness"
+
+
+def _message_v8_to_v9(value: dict[str, Any]) -> None:
+    _harness_role(value)
+    metadata = value.get("metadata", {})
+    if metadata.get("kind") == "context_provider" and "context_provider_delivery_key" in metadata:
+        metadata["context_provider_delivery_key"] = (
+            f"{metadata['plugin_id']}:{metadata['contribution_id']}:{metadata['fragment_index']}"
+        )
+
+
+def _run_v11_to_v12(value: dict[str, Any]) -> None:
+    settlement = (value.get("continuation") or {}).get("settlement_plan")
+    if settlement is not None:
+        settlement.setdefault("role", "user")
+        settlement.setdefault("scaffold", True)
+        _harness_role(settlement)
+
+
 def _context_v5_to_v11(value: dict[str, Any]) -> None:
     fields = (
         "role",
@@ -314,8 +352,15 @@ VERSION_STEPS: dict[str, dict[int, UpgradeStep]] = {
         2: UpgradeStep(5, _run_v2_to_v5),
         5: UpgradeStep(10, _run_v5_to_v10),
         10: UpgradeStep(11, _run_v10_to_v11),
+        11: UpgradeStep(12, _run_v11_to_v12),
     },
-    "message": {3: UpgradeStep(4, _message_v3_to_v4), 4: UpgradeStep(8, _message_v4_to_v8)},
+    "message": {
+        3: UpgradeStep(4, _message_v3_to_v4),
+        4: UpgradeStep(8, _message_v4_to_v8),
+        8: UpgradeStep(9, _message_v8_to_v9),
+    },
+    "input": {1: UpgradeStep(2, lambda value: _harness_role(value["item"]))},
+    "input_state": {1: UpgradeStep(2, _harness_role)},
     "task": {1: UpgradeStep(3, _task_v1_to_v3)},
     "execution": {1: UpgradeStep(3, _execution_v1_to_v3)},
     "usage": {1: UpgradeStep(2, _usage_v1_to_v2)},

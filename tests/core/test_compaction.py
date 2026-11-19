@@ -12,7 +12,7 @@ from ouro.core.compaction import (
     plan_compaction,
     project_compacted_messages,
 )
-from ouro.core.messages import MessageRecord, ToolResultReference
+from ouro.core.messages import InputMessageReference, MessageRecord, ToolResultReference
 from ouro.core.tools import ToolCallRequest
 
 
@@ -175,8 +175,7 @@ def test_compaction_projection_replaces_covered_prefix_without_mutating_history(
 
     assert [message.text_content for message in messages] == ["old", "answer", "latest"]
     assert [message.text_content for message in projected] == ["summary", "latest"]
-    assert projected[0].role == "system"
-    assert projected[0].scaffold is True
+    assert projected[0].role == "harness"
     assert projected[0].semantic_tag == "conversation-summary"
     assert projected[0].metadata["compaction_id"] == record.compaction_id
 
@@ -223,3 +222,20 @@ def test_compaction_strategy_registry_rejects_silent_replacement() -> None:
 
     with pytest.raises(ValueError, match="already registered"):
         registry.register(Strategy())
+
+
+def test_harness_input_batches_start_a_turn_and_observations_join_it():
+    old = [_message("user", "First question", 1), _message("assistant", "Done", 2)]
+    notice = _message("harness", "Task created", 3)
+    notice.input_ref = InputMessageReference(input_id="guidance")
+    notice.metadata["session_input_batch_id"] = "batch"
+    objective = _message("user", "New objective", 4)
+    objective.metadata["session_input_batch_id"] = "batch"
+    new = [
+        notice,
+        objective,
+        _message("harness", "Environment", 5),
+        _message("assistant", "Ready", 6),
+    ]
+    assert conversation_turns([*old, *new]) == [old, new]
+    assert compaction_frames([*old, *new]) == [old, new]

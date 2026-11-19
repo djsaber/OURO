@@ -587,7 +587,16 @@ class StreamingTaskProvider:
         self.prompts: list[str] = []
 
     async def stream(self, *, model, messages, system_prompt="", tools=None, request_context=None):
-        self.prompts.append(messages[-1].text_content)
+        self.prompts.append(
+            next(
+                m.text_content
+                for m in reversed(messages)
+                if m.role == "user"
+                and not m.text_content.startswith(
+                    ("<ouro-system-information>", "<unattended-mode-reminder>")
+                )
+            )
+        )
         yield ProviderStreamEvent(type="text_delta", text="Before attachment. ")
         self.started.set()
         await self.release.wait()

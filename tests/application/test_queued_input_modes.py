@@ -230,7 +230,7 @@ async def test_follow_up_inputs_are_consumed_at_run_boundaries_in_fifo_order(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("role", [None, "system"])
-async def test_host_follow_up_preserves_scaffold_role_and_attribution(tmp_path, role) -> None:
+async def test_host_follow_up_preserves_message_role_and_attribution(tmp_path, role) -> None:
     store, provider, runtime = _runtime(tmp_path, consumption_mode="one_by_one")
 
     async with running_runtime_task(runtime, runtime.run("initial")) as first_task:
@@ -264,11 +264,11 @@ async def test_host_follow_up_preserves_scaffold_role_and_attribution(tmp_path, 
         )
         host_run = snapshot.runs[-1]
 
-        assert host_message.role == (role or "user")
+        assert host_message.role == (role or "harness")
         assert host_message.semantic_tag == "runtime-recovery"
         assert host_message.text_content == "Recover from the durable checkpoint."
         assert host_message.metadata["host_source_id"] == "ouro.runtime/recovery"
-        assert provider.contexts[-1][-1].role == host_message.role
+        assert provider.contexts[-1][-1].role == (role or "user")
         assert provider.contexts[-1][-1].text_content == (
             "<runtime-recovery>\nRecover from the durable checkpoint.\n</runtime-recovery>"
         )

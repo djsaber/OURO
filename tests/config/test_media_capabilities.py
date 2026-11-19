@@ -3,7 +3,7 @@ import pytest
 from ouro.config.endpoints import ProviderEndpointConfig
 from ouro.config.provider_models import ProviderConfig, ProviderRuntimeOptions
 from ouro.config.provider_templates import provider_templates
-from ouro.config.providers.runtime import merge_runtime_options
+from ouro.config.providers.runtime import merge_runtime_options, runtime_options_from_config
 from ouro.core.errors import ConfigError
 from ouro.local_configuration import build_local_configuration
 from ouro.providers.factory import build_runtime_adapter
@@ -125,3 +125,27 @@ def test_media_capabilities_round_trip_through_configuration_and_runtime_overrid
     assert options.supports_audio_input and options.supports_video_input is False
     adapter = build_runtime_adapter(options)
     assert adapter.model.input_modalities == frozenset({"audio"})
+
+
+@pytest.mark.parametrize(
+    "protocol", ["openai-chat-completions", "openai-responses", "anthropic-messages"]
+)
+def test_inline_system_capability_reaches_the_adapter(protocol):
+    base = ProviderConfig(
+        provider_id="p",
+        display_name="Test",
+        provider_type="custom",
+        protocol=protocol,
+        base_url="https://example.test",
+        endpoints=(
+            ProviderEndpointConfig(
+                endpoint_id="m", model_id="m", supports_inline_system_messages=True
+            ),
+        ),
+    )
+    declared = runtime_options_from_config(base, endpoint_id="m")
+    assert build_runtime_adapter(declared).model.supports_inline_system_messages
+    disabled = merge_runtime_options(
+        declared, ProviderRuntimeOptions(supports_inline_system_messages=False)
+    )
+    assert not build_runtime_adapter(disabled).model.supports_inline_system_messages

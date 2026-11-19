@@ -599,6 +599,7 @@ def _provider_endpoint_command(
             "supports_image_input",
             "supports_audio_input",
             "supports_video_input",
+            "supports_inline_system_messages",
             "supports_streaming",
             "supports_structured_output",
             "request_options",
@@ -771,6 +772,7 @@ def _provider_options(args: argparse.Namespace, *, prefix: str = "") -> Provider
         "supports_image_input",
         "supports_audio_input",
         "supports_video_input",
+        "supports_inline_system_messages",
         "supports_streaming",
         "supports_structured_output",
     )

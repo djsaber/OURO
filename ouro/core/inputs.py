@@ -24,7 +24,6 @@ _ROUTING_FIELDS = (
     "mode",
     "source",
     "role",
-    "scaffold",
     "semantic_tag",
     "coalesce_key",
     "plugin_id",
@@ -48,7 +47,6 @@ class QueuedInput(MessageSemantics):
     queued_at: datetime
     source: QueuedInputSource
     role: MessageRole
-    scaffold: bool
     semantic_tag: SemanticTag | None
     batch_id: str | None = None
     batch_index: int | None = Field(default=None, ge=0)
@@ -158,15 +156,15 @@ class QueuedInput(MessageSemantics):
             and not self.attachments
         ):
             raise ValueError("queued input requires content or semantic attributes")
-        if self.skill_activations and (
-            self.source != "user" or self.role != "user" or self.scaffold
-        ):
+        if self.skill_activations and (self.source != "user" or self.role != "user"):
             raise ValueError("skill activation is only valid on direct user input")
         return self
 
 
 class InputRecord(VersionedOuroModel):
     """Immutable accepted intent, including its fixed attachment and skill units."""
+
+    schema_version: Literal[2] = 2
 
     session_id: str
     item: QueuedInput
@@ -178,11 +176,11 @@ def validate_input_message_semantics(
     reference = message.input_ref
     if reference is None:
         return
-    semantics = message.role, message.scaffold, message.semantic_tag
+    semantics = message.role, message.semantic_tag
     if reference.part == "body":
-        if semantics != (intent.role, intent.scaffold, intent.semantic_tag):
+        if semantics != (intent.role, intent.semantic_tag):
             raise PersistenceError("message semantics do not match its accepted Input body")
-    elif intent.source != "user" or semantics != ("user", True, "attachments"):
+    elif intent.source != "user" or semantics != ("harness", "attachments"):
         raise PersistenceError("attachment observation does not match its accepted Input")
 
 
@@ -220,6 +218,8 @@ def resolve_input_content(fact: MessageRecord, record: InputRecord | None = None
 class InputState(VersionedOuroModel):
     """Small lifecycle state; terminal states retain the original acceptance."""
 
+    schema_version: Literal[2] = 2
+
     session_id: str
     input_id: str = Field(min_length=1)
     history_epoch: int = Field(ge=0)
@@ -227,7 +227,6 @@ class InputState(VersionedOuroModel):
     mode: QueuedInputMode
     source: QueuedInputSource
     role: MessageRole
-    scaffold: bool
     semantic_tag: SemanticTag | None
     coalesce_key: str | None = None
     plugin_id: str | None = None

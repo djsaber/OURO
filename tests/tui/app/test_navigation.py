@@ -306,8 +306,8 @@ async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path
         assert app.screen.navigation_id == "help"
 
 
-@pytest.mark.parametrize("scaffold_visible", [False, True])
-async def test_child_shortcuts_navigate_runs_without_user_messages(tmp_path, scaffold_visible):
+@pytest.mark.parametrize("harness_visible", [False, True])
+async def test_child_shortcuts_navigate_runs_without_user_messages(tmp_path, harness_visible):
     from tests.tui.app.support import _persist_direct_child_session
 
     application = _application(tmp_path)
@@ -315,14 +315,13 @@ async def test_child_shortcuts_navigate_runs_without_user_messages(tmp_path, sca
     app = OuroTuiApp(application=application)
     async with run_ready_app(app, size=(80, 12)) as pilot:
         await app._open_session(child_id)
-        await app._set_scaffold_messages(scaffold_visible)
+        await app._set_harness_messages(harness_visible)
         conversation = app.query_one(ConversationView)
         messages = tuple(
             MessageRecord(
                 session_id=child_id,
                 run_id=f"run_child_{index}",
                 role=role,
-                scaffold=role == "user",
                 content=[TextContent(text=text)],
             )
             for index in range(4)

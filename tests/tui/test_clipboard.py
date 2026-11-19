@@ -269,7 +269,7 @@ async def test_history_right_click_copies_only_the_dragged_text() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["user", "scaffold", "command"])
+@pytest.mark.parametrize("kind", ["user", "harness", "command"])
 async def test_message_hover_and_right_click_copy_preserve_selection_priority(kind) -> None:
     copied: list[str] = []
     app = HistorySelectionApp(copied.append)
@@ -277,7 +277,7 @@ async def test_message_hover_and_right_click_copy_preserve_selection_priority(ki
 
     async with app.run_test(size=(40, 10), notifications=True) as pilot:
         history = app.query_one(ConversationHistory)
-        history.replace((TranscriptEntry(kind=kind, text=source, scaffold=kind == "scaffold"),))
+        history.replace((TranscriptEntry(kind=kind, text=source),))
         await history.wait_until_rendered()
         await pilot.pause()
 

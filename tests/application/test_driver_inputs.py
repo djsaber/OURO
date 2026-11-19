@@ -12,7 +12,7 @@ from ouro.core.prompt_policies import (
 )
 from ouro.core.provider import ProviderStreamEvent, ToolCallDelta
 from ouro.core.session_controls import HostSessionInput
-from ouro.sdk.plugins import v5 as sdk
+from ouro.sdk.plugins import v6 as sdk
 from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.application.helpers import wait_for_runtime_event
@@ -65,7 +65,7 @@ async def test_custom_driver_delivers_steering_at_the_next_decision_in_the_same_
     await context.models.request(tools=())
     inputs = await context.inputs.consume()
     assert await context.inputs.consume() == ()
-    assert inputs[0].role == "user" and not inputs[0].scaffold
+    assert inputs[0].role == "user"
     assert inputs[0].metadata["session_input_source"] == "user"
     text = "|".join(item.text for item in inputs)
     inputs[0].content[0]["text"] = "must not mutate native history"
@@ -478,7 +478,7 @@ async def test_worker_command_atomic_batch_keeps_driver_selection_and_input_orde
             "request",
             "batch done",
         ]
-        assert [item.role for item in history.messages] == [role or "user", "user", "assistant"]
+        assert [item.role for item in history.messages] == [role or "harness", "user", "assistant"]
         assert {item.metadata["input_driver_id"] for item in history.messages[:2]} == {DRIVER}
         assert len({item.run_id for item in history.messages}) == 1
     finally:

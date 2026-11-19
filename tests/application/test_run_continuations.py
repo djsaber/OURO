@@ -300,7 +300,7 @@ def _write_goal_plugin(source) -> None:
                 "name": "Goal",
                 "version": "1.0.0",
                 "namespace": "goal",
-                "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
+                "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "goal_plugin:create_plugin",
@@ -326,7 +326,7 @@ def _write_goal_plugin(source) -> None:
         encoding="utf-8",
     )
     (source / "goal_plugin.py").write_text(
-        """from ouro.sdk.plugins.v5 import (
+        """from ouro.sdk.plugins.v6 import (
     CommandContribution,
     CommandOutput,
     ContinuationDecision,
@@ -376,7 +376,7 @@ def create_plugin(context):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
-async def test_plugin_continuation_creates_attributed_scaffold_follow_up(
+async def test_plugin_continuation_creates_attributed_harness_follow_up(
     tmp_path,
     backend,
 ) -> None:
@@ -434,15 +434,17 @@ async def test_plugin_continuation_creates_attributed_scaffold_follow_up(
     assert snapshot.runs[1].parent_run_id == snapshot.runs[0].run_id
     assert [message.role for message in snapshot.messages] == [
         "user",
+        "harness",
         "assistant",
-        "user",
+        "harness",
         "assistant",
     ]
-    scaffold = snapshot.messages[2]
-    assert scaffold.metadata["plugin_id"] == TEST_GOAL_PLUGIN_ID
-    assert scaffold.metadata["contribution_id"] == "goal"
-    assert scaffold.metadata["continuation_decision_id"]
-    assert scaffold.text_content.startswith("Check the goal")
+    assert snapshot.messages[1].semantic_tag == "ouro-system-information"
+    harness = snapshot.messages[3]
+    assert harness.metadata["plugin_id"] == TEST_GOAL_PLUGIN_ID
+    assert harness.metadata["contribution_id"] == "goal"
+    assert harness.metadata["continuation_decision_id"]
+    assert harness.text_content.startswith("Check the goal")
     events = recorded_events(result.session.session_id)
     assert any(event.event_type == "run_continuation_resolved" for event in events)
 
@@ -518,7 +520,7 @@ async def test_plugin_command_returns_permission_checked_session_input(tmp_path)
     snapshot = store.load_session(result.session.session_id)
     assert len(snapshot.runs) == 1
     assert snapshot.runs[0].origin == "plugin"
-    assert snapshot.messages[0].role == "user"
+    assert snapshot.messages[0].role == "harness"
     assert snapshot.messages[0].text_content == "Work on: ship the feature"
     assert inspected_prompts == []
 
@@ -583,11 +585,11 @@ async def test_continuation_conflict_pauses_without_choosing_by_priority(tmp_pat
     registry = RunContinuationRegistry()
     registry.replace_owner(
         "first",
-        (_policy("dev.ouro.first", "gen_first", "first scaffold", priority=1),),
+        (_policy("dev.ouro.first", "gen_first", "first harness", priority=1),),
     )
     registry.replace_owner(
         "second",
-        (_policy("dev.ouro.second", "gen_second", "second scaffold", priority=2),),
+        (_policy("dev.ouro.second", "gen_second", "second harness", priority=2),),
     )
     service = RunContinuationService(
         store=store,
@@ -1016,7 +1018,7 @@ async def test_runtime_startup_reconciliation_replays_pending_settlement_without
         action="continue",
         harness=capture_harness(store, session.session_id),
         prompt="Resume the durable boundary work.",
-        role="user",
+        role="harness",
         semantic_tag="goal-continue",
         coalesce_key="goal-continuation",
     )
@@ -1080,8 +1082,7 @@ async def test_runtime_startup_reconciliation_replays_pending_settlement_without
     assert restored.continuation is not None
     assert restored.continuation.action == "continue"
     assert [item.prompt for item in queued] == ["Resume the durable boundary work."]
-    assert queued[0].role == "user"
-    assert queued[0].scaffold is True
+    assert queued[0].role == "harness"
     assert queued[0].semantic_tag == "goal-continue"
     assert queued[0].coalesce_key == "goal-continuation"
     assert not events
@@ -1451,7 +1452,7 @@ async def test_queued_user_input_supersedes_stale_automatic_continuation(tmp_pat
     registry = RunContinuationRegistry()
     registry.replace_owner(
         "goal",
-        (_policy("dev.ouro.goal", "gen_goal", "stale automatic scaffold"),),
+        (_policy("dev.ouro.goal", "gen_goal", "stale automatic harness"),),
     )
     queue = QueuedInputQueue(store)
     queue.enqueue(

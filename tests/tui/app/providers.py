@@ -437,7 +437,7 @@ class TuiPlanConfirmationProvider:
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt, tools
         if self.stream_count == 0:
-            scaffold = next(
+            plan_context = next(
                 (
                     message.text_content
                     for message in reversed(messages)
@@ -445,8 +445,8 @@ class TuiPlanConfirmationProvider:
                 ),
                 None,
             )
-            assert scaffold is not None, "Plan context was not delivered to the provider"
-            match = re.search(r"Plan file: (.+)", scaffold)
+            assert plan_context is not None, "Plan context was not delivered to the provider"
+            match = re.search(r"Plan file: (.+)", plan_context)
             assert match is not None
             self.plan_path = match.group(1)
             call = ToolCallRequest(

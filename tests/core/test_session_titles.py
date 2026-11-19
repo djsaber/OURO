@@ -5,12 +5,14 @@ from ouro.core.session_titles import fill_session_title, normalize_session_title
 from ouro.core.state import SessionRecord
 
 
-def test_title_uses_first_non_scaffold_user_text_and_limits_unicode_characters():
+def test_title_uses_first_user_text_and_limits_unicode_characters():
     session = with_session_title(SessionRecord(), None)
     messages = [
         MessageRecord.text(session_id=session.session_id, role="system", text="Instructions"),
         MessageRecord.text(
-            session_id=session.session_id, role="user", text="Attachment data", scaffold=True
+            session_id=session.session_id,
+            role="harness",
+            text="Attachment data",
         ),
         MessageRecord.text(session_id=session.session_id, role="assistant", text="An answer"),
         MessageRecord.text(session_id=session.session_id, role="user", text=" \n "),

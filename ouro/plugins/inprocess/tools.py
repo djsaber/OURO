@@ -10,7 +10,7 @@ from ouro.core.interactions import AnswerResolution, ToolInputResolution, Unatte
 from ouro.core.session_controls import SessionControlTransitionRequest
 from ouro.plugins.harness_calls import bind_context_callback, invoke_plugin_callback
 from ouro.plugins.tool_content import from_sdk_content
-from ouro.sdk.plugins import v5 as sdk
+from ouro.sdk.plugins import v6 as sdk
 from ouro.tools import (
     Tool,
     ToolDefinition,

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Literal
 
 from ouro.application.contracts.execution import RuntimeToolCallActivity
+from ouro.core.attachment_input import is_editable_user_input
 from ouro.core.compaction import CompactionRecord
 from ouro.core.messages import MessageRecord, ModelMessage, SkillActivationContent
 from ouro.tui.conversation.history_models import CompactionPresentation, TranscriptEntry
@@ -95,43 +97,32 @@ def _compaction_presentation(
     )
 
 
-def _presents_message(
-    message: MessageRecord,
-    *,
-    show_scaffold_messages: bool = False,
-) -> bool:
-    if show_scaffold_messages:
-        return True
-    if not message.scaffold:
-        return True
-    if message.semantic_tag == "attachments" and message.input_attachments:
-        # A text-bearing input presents its file chips on the user body instead.
-        return message.metadata.get("session_input_batch_size") == 1
-    return False
-
-
 def _input_transcript_entry(
     message: MessageRecord,
     *,
-    show_scaffold_messages: bool,
+    show_harness_messages: bool,
 ) -> TranscriptEntry | None:
-    """Share input presentation between snapshots, history pages and live events."""
-    normally_visible = _presents_message(message)
-    if not normally_visible and not (message.scaffold and show_scaffold_messages):
-        return None
-    if message.role != "user" and not (message.scaffold and show_scaffold_messages):
+    """Project model inputs and Driver receipts into the visible transcript."""
+    kind: Literal["user", "harness"]
+    if is_editable_user_input(message):
+        kind = "user"
+    elif show_harness_messages and (
+        message.role == "harness"
+        or (message.tool_result is not None and message.tool_result.producer.kind == "driver")
+    ):
+        kind = "harness"
+    else:
         return None
     text, reference_start = _user_message_presentation(
-        message, include_scaffold_content=message.scaffold and show_scaffold_messages
+        message, include_harness_content=show_harness_messages
     )
     if not text:
         return None
     return TranscriptEntry(
         # Revealing internal messages must not renumber /fork and /navigate targets.
-        kind="user" if normally_visible and message.role == "user" else "scaffold",
+        kind=kind,
         text=text,
         created_at=message.created_at,
-        scaffold=message.scaffold,
         run_id=message.run_id,
         reference_start=reference_start,
         source_sequence=message.sequence,
@@ -144,7 +135,7 @@ def project_transcript_entries(
     runs: tuple[RunPresentation, ...],
     *,
     mutable_tool_call_keys: frozenset[tuple[str | None, str | None, str]],
-    show_scaffold_messages: bool = False,
+    show_harness_messages: bool = False,
 ) -> tuple[TranscriptEntry, ...]:
     """Build immutable history away from Textual's event loop.
 
@@ -161,19 +152,15 @@ def project_transcript_entries(
 
     for message_index, message in enumerate(messages):
         message_positions[message.message_id] = message_index
-        if not _presents_message(message, show_scaffold_messages=show_scaffold_messages):
-            continue
-        if message.run_id is not None:
-            last_message_by_run[message.run_id] = message_index
         entries = message_entries[message_index]
-        if message.role == "user" or message.scaffold:
-            entry = _input_transcript_entry(
-                message,
-                show_scaffold_messages=show_scaffold_messages,
-            )
+        if message.role != "assistant":
+            entry = _input_transcript_entry(message, show_harness_messages=show_harness_messages)
             if entry is not None:
                 entries.append(entry)
-            continue
+            elif message.role == "harness":
+                continue
+        if message.run_id is not None:
+            last_message_by_run[message.run_id] = message_index
         if message.role != "assistant":
             continue
 
@@ -249,7 +236,7 @@ def project_transcript_entries(
 
 
 def _user_message_presentation(
-    message: MessageRecord | ModelMessage, *, include_scaffold_content: bool = False
+    message: MessageRecord | ModelMessage, *, include_harness_content: bool = False
 ) -> tuple[str, int | None]:
     """Keep copy text intact while identifying its semantic reference suffix."""
     attachments = message.input_attachments if isinstance(message, MessageRecord) else ()
@@ -258,7 +245,7 @@ def _user_message_presentation(
     )
     elements = sorted((*attachments, *activations), key=lambda item: (item.text_offset, item.order))
     text = message.text_content
-    if attachments and message.semantic_tag == "attachments" and not include_scaffold_content:
+    if attachments and message.semantic_tag == "attachments" and not include_harness_content:
         text = ""
     if not elements:
         return text, None

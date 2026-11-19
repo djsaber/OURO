@@ -7,7 +7,7 @@ from typing import Any
 
 from ouro.core.messages import ImageContent, ModelMessage, TextContent
 from ouro.core.provider import Usage
-from ouro.core.tool_result_projection import project_tool_result_messages
+from ouro.core.tool_result_projection import project_provider_messages
 from ouro.core.tools import ToolCallRequest
 from ouro.providers.tool_content import ToolContentPolicy
 
@@ -16,24 +16,27 @@ def messages_to_anthropic_messages(
     messages: list[ModelMessage],
     *,
     system_prompt: str,
+    supports_inline_system_messages: bool = False,
     supports_image_input: bool,
     provider_id: str,
     model_id: str,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Project canonical history into Anthropic's top-level system/messages shape."""
 
-    system_parts = [system_prompt] if system_prompt else []
     converted: list[dict[str, Any]] = []
+    previous_was_result = False
     policy = ToolContentPolicy(
         native=frozenset({"text", "image"} if supports_image_input else {"text"})
     )
-    for message in project_tool_result_messages(messages, policy):
+    instructions, dialogue = project_provider_messages(
+        messages,
+        policy,
+        system_prompt=system_prompt,
+        supports_inline_system_messages=supports_inline_system_messages,
+    )
+    for message in dialogue:
         if any(not isinstance(part, TextContent | ImageContent) for part in message.content):
             raise ValueError("unsupported Anthropic Messages content type")
-        if message.role == "system":
-            if message.text_content:
-                system_parts.append(message.text_content)
-            continue
         item = _message_to_anthropic(
             message,
             supports_image_input=supports_image_input,
@@ -42,11 +45,12 @@ def messages_to_anthropic_messages(
         )
         if item["role"] == "assistant" and not item["content"]:
             continue
-        if converted and converted[-1]["role"] == item["role"]:
+        if previous_was_result and message.role == "tool_result":
             converted[-1]["content"].extend(item["content"])
         else:
             converted.append(item)
-    return "\n\n".join(system_parts), converted
+        previous_was_result = message.role == "tool_result"
+    return instructions, converted
 
 
 def tool_to_anthropic_messages(tool: Mapping[str, Any]) -> dict[str, Any]:
@@ -165,7 +169,7 @@ def _message_to_anthropic(
             ],
         }
 
-    role = "assistant" if message.role == "assistant" else "user"
+    role = message.role
     if role == "assistant":
         continuation = message.provider_continuation
         if continuation is not None and continuation.matches(

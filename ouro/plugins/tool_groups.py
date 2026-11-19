@@ -16,7 +16,7 @@ from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.plugins.invocation import current_invocation
 from ouro.plugins.manifest import PluginManifest, ToolContributionSpec
 from ouro.plugins.models import PluginGenerationRecord
-from ouro.sdk.plugins import v5 as sdk
+from ouro.sdk.plugins import v6 as sdk
 from ouro.tools.base import Tool
 
 

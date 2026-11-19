@@ -44,6 +44,7 @@ def runtime_options_from_config(
         supports_image_input=endpoint.supports_image_input,
         supports_audio_input=endpoint.supports_audio_input,
         supports_video_input=endpoint.supports_video_input,
+        supports_inline_system_messages=endpoint.supports_inline_system_messages,
         supports_streaming=endpoint.supports_streaming,
         supports_structured_output=endpoint.supports_structured_output,
         reasoning=endpoint.reasoning,
@@ -115,6 +116,11 @@ def merge_runtime_options(
             override.supports_video_input
             if override.supports_video_input is not None
             else base.supports_video_input
+        ),
+        supports_inline_system_messages=(
+            override.supports_inline_system_messages
+            if override.supports_inline_system_messages is not None
+            else base.supports_inline_system_messages
         ),
         supports_streaming=(
             override.supports_streaming

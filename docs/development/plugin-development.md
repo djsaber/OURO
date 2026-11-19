@@ -130,7 +130,7 @@ Host 的插件列表、详情和安装版本条目直接返回可选 `icon`：�
 
 ## 4. SDK contribution
 
-in-process 插件只从 `ouro.sdk.plugins.v5` 使用公开类型。factory 接收 `PluginContext` 并返回实现以下生命周期的对象：
+in-process 插件只从 `ouro.sdk.plugins.v6` 使用公开类型。factory 接收 `PluginContext` 并返回实现以下生命周期的对象：
 
 ```python
 class Plugin:
@@ -163,9 +163,7 @@ Continuation 不直接写 Session/Run，而是返回类型化意图；applicatio
 Compaction Strategy handler 同样可以把 `CancellationContext` 作为第二个参数；长时间运行的进程内同步 handler 必须
 周期性调用 `raise_if_aborted`，异步 handler 和 worker 调用则由 Host task cancellation 传播。Host 不会强杀或遗弃仍在
 运行的 Python 同步线程，取消后产生的迟到摘要不会被激活。
-`SessionInput` 分别携带 `role`、`scaffold` 和可选 `semantic_tag`；SDK 的默认构造值为
-`role="user", scaffold=True, semantic_tag=None`，插件应按消息真实语义显式选择，Host 不从其中任何一项推导
-另一项。插件 provenance 始终保留，`role="user"` 不等于直接用户来源或授权。Tool
+`SessionInput` 默认使用 `role="harness"`。传递用户原话时选择 `role="user"`。可选的 `semantic_tag` 标识正文语义，插件来源随输入独立保存。Tool
 Policy 只能把执行提升为审批或拒绝，不能降低 Host policy、批准调用或改写参数。
 
 `ToolOutput.content` 接受字符串，或由 `ToolTextContent(text=...)`、`ToolImageContent(uri=..., media_type=...)`、
@@ -191,7 +189,7 @@ Tool handler 除 `ToolOutput` 或字符串外，还可返回 `ToolInputRequest(d
 
 ```python
 from ouro.sdk.plugins.interactions import PlanConfirmationRequest
-from ouro.sdk.plugins.v5 import ToolInputRequest
+from ouro.sdk.plugins.v6 import ToolInputRequest
 
 async def confirm_plan(call):
     return ToolInputRequest(
@@ -213,30 +211,28 @@ Context Provider 返回的字符串或普通 `ContextFragment` 默认只影响�
 可恢复的 canonical history，显式返回持久 fragment：
 
 ```python
-from ouro.sdk.plugins.v5 import ContextFragment, ContextOutput
+from ouro.sdk.plugins.v6 import ContextFragment, ContextOutput
 
-def plan_scaffold(call):
+def plan_context(call):
     return ContextOutput(
         fragments=(
             ContextFragment(
                 text="Plan mode is active for this Session.",
-                persistence="message",
-                role="system",
-                scaffold=True,
+                role="harness",
                 semantic_tag="plan-context",
             ),
         )
     )
 ```
 
-Host 在调用模型前按 fragment 声明的 role/scaffold/tag 写入带 plugin/provider/generation provenance 的 canonical
+Host 在调用模型前按 fragment 声明的 role/tag 写入带 plugin/provider/generation provenance 的 canonical
 消息；同一 Run/model round 的恢复不会重复写入。`semantic_tag` 默认是 `None`，可设置为小写字母、数字和连字符
 组成的具体语义名。只有设置标签时，构建 ProviderContext 才把正文包装为
-`<plan-context>...</plan-context>`；标签不会改变 role、scaffold、来源或协议权限。不要把瞬时状态快照无差别持久化。
+`<plan-context>...</plan-context>`；标签不会改变 role、来源或协议权限。不要把瞬时状态快照无差别持久化。
 
 如果片段属于完整 system prompt 而不是 canonical message，显式使用
 `ContextFragment(target="system_prompt")`。Application 会在基础 system prompt 与 Skills 指令之后按 Context
-Provider 顺序追加它；该目标只允许 `persistence="ephemeral"`，不会构造或持久化消息。
+Provider 顺序追加它；该目标进入固定系统指令。
 提供方可通过 `semantic_tag` 声明片段语义，正文只返回未包裹的原始文本；标签存在时 Core 与 message target
 共用同一 semantic envelope 投影，验证标签、转义正文中的同名包络分隔符并构造标签；标签不存在时原样投影。
 `ContextCall.workspace` 提供本次 Session 中 Agent 的工作目录。
@@ -280,7 +276,7 @@ Manifest 中可把需要随模式启停的贡献绑定到 controller：
       "description": "Own this Session mode.",
       "claims": [{"domain": "dev.example.primary_behavior", "access": "exclusive"}]
     }],
-    "context_providers": [{"id": "scaffold", "active_when": "mode"}],
+    "context_providers": [{"id": "context", "active_when": "mode"}],
     "tool_policies": [{"id": "gate", "active_when": "mode"}],
     "tools": [{
       "id": "finish",
@@ -332,8 +328,8 @@ Harness 版本、history_epoch 和消息头前置条件处理。
 
 ### 调用内会话状态
 
-Python SDK 入口为 `ouro.sdk.plugins.v5`，当前 Host 的 Plugin API 为 `5.0.0`，worker 使用 protocol `3.0`。
-依赖通用配置契约的插件在 `engines.plugin_api` 声明 `>=5.0.0,<6.0.0`。
+Python SDK 入口为 `ouro.sdk.plugins.v6`，当前 Host 的 Plugin API 为 `6.0.0`，worker 使用 protocol `3.0`。
+依赖通用配置契约的插件在 `engines.plugin_api` 声明 `>=6.0.0,<7.0.0`。
 PluginContext 不提供会话状态写入器。可修改状态的回调使用本次调用的 owner 视图：
 
 ```python
@@ -425,7 +421,7 @@ Builtin definition 以 `contract_version` 声明持久执行兼容性，`release
 ```
 
 ```python
-from ouro.sdk.plugins.v5 import ToolContribution, ToolGroupContribution
+from ouro.sdk.plugins.v6 import ToolContribution, ToolGroupContribution
 
 group = ToolGroupContribution(
     id="sources",
@@ -650,7 +646,7 @@ worker 创建 `models = WorkerModels(peer)`，并把 `"models.output"` 路由注
 `RunDriverContribution(id, handler)` 注册普通 async 函数，参数为 `RunDriverContext` 和可选 `DriverResume`。
 
 算法可以 `await context.inputs.consume()` 在安全决策边界接收 steering。返回 `RunInput` 包含 `message_id`、
-`role`、JSON 内容块 `content`、`scaffold`、`semantic_tag`、来源 `metadata` 和 `resource_refs`；`text` 提取其中的文本块。
+`role`、JSON 内容块 `content`、`semantic_tag`、来源 `metadata` 和 `resource_refs`；`text` 提取其中的文本块。
 这些是已经提交的消息副本，修改它们不会改变 Host 历史。模型请求前会自动交付待处理 steering；若算法刚显式读取过，
 紧接的模型请求使用该次输入集合。纯代码／服务算法可再次显式读取以开始下一次决策，不依赖固定模型循环。
 存在未处理的模型工具响应时须先执行并结算该批次；不能把输入插入工具请求与结果之间。
@@ -724,9 +720,9 @@ worker tool 以 `{"input_request": <任意 JSON 值>}` 返回同一种挂起请�
 还必须在 manifest 中声明 `supports_unattended=true`。Worker protocol `3.0` 只接受 `resolution` 判别联合；出现
 `answer` 字段时协议校验失败。
 协议 `3.0` 在 `session_controller.call` 输入中提供 `session_kind`，允许 `continuation.call` 输出
-`session_control_transitions`，与 in-process Plugin API `5.0.0` 使用相同状态及结算语义。
-`context.call` 的 `fragments` 既接受字符串，也接受带 `text`、`persistence`、`target`、`role`、`scaffold` 和
-可选 `semantic_tag` 的对象。Worker 应传递自己选择的字段；Host 不从 target、persistence 或 provenance 反推
+`session_control_transitions`，与 in-process Plugin API `6.0.0` 使用相同状态及结算语义。
+`context.call` 的 `fragments` 既接受字符串，也接受带 `text`、`target`、`role` 和
+可选 `semantic_tag` 的对象。Worker 应传递自己选择的字段；Host 不从 target 或 provenance 反推
 消息属性。
 
 ## 8. 社区资源导入前审查

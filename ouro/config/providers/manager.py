@@ -819,6 +819,7 @@ class ProviderConfigManager:
         supports_image_input: bool | None = None,
         supports_audio_input: bool | None = None,
         supports_video_input: bool | None = None,
+        supports_inline_system_messages: bool | None = None,
         supports_streaming: bool | None = None,
         supports_structured_output: bool | None = None,
         reasoning: EndpointReasoningConfig | None = None,
@@ -850,6 +851,8 @@ class ProviderConfigManager:
             changes["supports_audio_input"] = supports_audio_input
         if supports_video_input is not None:
             changes["supports_video_input"] = supports_video_input
+        if supports_inline_system_messages is not None:
+            changes["supports_inline_system_messages"] = supports_inline_system_messages
         if supports_streaming is not None:
             changes["supports_streaming"] = supports_streaming
         if supports_structured_output is not None:

@@ -147,6 +147,7 @@ class ContextCompactionService:
         prepared = await self.preparation.build(
             session=session,
             run=run,
+            turn_id=turn_id,
             tools=tools,
             model_round=model_round,
             adapter=adapter,
@@ -156,7 +157,7 @@ class ContextCompactionService:
         )
         session, active, messages = prepared.session, prepared.active, prepared.messages
         view = prepared.view
-        added_context, prompt_context = prepared.added_context, prepared.prompt_context
+        fixed_context, prompt_context = prepared.fixed_context, prepared.prompt_context
         active_adapter = adapter or self.preparation.adapter
         budget = active_adapter.model.context_budget.input_tokens
         trigger_tokens = int(budget * config.policy.trigger_ratio)
@@ -167,7 +168,7 @@ class ContextCompactionService:
                     session=session,
                     run=run,
                     tools=tools,
-                    added_context=added_context,
+                    fixed_context=fixed_context,
                     trigger="auto",
                     force=False,
                     abort_signal=abort_signal,
@@ -232,7 +233,7 @@ class ContextCompactionService:
                     messages=messages,
                     active=active,
                     tools=tools,
-                    added_context=added_context,
+                    fixed_context=fixed_context,
                     adapter=active_adapter,
                     skill_instructions=skill_instructions,
                     prompt_context=prompt_context,
@@ -258,7 +259,7 @@ class ContextCompactionService:
         session: SessionRecord,
         run: RunRecord,
         tools: list[ToolDefinition],
-        added_context: Sequence[str | ContextFragment] | None,
+        fixed_context: Sequence[ContextFragment],
         trigger: CompactionTrigger,
         force: bool,
         abort_signal: AbortSignal,
@@ -290,7 +291,7 @@ class ContextCompactionService:
                 messages=messages,
                 active=active,
                 tools=tools,
-                added_context=added_context or [],
+                fixed_context=fixed_context,
                 adapter=active_adapter,
                 skill_instructions=skill_instructions,
                 prompt_context=prompt_context,
@@ -423,7 +424,7 @@ class ContextCompactionService:
                 messages=messages[newly_covered:],
                 active=record,
                 tools=tools,
-                added_context=added_context or [],
+                fixed_context=fixed_context,
                 adapter=active_adapter,
                 skill_instructions=skill_instructions,
                 prompt_context=prompt_context,

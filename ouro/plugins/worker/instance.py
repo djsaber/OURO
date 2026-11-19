@@ -41,7 +41,7 @@ from ouro.plugins.worker.providers import WorkerProviderBridge
 from ouro.plugins.worker.scheduling import WorkerSchedulerBridge
 from ouro.plugins.worker.services import WorkerServiceBridge
 from ouro.plugins.worker.tool_groups import WorkerToolGroupBridge
-from ouro.sdk.plugins import v5 as sdk
+from ouro.sdk.plugins import v6 as sdk
 
 
 class WorkerPluginInstance:

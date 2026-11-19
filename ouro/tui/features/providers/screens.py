@@ -383,6 +383,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             "endpoint-audio-input",
             "endpoint-video-input",
             "endpoint-streaming",
+            "endpoint-inline-system-messages",
             "endpoint-structured-output",
         }
     )
@@ -428,6 +429,9 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             if existing is not None
             else False,
             "endpoint-streaming": (existing.supports_streaming if existing is not None else True),
+            "endpoint-inline-system-messages": existing.supports_inline_system_messages
+            if existing is not None
+            else False,
             "endpoint-structured-output": (
                 existing.supports_structured_output if existing is not None else True
             ),
@@ -648,6 +652,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             supports_audio_input=self._capabilities["endpoint-audio-input"],
             supports_video_input=self._capabilities["endpoint-video-input"],
             supports_streaming=self._capabilities["endpoint-streaming"],
+            supports_inline_system_messages=self._capabilities["endpoint-inline-system-messages"],
             supports_structured_output=self._capabilities["endpoint-structured-output"],
             reasoning_text_field=cast(Literal["reasoning_content", "reasoning"] | None, field),
             reasoning=(
@@ -731,6 +736,12 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
                 "endpoint-streaming",
                 "Streaming",
                 enabled_state=self._capabilities["endpoint-streaming"],
+                group="ADVANCED",
+            ),
+            Choice(
+                "endpoint-inline-system-messages",
+                "Inline system messages",
+                enabled_state=self._capabilities["endpoint-inline-system-messages"],
                 group="ADVANCED",
             ),
             Choice(

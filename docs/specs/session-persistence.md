@@ -36,7 +36,7 @@ OURO_HOME/
   trash/sessions/<trash_id>/
 ```
 
-当前 `data_layout_version` 为 44，SQLite schema 为 28；各持久记录的版本见下文 Canonical 数据与投影。
+当前 `data_layout_version` 为 46，SQLite schema 为 30。各持久记录的版本见下文 Canonical 数据与投影。
 SQLite 同样使用会话文件目录保存附件，资源元信息保存在数据库；跨后端传输使用统一归档。
 初始化只接受当前格式；不支持或缺失的版本抛出 `UnsupportedDataVersionError`，不扫描或转换历史记录。
 空数据目录/数据库初始化为当前格式。保留已有数据时，先停写，再按[数据升级指南](../guides/data-upgrade.md)检查和升级；Store 不清空数据。
@@ -98,22 +98,18 @@ Files 索引按 Run、Input 等业务身份定位成员。Run 查询只读该 Ru
 输入查询读取其最新成员。SQLite 后端对应查询保持表和索引定位；输入重复键查询
 按历史顺序取最新保留消息。输入领域自身的一次接受约束仍由接受记录负责。
 
-委派结果收集通过 `load_run_result_references` 读取当前保留历史的首条匹配委派输入、最后一条 assistant
-身份及 assistant/tool_result 的有序去重资源 ID，不展开整个 Run 正文。Files 的已有成员引用保存委派输入键和
+委派结果收集通过 `load_run_result_references` 读取首条匹配的委派输入、最后一条助手回复，
+以及已发布的助手回复和工具结果按历史顺序去重的资源 ID。Files 的成员引用保存委派输入键和
 资源 ID；SQLite 保存对应列并使用覆盖索引。确定工具结果的资源 ID 在提交前从固定 Outcome 解析，随消息发布
 维护，MessageFact 不复制 Outcome 的资源列表或正文。未知反馈发布后，迟到 Outcome 不改变该成员引用。
 撤销同步移除成员，完整转存从物化快照重建引用。此查询仍遍历该 Run 的小成员记录，内存只保留所需结果 ID 与
 唯一资源 ID，不声称资源列表或 Run 成员数无限增长时为固定成本。
 
-assistant 回包按 Session、Run、turn 定位，包含带 Call 引用的模型响应；持久 Context Provider 片段按
-Session、Run、delivery key 定位最后值。Files 索引保存这两类查询键及对应成员引用，身份作为 SQL 参数传递；
-没有对应身份的消息不增加这两类索引。SQLite 使用相同业务身份的复合表达式索引。
-查询只物化选中的一条事实，不建立 Run 全消息缓存；撤销截断索引后，片段查询自然回到仍保留的最后值。
+助手回复按 Session、Run 和 turn 定位，包括带 Call 引用的响应。Context Provider 片段按 Session 和 delivery key
+定位最近一次保留的投递，跨 Run 复用。两类查询都只物化选中的一条事实。
 
-续跑所需的 Run 成员存在性、user/system 输入存在性只查询成员引用，不读取正文；最后 assistant 查询只物化所选一条事实。
-Files 和 SQLite 均使用对应的 Run 索引与 role 部分索引，无须对成员身份进行哈希。
-scaffold 不影响这里的输入存在性语义，
-助手 Call 帧仍属于最后 assistant 查询结果。这些索引同样随追加、快照创建和撤销的原生提交维护。
+续跑通过成员索引判断 Run 是否有消息、Session 是否有输入。索引按消息来源区分输入、助手回复和工具结果，
+显式使用 `assistant` 角色的输入也计入输入。两个后端在消息追加、快照创建和撤销时同步维护这些索引。
 
 continuation 的执行事实读取 `RunMessageCounts`，不加载整 Run 消息。工具数按已发布消息中的
 Run/turn/tool_call_id 去重，声明和结果只计一次；未发布 Call 不计入，Driver 的结果消息也计入。
@@ -147,7 +143,7 @@ SQLite 在同一事务中插入摘要并更新 Session。查询使用只读边�
 Session 的 `pending_input_ids` 只保存待处理输入的 FIFO 身份。`InputRecord` 保存接受时的原文、固定技能内容、
 附件、来源与执行归属；`InputState` 保存路由字段及 pending/consumed/cancelled/withdrawn 状态和已提交消息身份。
 两个后端都用 `(session_id, input_id)` 直接定位不可变的 `inputs` 正文和独立的 `input_states` 状态。
-Host 输入身份不用于构造路径。可省略的字段只在值不为默认值时编码。已接受输入始终保存 `role`、`scaffold` 和 `semantic_tag`，无标签时 `semantic_tag` 为 `null`。
+Host 输入身份不用于构造路径。可省略的字段只在值不为默认值时编码。已接受输入始终保存 `role` 和 `semantic_tag`，无标签时 `semantic_tag` 为 `null`。
 技能内容、附件判别字段和插件自有数据完整保留。
 单独接受输入时，正文、初始状态与 Session 队列头在同一数据库事务中生效。取消不读取或重写原文。
 消息分页、尾部查询和模型上下文按所选消息分批读取引用的 Input，每批只解码一次相同身份；调用方直接取得正文，不需自行追踪引用。按完整对话帧向前翻阅时，游标按需逐条解析，不提前展开未选中的消息。
@@ -163,7 +159,7 @@ Host 输入身份不用于构造路径。可省略的字段只在值不为默认
 消息、分页和最近请求的显式读取在边界内物化所选字节，返回值可携带 URI 与原资源身份。
 `MessageFact` 是持久化形态，拒绝同时内嵌已引用的正文或附件意图；`MessageRecord` 是显式物化的单条执行/查询值，
 不含 loader 或隐式读取。`as_fact()` 在写入边界保留引用与消息自有内容，不把物化副本落盘。
-引用绑定必须与 Input 消费处于同一决定，角色、scaffold 与语义标签必须符合已接受意图；缺失或跨 Session 的 Input 明确报错。
+引用绑定必须与 Input 消费处于同一决定，角色与语义标签必须符合已接受意图；缺失或跨 Session 的 Input 明确报错。
 原始输入只含 resource_refs 时，消费生成的附件元信息属于消息自有内容，不冒充接受时已保存的附件意图。
 附件观察和正文共享输入身份及原子消费单元；输入回执返回正文消息，只有附件时返回附件消息。
 消息 metadata 不接受 `queued_input_id`，读取不猜测旧关联字段。
@@ -214,7 +210,7 @@ Files 的 `session_read` 遇到未决 `commit.json` 抛出 `SessionRecoveryRequi
 使用同一只读边界，不隐式恢复；创建和 CAS 更新仍显式进入 mutation。其余旧查询入口继续按执行恢复职责审查。
 
 Session、Run、Message、Event、Compaction、ContextSnapshot 和 Delegation 是独立持久化根记录。每个 payload
-必须显式携带各自当前 `schema_version`：Session 为 6，Run 为 11，ModelRequestHeader 为 11、Manifest 为 10，Message 为 8，Compaction 为 3，Delegation 为 3，InputRecord/InputState/ToolCallRecord/ToolCallStart/ToolCallState 为 1，ToolOutcomeRecord 为 2；ResourceRecord 为 3。
+必须显式携带各自当前 `schema_version`：Session 为 6，Run 为 12，ModelRequestHeader 为 11、Manifest 为 10，Message 为 9，Compaction 为 3，Delegation 为 3，InputRecord/InputState 为 2，ToolCallRecord/ToolCallStart/ToolCallState 为 1，ToolOutcomeRecord 为 2；ResourceRecord 为 3。
 
 最近请求通过统一 Session 提交接收小头和 `RequestManifestRecord`，不接受完整查询 DTO 作为持久正文。
 `load_latest_request` 返回已存骨架；完整 `load_latest_context` 在同一个 Session 读边界内点读其固定消息引用，
@@ -363,8 +359,8 @@ Files 未决帧决定使消息、Call 状态与 Run 点查明确报需恢复，�
 消息提交的领域准备阶段只对 `placeholder` Session 提取标题，将结果与消息写入同一个
 `SessionCommit` 决定。File/SQLite adapter 不解释标题内容，不另建标题更新事务；读取列表不触发补全。
 
-提取只检查本次提交中 `role=user` 且 `scaffold=false` 的消息，选择第一条非空文字，合并连续空白后取前
-60 个字符；无文字的显式技能调用使用 `Skill: <name>`。附件回执、附件正文、助手回复和其他脚手架不提供标题。
+提取只检查本次提交中 `role=user` 的消息，选择第一条非空文字，合并连续空白后取前
+60 个字符；无文字的显式技能调用使用 `Skill: <name>`。附件回执、附件正文、助手回复和其他框架消息不提供标题。
 仅发送附件时保留占位标题，之后首次提交有效文字再补全。上传、文件引用、直接输入和队列消费使用同一规则，
 不以附件类型、会话创建时刻或消息计数判断是否命名。已有 `fallback/generated/user` 标题不随后续输入改写。
 撤销消息不撤销 Session 标题；分支继承标题及其来源和锁定标记。
@@ -421,7 +417,7 @@ CLI/TUI 自行决定参数、文字和展示样式，框架只返回类型化摘
 索引、回收站发布以及 session lock；部署初始化和 catalog 维护不属于该端口。新的后端必须保持这些行为语义，
 而不只是复制方法签名。
 
-`MessageRecord` 显式保存封闭的 `role=system|user|assistant|tool_result`、独立的 `scaffold` 布尔值和可选
+`MessageRecord` 显式保存封闭的 `role=system|user|assistant|tool_result|harness` 和可选
 `semantic_tag`。引用 Input 的正文消息从同一接受记录物化正文和 `semantic_attributes`。
 独立消息自行保存标签属性。tool_calls/tool_result 按前述固定事实引用物化。
 
@@ -520,7 +516,7 @@ Application 的窗口观察只读指定消息范围，并从当前 Call、Draft 
 identity 定位。文件后端按 ID 读取事实、按 Run/input 读取所属成员引用；SQLite 使用对应的 Run 和 Input
 表达式索引。点查、结果交付与等待回执验证不得为此加载完整 runtime session，具体布局见前述消息事实契约。
 
-续跑通过 Run 成员查询确认旧代次仍有保留消息，并通过输入成员查询确认历史存在 user/system 输入，包含 scaffold。
+续跑通过 Run 成员查询确认旧代次仍有保留消息，并通过输入成员查询确认历史存在 user/system/harness 输入。
 消息角色属于 Files 的成员元数据；最后 assistant 回复使用按 Run 分组的成员索引，SQLite 使用对应部分索引。
 这两个查询不物化无关正文；索引与消息事实沿用同一提交和撤销边界，不形成另一份正文来源。
 Run 结果查询只读取指定 Run 和其最后一条 assistant 回复。Host 已消费回执按 Input 身份定位消息，
@@ -585,8 +581,7 @@ Session、Catalog 与 Host DTO 统一以 `current_model` 表达完整 `provider_
 Catalog 直接投影 Session 保存的路由，读取、展示和筛选不依赖 Provider 配置是否可用。
 
 Catalog 与 Host DTO 均不保存完整 transcript；文本查询只覆盖 title、至多 160 字符的最后消息预览、workspace、
-model 和 tags。最后消息预览只选择消息提供方明确声明为 `scaffold=false` 的 user/assistant 消息；不得从 role、
-semantic tag 或 producer provenance 猜测脚手架属性。全文搜索是独立未来能力，不能借 disposable Catalog 复制
+model 和 tags。最后消息预览选择 user/assistant 消息。全文搜索是独立未来能力，不能借 disposable Catalog 复制
 canonical 对话。
 
 root Session 有 active 或无法判定的 Agent descendant 时不能归档。trash 与归档语义不同：正常生命周期路径通过
@@ -602,7 +597,7 @@ root Session 有 active 或无法判定的 Agent descendant 时不能归档。tr
 - 分支 lineage 写入 root/parent/fork 字段。
 - 含 `resource_refs` 的分支通过 ResourceService 验证存在性，并与消息一起原子发布引用关系。
 - 分支当前 Harness 取所选消息之后的边界；分支头取当前版本。`copy/reset/reject` 一致作用于保留消息
-  锚点引用的全部版本。reset 移除 owner 状态和声明的脚手架投影，不能经分支内撤销复活；reject 不能被当前
+  锚点引用的全部版本。reset 移除 owner 状态和声明的框架消息投影，不能经分支内撤销复活；reject 不能被当前
   空状态绕过。分支点若是必须 reset 的投影则拒绝。
 - 重映射 Session、消息与版本身份。activation identity 按 Session 归属，与不透明 owner payload 一起保留，
   不单独重写其中一侧引用。

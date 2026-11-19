@@ -13,7 +13,7 @@ from ouro.core.state import SessionRecord
 from ouro.core.tools import ToolCallRequest
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.providers import FauxProvider
-from ouro.sdk.plugins import v5 as sdk
+from ouro.sdk.plugins import v6 as sdk
 from ouro.tools import ToolRegistry
 from tests.application.tool_runtime import store as store
 

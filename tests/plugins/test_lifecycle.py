@@ -16,7 +16,7 @@ from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.registry import PluginCommandError, PluginCommandRegistry
 from ouro.plugins.resources import OwnedTaskGroup
-from ouro.sdk.plugins import v5 as sdk
+from ouro.sdk.plugins import v6 as sdk
 from ouro.tools import ToolRegistry
 
 PLUGIN_ID = "dev.ouro.lifecycle"
@@ -50,7 +50,7 @@ def create_runtime(
                 "name": "Lifecycle",
                 "version": "1.0.0",
                 "namespace": "lifecycle",
-                "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
+                "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "lifecycle_plugin:create_plugin",

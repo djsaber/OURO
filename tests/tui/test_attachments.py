@@ -774,7 +774,7 @@ async def test_terminal_file_paste_uploads_and_submits_on_both_pages(
         assert app._controller.session_id == identity
         catalog.assert_awaited_once()
         snapshot = runtime.store.load_session(identity)
-        body = next(message for message in snapshot.messages if not message.scaffold)
+        body = next(message for message in snapshot.messages if message.role != "harness")
         assert body.text_content == content.text
         assert body.input_attachments == content.attachments
         assert uploaded.read_text(encoding="utf-8") == "file material"

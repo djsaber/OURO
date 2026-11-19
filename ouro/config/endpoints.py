@@ -36,6 +36,7 @@ class EndpointChanges(TypedDict, total=False):
     supports_image_input: bool
     supports_audio_input: bool
     supports_video_input: bool
+    supports_inline_system_messages: bool
     supports_streaming: bool
     supports_structured_output: bool
     reasoning: EndpointReasoningConfig
@@ -60,6 +61,7 @@ class ProviderEndpointConfig(OuroModel):
     supports_image_input: bool = False
     supports_audio_input: bool = False
     supports_video_input: bool = False
+    supports_inline_system_messages: bool = False
     supports_streaming: bool = True
     supports_structured_output: bool = True
     reasoning: EndpointReasoningConfig = Field(default_factory=EndpointReasoningConfig)

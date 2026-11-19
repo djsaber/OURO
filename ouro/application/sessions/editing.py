@@ -82,13 +82,13 @@ def undo_user_input(
                     (
                         item
                         for item in reversed(queue.eligible_session(session))
-                        if item.source == "user" and item.role == "user" and not item.scaffold
+                        if item.source == "user" and item.role == "user"
                     ),
                     None,
                 )
             )
             if pending is not None:
-                if pending.source != "user" or pending.role != "user" or pending.scaffold:
+                if pending.source != "user" or pending.role != "user":
                     raise ValueError("Undo requires a directly submitted user input")
                 committed = _commit_undo(
                     store,
@@ -200,7 +200,7 @@ def undo_user_input(
 
 def _direct_user_message(message: MessageRecord) -> bool:
     return is_editable_user_input(message) and (
-        message.scaffold or message.metadata.get("session_input_source") == "user"
+        message.role == "harness" or message.metadata.get("session_input_source") == "user"
     )
 
 

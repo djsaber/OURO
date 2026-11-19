@@ -48,7 +48,9 @@ async def test_context_building_and_recording_do_not_require_a_summary(tmp_path,
     preparation = runtime.context_preparation
     saved = store.load_session(session.session_id).messages
     try:
-        built = await preparation.build(session=session, run=run, tools=[], model_round=1)
+        built = await preparation.build(
+            session=session, run=run, turn_id="turn", tools=[], model_round=1
+        )
         assert built.view.metrics.over_budget
         assert not strategy.requests and not provider.calls
         with pytest.raises(ContextBlockedError):
@@ -72,7 +74,7 @@ async def test_context_building_and_recording_do_not_require_a_summary(tmp_path,
             messages=[context_note, *built.messages[-2:]],
             source_messages=built.messages,
             tools=[],
-            added_context=built.added_context,
+            fixed_context=built.fixed_context,
             adapter=runtime.adapter,
             prompt_context=built.prompt_context,
         )
@@ -99,7 +101,7 @@ async def test_context_building_and_recording_do_not_require_a_summary(tmp_path,
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
 @pytest.mark.parametrize(
     ("covered", "change"),
-    [(4, "none"), (128, "none"), (4, "append"), (4, "title"), (4, "fragment")],
+    [(4, "none"), (128, "none"), (4, "append"), (4, "title")],
 )
 async def test_auto_compaction_reuses_views_and_reloads_only_changed_history(
     tmp_path, monkeypatch, backend, covered, change
@@ -153,7 +155,7 @@ async def test_auto_compaction_reuses_views_and_reloads_only_changed_history(
     class Strategy(RecordingStrategy):
         async def compact(self, request, *, signal=None):
             assert request.previous_summary == "earlier summary"
-            assert len(request.messages) == 10 + int(change == "fragment")
+            assert len(request.messages) == 10
             assert request.messages[0].message_id == messages[covered].message_id
             entered.set()
             await release.wait()
@@ -189,7 +191,6 @@ async def test_auto_compaction_reuses_views_and_reloads_only_changed_history(
             fragments=[
                 ContextFragment(
                     text="current dynamic value",
-                    persistence="message" if change == "fragment" else "ephemeral",
                 )
             ]
         )
@@ -236,10 +237,10 @@ async def test_auto_compaction_reuses_views_and_reloads_only_changed_history(
             store.save_session(current.model_copy(update={"title": "renamed during summary"}))
         release.set()
         view = await asyncio.wait_for(task, 10)
-        assert tails == ([11, 2] if change == "append" else [11])
+        assert tails == ([11, 3] if change == "append" else [11])
         # Initial Agent projection, canonical summary material, then accepted tail.
         # An actual append needs one further projection; a title change does not.
-        assert len(reads) == {"append": 4, "fragment": 2}.get(change, 3)
+        assert len(reads) == (4 if change == "append" else 3)
         assert len(views) == (3 if change == "append" else 2)
         assert views[-1]() is view.provider_context
         assert fragments == [covered + 11]
@@ -253,14 +254,13 @@ async def test_auto_compaction_reuses_views_and_reloads_only_changed_history(
             for block in message.content
             if isinstance(block, ImageContent)
         ]
-        assert len(actual_media) == (0 if change == "fragment" else 1)
-        if actual_media:
-            assert base64.b64decode(actual_media[0].uri.partition(",")[2]) == raw
+        assert len(actual_media) == 1
+        assert base64.b64decode(actual_media[0].uri.partition(",")[2]) == raw
         saved = store.load_latest_context(session.session_id)
         assert saved.provider_context == view.provider_context
-        assert store.load_active_compaction(
-            session.session_id
-        ).covered_message_count == covered + 10 + int(change == "fragment")
+        assert (
+            store.load_active_compaction(session.session_id).covered_message_count == covered + 10
+        )
         # Reuse is local to this preparation; the service retains no prior payload view.
         gc.collect()
         assert all(reference() is None for reference in views[:-1])

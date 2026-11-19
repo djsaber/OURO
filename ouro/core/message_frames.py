@@ -17,35 +17,34 @@ class MessageTruncation(OuroModel):
 def project_tool_exchanges(
     messages: Sequence[MessageRecord],
 ) -> tuple[list[MessageRecord], tuple[str, ...]]:
-    """Omit incomplete exchanges from Provider context without editing history."""
+    """Keep each model call and its results contiguous, in recorded result order."""
 
-    results = {
-        (message.run_id, message.turn_id, message.tool_result.tool_call_id)
-        for message in messages
-        if message.tool_result is not None and message.tool_result.producer.kind == "model"
-    }
-    complete_calls = set()
-    complete_messages = set()
-    for message in messages:
-        if not message.tool_calls or message.metadata.get("incomplete"):
-            continue
-        calls = {(message.run_id, message.turn_id, call.id) for call in message.tool_calls}
-        if calls <= results:
-            complete_calls.update(calls)
-            complete_messages.add(message.message_id)
-
+    pending: dict[tuple[str | None, str | None, str], int] = {}
+    batches: dict[int, list[MessageRecord]] = {}
+    for position, message in enumerate(messages):
+        if message.tool_calls:
+            batches[position] = []
+            for call in message.tool_calls:
+                pending[message.run_id, message.turn_id, call.id] = position
+        elif (result := message.tool_result) is not None and result.producer.kind == "model":
+            owner = pending.pop((message.run_id, message.turn_id, result.tool_call_id), None)
+            if owner is not None:
+                batches[owner].append(message)
     projected = []
+    included_results: set[str] = set()
     excluded = []
-    for message in messages:
-        incomplete = bool(message.tool_calls) and message.message_id not in complete_messages
-        if message.tool_result is not None and message.tool_result.producer.kind == "model":
-            incomplete = (
-                message.run_id,
-                message.turn_id,
-                message.tool_result.tool_call_id,
-            ) not in complete_calls
-        if incomplete:
-            excluded.append(message.message_id)
+    for position, message in enumerate(messages):
+        if message.tool_calls:
+            batch = batches[position]
+            if message.metadata.get("incomplete") or len(batch) != len(message.tool_calls):
+                excluded.append(message.message_id)
+                continue
+            projected.append(message)
+            projected.extend(batch)
+            included_results.update(result.message_id for result in batch)
+        elif message.tool_result is not None and message.tool_result.producer.kind == "model":
+            if message.message_id not in included_results:
+                excluded.append(message.message_id)
         else:
             projected.append(message)
     return projected, tuple(excluded)
@@ -63,7 +62,7 @@ def conversation_turns(messages: Sequence[MessageRecord]) -> list[list[MessageRe
 
 
 def _starts_user_turn(message: MessageRecord, previous: MessageRecord) -> bool:
-    if message.role != "user":
+    if message.role != "user" and not (message.role == "harness" and message.input_ref is not None):
         return False
     batch_id = message.metadata.get("session_input_batch_id")
     return not batch_id or batch_id != previous.metadata.get("session_input_batch_id")

@@ -212,10 +212,11 @@ async def test_two_tuis_follow_tools_and_consecutive_runs_without_duplicate_summ
                     assert len(tool_entries) == 1
                     assert tool_entries[0].started_at == result_message.tool_execution.started_at
                     assert tool_entries[0].ended_at == result_message.tool_execution.ended_at
+            head = owner.runtime.store.load_session_record(session.session_id).message_count
             for app, pilot in ((first, first_pilot), (second, second_pilot)):
                 await wait_until(
                     lambda app=app: (
-                        app._observation_subscription.applied_position.message_sequence == 6
+                        app._observation_subscription.applied_position.message_sequence == head
                     ),
                     pilot,
                     description="all displayed content acknowledged",

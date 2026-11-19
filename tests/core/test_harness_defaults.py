@@ -6,7 +6,7 @@ from ouro.core.context_providers import AttributedContextFragment, ContextFragme
 from ouro.core.continuations import ContinuationDecision
 from ouro.core.session_controls import HostSessionInput, SessionInputRequest
 from ouro.core.state import RunContinuationSettlementPlan
-from ouro.sdk.plugins import v5 as sdk
+from ouro.sdk.plugins import v6 as sdk
 
 
 @pytest.mark.parametrize(
@@ -35,6 +35,6 @@ from ouro.sdk.plugins import v5 as sdk
         (sdk.ContinuationDecision, {}),
     ],
 )
-def test_scaffold_defaults_to_user_and_preserves_explicit_role(factory, fields):
-    assert factory(**fields).role == "user"
+def test_framework_input_defaults_to_harness_and_preserves_explicit_role(factory, fields):
+    assert factory(**fields).role == "harness"
     assert factory(**fields, role="system").role == "system"

@@ -85,24 +85,10 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         assert not list(screen.query("Button"))
         assert not list(screen.query("Checkbox"))
         assert not screen.query_one("#choice-filter", Input).display
-        assert [choice.group for choice in screen._choices] == [
-            "BASIC",
-            "BASIC",
-            "BASIC",
-            "BASIC",
-            "ADVANCED",
-            "ADVANCED",
-            "ADVANCED",
-            "ADVANCED",
-            "ADVANCED",
-            "ADVANCED",
-            "ADVANCED",
-            "ADVANCED",
-            "ADVANCED",
-            "ADVANCED",
-            "ADVANCED",
-            "ACTIONS",
+        assert [choice.group for choice in screen._choices] == ["BASIC"] * 4 + ["ADVANCED"] * 12 + [
+            "ACTIONS"
         ]
+        assert screen._capabilities["endpoint-inline-system-messages"] is False
         assert screen._capabilities["endpoint-tools"] is True
         assert screen._capabilities["endpoint-audio-input"] is False
         assert screen._capabilities["endpoint-video-input"] is False
@@ -141,6 +127,10 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         await pilot.press("enter")
         await pilot.pause()
         assert screen._capabilities["endpoint-image-input"] is True
+        options.highlighted = options.get_option_index("endpoint-inline-system-messages")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert screen._draft().supports_inline_system_messages is True
         assert screen._capabilities["endpoint-streaming"] is True
 
         for invalid, error in (

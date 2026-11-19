@@ -27,7 +27,7 @@ def install_plugin(app, directory):
         "name": "Synthetic commands",
         "version": "1.0.0",
         "namespace": "command_probe",
-        "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
+        "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
         "runtime": {"kind": "python-inprocess", "entrypoint": "command_probe_plugin:create_plugin"},
         "contributes": {
             "commands": [
@@ -50,7 +50,7 @@ def install_plugin(app, directory):
         encoding="utf-8",
     )
     (source / "command_probe_plugin.py").write_text(
-        """from ouro.sdk.plugins import v5 as sdk
+        """from ouro.sdk.plugins import v6 as sdk
 
 class Plugin:
     async def start(self): pass
@@ -60,9 +60,9 @@ class Plugin:
         async def inputs(call):
             return sdk.CommandOutput(output='accepted', session_input_batches=(
                 sdk.SessionInputBatch(inputs=(
-                    sdk.SessionInput(prompt='Synthetic scaffold', scaffold=True,
+                    sdk.SessionInput(prompt='Synthetic context', role='harness',
                                      semantic_tag='probe'),
-                    sdk.SessionInput(prompt='Inspect evidence'),
+                    sdk.SessionInput(prompt='Inspect evidence', role='user'),
                 )),
             ))
         return sdk.ContributionSet(commands=[
@@ -203,14 +203,12 @@ async def run_one(backend, mode, scenario, delay_ms):
                 statuses = []
             else:
                 snapshot = await asyncio.to_thread(app.runtime.store.load_session, session_id)
-                canonical = [
-                    (m.role, m.text_content, m.scaffold, m.semantic_tag) for m in snapshot.messages
-                ]
+                canonical = [(m.role, m.text_content, m.semantic_tag) for m in snapshot.messages]
                 runs = await asyncio.to_thread(app.runtime.store.load_runs, session_id)
                 statuses = [run.status for run in runs]
                 assert statuses and all(status == "completed" for status in statuses), statuses
                 assert [m.text_content for m in snapshot.messages if m.semantic_tag == "probe"] == [
-                    "Synthetic scaffold"
+                    "Synthetic context"
                 ]
             return {
                 "backend": backend,

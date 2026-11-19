@@ -395,7 +395,7 @@ async def test_display_menu_toggles_thinking_in_place(
         assert isinstance(menu, ChoiceScreen)
         assert [(choice.label, choice.enabled_state) for choice in menu._choices] == [
             ("Thinking", False),
-            ("Scaffold messages", False),
+            ("Harness messages", False),
             ("Execution traces", False),
         ]
         for shown in (True, False):

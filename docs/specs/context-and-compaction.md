@@ -58,29 +58,23 @@ OpenAI Chat Completions、OpenAI Responses 与 Anthropic Messages 均由公共�
 不生成调用规则。工具目录中的结构化契约保持原样。
 
 基础系统提示词保持原始内容；有 Skills 指令时使用稳定空行拼接。Context Provider 返回
-`target="system_prompt"` 的 ephemeral fragment 时，只有 fragment 显式提供 `semantic_tag`，Core 才使用统一
+`target="system_prompt"` 的指令片段时，只有 fragment 显式提供 `semantic_tag`，Core 才使用统一
 semantic envelope renderer 包裹原始正文；未提供标签时直接拼接正文。投影按稳定顺序位于基础提示词和 Skills
 之后，进入 token 估算和请求快照，但不构造消息。恢复投影只在模型上下文中标记 incomplete assistant 尝试，
 不把它升级为 canonical 完成消息。
 
-脚手架输入、Context Fragment 和续跑决策默认使用 `role=user`，提供方可显式声明其他角色。
-基础指令与 Skills 继续组装为 system prompt；Agent Context 的 AGENTS.md 指令和运行环境信息显式声明
-`role=system, target=system_prompt`，只进入系统提示词，不构造 user 消息。
-内置 Plan 与 Goal 的 Context Provider 使用 `persistence=message`，在模型请求准备边界将 user 脚手架追加到
-canonical history；模式和目标状态不并入 system prompt。子 Agent 指导和异步结果也以 user 脚手架进入普通输入队列。
-这些消息保留来源和语义标签，user 角色不表示真人输入，也不改变执行权限。
-请求准备重试按 Run、model round、提供方及片段位置构成的 delivery key 点查最后一次持久值。
-内容、角色、scaffold 与语义标签未变时不重复追加，改变时追加新事实；被摘要覆盖不使此重试身份失效。
+Host 和插件通过 `harness` 投递框架消息。运行环境、模式变化和 Driver 指引按首次投递顺序追加到会话。同一提供方、同一位置的状态片段按正文、角色、标签和可选的生产方 `revision` 去重。相同文案代表新的状态变化时，生产方可以指定新的 revision，该值只写入会话元数据。Driver 显式发起的请求指令按 Run 和模型轮次记录。重试、恢复和撤回查询当前保留的最近一次投递。
+基础系统指令、Skills 和面向系统提示词的 AGENTS.md 保持独立。端点配置 `supports_inline_system_messages` 决定 `harness` 在原位置编码为 `system` 或 `user`。并行调用与全部原生结果构成完整批次，期间收到的消息在批次之后交付。端点、指令和工具目录稳定时，连续请求保留已呈现的消息前缀。压缩、撤回、媒体预算裁剪和切换模型可以重新选择上下文。
+输入显式采用 `assistant` 角色时，历史保留其输入身份。同一轮的模型回复独立提交，并由请求记录引用。
 
 系统提示词、补充提示词、Skills 目录与请求级注入不被压缩改写。压缩前后使用同一次请求已解析的固定上下文，
 并将其完整计入输入预算。Agent 系统指令同时作为背景提供给生成策略，帮助理解会话，但不成为摘要模型的系统指令。
 
-Agent 的有效系统上下文为固定系统上下文加最新压缩结果。最新结果通过唯一的
-`role=system, semantic_tag=conversation-summary` 投影进入 Provider 的 system/instructions；原系统提示词完整保留。
+最新压缩结果以 `role=harness, semantic_tag=conversation-summary` 作为所选历史的第一条消息，角色按端点能力投影。
 再次压缩只替换这一结果，不累计追加旧摘要。canonical history 保留原始消息，投影使用最新结果及未覆盖尾部。
 
 显式用户技能激活正文保存在 canonical 输入中。压缩记录通过 `retained_skill_message_ids` 保存需要随上下文提供的
-已覆盖技能来源；请求准备层按这些固定引用恢复技能正文为 ephemeral user context，仍在尾部的激活不重复注入。
+已覆盖技能来源。请求准备层按这些引用恢复用户技能正文，仍在尾部的激活只呈现一次。
 正文从已接受的激活块重建，不重新读取文件、不提升角色、不追加 canonical 消息，并计入预算与请求快照。
 这部分背景固定到下一次压缩，不随当前执行 Run 切换而移除，也不依赖运行实例的内存状态。
 
@@ -246,10 +240,10 @@ Run；Run 是执行归属，不是压缩边界。摘要覆盖不删除或改写 
 
 内置 `builtin.llm_summary` 位于 `ouro/application/context/summary.py`，使用独立模型请求，不进入主 Agent 循环，
 不创建持久化 Session，不携带普通工具。摘要模型的 system 仅含其压缩指令；Agent 系统背景以
-`role=user, semantic_tag=agent-system-context` 脚手架传入，已有摘要与待压缩会话以
+`role=user, semantic_tag=agent-system-context` 消息传入，已有摘要与待压缩会话以
 `role=user, semantic_tag=conversation-to-summarize` 传入。两者都是待理解的材料，不能混入摘要模型的系统指令。
 会话材料包含正文、可读思考、工具调用与结果；签名、密文及原生续接 envelope 不作为摘要正文。
-每个分块及重试均保留 Agent 背景，估算覆盖全部脚手架、标签、转义正文、已有摘要及压缩指令。
+每个分块及重试均保留 Agent 背景，估算覆盖全部摘要输入、标签、转义正文、已有摘要及压缩指令。
 其提示词要求完整简洁的替代摘要，不复述固定系统指令，不依赖数值输出预算模板。
 当前内置解析器提取非空 `<summary>` 正文，格式规则与提示词一起维护。
 

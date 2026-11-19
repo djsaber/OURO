@@ -13,7 +13,7 @@ from ouro.core.messages import (
     TextContent,
 )
 from ouro.core.provider import Usage
-from ouro.core.tool_result_projection import project_tool_result_messages
+from ouro.core.tool_result_projection import project_provider_messages
 from ouro.providers.openai_responses.errors import OpenAIResponsesError
 from ouro.providers.openai_responses.items import OpenAIResponsesItemAccumulator
 from ouro.providers.tool_content import ToolContentPolicy
@@ -151,19 +151,24 @@ def responses_input(
     messages: list[ModelMessage],
     *,
     system_prompt: str,
+    supports_inline_system_messages: bool = False,
     provider_id: str,
     model_id: str,
     scope: tuple[str, ...],
     supports_image_input: bool = False,
 ) -> dict[str, Any]:
     """Encode only content fields. Service capabilities and model options belong to the adapter."""
-    instructions = [system_prompt] if system_prompt else []
     items: list[dict[str, Any]] = []
     policy = ToolContentPolicy(
         native=frozenset({"text", "image"} if supports_image_input else {"text"})
     )
     try:
-        projected = project_tool_result_messages(messages, policy)
+        instructions, projected = project_provider_messages(
+            messages,
+            policy,
+            system_prompt=system_prompt,
+            supports_inline_system_messages=supports_inline_system_messages,
+        )
     except ValueError:
         raise OpenAIResponsesError("unsupported_input") from None
     for message in projected:
@@ -172,9 +177,6 @@ def responses_input(
             raise OpenAIResponsesError("unsupported_input")
         if has_image and (not supports_image_input or message.role not in {"user", "tool_result"}):
             raise OpenAIResponsesError("unsupported_input")
-        if message.role == "system":
-            instructions.append(message.text_content)
-            continue
         if message.role == "tool_result":
             if message.tool_result is None or not message.tool_result.tool_call_id:
                 raise OpenAIResponsesError("unsupported_input")
@@ -224,7 +226,7 @@ def responses_input(
                         ),
                     }
                 )
-    return {"instructions": "\n\n".join(instructions), "input": items}
+    return {"instructions": instructions, "input": items}
 
 
 def _input_content(message: ModelMessage) -> list[dict[str, Any]]:

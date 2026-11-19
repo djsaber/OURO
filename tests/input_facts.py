@@ -25,7 +25,6 @@ def input_records(session, messages):
                 source="user",
                 mode="follow_up",
                 role=message.role,
-                scaffold=message.scaffold,
                 semantic_tag=message.semantic_tag,
             ),
         )
@@ -81,7 +80,6 @@ def queued_input(session, **values):
         mode="follow_up",
         source="user",
         role="user",
-        scaffold=False,
         semantic_tag=None,
     )
     fields.update(values)

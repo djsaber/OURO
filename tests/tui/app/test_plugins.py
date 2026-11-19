@@ -19,7 +19,7 @@ from tests.tui.helpers import wait_for_screen as _wait_for_screen
 
 
 @pytest.mark.asyncio
-async def test_plugin_message_event_renders_non_scaffold_user_input(
+async def test_plugin_message_event_renders_non_harness_user_input(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -28,18 +28,16 @@ async def test_plugin_message_event_renders_non_scaffold_user_input(
         session_id="ses_plugin_input",
         role="user",
         text="Ship through Goal",
-        scaffold=False,
         sequence=1,
     )
-    scaffold = MessageRecord.text(
+    harness = MessageRecord.text(
         session_id="ses_plugin_input",
-        role="user",
+        role="harness",
         text="internal goal instruction",
-        scaffold=True,
         semantic_tag="goal-create",
         sequence=2,
     )
-    by_id = {message.message_id: message for message in (visible, scaffold)}
+    by_id = {message.message_id: message for message in (visible, harness)}
 
     async def queued_user_inputs(_session_id: str):
         return ()
@@ -54,7 +52,7 @@ async def test_plugin_message_event_renders_non_scaffold_user_input(
                 payload={"message_id": item.message_id},
                 sequence=index,
             )
-            for index, item in enumerate((scaffold, visible), start=1)
+            for index, item in enumerate((harness, visible), start=1)
         )
 
         app._projection = TuiSessionProjection("ses_plugin_input")

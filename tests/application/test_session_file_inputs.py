@@ -65,7 +65,7 @@ async def test_same_named_uploads_have_unambiguous_model_file_labels(tmp_path):
 
 
 @pytest.mark.parametrize("backend", ("files", "sqlite"))
-async def test_paired_attachment_scaffold_is_not_a_separate_undo_input(tmp_path, backend):
+async def test_paired_attachment_harness_is_not_a_separate_undo_input(tmp_path, backend):
     app = application_at(tmp_path / "home", backend=backend)
     path = tmp_path / "notes.txt"
     path.write_text("data", encoding="utf-8")
@@ -322,9 +322,9 @@ async def test_unavailable_reference_only_is_valid_without_inventing_user_text(t
     item = input_content.InputFileReference(name="missing.md", path=str(tmp_path / "missing.md"))
     result = await app.runtime.run("", attachments=(item,), workspace=str(tmp_path))
     messages = app.runtime.store.load_session(result.session.session_id).messages
-    assert messages[0].scaffold and messages[0].input_attachments == (item,)
+    assert (messages[0].role == "harness") and messages[0].input_attachments == (item,)
     projection = app.runtime.sessions.context(result.session.session_id).provider_context
     assert "File unavailable" in projection.messages[0].text_content
-    assert len([message for message in messages if message.role == "user"]) == 1
+    assert not any(message.role == "user" for message in messages)
     assert not app.runtime.resources.list_resources(result.session.session_id).resources
     await app.close()

@@ -326,7 +326,7 @@ class SelectivelyBlockingProvider:
         self.stopped = asyncio.Event()
 
     async def stream(self, *, model, messages, system_prompt="", tools=None, request_context=None):
-        if "scheduled" in messages[-1].text_content:
+        if any(message.text_content.startswith("<scheduled-task>") for message in messages):
             self.started.set()
             try:
                 await self.release.wait()

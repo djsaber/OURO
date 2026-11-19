@@ -116,18 +116,25 @@ class PreparedFileInputs:
         messages: list[MessageRecord | ModelMessage] = []
         tool_attachments: list[ModelMessage] = []
         for message, start in self._materialized(elided_ids):
-            if message.role != "tool_result" and tool_attachments:
+            call = message.tool_result
+            model_result = call is not None and call.producer.kind == "model"
+            if not model_result and tool_attachments:
                 messages.extend(tool_attachments)
                 tool_attachments.clear()
             if start is None:
                 messages.append(message)
                 continue
-            messages.append(message.model_copy(update={"content": message.content[:start]}))
-            call = message.tool_result
-            target = tool_attachments if call is not None else messages
+            body = message.content[:start]
+            if (
+                message.role not in {"user", "harness"}
+                or message.semantic_tag
+                or any(not isinstance(block, TextContent) or block.text for block in body)
+            ):
+                messages.append(message.model_copy(update={"content": body}))
+            target = tool_attachments if message.tool_calls or model_result else messages
             target.append(
                 ModelMessage(
-                    role="user",
+                    role="harness",
                     semantic_tag="attachments",
                     semantic_attributes={"tool_call_id": call.tool_call_id} if call else {},
                     content=message.content[start:],
@@ -169,7 +176,7 @@ def _input_media_omission(
 ) -> str | None:
     if kind not in modalities:
         return unsupported_content_text(kind)
-    if role not in {"user", "tool_result"}:
+    if role not in {"user", "harness", "tool_result"}:
         return f"This {kind} cannot be shown here. Ask the user to attach it to their next message."
     return None
 
@@ -269,7 +276,7 @@ class FileInputProjector:
         input_modalities: frozenset[MediaModality],
         workspace: str | None,
     ) -> MessageRecord:
-        """Persist the bounded file material in the ordinary scaffold content once."""
+        """Persist the bounded file material in the attachment observation once."""
         content = _prepare_media_content(
             message.content, role=message.role, modalities=input_modalities
         )
@@ -431,8 +438,8 @@ class FileInputProjector:
             else DEFAULT_INPUT_CONTENT_BUDGET
         )
         seen: set[tuple[str, str]] = set()
-        for message in reversed(messages):
-            omission = partial(_input_media_omission, message.role, modalities=input_modalities)
+        omission = partial(_input_media_omission, "harness", modalities=input_modalities)
+        for message in messages:
             content = _prepare_media_content(
                 message.content,
                 role=message.role,
@@ -454,11 +461,8 @@ class FileInputProjector:
                 content.extend(blocks)
                 content_left -= used
                 seen.add(key)
-            # A tool response or a labeled body has its own boundary in the model request.
-            separate = message.tool_result is not None or message.semantic_tag is not None
-            offset = body_size if separate and len(content) > body_size else None
+            offset = body_size if len(content) > body_size else None
             prepared.append(_PreparedMessage(message, content, tuple(paths.values()), offset))
-        prepared.reverse()
         return PreparedFileInputs(prepared, DEFAULT_REQUEST_MEDIA_CHARS)
 
     def _prepare_owned_media(
@@ -571,7 +575,7 @@ class FileInputProjector:
                 0,
             )
         if repeated:
-            return self._reference(source, "Repeated attachment; see the more recent file entry")
+            return self._reference(source, "Repeated attachment; see the earlier file entry")
         text_budget = preview_budget
         encoding = text_encoding(prefix)
         if encoding is None:

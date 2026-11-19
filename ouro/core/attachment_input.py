@@ -8,20 +8,18 @@ from ouro.core.messages import MessageRecord, ModelMessage, SkillActivationConte
 
 
 def is_editable_user_input(message: MessageRecord) -> bool:
-    return message.role == "user" and (
-        not message.scaffold
-        or (
-            message.semantic_tag == "attachments"
-            and bool(message.input_attachments)
-            and message.metadata.get("session_input_batch_size") == 1
-        )
+    return message.role == "user" or (
+        message.role == "harness"
+        and message.semantic_tag == "attachments"
+        and bool(message.input_attachments)
+        and message.metadata.get("session_input_batch_size") == 1
     )
 
 
 def editable_input_content(
     message: MessageRecord | ModelMessage, attachments: tuple[InputFile, ...]
 ) -> InputContent:
-    """Restore editor elements without turning display labels or scaffolds into user text."""
+    """Restore editor elements without turning display labels or harness notices into user text."""
     return InputContent(
         text="" if message.semantic_tag == "attachments" else message.text_content,
         attachments=attachments,
@@ -52,7 +50,7 @@ def separate_attachments(
     receipt = message.model_copy(
         update={
             "message_id": attachment_id,
-            "scaffold": True,
+            "role": "harness",
             "semantic_tag": "attachments",
             "content": [
                 TextContent(

@@ -257,8 +257,7 @@ def _wire_views(messages, system_prompt):
     )
     return (
         (chat[0]["content"], chat[1:]),
-        # Anthropic joins adjacent roles; appending content blocks preserves their prefix.
-        (system, [(item["role"], block) for item in anthropic for block in item["content"]]),
+        (system, anthropic),
         (responses["instructions"], responses["input"]),
     )
 
@@ -267,12 +266,17 @@ def _assert_compaction_prefixes(calls, system_prompts):
     previous = None
     previous_summary = None
     for messages, system_prompt in zip(calls, system_prompts, strict=True):
-        summaries = [message for message in messages if message.role == "system"]
+        summaries = [
+            message
+            for message in messages
+            if message.text_content.startswith("<conversation-summary>\n")
+        ]
         assert len(summaries) <= 1
+        assert all(message.role == "user" for message in summaries)
         summary = summaries[0].text_content if summaries else None
         views = _wire_views(messages, system_prompt)
         for system, _ in views:
-            assert system == system_prompt + (f"\n\n{summary}" if summary else "")
+            assert system == system_prompt
         if previous is not None and summary == previous_summary:
             for (old_system, old_messages), (system, new_messages) in zip(
                 previous, views, strict=True

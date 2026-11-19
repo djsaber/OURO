@@ -105,24 +105,7 @@ class QueuedInputQueue:
                 return self._host_receipt(session, request, record), None, session, ()
             session, item, _, events = self.enqueue(
                 session_id,
-                QueuedInput(
-                    history_epoch=session.history_epoch,
-                    history_bound=request.history_epoch is not None,
-                    queue_id=queue_id,
-                    prompt=request.prompt,
-                    driver=driver,
-                    mode=request.mode,
-                    title=request.title,
-                    resource_refs=request.resource_refs,
-                    queued_at=utc_now(),
-                    source="host",
-                    role=request.role,
-                    scaffold=request.scaffold,
-                    semantic_tag=request.semantic_tag,
-                    semantic_attributes=request.semantic_attributes,
-                    host_source_id=request.host_source_id,
-                    caused_by_run_id=session.active_run_id,
-                ),
+                queued_host_input(session, request, queue_id=queue_id, driver=driver),
             )
         return (
             HostInputReceipt(
@@ -242,7 +225,6 @@ class QueuedInputQueue:
                 queued_at=utc_now(),
                 source=source,
                 role=item.role,
-                scaffold=item.scaffold,
                 semantic_tag=item.semantic_tag,
                 semantic_attributes=item.semantic_attributes,
                 batch_id=batch_id,
@@ -512,7 +494,6 @@ def queued_input_event(session: SessionRecord, item: QueuedInput, queue_size: in
             "resource_refs": list(item.resource_refs),
             "source": item.source,
             "role": item.role,
-            "scaffold": item.scaffold,
             "semantic_tag": item.semantic_tag,
             "host_source_id": item.host_source_id,
             "delegation_id": item.delegation_id,
@@ -557,7 +538,6 @@ def input_message_events(
             payload.update(
                 queued_input_id=item.queue_id if queued else None,
                 role=message.role,
-                scaffold=message.scaffold,
                 semantic_tag=message.semantic_tag,
                 resource_refs=list(item.resource_refs),
                 skill_names=[skill.name for skill in item.skill_activations],
@@ -631,7 +611,6 @@ def same_queued_input(first: QueuedInput, second: QueuedInput) -> bool:
         "attachments",
         "source",
         "role",
-        "scaffold",
         "semantic_tag",
         "semantic_attributes",
         "host_source_id",
@@ -648,6 +627,32 @@ def same_queued_input(first: QueuedInput, second: QueuedInput) -> bool:
     )
 
 
+def queued_host_input(
+    session: SessionRecord,
+    request: HostSessionInput,
+    *,
+    queue_id: str,
+    driver: RunDriverBinding | None = None,
+) -> QueuedInput:
+    return QueuedInput(
+        history_epoch=session.history_epoch,
+        history_bound=request.history_epoch is not None,
+        queue_id=queue_id,
+        prompt=request.prompt,
+        driver=driver,
+        mode=request.mode,
+        title=request.title,
+        resource_refs=request.resource_refs,
+        queued_at=utc_now(),
+        source="host",
+        role=request.role,
+        semantic_tag=request.semantic_tag,
+        semantic_attributes=request.semantic_attributes,
+        host_source_id=request.host_source_id,
+        caused_by_run_id=session.active_run_id,
+    )
+
+
 def validate_host_input(record: InputRecord, request: HostSessionInput) -> None:
     """Keep a fixed Host input identity bound to its originally accepted request."""
     existing = record.item
@@ -659,7 +664,6 @@ def validate_host_input(record: InputRecord, request: HostSessionInput) -> None:
         or existing.mode != request.mode
         or existing.resource_refs != request.resource_refs
         or existing.role != request.role
-        or existing.scaffold != request.scaffold
         or existing.semantic_tag != request.semantic_tag
         or existing.semantic_attributes != request.semantic_attributes
         or existing.history_bound != (request.history_epoch is not None)

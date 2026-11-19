@@ -199,14 +199,13 @@ def test_message_batch_round_trip_preserves_independent_semantics(tmp_path, back
     store.initialize()
     session = SessionRecord(title="Message contract")
     store.create_session(session)
-    roles = ("system", "user", "assistant", "tool_result")
+    roles = ("system", "user", "harness", "assistant", "tool_result")
     messages = [
         MessageRecord.text(
             session_id=session.session_id,
             role=role,
             text=f"{role} content",
             sequence=index,
-            scaffold=index % 2 == 0,
             semantic_tag=f"{role.replace('_', '-')}-context",
         ).model_copy(
             update={
@@ -228,10 +227,10 @@ def test_message_batch_round_trip_preserves_independent_semantics(tmp_path, back
     reloaded = store.load_session(session.session_id).messages
 
     assert [message.role for message in reloaded] == list(roles)
-    assert [message.scaffold for message in reloaded] == [False, True, False, True]
     assert [message.semantic_tag for message in reloaded] == [
         "system-context",
         "user-context",
+        "harness-context",
         "assistant-context",
         "tool-result-context",
     ]

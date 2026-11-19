@@ -30,7 +30,7 @@ class ToolActivityRenderer(Protocol):
 
 
 TranscriptEntryKind = Literal[
-    "user", "scaffold", "assistant", "tool", "notice", "command", "compaction", "run"
+    "user", "harness", "assistant", "tool", "notice", "command", "compaction", "run"
 ]
 
 
@@ -57,7 +57,6 @@ class TranscriptEntry:
     run: RunPresentation | None = None
     compaction: CompactionPresentation | None = None
     error: bool = False
-    scaffold: bool = False
     # Source coordinates merge canonical windows; they do not change visual identity.
     source_sequence: int | None = field(default=None, compare=False)
     # Character offset of the semantic reference suffix in the complete copy text.

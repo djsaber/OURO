@@ -32,8 +32,7 @@ class SessionInputRequest(MessageSemantics):
     prompt: str
     mode: SessionInputMode = "follow_up"
     title: str | None = None
-    role: SessionInputRole = "user"
-    scaffold: bool = True
+    role: SessionInputRole = "harness"
     driver_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
@@ -92,9 +91,8 @@ class AttributedSessionInputBatch(SessionInputBatchRequest):
 
 
 class HostSessionInput(SessionInputRequest):
-    """A scaffold input produced by an OURO Host/Application component."""
+    """An input produced by an OURO Host/Application component."""
 
-    scaffold: Literal[True] = True
     history_epoch: int | None = Field(default=None, ge=0)
     host_source_id: str = Field(min_length=1)
     queue_id: str | None = Field(default=None, min_length=1, max_length=256)
@@ -120,16 +118,9 @@ class HostSessionInput(SessionInputRequest):
 
 
 class DelegatedTaskInput(SessionInputRequest):
-    """The user-role task that starts one prepared subagent Run.
+    """A parent Agent's task delivered to the child Session by the harness."""
 
-    Delegation provenance is application-owned and durable, but it must not
-    change the model role of the task supplied through ``SpawnAgent``. The user
-    role describes message semantics only; provenance still records delegation
-    as the producer and does not grant direct-user authority.
-    """
-
-    role: Literal["user"] = "user"
-    scaffold: Literal[True] = True
+    role: Literal["harness"] = "harness"
     delegation_id: str = Field(min_length=1, max_length=128)
     resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
 

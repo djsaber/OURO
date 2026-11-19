@@ -40,12 +40,9 @@ from ouro.core.errors import (
     ContextBlockedError,
     PersistenceError,
 )
+from ouro.core.events import EventRecord
 from ouro.core.message_frames import project_tool_exchanges
-from ouro.core.message_roles import MessageRole
-from ouro.core.message_semantics import (
-    SemanticTag,
-)
-from ouro.core.messages import MessageRecord, ModelMessage
+from ouro.core.messages import MessageRecord, ModelMessage, TextContent
 from ouro.core.observers import ContextPreparedObservation, FrozenJson, freeze_json
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict
 from ouro.core.session_ports import SessionStore
@@ -55,17 +52,16 @@ from ouro.prompts import AFK_CONTEXT_PROMPT
 
 
 class ContextMessageAppender(Protocol):
+    """Commit a message batch and return notifications at its canonical position."""
+
     def __call__(
         self,
         *,
         session: SessionRecord,
         run: RunRecord,
-        prompt: str,
-        role: MessageRole,
-        scaffold: bool,
-        metadata: dict[str, object],
-        semantic_tag: SemanticTag | None = None,
-    ) -> MessageRecord: ...
+        messages: list[MessageRecord],
+        events: tuple[EventRecord, ...],
+    ) -> tuple[EventRecord, ...]: ...
 
 
 @dataclass(frozen=True)
@@ -76,7 +72,7 @@ class PreparedContext:
     active: CompactionRecord | None
     messages: list[MessageRecord]
     view: ContextView
-    added_context: Sequence[str | ContextFragment]
+    fixed_context: Sequence[ContextFragment]
     prompt_context: PromptContext
 
 
@@ -92,7 +88,7 @@ class ContextPreparationService:
         events: RuntimeEventRecorder,
         context_builder: ContextBuilder,
         system_prompt: str,
-        append_context_message: ContextMessageAppender,
+        append_context_messages: ContextMessageAppender,
         prompt_context_resolver: PromptContextResolver | None = None,
         prepare_model_messages: ModelMessagePreparer | None = None,
         usage_service: UsageService | None = None,
@@ -104,7 +100,7 @@ class ContextPreparationService:
         self.context_builder = context_builder
         self.system_prompt = system_prompt
         self.prompt_context_resolver = prompt_context_resolver
-        self.append_context_message = append_context_message
+        self.append_context_messages = append_context_messages
         self.media_context = MediaContextPreparation(prepare_model_messages)
         self.usage_service = usage_service
 
@@ -142,6 +138,7 @@ class ContextPreparationService:
         *,
         session: SessionRecord,
         run: RunRecord,
+        turn_id: str,
         tools: list[ToolDefinition],
         model_round: int,
         adapter: RuntimeAdapter | None = None,
@@ -180,30 +177,28 @@ class ContextPreparationService:
                 "required context provider failed: "
                 f"{failure.plugin_id}:{failure.provider_id}: {failure.error_type}"
             )
-        added_context = await run_blocking(
+        fixed_context, appended, events = await run_blocking(
             self._materialize_context_fragments,
             provider_result.fragments,
             session=session,
             run=run,
-            messages=messages,
+            turn_id=turn_id,
             model_round=model_round,
+            driver_prompt=prompt,
         )
-        if prompt:
-            added_context.append(ContextFragment(text=prompt, semantic_tag="driver-instruction"))
-        if session.interaction_mode == "unattended":
-            added_context.append(
-                ContextFragment(
-                    text=AFK_CONTEXT_PROMPT,
-                    semantic_tag="unattended-mode-reminder",
-                )
-            )
+        await self.events.publish_committed(events)
+        if appended and appended[0].sequence != session.message_count + 1:
+            # A message was committed while providers evaluated. Include it before our receipts.
+            session, active, messages = await run_blocking(self.load_history, session.session_id)
+        else:
+            messages.extend(appended)
         view = await run_blocking(
             self.project,
             session=session,
             messages=messages,
             active=active,
             tools=tools,
-            added_context=added_context,
+            fixed_context=fixed_context,
             adapter=active_adapter,
             skill_instructions=skill_instructions,
             prompt_context=prompt_context,
@@ -214,7 +209,7 @@ class ContextPreparationService:
             active=active,
             messages=messages,
             view=view,
-            added_context=added_context,
+            fixed_context=fixed_context,
             prompt_context=prompt_context,
         )
 
@@ -240,29 +235,48 @@ class ContextPreparationService:
         *,
         session: SessionRecord,
         run: RunRecord,
-        messages: list[MessageRecord],
+        turn_id: str,
         model_round: int,
-    ) -> list[ContextFragment]:
-        ephemeral: list[ContextFragment] = []
-        for fragment in fragments:
-            if fragment.persistence == "ephemeral":
-                ephemeral.append(fragment)
+        driver_prompt: str,
+    ) -> tuple[list[ContextFragment], list[MessageRecord], tuple[EventRecord, ...]]:
+        fixed: list[ContextFragment] = [
+            fragment for fragment in fragments if fragment.target == "system_prompt"
+        ]
+        observations = [fragment for fragment in fragments if fragment.target == "message"]
+        if driver_prompt:
+            observations.append(
+                AttributedContextFragment(
+                    plugin_id="ouro.runtime",
+                    provider_id="driver",
+                    fragment_index=0,
+                    text=driver_prompt,
+                    semantic_tag="driver-instruction",
+                    revision=f"{run.run_id}:{model_round}",
+                )
+            )
+        unattended = session.interaction_mode == "unattended"
+        mode = AttributedContextFragment(
+            plugin_id="ouro.runtime",
+            provider_id="interaction-mode",
+            fragment_index=0,
+            text=AFK_CONTEXT_PROMPT
+            if unattended
+            else "Interactive mode is active. The user is available.",
+            semantic_tag="unattended-mode-reminder" if unattended else "interactive-mode",
+        )
+        observations.append(mode)
+        pending = []
+        for fragment in observations:
+            delivery_key = f"{fragment.plugin_id}:{fragment.provider_id}:{fragment.fragment_index}"
+            previous = self.store.find_context_provider_message(session.session_id, delivery_key)
+            if previous is None and fragment is mode and not unattended:
                 continue
-            delivery_key = (
-                f"{run.run_id}:{model_round}:{fragment.plugin_id}:"
-                f"{fragment.provider_id}:{fragment.fragment_index}"
-            )
-            previous = self.store.find_context_provider_message(
-                session.session_id, run.run_id, delivery_key
-            )
-            # Preparation can fail after persistence without advancing the model round.
-            # Deduplicate unchanged retries; append changed state after the previous value.
             if (
                 previous is not None
-                and previous.text_content == fragment.text
                 and previous.role == fragment.role
-                and previous.scaffold == fragment.scaffold
                 and previous.semantic_tag == fragment.semantic_tag
+                and previous.metadata.get("fragment_revision") == fragment.revision
+                and previous.text_content == fragment.text
             ):
                 continue
             metadata: dict[str, object] = {
@@ -273,24 +287,44 @@ class ContextPreparationService:
                 "model_round": model_round,
                 "fragment_index": fragment.fragment_index,
             }
+            if fragment.revision is not None:
+                metadata["fragment_revision"] = fragment.revision
             if fragment.generation_id is not None:
                 metadata["generation_id"] = fragment.generation_id
-            try:
-                message = self.append_context_message(
-                    session=session,
-                    run=run,
-                    prompt=fragment.text,
+            pending.append(
+                MessageRecord(
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    turn_id=turn_id,
                     role=fragment.role,
-                    scaffold=fragment.scaffold,
-                    metadata=metadata,
+                    content=[TextContent(text=fragment.text)],
                     semantic_tag=fragment.semantic_tag,
+                    metadata=metadata,
                 )
-            except PersistenceError as exc:
-                raise ContextBlockedError(
-                    "context provider message could not be persisted before model execution"
-                ) from exc
-            messages.append(message)
-        return ephemeral
+            )
+        if not pending:
+            return fixed, pending, ()
+        try:
+            events = self.append_context_messages(
+                session=session,
+                run=run,
+                messages=pending,
+                events=tuple(
+                    EventRecord(
+                        session_id=session.session_id,
+                        run_id=run.run_id,
+                        turn_id=turn_id,
+                        event_type="context_message_added",
+                        payload={"message_id": message.message_id},
+                    )
+                    for message in pending
+                ),
+            )
+        except PersistenceError as exc:
+            raise ContextBlockedError(
+                "context provider message could not be persisted before model execution"
+            ) from exc
+        return fixed, pending, events
 
     async def _observe_built_context(
         self,
@@ -426,7 +460,7 @@ class ContextPreparationService:
         messages: list[MessageRecord],
         active: CompactionRecord | None,
         tools: list[ToolDefinition],
-        added_context: Sequence[str | ContextFragment],
+        fixed_context: Sequence[ContextFragment],
         adapter: RuntimeAdapter,
         skill_instructions: str,
         prompt_context: PromptContext,
@@ -435,8 +469,8 @@ class ContextPreparationService:
             project_compacted_messages(messages, active)
         )
         # The durable compaction boundary fixes this prefix, including after recovery.
-        added_context = [
-            *added_context,
+        fixed_context = [
+            *fixed_context,
             *compacted_skill_context(
                 [
                     self.store.load_message(session.session_id, identity)
@@ -466,7 +500,7 @@ class ContextPreparationService:
             messages=effective_messages,
             source_messages=messages,
             tools=tools,
-            added_context=added_context,
+            fixed_context=fixed_context,
             adapter=adapter,
             skill_instructions=skill_instructions,
             prompt_context=prompt_context,
@@ -500,7 +534,7 @@ class ContextPreparationService:
         messages: Sequence[MessageRecord | ModelMessage],
         source_messages: Sequence[MessageRecord] = (),
         tools: list[ToolDefinition],
-        added_context: Sequence[str | ContextFragment],
+        fixed_context: Sequence[ContextFragment],
         adapter: RuntimeAdapter,
         prompt_context: PromptContext,
         skill_instructions: str = "",
@@ -511,9 +545,10 @@ class ContextPreparationService:
             source_messages=source_messages,
             tools=tools,
             system_prompt=prompt_context.system_prompt,
-            added_context=added_context,
+            fixed_context=fixed_context,
             additional_skill_instructions=skill_instructions,
             budget=adapter.model.context_budget,
+            supports_inline_system_messages=adapter.model.supports_inline_system_messages,
         )
 
     def materialize_history(

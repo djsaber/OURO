@@ -93,7 +93,7 @@ def test_result_collection_reads_only_membership_at_both_scales(store, monkeypat
     with store.session_read(session.session_id) as connection:
         if isinstance(store, SQLiteSessionStore):
             plans = connection.execute(
-                "EXPLAIN QUERY PLAN SELECT message_id, role, delegation_input_id, resource_refs "
+                "EXPLAIN QUERY PLAN SELECT message_id, kind, delegation_input_id, resource_refs "
                 "FROM messages WHERE session_id = ? AND run_id = ? ORDER BY row_id",
                 (session.session_id, run.run_id),
             ).fetchall()

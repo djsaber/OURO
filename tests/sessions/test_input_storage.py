@@ -51,7 +51,6 @@ def accepted(session, identity="input_selected", *, prompt=None):
             source="user",
             mode="follow_up",
             role="user",
-            scaffold=False,
             semantic_tag=None,
         ),
     )
@@ -87,8 +86,7 @@ def test_accepted_input_owns_sparse_body_and_history_materializes_independent_vi
     )
     attachment = MessageRecord(
         session_id=session.session_id,
-        role="user",
-        scaffold=True,
+        role="harness",
         semantic_tag="attachments",
         input_ref=InputMessageReference(input_id=record.item.queue_id, part="attachments"),
     )
@@ -639,7 +637,7 @@ def test_cold_message_queries_resolve_only_selected_input_bodies(store, monkeypa
     assert len([sql for sql in statements if " FROM inputs " in sql]) == 1
 
 
-@pytest.mark.parametrize("damage", ["unbound", "role", "scaffold", "tag"])
+@pytest.mark.parametrize("damage", ["unbound", "role", "tag"])
 def test_message_input_binding_rejects_invalid_publication_atomically(store, damage):
     session = SessionRecord()
     store.create_session(session)
@@ -651,7 +649,6 @@ def test_message_input_binding_rejects_invalid_publication_atomically(store, dam
     else:
         field, value = {
             "role": ("role", "system"),
-            "scaffold": ("scaffold", True),
             "tag": ("semantic_tag", "attachments"),
         }[damage]
         message = request.steps[0].message.model_copy(update={field: value})

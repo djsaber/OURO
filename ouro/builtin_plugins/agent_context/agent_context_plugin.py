@@ -13,7 +13,7 @@ from pathlib import Path
 
 from ouro import __version__
 from ouro.sdk.plugins.environment import PluginEnvironment
-from ouro.sdk.plugins.v5 import (
+from ouro.sdk.plugins.v6 import (
     ContextCall,
     ContextContribution,
     ContextFragment,
@@ -115,9 +115,7 @@ class AgentContextPlugin:
             fragments=(
                 ContextFragment(
                     text=self._render_system_information(call, self._clock()),
-                    role="system",
                     semantic_tag="ouro-system-information",
-                    target="system_prompt",
                 ),
             )
         )

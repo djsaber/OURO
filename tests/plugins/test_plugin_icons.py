@@ -22,7 +22,7 @@ def _package(root: Path, icon: str | None = "./assets/icon.png") -> Path:
         "name": "Icon example",
         "version": "1.0.0",
         "namespace": "icon",
-        "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
+        "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
         "runtime": {"kind": "python-inprocess", "entrypoint": "icon_plugin:create_plugin"},
     }
     if icon is not None:

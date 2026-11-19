@@ -69,7 +69,6 @@ def test_selected_message_cannot_resolve_a_foreign_input(record_kind):
                 source="user",
                 mode="follow_up",
                 role="user",
-                scaffold=False,
                 semantic_tag=None,
             ),
         )
@@ -92,7 +91,6 @@ def test_materialized_message_does_not_mutate_its_input_or_message_fact():
             source="user",
             mode="follow_up",
             role="user",
-            scaffold=False,
             semantic_tag=None,
             attachments=(InputFileReference(path="C:/workspace/one.txt", name="one.txt"),),
             skill_activations=(
@@ -139,7 +137,6 @@ def test_input_body_materialization_checks_message_owned_attachment_offsets():
             source="user",
             mode="follow_up",
             role="user",
-            scaffold=False,
             semantic_tag=None,
         ),
     )

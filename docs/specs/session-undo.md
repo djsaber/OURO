@@ -208,7 +208,7 @@ canonical 查询在一致读边界内返回已提交事实；存在未决文件�
 4. 消息头、数量、压缩可达性、上下文缓存与当前活动投影对应新历史。
 5. Run、事件、实际 usage、资源与子会话执行事实保留。
 
-对 user/system/assistant/tool_result 节点使用相同语义。不以 role、scaffold、turn_id 或工具帧作为框架拒绝条件。
+对 user/system/assistant/tool_result/harness 节点使用相同语义。不以 role、turn_id 或工具帧作为框架拒绝条件。
 目标不存在、已撤回、锚点不可用、快照损坏或前置条件冲突时，必须在形成提交决定之前失败。
 已知同一操作的重试按结果去重，不能将“目标已不存在”一律解释为成功。
 
@@ -236,7 +236,7 @@ history_epoch 是所有会话效果入口的持久化校验，包括插件、工
 没有保留的有效输入时明确拒绝。普通、未撤销的崩溃恢复继续使用原 Run 和原执行契约。
 Provider continuation artifact、旧上下文快照与旧工具恢复许可均须经过历史有效性判断。
 
-有效输入包含合法的 Host 和委派任务，不因 scaffold 标记而拒绝。普通继续执行不隐式删除已持久化中断片段，
+有效输入包含合法的 Host 和委派任务。普通继续执行不隐式删除已持久化中断片段，
 通过恢复投影进入 Provider 上下文；不完整工具交换的诊断代码为 incomplete_tool_exchange。
 Supervisor 待执行的继续请求绑定接受时的 history_epoch；开始执行前代次已改变则拒绝。
 子会话的新执行沿用 Delegation 冻结的定义、工具范围、约束与预算，并更新当前 child Run 归属；保留旧 Run 审计。
@@ -244,7 +244,7 @@ Supervisor 待执行的继续请求绑定接受时的 history_epoch；开始执�
 ### UN-04：应用选择与完整输入
 
 应用入口支持 message_id 或 queue_id 定位直接用户输入；默认 /undo 优先最后一条待消费直接用户输入，
-否则选当前历史最后一条直接用户消息。来源依据 canonical provenance，不仅检查 role=user 或 scaffold=false。
+否则选当前历史最后一条直接用户消息。来源依据 canonical provenance，不仅检查 role=user 。
 其他角色和插件/Host 代发的用户角色消息不能通过用户撤销入口获得直接用户身份。
 有正文的附件输入以正文定位，撤回整个输入时一并移除配对骨架；该骨架不能单独作为用户撤销目标。
 仅含文件的输入以附件骨架定位，撤回时恢复完整文件项。

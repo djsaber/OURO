@@ -1006,6 +1006,7 @@ def _endpoint_capabilities(endpoint: ProviderEndpointView) -> tuple[str, ...]:
             ("image", endpoint.supports_image_input),
             ("audio", endpoint.supports_audio_input),
             ("video", endpoint.supports_video_input),
+            ("inline system", endpoint.supports_inline_system_messages),
             ("reasoning", endpoint.reasoning.capability.activation != "unsupported"),
         )
         if supported

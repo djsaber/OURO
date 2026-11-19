@@ -147,6 +147,7 @@ class PluginProvider:
                 max_output_tokens=model.max_output_tokens,
                 temperature=model.temperature,
                 supports_tools=model.supports_tools,
+                supports_inline_system_messages=model.supports_inline_system_messages,
                 supports_streaming=model.supports_streaming,
                 supports_structured_output=model.supports_structured_output,
                 input_modalities=tuple(sorted(model.input_modalities)),

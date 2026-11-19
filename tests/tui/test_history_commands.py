@@ -111,9 +111,7 @@ async def test_undo_skill_and_attachment_survive_navigation_restart_and_submissi
             if workers:
                 await wait_for_workers(restarted, workers)
         messages = restarted_application.runtime.store.load_messages_tail(session.session_id)
-        user = next(
-            message for message in messages if message.role == "user" and not message.scaffold
-        )
+        user = next(message for message in messages if message.role == "user")
         assert user.text_content == "edited"
         assert user.input_attachments[0].resource_id == resource.resource_id
         assert next(

@@ -50,7 +50,7 @@ def package(
         "namespace": "scheduled",
         "name": "Scheduled probe",
         "version": version,
-        "engines": {"ouro": ">=0.4.0", "plugin_api": "^5.0.0"},
+        "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
         "runtime": {"kind": kind, "entrypoint": "scheduled_plugin:create_plugin"}
         if kind == "python-inprocess"
         else {"kind": "worker", "command": ["{python}", "scheduled_plugin.py"]},

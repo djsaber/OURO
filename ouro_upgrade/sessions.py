@@ -42,7 +42,7 @@ from ouro_upgrade.units import UpgradeUnit, UpgradeUnits
 from ouro_upgrade.workspace import Workspace
 
 # Source container families select a reader, independently of the target writer.
-FILE_LAYOUTS = {9: "records", 41: "native", 42: "native", 43: "native"}
+FILE_LAYOUTS = {9: "records", 41: "native", 42: "native", 43: "native", 44: "native", 45: "native"}
 
 
 def write(

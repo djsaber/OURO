@@ -17,6 +17,7 @@ EventType = Literal[
     "user_message_added",
     "host_message_added",
     "plugin_message_added",
+    "context_message_added",
     "model_request_started",
     "model_text_delta",
     "model_reasoning_delta",
@@ -68,6 +69,12 @@ EventType = Literal[
     "event_observer_overflow",
     "diagnostic",
 ]
+
+# Notifications that reference a committed message by its ID.
+SESSION_INPUT_MESSAGE_EVENTS = frozenset(
+    {"user_message_added", "host_message_added", "plugin_message_added", "queued_input_consumed"}
+)
+SESSION_MESSAGE_ADDED_EVENTS = SESSION_INPUT_MESSAGE_EVENTS | {"context_message_added"}
 
 # Live model observations; only current text/reasoning prefixes are recoverable.
 MODEL_STREAM_DELTA_EVENT_TYPES = frozenset(

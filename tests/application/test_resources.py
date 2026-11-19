@@ -32,7 +32,7 @@ from ouro.core.messages import (
 )
 from ouro.core.observers import ObserverRegistry
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.core.tools import ToolResult
+from ouro.core.tools import ToolCallProducer, ToolCallRequest, ToolResult
 from ouro.resources import LocalResourceStore
 from ouro.resources.files import write_resource_contents
 from ouro.sessions.backends.files.store import LocalSessionStore
@@ -142,10 +142,13 @@ def test_model_projection_reads_file_once_and_revalidates_each_request(
     projected = resources.project_model_messages(
         [message], input_modalities=frozenset({"image"}) if image else frozenset()
     )
+    body, attachment = projected
+    assert body.content == message.content
+    assert (attachment.role, attachment.semantic_tag) == ("harness", "attachments")
     if image:
-        assert any(isinstance(block, ImageContent) for block in projected[0].content)
+        assert any(isinstance(block, ImageContent) for block in attachment.content)
     else:
-        assert "attached text" in projected[0].text_content
+        assert "attached text" in attachment.text_content
     assert message.text_content == "Read this"
     assert len(reads) == 1
     # Ordinary reads reject missing or resized files without scanning a full digest.
@@ -729,9 +732,11 @@ def test_text_resource_is_projected_with_source_label_without_mutating_canonical
         text="Summarize this",
     ).model_copy(update={"resource_refs": [resource.resource_id]})
 
-    projected = resources.project_model_messages([canonical], input_modalities=frozenset())[0]
+    body, projected = resources.project_model_messages([canonical], input_modalities=frozenset())
 
     assert canonical.text_content == "Summarize this"
+    assert body.content == canonical.content
+    assert projected.semantic_tag == "attachments"
     assert canonical.resource_refs == [resource.resource_id]
     assert 'File: "notes.txt"' in projected.text_content
     assert resource.resource_id not in projected.text_content
@@ -758,9 +763,10 @@ def test_image_resource_projection_is_request_local_data_uri(tmp_path) -> None:
         text="Describe it",
     ).model_copy(update={"resource_refs": [resource.resource_id]})
 
-    projected = resources.project_model_messages(
+    body, projected = resources.project_model_messages(
         [canonical], input_modalities=frozenset({"image"})
-    )[0]
+    )
+    assert body.content == canonical.content
     image = next(block for block in projected.content if isinstance(block, ImageContent))
 
     assert image.uri.startswith("data:image/png;base64,")
@@ -784,7 +790,24 @@ def test_referenced_files_preserve_tool_results_and_batch_order(tmp_path) -> Non
         for call in ("one", "two")
     ]
     question = MessageRecord.text(session_id=session_id, role="user", text="continue")
-    history = [*results, question]
+    driver = MessageRecord(
+        session_id=session_id,
+        role="tool_result",
+        tool_result=ToolResultReference(
+            tool_name="Report",
+            tool_call_id="three",
+            producer=ToolCallProducer(kind="driver", driver_id="report"),
+        ),
+        content=[TextContent(text="Driver report")],
+        resource_refs=[resource.resource_id],
+    )
+    request = MessageRecord(
+        session_id=session_id,
+        role="assistant",
+        tool_calls=[ToolCallRequest(id=call, name="Report") for call in ("one", "two")],
+        resource_refs=[resource.resource_id],
+    )
+    history = [request, *results, driver, question]
     prepared = resources.prepare_model_messages(history, input_modalities=frozenset())
     assert [item.message_id for item in prepared.materialize()] == [
         item.message_id for item in history
@@ -792,13 +815,16 @@ def test_referenced_files_preserve_tool_results_and_batch_order(tmp_path) -> Non
     projected = prepared.request_messages()
     view = ContextBuilder().build(messages=projected, source_messages=history, tools=[])
     wire = encode("chat", view.provider_context.messages, image_input=False)
-    assert [message["role"] for message in wire] == ["tool", "tool", "user", "user", "user"]
-    for index, source in enumerate(results):
+    assert [message["role"] for message in wire] == ["assistant", "tool", "tool", *["user"] * 6]
+    assert "<attachments>" in wire[3]["content"]
+    for index, source in enumerate(results, start=1):
         assert wire[index]["content"] == source.text_content
-        attached = wire[2 + index]["content"]
+        attached = wire[3 + index]["content"]
         assert f'<attachments tool_call_id="{wire[index]["tool_call_id"]}">' in attached
         assert path.name in attached
     assert wire[-1]["content"] == "continue"
+    assert "<driver-tool-result " in wire[6]["content"]
+    assert '<attachments tool_call_id="three">' in wire[7]["content"]
     assert view.manifest.materialize(session_id, {m.message_id: m for m in history}) == (
         view.provider_context.messages
     )
@@ -818,8 +844,8 @@ def test_repeated_media_resource_preserves_each_occurrence_and_elides_without_en
     latest = old.model_copy(update={"message_id": "msg_latest"})
     before = resources.project_model_messages([old], input_modalities=frozenset({"image"}))
     both = resources.project_model_messages([old, latest], input_modalities=frozenset({"image"}))
-    assert both[0] == before[0]
-    assert any(isinstance(part, ImageContent) for part in both[1].content)
+    assert both[: len(before)] == before
+    assert any(isinstance(part, ImageContent) for part in both[-1].content)
     encoded = []
     encode_image = base64.b64encode
 
@@ -832,27 +858,18 @@ def test_repeated_media_resource_preserves_each_occurrence_and_elides_without_en
         [old, latest], input_modalities=frozenset({"image"})
     )
     assert encoded == []
-    result = prepared.materialize(frozenset({old.message_id}))
+    result = prepared.request_messages(frozenset({old.message_id}))
     assert encoded == [path.stat().st_size]
-    assert "[Historical image]" in result[0].text_content
+    assert "[Historical image]" in result[1].text_content
     assert "old image" in result[0].text_content
-    assert result[1] == both[1]
+    assert result[2:] == both[2:]
 
 
 @pytest.mark.parametrize("source_kind", ["inline", "resource"])
-@pytest.mark.parametrize(
-    "role,image_input,keeps_image",
-    [
-        ("tool_result", False, False),
-        ("tool_result", True, True),
-        ("user", False, False),
-        ("user", True, True),
-        ("assistant", False, False),
-        ("assistant", True, False),
-    ],
-)
+@pytest.mark.parametrize("role", ["tool_result", "user", "assistant", "system"])
+@pytest.mark.parametrize("image_input", [False, True])
 def test_resource_preparation_preserves_eligible_tool_content_for_provider_placement(
-    tmp_path, source_kind, role, image_input, keeps_image
+    tmp_path, source_kind, role, image_input
 ):
     _, _, resources, service = _services(tmp_path)
     session_id = service.create().session.session_id
@@ -875,6 +892,11 @@ def test_resource_preparation_preserves_eligible_tool_content_for_provider_place
 
     content = [part for item in projected for part in item.content]
     images = [part for part in content if isinstance(part, ImageContent)]
+    if source_kind == "resource":
+        body, attachment = projected
+        assert (body.role, body.content) == (role, message.content)
+        assert (attachment.role, attachment.semantic_tag) == ("harness", "attachments")
+    keeps_image = image_input and (source_kind == "resource" or role in {"user", "tool_result"})
     assert [part.uri for part in images] == ([uri] if keeps_image else [])
     assert message == before
     if role == "tool_result":

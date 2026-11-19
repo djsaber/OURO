@@ -150,8 +150,10 @@ async def test_cold_recovery_and_runtime_never_read_covered_message_bodies(
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
-@pytest.mark.parametrize("covered", [4, 2048])
-async def test_preparation_reads_only_the_selected_suffix(tmp_path, monkeypatch, backend, covered):
+@pytest.mark.parametrize(("covered", "interleaved"), [(4, False), (2048, False), (4, True)])
+async def test_preparation_reads_only_the_selected_suffix(
+    tmp_path, monkeypatch, backend, covered, interleaved
+):
     store = (
         LocalSessionStore(tmp_path)
         if backend == "files"
@@ -188,7 +190,16 @@ async def test_preparation_reads_only_the_selected_suffix(tmp_path, monkeypatch,
 
     def context_provider(call):
         counts.append(call.message_count)
-        return ContextProviderResult()
+        if interleaved:
+            store.append_message(
+                MessageRecord.text(
+                    session_id=call.session_id,
+                    run_id=call.run_id,
+                    role="user",
+                    text="arrived during preparation",
+                )
+            )
+        return ContextProviderResult(fragments=[ContextFragment(text="current observation")])
 
     providers = ContextProviderRegistry()
     providers.replace_owner(
@@ -212,7 +223,7 @@ async def test_preparation_reads_only_the_selected_suffix(tmp_path, monkeypatch,
 
     def selected_tail(session_id, *, limit=100, include_media=True):
         reads.append(limit)
-        assert limit == 2
+        assert limit <= 4
         return original_tail(session_id, limit=limit, include_media=include_media)
 
     def forbid_history(*args, **kwargs):
@@ -231,11 +242,13 @@ async def test_preparation_reads_only_the_selected_suffix(tmp_path, monkeypatch,
             abort_signal=AbortSignal(),
         )
         assert counts == [covered + 2]
-        assert reads == [2]
+        assert reads == ([2, 4] if interleaved else [2])
         assert "covered summary" in view.provider_context.messages[0].text_content
         assert [message.text_content for message in view.provider_context.messages[1:]] == [
             f"message {covered}",
             f"message {covered + 1}",
+            *(["arrived during preparation"] if interleaved else []),
+            "current observation",
         ]
         latest = store.load_latest_context(session.session_id)
         assert latest is not None
@@ -263,6 +276,7 @@ async def test_persistent_fragment_retries_use_the_last_value_even_after_compact
     )
     store.save_session(session)
     values = ["first state", "retained state"]
+    observed = []
     providers = ContextProviderRegistry()
     providers.replace_owner(
         "test",
@@ -271,9 +285,7 @@ async def test_persistent_fragment_retries_use_the_last_value_even_after_compact
                 plugin_id="dev.ouro.test",
                 provider_id="state",
                 handler=lambda _: ContextProviderResult(
-                    fragments=[
-                        ContextFragment(text=value, persistence="message") for value in values
-                    ]
+                    fragments=[ContextFragment(text=value) for value in values]
                 ),
             ),
         ),
@@ -282,6 +294,7 @@ async def test_persistent_fragment_retries_use_the_last_value_even_after_compact
         store=store,
         tools=ToolRegistry(),
         context_providers=providers,
+        event_sink=observed.append,
         adapter=RuntimeAdapter(FauxProvider(), ModelMetadata(model_id="test", provider_id="test")),
     )
 
@@ -328,5 +341,127 @@ async def test_persistent_fragment_retries_use_the_last_value_even_after_compact
         )
         await prepare()
         assert store.load_session_record(session.session_id).message_count == 3
+        await runtime.drain_events()
+        notices = [event for event in observed if event.event_type == "context_message_added"]
+        assert [event.payload["message_id"] for event in notices] == [
+            first.message_id,
+            last.message_id,
+            newest.message_id,
+        ]
+        assert [event.message_after for event in notices] == [0, 0, 2]
+        assert [event.position.message_sequence for event in notices if event.position] == [2, 3]
+        assert all(event.turn_id == "turn_retry" for event in notices)
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_assistant_input_and_model_reply_both_reach_the_next_request(tmp_path, backend):
+    store = (
+        LocalSessionStore(tmp_path)
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sessions.db")
+    )
+    store.initialize()
+    providers = ContextProviderRegistry()
+    providers.replace_owner(
+        "test",
+        (
+            ContextProviderRegistration(
+                plugin_id="dev.ouro.test",
+                provider_id="example",
+                handler=lambda _: ContextProviderResult(
+                    fragments=[ContextFragment(role="assistant", text="An example answer")]
+                ),
+            ),
+        ),
+    )
+    runtime = RuntimeService(
+        store=store,
+        tools=ToolRegistry(),
+        context_providers=providers,
+        adapter=RuntimeAdapter(FauxProvider(), ModelMetadata(model_id="test", provider_id="test")),
+    )
+    try:
+        first = await runtime.run("first")
+        session_id = first.session.session_id
+        prompt, example, reply = store.load_run_messages(session_id, first.run.run_id)
+        assert [prompt.text_content, example.text_content, reply.text_content] == [
+            "first",
+            "An example answer",
+            first.final_text,
+        ]
+        assert example.turn_id == reply.turn_id
+        assert example.role == reply.role == "assistant"
+        assert store.load_latest_context_header(session_id).response_message_id == reply.message_id
+        original = runtime.sessions.context(session_id).provider_context
+        second = await runtime.run("second", session_id=session_id)
+        assert second.run.status == "completed"
+        current = runtime.sessions.context(session_id).provider_context
+        assert current.system_prompt == original.system_prompt
+        assert current.messages[: len(original.messages)] == original.messages
+        assert [(m.role, m.text_content) for m in current.messages[len(original.messages) :]] == [
+            ("assistant", first.final_text),
+            ("user", "second"),
+        ]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_driver_actions_and_mode_transitions_extend_the_existing_request(tmp_path, backend):
+    store = (
+        LocalSessionStore(tmp_path)
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sessions.db")
+    )
+    store.initialize()
+    session = SessionRecord()
+    store.create_session(session)
+    run = RunRecord(session_id=session.session_id, status="running")
+    store.save_run(run)
+    store.save_session(
+        session.model_copy(update={"active_run_id": run.run_id, "status": "running"})
+    )
+    runtime = RuntimeService(
+        store=store,
+        tools=ToolRegistry(),
+        adapter=RuntimeAdapter(
+            FauxProvider(),
+            ModelMetadata(model_id="m", provider_id="p", supports_inline_system_messages=True),
+        ),
+    )
+
+    async def prepare(round_number, mode):
+        selected = store.load_session_record(session.session_id)
+        if selected.interaction_mode != mode:
+            selected = selected.model_copy(update={"interaction_mode": mode})
+            store.save_session(selected)
+        view = await runtime.context_compaction.prepare(
+            session=selected,
+            run=run,
+            tools=[],
+            model_round=round_number,
+            turn_id=f"turn_{round_number}",
+            abort_signal=AbortSignal(),
+            prompt="Inspect again",
+        )
+        return view.provider_context.messages
+
+    try:
+        first = await prepare(1, "unattended")
+        assert first == await prepare(1, "unattended")
+        second = await prepare(2, "interactive")
+        assert second[: len(first)] == first
+        assert second == await prepare(2, "interactive")
+        assert all(message.role == "system" for message in second)
+        records = store.load_session(session.session_id).messages
+        assert [m.semantic_tag for m in records] == [
+            "driver-instruction",
+            "unattended-mode-reminder",
+            "driver-instruction",
+            "interactive-mode",
+        ]
+        assert {m.role for m in records} == {"harness"}
     finally:
         await runtime.close()

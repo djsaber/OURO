@@ -343,38 +343,34 @@ def test_history_keeps_reused_provider_call_ids_in_their_native_scope(
 
 
 @pytest.mark.asyncio
-async def test_history_load_projects_scaffold_visibility_from_message_record(
+async def test_history_load_projects_harness_visibility_from_message_record(
     tmp_path: Path,
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
     messages = (
         MessageRecord.text(
-            session_id="ses_scaffold",
-            role="user",
+            session_id="ses_harness",
+            role="harness",
             text="internal goal instruction",
-            scaffold=True,
             semantic_tag="goal-create",
             sequence=1,
         ),
         MessageRecord.text(
-            session_id="ses_scaffold",
+            session_id="ses_harness",
             role="user",
             text="Ship the visible objective",
-            scaffold=False,
             sequence=2,
         ),
         MessageRecord.text(
-            session_id="ses_scaffold",
-            role="assistant",
-            text="internal assistant scaffold",
-            scaffold=True,
+            session_id="ses_harness",
+            role="harness",
+            text="internal assistant harness",
             sequence=3,
         ),
         MessageRecord.text(
-            session_id="ses_scaffold",
+            session_id="ses_harness",
             role="assistant",
             text="Visible answer",
-            scaffold=False,
             sequence=4,
         ),
     )

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, replace
 
-from ouro.sdk.plugins.v5 import (
+from ouro.sdk.plugins.v6 import (
     CommandCall,
     CommandOutput,
     JsonValue,
@@ -175,15 +175,13 @@ def _creation_output(objective: str, token_budget: int | None) -> CommandOutput:
                         prompt=creation_instruction(),
                         mode="follow_up",
                         title=f"Create Goal: {objective[:48]}",
-                        role="user",
-                        scaffold=True,
+                        role="harness",
                         semantic_tag="goal-create",
                     ),
                     SessionInput(
                         prompt=objective,
                         mode="follow_up",
                         role="user",
-                        scaffold=False,
                     ),
                 ),
                 coalesce_key=_LIFECYCLE_COALESCE_KEY,
@@ -220,8 +218,7 @@ def _lifecycle_output(
                     SessionInput(
                         prompt=lifecycle_prompt(action, goal),
                         mode="follow_up",
-                        role="user",
-                        scaffold=True,
+                        role="harness",
                         semantic_tag=f"goal-{action}",
                     ),
                 ),

@@ -752,7 +752,7 @@ async def test_older_page_finishing_after_a_switch_cannot_mutate_the_new_view(
         assert app._history_before_cursor is None
 
 
-async def test_cached_reentry_retains_run_boundaries_in_hidden_scaffold_messages(tmp_path):
+async def test_cached_reentry_retains_run_boundaries_in_hidden_harness_messages(tmp_path):
     application = streaming_application(tmp_path, None)
     session, _ = seed(application, 0)
     store = application.runtime.store
@@ -768,10 +768,9 @@ async def test_cached_reentry_retains_run_boundaries_in_hidden_scaffold_messages
         [
             MessageRecord.text(
                 session_id=session.session_id,
-                role="user",
+                role="harness" if 200 <= index < 300 else "user",
                 text=f"message {index}",
                 run_id=run.run_id if index < 300 else None,
-                scaffold=200 <= index < 300,
             )
             for index in range(405)
         ]

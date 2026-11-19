@@ -29,8 +29,7 @@ class ContinuationDecision(OuroModel):
     prompt: str | None = None
     mode: SessionInputMode = "follow_up"
     title: str | None = None
-    role: SessionInputRole = "user"
-    scaffold: bool = True
+    role: SessionInputRole = "harness"
     semantic_tag: SemanticTag | None = None
     coalesce_key: str | None = Field(default=None, min_length=1, max_length=128)
     reason: str | None = None
