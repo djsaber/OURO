@@ -29,7 +29,7 @@ from ouro.tui.conversation.history_models import (
     _RenderedEntry,
 )
 from ouro.tui.conversation.markdown_stream import _BACKGROUND_MARKDOWN_CHARS
-from ouro.tui.conversation.messages import _HISTORY_ACTION
+from ouro.tui.conversation.messages import _HISTORY_ACTION, _LABEL_ACTION
 from ouro.tui.markdown import assistant_markdown
 from ouro.tui.selection import RangeSelectionOnly
 from ouro.tui.state import (
@@ -42,6 +42,7 @@ from ouro.tui.text_wrapping import ProseText, wrap_plain_lines
 from ouro.tui.theme import DEFAULT_TUI_THEME, TuiTheme, theme_for
 
 _ACTION_STYLE = Style(meta={_HISTORY_ACTION: True})
+_LABEL_STYLE = Style(meta={_HISTORY_ACTION: _LABEL_ACTION})
 
 
 def _thought_label(
@@ -56,7 +57,7 @@ def _thought_label(
         expanded=expanded,
         theme=theme,
     )
-    label.stylize(_ACTION_STYLE)
+    label.stylize(_LABEL_STYLE)
     return label
 
 
@@ -92,6 +93,7 @@ class _MessageContent:
     created_at: datetime | None = None
     lowlight: bool = False
     reference_start: int | None = None
+    source_label: str | None = None
 
     def __rich_console__(
         self,
@@ -114,14 +116,14 @@ class _MessageContent:
             content.append(self.text[self.reference_start :], style=self.theme.accent)
         lines = console.render_lines(content, content_options, pad=False)
         if self.created_at is not None:
-            timestamp = Text(
-                _format_user_message_timestamp(
-                    self.created_at,
-                    separator=self.theme.inline_separator,
-                ),
-                style=self.theme.text_lowlight,
+            label = _format_user_message_timestamp(
+                self.created_at, separator=self.theme.inline_separator
             )
-            lines.extend(console.render_lines(timestamp, content_options, pad=False))
+            style = Style(color=self.theme.text_lowlight)
+            if self.source_label is not None:
+                label = self.theme.inline_separator.join((self.source_label, label))
+                style += _LABEL_STYLE
+            lines.extend(console.render_lines(Text(label, style=style), content_options, pad=False))
         border = Segment(
             "│",
             Style(color=self.theme.text_lowlight if self.lowlight else self.theme.accent)
@@ -167,13 +169,17 @@ def _format_user_message_timestamp(
     return f"{date_label}{separator}{time_label}"
 
 
-def _highlight_message_row(line: Strip, *, reasoning: bool, theme: TuiTheme) -> Strip:
-    """Paint the thought label or message panel without laying out the entry again."""
-    hover = Style(color=theme.text_highlight) if reasoning else Style(bgcolor=theme.highlight)
+def _highlight_message_row(line: Strip, *, label: bool, theme: TuiTheme) -> Strip:
+    """Paint an interactive label or message panel without laying out the entry again."""
+    hover = Style(color=theme.text_highlight) if label else Style(bgcolor=theme.highlight)
     segments = []
     for segment in line:
         style = segment.style
-        if style is not None and style.meta.get(_HISTORY_ACTION) and (reasoning or style.bgcolor):
+        if (
+            style is not None
+            and style.meta.get(_HISTORY_ACTION)
+            and (style.meta[_HISTORY_ACTION] == _LABEL_ACTION if label else style.bgcolor)
+        ):
             segment = Segment(segment.text, style + hover, segment.control)
         segments.append(segment)
     return Strip(segments, line.cell_length)
@@ -596,6 +602,7 @@ def _entry_renderables(
                         created_at=entry.created_at,
                         lowlight=entry.kind in {"harness", "command"},
                         reference_start=entry.reference_start,
+                        source_label=entry.message_source.label if entry.message_source else None,
                     ),
                     (1, 0, 1, 0),
                 ),

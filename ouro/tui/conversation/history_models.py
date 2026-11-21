@@ -43,6 +43,13 @@ class CompactionPresentation:
 
 
 @dataclass(frozen=True)
+class MessageSource:
+    label: str
+    # Results point to a delegated child. Tasks and follow-ups point to the parent.
+    child_delegation_id: str | None = None
+
+
+@dataclass(frozen=True)
 class TranscriptEntry:
     """Immutable presentation input for one persisted transcript boundary."""
 
@@ -61,6 +68,7 @@ class TranscriptEntry:
     source_sequence: int | None = field(default=None, compare=False)
     # Character offset of the semantic reference suffix in the complete copy text.
     reference_start: int | None = None
+    message_source: MessageSource | None = None
 
 
 _PieceTag = Literal["body", "user", "reasoning"]

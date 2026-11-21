@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import pytest
+from rich.color import Color
 from textual.app import App, ComposeResult
 
 from ouro.application.contracts.agents import AgentTreeNode
 from ouro.application.contracts.execution import RuntimeActivitySnapshot
 from ouro.tui.subagent_navigation import SubagentNavigationPanel
+from ouro.tui.theme import theme_for
 
 
 def _agent(
@@ -187,6 +189,14 @@ async def test_subagent_panel_hover_previews_stable_visible_node_and_click_reque
         assert panel.selected_session_id == "ses_root"
         assert "Inspect task 3 • Worker 3" in panel.render_content(80).plain
         assert panel.render_content(80).plain.rstrip().endswith("■ | ▣■ ■■■■ ■■■■")
+        theme = theme_for(panel)
+
+        def node_color(x: int) -> Color | None:
+            return panel.render_content(80).get_style_at_offset(app.console, x).color
+
+        root_x = rendered.rfind("▣ | ")
+        assert node_color(root_x) == Color.parse(theme.accent)
+        assert node_color(first_child_x) == Color.parse(theme.running)
 
         await pilot.hover(None, offset=(0, 5))
         await pilot.pause()
@@ -197,6 +207,10 @@ async def test_subagent_panel_hover_previews_stable_visible_node_and_click_reque
 
         assert app.navigation == ["ses_child_3"]
         assert panel.selected_session_id == "ses_child_3"
+        assert node_color(root_x) == Color.parse(theme.accent)
+        panel.set_current_session("ses_child_3")
+        assert node_color(root_x) == Color.parse(theme.running)
+        assert node_color(panel.render_content(80).plain.rfind("▣")) == Color.parse(theme.accent)
 
         rendered = panel.render_content(panel.content_region.width).plain
         root_node_x = rendered.rfind("■ | ")

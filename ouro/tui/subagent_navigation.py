@@ -275,7 +275,9 @@ class SubagentNavigationPanel(Static):
 
     def _node_style(self, status: str, session_id: str) -> Style:
         return Style(
-            color=self._status_color(status),
+            color=theme_for(self).accent
+            if session_id == self._current_session_id
+            else self._status_color(status),
             meta={_SESSION_NODE_META: session_id},
         )
 

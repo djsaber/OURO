@@ -38,7 +38,9 @@ from ouro.tui.conversation.history_rendering import (
 from ouro.tui.conversation.markdown_stream import _BACKGROUND_MARKDOWN_CHARS
 from ouro.tui.conversation.messages import (
     _HISTORY_ACTION,
+    _LABEL_ACTION,
     MessageCopyRequested,
+    MessageSourceRequested,
     ToolNavigationRequested,
 )
 from ouro.tui.selection import RangeSelectionOnly
@@ -115,6 +117,7 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         self._pending_history_state: ConversationHistoryState | None = None
         self._trace_visibility_dirty = False
         self._hovered_entry: int | None = None
+        self._label_hovered = False
         self._rendered_count = 0
         self._prefix_pending = 0
         self._render_failed = False
@@ -202,7 +205,7 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
             kind = self._entries[hovered].kind
             if kind in {"assistant", "user", "harness", "command"}:
                 line = _highlight_message_row(
-                    line, reasoning=kind == "assistant", theme=theme_for(self)
+                    line, label=self._label_hovered, theme=theme_for(self)
                 )
         line = line.apply_style(self.rich_style)
         selection = self.text_selection
@@ -242,7 +245,11 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         entry_index = self._action_entry(event)
         if entry_index is not None:
             entry = self._entries[entry_index]
-            if entry.kind == "run":
+            if event.style.meta.get(_HISTORY_ACTION) == _LABEL_ACTION and entry.message_source:
+                # Textual also emits a click when a drag ends on the same widget.
+                if self.text_selection is None:
+                    self.post_message(MessageSourceRequested(entry.message_source))
+            elif entry.kind == "run":
                 self.post_message(self.ToggleTraceRequested(entry_index))
             elif entry.kind == "assistant":
                 self.post_message(self.ToggleReasoningRequested(entry_index))
@@ -274,16 +281,18 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         self.post_message(MessageCopyRequested(entry.text))
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
-        self._set_hovered_entry(self._action_entry(event))
+        action = event.style.meta.get(_HISTORY_ACTION) if event.style else None
+        self._set_hovered_entry(self._action_entry(event), label=action == _LABEL_ACTION)
 
     def on_leave(self, _event: events.Leave) -> None:
         self._set_hovered_entry(None)
 
-    def _set_hovered_entry(self, entry_index: int | None) -> None:
+    def _set_hovered_entry(self, entry_index: int | None, *, label: bool = False) -> None:
         previous = self._hovered_entry
-        if previous == entry_index:
+        if previous == entry_index and self._label_hovered == label:
             return
         self._hovered_entry = entry_index
+        self._label_hovered = label
         for changed in (previous, entry_index):
             if changed is not None and self._entries[changed].kind in {"run", "tool"}:
                 self._rerender_entry(changed)

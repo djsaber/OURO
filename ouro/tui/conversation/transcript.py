@@ -8,8 +8,13 @@ from typing import Literal
 from ouro.application.contracts.execution import RuntimeToolCallActivity
 from ouro.core.attachment_input import is_editable_user_input
 from ouro.core.compaction import CompactionRecord
+from ouro.core.message_statistics import delegation_input_id
 from ouro.core.messages import MessageRecord, ModelMessage, SkillActivationContent
-from ouro.tui.conversation.history_models import CompactionPresentation, TranscriptEntry
+from ouro.tui.conversation.history_models import (
+    CompactionPresentation,
+    MessageSource,
+    TranscriptEntry,
+)
 from ouro.tui.conversation.markdown_stream import split_markdown_blocks
 from ouro.tui.input_presentation import reference_labels
 from ouro.tui.state import RunPresentation
@@ -97,6 +102,25 @@ def _compaction_presentation(
     )
 
 
+def _agent_message_source(message: MessageRecord) -> MessageSource | None:
+    if message.semantic_tag == "subagent-task" and delegation_input_id(message):
+        return MessageSource("Main")
+    if message.metadata.get("session_input_source") != "host":
+        return None
+    host = message.metadata.get("host_source_id")
+    if not isinstance(host, str) or not host.startswith("ouro.subagents/"):
+        return None
+    if message.semantic_tag == "subagent-message":
+        return MessageSource("Main")
+    if message.semantic_tag == "subagent-result":
+        attributes = message.semantic_attributes
+        name = attributes.get("nickname") or attributes.get("agent_name")
+        delegation_id = attributes.get("delegation_id")
+        if name and delegation_id:
+            return MessageSource(name, delegation_id)
+    return None
+
+
 def _input_transcript_entry(
     message: MessageRecord,
     *,
@@ -125,6 +149,7 @@ def _input_transcript_entry(
         created_at=message.created_at,
         run_id=message.run_id,
         reference_start=reference_start,
+        message_source=_agent_message_source(message) if kind == "harness" else None,
         source_sequence=message.sequence,
     )
 

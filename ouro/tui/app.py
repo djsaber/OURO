@@ -91,7 +91,7 @@ from ouro.tui.controller import NoInputModels, TuiController
 from ouro.tui.conversation.history import ConversationHistory
 from ouro.tui.conversation.history_models import ConversationHistoryState, TranscriptEntry
 from ouro.tui.conversation.markdown_stream import AssistantMarkdownStream
-from ouro.tui.conversation.messages import ToolNavigationRequested
+from ouro.tui.conversation.messages import MessageSourceRequested, ToolNavigationRequested
 from ouro.tui.conversation.tools import is_terminal_tool
 from ouro.tui.conversation.transcript import project_transcript_entries
 from ouro.tui.conversation.view import ConversationView
@@ -3539,6 +3539,22 @@ class OuroTuiApp(App[int]):
         message: SubagentNavigationPanel.NavigationRequested,
     ) -> None:
         message.stop()
+        self._navigate_to_agent_session(message.session_id)
+
+    def on_message_source_requested(self, message: MessageSourceRequested) -> None:
+        message.stop()
+        delegation_id = message.source.child_delegation_id
+        if delegation_id is None:
+            if self._visible_agent is not None:
+                self._navigate_to_agent_session(self._visible_agent.parent_session_id)
+            return
+        agent = self._agent_nodes.get(delegation_id)
+        if agent is None or agent.parent_session_id != self._visible_session_id():
+            self.notify("This subagent session is not available yet", severity="warning")
+            return
+        self._navigate_to_agent_session(agent.session_id)
+
+    def _navigate_to_agent_session(self, session_id: str) -> None:
         if (
             self._host_closing
             or len(self.screen_stack) > 1
@@ -3549,7 +3565,7 @@ class OuroTuiApp(App[int]):
         if not panel.display:
             return
         panel.begin_navigation()
-        self._request_agent_switch(panel.select_session(message.session_id))
+        self._request_agent_switch(panel.select_session(session_id))
 
     def _navigate_agent_node(
         self,
@@ -3822,9 +3838,7 @@ class OuroTuiApp(App[int]):
                     severity="warning",
                 )
                 return
-            panel = self.query_one(SubagentNavigationPanel)
-            panel.begin_navigation()
-            self._request_agent_switch(panel.select_session(agent.session_id))
+            self._navigate_to_agent_session(agent.session_id)
         except Exception as exc:  # noqa: BLE001 - navigation failures are user-visible.
             self.notify(str(exc), severity="error", markup=False)
 

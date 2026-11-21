@@ -4,7 +4,18 @@ from __future__ import annotations
 
 from textual.message import Message
 
+from ouro.tui.conversation.history_models import MessageSource
+
 _HISTORY_ACTION = "ouro_history_action"
+_LABEL_ACTION = "label"
+
+
+class MessageSourceRequested(Message):
+    """The source label of an agent message requested its originating session."""
+
+    def __init__(self, source: MessageSource) -> None:
+        super().__init__()
+        self.source = source
 
 
 class ToolNavigationRequested(Message):

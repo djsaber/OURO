@@ -4,7 +4,10 @@ from datetime import UTC, datetime
 from threading import Event
 
 import pytest
+from rich.cells import cell_len
+from rich.color import Color
 from rich.console import Console
+from textual import events
 
 from ouro.core.attachment_input import separate_attachments
 from ouro.core.errors import ConfigError
@@ -20,7 +23,7 @@ from ouro.tui.conversation.view import ConversationView
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.preferences import TuiPreferencesStore
 from ouro.tui.state import TuiSessionProjection
-from ouro.tui.theme import DEFAULT_TUI_THEME
+from ouro.tui.theme import DEFAULT_TUI_THEME, theme_for
 from tests.tui.app.support import _application, _persist_direct_child_session
 from tests.tui.helpers import choose_menu, run_ready_app, wait_for_screen, wait_until
 from tests.tui.test_background_navigation import NavigationProvider, submit
@@ -142,6 +145,122 @@ async def test_live_inputs_and_loaded_history_share_harness_projection(tmp_path,
         assert history.user_turns == ("Actual input",)
         assert len(history.user_lines) == 1
         assert [argument.value for argument in app._user_message_arguments()] == ["#1"]
+
+
+@pytest.mark.parametrize(
+    "nickname,child_tag", [("核算", "subagent-task"), (None, "subagent-message")]
+)
+async def test_agent_source_text_links_both_sessions_and_preserves_body_copy(
+    tmp_path, monkeypatch, nickname, child_tag
+):
+    application = _application(tmp_path)
+    root_id, child_id = _persist_direct_child_session(application)
+    delegation_id = "dlg_picker_child"
+    attributes = {"delegation_id": delegation_id, "agent_name": "General"}
+    if nickname:
+        attributes["nickname"] = nickname
+    child_metadata = (
+        {"session_input_source": "delegation", "delegation_id": delegation_id}
+        if child_tag == "subagent-task"
+        else {
+            "session_input_source": "host",
+            "host_source_id": f"ouro.subagents/{delegation_id}/messages/follow_up",
+        }
+    )
+    source_text = "Result with literal **markup**"
+    created = datetime.now().astimezone().replace(hour=1, minute=29)
+    for session_id, body, tag, metadata, fields in (
+        (
+            root_id,
+            source_text,
+            "subagent-result",
+            {"session_input_source": "host", "host_source_id": "ouro.subagents/results/delivery"},
+            attributes,
+        ),
+        (child_id, "Inspect the result", child_tag, child_metadata, {}),
+    ):
+        application.runtime.store.append_message(
+            MessageRecord.text(
+                session_id=session_id,
+                role="harness",
+                text=body,
+                semantic_tag=tag,
+                semantic_attributes=fields,
+            ).model_copy(update={"metadata": metadata, "created_at": created})
+        )
+
+    app = OuroTuiApp(home=tmp_path, application=application)
+    copied = []
+    async with run_ready_app(app, size=(80, 36)) as pilot:
+        await app._open_session(root_id)
+        await app._set_harness_messages(True)
+        history = app.query_one(ConversationHistory)
+        monkeypatch.setattr(app.screen, "_clipboard_writer", copied.append)
+        for label, target in ((nickname or "General", child_id), ("Main", root_id)):
+            await history.wait_until_rendered()
+            await pilot.pause()
+            footer = f"{label} • 01:29"
+            y = next(i for i, line in enumerate(history.lines) if footer in line.text)
+            x = history.lines[y].text.index(label)
+            end = x + cell_len(footer)
+            body = history.lines[y - 1].text
+            body_x = body.index(source_text if target == child_id else "Inspect the result")
+            theme = theme_for(history)
+
+            def footer_colors(row):
+                return {
+                    s.style.color
+                    for s in history.render_line(row)
+                    if s.text.strip() and s.text != "│"
+                }
+
+            assert footer_colors(y) == {Color.parse(theme.text_lowlight)}
+            for hit in (x, x + cell_len(label), end - 1):
+                await pilot.hover(history, offset=(hit, y))
+                assert footer_colors(y) == {Color.parse(theme.text_highlight)}
+            for miss in (x - 1, end):
+                await pilot.hover(history, offset=(miss, y))
+                assert footer_colors(y) == {Color.parse(theme.text_lowlight)}
+                await pilot.click(history, offset=(miss, y))
+                assert not app._agent_switch_in_progress
+
+            if target == child_id:
+                await pilot.click(history, offset=(body_x, y - 1), button=3)
+                await wait_until(
+                    lambda: copied == [source_text], pilot, description="whole message copy"
+                )
+                await pilot.mouse_down(history, offset=(body_x, y - 1))
+                await pilot.hover(history, offset=(body_x + 5, y - 1))
+                await pilot.mouse_up(history, offset=(body_x + 5, y - 1))
+                assert app.screen.get_selected_text() == "Result"
+                await pilot.mouse_down(history, offset=(body_x, y - 1), button=3)
+                await wait_until(
+                    lambda: copied == [source_text, "Result"],
+                    pilot,
+                    description="selected text copy",
+                )
+
+                # Use driver events: Pilot.mouse_up alone omits the concluding Click.
+                for event, column, row in (
+                    (events.MouseDown, body_x, y - 1),
+                    (events.MouseMove, end - 1, y),
+                    (events.MouseUp, end - 1, y),
+                ):
+                    screen_x, screen_y = history.region.offset + (column, row)
+                    app.post_message(event(None, screen_x, screen_y, 0, 0, 1, False, False, False))
+                    await pilot.pause()
+                assert source_text in app.screen.get_selected_text()
+                assert app._visible_session_id() == root_id and not app._agent_switch_in_progress
+
+            await pilot.click(history, offset=(end - 1, y))
+            await wait_until(
+                lambda target=target: (
+                    app._visible_session_id() == target and not app._agent_switch_in_progress
+                ),
+                pilot,
+                description=f"source label opened {target}",
+            )
+            assert app.query_one(Composer).disabled is (target == child_id)
 
 
 @pytest.mark.parametrize("session_kind", ["main", "subagent", "task"])
