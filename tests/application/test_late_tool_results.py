@@ -12,9 +12,8 @@ from ouro.core.session_commits import SessionCommit
 from ouro.core.session_controls import SessionControlTransitionRequest
 from ouro.core.state import SessionRecord
 from ouro.core.tools import ToolDefinition, ToolResult
-from ouro.plugins.catalog.bindings import bind_generation_gate
+from ouro.plugins.catalog.bindings import gate_tool
 from ouro.plugins.catalog.gates import GenerationGate
-from ouro.plugins.contributions.models import ContributionOwner, PreparedContributionSet
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.worker.instance import WorkerPluginInstance
@@ -119,12 +118,7 @@ async def test_late_callback_result_retains_only_original_observation(
             handler=handler,
         )
     gate = GenerationGate("late-test")
-    tool = bind_generation_gate(
-        PreparedContributionSet(
-            owner=ContributionOwner("example.late", "user", "test", "late-test"), tools=(tool,)
-        ),
-        gate,
-    ).tools[0]
+    tool = gate_tool(tool, gate)
     app = runtime(store, tool, {})
     session = SessionRecord()
     store.create_session(session)

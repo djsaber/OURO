@@ -15,6 +15,7 @@ from ouro.core.agents import (
 )
 from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.state import RunStatus
+from ouro.core.tool_facts import ToolQuestion
 
 
 class AgentDefinitionView(ApplicationDTO):
@@ -179,6 +180,7 @@ class AgentInteractionView(ApplicationDTO):
     task_description: str
     child_session_id: str
     child_run_id: str
+    question: ToolQuestion | None = None
     tool_call_id: str
     tool_name: str
     request_id: str

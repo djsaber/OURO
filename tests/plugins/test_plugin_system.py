@@ -320,7 +320,8 @@ def test_contribution_type_inventory_is_closed_complete_and_lifecycle_explicit()
     resources = {adapter.kind for adapter in adapters if adapter.resource is not None}
     assert resources == {"skills", "mcp_servers"}
     for adapter in adapters:
-        assert adapter.preparation.kind == adapter.kind
+        owner = "tools" if adapter.kind == "mcp_servers" else adapter.kind
+        assert adapter.preparation.kind == adapter.projection.kind == owner
         assert adapter.lifecycle == adapter.projection.lifecycle
         if adapter.kind in resources:
             assert adapter.resource is not None
@@ -628,6 +629,39 @@ async def test_plugin_mcp_starts_on_enable(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["system_prompt_providers", "context_providers"])
+@pytest.mark.parametrize("optional", [False, True])
+async def test_missing_request_provider_honors_manifest_optionality(tmp_path, kind, optional):
+    plugin_id = "dev.ouro.empty"
+    definition = _builtin_plugin(
+        tmp_path / "builtin",
+        plugin_id=plugin_id,
+        contributes={kind: [{"id": "absent", "optional": optional}]},
+    )
+    registry = BuiltinPluginRegistry((definition,))
+    runtime, *_ = _runtime(tmp_path / "home", builtin_plugins=registry)
+    service = PluginService(runtime.store, runtime=runtime, builtin_plugins=registry)
+    try:
+        result = await service.enable(plugin_id)
+        diagnostics = service.diagnostics(plugin_id)
+        with runtime.snapshot() as snapshot:
+            if optional:
+                assert result.status == "degraded"
+                assert snapshot.generations[0].contract_hashes == {}
+                assert any(
+                    item.code == "plugin_optional_contribution_unavailable"
+                    and f"{kind}/absent" in item.message
+                    for item in diagnostics
+                )
+            else:
+                assert result.status == "failed"
+                assert snapshot.generations == ()
+                assert any("absent" in item.message for item in diagnostics)
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_optional_plugin_mcp_failure_degrades_without_fake_contract(tmp_path) -> None:
     source = tmp_path / "optional-mcp"
     (source / "mcp").mkdir(parents=True)
@@ -669,7 +703,14 @@ async def test_optional_plugin_mcp_failure_degrades_without_fake_contract(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_plugin_mcp_tools_are_frozen_in_catalog_and_resource_closes(tmp_path) -> None:
+async def test_plugin_mcp_tools_are_frozen_in_catalog_and_resource_closes(
+    tmp_path, monkeypatch
+) -> None:
+    # Resource discovery and native tool registration may appear in either inventory order.
+    monkeypatch.setattr(
+        "ouro.plugins.contributions.inventory._CONTRIBUTION_TYPE_ADAPTERS",
+        tuple(reversed(contribution_type_adapters())),
+    )
     source = tmp_path / "connected-mcp"
     (source / "mcp").mkdir(parents=True)
     _write_native_plugin(
@@ -695,51 +736,55 @@ async def test_plugin_mcp_tools_are_frozen_in_catalog_and_resource_closes(tmp_pa
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
 
-    assert (await asyncio.wait_for(service.enable("dev.ouro.echo"), timeout=15)).status == "active"
-    resource = runtime._active["dev.ouro.echo"].resources[0]
-    assert isinstance(resource, PluginMCPResource)
-    with runtime.snapshot() as snapshot:
-        assert snapshot.tools.names() == ["echo_calendar__echo"]
-        assert "dev.ouro.echo/mcp_servers/calendar" in (snapshot.generations[0].contract_hashes)
-        definition = snapshot.tools.get("echo_calendar__echo").definition
-        assert definition.permission_mode == "approval"
-        assert definition.metadata["mcp_server_id"] == "echo_calendar"
-        assert definition.metadata["mcp_tool_name"] == "echo"
-        assert definition.identity == "dev.ouro.echo/tools/mcp:echo_calendar:echo"
-        with pytest.raises(RuntimeError, match="frozen"):
-            snapshot.tools.replace((), ())
-        result = await asyncio.wait_for(
-            ToolExecutor(snapshot.tools).execute(
-                ToolInvocation(
-                    session_id="ses_mcp",
-                    run_id="run_mcp",
-                    tool_name="echo_calendar__echo",
-                    canonical_tool_id=definition.identity,
-                    source=definition.source,
-                    contract_hash=definition.metadata["contract_hash"],
-                    execution_contract_hash=definition.metadata["execution_contract_hash"],
-                    arguments={"value": "hello"},
+    try:
+        assert (
+            await asyncio.wait_for(service.enable("dev.ouro.echo"), timeout=15)
+        ).status == "active"
+        resource = runtime._active["dev.ouro.echo"].resources[0]
+        assert isinstance(resource, PluginMCPResource)
+        with runtime.snapshot() as snapshot:
+            assert snapshot.tools.names() == ["echo_calendar__echo"]
+            assert "dev.ouro.echo/mcp_servers/calendar" in (snapshot.generations[0].contract_hashes)
+            definition = snapshot.tools.get("echo_calendar__echo").definition
+            assert definition.permission_mode == "approval"
+            assert definition.metadata["mcp_server_id"] == "echo_calendar"
+            assert definition.metadata["mcp_tool_name"] == "echo"
+            assert definition.identity == "dev.ouro.echo/tools/mcp:echo_calendar:echo"
+            with pytest.raises(RuntimeError, match="frozen"):
+                snapshot.tools.replace((), ())
+            result = await asyncio.wait_for(
+                ToolExecutor(snapshot.tools).execute(
+                    ToolInvocation(
+                        session_id="ses_mcp",
+                        run_id="run_mcp",
+                        tool_name="echo_calendar__echo",
+                        canonical_tool_id=definition.identity,
+                        source=definition.source,
+                        contract_hash=definition.metadata["contract_hash"],
+                        execution_contract_hash=definition.metadata["execution_contract_hash"],
+                        arguments={"value": "hello"},
+                    ),
+                    approved=True,
                 ),
-                approved=True,
-            ),
+                timeout=10,
+            )
+            assert result.result is not None
+            assert result.result.structured == {"value": "hello"}
+
+        assert (
+            await asyncio.wait_for(service.disable("dev.ouro.echo"), timeout=10)
+        ).status == "disabled"
+        retirement_tasks = tuple(runtime._retirement_tasks)
+        await asyncio.wait_for(
+            asyncio.gather(*retirement_tasks),
             timeout=10,
         )
-        assert result.result is not None
-        assert result.result.structured == {"value": "hello"}
-
-    assert (
-        await asyncio.wait_for(service.disable("dev.ouro.echo"), timeout=10)
-    ).status == "disabled"
-    retirement_tasks = tuple(runtime._retirement_tasks)
-    await asyncio.wait_for(
-        asyncio.gather(*retirement_tasks),
-        timeout=10,
-    )
-    assert resource.manager.get("echo_calendar").status == "stopped"
-    assert resource.registry.names() == []
-    with runtime.snapshot() as current:
-        assert current.tools.names() == []
-    await runtime.close()
+        assert resource.manager.get("echo_calendar").status == "stopped"
+        assert resource.registry.names() == []
+        with runtime.snapshot() as current:
+            assert current.tools.names() == []
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.parametrize(
@@ -2604,10 +2649,10 @@ for line in sys.stdin:
         "session_kind": "subagent",
         "payload": {"phase": "end"},
     }
-    instructions = await snapshot.system_prompt_providers.evaluate("/project")
+    instructions = await snapshot.request_providers.system_prompts.evaluate("/project")
     assert instructions.failures == []
     assert instructions.fragments == ["<workspace-rules>\nWorkspace rules\n</workspace-rules>"]
-    context_provider = snapshot.context_providers.snapshot()[0]
+    context_provider = snapshot.request_providers.observations.snapshot()[0]
     context_result = await context_provider.handler(
         ContextProviderCall(
             session_id="ses_worker",

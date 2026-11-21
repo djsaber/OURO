@@ -23,12 +23,12 @@ from ouro.application.runs.tool_batches import load_batch_call
 from ouro.core.context_snapshots import ModelRequestHeader
 from ouro.core.messages import MessageRecord
 from ouro.core.session_observation import FactCursor, SessionObservationPosition
-from ouro.core.session_ports import SessionStore
+from ouro.core.session_ports import SessionObservationReader
 from ouro.core.tool_batches import ToolCallBatchRecord
 
 
 def read_observation_page(
-    store: SessionStore,
+    store: SessionObservationReader,
     session_id: str,
     *,
     after: SessionObservationPosition,
@@ -172,7 +172,7 @@ def read_observation_page(
             ()
             if more
             else read_draft_events(
-                store,
+                store.load_response_draft,
                 session_id,
                 sequence=0,
                 header=context,

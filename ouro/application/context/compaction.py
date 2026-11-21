@@ -31,7 +31,6 @@ from ouro.core.context import (
     ContextView,
     estimate_text_tokens,
 )
-from ouro.core.context_providers import ContextProviderRegistry
 from ouro.core.context_selection import ContextSelection
 from ouro.core.errors import (
     CompactionError,
@@ -42,7 +41,6 @@ from ouro.core.events import EventRecord
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict
 from ouro.core.session_ports import SessionStore
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.core.system_prompts import SystemPromptRegistry
 from ouro.core.tools import ToolDefinition
 
 
@@ -135,8 +133,6 @@ class ContextCompactionService:
         turn_id: str,
         abort_signal: AbortSignal,
         adapter: RuntimeAdapter | None = None,
-        context_providers: ContextProviderRegistry | None = None,
-        system_prompt_providers: SystemPromptRegistry | None = None,
         strategies: CompactionStrategyRegistry | None = None,
         skill_instructions: str = "",
         prompt: str = "",
@@ -149,8 +145,6 @@ class ContextCompactionService:
             tools=tools,
             model_round=model_round,
             adapter=adapter,
-            context_providers=context_providers,
-            system_prompt_providers=system_prompt_providers,
             skill_instructions=skill_instructions,
             prompt=prompt,
         )
@@ -261,17 +255,13 @@ class ContextCompactionService:
         strategies: CompactionStrategyRegistry | None = None,
         skill_instructions: str = "",
         prepared: PreparedContext | None = None,
-        system_prompt_providers: SystemPromptRegistry | None = None,
         config: CompactionConfig | None = None,
     ) -> CompactionExecution:
         config = config if config is not None else self.config.model_copy(deep=True)
         active_adapter = adapter or self.preparation.adapter
         if prepared is None:
-            session, active, messages = await run_blocking(
-                self.preparation.load_history, session.session_id
-            )
-            prompt_context = await self.preparation.resolve_prompt_context(
-                session, run, system_prompt_providers
+            session, active, messages, prompt_context = await self.preparation.load_prompt_history(
+                session, run
             )
             initial_view = await run_blocking(
                 self.preparation.project,

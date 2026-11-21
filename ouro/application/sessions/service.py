@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import closing
 from datetime import datetime
 from time import monotonic
@@ -28,7 +28,10 @@ from ouro.application.contracts.sessions import (
     SessionUndoResult,
     SessionView,
 )
-from ouro.application.inputs.queue import QueuedInputQueue, project_pending_user_inputs
+from ouro.application.inputs.queue import (
+    PendingInputs,
+    project_pending_user_inputs,
+)
 from ouro.application.observations.activity import (
     project_batch_activity,
     project_batch_interactions,
@@ -131,6 +134,31 @@ class SessionService:
             diagnostics=self._refresh_index_diagnostics(session.session_id),
         )
 
+    def update_settings(
+        self,
+        session_id: str,
+        changes: Mapping[str, object],
+        *,
+        validate: Callable[[SessionRecord], None] | None = None,
+    ) -> SessionRecord:
+        """Update request-bound Session settings without contending for Run ownership."""
+
+        with self._store.session_mutation(session_id):
+            session = self._store.load_session_record(session_id)
+            if validate is not None:
+                validate(session)
+            now = utc_now()
+            updated = session.model_copy(
+                update={
+                    **changes,
+                    "updated_at": now,
+                    "last_activity_at": now,
+                }
+            )
+            self._store.save_session(updated)
+        self._store.refresh_catalog(session_id)
+        return updated
+
     def view(self, session_id: str) -> SessionView:
         """Read Session identity and settings without history or recovery."""
 
@@ -172,10 +200,34 @@ class SessionService:
         with self._store.session_read(session_id):
             session = self._store.load_session_record(session_id)
             run = self.run_record(session_id, run_id)
-            response = self._store.find_last_assistant_message(session_id, run_id)
-            return RunResult(
-                session=session, run=run, final_text=response.text_content if response else ""
+            decision = run.metadata.get("invocation_result", {})
+            end = decision.get("ended_at")
+            previous_end = datetime.fromisoformat(end) if end else None
+            current = previous_end is not None and previous_end == run.ended_at
+            text = ""
+            if not current or decision["has_text"]:
+                response = self._store.find_last_assistant_message(session_id, run_id)
+                if (
+                    response
+                    and not response.tool_calls
+                    and (current or previous_end is None or response.created_at > previous_end)
+                ):
+                    text = response.text_content
+            had_tool_error = (
+                decision["had_tool_error"]
+                if current
+                else self._store.run_has_tool_error(
+                    session_id, run_id, after_revision=decision.get("through_revision", -1)
+                )
             )
+        return RunResult(
+            session=session,
+            run=run,
+            final_text=text,
+            had_tool_error=had_tool_error,
+            error_code=run.error_code,
+            usage=self._usage.run_values(session_id, run_id) if self._usage is not None else None,
+        )
 
     def run_record(self, session_id: str, run_id: str) -> RunRecord:
         """Read exact durable Run facts without loading message history."""
@@ -385,14 +437,14 @@ class SessionService:
                 position_revision = self._store.observation_revision(session_id)
                 context = self._store.load_latest_context_header(session_id)
                 events = read_draft_events(
-                    self._store,
+                    self._store.load_response_draft,
                     session_id,
                     sequence=0,
                     header=context,
                     history_epoch=session.history_epoch,
                 )
                 queued_inputs = project_pending_user_inputs(
-                    session, QueuedInputQueue(self._store).eligible_session(session)
+                    session, PendingInputs(self._store).eligible_session(session)
                 )
                 recent_run_id = session.active_run_id or session.last_run_id
                 recent_run = next((run for run in runs if run.run_id == recent_run_id), None)

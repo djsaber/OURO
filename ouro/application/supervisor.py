@@ -39,6 +39,7 @@ from ouro.application.observations.sessions import (
     redact_observation,
 )
 from ouro.application.observations.subscription import SessionStateSubscription
+from ouro.application.runs.interactions import StaleToolQuestion
 from ouro.application.runs.lifecycle import maybe_active_run
 from ouro.application.runs.ownership import RunReservation
 from ouro.application.runs.tool_batches import load_tool_batch
@@ -60,7 +61,7 @@ from ouro.core.state import (
     RunStatus,
     SessionRecord,
 )
-from ouro.core.tool_facts import ToolCallIdentity
+from ouro.core.tool_facts import ToolCallIdentity, ToolQuestion
 
 _CLOSED: Final = object()
 _LOGGER = logging.getLogger(__name__)
@@ -108,7 +109,7 @@ class _ResolveApproval:
 
 @dataclass(frozen=True)
 class _AnswerUser:
-    run_id: str
+    question: ToolQuestion
     answer: JsonValue
 
 
@@ -376,14 +377,9 @@ class RuntimeSupervisor:
         on_session_created: Callable[[SessionRecord], None] | None,
         on_input_accepted: Callable[[], None] | None,
     ) -> UserInputSubmission:
-        receipt = await self.runtime.accept_user_input(request)
-        session, active = await run_blocking(
-            self._read_session_run,
-            receipt.session_id,
-            include_run=request.session_id is not None and receipt.run_id is None,
-        )
+        receipt, session = await self.runtime.input_admission.accept(request)
         history_epoch = session.history_epoch
-        result_run_id = receipt.run_id or (active.run_id if active is not None else None)
+        result_run_id = receipt.run_id or (session.active_run_id if request.session_id else None)
         # Notify before execution can publish events for a newly selected Session.
         try:
             if request.session_id is None and on_session_created is not None:
@@ -405,14 +401,25 @@ class RuntimeSupervisor:
                 return await run_blocking(
                     self.runtime.sessions.run_result, receipt.session_id, result_run_id
                 )
-            if job is not None:
-                await job.done.wait()
-                if job.cancelled and job.result is None:
+            current = job
+            while current is not None:
+                await current.done.wait()
+                if current.cancelled and current.result is None:
                     raise asyncio.CancelledError("Accepted input was cancelled before execution")
-                if job.error is not None:
-                    raise job.error
-                if job.result is not None:
-                    return job.result
+                if current.error is not None:
+                    raise current.error
+                result = current.result
+                if result is None:
+                    break
+                if result.run.status in ACTIVE_RUN_STATUSES:
+                    return result
+                if receipt.queue_id not in result.session.pending_input_ids:
+                    if current is job and session.pending_input_ids == (receipt.queue_id,):
+                        return result
+                    break  # Several inputs shared this job. Read this receipt's own Run.
+                current = await self._dispatch_session(receipt.session_id)
+                if current is None:
+                    current = self._jobs_by_session.get(receipt.session_id)
             return await run_blocking(self._accepted_input_result, receipt)
 
         return UserInputSubmission(receipt=receipt, _result=result)
@@ -737,21 +744,25 @@ class RuntimeSupervisor:
         session_id: str,
         run_id: str,
         answer: JsonValue,
+        question: ToolQuestion | None = None,
     ) -> RunHandle:
+        if question is None:
+            question = await run_blocking(
+                self.runtime.parked_runs.pending_question, session_id, run_id
+            )
+        elif question.call.run_id != run_id:
+            raise ValueError("question belongs to another Run")
         await self.start()
         await self._await_parked_session(
             session_id,
             run_id=run_id,
             expected_status="waiting_user",
         )
-        run = await run_blocking(self.store.load_run, session_id, run_id)
-        if run.status != "waiting_user":
-            raise ValueError(f"run is not waiting for user input: {run.status}")
         handle = RunHandle(session_id=session_id)
         await self._enqueue_job(
             _RunJob(
                 handle=handle,
-                operation=_AnswerUser(run_id, answer),
+                operation=_AnswerUser(question, answer),
             ),
             run_id=run_id,
         )
@@ -1370,11 +1381,12 @@ class RuntimeSupervisor:
                     reason=reason,
                     arguments_override=arguments_override,
                 )
-            case _AnswerUser(run_id, answer):
+            case _AnswerUser(question, answer):
                 return await self.runtime.answer_user(
                     session_id=session_id,
-                    run_id=run_id,
+                    run_id=question.call.run_id,
                     answer=answer,
+                    question=question,
                 )
             case _ResumeAgentWait(identity, resolution):
                 return await self.runtime.resume_agent_wait(
@@ -1425,10 +1437,14 @@ class RuntimeSupervisor:
                 except Exception as exc:  # noqa: BLE001 - task isolation boundary.
                     job.error = exc
                     diagnostic = Diagnostic(
-                        code="supervised_run_failed",
+                        code="stale_tool_question"
+                        if isinstance(exc, StaleToolQuestion)
+                        else "supervised_run_failed",
                         severity="error",
                         component="runtime.supervisor",
-                        message=f"runtime task failed ({type(exc).__name__})",
+                        message="The question changed before the answer could be applied."
+                        if isinstance(exc, StaleToolQuestion)
+                        else f"runtime task failed ({type(exc).__name__})",
                         session_id=job.handle.session_id,
                         recoverable=False,
                     )

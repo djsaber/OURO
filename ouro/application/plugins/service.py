@@ -30,10 +30,9 @@ from ouro.application.contracts.plugins import (
     PluginValidationView,
 )
 from ouro.application.harness import capture_session_harness
-from ouro.application.inputs.queue import QueuedInputQueue
 from ouro.application.plugins.commands import execute_plugin_command
 from ouro.application.plugins.configuration import PluginConfigurationService
-from ouro.application.runs.tool_batches import load_batch_states
+from ouro.application.runs.recovery import retained_plugin_releases
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.application.usage import UsageService
 from ouro.core.callbacks import run_blocking
@@ -70,18 +69,6 @@ from ouro.plugins.models import (
     PluginStateDocument,
 )
 from ouro.plugins.semver import SemVer
-
-_PLUGIN_GENERATION_RETAINING_RUN_STATUSES = frozenset(
-    {
-        "queued",
-        "running",
-        "waiting_user",
-        "waiting_approval",
-        "waiting_child",
-        "paused",
-        "recoverable",
-    }
-)
 
 
 class PluginOperationNotAllowedError(ValueError):
@@ -686,7 +673,7 @@ class PluginService:
     def gc(self) -> builtins.list[str]:
         referenced = {
             (plugin_id, release_id)
-            for plugin_class, plugin_id, release_id in self._durable_reference_map()
+            for plugin_class, plugin_id, release_id in retained_plugin_releases(self.session_store)
             if plugin_class == "user"
         }
         return [str(path) for path in self.store.garbage_collect(referenced)]
@@ -1023,90 +1010,15 @@ class PluginService:
         return sorted(
             {
                 owner
-                for (kind, identity, release), owners in self._durable_reference_map().items()
+                for (kind, identity, release), owners in retained_plugin_releases(
+                    self.session_store
+                ).items()
                 if kind == plugin_class
                 and identity == plugin_id
                 and (release_id is None or release == release_id)
                 for owner in owners
             }
         )
-
-    def _durable_reference_map(self) -> dict[tuple[PluginClass, str, str], set[str]]:
-        """Scan recovery facts once on the management path, without loading message journals."""
-        references: dict[tuple[PluginClass, str, str], set[str]] = {}
-        if self.session_store is None:
-            return references
-
-        def retain(kind: PluginClass, identity: str, release: str, owner: str) -> None:
-            references.setdefault((kind, identity, release), set()).add(owner)
-
-        queue = QueuedInputQueue(self.session_store)
-        for session in self.session_store.list_sessions():
-            for driver in queue.bound_drivers(session):
-                for implementation in driver.implementations:
-                    retain(
-                        implementation.plugin_class,
-                        implementation.plugin_id,
-                        implementation.release_id,
-                        f"{session.session_id}/queued",
-                    )
-            for activation in session.controls.activations:
-                retain(
-                    activation.plugin_class,
-                    activation.plugin_id,
-                    activation.release_id,
-                    session.session_id,
-                )
-            for run in self.session_store.load_runs(session.session_id):
-                resumable_driver = (
-                    run.driver_checkpoint is not None
-                    and run.driver_checkpoint.state in {"pending", "ready"}
-                    and run.active_tool_batch is not None
-                )
-                retained = run.status in _PLUGIN_GENERATION_RETAINING_RUN_STATUSES
-                owner = f"{session.session_id}/{run.run_id}"
-                if retained or resumable_driver:
-                    for implementation in run.driver.implementations:
-                        retain(
-                            implementation.plugin_class,
-                            implementation.plugin_id,
-                            implementation.release_id,
-                            owner,
-                        )
-                if not retained:
-                    continue
-                for call in load_batch_states(self.session_store, run):
-                    invocation = call.prepared_binding
-                    if invocation is None and call.attempt > 0:
-                        started = self.session_store.load_tool_call_start(
-                            session.session_id, call.identity, call.attempt
-                        )
-                        invocation = started.binding if started is not None else None
-                    if (
-                        call.status
-                        not in {
-                            "planned",
-                            "ready",
-                            "running",
-                            "awaiting_approval",
-                            "waiting_user",
-                            "resolving_input",
-                        }
-                        or invocation is None
-                    ):
-                        continue
-                    if (
-                        invocation.plugin_class is not None
-                        and invocation.plugin_id is not None
-                        and invocation.release_id is not None
-                    ):
-                        retain(
-                            invocation.plugin_class,
-                            invocation.plugin_id,
-                            invocation.release_id,
-                            owner,
-                        )
-        return references
 
 
 def _icon_data_url(root: Path, icon: str | None) -> str | None:

@@ -321,6 +321,21 @@ class RunRecord(VersionedOuroModel):
         )
 
     @property
+    def has_recorded_extension_binding(self) -> bool:
+        """An empty generation list also records a completed catalog binding."""
+        return "extension_generations" in self.metadata
+
+    @property
+    def has_pending_continuation(self) -> bool:
+        checkpoint = self.continuation
+        return (
+            self.kind == "agent"
+            and self.status not in ACTIVE_RUN_STATUSES
+            and checkpoint is not None
+            and checkpoint.state != "resolved"
+        )
+
+    @property
     def budget_policy(self) -> RunBudgetPolicy | None:
         """Decode the persisted budget; the caller owns its effective-policy selection."""
         raw = self.metadata.get("run_budget")

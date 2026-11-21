@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+from typing import Protocol
+
 from ouro.core.context_snapshots import ModelRequestHeader
 from ouro.core.events import EventRecord
-from ouro.core.response_drafts import ResponseStreamPosition
-from ouro.core.session_ports import SessionRepository
+from ouro.core.response_drafts import ResponseDraftPage, ResponseStreamPosition
+
+
+class ReadResponseDraft(Protocol):
+    def __call__(
+        self, session_id: str, context_id: str, *, after_cursor: int, limit: int | None
+    ) -> ResponseDraftPage | None: ...
 
 
 def read_draft_events(
-    store: SessionRepository,
+    read: ReadResponseDraft,
     session_id: str,
     *,
     sequence: int,
@@ -22,9 +29,7 @@ def read_draft_events(
     cursor = (
         (after.cursor or 0) if after is not None and after.context_id == header.context_id else 0
     )
-    page = store.load_response_draft(
-        session_id, header.context_id, after_cursor=cursor, limit=limit
-    )
+    page = read(session_id, header.context_id, after_cursor=cursor, limit=limit)
     if page is None:
         return ()
     events = []

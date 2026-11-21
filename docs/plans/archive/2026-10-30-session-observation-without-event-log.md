@@ -213,17 +213,16 @@ Files 首次进入可键入的中位数增加约 6 ms，SQLite 减少约 25 ms�
 因此“每个会话一定更小”不成立；实际执行长会话的约 6% 减少与静态种子数据的索引增加必须分别解释。
 当前 Draft 仍用于恢复未完成内容，正式响应提交后清除；用量审计保留在独立账本，不属于被移除的通知日志。
 
-### 原始记录
+### 各场景的测量源码
 
-原始 JSONL 位于本地 `.ouro-dev/event-removal-*.jsonl`，每份记录包含环境、完整源码指纹、每组原始值与完成条件。
-下表明确每个测量使用的源码快照，避免将不同记录误当成一次运行：
+各场景分别采样。下表的场景名对应本节复现命令，源码指纹对应各表的候选值。
 
-| 场景 | JSONL 文件 | 测量源码 SHA-256 |
-|---|---|---|
-| long-run | `event-removal-long-run.jsonl` | `f6f4cabe0f1f497b365a7f6acc6dc8032de96d62a265baac656576c90ec0286b` |
-| stream-host | `event-removal-stream-host.jsonl` | `1f10ee261d3959ef10cf0a6e33de58340564fa389c7e5366f0f97fb8749795fa` |
-| interaction-final | `event-removal-interaction-final.jsonl` | `dd5e2b58c4647986cf4c8ed6f2c2fe59918eb87f37b9780fbf91db008592ebb8` |
-| navigation | `event-removal-navigation.jsonl` | `16de572777805af69ff298957c16dd191121f6d69c36db46874369fa7f2a9cc3` |
-| tui-final | `event-removal-tui-final.jsonl` | `ed4defb815e023cb489f7827b88b571355712b1d68e1bf27f89035b71c0b8262` |
+| 基准场景 | 测量源码 SHA-256 |
+|---|---|
+| `long_run` | `f6f4cabe0f1f497b365a7f6acc6dc8032de96d62a265baac656576c90ec0286b` |
+| `stream_io` | `1f10ee261d3959ef10cf0a6e33de58340564fa389c7e5366f0f97fb8749795fa` |
+| `interaction` | `dd5e2b58c4647986cf4c8ed6f2c2fe59918eb87f37b9780fbf91db008592ebb8` |
+| `navigation` | `16de572777805af69ff298957c16dd191121f6d69c36db46874369fa7f2a9cc3` |
+| `tui` | `ed4defb815e023cb489f7827b88b571355712b1d68e1bf27f89035b71c0b8262` |
 
 现行契约见[会话持久化](../../specs/session-persistence.md)、[会话观察](../../specs/session-observation.md)与[性能规格](../../specs/performance.md)。

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import textwrap
 import weakref
+from collections import Counter, defaultdict
 from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -17,16 +18,20 @@ from ouro.application.runs.lifecycle import reserve_run
 from ouro.application.runtime.service import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import AgentCatalogEntry, AgentCatalogSnapshot, AgentDefinition
+from ouro.core.context_providers import ContextProviderRegistration, ContextProviderResult
 from ouro.core.errors import PersistenceError
-from ouro.core.observers import ContextPreparedObservation
-from ouro.core.provider import ModelMetadata
-from ouro.core.session_controls import HostSessionInput
-from ouro.core.state import RunRecord
+from ouro.core.observers import ContextPreparedObservation, ObserverRegistry
+from ouro.core.provider import ModelMetadata, ProviderStreamEvent
+from ouro.core.run_budget import RunBudgetPolicy
+from ouro.core.session_controls import HostSessionInput, SessionControlState
+from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.system_prompts import SystemPromptFragment, SystemPromptRegistration
 from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_catalog
 from ouro.providers import FauxProvider
 from ouro.sessions.backends.files.store import LocalSessionStore
-from ouro.tools import ToolRegistry
+from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 from tests.agent_facts import seed_delegation
+from tests.application.test_run_continuations import _activation, _session_controller_registry
 
 
 async def test_decision_tools_are_reused_and_rebound_with_their_catalog(
@@ -166,6 +171,33 @@ async def runtime(tmp_path):
     # Finish unstarted or pending shutdowns without replaying an observed failure.
     if app._close_task is None or not app._close_task.done():
         await app.close()
+
+
+async def test_empty_bound_provider_catalog_owns_the_request(runtime):
+    app, catalog, source = runtime
+    calls = []
+
+    def prompt(_):
+        calls.append("prompt")
+        return SystemPromptFragment(text="base prompt")
+
+    def observe(_):
+        calls.append("observe")
+        return ContextProviderResult()
+
+    app.system_prompt_providers.replace_owner(
+        "base", (SystemPromptRegistration("base", "p", prompt),)
+    )
+    app.context_providers.replace_owner(
+        "base", (ContextProviderRegistration("base", "o", observe),)
+    )
+    app.bind_extensions(catalog=source)
+    with source.snapshot() as lease:
+        assert lease.request_providers is catalog.request_providers
+    result = await app.run("Use the bound catalog", session_id="session")
+    assert result.run.status == "completed", result.run.error
+    assert calls == []
+    assert catalog.lease_count == 0
 
 
 def delegated_run(app, session_id="session", **updates):
@@ -400,3 +432,107 @@ async def test_queued_admission_retains_catalog_through_commit(runtime, monkeypa
     assert app.store.load_session_record("session").pending_input_ids == (
         () if commit_fails else (request.input_id,)
     )
+
+
+@pytest.mark.parametrize("concurrent", [False, True])
+async def test_root_runs_keep_their_budgets_and_tool_selections(tmp_path, concurrent):
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    activation = _activation("dev.example.mode", "mode")
+    barrier = asyncio.Barrier(2)
+    requests = defaultdict(list)
+    effects = Counter()
+
+    class Provider:
+        provider_id = "capture"
+
+        async def stream(self, *, request_context, tools, **kwargs):
+            session_id = request_context.values["session.id"]
+            requests[session_id].append(sorted(tool["name"] for tool in tools))
+            if len(requests[session_id]) == 1:
+                if concurrent:
+                    await asyncio.wait_for(barrier.wait(), timeout=15)
+                yield ProviderStreamEvent.from_tool_call(
+                    {"id": "read", "name": "Read", "arguments": {}}
+                )
+            else:
+                yield ProviderStreamEvent(type="text_delta", text="done")
+            yield ProviderStreamEvent(type="done")
+
+    def read(invocation, context):
+        effects[invocation.session_id] += 1
+        return ToolResult(
+            tool_call_id=invocation.tool_call_id, tool_name=invocation.tool_name, content="ok"
+        )
+
+    tools = ToolRegistry()
+    for name, scope in (("Read", None), ("Selected", activation.controller_id)):
+        tools.register(
+            Tool(
+                definition=ToolDefinition(
+                    name=name,
+                    description=name,
+                    permission_mode="auto",
+                    active_when_controller_id=scope,
+                ),
+                handler=read,
+            )
+        )
+    catalog = build_extension_catalog(
+        ExtensionCatalogBase.capture(
+            tools=tools,
+            observers=ObserverRegistry(),
+            commands=None,
+            continuations=None,
+            compaction=None,
+            tool_policies=None,
+            session_controllers=_session_controller_registry(
+                activation.plugin_id, activation.execution_contract_hash, []
+            ),
+        ),
+        (),
+    )
+    async with RuntimeService(
+        store=store,
+        tools=tools,
+        adapter=RuntimeAdapter(
+            Provider(), ModelMetadata(model_id="capture", provider_id="capture")
+        ),
+    ) as runtime:
+        runtime.bind_extensions(
+            catalog=SimpleNamespace(
+                snapshot=catalog.acquire,
+                bind_observers=catalog.bind_observers,
+                catalog=lambda: catalog,
+                synchronize=AsyncMock(),
+                driver_scope=nullcontext,
+            )
+        )
+
+        async def drive(sid, rounds, controls):
+            store.create_session(SessionRecord(session_id=sid, controls=controls))
+            run = reserve_run(
+                store,
+                RunRecord(
+                    session_id=sid,
+                    status="queued",
+                    metadata={
+                        "run_budget": RunBudgetPolicy(max_model_rounds=rounds).model_dump(
+                            mode="json"
+                        )
+                    },
+                ),
+            )
+            result = await runtime.run_prepared(
+                run, HostSessionInput(prompt="read", host_source_id="fixture")
+            )
+            return result.run.status, result.run.model_round_count, requests[sid], effects[sid]
+
+        short = drive("short", 1, SessionControlState())
+        long = drive("long", 2, SessionControlState(revision=1, activations=[activation]))
+        results = await asyncio.gather(short, long) if concurrent else [await short, await long]
+        assert results == [
+            ("paused", 1, [["Read"]], 1),
+            ("completed", 2, [["Read", "Selected"], ["Read", "Selected"]], 1),
+        ]
+    assert catalog.lease_count == 0

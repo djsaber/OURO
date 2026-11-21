@@ -5,14 +5,14 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
-from ouro.application.contracts.models import AvailableModel
-from ouro.application.runtime.service import RuntimeService
+from ouro.application.contracts.models import AvailableModel, ModelReasoningState
 from ouro.automation.plugin_tasks import BoundPluginTask, PluginTaskProvider
 from ouro.automation.repository import TaskRepository
 from ouro.automation.schedule import next_occurrence
 from ouro.core.base import new_id, utc_now
 from ouro.core.callbacks import run_blocking
 from ouro.core.model_selection import DEFAULT_MODEL
+from ouro.core.reasoning import ReasoningRequest
 from ouro.core.tasks import (
     AgentTaskRun,
     AgentTaskTarget,
@@ -32,13 +32,13 @@ class TaskService:
     def __init__(
         self,
         repository: TaskRepository,
-        runtime: RuntimeService,
+        model_reasoning: Callable[[str | None, ReasoningRequest], ModelReasoningState],
         *,
         clock: Callable[[], datetime] = utc_now,
         plugin_tasks: PluginTaskProvider | None = None,
     ) -> None:
         self.repository = repository
-        self.runtime = runtime
+        self.model_reasoning = model_reasoning
         self.clock = clock
         self.plugin_tasks = plugin_tasks
         self.changed = asyncio.Event()
@@ -123,12 +123,8 @@ class TaskService:
         )
 
     def resolve_model(self, target: AgentTaskTarget) -> AvailableModel:
-        selector = (
-            self.runtime.configured_default_model().key
-            if target.model == DEFAULT_MODEL
-            else target.model
-        )
-        return self.runtime.model_reasoning(selector, target.reasoning).model
+        selector = None if target.model == DEFAULT_MODEL else target.model
+        return self.model_reasoning(selector, target.reasoning).model
 
     async def update(
         self,

@@ -17,6 +17,7 @@ from ouro.application.observations.activity import (
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.state import ACTIVE_RUN_STATUSES
+from ouro.core.tool_facts import ToolCallIdentity, ToolQuestion
 
 
 @dataclass
@@ -301,9 +302,17 @@ class SessionContentProjection:
         elif event.event_type == "ask_user_requested" and event.run_id is not None:
             tool_call_id = _string(payload.get("tool_call_id"))
             if tool_call_id is not None:
+                batch_id = _string(payload.get("batch_id"))
+                revision = payload.get("input_revision")
+                question = (
+                    ToolQuestion(ToolCallIdentity(event.run_id, batch_id, tool_call_id), revision)
+                    if batch_id is not None and isinstance(revision, int) and revision >= 0
+                    else None
+                )
                 self._pending_interactions[f"question:{event.run_id}:{tool_call_id}"] = (
                     PendingInteraction(
                         kind="question",
+                        question=question,
                         run_id=event.run_id,
                         tool_call_id=tool_call_id,
                         tool_name=_string(payload.get("tool_name")) or "tool",

@@ -314,11 +314,11 @@ def _die_between_stores(root, backend, ready, release):
             ),
         )
 
-        def before_session_settlement(**kwargs):
-            ready.put(kwargs["session_id"])
+        def before_session_settlement(session_id, *args, **kwargs):
+            ready.put(session_id)
             assert release.wait(30)
 
-        runtime.context_preparation.record_request_settlement = before_session_settlement
+        store.settle_request_header = before_session_settlement
         await runtime.run("request")
 
     asyncio.run(run())

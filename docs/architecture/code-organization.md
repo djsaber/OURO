@@ -7,7 +7,13 @@ OURO 的主包与升级包位于仓库根目录下的 `ouro/` 与 `ouro_upgrade/
 `packages/tui-themes/` 发行边界。主包按领域分层，各领域内部按实际能力和状态所有权组织。
 目录不规定统一的服务模板，也不承担运行时注册或自动发现职责。
 
+`SessionCommit.context_source_ids` 根据刚读到的 Session 和拟提交的上下文选择，给出本次需要核实的压缩与消息身份。Files 与 SQLite 在各自的事务中读取相应事实，再由同一会话提交规则裁决。
+
 ## 应用用例与运行所有权
+
+本地组合根直接向 Host 提供会话、资源与模型用例。`SessionModels` 解析路由、推理能力和会话的下一次请求绑定。
+自动任务持有配置验证所需的模型解析函数，派发协调器分别取得 Run 命令和状态查询。
+执行中的会话与草稿共享同一组路由及推理规则。
 
 `application` 聚合应用能力，Host 从这里取得用例和视图。`local_application.py` 选择具体实现，
 装配共享服务并拥有整体关闭顺序；Core 的领域记录、端口和运行语义保持独立。
@@ -17,9 +23,9 @@ OURO 的主包与升级包位于仓库根目录下的 `ouro/` 与 `ouro_upgrade/
 | `application/contracts/` | Host 使用的请求、结果与视图；引用既有领域声明，不引用应用服务、Host 或具体存储后端 |
 | `application/agents/`、`tasks/` | Agent 派遣及结果交付、自动任务领取及执行；复用原生 Session/Run |
 | `application/sessions/` | 会话用例、历史、编辑和恢复 |
-| `application/runs/` | 持久 Run 转换、执行所有权、续接、Driver/Turn 协作及恢复 |
+| `application/runs/` | 持久 Run 转换、执行所有权、续接及恢复，`execution.py` 装配每次 Driver 调用的原生模型与工具操作 |
 | `application/runtime/` | Runtime 编排、环境和 RunResources；`extensions.py` 定义执行所需的能力、调用作用域及租约契约 |
-| `application/inputs/` | 输入准备、策略评估、受理回执和队列；`admission.py` 拥有初始输入发布与受理事实查询 |
+| `application/inputs/` | 输入准备、策略评估、受理回执和队列；`admission.py` 拥有用户输入受理、初始发布和按输入身份查询回执 |
 | `application/context/` | `preparation.py` 提供上下文构造与记录，`compaction.py` 组合默认压缩流程，`summary.py` 实现摘要生成 |
 | `application/models/`、`observations/` | 模型查询和执行、会话快照与事件订阅 |
 | `application/configuration/`、`plugins/`、`provider_auth/`、`transfer/` | 对应能力的应用用例及投影 |
@@ -28,8 +34,7 @@ OURO 的主包与升级包位于仓库根目录下的 `ouro/` 与 `ouro_upgrade/
 RunLifecycle 拥有持久转换，Supervisor 拥有会话调度、执行队列和执行许可，Runtime 拥有单次运行协作。
 Supervisor 的每个任务持有一种类型明确的执行操作；输入、继续、预留 Run、审批、回答和子任务恢复各自携带
 所需参数，任务对象只维护共有的调度、完成与取消状态。Core 的运行转换函数拥有续接时的状态准备规则。
-模型请求派发记录、Run 预算写入和已请求中止的状态结算归 RunLifecycle；Runtime 负责调用时机、
-资源收尾与提交后的事件发布，避免两个服务分别维护同一类持久转换。
+RunLifecycle 提交模型请求与 Run 预算，结算已请求的中止并发布对应事件。RunDriverExecution 调用默认或绑定的 Driver，复用进程级模型端口，按所属 Run 选择工具和预算。Runtime 负责执行所有权与会话调度的交接。
 Runtime 通过装配的窄回调报告会话推进机会，不引用具体调度器或 Host。调度按当前队列事实安排执行，
 TUI、AgentService 和任务协调器保留自己的业务身份、授权与结算。
 `agents/budgets.py` 从 SessionStore 与用量账本读取共享预算事实；AgentService 拥有派遣、等待与结果交付的事务状态。
@@ -57,10 +62,12 @@ ConfigurationFacade 修改配置，不启动运行环境。配置管理器拥有
 
 用户输入约束由 `UserInputRequest` 表达。`RuntimeService.run` 与 Supervisor 受理共用该请求和新会话输入准备；
 `run` 等待本次执行结果，Supervisor 受理返回持久回执并拥有后续调度。已受理输入通过 `run_pending_inputs`，
-预留 Run 通过 `run_prepared` 进入内部执行边界。
+预留 Run 通过 `run_prepared` 进入内部执行边界。Supervisor 从受理提交或同一次一致性读取取得回执与会话头，使用头中的活动 Run 身份安排等待。
 `InputSessionSettings` 表达随输入提交的会话选项；队列受理和直接 Run 启动在各自的原子提交内应用同一规则。
 策略检查在持久提交前完成；输入拒绝或受理提交失败不发布这些选项。
-执行边界统一处理锁竞争时的排队、锁内重读、输入消费和 Run 收尾，执行入口分别管理用户请求、已受理输入和锁预留。
+用户入口准备直接输入，队列入口选择一个可消费单元，预留入口核对 Run 和锁。`RunStartExecution` 取得会话执行权，在锁内重读、恢复并绑定模型，调用该入口的启动提交，再交给 `RunDriverExecution`。执行结束后释放锁并调度后续工作。
+`application/runs/interactions.py` 负责审批、回答和子任务交付。每个入口核对自己的交互身份，
+共用锁内读与裁决、原子提交、通知和释放后调度的顺序。
 
 Runtime 通过 `RuntimeExtensions` 获取当前能力，通过 `RuntimeCapabilities` 持有一次决策的租约。
 RunResources 拥有单次 Run 的工具选择：控制器可见范围、派遣能力上限与 Agent 控制工具在此组合。
@@ -70,7 +77,7 @@ RunResources 拥有单次 Run 的工具选择：控制器可见范围、派遣�
 身份、授权和退出失效；插件 Driver 的适配 handler 拥有自己的作用域。Runtime 不引用插件实现或 SDK 类型。
 Provider 绑定由本地装配直接注入协议适配器，插件运行资源在请求时提供对应代次的绑定。
 `LocalApplication.build` 装配完整执行环境；`from_runtime` 接收调用方已装配的 Runtime 及模型能力。
-`build_local_runtime` 提供独立本地 Runtime，插件协议通过显式 Provider binder 接入。
+`build_local_runtime` 提供独立本地 Runtime，插件协议通过显式 Provider binder 接入。每个 Runtime 持有自己的基础注册表。由它装配的 Host 用这组注册表构造扩展目录。插件管理和 Agent 定义入口只装配各自需要的基础能力，Run 使用已绑定决策的目录。
 未绑定的协议可保留模型路由与会话管理能力，实际模型请求报告不可用；连接检查由
 `open_local_provider_runtime` 持有所需的 Runtime 和协议插件生命周期。
 Core 的 `SessionControllerRegistry` 表达控制器契约、调用规则与可用性，插件适配器负责 SDK 转换及代次归属绑定。

@@ -1,14 +1,19 @@
 from __future__ import annotations
 
-from ouro.application.events import RuntimeEventRecorder
-from ouro.application.runs.lifecycle import RunLifecycle
-from ouro.application.runs.tool_batches import load_tool_batch
+from typing import TYPE_CHECKING
+
+from ouro.application.inputs.queue import PendingInputs
+from ouro.application.runs.tool_batches import load_batch_states, load_tool_batch
 from ouro.core.base import utc_now
 from ouro.core.callbacks import run_blocking
-from ouro.core.session_ports import RuntimeSessionSnapshot, SessionRepository
-from ouro.core.state import RESUMABLE_RUN_STATUSES
+from ouro.core.session_ports import RunReferenceReader, RuntimeSessionSnapshot, SessionRepository
+from ouro.core.state import ACTIVE_RUN_STATUSES, RESUMABLE_RUN_STATUSES
 from ouro.core.tool_batches import ToolBatchCall
 from ouro.core.tools import ToolResult, ToolResultFeedback, ToolResultValue
+
+if TYPE_CHECKING:
+    from ouro.application.events import RuntimeEventRecorder
+    from ouro.application.runs.lifecycle import RunLifecycle
 
 
 class RunRecoveryService:
@@ -116,3 +121,83 @@ class RunRecoveryService:
                 ),
             }
         )
+
+
+def retained_plugin_releases(
+    store: RunReferenceReader | None,
+) -> dict[tuple[str, str, str], set[str]]:
+    """Scan recovery facts once on the management path, without loading message journals."""
+    references: dict[tuple[str, str, str], set[str]] = {}
+    if store is None:
+        return references
+
+    def retain(kind: str, identity: str, release: str, owner: str) -> None:
+        references.setdefault((kind, identity, release), set()).add(owner)
+
+    queue = PendingInputs(store)
+    for session in store.list_sessions():
+        for driver in queue.bound_drivers(session):
+            for implementation in driver.implementations:
+                retain(
+                    implementation.plugin_class,
+                    implementation.plugin_id,
+                    implementation.release_id,
+                    f"{session.session_id}/queued",
+                )
+        for activation in session.controls.activations:
+            retain(
+                activation.plugin_class,
+                activation.plugin_id,
+                activation.release_id,
+                session.session_id,
+            )
+        for run in store.load_runs(session.session_id):
+            resumable_driver = (
+                run.driver_checkpoint is not None
+                and run.driver_checkpoint.state in {"pending", "ready"}
+                and run.active_tool_batch is not None
+            )
+            retained = run.status in ACTIVE_RUN_STATUSES or run.status in {"paused", "recoverable"}
+            owner = f"{session.session_id}/{run.run_id}"
+            if retained or resumable_driver:
+                for implementation in run.driver.implementations:
+                    retain(
+                        implementation.plugin_class,
+                        implementation.plugin_id,
+                        implementation.release_id,
+                        owner,
+                    )
+            if not retained:
+                continue
+            for call in load_batch_states(store, run):
+                invocation = call.prepared_binding
+                if invocation is None and call.attempt > 0:
+                    started = store.load_tool_call_start(
+                        session.session_id, call.identity, call.attempt
+                    )
+                    invocation = started.binding if started is not None else None
+                if (
+                    call.status
+                    not in {
+                        "planned",
+                        "ready",
+                        "running",
+                        "awaiting_approval",
+                        "waiting_user",
+                        "resolving_input",
+                    }
+                    or invocation is None
+                ):
+                    continue
+                if (
+                    invocation.plugin_class is not None
+                    and invocation.plugin_id is not None
+                    and invocation.release_id is not None
+                ):
+                    retain(
+                        invocation.plugin_class,
+                        invocation.plugin_id,
+                        invocation.release_id,
+                        owner,
+                    )
+    return references

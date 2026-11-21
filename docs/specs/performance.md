@@ -8,7 +8,7 @@
 编排和轻量投影；可能等待文件锁、`fsync`、SQLite writer 或执行大对象物化的同步工作必须离开事件循环。性能改进
 不能改变 canonical 顺序、原子提交、恢复、取消、插件 generation 隔离或 Host 观察语义。
 
-真实终端的测量目标和条件性优化见[性能规划](../plans/performance.md)。
+真实终端的操作步骤见[人工终端验收入口](../../dev/benchmarks/README.md#人工终端验收入口)。
 
 ## 导入与 Host 准备
 
@@ -62,7 +62,7 @@ iterator，消费者独占 FIFO；FIFO 满是唯一无损背压点。
 
 ## Runtime Event Observer
 
-业务 Event 持久化，实时分片按[当前输出与观察契约](session-observation.md#通用正文观察)使用当前 Draft，
+业务 Event 持久化，实时分片按[当前输出与观察契约](session-observation.md#统一增量观察)使用当前 Draft，
 不成为永久事件历史。Host event sink 按注册的同步 filter 选择入队事件，未设 filter 时接收全部事件。
 filter 不执行 I/O，拒绝投递不影响持久化或其他消费者。Plugin Observer 是独立可选消费者：
 
@@ -223,6 +223,7 @@ Skill 资源遍历在下降前剪枝忽略目录，不枚举其内部文件再�
 Application 与 TUI 的投影只使用既有事实，时间、sequence 等不影响用户可见状态的变化不应触发全量重建。
 Store 离开事件循环能消除同步 IO 阻塞，但不保证 GC、GIL、App 消息泵或真实终端绘制达到帧预算。
 `dev/benchmarks` 测量 loop lag、按键、动画、GC 和局部 IO；真实 Windows/POSIX 终端须分别验证。
+受控验收目标为 1 ms ticker 的 loop lag P99 ≤ 16 ms、最大值 ≤ 32 ms，按键到 Composer 更新的 P95 ≤ 50 ms。周期为 120 ms 的动画最多连续错过一个周期。
 当前没有跨平台端到端时延保证，不能把 headless 结果或局部优化视为该保证。
 
 ## Harness 与撤销成本

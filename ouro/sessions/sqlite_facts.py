@@ -242,6 +242,20 @@ def write_call_state(
     )
 
 
+def run_has_tool_error(
+    connection: sqlite3.Connection, session_id: str, run_id: str, after_revision: int
+) -> bool:
+    row = connection.execute(
+        "SELECT 1 FROM tool_call_states WHERE session_id = ? AND run_id = ? "
+        "AND modified_revision > ? AND json_extract(payload, '$.result_message_id') IS NOT NULL "
+        "AND json_extract(payload, '$.status') IN "
+        "('failed', 'rejected', 'aborted', 'unknown_outcome') "
+        "LIMIT 1",
+        (session_id, run_id, after_revision),
+    ).fetchone()
+    return row is not None
+
+
 def load_states(connection: sqlite3.Connection, session_id: str) -> tuple[ToolCallState, ...]:
     states = []
     for row in connection.execute(

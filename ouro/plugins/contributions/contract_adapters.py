@@ -5,66 +5,31 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Protocol
 
-from ouro.core.compaction import CompactionStrategy
-from ouro.core.context_providers import ContextProviderRegistration
-from ouro.core.continuations import ContinuationPolicyRegistration
-from ouro.core.observers import ObserverRegistration
-from ouro.core.prompt_policies import PromptPolicyRegistration
-from ouro.core.run_drivers import RunDriverRegistration
-from ouro.core.session_controller_registry import SessionController
-from ouro.core.system_prompts import SystemPromptRegistration
-from ouro.core.tool_policies import ToolPolicyRegistration
-from ouro.core.turn_policies import TurnPolicyRegistration
+from ouro.plugins.contributions.models import PreparedContributionSet
 from ouro.plugins.manifest import PluginManifest
-from ouro.plugins.providers import ProviderRegistration
-from ouro.plugins.registry import PluginCommand
-from ouro.tools import Tool
-
-
-class ContractBackgroundService(Protocol):
-    @property
-    def service_id(self) -> str: ...
-
-    @property
-    def scope(self) -> Literal["host", "home"]: ...
-
-
-@dataclass(frozen=True)
-class ContributionContractContext:
-    manifest: PluginManifest
-    tools: tuple[Tool, ...]
-    observers: tuple[ObserverRegistration, ...]
-    context_providers: tuple[ContextProviderRegistration, ...]
-    system_prompt_providers: tuple[SystemPromptRegistration, ...]
-    commands: tuple[PluginCommand, ...]
-    compaction: tuple[CompactionStrategy, ...]
-    background_services: tuple[ContractBackgroundService, ...]
-    providers: tuple[ProviderRegistration, ...]
-    run_drivers: tuple[RunDriverRegistration, ...]
-    continuation_policies: tuple[ContinuationPolicyRegistration, ...]
-    prompt_policies: tuple[PromptPolicyRegistration, ...]
-    turn_policies: tuple[TurnPolicyRegistration, ...]
-    tool_policies: tuple[ToolPolicyRegistration, ...]
-    session_controllers: tuple[SessionController, ...]
-    resource_contracts: dict[str, object]
 
 
 class ContributionContractAdapter(Protocol):
     @property
     def kind(self) -> str: ...
 
-    def contracts(self, context: ContributionContractContext) -> dict[str, object]: ...
+    def contracts(
+        self, manifest: PluginManifest, prepared: PreparedContributionSet
+    ) -> dict[str, object]: ...
 
 
 @dataclass(frozen=True)
 class _ToolContractAdapter:
     kind: str = "tools"
 
-    def contracts(self, context: ContributionContractContext) -> dict[str, object]:
+    def contracts(
+        self, manifest: PluginManifest, prepared: PreparedContributionSet
+    ) -> dict[str, object]:
         return {
-            tool.definition.identity: tool.definition.execution_contract() for tool in context.tools
+            tool.definition.identity: tool.definition.execution_contract()
+            for tool in prepared.tools
         }
 
 
@@ -72,32 +37,18 @@ class _ToolContractAdapter:
 class _ObserverContractAdapter:
     kind: str = "observers"
 
-    def contracts(self, context: ContributionContractContext) -> dict[str, object]:
+    def contracts(
+        self, manifest: PluginManifest, prepared: PreparedContributionSet
+    ) -> dict[str, object]:
         return {
-            f"{context.manifest.plugin_id}/observers/{observer.observer_id}": {
+            f"{manifest.plugin_id}/observers/{observer.observer_id}": {
                 "event": observer.event,
                 "event_types": list(observer.event_types),
                 "priority": observer.priority,
                 "timeout_seconds": observer.timeout_seconds,
                 "active_when_controller_id": observer.active_when_controller_id,
             }
-            for observer in context.observers
-        }
-
-
-@dataclass(frozen=True)
-class _RequestProviderContractAdapter:
-    kind: str
-
-    def contracts(self, context: ContributionContractContext) -> dict[str, object]:
-        return {
-            f"{context.manifest.plugin_id}/{self.kind}/{provider.provider_id}": {
-                "priority": provider.priority,
-                "timeout_seconds": provider.timeout_seconds,
-                "failure_mode": provider.failure_mode,
-                "active_when_controller_id": provider.active_when_controller_id,
-            }
-            for provider in getattr(context, self.kind)
+            for observer in prepared.observers
         }
 
 
@@ -105,9 +56,11 @@ class _RequestProviderContractAdapter:
 class _CommandContractAdapter:
     kind: str = "commands"
 
-    def contracts(self, context: ContributionContractContext) -> dict[str, object]:
+    def contracts(
+        self, manifest: PluginManifest, prepared: PreparedContributionSet
+    ) -> dict[str, object]:
         return {
-            f"{context.manifest.plugin_id}/commands/{command.name}": {
+            f"{manifest.plugin_id}/commands/{command.name}": {
                 "description": command.description,
                 "usage": command.usage,
                 "argument_options": [
@@ -120,7 +73,7 @@ class _CommandContractAdapter:
                 ],
                 "requires_session": command.requires_session,
             }
-            for command in context.commands
+            for command in prepared.commands
         }
 
 
@@ -128,13 +81,15 @@ class _CommandContractAdapter:
 class _SessionControllerContractAdapter:
     kind: str = "session_controllers"
 
-    def contracts(self, context: ContributionContractContext) -> dict[str, object]:
+    def contracts(
+        self, manifest: PluginManifest, prepared: PreparedContributionSet
+    ) -> dict[str, object]:
         return {
-            f"{context.manifest.plugin_id}/session_controllers/{controller.controller_id}": {
+            f"{manifest.plugin_id}/session_controllers/{controller.controller_id}": {
                 "claims": [claim.model_dump(mode="json") for claim in controller.claims],
                 "timeout_seconds": controller.timeout_seconds,
             }
-            for controller in context.session_controllers
+            for controller in prepared.session_controllers
         }
 
 
@@ -142,12 +97,14 @@ class _SessionControllerContractAdapter:
 class _CompactionContractAdapter:
     kind: str = "compaction_strategies"
 
-    def contracts(self, context: ContributionContractContext) -> dict[str, object]:
-        prefix = f"{context.manifest.plugin_id}."
+    def contracts(
+        self, manifest: PluginManifest, prepared: PreparedContributionSet
+    ) -> dict[str, object]:
+        prefix = f"{manifest.plugin_id}."
         return {
-            f"{context.manifest.plugin_id}/compaction_strategies/"
+            f"{manifest.plugin_id}/compaction_strategies/"
             f"{strategy.strategy_id.removeprefix(prefix)}": {"version": strategy.version}
-            for strategy in context.compaction
+            for strategy in prepared.compaction_strategies
         }
 
 
@@ -155,13 +112,15 @@ class _CompactionContractAdapter:
 class _BackgroundServiceContractAdapter:
     kind: str = "background_services"
 
-    def contracts(self, context: ContributionContractContext) -> dict[str, object]:
+    def contracts(
+        self, manifest: PluginManifest, prepared: PreparedContributionSet
+    ) -> dict[str, object]:
         return {
-            f"{context.manifest.plugin_id}/background_services/{service.service_id}": {
+            f"{manifest.plugin_id}/background_services/{service.service_id}": {
                 "lifecycle": "activation-singleton",
                 "scope": service.scope,
             }
-            for service in context.background_services
+            for service in prepared.background_services
         }
 
 
@@ -169,14 +128,16 @@ class _BackgroundServiceContractAdapter:
 class _ContinuationContractAdapter:
     kind: str = "continuation_policies"
 
-    def contracts(self, context: ContributionContractContext) -> dict[str, object]:
+    def contracts(
+        self, manifest: PluginManifest, prepared: PreparedContributionSet
+    ) -> dict[str, object]:
         return {
-            f"{context.manifest.plugin_id}/continuation_policies/{policy.policy_id}": {
+            f"{manifest.plugin_id}/continuation_policies/{policy.policy_id}": {
                 "priority": policy.priority,
                 "timeout_seconds": policy.timeout_seconds,
                 "active_when_controller_id": policy.active_when_controller_id,
             }
-            for policy in context.continuation_policies
+            for policy in prepared.continuation_policies
         }
 
 
@@ -184,15 +145,17 @@ class _ContinuationContractAdapter:
 class _ToolPolicyContractAdapter:
     kind: str = "tool_policies"
 
-    def contracts(self, context: ContributionContractContext) -> dict[str, object]:
+    def contracts(
+        self, manifest: PluginManifest, prepared: PreparedContributionSet
+    ) -> dict[str, object]:
         return {
-            f"{context.manifest.plugin_id}/tool_policies/{policy.policy_id}": {
+            f"{manifest.plugin_id}/tool_policies/{policy.policy_id}": {
                 "priority": policy.priority,
                 "timeout_seconds": policy.timeout_seconds,
                 "restriction_only": True,
                 "active_when_controller_id": policy.active_when_controller_id,
             }
-            for policy in context.tool_policies
+            for policy in prepared.tool_policies
         }
 
 
@@ -200,16 +163,18 @@ class _ToolPolicyContractAdapter:
 class _PromptPolicyContractAdapter:
     kind: str = "prompt_policies"
 
-    def contracts(self, context: ContributionContractContext) -> dict[str, object]:
+    def contracts(
+        self, manifest: PluginManifest, prepared: PreparedContributionSet
+    ) -> dict[str, object]:
         return {
-            f"{context.manifest.plugin_id}/prompt_policies/{policy.policy_id}": {
+            f"{manifest.plugin_id}/prompt_policies/{policy.policy_id}": {
                 "priority": policy.priority,
                 "timeout_seconds": policy.timeout_seconds,
                 "deny_only": True,
                 "active_when_controller_id": policy.active_when_controller_id,
                 "permission": "sessions.prompt.inspect",
             }
-            for policy in context.prompt_policies
+            for policy in prepared.prompt_policies
         }
 
 
@@ -217,14 +182,16 @@ class _PromptPolicyContractAdapter:
 class _TurnPolicyContractAdapter:
     kind: str = "turn_policies"
 
-    def contracts(self, context: ContributionContractContext) -> dict[str, object]:
+    def contracts(
+        self, manifest: PluginManifest, prepared: PreparedContributionSet
+    ) -> dict[str, object]:
         return {
-            f"{context.manifest.plugin_id}/turn_policies/{policy.policy_id}": {
+            f"{manifest.plugin_id}/turn_policies/{policy.policy_id}": {
                 "priority": policy.priority,
                 "timeout_seconds": policy.timeout_seconds,
                 "active_when_controller_id": policy.active_when_controller_id,
             }
-            for policy in context.turn_policies
+            for policy in prepared.turn_policies
         }
 
 
@@ -237,10 +204,6 @@ OBSERVER_CONTRACT_ADAPTER = _ObserverContractAdapter()
 COMMAND_CONTRACT_ADAPTER = _CommandContractAdapter()
 
 
-CONTEXT_CONTRACT_ADAPTER = _RequestProviderContractAdapter("context_providers")
-SYSTEM_PROMPT_CONTRACT_ADAPTER = _RequestProviderContractAdapter("system_prompt_providers")
-
-
 COMPACTION_CONTRACT_ADAPTER = _CompactionContractAdapter()
 
 
@@ -251,16 +214,20 @@ BACKGROUND_SERVICE_CONTRACT_ADAPTER = _BackgroundServiceContractAdapter()
 class _RunDriverContractAdapter:
     kind: str = "run_drivers"
 
-    def contracts(self, context: ContributionContractContext) -> dict[str, object]:
-        return {item.canonical_id: {"protocol": "run-driver/1"} for item in context.run_drivers}
+    def contracts(
+        self, manifest: PluginManifest, prepared: PreparedContributionSet
+    ) -> dict[str, object]:
+        return {item.canonical_id: {"protocol": "run-driver/1"} for item in prepared.run_drivers}
 
 
 @dataclass(frozen=True)
 class _ProviderContractAdapter:
     kind: str = "providers"
 
-    def contracts(self, context: ContributionContractContext) -> dict[str, object]:
-        return {item.canonical_id: {"protocol": "model-provider/1"} for item in context.providers}
+    def contracts(
+        self, manifest: PluginManifest, prepared: PreparedContributionSet
+    ) -> dict[str, object]:
+        return {item.canonical_id: {"protocol": "model-provider/1"} for item in prepared.providers}
 
 
 PROVIDER_CONTRACT_ADAPTER = _ProviderContractAdapter()

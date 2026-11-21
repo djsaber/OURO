@@ -34,6 +34,12 @@ class ToolCallIdentity:
         return self
 
 
+@dataclass(frozen=True, slots=True, config=ConfigDict(extra="forbid"))
+class ToolQuestion:
+    call: ToolCallIdentity
+    input_revision: int = Field(ge=0)
+
+
 class ToolCallRecord(VersionedOuroModel):
     """The original, immutable call accepted from a model or Driver."""
 

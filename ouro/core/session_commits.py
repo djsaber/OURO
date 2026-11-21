@@ -31,6 +31,14 @@ class SessionCommitConflict(PersistenceError):
     """The operation's read state no longer permits its proposed effects."""
 
 
+class InputAlreadyAccepted(SessionCommitConflict):
+    """Another submission already owns the durable input identity."""
+
+    def __init__(self, input_id: str) -> None:
+        super().__init__("input identity is already accepted")
+        self.input_id = input_id
+
+
 class HistoryBoundaryUnavailable(PersistenceError):
     """The selected message has no provable before-state checkpoint."""
 
@@ -67,6 +75,25 @@ class SessionCommit(OuroModel):
     compaction: CompactionRecord | None = None
     request_header: ModelRequestHeader | None = None
     request_manifest: RequestManifestRecord | None = None
+
+    def context_source_ids(self, current: SessionRecord) -> tuple[str | None, str | None]:
+        """Existing compaction and message facts needed to validate a changed selection."""
+        if self.after is None:
+            return None, None
+        selected = self.after.context_selection
+        previous = current.context_selection
+        compaction_id = (
+            selected.compaction_id
+            if self.compaction is None and selected.compaction_id != previous.compaction_id
+            else None
+        )
+        boundary = selected.media_elided_through
+        message_id = (
+            boundary.message_id
+            if boundary is not None and boundary != previous.media_elided_through
+            else None
+        )
+        return compaction_id, message_id
 
     @property
     def media_resource_ids(self) -> tuple[str, ...]:
@@ -464,7 +491,7 @@ def _prepare_inputs(
     for record in request.inputs:
         identity = record.item.queue_id
         if identity in states:
-            raise SessionCommitConflict("input identity is already accepted")
+            raise InputAlreadyAccepted(identity)
         if record.item.history_epoch != request.before.history_epoch:
             raise SessionCommitConflict("input belongs to withdrawn Session history")
         state = InputState.pending(record)

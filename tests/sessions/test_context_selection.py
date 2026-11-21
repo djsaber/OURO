@@ -217,14 +217,14 @@ async def test_preparation_checks_selection_dependency_but_accepts_unrelated_cha
         session=session, run=run, snapshot=store.load_runtime_session(session.session_id)
     )
     captured, release = asyncio.Event(), asyncio.Event()
-    resolve = runtime.context_preparation.resolve_prompt_context
+    resolve = runtime.context_preparation._resolve_prompt_context
 
     async def paused(*args, **kwargs):
         captured.set()
         await release.wait()
         return await resolve(*args, **kwargs)
 
-    monkeypatch.setattr(runtime.context_preparation, "resolve_prompt_context", paused)
+    monkeypatch.setattr(runtime.context_preparation, "_resolve_prompt_context", paused)
     task = asyncio.create_task(
         runtime.context_compaction.prepare(
             session=session,

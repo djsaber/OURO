@@ -8,6 +8,7 @@ from pydantic import Field, JsonValue
 
 from ouro.application.contracts.base import ApplicationDTO
 from ouro.core.tool_batches import ToolCallStatus
+from ouro.core.tool_facts import ToolQuestion
 
 RuntimeToolCallStatus = ToolCallStatus | Literal["streaming", "cancelling"]
 RUNTIME_TOOL_ARGUMENT_TAIL_MAX_CHARS = 256
@@ -28,6 +29,7 @@ class PendingInteraction:
     session_id: str | None = None
     delegation_id: str | None = None
     agent_name: str | None = None
+    question: ToolQuestion | None = None
 
     @property
     def is_subagent(self) -> bool:

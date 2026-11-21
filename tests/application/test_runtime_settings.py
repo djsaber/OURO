@@ -328,13 +328,13 @@ async def test_exhausted_budget_does_not_bind_capabilities(tmp_path, monkeypatch
 
     runtime, _, _ = loop_runtime(tmp_path, read, rounds=1)
     bindings = []
-    original = runtime._bind_run_capabilities
+    original = runtime._capture_run_capabilities
 
-    async def bind(**kwargs):
+    def bind(**kwargs):
         bindings.append(kwargs["model_round"])
-        return await original(**kwargs)
+        return original(**kwargs)
 
-    monkeypatch.setattr(runtime, "_bind_run_capabilities", bind)
+    monkeypatch.setattr(runtime, "_capture_run_capabilities", bind)
     async with runtime:
         result = await runtime.run("Read once")
         assert result.run.status == "paused"

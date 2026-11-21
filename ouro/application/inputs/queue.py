@@ -19,7 +19,7 @@ from ouro.core.messages import MessageRecord
 from ouro.core.run_drivers import RunDriverBinding
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict
 from ouro.core.session_controls import HostSessionInput, SessionInputRequest
-from ouro.core.session_ports import RuntimeSessionSnapshot, SessionRepository
+from ouro.core.session_ports import PendingInputReader, RuntimeSessionSnapshot, SessionRepository
 from ouro.core.state import RunRecord, SessionRecord
 
 
@@ -30,10 +30,10 @@ class InputQueueChange:
     superseded: tuple[QueuedInput, ...] = ()
 
 
-class QueuedInputQueue:
-    """FIFO references to accepted inputs; bodies are immutable independent facts."""
+class PendingInputs:
+    """Read eligible inputs and their frozen Driver bindings from the current history."""
 
-    def __init__(self, store: SessionRepository) -> None:
+    def __init__(self, store: PendingInputReader) -> None:
         self.store = store
 
     def _state(self, session_id: str, input_id: str) -> InputState:
@@ -41,12 +41,6 @@ class QueuedInputQueue:
         if state is None:
             raise PersistenceError(f"accepted input state not found: {input_id}")
         return state
-
-    def are_consumed(self, session_id: str, input_ids: Iterable[str]) -> bool:
-        with self.store.session_read(session_id):
-            return all(
-                self._state(session_id, identity).status == "consumed" for identity in input_ids
-            )
 
     def _pending_state(self, session: SessionRecord, input_id: str) -> InputState:
         state = self._state(session.session_id, input_id)
@@ -76,6 +70,46 @@ class QueuedInputQueue:
                 }
             )
         return item
+
+    def _eligible_items(
+        self, session: SessionRecord, *, mode: QueuedInputMode | None
+    ) -> Iterator[QueuedInput]:
+        for input_id in session.pending_input_ids:
+            state = self._pending_state(session, input_id)
+            if mode is not None and state.mode != mode:
+                continue
+            item = self._pending_item(session, state)
+            if item is not None:
+                yield item
+
+    def eligible_session(
+        self,
+        session: SessionRecord,
+        *,
+        mode: QueuedInputMode | None = None,
+        limit: int | None = None,
+    ) -> list[QueuedInput]:
+        with self.store.session_read(session.session_id):
+            session = self.store.load_session_record(session.session_id)
+            return list(islice(self._eligible_items(session, mode=mode), limit))
+
+    def bound_drivers(self, session: SessionRecord) -> tuple[RunDriverBinding, ...]:
+        return tuple(
+            item.driver for item in self.eligible_session(session) if item.driver is not None
+        )
+
+
+class QueuedInputQueue(PendingInputs):
+    """FIFO references to accepted inputs; bodies are immutable independent facts."""
+
+    def __init__(self, store: SessionRepository) -> None:
+        self.store: SessionRepository = store
+
+    def are_consumed(self, session_id: str, input_ids: Iterable[str]) -> bool:
+        with self.store.session_read(session_id):
+            return all(
+                self._state(session_id, identity).status == "consumed" for identity in input_ids
+            )
 
     def accept_host(
         self,
@@ -338,33 +372,6 @@ class QueuedInputQueue:
         limit: int | None = None,
     ) -> list[QueuedInput]:
         return self.eligible_session(snapshot.session, mode=mode, limit=limit)
-
-    def bound_drivers(self, session: SessionRecord) -> tuple[RunDriverBinding, ...]:
-        return tuple(
-            item.driver for item in self.eligible_session(session) if item.driver is not None
-        )
-
-    def eligible_session(
-        self,
-        session: SessionRecord,
-        *,
-        mode: QueuedInputMode | None = None,
-        limit: int | None = None,
-    ) -> list[QueuedInput]:
-        with self.store.session_read(session.session_id):
-            session = self.store.load_session_record(session.session_id)
-            return list(islice(self._eligible_items(session, mode=mode), limit))
-
-    def _eligible_items(
-        self, session: SessionRecord, *, mode: QueuedInputMode | None
-    ) -> Iterator[QueuedInput]:
-        for input_id in session.pending_input_ids:
-            state = self._pending_state(session, input_id)
-            if mode is not None and state.mode != mode:
-                continue
-            item = self._pending_item(session, state)
-            if item is not None:
-                yield item
 
     def eligible_units(
         self,

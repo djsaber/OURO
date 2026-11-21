@@ -151,6 +151,8 @@ async def test_existing_session_acceptance_receipt_survives_history_undo(tmp_pat
     session = runtime.create_session()
     result = await runtime.run("submitted", session_id=session.session_id, input_id="sent")
     assert result.run.status == "completed"
+    retry = await runtime.run("submitted", session_id=session.session_id, input_id="sent")
+    assert (retry.run.run_id, retry.final_text) == (result.run.run_id, result.final_text)
     assert runtime.sessions.input_accepted(session.session_id, "sent")
     runtime.sessions.undo(session.session_id)
     assert runtime.sessions.input_accepted(session.session_id, "sent")
@@ -221,10 +223,13 @@ async def test_first_input_acceptance_survives_execution_setup_failure(
     def fail(_session):
         raise PersistenceError("execution setup failed")
 
-    monkeypatch.setattr(runtime, "_resolve_session_adapter", fail)
     accepted = []
     created = []
-    with pytest.raises(PersistenceError, match="execution setup failed"):
+    with (
+        monkeypatch.context() as setup,
+        pytest.raises(PersistenceError, match="execution setup failed"),
+    ):
+        setup.setattr(runtime.session_models, "bind_session", fail)
         await runtime.run(
             "keep this",
             new_session_id=identity,
@@ -240,4 +245,11 @@ async def test_first_input_acceptance_survives_execution_setup_failure(
     queued = runtime.queued_inputs.eligible(session)
     assert len(queued) == 1 and queued[0].prompt == "keep this"
     assert session.messages == []
+    resumed = await runtime.run("keep this", new_session_id=identity, input_id="accepted")
+    repeated = await runtime.run("keep this", new_session_id=identity, input_id="accepted")
+    assert resumed.run.run_id == repeated.run.run_id == queued[0].prospective_run_id
+    assert resumed.run.origin == "user"
+    assert resumed.final_text == repeated.final_text
+    assert len(runtime.store.load_runs(identity)) == 1
+    assert not runtime._run_resources
     await application.close()

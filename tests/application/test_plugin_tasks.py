@@ -105,12 +105,17 @@ async def host(tmp_path, request, kind):
     repository = request.param(tmp_path / "home")
     repository.initialize()
     clock = [NOW]
-    tasks = TaskService(repository, runtime, clock=lambda: clock[0], plugin_tasks=plugins)
+    tasks = TaskService(
+        repository,
+        runtime.session_models.model_reasoning,
+        clock=lambda: clock[0],
+        plugin_tasks=plugins,
+    )
     plugins.bind_task_service(tasks)
     assert (await service.enable(PLUGIN)).status == "active", service.diagnostics()
     supervisor = RuntimeSupervisor(runtime)
     await supervisor.start()
-    execution = TaskExecutionCoordinator(tasks, supervisor)
+    execution = TaskExecutionCoordinator(tasks, supervisor, runs=runtime, state=store)
     try:
         yield tasks, execution, plugins, service, clock
     finally:
@@ -161,7 +166,7 @@ async def test_scheduled_service_persists_exact_target_and_result_without_a_sess
         "arguments": {"value": "payload"},
         "caller_id": "ouro.tasks",
     }
-    assert not tasks.runtime.sessions.catalog().entries
+    assert not execution.supervisor.runtime.sessions.catalog().entries
     assert (await tasks.get(task.task_id)).session_id is None
     assert plugins._active[PLUGIN].lease_count == 0
     assert not execution._plugin_jobs
@@ -191,7 +196,7 @@ async def test_disable_settles_inflight_service_and_releases_implementation(host
     receipt = await settle(tasks, execution, task.task_id)
     assert receipt.status == "interrupted", receipt.error
     assert generation.lease_count == 0
-    assert not tasks.runtime.sessions.catalog().entries
+    assert not execution.supervisor.runtime.sessions.catalog().entries
 
 
 async def test_unobserved_claim_is_interrupted_without_replaying_service(host):
@@ -213,7 +218,7 @@ async def test_peer_interrupt_request_is_consumed_by_the_scheduling_owner(host):
     task = await tasks.create(configuration(block=True))
     await execution.tick()
     await started(plugins._active[PLUGIN].services)
-    peer = TaskService(type(tasks.repository)(plugins.store.home), tasks.runtime)
+    peer = TaskService(type(tasks.repository)(plugins.store.home), tasks.model_reasoning)
     await peer.request_interrupt(await peer.get(task.task_id))
     receipt = await settle(tasks, execution, task.task_id)
     assert receipt.status == "interrupted" and receipt.cancel_requested
@@ -341,7 +346,7 @@ async def test_plugin_and_agent_targets_share_the_dispatch_concurrency_limit(hos
     )
     await execution.tick()
     assert not await tasks.executions(agent_task.task_id)
-    assert not tasks.runtime.sessions.catalog().entries
+    assert not execution.supervisor.runtime.sessions.catalog().entries
     await plugins._active[PLUGIN].services.call(PLUGIN, "sync", "release")
     assert (await settle(tasks, execution, plugin_task.task_id)).status == "completed"
     await execution.tick()

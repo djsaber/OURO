@@ -232,22 +232,14 @@ class FileSessionCommits:
             )
         media_source = None
         selected_compaction = None
-        if (
-            request.compaction is None
-            and request.after is not None
-            and (selected_id := request.after.context_selection.compaction_id) is not None
-            and selected_id != current.context_selection.compaction_id
-        ):
+        selected_id, message_id = request.context_source_ids(current)
+        if selected_id is not None:
             try:
                 selected_compaction = read_compaction(connection, directory, selected_id)
             except FileNotFoundError:
                 pass
-        if (
-            request.after is not None
-            and (boundary := request.after.context_selection.media_elided_through) is not None
-            and boundary != current.context_selection.media_elided_through
-        ):
-            media_source = self.messages.fact(connection, directory, boundary.message_id)
+        if message_id is not None:
+            media_source = self.messages.fact(connection, directory, message_id)
         withdrawn_inputs = tuple(
             dict.fromkeys(item.queued_input_id for item in removed_messages if item.queued_input_id)
         )

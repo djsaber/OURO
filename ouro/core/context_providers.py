@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from pydantic import ConfigDict, Field
 
 from ouro.core.base import OuroModel
@@ -13,6 +15,7 @@ from ouro.core.request_providers import (
     ProviderEvaluation,
     RequestProviderRegistration,
 )
+from ouro.core.system_prompts import SystemPromptRegistry
 
 
 class ContextProviderCall(OuroModel):
@@ -55,6 +58,14 @@ class ContextProviderRegistration(
 class ContextProviderRegistry(OrderedProviderRegistry[ContextProviderRegistration]):
     async def evaluate(self, call: ContextProviderCall) -> ProviderEvaluation[ContextObservation]:
         return await self._evaluate(call, ContextProviderResult, _attribute_observations)
+
+
+@dataclass(frozen=True)
+class RequestProviders:
+    """The two sources of request content in one decision's catalog."""
+
+    system_prompts: SystemPromptRegistry
+    observations: ContextProviderRegistry
 
 
 def _attribute_observations(

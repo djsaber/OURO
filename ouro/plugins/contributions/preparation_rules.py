@@ -10,15 +10,11 @@ from typing import Any
 
 from ouro.core.cancellation import AbortSignal
 from ouro.core.compaction import CompactionArtifact, CompactionRequest, CompactionStrategy
-from ouro.core.context_providers import ContextProviderRegistration
 from ouro.core.continuations import ContinuationPolicyRegistration
 from ouro.core.extensions import PluginSource
 from ouro.core.observers import ObserverRegistration
 from ouro.core.prompt_policies import PromptPolicyRegistration
-from ouro.core.request_providers import RequestProviderRegistration
-from ouro.core.run_drivers import RunDriverRegistration
 from ouro.core.session_controller_registry import SessionController
-from ouro.core.system_prompts import SystemPromptRegistration
 from ouro.core.tool_policies import ToolPolicyRegistration
 from ouro.core.turn_policies import TurnPolicyRegistration
 from ouro.plugins.contributions.models import (
@@ -26,10 +22,8 @@ from ouro.plugins.contributions.models import (
     ContributionOwner,
     ContributionValidationError,
     PluginContributions,
-    PreparedBackgroundService,
 )
 from ouro.plugins.manifest import PluginManifest, ToolContributionSpec
-from ouro.plugins.providers import ProviderRegistration
 from ouro.plugins.registry import PluginCommand, PluginCommandArgument, bind_plugin_command
 from ouro.plugins.session_controllers import bind_plugin_session_controller
 from ouro.skills.models import SkillMetadata
@@ -44,25 +38,6 @@ class _PreparationContext:
     source: PluginSource
     resource_skills: tuple[SkillMetadata, ...]
     discovered_tools: tuple[Tool, ...]
-
-
-@dataclass
-class _PreparedBuilder:
-    tools: tuple[Tool, ...] = ()
-    observers: tuple[ObserverRegistration, ...] = ()
-    context_providers: tuple[ContextProviderRegistration, ...] = ()
-    system_prompt_providers: tuple[SystemPromptRegistration, ...] = ()
-    commands: tuple[PluginCommand, ...] = ()
-    compaction_strategies: tuple[CompactionStrategy, ...] = ()
-    background_services: tuple[PreparedBackgroundService, ...] = ()
-    skills: tuple[SkillMetadata, ...] = ()
-    providers: tuple[ProviderRegistration, ...] = ()
-    run_drivers: tuple[RunDriverRegistration, ...] = ()
-    continuation_policies: tuple[ContinuationPolicyRegistration, ...] = ()
-    prompt_policies: tuple[PromptPolicyRegistration, ...] = ()
-    turn_policies: tuple[TurnPolicyRegistration, ...] = ()
-    tool_policies: tuple[ToolPolicyRegistration, ...] = ()
-    session_controllers: tuple[SessionController, ...] = ()
 
 
 @dataclass
@@ -246,16 +221,12 @@ def prepare_tools(
     return tuple(prepared)
 
 
-def _prepare_commands(
-    manifest: PluginManifest,
-    owner: ContributionOwner,
-    source: PluginSource,
-    commands: list[PluginCommand],
-) -> tuple[PluginCommand, ...]:
+def _prepare_commands(context: _PreparationContext) -> tuple[PluginCommand, ...]:
+    manifest = context.manifest
     declarations = {item.id: item for item in manifest.contributes.commands}
     actual = _unique_contribution_map(
         "command",
-        ((command.name, command) for command in commands),
+        ((command.name, command) for command in context.contributions.commands),
     )
     _validate_declared_set("command", declarations, actual)
     return tuple(
@@ -263,10 +234,10 @@ def _prepare_commands(
             bind_plugin_command(
                 command,
                 plugin_id=manifest.plugin_id,
-                source=source,
+                source=context.source,
                 maximum_timeout_seconds=5.0,
             ),
-            generation_id=owner.generation_id,
+            generation_id=context.owner.generation_id,
             allow_session_inputs=_allows_session_inputs(manifest),
             description=declarations[command_id].description,
             usage=declarations[command_id].usage,
@@ -284,16 +255,15 @@ def _prepare_commands(
     )
 
 
-def _prepare_session_controllers(
-    manifest: PluginManifest,
-    owner: ContributionOwner,
-    source: PluginSource,
-    controllers: list[SessionController],
-) -> tuple[SessionController, ...]:
+def _prepare_session_controllers(context: _PreparationContext) -> tuple[SessionController, ...]:
+    manifest = context.manifest
     declarations = {item.id: item for item in manifest.contributes.session_controllers}
     actual = _unique_contribution_map(
         "session controller",
-        ((controller.controller_id, controller) for controller in controllers),
+        (
+            (controller.controller_id, controller)
+            for controller in context.contributions.session_controllers
+        ),
     )
     _validate_declared_set("session controller", declarations, actual)
     prepared: list[SessionController] = []
@@ -313,11 +283,11 @@ def _prepare_session_controllers(
                     timeout_seconds=declaration.timeout_seconds,
                 ),
                 plugin_id=manifest.plugin_id,
-                source=source,
-                plugin_class=owner.plugin_class,
-                release_id=owner.release_id,
-                package_digest=owner.package_digest,
-                generation_id=owner.generation_id,
+                source=context.source,
+                plugin_class=context.owner.plugin_class,
+                release_id=context.owner.release_id,
+                package_digest=context.owner.package_digest,
+                generation_id=context.owner.generation_id,
                 maximum_timeout_seconds=5.0,
             )
         )
@@ -369,16 +339,12 @@ def _prepare_discovered_tools(
     return tuple(prepared)
 
 
-def _prepare_observers(
-    manifest: PluginManifest,
-    owner: ContributionOwner,
-    source: PluginSource,
-    observers: list[ObserverRegistration],
-) -> tuple[ObserverRegistration, ...]:
+def _prepare_observers(context: _PreparationContext) -> tuple[ObserverRegistration, ...]:
+    manifest = context.manifest
     declarations = {item.id: item for item in manifest.contributes.observers}
     actual = _unique_contribution_map(
         "observer",
-        ((observer.observer_id, observer) for observer in observers),
+        ((observer.observer_id, observer) for observer in context.contributions.observers),
     )
     _validate_declared_set("observer", declarations, actual)
     prepared: list[ObserverRegistration] = []
@@ -396,12 +362,12 @@ def _prepare_observers(
             replace(
                 observer,
                 plugin_id=manifest.plugin_id,
-                source=source,
+                source=context.source,
                 priority=declaration.priority,
                 timeout_seconds=declaration.timeout_seconds,
                 observer_id=observer_id,
-                owner=owner.key,
-                generation_id=owner.generation_id,
+                owner=context.owner.key,
+                generation_id=context.owner.generation_id,
                 active_when_controller_id=_canonical_controller_id(
                     manifest.plugin_id,
                     declaration.active_when,
@@ -409,36 +375,6 @@ def _prepare_observers(
             )
         )
     return tuple(prepared)
-
-
-def _prepare_request_providers[R: RequestProviderRegistration](
-    kind: str,
-    manifest: PluginManifest,
-    owner: ContributionOwner,
-    providers: list[R],
-) -> tuple[R, ...]:
-    declarations = {item.id: item for item in getattr(manifest.contributes, kind)}
-    actual = _unique_contribution_map(
-        kind,
-        ((provider.provider_id, provider) for provider in providers),
-    )
-    _validate_declared_set(kind, declarations, actual)
-    return tuple(
-        replace(
-            provider,
-            plugin_id=manifest.plugin_id,
-            priority=declarations[provider.provider_id].priority,
-            timeout_seconds=declarations[provider.provider_id].timeout_seconds,
-            failure_mode=declarations[provider.provider_id].failure_mode,
-            owner=owner.key,
-            generation_id=owner.generation_id,
-            active_when_controller_id=_canonical_controller_id(
-                manifest.plugin_id,
-                declarations[provider.provider_id].active_when,
-            ),
-        )
-        for provider in actual.values()
-    )
 
 
 def _prepare_compaction(
@@ -485,14 +421,13 @@ def _validate_background_services(
 
 
 def _prepare_continuation_policies(
-    manifest: PluginManifest,
-    owner: ContributionOwner,
-    policies: list[ContinuationPolicyRegistration],
+    context: _PreparationContext,
 ) -> tuple[ContinuationPolicyRegistration, ...]:
+    manifest = context.manifest
     declarations = {item.id: item for item in manifest.contributes.continuation_policies}
     actual = _unique_contribution_map(
         "continuation policy",
-        ((policy.policy_id, policy) for policy in policies),
+        ((policy.policy_id, policy) for policy in context.contributions.continuation_policies),
     )
     _validate_declared_set("continuation policy", declarations, actual)
     if actual and not _allows_session_inputs(manifest):
@@ -505,8 +440,8 @@ def _prepare_continuation_policies(
             plugin_id=manifest.plugin_id,
             priority=declarations[policy.policy_id].priority,
             timeout_seconds=declarations[policy.policy_id].timeout_seconds,
-            owner=owner.key,
-            generation_id=owner.generation_id,
+            owner=context.owner.key,
+            generation_id=context.owner.generation_id,
             active_when_controller_id=_canonical_controller_id(
                 manifest.plugin_id,
                 declarations[policy.policy_id].active_when,
@@ -516,15 +451,12 @@ def _prepare_continuation_policies(
     )
 
 
-def _prepare_tool_policies(
-    manifest: PluginManifest,
-    owner: ContributionOwner,
-    policies: list[ToolPolicyRegistration],
-) -> tuple[ToolPolicyRegistration, ...]:
+def _prepare_tool_policies(context: _PreparationContext) -> tuple[ToolPolicyRegistration, ...]:
+    manifest = context.manifest
     declarations = {item.id: item for item in manifest.contributes.tool_policies}
     actual = _unique_contribution_map(
         "tool policy",
-        ((policy.policy_id, policy) for policy in policies),
+        ((policy.policy_id, policy) for policy in context.contributions.tool_policies),
     )
     _validate_declared_set("tool policy", declarations, actual)
     return tuple(
@@ -533,8 +465,8 @@ def _prepare_tool_policies(
             plugin_id=manifest.plugin_id,
             priority=declarations[policy.policy_id].priority,
             timeout_seconds=declarations[policy.policy_id].timeout_seconds,
-            owner=owner.key,
-            generation_id=owner.generation_id,
+            owner=context.owner.key,
+            generation_id=context.owner.generation_id,
             active_when_controller_id=_canonical_controller_id(
                 manifest.plugin_id,
                 declarations[policy.policy_id].active_when,
@@ -544,15 +476,12 @@ def _prepare_tool_policies(
     )
 
 
-def _prepare_prompt_policies(
-    manifest: PluginManifest,
-    owner: ContributionOwner,
-    policies: list[PromptPolicyRegistration],
-) -> tuple[PromptPolicyRegistration, ...]:
+def _prepare_prompt_policies(context: _PreparationContext) -> tuple[PromptPolicyRegistration, ...]:
+    manifest = context.manifest
     declarations = {item.id: item for item in manifest.contributes.prompt_policies}
     actual = _unique_contribution_map(
         "prompt policy",
-        ((policy.policy_id, policy) for policy in policies),
+        ((policy.policy_id, policy) for policy in context.contributions.prompt_policies),
     )
     _validate_declared_set("prompt policy", declarations, actual)
     permissions = {request.id for request in manifest.permissions}
@@ -566,8 +495,8 @@ def _prepare_prompt_policies(
             plugin_id=manifest.plugin_id,
             priority=declarations[policy.policy_id].priority,
             timeout_seconds=declarations[policy.policy_id].timeout_seconds,
-            owner=owner.key,
-            generation_id=owner.generation_id,
+            owner=context.owner.key,
+            generation_id=context.owner.generation_id,
             active_when_controller_id=_canonical_controller_id(
                 manifest.plugin_id,
                 declarations[policy.policy_id].active_when,
@@ -577,15 +506,12 @@ def _prepare_prompt_policies(
     )
 
 
-def _prepare_turn_policies(
-    manifest: PluginManifest,
-    owner: ContributionOwner,
-    policies: list[TurnPolicyRegistration],
-) -> tuple[TurnPolicyRegistration, ...]:
+def _prepare_turn_policies(context: _PreparationContext) -> tuple[TurnPolicyRegistration, ...]:
+    manifest = context.manifest
     declarations = {item.id: item for item in manifest.contributes.turn_policies}
     actual = _unique_contribution_map(
         "turn policy",
-        ((policy.policy_id, policy) for policy in policies),
+        ((policy.policy_id, policy) for policy in context.contributions.turn_policies),
     )
     _validate_declared_set("turn policy", declarations, actual)
     return tuple(
@@ -594,8 +520,8 @@ def _prepare_turn_policies(
             plugin_id=manifest.plugin_id,
             priority=declarations[policy.policy_id].priority,
             timeout_seconds=declarations[policy.policy_id].timeout_seconds,
-            owner=owner.key,
-            generation_id=owner.generation_id,
+            owner=context.owner.key,
+            generation_id=context.owner.generation_id,
             active_when_controller_id=_canonical_controller_id(
                 manifest.plugin_id,
                 declarations[policy.policy_id].active_when,

@@ -457,6 +457,8 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         self._line_cache.clear()
         self.display = bool(self._entries)
         self.virtual_size = Size(self._widest_line_width, len(self.lines))
+        # A layout in this frame may have measured the visible buffer before its rows returned.
+        self._box_model_cache.clear()
         self.refresh(layout=True)
         return shared
 

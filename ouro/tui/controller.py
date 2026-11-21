@@ -377,29 +377,29 @@ class TuiController:
         self, session_id: str | None, prepared_session_id: str
     ) -> SessionView | str:
         """Capture an existing Session epoch or reserve a new input's file namespace."""
-        runtime = self._runtime()
+        services = self._services()
         if session_id is not None:
-            return await asyncio.to_thread(runtime.sessions.view, session_id)
+            return await asyncio.to_thread(services.sessions.view, session_id)
         await self.prepare_input_resources(prepared_session_id)
         return prepared_session_id
 
     async def prepare_input_resources(self, identity: str) -> None:
-        resources = self._runtime().resources
+        resources = self._services().resources
         if resources is not None:
             await asyncio.to_thread(resources.reserve, identity)
 
     async def release_input_resources(self, identity: str, retain: tuple[str, ...]) -> None:
-        resources = self._runtime().resources
+        resources = self._services().resources
         if resources is not None:
             await asyncio.to_thread(resources.release_prepared, identity, retain=retain)
 
     async def input_accepted(self, session_id: str, input_id: str) -> bool:
         return await asyncio.to_thread(
-            self._runtime().sessions.input_accepted, session_id, input_id
+            self._services().sessions.input_accepted, session_id, input_id
         )
 
     async def import_attachment(self, session: SessionView | str, path: Path) -> InputAttachment:
-        resources = self._runtime().resources
+        resources = self._services().resources
         if resources is None:
             raise ConfigError("Resource storage is unavailable")
         if isinstance(session, str):
@@ -417,7 +417,7 @@ class TuiController:
         """Capture selected paths and their workspace without creating a Session."""
         workspace = self._draft_workspace
         if self._session_id is not None:
-            session = await asyncio.to_thread(self._runtime().sessions.view, self._session_id)
+            session = await asyncio.to_thread(self._services().sessions.view, self._session_id)
             workspace = session.workspace
 
         def capture() -> tuple[InputFile, ...]:
@@ -443,7 +443,7 @@ class TuiController:
     async def validate_attachment_session(self, session: SessionView | str) -> None:
         if isinstance(session, str):
             return
-        latest = await asyncio.to_thread(self._runtime().sessions.view, session.session_id)
+        latest = await asyncio.to_thread(self._services().sessions.view, session.session_id)
         if latest.history_epoch != session.history_epoch:
             raise SessionCommitConflict(
                 "Session history changed while importing attachments; select the files again"
@@ -452,7 +452,7 @@ class TuiController:
     async def input_attachments(
         self, session_id: str, resource_refs: tuple[str, ...]
     ) -> tuple[InputFile, ...]:
-        resources = self._runtime().resources
+        resources = self._services().resources
         if resources is None:
             return ()
         items = []
@@ -473,16 +473,16 @@ class TuiController:
         new_session_id: str | None = None,
         input_id: str | None = None,
     ) -> RunResult:
-        runtime = self._runtime()
+        services = self._services()
         revision = self._selection_revision
         selection = (self._session_id, self._initial_model)
         available = await self.models()
         if not available:
             raise NoInputModels("add a provider and endpoint before sending a message")
         selected = (
-            await asyncio.to_thread(runtime.resolve_model, selection[1])
+            await asyncio.to_thread(services.models.resolve_model, selection[1])
             if selection[0] is None and selection[1] is not None
-            else await asyncio.to_thread(runtime.current_model, selection[0])
+            else await asyncio.to_thread(services.models.current_model, selection[0])
         )
         if (
             not self._started
@@ -572,7 +572,7 @@ class TuiController:
         if snapshot.run_id is None:
             return None
         return await asyncio.to_thread(
-            self._runtime().sessions.run_result,
+            self._services().sessions.run_result,
             snapshot.session_id,
             snapshot.run_id,
         )
@@ -633,11 +633,13 @@ class TuiController:
                 tool_call_id=interaction.tool_call_id,
                 request_id=interaction.request_id,
                 answer=answer,
+                question=interaction.question,
             )
             return None
         assert self._application is not None
         handle = await self._application.supervisor.resolve_tool_input(
-            session_id=self._require_session(),
+            question=interaction.question,
+            session_id=interaction.session_id or self._require_session(),
             run_id=interaction.run_id,
             answer=answer,
         )
@@ -648,10 +650,12 @@ class TuiController:
         supervisor = self._application.supervisor
         try:
             snapshot = await supervisor.wait(handle)
+            if snapshot.status == "failed" and snapshot.diagnostics:
+                raise ValueError(snapshot.diagnostics[0].message)
             if snapshot.run_id is None:
                 raise PersistenceError("Supervised interaction failed before a Run was identified")
             return await asyncio.to_thread(
-                self._runtime().sessions.run_result,
+                self._services().sessions.run_result,
                 snapshot.session_id,
                 snapshot.run_id,
             )
@@ -688,7 +692,7 @@ class TuiController:
         self, configuration: TuiDraftConfiguration | None = None
     ) -> TuiNewSession:
         """Resolve draft defaults without changing the selected Session."""
-        runtime = self._runtime()
+        services = self._services()
         initial_model = self._initial_model
         previous_route, previous_workspace = await self._leaving_session_defaults()
         if previous_route is not None:
@@ -699,13 +703,13 @@ class TuiController:
         draft: AvailableModel | None = None
         if initial_model is not None:
             try:
-                draft = await asyncio.to_thread(runtime.resolve_model, initial_model)
+                draft = await asyncio.to_thread(services.models.resolve_model, initial_model)
             except ConfigError as exc:
                 if configuration is not None:
                     warnings.append(f"Draft model unavailable; using the default model: {exc}")
                 draft = None
         if draft is None:
-            draft = await asyncio.to_thread(runtime.current_model)
+            draft = await asyncio.to_thread(services.models.current_model)
             initial_model = None
         if configuration is not None:
             reasoning = configuration.reasoning if not warnings else ReasoningRequest()
@@ -720,7 +724,7 @@ class TuiController:
         return TuiNewSession(
             draft,
             initial_model,
-            previous_workspace or runtime.default_workspace,
+            previous_workspace or services.runtime.default_workspace,
             configuration,
             tuple(warnings),
         )
@@ -767,11 +771,11 @@ class TuiController:
         session_id = self._session_id
         if session_id is None:
             return None, None
-        runtime = self._runtime()
+        services = self._services()
 
         def read() -> tuple[str | None, str | None]:
             try:
-                session = runtime.sessions.view(session_id)
+                session = services.sessions.view(session_id)
             except PersistenceError, SessionNotFoundError, FileNotFoundError:
                 # Inheriting defaults is optional. An unreadable previous
                 # Session must not prevent navigation to a fresh draft.
@@ -781,11 +785,11 @@ class TuiController:
         return await asyncio.to_thread(read)
 
     async def sessions(self, *, include_subagents: bool = False) -> tuple[SessionCatalogEntry, ...]:
-        runtime = self._runtime()
+        services = self._services()
         return await asyncio.to_thread(
             lambda: tuple(
                 entry
-                for entry in runtime.sessions.catalog().entries
+                for entry in services.sessions.catalog().entries
                 if include_subagents or entry.session_kind != "subagent"
             )
         )
@@ -850,13 +854,13 @@ class TuiController:
         await self._application.task_scheduler.execution.interrupt(task)
 
     async def set_session_archived(self, session_id: str, *, archived: bool) -> None:
-        sessions = self._runtime().sessions
+        sessions = self._services().sessions
         await asyncio.to_thread(sessions.set_archived, session_id, archived)
         if session_id == self._session_id:
             self._session_archived = archived
 
     async def rename_session(self, session_id: str, title: str) -> SessionView:
-        sessions = self._runtime().sessions
+        sessions = self._services().sessions
         result = await asyncio.to_thread(sessions.rename, session_id, title)
         return result.session
 
@@ -871,7 +875,7 @@ class TuiController:
         return removed
 
     def _delete_sessions(self, session_ids: tuple[str, ...]) -> tuple[str, ...]:
-        sessions = self._runtime().sessions
+        sessions = self._services().sessions
         catalog = {entry.session_id: entry for entry in sessions.catalog().entries}
         selected = tuple(dict.fromkeys(session_ids))
         remaining = set(catalog)
@@ -901,15 +905,15 @@ class TuiController:
         if message_id is None:
             return await asyncio.to_thread(self._branch_current_session, session_id)
         return await asyncio.to_thread(
-            self._runtime().sessions.branch,
+            self._services().sessions.branch,
             session_id,
             message_id,
             before_input=True,
         )
 
     def _branch_current_session(self, session_id: str) -> SessionBranchResult:
-        session = self._runtime().sessions.view(session_id)
-        return self._runtime().sessions.branch(session_id, session.last_message_id)
+        session = self._services().sessions.view(session_id)
+        return self._services().sessions.branch(session_id, session.last_message_id)
 
     async def queued_user_inputs(
         self,
@@ -930,30 +934,30 @@ class TuiController:
         return self._runtime().pending_user_inputs(target_session_id)
 
     async def message(self, session_id: str, message_id: str) -> MessageRecord:
-        runtime = self._runtime()
-        return await asyncio.to_thread(runtime.sessions.message, session_id, message_id)
+        services = self._services()
+        return await asyncio.to_thread(services.sessions.message, session_id, message_id)
 
     async def run_record(self, session_id: str, run_id: str) -> RunRecord:
-        return await asyncio.to_thread(self._runtime().sessions.run_record, session_id, run_id)
+        return await asyncio.to_thread(self._services().sessions.run_record, session_id, run_id)
 
     async def models(self) -> tuple[AvailableModel, ...]:
-        runtime = self._runtime()
-        return await asyncio.to_thread(lambda: tuple(runtime.available_models()))
+        services = self._services()
+        return await asyncio.to_thread(lambda: tuple(services.models.available_models()))
 
     async def default_model(self) -> AvailableModel:
         """Resolve the deployment default independently of the open Session or draft."""
-        return await asyncio.to_thread(self._runtime().current_model)
+        return await asyncio.to_thread(self._services().models.current_model)
 
     async def selected_model_key(self) -> str | None:
         """Resolve the current draft or controlled Session's endpoint identity."""
 
-        runtime = self._runtime()
+        services = self._services()
         session_id, initial_model = self._session_id, self._initial_model
 
         def resolve() -> str:
             if session_id is None and initial_model is not None:
-                return runtime.resolve_model(initial_model).key
-            return runtime.current_model(session_id).key
+                return services.models.resolve_model(initial_model).key
+            return services.models.current_model(session_id).key
 
         try:
             return await asyncio.to_thread(resolve)
@@ -962,7 +966,7 @@ class TuiController:
 
     async def configured_default_model(self) -> AvailableModel | None:
         try:
-            return await asyncio.to_thread(self._runtime().configured_default_model)
+            return await asyncio.to_thread(self._services().models.configured_default_model)
         except ConfigError:
             return None
 
@@ -1702,7 +1706,7 @@ class TuiController:
                 max_output_tokens=draft.max_output_tokens,
                 reasoning=draft.reasoning,
             ),
-            models=self._runtime().models,
+            models=self._services().models.catalog,
         )
 
     async def compact(self) -> CompactionCommandResult:
@@ -1917,23 +1921,23 @@ class TuiController:
         mutation. Re-selecting the current route preserves the user's intent.
         """
 
-        runtime = self._runtime()
+        services = self._services()
         session_id = self._session_id
         reasoning_request = self._reasoning_request
         initial_model = self._initial_model
 
         def select() -> tuple[AvailableModel, bool]:
-            model = runtime.resolve_model(selector)
+            model = services.models.resolve_model(selector)
             if session_id is None:
-                current_model = initial_model or runtime.current_model().key
+                current_model = initial_model or services.models.current_model().key
                 route_changed = model.key != current_model
                 selected_reasoning = ReasoningRequest() if route_changed else reasoning_request
-                runtime.model_reasoning(model.key, selected_reasoning)
+                services.models.model_reasoning(model.key, selected_reasoning)
             else:
-                session = runtime.sessions.view(session_id)
-                current_model = session.current_model or runtime.current_model().key
+                session = services.sessions.view(session_id)
+                current_model = session.current_model or services.models.current_model().key
                 route_changed = model.key != current_model
-                runtime.switch_session_model(
+                services.models.switch_session_model(
                     session_id,
                     model.key,
                     reasoning_request=ReasoningRequest() if route_changed else None,
@@ -1974,7 +1978,7 @@ class TuiController:
             approval_mode = self._approval_mode
             interaction_mode = self._interaction_mode
         else:
-            sessions = self._runtime().sessions
+            sessions = self._services().sessions
             session = await asyncio.to_thread(sessions.view, session_id)
             approval_mode = session.approval_mode
             interaction_mode = session.interaction_mode
@@ -2011,16 +2015,16 @@ class TuiController:
     async def session_reasoning(self) -> ModelReasoningState:
         """Return endpoint-resolved reasoning for the draft or persisted Session."""
 
-        runtime = self._runtime()
+        services = self._services()
         session_id = self._session_id
         if session_id is not None:
-            return await asyncio.to_thread(runtime.session_reasoning, session_id)
+            return await asyncio.to_thread(services.models.session_reasoning, session_id)
         initial_model = self._initial_model
         reasoning_request = self._reasoning_request
 
         def resolve() -> ModelReasoningState:
-            model = initial_model or runtime.current_model().key
-            return runtime.model_reasoning(model, reasoning_request)
+            model = initial_model or services.models.current_model().key
+            return services.models.model_reasoning(model, reasoning_request)
 
         return await asyncio.to_thread(resolve)
 
@@ -2029,29 +2033,31 @@ class TuiController:
         self,
         reasoning_request: ReasoningRequest,
     ) -> ModelReasoningState:
-        """Validate and set draft or persisted reasoning through RuntimeService."""
+        """Validate and set draft or persisted reasoning through the session model service."""
 
-        runtime = self._runtime()
+        services = self._services()
         session_id = self._session_id
         if session_id is None:
             initial_model = self._initial_model
 
             def resolve() -> ModelReasoningState:
-                model = initial_model or runtime.current_model().key
-                return runtime.model_reasoning(model, reasoning_request)
+                model = initial_model or services.models.current_model().key
+                return services.models.model_reasoning(model, reasoning_request)
 
             state = await asyncio.to_thread(resolve)
             self._initial_model = state.model.key
             self._reasoning_request = state.requested
             return state
-        await asyncio.to_thread(runtime.set_session_reasoning, session_id, reasoning_request)
+        await asyncio.to_thread(
+            services.models.set_session_reasoning, session_id, reasoning_request
+        )
         await self._unarchive_current_session_after_update()
-        return await asyncio.to_thread(runtime.session_reasoning, session_id)
+        return await asyncio.to_thread(services.models.session_reasoning, session_id)
 
     async def session_summaries(self, session_id: str) -> tuple[SessionSummary, ...]:
         """Query summary history without changing the controlled Session."""
 
-        return await asyncio.to_thread(self._runtime().sessions.summaries, session_id)
+        return await asyncio.to_thread(self._services().sessions.summaries, session_id)
 
     async def load_session(self, session_id: str) -> LoadedSession:
         observation = await self.prepare_session_selection(session_id)
@@ -2065,8 +2071,8 @@ class TuiController:
         self, session_id: str, *, history_anchor: SessionHistoryAnchor | None = None
     ) -> TuiSessionObservation:
         """Prepare an explicitly selected control Session, including execution recovery."""
-        runtime = self._runtime()
-        session = await asyncio.to_thread(runtime.sessions.view, session_id)
+        services = self._services()
+        session = await asyncio.to_thread(services.sessions.view, session_id)
         if session.session_kind == "primary":
             assert self._application is not None
             await self._application.supervisor.schedule_session(session_id)
@@ -2097,7 +2103,7 @@ class TuiController:
                 session
                 if session.session_kind == "primary"
                 else await asyncio.to_thread(
-                    application.runtime.sessions.view, session.agent_root_session_id
+                    application.sessions.view, session.agent_root_session_id
                 )
             )
             if control.session_kind != "primary":
@@ -2116,7 +2122,7 @@ class TuiController:
         self, session_id: str, *, before: int, history_epoch: int
     ) -> SessionHistoryWindow:
         return await asyncio.to_thread(
-            self._runtime().sessions.history_window,
+            self._services().sessions.history_window,
             session_id,
             before=before,
             history_epoch=history_epoch,
@@ -2158,15 +2164,15 @@ class TuiController:
         session_id = self._session_id
         if session_id is None or not self._session_archived:
             return
-        sessions = self._runtime().sessions
+        sessions = self._services().sessions
         await asyncio.to_thread(sessions.set_archived, session_id, False)
         self._session_archived = False
 
     def _loaded_snapshot(self, snapshot: SessionObservationSnapshot) -> LoadedSession:
         session_id = snapshot.session.session_id
-        runtime = self._runtime()
+        services = self._services()
         try:
-            reasoning = runtime.reasoning_for_session(snapshot.session)
+            reasoning = services.models.reasoning_for_session(snapshot.session)
         except ConfigError:
             reasoning = None
         return LoadedSession(
@@ -2179,7 +2185,7 @@ class TuiController:
         )
 
     def _session_messages(self, session_id: str) -> list[MessageRecord]:
-        sessions = self._runtime().sessions
+        sessions = self._services().sessions
         messages: list[MessageRecord] = []
         cursor = 0
         while True:
@@ -2189,10 +2195,13 @@ class TuiController:
                 return messages
             cursor = page.next_cursor
 
-    def _runtime(self) -> RuntimeService:
+    def _services(self) -> LocalApplication:
         if not self._started or self._application is None:
             raise RuntimeError("TUI controller is not started")
-        return self._application.runtime
+        return self._application
+
+    def _runtime(self) -> RuntimeService:
+        return self._services().runtime
 
     def _require_session(self) -> str:
         if self._session_id is None:
@@ -2256,7 +2265,7 @@ class TuiController:
         if cached is not None:
             return cached
         try:
-            session = self._runtime().sessions.view(session_id)
+            session = self._services().sessions.view(session_id)
         except FileNotFoundError, PersistenceError, SessionNotFoundError:
             return None
         root_session_id = session.agent_root_session_id

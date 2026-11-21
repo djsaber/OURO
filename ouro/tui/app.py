@@ -2730,9 +2730,8 @@ class OuroTuiApp(App[int]):
         self._resolve_approval(message.interaction, message.approved)
 
     def on_ask_user_panel_completed(self, message: AskUserPanel.Completed) -> None:
-        interaction = self._interaction
-        if interaction is not None and interaction.kind == "question":
-            self._answer_input(interaction, message.answer)
+        if message.interaction is not None and message.interaction == self._interaction:
+            self._answer_input(message.interaction, message.answer)
 
     def on_ask_user_panel_freeform_requested(
         self,
@@ -2745,9 +2744,8 @@ class OuroTuiApp(App[int]):
         self,
         message: PlanConfirmationPanel.Completed,
     ) -> None:
-        interaction = self._interaction
-        if interaction is not None and interaction.kind == "question":
-            self._answer_input(interaction, message.answer)
+        if message.interaction is not None and message.interaction == self._interaction:
+            self._answer_input(message.interaction, message.answer)
 
     def on_plan_confirmation_panel_feedback_requested(
         self,
@@ -2864,11 +2862,12 @@ class OuroTuiApp(App[int]):
                 plan_request = project_plan_confirmation(interaction)
                 if plan_request is not None:
                     ask_user.hide_panel()
-                    plan_panel.show_request(plan_request)
+                    plan_panel.show_request(plan_request, interaction)
                 else:
                     plan_panel.hide_panel()
                     ask_user.show_request(
-                        project_question_form(interaction.tool_name, interaction.request)
+                        project_question_form(interaction.tool_name, interaction.request),
+                        interaction,
                     )
                 self._sync_composer_placeholder()
                 self._sync_input_state(interaction, focus=True)

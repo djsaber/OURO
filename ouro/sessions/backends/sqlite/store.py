@@ -109,6 +109,7 @@ from ouro.sessions.sqlite_facts import (
     load_states,
     read_call_state,
     read_fact,
+    run_has_tool_error,
     write_call_state,
     write_fact,
 )
@@ -1482,6 +1483,10 @@ class SQLiteSessionStore:
                 ).fetchone()
                 is not None
             )
+
+    def run_has_tool_error(self, session_id: str, run_id: str, *, after_revision: int) -> bool:
+        with self._read_connection() as connection:
+            return run_has_tool_error(connection, session_id, run_id, after_revision)
 
     def find_last_assistant_message(self, session_id: str, run_id: str) -> MessageRecord | None:
         with self.session_read(session_id) as connection:

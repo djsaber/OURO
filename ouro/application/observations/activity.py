@@ -614,6 +614,7 @@ def project_batch_interactions(
             pending.append(
                 PendingInteraction(
                     kind="question",
+                    question=call.question(run.run_id, batch.batch_id),
                     session_id=run.session_id,
                     run_id=run.run_id,
                     tool_call_id=call.request.id,

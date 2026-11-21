@@ -163,12 +163,8 @@ class SQLiteSessionCommits:
             )
         media_source = None
         selected_compaction = None
-        if (
-            request.compaction is None
-            and request.after is not None
-            and (selected_id := request.after.context_selection.compaction_id) is not None
-            and selected_id != current.context_selection.compaction_id
-        ):
+        selected_id, message_id = request.context_source_ids(current)
+        if selected_id is not None:
             row = connection.execute(
                 "SELECT payload FROM compactions WHERE session_id = ? AND compaction_id = ?",
                 (session_id, selected_id),
@@ -177,14 +173,10 @@ class SQLiteSessionCommits:
                 selected_compaction = decode_versioned_record_json(
                     CompactionRecord, row[0], label="selected compaction"
                 )
-        if (
-            request.after is not None
-            and (boundary := request.after.context_selection.media_elided_through) is not None
-            and boundary != current.context_selection.media_elided_through
-        ):
+        if message_id is not None:
             row = connection.execute(
                 "SELECT payload FROM messages WHERE session_id = ? AND message_id = ?",
-                (session_id, boundary.message_id),
+                (session_id, message_id),
             ).fetchone()
             if row is not None:
                 media_source = decode_versioned_record_json(

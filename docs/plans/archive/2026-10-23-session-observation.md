@@ -12,7 +12,7 @@
 现行契约以[会话观察规格](../../specs/session-observation.md)、[运行时规格](../../specs/runtime.md)、
 [子智能体规格](../../specs/subagents.md)、[TUI 规格](../../specs/tui.md)和[性能规格](../../specs/performance.md)为准。
 实现阶段发现契约需要调整时，随对应实现和回归同步更新权威规格，不在本文维护第二份现行契约。
-长期性能目标和窗口化条件沿用[性能规划](../performance.md)；未来 Host 复用本计划形成的 Application 边界。
+长历史窗口和性能目标见[响应性与资源界限](../session-observation.md#响应性与资源界限)。未来 Host 复用本计划形成的 Application 边界。
 
 剩余工作由[会话协作验收计划](../session-observation.md)跟踪。以下保留原实施阶段与实际验证记录，
 其中的设计取舍和当时路径不作为现行契约。
@@ -128,7 +128,7 @@ TUI 的一次视图切换拥有目标 Session、有效版本、订阅、内容�
 ### P1：一致性只读边界
 
 定位：[SessionService](../../../ouro/application/sessions/service.py)、[Supervisor](../../../ouro/application/supervisor.py)、
-[存储端口](../../../ouro/sessions/base.py)、[文件后端](../../../ouro/sessions/backends/files/store.py)、[SQLite 后端](../../../ouro/sessions/backends/sqlite/store.py)。
+[存储端口](https://github.com/djsaber/OURO/blob/73136f400bf7921f0c70478a337ea8db01844f5f/ouro/sessions/base.py)、[文件后端](../../../ouro/sessions/backends/files/store.py)、[SQLite 后端](../../../ouro/sessions/backends/sqlite/store.py)。
 
 - [x] 复用 `load_session_observation` 和后端读取能力，将确需组合的轻量事实通过窄查询在同一只读边界取得。
 - [x] 审查观察、activity/status、按 history_epoch 解析消息等纯读取中的 `session_mutation`；逐项保留其一致性保证并替换错误的写事务语义。
@@ -226,7 +226,7 @@ TUI 的一次视图切换拥有目标 Session、有效版本、订阅、内容�
 ### P6：性能测量与条件性历史优化
 
 测量是必做工作；新增窗口化和缓存结构必须由测量或明确的规模成本证据决定。方法与目标链接至
-[性能规划](../performance.md)和[基准说明](../../../dev/benchmarks/README.md)，不在本计划复制第二套时间指标。
+[响应性验证](../../specs/performance.md#io-所有权与响应性验证)和[基准说明](../../../dev/benchmarks/README.md)。
 
 - [x] 在同机、同依赖、同负载下记录 Store、内容投影、排版和消息泵成本。
 - [ ] 测量实际终端 paint，并完成严格响应性目标验收。
@@ -275,7 +275,7 @@ TUI 的一次视图切换拥有目标 Session、有效版本、订阅、内容�
 [Supervisor](../../../tests/application/test_supervisor.py)、[运行归属](../../../tests/application/test_run_ownership.py)、
 [事件跟随](../../../tests/application/test_session_event_following.py)、[历史观察](../../../tests/application/test_history_observation.py)、
 [Agent](../../../tests/application/test_agents.py)、[多 Host Agent](../../../tests/application/test_agent_multi_host.py)、
-[真实事件尾读](../../../tests/sessions/test_event_tail_process.py)、[双 TUI 观察](../../../tests/tui/test_live_session_attachment.py)、
+[真实事件尾读](https://github.com/djsaber/OURO/blob/73136f400bf7921f0c70478a337ea8db01844f5f/tests/sessions/test_event_tail_process.py)、[双 TUI 观察](../../../tests/tui/test_live_session_attachment.py)、
 [后台导航](../../../tests/tui/test_background_navigation.py)、[异步观察](../../../tests/tui/test_async_observation.py)、
 [提前审批](../../../tests/tui/test_preflight_interactions.py)、[历史渲染](../../../tests/tui/test_conversation_history.py)。
 
@@ -315,10 +315,9 @@ TUI 的一次视图切换拥有目标 Session、有效版本、订阅、内容�
 
 ### 当前性能证据
 
-命令和探针口径见[基准说明](../../../dev/benchmarks/README.md)。原始 JSONL 在本地忽略目录
-`.ouro-dev/session-observation/`。测量使用 120×40 headless 窗口，不包含真实终端 paint 或操作系统键盘传输。
+测量使用 120×40 headless 窗口，计时覆盖应用内事件处理与界面更新。命令和探针口径见[基准说明](../../../dev/benchmarks/README.md)。
 
-`review-history-window.jsonl` 使用每后端一个 10,000 条消息样本。初始读取 201 条、显示近期 200 条，
+历史窗口测量使用每后端一个 10,000 条消息样本。初始读取 201 条、显示近期 200 条，
 窗口在线程中准备后一次发布；缓存重进不重新排版已有条目，流式重进读取 202 条。首个正文帧如下：
 
 | 后端 | 冷进入 ms | 缓存重进 ms | 流式重进 ms |
@@ -327,7 +326,7 @@ TUI 的一次视图切换拥有目标 Session、有效版本、订阅、内容�
 | SQLite | 248 | 60 | 88 |
 
 这些单次测量验证窗口成本，不代表延迟分布或终端验收结果。
-`review-stream-handoff.jsonl` 使用每后端一次、每轮 400 个片段、片段间隔 5ms 的合成流：
+流式交接在每个后端各测一次，每轮发送 400 个片段，间隔 5 ms。
 
 | 后端 | loop lag p99 / max ms | 按键 p95 ms | spinner 最大间隔 ms | GC 最大耗时 ms |
 |---|---|---|---|---|
@@ -338,8 +337,8 @@ TUI 的一次视图切换拥有目标 Session、有效版本、订阅、内容�
 长停顿与 gen2 GC 重叠，但不能据此将全部成本归因于依赖。生产代码不修改依赖缓存或 GC 策略。
 下一步需在同负载下定位剩余对象分配与回收成本，并完成跨平台重复测量。
 
-稳定活动组件的长时探针 `p6-stable-tail-after.jsonl` 覆盖 Files 20 轮、60 次切换；任务数在 221–227 间波动，
-detach 后正文订阅与跟随器均为零。`p6-stable-tail-heap.jsonl` 的第 1/4/8 轮，Widget 均为 156 个、
+稳定活动组件的长时探针覆盖 Files 20 轮、60 次切换。任务数在 221–227 间波动，
+detach 后正文订阅与跟随器均为零。堆诊断的第 1/4/8 轮，Widget 均为 156 个、
 样式缓存均为 118 项，Strip 随持续新增正文增长。堆诊断不作为响应性测量，也不能仅依据 RSS 判断泄漏。
 
 ### 交付与终端边界

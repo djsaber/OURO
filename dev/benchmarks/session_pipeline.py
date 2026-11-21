@@ -293,9 +293,19 @@ async def run_one(backend, mode, delay_ms):
                     await asyncio.sleep(0.01)
                     await tui._open_session(session.session_id)
                     probe.phase = "run"
-                    previous_workers = set(tui.workers)
+                    submitted_worker = asyncio.get_running_loop().create_future()
+                    run_prompt = tui._run_prompt
+
+                    def observe_run(*args, **kwargs):
+                        worker = run_prompt(*args, **kwargs)
+                        submitted_worker.set_result(worker)
+                        return worker
+
+                    tui._run_prompt = observe_run
                     composer = tui.query_one(Composer)
                     composer.focus()
+                    await pilot.pause()
+                    assert tui.focused is composer and not composer.disabled
                     composer.load_text("Inspect evidence")
                     submit = tui._controller.submit
 
@@ -311,13 +321,9 @@ async def run_one(backend, mode, delay_ms):
                     tui._controller.submit = measure_submission
                     pressed = time.perf_counter()
                     await pilot.press("enter")
-                    worker = next(
-                        worker
-                        for worker in tui.workers
-                        if worker.group == "run" and worker not in previous_workers
-                    )
-                    tasks.append(asyncio.create_task(probe.keys(tui)))
                     async with asyncio.timeout(60):
+                        worker = await submitted_worker
+                        tasks.append(asyncio.create_task(probe.keys(tui)))
                         await worker.wait()
                     submission_timings["enter_to_result_ms"] = (
                         time.perf_counter() - pressed

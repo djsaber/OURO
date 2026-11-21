@@ -142,10 +142,9 @@ async def test_model_port_records_requests_and_usage_without_driving_or_finishin
             record_settlement=runtime.context_preparation.record_request_settlement,
             record_usage=runtime.run_lifecycle.record_usage,
             commit_model_request=runtime.run_lifecycle.commit_model_request,
-            publish_committed=runtime.event_recorder.publish_committed,
+            events=runtime.event_recorder,
             append_draft=runtime.store.append_response_draft,
             record_retry=runtime.store.record_request_retry,
-            emit=runtime.event_recorder.emit,
         ),
     )
     request = RunModelRequest(session, run, 1, "first", AbortSignal())
@@ -236,10 +235,9 @@ async def test_abort_during_usage_commit_keeps_usage_and_closes_stream(tmp_path)
             record_settlement=runtime.context_preparation.record_request_settlement,
             record_usage=record_usage,
             commit_model_request=runtime.run_lifecycle.commit_model_request,
-            publish_committed=runtime.event_recorder.publish_committed,
+            events=runtime.event_recorder,
             append_draft=runtime.store.append_response_draft,
             record_retry=runtime.store.record_request_retry,
-            emit=runtime.event_recorder.emit,
         ),
     )
     try:

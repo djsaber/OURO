@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
+from typing import Any
 
 from ouro.core.extensions import PluginSource
-from ouro.plugins.contributions.contract_adapters import ContributionContractContext
 from ouro.plugins.contributions.contracts import build_contribution_contract_hashes
 from ouro.plugins.contributions.models import (
     ContributionOwner,
     PluginContributions,
     PreparedContributionSet,
 )
-from ouro.plugins.contributions.preparation_rules import _PreparationContext, _PreparedBuilder
+from ouro.plugins.contributions.preparation_rules import _PreparationContext
 from ouro.plugins.lifecycle.candidates import PluginRuntimeCandidate
 from ouro.plugins.models import PluginGenerationRecord
 from ouro.skills.models import SkillMetadata
@@ -47,54 +48,19 @@ def prepare_contributions(
         resource_skills=resource_skills,
         discovered_tools=discovered_tools,
     )
-    adapters = contribution_type_adapters()
-    builder = _PreparedBuilder()
-    for adapter in adapters:
-        adapter.preparation.prepare(context, builder)
-    hashes = build_contribution_contract_hashes(
-        ContributionContractContext(
-            manifest=manifest,
-            tools=builder.tools,
-            observers=builder.observers,
-            context_providers=builder.context_providers,
-            system_prompt_providers=builder.system_prompt_providers,
-            commands=builder.commands,
-            compaction=builder.compaction_strategies,
-            background_services=builder.background_services,
-            continuation_policies=builder.continuation_policies,
-            providers=builder.providers,
-            run_drivers=builder.run_drivers,
-            prompt_policies=builder.prompt_policies,
-            turn_policies=builder.turn_policies,
-            tool_policies=builder.tool_policies,
-            session_controllers=builder.session_controllers,
-            resource_contracts=dict(resource_contracts or {}),
-        )
+    adapters = tuple(
+        entry.preparation
+        for entry in contribution_type_adapters()
+        if entry.kind == entry.preparation.kind
     )
+    items: dict[str, Any] = {}
+    for adapter in adapters:
+        adapter.prepare(context, items)
+    prepared = PreparedContributionSet(owner=owner, **items)
+    hashes = build_contribution_contract_hashes(manifest, prepared, resource_contracts or {})
     degraded_reasons = tuple(
         sorted(
-            reason
-            for adapter in adapters
-            for reason in adapter.preparation.missing_optional(context, builder)
+            reason for adapter in adapters for reason in adapter.missing_optional(context, prepared)
         )
     )
-    return PreparedContributionSet(
-        owner=owner,
-        tools=builder.tools,
-        observers=builder.observers,
-        context_providers=builder.context_providers,
-        system_prompt_providers=builder.system_prompt_providers,
-        commands=builder.commands,
-        compaction_strategies=builder.compaction_strategies,
-        background_services=builder.background_services,
-        skills=builder.skills,
-        continuation_policies=builder.continuation_policies,
-        providers=builder.providers,
-        run_drivers=builder.run_drivers,
-        prompt_policies=builder.prompt_policies,
-        turn_policies=builder.turn_policies,
-        tool_policies=builder.tool_policies,
-        session_controllers=builder.session_controllers,
-        contract_hashes=hashes,
-        degraded_reasons=degraded_reasons,
-    )
+    return replace(prepared, contract_hashes=hashes, degraded_reasons=degraded_reasons)

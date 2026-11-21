@@ -1,9 +1,9 @@
-"""In-memory resources owned by one Run, independent of its durable record."""
+"""Process registries and the capabilities selected for one Run."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ouro.application.agents.definitions import AgentDefinitionService
@@ -12,13 +12,37 @@ from ouro.core.agents import (
     DelegationRecord,
     EffectiveToolRef,
 )
+from ouro.core.compaction import CompactionStrategyRegistry
+from ouro.core.context_providers import ContextProviderRegistry, RequestProviders
+from ouro.core.continuations import RunContinuationRegistry
+from ouro.core.observers import ObserverRegistry
+from ouro.core.prompt_policies import PromptPolicyRegistry
 from ouro.core.run_budget import RunBudgetPolicy
+from ouro.core.system_prompts import SystemPromptRegistry
+from ouro.core.tool_policies import ToolPolicyRegistry
+from ouro.core.turn_policies import TurnPolicyRegistry
 from ouro.tools.builtin.agents import agent_control_tools
 from ouro.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from ouro.application.runtime.extensions import RuntimeCapabilities
     from ouro.application.tool_calls import ToolCallCoordinator
+
+
+@dataclass(frozen=True)
+class RuntimeRegistries:
+    """Live process registrations shared by standalone execution and the local plugin host."""
+
+    tools: ToolRegistry = field(default_factory=ToolRegistry)
+    observers: ObserverRegistry = field(default_factory=ObserverRegistry)
+    request_providers: RequestProviders = field(
+        default_factory=lambda: RequestProviders(SystemPromptRegistry(), ContextProviderRegistry())
+    )
+    compaction: CompactionStrategyRegistry = field(default_factory=CompactionStrategyRegistry)
+    continuations: RunContinuationRegistry = field(default_factory=RunContinuationRegistry)
+    prompt_policies: PromptPolicyRegistry = field(default_factory=PromptPolicyRegistry)
+    tool_policies: ToolPolicyRegistry = field(default_factory=ToolPolicyRegistry)
+    turn_policies: TurnPolicyRegistry = field(default_factory=TurnPolicyRegistry)
 
 
 @dataclass

@@ -1,12 +1,22 @@
-"""Prepare each contribution type against host capabilities."""
+"""Prepare native contributions and implement the two request-provider catalog adapters."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import Protocol
+from operator import attrgetter
+from typing import Any, Literal, Protocol
 
-from ouro.plugins.contributions.models import ContributionValidationError, PreparedBackgroundService
+from ouro.core.callbacks import invoke_owned_callback
+from ouro.core.request_providers import RequestProviderRegistration
+from ouro.plugins.catalog.gates import GenerationGate
+from ouro.plugins.contributions.models import (
+    ContributionValidationError,
+    PreparedBackgroundService,
+    PreparedContributionSet,
+)
 from ouro.plugins.contributions.preparation_rules import (
+    _canonical_controller_id,
     _missing_optional,
     _PreparationContext,
     _prepare_commands,
@@ -15,16 +25,16 @@ from ouro.plugins.contributions.preparation_rules import (
     _prepare_discovered_tools,
     _prepare_observers,
     _prepare_prompt_policies,
-    _prepare_request_providers,
     _prepare_session_controllers,
     _prepare_tool_policies,
     _prepare_turn_policies,
-    _PreparedBuilder,
     _unique_contribution_map,
     _validate_background_services,
     _validate_declared_set,
     prepare_tools,
 )
+from ouro.plugins.contributions.projection_adapters import CatalogProjectionTargets
+from ouro.plugins.manifest import PluginManifest
 
 
 class ContributionPreparationAdapter(Protocol):
@@ -34,14 +44,94 @@ class ContributionPreparationAdapter(Protocol):
     def prepare(
         self,
         context: _PreparationContext,
-        builder: _PreparedBuilder,
+        items: dict[str, tuple],
     ) -> None: ...
 
     def missing_optional(
         self,
         context: _PreparationContext,
-        builder: _PreparedBuilder,
+        prepared: PreparedContributionSet,
     ) -> tuple[str, ...]: ...
+
+
+def _bind_provider[R: RequestProviderRegistration](registration: R, gate: GenerationGate) -> R:
+    async def invoke(call: Any) -> Any:
+        async with gate.invocation():
+            return await invoke_owned_callback(registration.handler, call)
+
+    return replace(registration, handler=invoke)
+
+
+@dataclass(frozen=True)
+class RequestProviderContribution:
+    kind: Literal["system_prompt_providers", "context_providers"]
+    lifecycle: Literal["snapshot-bound"] = "snapshot-bound"
+
+    def prepare(self, context: _PreparationContext, items: dict[str, tuple]) -> None:
+        manifest = context.manifest
+        declarations = {item.id: item for item in getattr(manifest.contributes, self.kind)}
+        actual = _unique_contribution_map(
+            self.kind,
+            ((item.provider_id, item) for item in getattr(context.contributions, self.kind)),
+        )
+        _validate_declared_set(self.kind, declarations, actual)
+        registrations = []
+        for identity, provider in actual.items():
+            declaration = declarations[identity]
+            registrations.append(
+                replace(
+                    provider,
+                    plugin_id=manifest.plugin_id,
+                    priority=declaration.priority,
+                    timeout_seconds=declaration.timeout_seconds,
+                    failure_mode=declaration.failure_mode,
+                    owner=context.owner.key,
+                    generation_id=context.owner.generation_id,
+                    active_when_controller_id=_canonical_controller_id(
+                        manifest.plugin_id, declaration.active_when
+                    ),
+                )
+            )
+        items[self.kind] = tuple(registrations)
+
+    def missing_optional(
+        self, context: _PreparationContext, prepared: PreparedContributionSet
+    ) -> tuple[str, ...]:
+        return _missing_optional(
+            self.kind,
+            getattr(context.manifest.contributes, self.kind),
+            {item.provider_id for item in getattr(prepared, self.kind)},
+        )
+
+    def contracts(
+        self, manifest: PluginManifest, prepared: PreparedContributionSet
+    ) -> dict[str, object]:
+        return {
+            f"{manifest.plugin_id}/{self.kind}/{provider.provider_id}": {
+                "priority": provider.priority,
+                "timeout_seconds": provider.timeout_seconds,
+                "failure_mode": provider.failure_mode,
+                "active_when_controller_id": provider.active_when_controller_id,
+            }
+            for provider in getattr(prepared, self.kind)
+        }
+
+    def project(
+        self,
+        targets: CatalogProjectionTargets,
+        *,
+        owner: str,
+        prepared: PreparedContributionSet,
+        gate: GenerationGate,
+    ) -> None:
+        registry = getattr(targets, self.kind)
+        registry.replace_owner(
+            owner, tuple(_bind_provider(item, gate) for item in getattr(prepared, self.kind))
+        )
+
+
+CONTEXT_PROVIDERS = RequestProviderContribution("context_providers")
+SYSTEM_PROMPT_PROVIDERS = RequestProviderContribution("system_prompt_providers")
 
 
 @dataclass(frozen=True)
@@ -51,21 +141,25 @@ class _ToolPreparationAdapter:
     def prepare(
         self,
         context: _PreparationContext,
-        builder: _PreparedBuilder,
+        items: dict[str, tuple],
     ) -> None:
-        builder.tools = prepare_tools(
+        registered = prepare_tools(
             context.manifest,
             context.owner,
             context.source,
             context.contributions.tools,
         )
+        discovered = _prepare_discovered_tools(
+            context.manifest, context.owner, context.discovered_tools
+        )
+        items["tools"] = (*registered, *discovered)
 
     def missing_optional(
         self,
         context: _PreparationContext,
-        builder: _PreparedBuilder,
+        prepared: PreparedContributionSet,
     ) -> tuple[str, ...]:
-        del builder
+        del prepared
         return _missing_optional(
             "tools",
             context.manifest.contributes.tools,
@@ -75,115 +169,21 @@ class _ToolPreparationAdapter:
 
 
 @dataclass(frozen=True)
-class _ObserverPreparationAdapter:
-    kind: str = "observers"
-
-    def prepare(
-        self,
-        context: _PreparationContext,
-        builder: _PreparedBuilder,
-    ) -> None:
-        builder.observers = (
-            *builder.observers,
-            *_prepare_observers(
-                context.manifest,
-                context.owner,
-                context.source,
-                context.contributions.observers,
-            ),
-        )
-
-    def missing_optional(
-        self,
-        context: _PreparationContext,
-        builder: _PreparedBuilder,
-    ) -> tuple[str, ...]:
-        return _missing_optional(
-            "observers",
-            context.manifest.contributes.observers,
-            {observer.observer_id for observer in builder.observers},
-        )
-
-
-@dataclass(frozen=True)
-class _RequestProviderPreparationAdapter:
+class _RegistrationPreparation[R]:
     kind: str
+    registrations: Callable[[_PreparationContext], tuple[R, ...]]
+    identity: Callable[[R], str]
 
-    def prepare(
-        self,
-        context: _PreparationContext,
-        builder: _PreparedBuilder,
-    ) -> None:
-        providers = _prepare_request_providers(
-            self.kind, context.manifest, context.owner, getattr(context.contributions, self.kind)
-        )
-        setattr(builder, self.kind, providers)
+    def prepare(self, context: _PreparationContext, items: dict[str, tuple]) -> None:
+        items[self.kind] = self.registrations(context)
 
     def missing_optional(
-        self,
-        context: _PreparationContext,
-        builder: _PreparedBuilder,
+        self, context: _PreparationContext, prepared: PreparedContributionSet
     ) -> tuple[str, ...]:
         return _missing_optional(
             self.kind,
             getattr(context.manifest.contributes, self.kind),
-            {provider.provider_id for provider in getattr(builder, self.kind)},
-        )
-
-
-@dataclass(frozen=True)
-class _CommandPreparationAdapter:
-    kind: str = "commands"
-
-    def prepare(
-        self,
-        context: _PreparationContext,
-        builder: _PreparedBuilder,
-    ) -> None:
-        builder.commands = _prepare_commands(
-            context.manifest,
-            context.owner,
-            context.source,
-            context.contributions.commands,
-        )
-
-    def missing_optional(
-        self,
-        context: _PreparationContext,
-        builder: _PreparedBuilder,
-    ) -> tuple[str, ...]:
-        return _missing_optional(
-            "commands",
-            context.manifest.contributes.commands,
-            {command.name for command in builder.commands},
-        )
-
-
-@dataclass(frozen=True)
-class _SessionControllerPreparationAdapter:
-    kind: str = "session_controllers"
-
-    def prepare(
-        self,
-        context: _PreparationContext,
-        builder: _PreparedBuilder,
-    ) -> None:
-        builder.session_controllers = _prepare_session_controllers(
-            context.manifest,
-            context.owner,
-            context.source,
-            context.contributions.session_controllers,
-        )
-
-    def missing_optional(
-        self,
-        context: _PreparationContext,
-        builder: _PreparedBuilder,
-    ) -> tuple[str, ...]:
-        return _missing_optional(
-            "session_controllers",
-            context.manifest.contributes.session_controllers,
-            {controller.controller_id for controller in builder.session_controllers},
+            {self.identity(item) for item in getattr(prepared, self.kind)},
         )
 
 
@@ -194,9 +194,9 @@ class _CompactionPreparationAdapter:
     def prepare(
         self,
         context: _PreparationContext,
-        builder: _PreparedBuilder,
+        items: dict[str, tuple],
     ) -> None:
-        builder.compaction_strategies = _prepare_compaction(
+        items["compaction_strategies"] = _prepare_compaction(
             context.manifest,
             context.contributions.compaction_strategies,
         )
@@ -204,14 +204,14 @@ class _CompactionPreparationAdapter:
     def missing_optional(
         self,
         context: _PreparationContext,
-        builder: _PreparedBuilder,
+        prepared: PreparedContributionSet,
     ) -> tuple[str, ...]:
         return _missing_optional(
             "compaction_strategies",
             context.manifest.contributes.compaction_strategies,
             {
                 strategy.strategy_id.removeprefix(f"{context.manifest.plugin_id}.")
-                for strategy in builder.compaction_strategies
+                for strategy in prepared.compaction_strategies
             },
         )
 
@@ -223,47 +223,20 @@ class _SkillPreparationAdapter:
     def prepare(
         self,
         context: _PreparationContext,
-        builder: _PreparedBuilder,
+        items: dict[str, tuple],
     ) -> None:
-        builder.skills = context.resource_skills
+        items["skills"] = context.resource_skills
 
     def missing_optional(
         self,
         context: _PreparationContext,
-        builder: _PreparedBuilder,
+        prepared: PreparedContributionSet,
     ) -> tuple[str, ...]:
         return _missing_optional(
             "skills",
             context.manifest.contributes.skills,
-            {skill.name for skill in builder.skills},
+            {skill.name for skill in prepared.skills},
         )
-
-
-@dataclass(frozen=True)
-class _MCPPreparationAdapter:
-    kind: str = "mcp_servers"
-
-    def prepare(
-        self,
-        context: _PreparationContext,
-        builder: _PreparedBuilder,
-    ) -> None:
-        builder.tools = (
-            *builder.tools,
-            *_prepare_discovered_tools(
-                context.manifest,
-                context.owner,
-                context.discovered_tools,
-            ),
-        )
-
-    def missing_optional(
-        self,
-        context: _PreparationContext,
-        builder: _PreparedBuilder,
-    ) -> tuple[str, ...]:
-        del context, builder
-        return ()
 
 
 @dataclass(frozen=True)
@@ -273,14 +246,14 @@ class _BackgroundServicePreparationAdapter:
     def prepare(
         self,
         context: _PreparationContext,
-        builder: _PreparedBuilder,
+        items: dict[str, tuple],
     ) -> None:
         _validate_background_services(
             context.manifest,
             context.contributions.background_services,
         )
         declarations = {item.id: item for item in context.manifest.contributes.background_services}
-        builder.background_services = tuple(
+        items["background_services"] = tuple(
             PreparedBackgroundService(service, declarations[service.service_id].scope)
             for service in context.contributions.background_services
         )
@@ -288,146 +261,37 @@ class _BackgroundServicePreparationAdapter:
     def missing_optional(
         self,
         context: _PreparationContext,
-        builder: _PreparedBuilder,
+        prepared: PreparedContributionSet,
     ) -> tuple[str, ...]:
         return _missing_optional(
             "background_services",
             context.manifest.contributes.background_services,
-            {service.service_id for service in builder.background_services},
-        )
-
-
-@dataclass(frozen=True)
-class _ContinuationPreparationAdapter:
-    kind: str = "continuation_policies"
-
-    def prepare(
-        self,
-        context: _PreparationContext,
-        builder: _PreparedBuilder,
-    ) -> None:
-        builder.continuation_policies = _prepare_continuation_policies(
-            context.manifest,
-            context.owner,
-            context.contributions.continuation_policies,
-        )
-
-    def missing_optional(
-        self,
-        context: _PreparationContext,
-        builder: _PreparedBuilder,
-    ) -> tuple[str, ...]:
-        return _missing_optional(
-            "continuation_policies",
-            context.manifest.contributes.continuation_policies,
-            {policy.policy_id for policy in builder.continuation_policies},
-        )
-
-
-@dataclass(frozen=True)
-class _ToolPolicyPreparationAdapter:
-    kind: str = "tool_policies"
-
-    def prepare(
-        self,
-        context: _PreparationContext,
-        builder: _PreparedBuilder,
-    ) -> None:
-        builder.tool_policies = _prepare_tool_policies(
-            context.manifest,
-            context.owner,
-            context.contributions.tool_policies,
-        )
-
-    def missing_optional(
-        self,
-        context: _PreparationContext,
-        builder: _PreparedBuilder,
-    ) -> tuple[str, ...]:
-        return _missing_optional(
-            "tool_policies",
-            context.manifest.contributes.tool_policies,
-            {policy.policy_id for policy in builder.tool_policies},
-        )
-
-
-@dataclass(frozen=True)
-class _PromptPolicyPreparationAdapter:
-    kind: str = "prompt_policies"
-
-    def prepare(
-        self,
-        context: _PreparationContext,
-        builder: _PreparedBuilder,
-    ) -> None:
-        builder.prompt_policies = _prepare_prompt_policies(
-            context.manifest,
-            context.owner,
-            context.contributions.prompt_policies,
-        )
-
-    def missing_optional(
-        self,
-        context: _PreparationContext,
-        builder: _PreparedBuilder,
-    ) -> tuple[str, ...]:
-        return _missing_optional(
-            "prompt_policies",
-            context.manifest.contributes.prompt_policies,
-            {policy.policy_id for policy in builder.prompt_policies},
-        )
-
-
-@dataclass(frozen=True)
-class _TurnPolicyPreparationAdapter:
-    kind: str = "turn_policies"
-
-    def prepare(
-        self,
-        context: _PreparationContext,
-        builder: _PreparedBuilder,
-    ) -> None:
-        builder.turn_policies = _prepare_turn_policies(
-            context.manifest,
-            context.owner,
-            context.contributions.turn_policies,
-        )
-
-    def missing_optional(
-        self,
-        context: _PreparationContext,
-        builder: _PreparedBuilder,
-    ) -> tuple[str, ...]:
-        return _missing_optional(
-            "turn_policies",
-            context.manifest.contributes.turn_policies,
-            {policy.policy_id for policy in builder.turn_policies},
+            {service.service_id for service in prepared.background_services},
         )
 
 
 TOOL_PREPARATION_ADAPTER = _ToolPreparationAdapter()
 
 
-OBSERVER_PREPARATION_ADAPTER = _ObserverPreparationAdapter()
+OBSERVER_PREPARATION_ADAPTER = _RegistrationPreparation(
+    "observers", _prepare_observers, attrgetter("observer_id")
+)
 
 
-COMMAND_PREPARATION_ADAPTER = _CommandPreparationAdapter()
+COMMAND_PREPARATION_ADAPTER = _RegistrationPreparation(
+    "commands", _prepare_commands, attrgetter("name")
+)
 
 
-SESSION_CONTROLLER_PREPARATION_ADAPTER = _SessionControllerPreparationAdapter()
-
-
-CONTEXT_PREPARATION_ADAPTER = _RequestProviderPreparationAdapter("context_providers")
-SYSTEM_PROMPT_PREPARATION_ADAPTER = _RequestProviderPreparationAdapter("system_prompt_providers")
+SESSION_CONTROLLER_PREPARATION_ADAPTER = _RegistrationPreparation(
+    "session_controllers", _prepare_session_controllers, attrgetter("controller_id")
+)
 
 
 COMPACTION_PREPARATION_ADAPTER = _CompactionPreparationAdapter()
 
 
 SKILL_PREPARATION_ADAPTER = _SkillPreparationAdapter()
-
-
-MCP_PREPARATION_ADAPTER = _MCPPreparationAdapter()
 
 
 BACKGROUND_SERVICE_PREPARATION_ADAPTER = _BackgroundServicePreparationAdapter()
@@ -440,7 +304,7 @@ class _RunDriverPreparationAdapter:
     def prepare(
         self,
         context: _PreparationContext,
-        builder: _PreparedBuilder,
+        items: dict[str, tuple],
     ) -> None:
         manifest = context.manifest
         declarations = {item.id: item for item in manifest.contributes.run_drivers}
@@ -450,7 +314,7 @@ class _RunDriverPreparationAdapter:
         _validate_declared_set("Run driver", declarations, actual)
         if actual and "sessions.write" not in {item.id for item in manifest.permissions}:
             raise ContributionValidationError("Run drivers require sessions.write permission")
-        builder.run_drivers = tuple(
+        items["run_drivers"] = tuple(
             replace(
                 item,
                 plugin_id=manifest.plugin_id,
@@ -461,12 +325,12 @@ class _RunDriverPreparationAdapter:
         )
 
     def missing_optional(
-        self, context: _PreparationContext, builder: _PreparedBuilder
+        self, context: _PreparationContext, prepared: PreparedContributionSet
     ) -> tuple[str, ...]:
         return _missing_optional(
             "run_drivers",
             context.manifest.contributes.run_drivers,
-            {item.driver_id for item in builder.run_drivers},
+            {item.driver_id for item in prepared.run_drivers},
         )
 
 
@@ -477,7 +341,7 @@ class _ProviderPreparationAdapter:
     def prepare(
         self,
         context: _PreparationContext,
-        builder: _PreparedBuilder,
+        items: dict[str, tuple],
     ) -> None:
         manifest = context.manifest
         declarations = {item.id: item for item in manifest.contributes.providers}
@@ -485,18 +349,18 @@ class _ProviderPreparationAdapter:
             "Provider", ((item.provider_id, item) for item in context.contributions.providers)
         )
         _validate_declared_set("Provider", declarations, actual)
-        builder.providers = tuple(
+        items["providers"] = tuple(
             replace(item, plugin_id=manifest.plugin_id, owner=context.owner.key)
             for item in actual.values()
         )
 
     def missing_optional(
-        self, context: _PreparationContext, builder: _PreparedBuilder
+        self, context: _PreparationContext, prepared: PreparedContributionSet
     ) -> tuple[str, ...]:
         return _missing_optional(
             "providers",
             context.manifest.contributes.providers,
-            {item.provider_id for item in builder.providers},
+            {item.provider_id for item in prepared.providers},
         )
 
 
@@ -506,13 +370,21 @@ PROVIDER_PREPARATION_ADAPTER = _ProviderPreparationAdapter()
 RUN_DRIVER_PREPARATION_ADAPTER = _RunDriverPreparationAdapter()
 
 
-CONTINUATION_PREPARATION_ADAPTER = _ContinuationPreparationAdapter()
+CONTINUATION_PREPARATION_ADAPTER = _RegistrationPreparation(
+    "continuation_policies", _prepare_continuation_policies, attrgetter("policy_id")
+)
 
 
-TOOL_POLICY_PREPARATION_ADAPTER = _ToolPolicyPreparationAdapter()
+TOOL_POLICY_PREPARATION_ADAPTER = _RegistrationPreparation(
+    "tool_policies", _prepare_tool_policies, attrgetter("policy_id")
+)
 
 
-PROMPT_POLICY_PREPARATION_ADAPTER = _PromptPolicyPreparationAdapter()
+PROMPT_POLICY_PREPARATION_ADAPTER = _RegistrationPreparation(
+    "prompt_policies", _prepare_prompt_policies, attrgetter("policy_id")
+)
 
 
-TURN_POLICY_PREPARATION_ADAPTER = _TurnPolicyPreparationAdapter()
+TURN_POLICY_PREPARATION_ADAPTER = _RegistrationPreparation(
+    "turn_policies", _prepare_turn_policies, attrgetter("policy_id")
+)

@@ -126,7 +126,13 @@ from ouro.sessions.sqlite_drafts import publish_draft
 from ouro.sessions.sqlite_drafts import read_head as read_draft_head
 from ouro.sessions.sqlite_drafts import read_page as read_draft_page
 from ouro.sessions.sqlite_facts import load_snapshot as load_tool_facts
-from ouro.sessions.sqlite_facts import load_states, read_call_state, write_call_state, write_facts
+from ouro.sessions.sqlite_facts import (
+    load_states,
+    read_call_state,
+    run_has_tool_error,
+    write_call_state,
+    write_facts,
+)
 from ouro.sessions.sqlite_inputs import (
     read_input,
     read_inputs,
@@ -1333,6 +1339,10 @@ class LocalSessionStore:
             if found.kind != "input":
                 raise PersistenceError("input history lookup has a non-input message")
             return True
+
+    def run_has_tool_error(self, session_id: str, run_id: str, *, after_revision: int) -> bool:
+        with self.session_read(session_id) as reader:
+            return run_has_tool_error(reader.connection(), session_id, run_id, after_revision)
 
     def find_last_assistant_message(self, session_id: str, run_id: str) -> MessageRecord | None:
         with self.session_read(session_id) as reader:

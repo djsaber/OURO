@@ -78,10 +78,9 @@ def requests(runtime, budget=None):
             record_settlement=runtime.context_preparation.record_request_settlement,
             record_usage=runtime.run_lifecycle.record_usage,
             commit_model_request=runtime.run_lifecycle.commit_model_request,
-            publish_committed=runtime.event_recorder.publish_committed,
+            events=runtime.event_recorder,
             append_draft=runtime.store.append_response_draft,
             record_retry=runtime.store.record_request_retry,
-            emit=runtime.event_recorder.emit,
             run_usage=runtime.usage.run_usage if runtime.usage is not None else None,
         ),
     )

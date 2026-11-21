@@ -1,13 +1,16 @@
 import asyncio
 import json
 from datetime import timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 
-import ouro.application.runtime.service as runtime_module
+import ouro.application.runs.interactions as run_interactions
 import ouro.application.tool_calls as tool_calls_module
+from ouro.application.inputs.requests import UserInputRequest
 from ouro.application.runs.tool_batches import load_tool_batch
 from ouro.application.runtime.service import RuntimeService
+from ouro.application.supervisor import RuntimeSupervisor
 from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import utc_now
@@ -22,6 +25,7 @@ from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 from ouro.tools.builtin.todolist import builtin_todolist_tool
 from tests.application.helpers import running_runtime_task
+from tests.application.test_user_input_admission import HeldProvider
 from tests.event_capture import recorded_events
 from tests.run_facts import run_tool_results
 
@@ -318,14 +322,14 @@ async def test_tool_wait_returns_consumed_state_change_and_resumes_committed_sta
             ModelMetadata(model_id="faux", provider_id="faux"),
         ),
     )
-    original_request = runtime._execute_model_tool_batch
+    original_request = runtime.driver_execution.request_model_tools
 
     async def request_tools(request):
         result = await original_request(request)
         outcomes.append(result)
         return result
 
-    monkeypatch.setattr(runtime, "_execute_model_tool_batch", request_tools)
+    monkeypatch.setattr(runtime.driver_execution, "request_model_tools", request_tools)
     try:
         waiting = await runtime.run("advance")
         assert waiting.run.status == "waiting_user"
@@ -962,15 +966,28 @@ async def test_resumable_tool_can_request_multiple_inputs_and_owns_final_result(
     )
 
     first = await runtime.run("advance")
+
+    # Failure while reading the committed question leaves the original wait retryable.
+    def unavailable_harness(*_args, **_kwargs):
+        raise OSError("question state unavailable")
+
+    with monkeypatch.context() as failing:
+        failing.setattr(run_interactions, "capture_harness", unavailable_harness)
+        with pytest.raises(OSError, match="question state unavailable"):
+            await runtime.answer_user(
+                session_id=first.session.session_id, run_id=first.run.run_id, answer="retry"
+            )
+    assert first.run.run_id not in runtime._run_resources
+    assert not runtime.store.is_session_locked(first.session.session_id)
+    assert not resume_calls
     batch_reads = []
-    load_batch = runtime_module.load_tool_batch
 
     def read_batch(store, run):
         batch_reads.append(run.run_id)
         assert store.is_session_locked(run.session_id)
-        return load_batch(store, run)
+        return load_tool_batch(store, run)
 
-    monkeypatch.setattr(runtime_module, "load_tool_batch", read_batch)
+    monkeypatch.setattr(run_interactions, "load_tool_batch", read_batch)
     commits = []
     commit_session = runtime.store.commit_session
 
@@ -979,12 +996,44 @@ async def test_resumable_tool_can_request_multiple_inputs_and_owns_final_result(
         return commit_session(request)
 
     monkeypatch.setattr(runtime.store, "commit_session", commit)
-    second = await runtime.answer_user(
-        session_id=first.session.session_id,
-        run_id=first.run.run_id,
-        answer={"choice": "next"},
+    # A second Host accepts an answer while its only execution permit is occupied.
+    held = HeldProvider()
+    other_store = store_type(
+        tmp_path / "sessions.db" if store_type is SQLiteSessionStore else tmp_path
     )
-    assert batch_reads == [first.run.run_id]
+    async with RuntimeService(
+        store=other_store,
+        tools=registry,
+        adapter=RuntimeAdapter(held, ModelMetadata(model_id="faux", provider_id="faux")),
+    ) as other_host:
+        supervisor = RuntimeSupervisor(other_host, max_concurrency=1)
+        try:
+            blocker = await supervisor.submit_user_input(UserInputRequest(prompt="occupy permit"))
+            assert await asyncio.wait_for(held.started.get(), 5) == "occupy permit"
+            target = {"session_id": first.session.session_id, "run_id": first.run.run_id}
+            stale = await supervisor.resolve_tool_input(**target, answer="queued answer for first")
+            assert supervisor.status(stale).status == "queued"
+            second = await runtime.answer_user(**target, answer={"choice": "next"})
+            assert batch_reads == [first.run.run_id]
+            held.release.set()
+            await asyncio.wait_for(blocker.wait(), 10)
+            failed = await asyncio.wait_for(supervisor.wait(stale), 10)
+            assert (
+                failed.status == "failed" and failed.diagnostics[-1].code == "stale_tool_question"
+            )
+            assert other_store.load_run(**target) == second.run
+            assert resume_calls == [({"stage": "first"}, {"choice": "next"})]
+        finally:
+            held.release.set()
+            await supervisor.shutdown()
+    assert batch_reads == [first.run.run_id, first.run.run_id]
+    # A concurrent answer selected the first question before the second one was published.
+    with monkeypatch.context() as pending:
+        pending.setattr(runtime.parked_runs, "_target", AsyncMock(return_value=first.run))
+        with pytest.raises(ValueError, match="question changed"):
+            await runtime.answer_user(
+                session_id=first.session.session_id, run_id=first.run.run_id, answer="stale"
+            )
     waiting = [
         request for request in commits if any(run.status == "waiting_user" for run in request.runs)
     ]
@@ -1286,7 +1335,9 @@ async def test_parallel_batch_marks_only_handlers_that_actually_started(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_batch_waits_for_every_approval_and_marks_running_before_execution(tmp_path) -> None:
+async def test_batch_waits_for_every_approval_and_marks_running_before_execution(
+    tmp_path, monkeypatch
+) -> None:
     registry = ToolRegistry()
     started = asyncio.Event()
     release = asyncio.Event()
@@ -1339,6 +1390,14 @@ async def test_batch_waits_for_every_approval_and_marks_running_before_execution
         approved=True,
     )
     assert still_waiting.run.status == "waiting_approval"
+    assert executed == []
+    # The competing command observed the first pending approval before acquiring the lock.
+    with monkeypatch.context() as stale:
+        stale.setattr(runtime.parked_runs, "_target", AsyncMock(return_value=pending.run))
+        with pytest.raises(ValueError, match="approval is not pending"):
+            await asyncio.wait_for(
+                runtime.approve_tool(session_id=pending.session.session_id, approved=False), 2
+            )
     assert executed == []
 
     resume_task = asyncio.create_task(

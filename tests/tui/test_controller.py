@@ -358,15 +358,15 @@ async def test_late_session_creation_does_not_replace_navigation(
     application = two_route_application(tmp_path)
     controller = TuiController(lambda _event: None, lambda _status: None, application=application)
     entered, release = asyncio.Event(), asyncio.Event()
-    run = application.runtime.accept_user_input
+    accept = application.runtime.input_admission.accept
 
-    async def delayed_run(*args, **kwargs):
+    async def delayed_accept(*args, **kwargs):
         entered.set()
         await release.wait()
-        return await run(*args, **kwargs)
+        return await accept(*args, **kwargs)
 
     await controller.start()
-    monkeypatch.setattr(application.runtime, "accept_user_input", delayed_run)
+    monkeypatch.setattr(application.runtime.input_admission, "accept", delayed_accept)
     submission = asyncio.create_task(controller.submit("Background creation"))
     try:
         await asyncio.wait_for(entered.wait(), 5)
@@ -564,7 +564,7 @@ async def test_controller_model_queries_do_not_block_startup_or_submission(tmp_p
     application = _reasoning_application(tmp_path)
     controller = TuiController(lambda _event: None, lambda _status: None, application=application)
     loop_thread = threading.get_ident()
-    original = application.runtime.current_model
+    original = application.models.current_model
     queries = []
 
     def checked_model(*args, **kwargs):
@@ -572,7 +572,7 @@ async def test_controller_model_queries_do_not_block_startup_or_submission(tmp_p
         assert queries[-1] != loop_thread
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(application.runtime, "current_model", checked_model)
+    monkeypatch.setattr(application.models, "current_model", checked_model)
     try:
         await controller.start()
         result = await controller.submit("first request")
@@ -590,7 +590,7 @@ async def test_submission_preflight_does_not_follow_a_session_switch(tmp_path, m
     result = await controller.submit("initial session")
     entered = threading.Event()
     release = threading.Event()
-    original = application.runtime.available_models
+    original = application.models.available_models
 
     def delayed_models():
         if not entered.is_set():
@@ -598,7 +598,7 @@ async def test_submission_preflight_does_not_follow_a_session_switch(tmp_path, m
             assert release.wait(5)
         return original()
 
-    monkeypatch.setattr(application.runtime, "available_models", delayed_models)
+    monkeypatch.setattr(application.models, "available_models", delayed_models)
     pending = asyncio.create_task(controller.submit("must not move to a new draft"))
     try:
         assert await asyncio.to_thread(entered.wait, 5)

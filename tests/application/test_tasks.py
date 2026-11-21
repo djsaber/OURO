@@ -61,8 +61,8 @@ async def task_runtime(home, *, provider=None, backend="files", task_backend="fi
     )
     repository.initialize()
     now = [NOW]
-    tasks = TaskService(repository, runtime, clock=lambda: now[0])
-    execution = TaskExecutionCoordinator(tasks, supervisor)
+    tasks = TaskService(repository, runtime.session_models.model_reasoning, clock=lambda: now[0])
+    execution = TaskExecutionCoordinator(tasks, supervisor, runs=runtime, state=store)
     await supervisor.start()
     try:
         yield tasks, execution, supervisor, now
@@ -119,7 +119,7 @@ async def test_due_task_runs_with_persisted_configuration_through_shared_runtime
         completed = await settle(tasks, execution, task.task_id)
         entries = await tasks.executions(task.task_id)
         assert len(entries) == 1
-        session = tasks.runtime.store.load_session(completed.session_id)
+        session = supervisor.runtime.store.load_session(completed.session_id)
         assert session.session.namespace == "task"
         assert session.session.workspace == str(tmp_path)
         assert session.session.title == "Scheduled report"
@@ -146,7 +146,7 @@ async def test_due_task_runs_with_persisted_configuration_through_shared_runtime
 async def test_default_task_model_is_resolved_at_dispatch_without_freezing_configuration(
     tmp_path, monkeypatch
 ) -> None:
-    async with task_runtime(tmp_path) as (tasks, execution, _, _):
+    async with task_runtime(tmp_path) as (tasks, execution, supervisor, _):
         config = configuration(tmp_path)
         config = config.model_copy(
             update={"target": config.target.model_copy(update={"model": DEFAULT_MODEL})}
@@ -155,19 +155,21 @@ async def test_default_task_model_is_resolved_at_dispatch_without_freezing_confi
             await tasks.create(config)
 
         monkeypatch.setattr(
-            tasks.runtime, "configured_default_model", lambda: tasks.runtime.current_model()
+            supervisor.runtime.models,
+            "configured_default_model",
+            supervisor.runtime.models.default_model,
         )
         task = await tasks.create(config)
         assert task.configuration.target.model == DEFAULT_MODEL
         await execution.tick()
         completed = await settle(tasks, execution, task.task_id)
-        session = tasks.runtime.store.load_session(completed.session_id)
+        session = supervisor.runtime.store.load_session(completed.session_id)
         assert session.session.current_model == "faux/task"
 
 
 @pytest.mark.parametrize("mode", ["new", "reuse"])
 async def test_session_creation_mode_and_deleted_reusable_session(tmp_path, mode):
-    async with task_runtime(tmp_path) as (tasks, execution, _, now):
+    async with task_runtime(tmp_path) as (tasks, execution, supervisor, now):
         task = await tasks.create(configuration(tmp_path, session_mode=mode))
         await execution.tick()
         first = await settle(tasks, execution, task.task_id)
@@ -175,7 +177,7 @@ async def test_session_creation_mode_and_deleted_reusable_session(tmp_path, mode
         await execution.tick()
         second = await settle(tasks, execution, task.task_id)
         assert (first.session_id == second.session_id) == (mode == "reuse")
-        tasks.runtime.sessions.trash(second.session_id)
+        supervisor.runtime.sessions.trash(second.session_id)
         now[0] += timedelta(hours=1)
         await execution.tick()
         third = await settle(tasks, execution, task.task_id)
@@ -226,7 +228,7 @@ async def test_task_crud_validates_and_detects_concurrent_edits(tmp_path):
 
 
 async def test_missed_occurrences_coalesce_and_claim_is_atomic(tmp_path):
-    async with task_runtime(tmp_path) as (tasks, execution, _, now):
+    async with task_runtime(tmp_path) as (tasks, execution, supervisor, now):
         task = await tasks.create(configuration(tmp_path))
         now[0] += timedelta(days=1000)
         results = await asyncio.gather(
@@ -242,7 +244,7 @@ async def test_missed_occurrences_coalesce_and_claim_is_atomic(tmp_path):
         await execution.recover()
         assert (await tasks.get(task.task_id)).status == "waiting"
         assert (await tasks.executions(task.task_id))[0].status == "interrupted"
-        assert not tasks.runtime.sessions.catalog().entries
+        assert not supervisor.runtime.sessions.catalog().entries
 
 
 async def test_scheduler_election_and_startup_dispatch(tmp_path):
@@ -292,7 +294,7 @@ async def test_approval_pauses_until_user_resumes_the_same_run(tmp_path):
             [ProviderStreamEvent(type="text_delta", text="Done"), ProviderStreamEvent(type="done")],
         ]
     )
-    async with task_runtime(tmp_path, provider=provider) as (tasks, execution, _, now):
+    async with task_runtime(tmp_path, provider=provider) as (tasks, execution, supervisor, now):
         task = await tasks.create(configuration(tmp_path, approval_mode="approval"))
         await execution.tick()
         paused = await settle(tasks, execution, task.task_id, status="paused")
@@ -304,8 +306,8 @@ async def test_approval_pauses_until_user_resumes_the_same_run(tmp_path):
         await execution.tick()
         assert len(await tasks.executions(task.task_id)) == 1
         record = (await tasks.executions(task.task_id))[0]
-        run = tasks.runtime.store.load_run(record.target.session_id, record.target.run_id)
-        result = await tasks.runtime.approve_tool(
+        run = supervisor.runtime.store.load_run(record.target.session_id, record.target.run_id)
+        result = await supervisor.runtime.approve_tool(
             session_id=record.target.session_id,
             run_id=record.target.run_id,
             approval_id=run.pending_approval_id,
@@ -356,7 +358,7 @@ async def test_target_edit_during_execution_applies_only_to_next_occurrence(tmp_
     async with task_runtime(tmp_path, provider=provider, task_backend=task_backend) as (
         tasks,
         execution,
-        _,
+        supervisor,
         now,
     ):
         task = await tasks.create(configuration(tmp_path))
@@ -378,7 +380,7 @@ async def test_target_edit_during_execution_applies_only_to_next_occurrence(tmp_
         await settle(tasks, execution, task.task_id)
         completed = (await tasks.executions(task.task_id))[0]
         assert completed.target == accepted.target
-        first = tasks.runtime.store.load_session(completed.target.session_id)
+        first = supervisor.runtime.store.load_session(completed.target.session_id)
         assert any(
             message.text_content == task.configuration.target.prompt for message in first.messages
         )
@@ -389,7 +391,7 @@ async def test_target_edit_during_execution_applies_only_to_next_occurrence(tmp_
         await settle(tasks, execution, task.task_id)
         latest = (await tasks.executions(task.task_id))[0]
         assert latest.target.run_id != completed.target.run_id
-        second = tasks.runtime.store.load_session(latest.target.session_id)
+        second = supervisor.runtime.store.load_session(latest.target.session_id)
         assert any(message.text_content == "New instruction" for message in second.messages)
 
 
@@ -445,7 +447,7 @@ async def test_launch_failure_is_visible_and_does_not_block_other_tasks(tmp_path
 
 
 async def test_expired_plan_does_not_dispatch_after_restart(tmp_path):
-    async with task_runtime(tmp_path) as (tasks, execution, _, now):
+    async with task_runtime(tmp_path) as (tasks, execution, supervisor, now):
         config = configuration(tmp_path).model_copy(
             update={"schedule": TaskSchedule(frequency="hourly", starts_at=NOW, ends_at=NOW)}
         )
@@ -457,7 +459,7 @@ async def test_expired_plan_does_not_dispatch_after_restart(tmp_path):
         assert expired.next_run_at is None
         assert expired.status == "completed"
         assert not await tasks.executions(task.task_id)
-        assert not tasks.runtime.sessions.catalog().entries
+        assert not supervisor.runtime.sessions.catalog().entries
         assert (await tasks.counts()).completed_executions == 0
 
 
@@ -534,7 +536,7 @@ async def test_restart_preserves_pending_approval_and_exact_run_identity(tmp_pat
             ]
         ]
     )
-    async with task_runtime(tmp_path, provider=provider) as (tasks, execution, _, now):
+    async with task_runtime(tmp_path, provider=provider) as (tasks, execution, supervisor, now):
         task = await tasks.create(configuration(tmp_path, approval_mode="approval"))
         await execution.tick()
         await settle(tasks, execution, task.task_id, status="paused")
@@ -546,7 +548,7 @@ async def test_restart_preserves_pending_approval_and_exact_run_identity(tmp_pat
         assert (await tasks.get(task.task_id)).status == "paused"
         assert (await tasks.counts()).awaiting_approval == 1
         assert not target.exists()
-        run = tasks.runtime.store.load_run(receipt.target.session_id, receipt.target.run_id)
+        run = supervisor.runtime.store.load_run(receipt.target.session_id, receipt.target.run_id)
         handle = await supervisor.resolve_tool_approval(
             session_id=receipt.target.session_id,
             run_id=receipt.target.run_id,
@@ -587,10 +589,10 @@ async def test_corrupt_task_storage_is_diagnosed_without_stopping_interactive_ru
 
 
 async def test_busy_reusable_sessions_do_not_starve_tasks_beyond_admission_window(tmp_path):
-    async with task_runtime(tmp_path) as (tasks, execution, _, now):
-        session = tasks.runtime.create_session(title="Busy reusable session", namespace="task")
+    async with task_runtime(tmp_path) as (tasks, execution, supervisor, now):
+        session = supervisor.runtime.create_session(title="Busy reusable session", namespace="task")
         config = configuration(tmp_path, session_mode="reuse")
-        tasks.runtime.prepare_run(
+        supervisor.runtime.prepare_run(
             RunRecord(session_id=session.session_id),
             model=config.target.model,
             reasoning=config.target.reasoning,

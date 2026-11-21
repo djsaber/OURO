@@ -234,6 +234,7 @@ def project_agent_interaction(interaction: AgentInteractionView) -> PendingInter
         tool_name=interaction.tool_name,
         request_id=interaction.request_id,
         request=interaction.input_request,
+        question=interaction.question,
         canonical_tool_id=interaction.canonical_tool_id,
         plugin_id=interaction.plugin_id,
         plugin_class=interaction.plugin_class,

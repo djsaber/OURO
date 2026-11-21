@@ -176,7 +176,7 @@ async def test_requested_abort_finalization_reads_store_outside_the_event_loop(
 
     monkeypatch.setattr(store, "load_run", blocking_load_run)
     finalizing = asyncio.create_task(
-        runtime._finalize_requested_abort(RunResult(session=session, run=run))
+        runtime.run_lifecycle.finalize_requested_abort(RunResult(session=session, run=run))
     )
     try:
         assert await asyncio.to_thread(entered.wait, 30) is True
@@ -1825,6 +1825,7 @@ async def test_runtime_persists_context_provider_message_with_provenance(tmp_pat
         {"text": "State B"},
         {"role": "system"},
         {"semantic_tag": "updated-state"},
+        {"revision": "2"},
     ],
 )
 async def test_context_provider_retry_appends_changes_without_rewriting_history(
@@ -1885,6 +1886,7 @@ async def test_context_provider_retry_appends_changes_without_rewriting_history(
                 assert message.text_content == value.text
                 assert message.role == value.role
                 assert message.semantic_tag == value.semantic_tag
+                assert message.metadata.get("fragment_revision") == value.revision
             before = messages
 
         adapter.model = model
@@ -1896,6 +1898,46 @@ async def test_context_provider_retry_appends_changes_without_rewriting_history(
         assert messages[:-1] == before
     finally:
         await runtime.close()
+
+
+@pytest.mark.parametrize("append_observation", [True, False])
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_request_snapshot_with_a_concurrent_message(tmp_path, backend, append_observation):
+    store = (
+        LocalSessionStore(tmp_path)
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sessions.db")
+    )
+    store.initialize()
+    provider = CapturingProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(provider, ModelMetadata(model_id="capture", provider_id="capture")),
+        tools=ToolRegistry(),
+    )
+
+    def observe(call):
+        # The request has already read the active window when the provider starts.
+        store.append_message(
+            MessageRecord.text(session_id=call.session_id, role="harness", text="another writer")
+        )
+        return ContextProviderResult(
+            fragments=[ContextFragment(text="observation")] if append_observation else []
+        )
+
+    runtime.context_providers.replace_owner(
+        "ctx", (ContextProviderRegistration("ctx", "state", observe),)
+    )
+    async with runtime:
+        result = await runtime.run("Read the window")
+        assert result.run.status == "completed"
+        assert provider.calls == 1
+        expected = ["Read the window"]
+        if append_observation:
+            expected.extend(["another writer", "observation"])
+        assert [message.text_content for message in provider.messages] == expected
+        saved = store.load_latest_context(result.session.session_id)
+        assert saved.provider_context.messages == provider.messages
 
 
 @pytest.mark.asyncio
@@ -2017,8 +2059,9 @@ async def test_runtime_merges_context_builder_skills_before_provider_context(tmp
         ("system_prompt_providers", SystemPromptRegistration, "system_prompt_provider_failed"),
     ],
 )
-async def test_required_provider_failure_pauses_before_model_request(
-    tmp_path, registry_name, registration, event_type
+@pytest.mark.parametrize("failure_mode", ["omit", "block"])
+async def test_provider_failure_controls_model_dispatch(
+    tmp_path, registry_name, registration, event_type, failure_mode
 ) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -2042,16 +2085,21 @@ async def test_required_provider_failure_pauses_before_model_request(
                 plugin_id="dev.ouro.required",
                 provider_id="state",
                 handler=fail,
-                failure_mode="block",
+                failure_mode=failure_mode,
             ),
         ),
     )
     result = await runtime.run("Use required context")
     events = recorded_events(result.session.session_id)
 
-    assert result.run.status == "paused"
-    assert result.run.metadata["pause"]["reason"] == "context_blocked"
-    assert provider.messages == []
+    if failure_mode == "block":
+        assert result.run.status == "paused"
+        assert result.run.metadata["pause"]["reason"] == "context_blocked"
+        assert provider.calls == 0
+    else:
+        assert result.run.status == "completed"
+        assert provider.calls == 1
+        assert [message.text_content for message in provider.messages] == ["Use required context"]
     (failure,) = (event for event in events if event.event_type == event_type)
     assert failure.payload["session_id"] == failure.session_id == result.session.session_id
     assert failure.payload["run_id"] == failure.run_id == result.run.run_id

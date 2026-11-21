@@ -12,6 +12,7 @@ from textual.containers import VerticalScroll
 from textual.message import Message
 from textual.widgets import Static
 
+from ouro.application.contracts.tool_activity import PendingInteraction
 from ouro.sdk.plugins.interactions import (
     PlanConfirmationAction,
     PlanConfirmationAnswer,
@@ -32,8 +33,9 @@ class PlanConfirmationPanel(ApprovalPanel):
     ]
 
     class Completed(Message):
-        def __init__(self, answer: JsonValue) -> None:
+        def __init__(self, interaction: PendingInteraction | None, answer: JsonValue) -> None:
             super().__init__()
+            self.interaction = interaction
             self.answer = answer
 
     class FeedbackRequested(Message):
@@ -54,6 +56,7 @@ class PlanConfirmationPanel(ApprovalPanel):
             can_focus=False,
         )
         self._request: PlanConfirmationRequest | None = None
+        self._interaction: PendingInteraction | None = None
         self._stage: Literal["action", "option", "feedback"] = "action"
         self._awaiting_feedback = False
 
@@ -72,9 +75,12 @@ class PlanConfirmationPanel(ApprovalPanel):
             return None
         return self._request.actions[self._cursor]
 
-    def show_request(self, request: PlanConfirmationRequest) -> None:
+    def show_request(
+        self, request: PlanConfirmationRequest, interaction: PendingInteraction | None = None
+    ) -> None:
         with self.app.batch_update():
             self._request = request
+            self._interaction = interaction
             self._stage = "action"
             self._cursor = 0
             self._awaiting_feedback = False
@@ -88,6 +94,7 @@ class PlanConfirmationPanel(ApprovalPanel):
         with self.app.batch_update():
             self.display = False
             self._request = None
+            self._interaction = None
             self._stage = "action"
             self._cursor = 0
             self._awaiting_feedback = False
@@ -177,7 +184,7 @@ class PlanConfirmationPanel(ApprovalPanel):
 
     def _complete(self, answer: PlanConfirmationAnswer) -> None:
         self.disabled = True
-        self.post_message(self.Completed(answer.to_json()))
+        self.post_message(self.Completed(self._interaction, answer.to_json()))
 
     def _render_panel(self) -> None:
         request = self._request

@@ -224,8 +224,7 @@ SQLite 使用另一个目录，并在两端都指定 `--home .ouro-dev/manual-sq
 每次输入会生成两轮文本和一个合成工具结果；默认每轮 400 片、间隔 25ms。可用 `--deltas` 和 `--interval-ms`
 调整持续时间或突发，不会调用外部模型或系统命令。
 
-将两个终端分别记为 A（发起运行）和 B（只观察）。首轮按下表逐项定位问题；全部通过后，按
-[性能规划](../../docs/plans/performance.md)在两后端及 Windows/POSIX 实际终端分别重复各场景至少 20 次。
+将两个终端分别记为 A（发起运行）和 B（只观察）。首轮按下表逐项定位问题。全部通过后，在两后端及 Windows/POSIX 实际终端分别重复各场景至少 20 次，按[受控响应性目标](../../docs/specs/performance.md#io-所有权与响应性验证)核对结果。
 合成输出的每一轮从 1 开始计数，工具结果后开始下一轮；不要将合法的第二轮计数误记为重复消息。
 开始下一项提交测试前，先清空上一项留下的未发送草稿。
 
@@ -335,8 +334,7 @@ Worker 基准通过真实 handler 测量合成响应解码耗时、Python 分配
 命令基准临时安装真实 SDK 插件，覆盖查询、预建会话、输出后创建会话及已有 120 条历史的会话。
 `--mode application|tui|all` 分别测 Application 命令用例与 headless TUI；输入批次由合成 Provider 和工具完成。
 输出包含提交、首段文本、完整消费、消息摘要、Run 终态和响应性指标；安装、启动与初始历史准备不计时。
-首个模型 delta 不等于终端 paint，TUI 帧、按键和网络性能须按[性能规划](../../docs/plans/performance.md)
-单独验证。
+首个模型 delta 标记模型开始输出。TUI 帧与按键回显通过[实际终端测量](#人工终端验收入口)验证，网络耗时单独记录。
 
 ```powershell
 uv run --frozen python -m dev.benchmarks.response_drafts --repeat 3

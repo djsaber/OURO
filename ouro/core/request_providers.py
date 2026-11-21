@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Container, Iterable
 from dataclasses import dataclass, field, replace
 from typing import Literal, Self
 
@@ -76,7 +76,7 @@ class OrderedProviderRegistry[R: RequestProviderRegistration]:
         self._require_mutable()
         self._registrations = snapshot
 
-    def scoped(self, active_controller_ids: set[str]) -> Self:
+    def scoped(self, active_controller_ids: Container[str]) -> Self:
         scoped = type(self)()
         scoped._registrations = tuple(
             item

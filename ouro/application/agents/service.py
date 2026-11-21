@@ -82,7 +82,7 @@ from ouro.core.state import (
     SessionRecord,
 )
 from ouro.core.tool_batches import ToolCallBatchRecord, ToolCallState
-from ouro.core.tool_facts import ToolCallIdentity, ToolOutcomeRecord
+from ouro.core.tool_facts import ToolCallIdentity, ToolOutcomeRecord, ToolQuestion
 from ouro.core.tools import ToolInvocation, ToolResult
 
 _LOGGER = logging.getLogger(__name__)
@@ -149,6 +149,7 @@ class RunScheduler(Protocol):
         session_id: str,
         run_id: str,
         answer: JsonValue,
+        question: ToolQuestion | None = None,
     ) -> RunHandle: ...
 
 
@@ -1388,6 +1389,7 @@ class AgentService:
         tool_call_id: str,
         request_id: str,
         answer: JsonValue,
+        question: ToolQuestion | None = None,
     ) -> RunHandle:
         relation = await run_blocking(
             self._require_child_identity,
@@ -1408,9 +1410,18 @@ class AgentService:
             None,
         )
         expected_request_id = f"{batch.batch_id}/{tool_call_id}" if batch else None
-        if call is None or run.status != "waiting_user" or request_id != expected_request_id:
+        if (
+            batch is None
+            or call is None
+            or run.status != "waiting_user"
+            or request_id != expected_request_id
+        ):
             raise ValueError("input identity does not match the child canonical request")
+        current_question = call.question(child_run_id, batch.batch_id)
+        if question is not None and question != current_question:
+            raise ValueError("child question changed before the answer was applied")
         handle = await self.scheduler.resolve_tool_input(
+            question=current_question,
             session_id=child_session_id,
             run_id=child_run_id,
             answer=answer,

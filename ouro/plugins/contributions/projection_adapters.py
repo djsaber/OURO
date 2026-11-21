@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from ouro.core.compaction import CompactionStrategyRegistry
 from ouro.core.context_providers import ContextProviderRegistry
@@ -14,6 +15,8 @@ from ouro.core.session_controller_registry import SessionControllerRegistry
 from ouro.core.system_prompts import SystemPromptRegistry
 from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistry
+from ouro.plugins.catalog import bindings
+from ouro.plugins.catalog.gates import GenerationGate
 from ouro.plugins.contributions.models import PreparedContributionSet
 from ouro.plugins.providers import ProviderRegistry
 from ouro.plugins.registry import PluginCommandRegistry
@@ -57,14 +60,15 @@ class ContributionProjectionAdapter(Protocol):
         *,
         owner: str,
         prepared: PreparedContributionSet,
+        gate: GenerationGate,
     ) -> None: ...
 
 
 @dataclass(frozen=True)
 class _SnapshotProjectionAdapter:
     kind: str
-    target_attribute: str
-    prepared_attribute: str
+    bind: Callable[[Any, GenerationGate], Any]
+    target_attribute: str | None = None
     lifecycle: ContributionLifecycle = "snapshot-bound"
 
     def project(
@@ -73,10 +77,11 @@ class _SnapshotProjectionAdapter:
         *,
         owner: str,
         prepared: PreparedContributionSet,
+        gate: GenerationGate,
     ) -> None:
-        registry = getattr(targets, self.target_attribute)
-        contributions = getattr(prepared, self.prepared_attribute)
-        registry.replace_owner(owner, contributions)
+        registry = getattr(targets, self.target_attribute or self.kind)
+        contributions = getattr(prepared, self.kind)
+        registry.replace_owner(owner, tuple(self.bind(item, gate) for item in contributions))
 
 
 @dataclass(frozen=True)
@@ -90,8 +95,9 @@ class _BackgroundServiceAdapter:
         *,
         owner: str,
         prepared: PreparedContributionSet,
+        gate: GenerationGate,
     ) -> None:
-        del targets, owner, prepared
+        del targets, owner, prepared, gate
 
 
 @dataclass(frozen=True)
@@ -105,6 +111,7 @@ class _SkillProjectionAdapter:
         *,
         owner: str,
         prepared: PreparedContributionSet,
+        gate: GenerationGate,
     ) -> None:
         for skill in prepared.skills:
             if skill.name in targets.skills:
@@ -112,82 +119,28 @@ class _SkillProjectionAdapter:
             targets.skills[skill.name] = skill
 
 
-TOOL_PROJECTION_ADAPTER = _SnapshotProjectionAdapter("tools", "tools", "tools")
-
-
-OBSERVER_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
-    "observers",
-    "observers",
-    "observers",
-)
-
-
-CONTEXT_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
-    "context_providers", "context_providers", "context_providers"
-)
-SYSTEM_PROMPT_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
-    "system_prompt_providers", "system_prompt_providers", "system_prompt_providers"
-)
-
-
-COMMAND_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
-    "commands",
-    "commands",
-    "commands",
-)
-
-
+TOOL_PROJECTION_ADAPTER = _SnapshotProjectionAdapter("tools", bindings.gate_tool)
+OBSERVER_PROJECTION_ADAPTER = _SnapshotProjectionAdapter("observers", bindings.gate_observer)
+COMMAND_PROJECTION_ADAPTER = _SnapshotProjectionAdapter("commands", bindings.gate_command)
 SESSION_CONTROLLER_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
-    "session_controllers",
-    "session_controllers",
-    "session_controllers",
+    "session_controllers", bindings.gate_session_controller
 )
-
-
 COMPACTION_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
-    "compaction_strategies",
-    "compaction",
-    "compaction_strategies",
+    "compaction_strategies", bindings.GatedCompactionStrategy, "compaction"
 )
-
-
-PROVIDER_PROJECTION_ADAPTER = _SnapshotProjectionAdapter("providers", "providers", "providers")
-
-
-RUN_DRIVER_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
-    "run_drivers", "run_drivers", "run_drivers"
-)
-
-
+PROVIDER_PROJECTION_ADAPTER = _SnapshotProjectionAdapter("providers", bindings.gate_provider)
+RUN_DRIVER_PROJECTION_ADAPTER = _SnapshotProjectionAdapter("run_drivers", bindings.gate_driver)
 CONTINUATION_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
-    "continuation_policies",
-    "continuations",
-    "continuation_policies",
+    "continuation_policies", bindings.gate_continuation, "continuations"
 )
-
-
 PROMPT_POLICY_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
-    "prompt_policies",
-    "prompt_policies",
-    "prompt_policies",
+    "prompt_policies", bindings.gate_prompt_policy
 )
-
-
 TOOL_POLICY_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
-    "tool_policies",
-    "tool_policies",
-    "tool_policies",
+    "tool_policies", bindings.gate_tool_policy
 )
-
-
 TURN_POLICY_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
-    "turn_policies",
-    "turn_policies",
-    "turn_policies",
+    "turn_policies", bindings.gate_turn_policy
 )
-
-
 BACKGROUND_SERVICE_PROJECTION_ADAPTER = _BackgroundServiceAdapter()
-
-
 SKILL_PROJECTION_ADAPTER = _SkillProjectionAdapter()

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import replace
+from unittest.mock import Mock
 
 import pytest
 
 from ouro.application.runs.tool_batches import load_batch_call
+from ouro.application.runtime.extensions import RuntimeExtensions
 from ouro.core.session_controller_registry import SessionControllerRegistry
 from ouro.core.state import SessionRecord
 from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_catalog
@@ -153,15 +156,11 @@ async def test_observation_precedes_control_and_remains_distinct_from_feedback(
         (),
     )
 
-    async def attach_catalog(run):
-        return await app._bind_extension_snapshot(run, catalog.acquire())
-
-    async def ensure_catalog(run):
-        if app._extension_snapshot_for_run(run.run_id) is None:
-            await attach_catalog(run)
-
-    monkeypatch.setattr(app, "_attach_extension_snapshot", attach_catalog)
-    monkeypatch.setattr(app, "_ensure_extension_snapshot", ensure_catalog)
+    extensions = Mock(spec=RuntimeExtensions)
+    extensions.snapshot.side_effect = catalog.acquire
+    extensions.bind_observers.side_effect = catalog.bind_observers
+    extensions.driver_scope.side_effect = nullcontext
+    app.bind_extensions(catalog=extensions)
     session = SessionRecord(
         interaction_mode="unattended" if entry == "unattended" else "interactive"
     )

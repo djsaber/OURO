@@ -45,6 +45,17 @@ class RuntimeSessionSnapshot(OuroModel):
     session: SessionRecord
     runs: list[RunRecord] = Field(default_factory=list)
 
+    @property
+    def pending_continuation(self) -> RunRecord | None:
+        return next(
+            (
+                run
+                for run in self.runs
+                if run.history_epoch == self.session.history_epoch and run.has_pending_continuation
+            ),
+            None,
+        )
+
 
 class SessionHistorySnapshot(RuntimeSessionSnapshot):
     """Explicit complete history shared by inspection and observation views."""
@@ -80,7 +91,115 @@ class SessionLock(Protocol):
     def release(self) -> None: ...
 
 
-class SessionRepository(Protocol):
+class ConsistentSessionRead(Protocol):
+    def session_read(self, session_id: str) -> AbstractContextManager[object, bool | None]:
+        """Compose synchronous reads of one Session at a consistent boundary.
+
+        The boundary holds no execution ownership and must end before projection,
+        rendering or asynchronous waiting. SQLite readers do not reserve a writer.
+        """
+        ...
+
+
+class PendingInputReader(ConsistentSessionRead, Protocol):
+    def load_session_record(self, session_id: str) -> SessionRecord: ...
+
+    def load_input(self, session_id: str, input_id: str) -> InputRecord | None: ...
+
+    def load_input_state(self, session_id: str, input_id: str) -> InputState | None: ...
+
+
+class ToolCallStateReader(ConsistentSessionRead, Protocol):
+    """Read active Call state and the binding recorded when an attempt began."""
+
+    def load_tool_call_state(
+        self, session_id: str, identity: ToolCallIdentity
+    ) -> ToolCallState | None: ...
+
+    def load_tool_call_start(
+        self, session_id: str, identity: ToolCallIdentity, attempt: int
+    ) -> ToolCallStart | None: ...
+
+
+class ToolCallReader(ToolCallStateReader, Protocol):
+    """Read the immutable and current facts for one native tool call or batch."""
+
+    def load_tool_call(
+        self, session_id: str, identity: ToolCallIdentity
+    ) -> ToolCallRecord | None: ...
+
+    def load_tool_outcome(
+        self, session_id: str, identity: ToolCallIdentity, attempt: int
+    ) -> ToolOutcomeRecord | None: ...
+
+    def load_message(self, session_id: str, message_id: str) -> MessageRecord: ...
+
+    def load_message_fact(self, session_id: str, message_id: str) -> MessageFact: ...
+
+
+class RunReferenceReader(PendingInputReader, ToolCallStateReader, Protocol):
+    """Scan Session and Run heads and their referenced input and Call facts."""
+
+    def list_sessions(self) -> list[SessionRecord]: ...
+
+    def load_runs(self, session_id: str) -> list[RunRecord]: ...
+
+
+class SessionObservationReader(PendingInputReader, ToolCallReader, Protocol):
+    """Read one consistent revision and the bounded facts needed to project it."""
+
+    def observation_revision(self, session_id: str) -> int:
+        """Current committed fact revision; draft appends have their own cursor."""
+        ...
+
+    def load_run(self, session_id: str, run_id: str) -> RunRecord: ...
+
+    def run_message_end(self, session_id: str, run_id: str) -> int:
+        """Last published message position for this Run, without reading content."""
+        ...
+
+    def load_messages_after(
+        self,
+        session_id: str,
+        *,
+        after_sequence: int,
+        limit: int,
+    ) -> tuple[list[MessageRecord], bool]:
+        """Read only the published message suffix in canonical Session order."""
+        ...
+
+    def load_observation_changes(
+        self,
+        session_id: str,
+        *,
+        after_revision: int,
+        through_revision: int,
+        limit: int,
+        cursor: FactCursor | None = None,
+    ) -> SessionFactPage: ...
+
+    def load_latest_context_header(self, session_id: str) -> ModelRequestHeader | None:
+        """Read request status without materializing provider arguments."""
+        ...
+
+    def load_request_header(
+        self, session_id: str, context_id: str
+    ) -> ModelRequestHeader | None: ...
+
+    def load_compaction(self, session_id: str, compaction_id: str) -> CompactionRecord: ...
+
+    def load_compactions_in_range(
+        self, session_id: str, *, first_sequence: int, last_sequence: int
+    ) -> list[CompactionRecord]: ...
+
+    def load_response_draft(
+        self, session_id: str, context_id: str, *, after_cursor: int = 0, limit: int | None = None
+    ) -> ResponseDraftPage | None:
+        """Read current output; None means this request was replaced or closed."""
+        ...
+
+
+class SessionRepository(SessionObservationReader, RunReferenceReader, Protocol):
     """Canonical Session persistence required by application behavior.
 
     Deployment paths, initialization and disposable catalog maintenance are
@@ -94,29 +213,9 @@ class SessionRepository(Protocol):
 
     def create_session(self, session: SessionRecord) -> None: ...
 
-    def load_input(self, session_id: str, input_id: str) -> InputRecord | None: ...
-
-    def load_input_state(self, session_id: str, input_id: str) -> InputState | None: ...
-
-    def load_tool_call(
-        self, session_id: str, identity: ToolCallIdentity
-    ) -> ToolCallRecord | None: ...
-
-    def load_tool_call_start(
-        self, session_id: str, identity: ToolCallIdentity, attempt: int
-    ) -> ToolCallStart | None: ...
-
-    def load_tool_outcome(
-        self, session_id: str, identity: ToolCallIdentity, attempt: int
-    ) -> ToolOutcomeRecord | None: ...
-
     def tool_outcomes_use_resource(self, session_id: str, resource_id: str) -> bool:
         """Check retained Outcomes during explicit resource deletion, including unpublished ones."""
         ...
-
-    def load_tool_call_state(
-        self, session_id: str, identity: ToolCallIdentity
-    ) -> ToolCallState | None: ...
 
     def commit_tool_outcome(self, outcome: ToolOutcomeRecord) -> ToolOutcomeRecord:
         """Save a certain observation without publishing history or changing Run ownership."""
@@ -225,12 +324,6 @@ class SessionRepository(Protocol):
         """Read the latest fragment's position and channel without materializing its content."""
         ...
 
-    def load_response_draft(
-        self, session_id: str, context_id: str, *, after_cursor: int = 0, limit: int | None = None
-    ) -> ResponseDraftPage | None:
-        """Read current output; None means this request was replaced or closed."""
-        ...
-
     def record_request_retry(
         self, session_id: str, context_id: str, retry: ProviderRetryNotice
     ) -> None:
@@ -255,22 +348,12 @@ class SessionRepository(Protocol):
         self, session_id: str
     ) -> tuple[ModelRequestHeader, RequestManifestRecord] | None: ...
 
-    def load_request_header(
-        self, session_id: str, context_id: str
-    ) -> ModelRequestHeader | None: ...
-
-    def load_latest_context_header(self, session_id: str) -> ModelRequestHeader | None:
-        """Read request status without materializing provider arguments."""
-        ...
-
     def load_session(self, session_id: str) -> SessionSnapshot: ...
 
     def load_runtime_session(
         self,
         session_id: str,
     ) -> RuntimeSessionSnapshot: ...
-
-    def load_session_record(self, session_id: str) -> SessionRecord: ...
 
     def load_session_harness(self, session_id: str) -> tuple[SessionRecord, HarnessVersion]:
         """Read a Session and its referenced Harness at one consistency boundary.
@@ -283,37 +366,7 @@ class SessionRepository(Protocol):
 
     def load_active_compaction(self, session_id: str) -> CompactionRecord | None: ...
 
-    def load_compaction(self, session_id: str, compaction_id: str) -> CompactionRecord: ...
-
     def load_compactions(self, session_id: str) -> list[CompactionRecord]: ...
-
-    def load_compactions_in_range(
-        self, session_id: str, *, first_sequence: int, last_sequence: int
-    ) -> list[CompactionRecord]: ...
-
-    def load_observation_changes(
-        self,
-        session_id: str,
-        *,
-        after_revision: int,
-        through_revision: int,
-        limit: int,
-        cursor: FactCursor | None = None,
-    ) -> SessionFactPage: ...
-
-    def observation_revision(self, session_id: str) -> int:
-        """Current committed fact revision; draft appends have their own cursor."""
-        ...
-
-    def load_messages_after(
-        self,
-        session_id: str,
-        *,
-        after_sequence: int,
-        limit: int,
-    ) -> tuple[list[MessageRecord], bool]:
-        """Read only the published message suffix in canonical Session order."""
-        ...
 
     def load_messages_page(
         self,
@@ -322,10 +375,6 @@ class SessionRepository(Protocol):
         cursor: int = 0,
         limit: int = 100,
     ) -> tuple[list[MessageRecord], int | None]: ...
-
-    def load_message(self, session_id: str, message_id: str) -> MessageRecord: ...
-
-    def load_message_fact(self, session_id: str, message_id: str) -> MessageFact: ...
 
     def load_run_message_counts(self, session_id: str, run_id: str) -> RunMessageCounts:
         """Read counts maintained with message publication, without historical bodies."""
@@ -341,16 +390,16 @@ class SessionRepository(Protocol):
         """Read only one Run's canonical messages, in journal order."""
         ...
 
-    def run_message_end(self, session_id: str, run_id: str) -> int:
-        """Last published message position for this Run, without reading content."""
-        ...
-
     def has_run_messages(self, session_id: str, run_id: str) -> bool:
         """Check retained Run membership without materializing any message body."""
         ...
 
     def has_input_messages(self, session_id: str) -> bool:
         """Whether canonical history retains an input to continue from."""
+        ...
+
+    def run_has_tool_error(self, session_id: str, run_id: str, *, after_revision: int) -> bool:
+        """Whether this Run published a tool error after the given fact revision."""
         ...
 
     def find_last_assistant_message(self, session_id: str, run_id: str) -> MessageRecord | None:
@@ -373,21 +422,15 @@ class SessionRepository(Protocol):
         """Find the canonical receipt of an already consumed queued input."""
         ...
 
-    def load_run(self, session_id: str, run_id: str) -> RunRecord: ...
-
     def load_run_abort(self, session_id: str, run_id: str) -> RunRecord | None:
         """Read the Run only if cancellation is requested or settled; otherwise return None."""
         ...
 
     def load_run_request_counts(self, session_id: str) -> tuple[RunRequestCounts, ...]: ...
 
-    def load_runs(self, session_id: str) -> list[RunRecord]: ...
-
     def load_pending_runs(self, session_id: str) -> list[RunRecord]:
         """Read only current-epoch Runs with execution or settlement work remaining."""
         ...
-
-    def list_sessions(self) -> list[SessionRecord]: ...
 
     def load_resource_references(self, session_id: str) -> list[SessionResourceReference]: ...
 
@@ -412,14 +455,6 @@ class SessionRepository(Protocol):
         self,
         session_id: str,
     ) -> AbstractContextManager[object, None]: ...
-
-    def session_read(self, session_id: str) -> AbstractContextManager[object, bool | None]:
-        """Compose synchronous reads of one Session at a consistent boundary.
-
-        The boundary holds no execution ownership and must end before projection,
-        rendering or asynchronous waiting. SQLite readers do not reserve a writer.
-        """
-        ...
 
     def acquire_session_lock(self, session_id: str, run_id: str) -> SessionLock | None: ...
 

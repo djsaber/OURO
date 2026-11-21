@@ -4,8 +4,10 @@ import asyncio
 from contextlib import suppress
 from contextvars import Context
 from datetime import datetime
+from typing import Protocol
 
 from ouro.application.contracts.execution import RunHandle, RuntimeStatusSnapshot
+from ouro.application.events import RuntimeEventSink, RuntimeEventSinkRegistration
 from ouro.application.supervisor import RuntimeSupervisor
 from ouro.application.tasks.service import TaskService
 from ouro.automation.plugin_tasks import BoundPluginTask
@@ -14,9 +16,11 @@ from ouro.core.base import new_id
 from ouro.core.callbacks import run_blocking
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
+from ouro.core.reasoning import ReasoningRequest
 from ouro.core.redaction import redact_text
+from ouro.core.results import RunResult
 from ouro.core.session_controls import HostSessionInput
-from ouro.core.state import RunRecord
+from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tasks import (
     AgentTaskRun,
     AgentTaskTarget,
@@ -44,17 +48,61 @@ _BOUNDARIES = frozenset(
 )
 
 
+class TaskRunState(Protocol):
+    def load_session_record(self, session_id: str) -> SessionRecord: ...
+    def load_run(self, session_id: str, run_id: str) -> RunRecord: ...
+    def is_session_locked(self, session_id: str) -> bool: ...
+
+
+class TaskRunCommands(Protocol):
+    def create_session(
+        self,
+        *,
+        title: str,
+        _session_id: str,
+        namespace: str,
+        initial_model: str,
+        reasoning_request: ReasoningRequest,
+        workspace: str,
+        approval_mode: SessionApprovalMode,
+        interaction_mode: SessionInteractionMode,
+    ) -> SessionRecord: ...
+
+    def prepare_run(
+        self,
+        run: RunRecord,
+        *,
+        model: str,
+        reasoning: ReasoningRequest,
+        workspace: str,
+        approval_mode: SessionApprovalMode,
+        interaction_mode: SessionInteractionMode,
+        title: str,
+    ) -> RunRecord: ...
+
+    async def abort_run(self, *, session_id: str, run_id: str, reason: str) -> RunResult: ...
+
+    def add_event_sink(self, event_sink: RuntimeEventSink) -> RuntimeEventSinkRegistration: ...
+
+
 class TaskExecutionCoordinator:
     """Dispatch application task inputs and reconcile their canonical Run outcomes."""
 
     def __init__(
-        self, tasks: TaskService, supervisor: RuntimeSupervisor, *, max_concurrency: int = 1
+        self,
+        tasks: TaskService,
+        supervisor: RuntimeSupervisor,
+        *,
+        runs: TaskRunCommands,
+        state: TaskRunState,
+        max_concurrency: int = 1,
     ) -> None:
         if max_concurrency < 1:
             raise ValueError("Task concurrency must be positive")
         self.tasks = tasks
         self.supervisor = supervisor
-        self.runtime = tasks.runtime
+        self.runs = runs
+        self.state = state
         self.max_concurrency = max_concurrency
         self._handles: dict[str, RunHandle] = {}
         self._waiters: dict[str, asyncio.Task[None]] = {}
@@ -62,7 +110,7 @@ class TaskExecutionCoordinator:
         self._plugin_jobs: dict[str, asyncio.Task[TaskExecution]] = {}
         self._sessions: set[str] = set()
         self._due_cursor: tuple[datetime, str] | None = None
-        self._registration = self.runtime.add_event_sink(self._on_event)
+        self._registration = self.runs.add_event_sink(self._on_event)
 
     async def _on_event(self, event: EventRecord) -> None:
         if event.session_id in self._sessions and event.event_type in _BOUNDARIES:
@@ -133,13 +181,13 @@ class TaskExecutionCoordinator:
         existing = False
         if session_id is not None:
             try:
-                session = await run_blocking(self.runtime.store.load_session_record, session_id)
+                session = await run_blocking(self.state.load_session_record, session_id)
             except FileNotFoundError:
                 session_id = None
             else:
                 # A user may be running or approving work in the reusable Session.
                 if session.active_run_id is not None or await run_blocking(
-                    self.runtime.store.is_session_locked, session_id
+                    self.state.is_session_locked, session_id
                 ):
                     return
                 existing = True
@@ -165,7 +213,7 @@ class TaskExecutionCoordinator:
             )
             if not existing:
                 await run_blocking(
-                    lambda: self.runtime.create_session(
+                    lambda: self.runs.create_session(
                         title=config.display_title,
                         _session_id=session_id,
                         namespace="task",
@@ -177,7 +225,7 @@ class TaskExecutionCoordinator:
                     )
                 )
             run = await run_blocking(
-                lambda: self.runtime.prepare_run(
+                lambda: self.runs.prepare_run(
                     RunRecord(
                         run_id=run_id,
                         session_id=session_id,
@@ -219,10 +267,10 @@ class TaskExecutionCoordinator:
         assert isinstance(execution.target, AgentTaskRun)
         with suppress(FileNotFoundError):
             run = await run_blocking(
-                self.runtime.store.load_run, execution.target.session_id, execution.target.run_id
+                self.state.load_run, execution.target.session_id, execution.target.run_id
             )
             if run.status == "queued":
-                await self.runtime.abort_run(
+                await self.runs.abort_run(
                     session_id=run.session_id, run_id=run.run_id, reason="Task dispatch failed"
                 )
         now = self.tasks.clock()
@@ -283,7 +331,7 @@ class TaskExecutionCoordinator:
             else:
                 try:
                     run = await run_blocking(
-                        self.runtime.store.load_run,
+                        self.state.load_run,
                         execution.target.session_id,
                         execution.target.run_id,
                     )
@@ -440,12 +488,12 @@ class TaskExecutionCoordinator:
             return
         with suppress(FileNotFoundError):
             run = await run_blocking(
-                self.runtime.store.load_run,
+                self.state.load_run,
                 execution.target.session_id,
                 execution.target.run_id,
             )
             if run.status not in {"completed", "failed", "aborted"}:
-                await self.runtime.abort_run(
+                await self.runs.abort_run(
                     session_id=run.session_id,
                     run_id=run.run_id,
                     reason=reason,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from contextlib import ExitStack
+from datetime import datetime
 from typing import Any
 
 from ouro.application.events import RuntimeEventRecorder
@@ -112,6 +113,24 @@ def require_current_continuation(
 ) -> None:
     if request is not None and not request.is_current(session):
         raise SessionContinuationSuperseded("Session continuation was consumed or superseded")
+
+
+def _result_metadata(
+    run: RunRecord,
+    final_text: str,
+    had_tool_error: bool,
+    ended_at: datetime,
+    *,
+    through_revision: int | None = None,
+) -> dict[str, Any]:
+    decision: dict[str, Any] = {
+        "ended_at": ended_at.isoformat(),
+        "has_text": bool(final_text),
+        "had_tool_error": had_tool_error,
+    }
+    if through_revision is not None:
+        decision["through_revision"] = through_revision
+    return {**run.metadata, "invocation_result": decision}
 
 
 class RunLifecycle:
@@ -1075,6 +1094,17 @@ class RunLifecycle:
             )
             return updated_run, committed.events
 
+    async def finalize_requested_abort(self, result: RunResult) -> RunResult:
+        """Publish terminal abort only after the active owner has settled its work."""
+
+        session, aborted_run, events = await run_blocking(
+            self.settle_requested_abort,
+            result.run.session_id,
+            result.run.run_id,
+        )
+        await self.events.publish_committed(events)
+        return result.model_copy(update={"session": session, "run": aborted_run})
+
     def settle_requested_abort(
         self,
         session_id: str,
@@ -1184,7 +1214,7 @@ class RunLifecycle:
                     "ended_at": now,
                     "pending_approval_id": None,
                     "active_tool_batch": None,
-                    "metadata": dict(latest_run.metadata),
+                    "metadata": _result_metadata(latest_run, final_text, had_tool_error, now),
                 }
             )
             transition = plan_run_transition(
@@ -1311,7 +1341,13 @@ class RunLifecycle:
                     # Failure must retain committed outcomes until recovery
                     # publishes their canonical tool-result messages.
                     "active_tool_batch": latest_run.active_tool_batch,
-                    "metadata": dict(latest_run.metadata),
+                    "metadata": _result_metadata(
+                        latest_run,
+                        final_text,
+                        had_tool_error,
+                        now,
+                        through_revision=self.store.observation_revision(session.session_id),
+                    ),
                 }
             )
             transition = plan_run_transition(
@@ -1396,7 +1432,14 @@ class RunLifecycle:
                     final_text=final_text,
                     had_tool_error=had_tool_error,
                 )
-            metadata = dict(latest_run.metadata)
+            now = utc_now()
+            metadata = _result_metadata(
+                latest_run,
+                final_text,
+                had_tool_error,
+                now,
+                through_revision=self.store.observation_revision(session.session_id),
+            )
             metadata["pause"] = {
                 "kind": (
                     "context_maintenance"
@@ -1408,7 +1451,6 @@ class RunLifecycle:
                 "reason": reason,
                 "next_model_round": next_model_round,
             }
-            now = utc_now()
             paused_run = latest_run.model_copy(
                 update={
                     "status": "paused",

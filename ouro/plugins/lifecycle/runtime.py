@@ -33,7 +33,7 @@ from ouro.core.tasks import AgentTaskTarget
 from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistry
 from ouro.plugins.builtin import EMPTY_BUILTIN_PLUGIN_REGISTRY, BuiltinPluginRegistry
-from ouro.plugins.catalog.bindings import bind_generation_gate
+from ouro.plugins.catalog.bindings import gate_driver
 from ouro.plugins.catalog.gates import GenerationGate, GenerationLease
 from ouro.plugins.catalog.snapshot import (
     CatalogContributionError,
@@ -765,15 +765,20 @@ class PluginRuntimeResource:
 
             assert expected.implementation is not None
             owner = generations[expected.implementation.plugin_id]
-            prepared = bind_generation_gate(owner.contributions, owner.gate)
             driver = next(
-                (item for item in prepared.run_drivers if item.canonical_id == expected.driver_id),
+                (
+                    item
+                    for item in owner.contributions.run_drivers
+                    if item.canonical_id == expected.driver_id
+                ),
                 None,
             )
             if driver is None or driver.contract_hash != expected.contract_hash:
                 raise ValueError(f"Run driver contract is unavailable: {expected.driver_id}")
             driver = replace(
-                driver, implementation=expected.implementation, dependencies=expected.dependencies
+                gate_driver(driver, owner.gate),
+                implementation=expected.implementation,
+                dependencies=expected.dependencies,
             )
             if self._closed or self.store.read_state() != current:
                 raise PluginStateConflictError("plugin state changed while loading a Run driver")

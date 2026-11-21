@@ -97,7 +97,7 @@ async def test_task_sessions_use_the_composed_session_backend(
         assert type(tasks.repository) is (
             LocalTaskRepository if task_backend == "files" else SQLiteTaskRepository
         )
-        assert tasks.runtime is application.runtime
+        assert tasks.model_reasoning == application.models.model_reasoning
         now = datetime.now(UTC)
         monkeypatch.setattr(tasks, "clock", lambda: now)
         task = await tasks.create(

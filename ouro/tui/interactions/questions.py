@@ -8,6 +8,7 @@ from textual.binding import Binding
 from textual.message import Message
 from textual.widgets import Static
 
+from ouro.application.contracts.tool_activity import PendingInteraction
 from ouro.tui.interactions.forms import QuestionField, QuestionForm
 from ouro.tui.theme import theme_for
 
@@ -31,8 +32,9 @@ class AskUserPanel(Static):
     ]
 
     class Completed(Message):
-        def __init__(self, answer: JsonValue) -> None:
+        def __init__(self, interaction: PendingInteraction | None, answer: JsonValue) -> None:
             super().__init__()
+            self.interaction = interaction
             self.answer = answer
 
     class FreeformRequested(Message):
@@ -45,6 +47,7 @@ class AskUserPanel(Static):
         self.display = False
         self.disabled = True
         self._request: QuestionForm | None = None
+        self._interaction: PendingInteraction | None = None
         self._question_index = 0
         self._cursor = 0
         self._selected: set[int] = set()
@@ -55,9 +58,12 @@ class AskUserPanel(Static):
     def awaiting_freeform(self) -> bool:
         return self._awaiting_freeform
 
-    def show_request(self, request: QuestionForm) -> None:
+    def show_request(
+        self, request: QuestionForm, interaction: PendingInteraction | None = None
+    ) -> None:
         with self.app.batch_update():
             self._request = request
+            self._interaction = interaction
             self._question_index = 0
             self._cursor = 0
             self._selected.clear()
@@ -71,6 +77,7 @@ class AskUserPanel(Static):
         with self.app.batch_update():
             self.display = False
             self._request = None
+            self._interaction = None
             self._awaiting_freeform = False
 
     def resume(self) -> None:
@@ -167,7 +174,7 @@ class AskUserPanel(Static):
             return
         answer = self._request.encode(self._answers)
         self.disabled = True
-        self.post_message(self.Completed(answer))
+        self.post_message(self.Completed(self._interaction, answer))
 
     def _move_question(self, offset: int) -> None:
         request = self._request

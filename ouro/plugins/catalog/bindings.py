@@ -15,7 +15,6 @@ from ouro.core.prompt_policies import (
     PromptPolicyDecision,
     PromptPolicyRegistration,
 )
-from ouro.core.request_providers import RequestProviderRegistration
 from ouro.core.run_drivers import (
     DriverFinished,
     DriverResume,
@@ -32,7 +31,6 @@ from ouro.core.turn_policies import (
     TurnPolicyRegistration,
 )
 from ouro.plugins.catalog.gates import GenerationGate
-from ouro.plugins.contributions.models import PreparedContributionSet
 from ouro.plugins.providers import ProviderRegistration
 from ouro.plugins.registry import PluginCommand, PluginCommandRequest, PluginCommandResult
 from ouro.sdk.plugins import providers as provider_sdk
@@ -40,43 +38,7 @@ from ouro.tools import Tool, ToolExecutionContext
 from ouro.tools.base import ToolExecutionResult
 
 
-def bind_generation_gate(
-    prepared: PreparedContributionSet,
-    gate: GenerationGate,
-) -> PreparedContributionSet:
-    return replace(
-        prepared,
-        tools=tuple(_gated_tool(item, gate) for item in prepared.tools),
-        observers=tuple(_gated_observer(item, gate) for item in prepared.observers),
-        context_providers=tuple(
-            _gated_request_provider(item, gate) for item in prepared.context_providers
-        ),
-        system_prompt_providers=tuple(
-            _gated_request_provider(item, gate) for item in prepared.system_prompt_providers
-        ),
-        commands=tuple(_gated_command(item, gate) for item in prepared.commands),
-        compaction_strategies=tuple(
-            _GatedCompactionStrategy(item, gate) for item in prepared.compaction_strategies
-        ),
-        providers=tuple(_gated_provider(item, gate) for item in prepared.providers),
-        run_drivers=tuple(_gated_driver(item, gate) for item in prepared.run_drivers),
-        continuation_policies=tuple(
-            _gated_continuation(item, gate) for item in prepared.continuation_policies
-        ),
-        prompt_policies=tuple(
-            _gated_prompt_policy(item, gate) for item in prepared.prompt_policies
-        ),
-        turn_policies=tuple(_gated_turn_policy(item, gate) for item in prepared.turn_policies),
-        tool_policies=tuple(_gated_tool_policy(item, gate) for item in prepared.tool_policies),
-        session_controllers=tuple(
-            _gated_session_controller(item, gate) for item in prepared.session_controllers
-        ),
-    )
-
-
-def _gated_provider(
-    registration: ProviderRegistration, gate: GenerationGate
-) -> ProviderRegistration:
+def gate_provider(registration: ProviderRegistration, gate: GenerationGate) -> ProviderRegistration:
     async def stream(
         request: provider_sdk.ProviderRequest, output: provider_sdk.ProviderOutput
     ) -> None:
@@ -90,7 +52,7 @@ def _gated_provider(
     return replace(registration, stream=stream, check=check)
 
 
-def _gated_session_controller(
+def gate_session_controller(
     controller: SessionController,
     gate: GenerationGate,
 ) -> SessionController:
@@ -109,7 +71,7 @@ def _gated_session_controller(
     )
 
 
-def _gated_tool(tool: Tool, gate: GenerationGate) -> Tool:
+def gate_tool(tool: Tool, gate: GenerationGate) -> Tool:
     async def invoke(
         invocation,
         context: ToolExecutionContext,
@@ -138,7 +100,7 @@ def _gated_tool(tool: Tool, gate: GenerationGate) -> Tool:
     )
 
 
-def _gated_observer(
+def gate_observer(
     registration: ObserverRegistration,
     gate: GenerationGate,
 ) -> ObserverRegistration:
@@ -151,17 +113,7 @@ def _gated_observer(
     return replace(registration, handler=invoke)
 
 
-def _gated_request_provider[R: RequestProviderRegistration](
-    registration: R, gate: GenerationGate
-) -> R:
-    async def invoke(call: Any) -> Any:
-        async with gate.invocation():
-            return await _invoke_callback(registration.handler, call)
-
-    return replace(registration, handler=invoke)
-
-
-def _gated_command(
+def gate_command(
     command: PluginCommand,
     gate: GenerationGate,
 ) -> PluginCommand:
@@ -175,7 +127,7 @@ def _gated_command(
 
 
 @dataclass
-class _GatedCompactionStrategy:
+class GatedCompactionStrategy:
     delegate: CompactionStrategy
     gate: GenerationGate
     strategy_id: str = field(init=False)
@@ -195,9 +147,7 @@ class _GatedCompactionStrategy:
             return await self.delegate.compact(request, signal=signal)
 
 
-def _gated_driver(
-    registration: RunDriverRegistration, gate: GenerationGate
-) -> RunDriverRegistration:
+def gate_driver(registration: RunDriverRegistration, gate: GenerationGate) -> RunDriverRegistration:
     async def invoke(
         context: RunDriverContext, resume: DriverResume | None
     ) -> DriverFinished | DriverSuspended:
@@ -207,7 +157,7 @@ def _gated_driver(
     return replace(registration, handler=invoke)
 
 
-def _gated_continuation(
+def gate_continuation(
     registration: ContinuationPolicyRegistration,
     gate: GenerationGate,
 ) -> ContinuationPolicyRegistration:
@@ -218,7 +168,7 @@ def _gated_continuation(
     return replace(registration, handler=invoke)
 
 
-def _gated_tool_policy(
+def gate_tool_policy(
     registration: ToolPolicyRegistration,
     gate: GenerationGate,
 ) -> ToolPolicyRegistration:
@@ -229,7 +179,7 @@ def _gated_tool_policy(
     return replace(registration, handler=invoke)
 
 
-def _gated_prompt_policy(
+def gate_prompt_policy(
     registration: PromptPolicyRegistration,
     gate: GenerationGate,
 ) -> PromptPolicyRegistration:
@@ -240,7 +190,7 @@ def _gated_prompt_policy(
     return replace(registration, handler=invoke)
 
 
-def _gated_turn_policy(
+def gate_turn_policy(
     registration: TurnPolicyRegistration,
     gate: GenerationGate,
 ) -> TurnPolicyRegistration:

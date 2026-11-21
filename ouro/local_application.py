@@ -20,6 +20,7 @@ from ouro.application.plugins.service import PluginService
 from ouro.application.provider_auth.service import ProviderAuthService
 from ouro.application.resources import ResourceService
 from ouro.application.runtime.environment import RuntimeEnvironment
+from ouro.application.runtime.resources import RuntimeRegistries
 from ouro.application.runtime.service import RuntimeService
 from ouro.application.sessions.service import SessionService
 from ouro.application.supervisor import RuntimeSupervisor
@@ -55,17 +56,9 @@ from ouro.config.provider_models import (
 from ouro.config.providers.manager import ProviderConfigManager
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.cancellation import settle_owned_tasks
-from ouro.core.compaction import CompactionStrategyRegistry
 from ouro.core.context import ContextBuilder
-from ouro.core.context_providers import ContextProviderRegistry
-from ouro.core.continuations import RunContinuationRegistry
 from ouro.core.errors import ConfigError, OuroError
-from ouro.core.observers import ObserverRegistry
-from ouro.core.prompt_policies import PromptPolicyRegistry
 from ouro.core.session_ports import SessionStore
-from ouro.core.system_prompts import SystemPromptRegistry
-from ouro.core.tool_policies import ToolPolicyRegistry
-from ouro.core.turn_policies import TurnPolicyRegistry
 from ouro.deployment import (
     SessionBackend,
     TaskBackend,
@@ -168,6 +161,9 @@ class LocalApplication:
         task_scheduler: TaskScheduler | None = None,
     ) -> None:
         self.runtime = runtime
+        self.sessions = runtime.sessions
+        self.resources = runtime.resources
+        self.models = runtime.session_models
         self.provider_auth = runtime.provider_auth
         self.mcp = mcp
         self.plugin_runtime = plugin_runtime
@@ -262,15 +258,7 @@ class LocalApplication:
         ensure_home_available(configured_home)
         plugin_runtime, plugins = _build_local_plugin_runtime(
             configured_home,
-            tools=runtime.tools,
-            observers=runtime.observers,
-            context_providers=runtime.context_providers,
-            system_prompt_providers=runtime.system_prompt_providers,
-            compaction=runtime.compaction_strategies,
-            continuations=runtime.continuations,
-            prompt_policies=runtime.prompt_policies,
-            turn_policies=runtime.turn_policies,
-            tool_policies=runtime.tool_policies,
+            registries=runtime.registries,
             skills=runtime.skills,
             session_store=runtime.store,
             usage_service=runtime.usage,
@@ -308,11 +296,13 @@ class LocalApplication:
             if task_backend == "files"
             else SQLiteTaskRepository(configured_home)
         )
-        tasks = TaskService(task_repository, runtime, plugin_tasks=plugin_runtime)
+        tasks = TaskService(
+            task_repository, runtime.session_models.model_reasoning, plugin_tasks=plugin_runtime
+        )
         plugin_runtime.bind_task_service(tasks)
         task_scheduler = TaskScheduler(
             tasks,
-            TaskExecutionCoordinator(tasks, supervisor),
+            TaskExecutionCoordinator(tasks, supervisor, runs=runtime, state=runtime.store),
             refresh_environment=plugin_runtime.synchronize,
             owned_services=plugin_runtime,
         )
@@ -513,15 +503,7 @@ async def open_local_plugins(
     usage = build_local_usage_service(root)
     runtime, service = _build_local_plugin_runtime(
         root,
-        tools=ToolRegistry(),
-        observers=ObserverRegistry(),
-        context_providers=ContextProviderRegistry(),
-        system_prompt_providers=SystemPromptRegistry(),
-        compaction=CompactionStrategyRegistry(),
-        continuations=RunContinuationRegistry(),
-        prompt_policies=PromptPolicyRegistry(),
-        turn_policies=TurnPolicyRegistry(),
-        tool_policies=ToolPolicyRegistry(),
+        registries=RuntimeRegistries(),
         session_store=session_services._store,
         usage_service=usage,
     )
@@ -585,15 +567,7 @@ async def open_local_agent_definitions(
         tools.register(tool)
     plugin_runtime, _ = _build_local_plugin_runtime(
         root,
-        tools=tools,
-        observers=ObserverRegistry(),
-        context_providers=ContextProviderRegistry(),
-        system_prompt_providers=SystemPromptRegistry(),
-        compaction=CompactionStrategyRegistry(),
-        continuations=RunContinuationRegistry(),
-        prompt_policies=PromptPolicyRegistry(),
-        turn_policies=TurnPolicyRegistry(),
-        tool_policies=ToolPolicyRegistry(),
+        registries=RuntimeRegistries(tools=tools),
         session_store=session_services._store,
         usage_service=build_local_usage_service(root),
     )
@@ -834,15 +808,7 @@ def resolve_plugin_credential(reference: str) -> str:
 def _build_local_plugin_runtime(
     home: Path,
     *,
-    tools: ToolRegistry,
-    observers: ObserverRegistry,
-    context_providers: ContextProviderRegistry,
-    system_prompt_providers: SystemPromptRegistry,
-    compaction: CompactionStrategyRegistry,
-    continuations: RunContinuationRegistry,
-    prompt_policies: PromptPolicyRegistry,
-    turn_policies: TurnPolicyRegistry,
-    tool_policies: ToolPolicyRegistry,
+    registries: RuntimeRegistries,
     skills: tuple[SkillMetadata, ...] = (),
     session_store: SessionStore | None,
     usage_service: UsageService | None,
@@ -852,16 +818,16 @@ def _build_local_plugin_runtime(
     commands = PluginCommandRegistry()
     runtime = PluginRuntimeResource(
         store,
-        tools=tools,
-        observers=observers,
-        context_providers=context_providers,
-        system_prompt_providers=system_prompt_providers,
+        tools=registries.tools,
+        observers=registries.observers,
+        context_providers=registries.request_providers.observations,
+        system_prompt_providers=registries.request_providers.system_prompts,
         commands=commands,
-        compaction=compaction,
-        continuations=continuations,
-        prompt_policies=prompt_policies,
-        turn_policies=turn_policies,
-        tool_policies=tool_policies,
+        compaction=registries.compaction,
+        continuations=registries.continuations,
+        prompt_policies=registries.prompt_policies,
+        turn_policies=registries.turn_policies,
+        tool_policies=registries.tool_policies,
         credential_resolver=resolve_plugin_credential,
         builtin_plugins=LOCAL_BUILTIN_PLUGINS,
         base_skills=skills,

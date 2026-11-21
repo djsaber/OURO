@@ -154,7 +154,7 @@ async def test_endpoint_menu_remains_available_without_a_resolvable_selection(
         def unavailable(*_args):
             raise ConfigError("default model is unavailable")
 
-        monkeypatch.setattr(application.runtime, "current_model", unavailable)
+        monkeypatch.setattr(application.models, "current_model", unavailable)
         menu = ChoiceScreen(title="ACTIONS", placeholder="Choose an action…", choices=())
         app.push_screen(menu)
         await pilot.pause()

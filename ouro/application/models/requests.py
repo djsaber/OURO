@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from time import monotonic
 from typing import Protocol
 
+from ouro.application.events import RuntimeEventRecorder
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import Metadata, utc_now
 from ouro.core.billing import UsagePurpose
@@ -63,12 +64,6 @@ class RequestSettlementRecorder(Protocol):
     ) -> None: ...
 
 
-class ModelRequestResolver(Protocol):
-    def __call__(
-        self, *, session: SessionRecord, run: RunRecord, model_round: int
-    ) -> tuple[SessionRecord, RuntimeAdapter]: ...
-
-
 class UsageRecorder(Protocol):
     def __call__(
         self,
@@ -94,33 +89,20 @@ class ModelRoundCommitter(Protocol):
     ) -> tuple[RunRecord, tuple[EventRecord, ...]]: ...
 
 
-class ModelEventEmitter(Protocol):
-    async def __call__(
-        self,
-        run: RunRecord,
-        *,
-        event_type: EventType,
-        payload: Metadata,
-        stream: ResponseStreamPosition | None = None,
-    ) -> None: ...
-
-
 @dataclass(frozen=True)
 class ModelRequestPorts:
     prepare_context: ContextPreparer
     record_usage: UsageRecorder
-    emit: ModelEventEmitter
+    events: RuntimeEventRecorder
     record_settlement: RequestSettlementRecorder
     commit_model_request: ModelRoundCommitter
-    publish_committed: Callable[[Sequence[EventRecord]], Awaitable[None]]
     append_draft: Callable[[str, str, ResponseDraftChunk], int]
     record_retry: Callable[[str, str, ProviderRetryNotice], None]
-    resolve_model_request: ModelRequestResolver | None = None
+    resolve_adapter: Callable[[str], tuple[SessionRecord, RuntimeAdapter]] | None = None
     begin_model_round: ModelRoundStarter | None = None
     # Prepare request settings before preflight and return the effective Run budget.
     prepare_configuration: Callable[[RunRecord], Awaitable[RunBudgetPolicy]] | None = None
     shared_budget_reason: Callable[[RunRecord, int], Awaitable[RunPauseReason | None]] | None = None
-    notify_provider_stream_start: Callable[[], None] | None = None
     run_usage: Callable[[str, str], RunUsageTotals | None] | None = None
 
 
@@ -138,7 +120,9 @@ class RunModelRequests:
         tool_definitions: Callable[[], list[ToolDefinition]],
         ports: ModelRequestPorts,
         run_budget: RunBudgetPolicy | None = None,
+        on_stream_start: Callable[[], None] | None = None,
     ) -> None:
+        self.on_stream_start = on_stream_start
         self.adapter = adapter
         self.tool_definitions = tool_definitions
         self.ports = ports
@@ -162,12 +146,9 @@ class RunModelRequests:
                 run = await self.ports.begin_model_round(
                     session=session, run=run, model_round=model_round
                 )
-            if self.ports.resolve_model_request is not None:
+            if self.ports.resolve_adapter is not None:
                 session, adapter = await run_blocking(
-                    self.ports.resolve_model_request,
-                    session=session,
-                    run=run,
-                    model_round=model_round,
+                    self.ports.resolve_adapter, session.session_id
                 )
                 run = run.model_copy(update={"model": adapter.model.model_id})
             definitions = self.tool_definitions()
@@ -231,7 +212,7 @@ class RunModelRequests:
         if run.abort_requested or run.status not in ACTIVE_RUN_STATUSES:
             request.abort_signal.abort("Run no longer owns the model request")
         if events:
-            await self.ports.publish_committed(events)
+            await self.ports.events.publish_committed(events)
 
         provider_done_seen = False
 
@@ -288,7 +269,7 @@ class RunModelRequests:
             publication = _model_event(progress, context_id=context_id)
             if publication is not None:
                 event_type, payload = publication
-                await self.ports.emit(
+                await self.ports.events.emit(
                     run,
                     event_type=event_type,
                     payload={**payload, "round": model_round, "turn_id": request.turn_id},
@@ -304,7 +285,7 @@ class RunModelRequests:
             signal=request.abort_signal,
             on_event=observe,
             on_provider_done=settle_provider_done,
-            on_stream_start=self.ports.notify_provider_stream_start,
+            on_stream_start=self.on_stream_start,
             started=started,
         )
         if not provider_done_seen:

@@ -1170,7 +1170,9 @@ async def test_later_auto_compaction_is_incremental(tmp_path, with_media) -> Non
 
 
 @pytest.mark.asyncio
-async def test_manual_compaction_uses_same_pipeline_without_adding_messages(tmp_path) -> None:
+async def test_manual_compaction_uses_same_pipeline_without_adding_messages(
+    tmp_path, monkeypatch
+) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Manual summary")
@@ -1192,6 +1194,13 @@ async def test_manual_compaction_uses_same_pipeline_without_adding_messages(tmp_
     )
     before = store.load_session(session.session_id)
 
+    load_history = runtime.context_preparation.load_history
+
+    def replace_prompt_during_read(session_id):
+        runtime.system_prompt_providers.replace_owner("test", ())
+        return load_history(session_id)
+
+    monkeypatch.setattr(runtime.context_preparation, "load_history", replace_prompt_during_read)
     result = await runtime.compact(session_id=session.session_id)
     after = store.load_session(session.session_id)
 

@@ -97,10 +97,10 @@ text, reasoning, tool, interaction, run, compaction, lifecycle, agent, unknown
 ## Session snapshot 与已确认位置
 
 `SessionObservationSnapshot` 包含 Session、选定消息窗口、相关 Run 与摘要、待处理输入、当前工具与交互、
-当前请求小头、有效上下文指标和当前 Draft。`events` 只承载当前 Draft 的显示分片，不包含历史通知。
+当前请求小头、有效上下文指标和当前 Draft。待回答工具的交互视图携带 Run、批次、Call 和当前提问修订。宿主可将这组身份随回答交还给执行入口。`events` 只承载当前 Draft 的显示分片，不包含历史通知。
 `position` 包含事实修订号、消息位置和草稿偏移；分页时附带仅在内存使用的事实页位置。
 
-快照与后续事实页都在 `SessionRepository.session_read` 内取得一致数据。近期窗口和观察位置共用本次读取的 Session 头。
+快照与后续事实页都在同一后端实例的 `session_read` 内取得一致数据。事实页通过 `SessionObservationReader` 读取有界变更、消息和工具事实。草稿投影在该读事务内调用已绑定的 `load_response_draft`。近期窗口和观察位置共用本次读取的 Session 头。
 SQLite 使用短读事务，Files 使用短会话锁；
 嵌套查询共享资源寿命。存储边界在通知脱敏、界面排版及异步等待前释放。观察不启动执行、申请 Run 所有权或恢复任务。
 

@@ -7,7 +7,7 @@ from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from typing import Protocol
 
 from ouro.core.compaction import CompactionStrategyRegistry
-from ouro.core.context_providers import ContextProviderRegistry
+from ouro.core.context_providers import RequestProviders
 from ouro.core.continuations import RunContinuationRegistry
 from ouro.core.observers import Observation, ObserverRegistry
 from ouro.core.prompt_policies import PromptPolicyRegistry
@@ -15,7 +15,6 @@ from ouro.core.run_drivers import RunDriverBinding, RunDriverContext, RunDriverR
 from ouro.core.session_controller_registry import SessionControllerRegistry
 from ouro.core.session_controls import SessionControlState
 from ouro.core.state import RunContinuationControllerRef
-from ouro.core.system_prompts import SystemPromptRegistry
 from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistry
 from ouro.skills import SkillMetadata
@@ -42,10 +41,7 @@ class RuntimeCapabilities(Protocol):
     def observers(self) -> ObserverRegistry: ...
 
     @property
-    def context_providers(self) -> ContextProviderRegistry: ...
-
-    @property
-    def system_prompt_providers(self) -> SystemPromptRegistry: ...
+    def request_providers(self) -> RequestProviders: ...
 
     @property
     def compaction(self) -> CompactionStrategyRegistry: ...

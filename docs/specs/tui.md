@@ -433,7 +433,7 @@ Provider 子菜单的 `Authentication` 入口通过 `TuiController.provider_auth
 ## 工具审批与 AskUser
 
 审批、AskUser 和 resumable plugin tool 使用 composer 上方的专用交互 surface。面板必须显示明确的调用身份、
-问题/选项或批准范围，并把结果路由到精确 Session/Run/ToolCall/request identity。
+问题、选项或批准范围。问答与计划确认面板随提交传递显示时的 Session、Run、批次、Call 与提问修订。同一 Call 再次提问时生成新的修订。旧面板已经发出的提交无法回答新问题。
 
 - approval 与 user input 是不同状态，不得共用含糊布尔值；
 - AskUser 支持稳定问题 id、选项说明、多选和 Host 提供的自由输入；
@@ -486,6 +486,7 @@ Session 操作。root interaction inbox 中的 child 审批与 AskUser 仍由 co
 历史加载不按排版进度向用户回放旧消息。冷加载、增量、宽度与主题变化共用一个渲染 worker；
 迟到结果必须匹配内容版本、条目、宽度和主题，不能写入已切换的视图。
 取消或切换不补做旧目标剩余排版。缓存保留已发布的兼容内容，重进后只准备缺失部分，再一次并入显示。
+重进时，历史组件按已恢复的行数参与当前帧布局，正文和阅读位置一同恢复。
 进入执行中的 Session 时，即使任务输入因框架消息显示设置隐藏，也必须呈现工具前已产生的 assistant 内容。
 切换 Session 时，缓存历史与其保存的滚动位置共同恢复；首次可见帧不得混用上一 Session 的滚动位置。
 最多保留三个非当前会话的历史缓存，窗口起点随缓存保留；同代次新消息不改变已有起点，代次变化使缓存失效。

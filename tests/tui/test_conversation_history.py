@@ -494,6 +494,30 @@ async def test_wait_until_rendered_recovers_after_a_deferred_layout_miss(
         assert "first message" in app.history.rendered_text
 
 
+async def test_restored_rows_replace_the_empty_history_height_in_the_same_frame() -> None:
+    app = _HistoryApp()
+    entries = tuple(TranscriptEntry(kind="user", text=f"message {i}") for i in range(40))
+    async with app.run_test(size=(100, 30)) as pilot:
+        app.screen.styles.overflow_y = "hidden"
+        history = app.history
+        history.styles.height = "auto"
+        history.styles.min_height = 0
+        history.styles.overflow = ("hidden", "hidden")
+        await history.load(entries)
+        await pilot.pause()
+        state = history.take_state()
+        await pilot.pause()
+
+        # A welcome-to-Session layout can measure the visible buffer before its rows arrive.
+        history.display = True
+        app.screen._refresh_layout()
+        assert history.region.height == 0
+        await history.load(entries, reusable_state=state, wait_for_render=False)
+        await pilot.pause()
+
+        assert history.region.height == len(history.lines) > 0
+
+
 @pytest.mark.asyncio
 async def test_same_session_history_reuse_renders_only_the_changed_suffix(
     monkeypatch: pytest.MonkeyPatch,

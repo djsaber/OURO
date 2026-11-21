@@ -647,6 +647,7 @@ class ToolCallCoordinator:
                                 "turn_id": batch.turn_id,
                                 "tool_call_id": completed_call.request.id,
                                 "tool_name": completed_call.request.name,
+                                "input_revision": completed_call.input_revision,
                                 "request": completed_call.input_request.data,
                                 "source_index": completed_call.request.source_index,
                                 **_interaction_tool_identity(completed_call.invocation),
@@ -773,6 +774,7 @@ class ToolCallCoordinator:
                             "tool_call_id": resolving_call.request.id,
                             "tool_name": resolving_call.request.name,
                             "request": request.data,
+                            "input_revision": resolving_call.input_revision,
                             "source_index": resolving_call.request.source_index,
                             "interaction_mode": session.interaction_mode,
                             "will_suspend": False,
@@ -1538,6 +1540,7 @@ class ToolCallCoordinator:
                         "turn_id": turn_id,
                         "tool_call_id": request.id,
                         "tool_name": request.name,
+                        "input_revision": 0,
                         "request": outcome.input_request.data
                         if outcome.input_request is not None
                         else None,

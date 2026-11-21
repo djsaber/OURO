@@ -203,7 +203,7 @@ async def test_sdk_agent_plan_requires_sessions_permission_and_records_native_ru
     receipt = await settle(tasks, execution, created["task_id"])
     assert receipt.status == "completed" and receipt.owner_id == PLUGIN
     assert isinstance(receipt.target, AgentTaskRun)
-    run = tasks.runtime.store.load_run(receipt.target.session_id, receipt.target.run_id)
+    run = execution.state.load_run(receipt.target.session_id, receipt.target.run_id)
     assert run.status == "completed" and run.trigger == "scheduled"
     assert run.initiator_id == f"ouro.tasks/{created['task_id']}"
     history = await schedule(plugins, "executions", task_id=created["task_id"])
@@ -271,7 +271,7 @@ async def test_sdk_can_schedule_only_own_or_declared_dependency_services(host, t
 async def test_disabling_owner_wakes_scheduler_and_interrupts_its_agent_run(host, tmp_path, kind):
     tasks, execution, plugins, service, clock = host
     provider = SelectivelyBlockingProvider()
-    tasks.runtime.adapter.provider = provider
+    execution.supervisor.runtime.adapter.provider = provider
     await service.reload(PLUGIN, package(tmp_path, kind, version="1.1.0", sessions=True))
     created = await schedule(plugins, "create", configuration=agent_configuration(tmp_path))
     task_id = created["task_id"]
@@ -283,7 +283,7 @@ async def test_disabling_owner_wakes_scheduler_and_interrupts_its_agent_run(host
     assert tasks.changed.is_set()
     receipt = await settle(tasks, execution, task_id)
     assert receipt.status == "interrupted" and receipt.owner_id == PLUGIN
-    run = tasks.runtime.store.load_run(receipt.target.session_id, receipt.target.run_id)
+    run = execution.state.load_run(receipt.target.session_id, receipt.target.run_id)
     assert run.metadata["abort_reason"] == "Task owner is unavailable"
     clock[0] += timedelta(hours=1)
     await execution.tick()

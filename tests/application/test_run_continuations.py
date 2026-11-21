@@ -993,10 +993,12 @@ async def test_staged_settlement_replay_does_not_reevaluate_or_release_new_activ
 @pytest.mark.asyncio
 @pytest.mark.parametrize("policy_available", [True, False])
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
+@pytest.mark.parametrize("targeted", [False, True], ids=["maintenance", "target"])
 async def test_runtime_startup_reconciliation_replays_pending_settlement_without_running(
     tmp_path,
     policy_available,
     backend,
+    targeted,
     monkeypatch,
 ) -> None:
     store = (
@@ -1067,14 +1069,24 @@ async def test_runtime_startup_reconciliation_replays_pending_settlement_without
         pass
 
     monkeypatch.setattr(runtime.event_recorder, "publish_committed", drop_notifications)
-    first = await runtime.reconcile_pending_run_continuations()
-    second = await runtime.reconcile_pending_run_continuations()
+    if targeted:
+        recovered = await runtime.reconcile_execution_session(session.session_id)
+        assert recovered.pending_continuation is None
+        assert len(recovered.session.pending_input_ids) == 1
+
+        async def unexpected_scan(_session_id):
+            pytest.fail("a recovered snapshot with no pending continuation was scanned again")
+
+        monkeypatch.setattr(runtime, "reconcile_pending_run_continuations", unexpected_scan)
+        again = await runtime.reconcile_execution_session(session.session_id)
+        assert again.session.pending_input_ids == recovered.session.pending_input_ids
+    else:
+        assert await runtime.reconcile_pending_run_continuations() == (run.run_id,)
+        assert await runtime.reconcile_pending_run_continuations() == ()
 
     restored = store.load_run(session.session_id, run.run_id)
     queued = runtime.queued_inputs.eligible(store.load_runtime_session(session.session_id))
     events = recorded_events(session.session_id)
-    assert first == (run.run_id,)
-    assert second == ()
     assert policy_calls == 0
     assert provider.calls == 0
     assert restored.continuation is not None
@@ -1089,13 +1101,16 @@ async def test_runtime_startup_reconciliation_replays_pending_settlement_without
 
 
 @pytest.mark.asyncio
-async def test_snapshot_recovery_failure_keeps_continuation_retryable(tmp_path, caplog) -> None:
+async def test_snapshot_recovery_failure_keeps_continuation_retryable(
+    tmp_path, caplog, monkeypatch
+) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     plugin_id = "dev.example.owner"
     activation = _activation(plugin_id, "mode")
     session = SessionRecord(controls=SessionControlState(revision=1, activations=[activation]))
     store.create_session(session)
+    before_wait = store.load_runtime_session(session.session_id)
     controller_ref = _controller(plugin_id, "boundary", "gen-owner").model_copy(
         update={
             "active_when_controller_id": activation.controller_id,
@@ -1112,6 +1127,7 @@ async def test_snapshot_recovery_failure_keeps_continuation_retryable(tmp_path, 
         continuation=RunContinuationCheckpoint(controllers=[controller_ref]),
     )
     store.save_run(run)
+    store.save_session(session.model_copy(update={"last_run_id": run.run_id}))
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
@@ -1145,6 +1161,13 @@ async def test_snapshot_recovery_failure_keeps_continuation_retryable(tmp_path, 
     assert "catalog storage is unavailable" in caplog.text
     with pytest.raises(SessionBusyError, match="unresolved terminal Run continuation"):
         await runtime.run("Do not start a newer Run", session_id=session.session_id)
+
+    async def observed_before_wait(_session_id):
+        return before_wait
+
+    monkeypatch.setattr(runtime, "_input_target", observed_before_wait)
+    with pytest.raises(SessionBusyError, match="unresolved terminal Run continuation"):
+        await runtime.run("Compete with the terminal boundary", session_id=session.session_id)
     await runtime.close()
 
 

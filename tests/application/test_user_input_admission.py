@@ -7,10 +7,23 @@ import pytest
 
 from ouro.application.contracts.execution import ShutdownPolicy
 from ouro.application.inputs.requests import UserInputRequest
+from ouro.application.runtime.service import RuntimeService
 from ouro.application.supervisor import RuntimeSupervisor
+from ouro.cli.run import _run_exit_code
+from ouro.core.adapter import RuntimeAdapter
+from ouro.core.errors import PromptRejectedError
 from ouro.core.messages import MessageRecord
-from ouro.core.provider import ProviderStreamEvent
+from ouro.core.prompt_policies import (
+    PromptPolicyDecision,
+    PromptPolicyRegistration,
+    PromptPolicyRegistry,
+)
+from ouro.core.provider import ModelMetadata, ProviderStreamEvent, Usage
+from ouro.local_application import build_local_usage_service
 from ouro.providers.faux import FauxProvider
+from ouro.sessions.backends.files.store import LocalSessionStore
+from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
+from ouro.tools import ToolRegistry
 from tests.tui.test_tasks import streaming_application
 
 
@@ -37,6 +50,188 @@ class HeldProvider:
             self.closed.set()
 
 
+@pytest.fixture(params=[LocalSessionStore, SQLiteSessionStore], ids=["files", "sqlite"])
+def open_input_runtime(tmp_path, request):
+    def open_runtime(provider, **options):
+        store_type = request.param
+        store = store_type(
+            tmp_path / "sessions.db" if store_type is SQLiteSessionStore else tmp_path
+        )
+        store.initialize()
+        return RuntimeService(
+            store=store,
+            adapter=RuntimeAdapter(provider, ModelMetadata(model_id="faux", provider_id="faux")),
+            tools=ToolRegistry(),
+            **options,
+        )
+
+    return open_runtime
+
+
+async def test_reopened_first_input_rechecks_current_policy(open_input_runtime):
+    user_input = UserInputRequest(prompt="run after maintenance")
+    ids = {"new_session_id": user_input.new_session_id, "input_id": user_input.input_id}
+    decisions = []
+
+    def policies(action):
+        registry = PromptPolicyRegistry()
+
+        def decide(call):
+            decisions.append((action, call.prospective_run_id))
+            return PromptPolicyDecision(
+                action=action, reason="maintenance" if action == "deny" else ""
+            )
+
+        registry.register(PromptPolicyRegistration("ouro.host", "maintenance", decide))
+        return registry
+
+    def interrupt():
+        raise InterruptedError("closed after receipt")
+
+    async with open_input_runtime(FauxProvider(), prompt_policies=policies("allow")) as first:
+        with pytest.raises(InterruptedError, match="closed after receipt"):
+            await first.run(user_input.prompt, **ids, on_input_accepted=interrupt)
+    async with open_input_runtime(FauxProvider(), prompt_policies=policies("deny")) as reopened:
+        with pytest.raises(PromptRejectedError):
+            await reopened.run(user_input.prompt, **ids)
+        assert (
+            reopened.store.load_input_state(user_input.new_session_id, user_input.input_id).status
+            == "pending"
+        )
+        assert reopened.store.load_runs(user_input.new_session_id) == []
+        assert not reopened.store.has_input_messages(user_input.new_session_id)
+    async with open_input_runtime(FauxProvider(), prompt_policies=policies("allow")) as allowed:
+        result = await allowed.run(user_input.prompt, **ids)
+        assert result.run.status == "completed"
+        assert decisions == [(action, result.run.run_id) for action in ("allow", "deny", "allow")]
+        await allowed.run("new first input")
+        assert len(decisions) == 4
+
+
+async def test_receipt_retry_waits_for_its_own_fifo_input(open_input_runtime):
+    async with open_input_runtime(FauxProvider()) as runtime:
+        session_id = runtime.create_session().session_id
+        for input_id in ("first", "second"):
+            await runtime.accept_user_input(
+                UserInputRequest(session_id=session_id, input_id=input_id, prompt=input_id)
+            )
+        result = await runtime.run("second", session_id=session_id, input_id="second")
+        runs = runtime.store.load_runs(session_id)
+        assert len(runs) == 2
+        assert [
+            runtime.store.find_queued_input_message(session_id, key).run_id
+            for key in ("first", "second")
+        ] == [r.run_id for r in runs]
+        assert result.run == runs[1]
+
+
+async def test_failed_receipt_restores_diagnostic_usage_and_exit_code(open_input_runtime, tmp_path):
+    provider = FauxProvider(
+        event_batches=[
+            [
+                ProviderStreamEvent.from_tool_call(
+                    {"id": "call_missing", "name": "Missing", "arguments": {}}
+                ),
+                ProviderStreamEvent(type="done", usage=Usage(input_tokens=5, output_tokens=2)),
+            ],
+            [
+                ProviderStreamEvent(
+                    type="error", error="Unavailable.", error_code="authentication_required"
+                )
+            ],
+            [
+                ProviderStreamEvent(type="text_delta", text="back online"),
+                ProviderStreamEvent(type="done"),
+            ],
+        ]
+    )
+    async with open_input_runtime(
+        provider, usage_service=build_local_usage_service(tmp_path)
+    ) as runtime:
+        ids = {"session_id": runtime.create_session().session_id, "input_id": "failed-input"}
+        first = await runtime.run("use the tool", **ids)
+        assert first.run.status == "failed" and _run_exit_code(first) == 6
+        assert first.usage["input_tokens"] == 5 and first.usage["output_tokens"] == 2
+        assert first.error_code == "authentication_required" and first.had_tool_error
+    async with open_input_runtime(
+        provider, usage_service=build_local_usage_service(tmp_path)
+    ) as reopened:
+        repeated = await reopened.run("use the tool", **ids)
+        assert (
+            repeated.run,
+            repeated.final_text,
+            repeated.had_tool_error,
+            repeated.error_code,
+            repeated.usage,
+        ) == (first.run, first.final_text, first.had_tool_error, first.error_code, first.usage)
+        assert _run_exit_code(repeated) == 6 and provider._stream_count == 2
+        # Current-format Runs without a recorded invocation decision retain native evidence.
+        persisted = reopened.store.load_run(ids["session_id"], first.run.run_id)
+        metadata = dict(persisted.metadata)
+        metadata.pop("invocation_result")
+        reopened.store.save_run(persisted.model_copy(update={"metadata": metadata}))
+        retained = await reopened.run("use the tool", **ids)
+        assert (
+            retained.final_text,
+            retained.had_tool_error,
+            retained.error_code,
+            retained.usage,
+        ) == (first.final_text, first.had_tool_error, first.error_code, first.usage)
+        # A subsequent invocation can finish the same Run without a tool error.
+        resumed = await reopened.continue_run(session_id=ids["session_id"])
+        assert resumed.run.run_id == first.run.run_id and not resumed.had_tool_error
+        assert resumed.run.status == "completed"
+        # A writer can preserve the preceding terminal metadata when it continues the Run.
+        reopened.store.save_run(
+            resumed.run.model_copy(
+                update={
+                    "metadata": {
+                        **resumed.run.metadata,
+                        "invocation_result": first.run.metadata["invocation_result"],
+                    }
+                }
+            )
+        )
+        after_resume = await reopened.run("use the tool", **ids)
+        assert (after_resume.final_text, after_resume.had_tool_error, after_resume.usage) == (
+            resumed.final_text,
+            resumed.had_tool_error,
+            resumed.usage,
+        )
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_supervisor_wait_returns_the_submitted_input_among_pending_units(tmp_path, backend):
+    held = HeldProvider()
+    app = streaming_application(tmp_path, held, backend=backend)
+    app.supervisor.max_concurrency = 1
+    async with app:
+        blocker = await app.supervisor.submit_user_input(UserInputRequest(prompt="occupy permit"))
+        try:
+            assert await asyncio.wait_for(held.started.get(), 5) == "occupy permit"
+            session_id = app.runtime.create_session().session_id
+            submissions = [
+                await app.supervisor.submit_user_input(
+                    UserInputRequest(session_id=session_id, input_id=key, prompt=key)
+                )
+                for key in ("a", "b")
+            ]
+            pending = app.runtime.store.load_session_record(session_id)
+            assert pending.active_run_id is None and pending.pending_input_ids == ("a", "b")
+        finally:
+            held.release.set()
+            await blocker.wait()
+        first, second = await asyncio.wait_for(
+            asyncio.gather(*(submission.wait() for submission in submissions)), 10
+        )
+        assert first.run.run_id != second.run.run_id
+        for key, result in zip(("a", "b"), (first, second), strict=True):
+            assert (
+                app.runtime.store.find_queued_input_message(session_id, key).run_id
+                == result.run.run_id
+            )
+
+
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
 async def test_first_user_run_preserves_entry_origin(tmp_path, backend):
     async with streaming_application(tmp_path, FauxProvider(), backend=backend) as app:
@@ -46,6 +241,57 @@ async def test_first_user_run_preserves_entry_origin(tmp_path, backend):
         for result, origin in ((direct, "user"), (queued, "follow_up")):
             run = app.runtime.store.load_run(result.session.session_id, result.run.run_id)
             assert (run.origin, run.trigger, run.status) == (origin, "user", "completed")
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_direct_retry_finds_the_winning_commit_after_admission(
+    tmp_path, backend, monkeypatch
+):
+    async with streaming_application(tmp_path, FauxProvider(), backend=backend) as app:
+        runtime = app.runtime
+        session = runtime.create_session()
+        destination = {"session_id": session.session_id, "input_id": "same"}
+        entered, resume = asyncio.Event(), asyncio.Event()
+        load_target = runtime._input_target
+
+        async def wait_after_lookup(session_id):
+            entered.set()
+            await resume.wait()
+            return await load_target(session_id)
+
+        with monkeypatch.context() as delayed:
+            delayed.setattr(runtime, "_input_target", wait_after_lookup)
+            retry = asyncio.create_task(runtime.run("one input", **destination))
+            await asyncio.wait_for(entered.wait(), 5)
+        try:
+            winner = await runtime.run("one input", **destination)
+        finally:
+            resume.set()
+        repeated = await retry
+        assert (repeated.run.run_id, repeated.final_text) == (winner.run.run_id, winner.final_text)
+        assert len(runtime.store.load_runs(session.session_id)) == 1
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_direct_first_input_retry_shares_the_running_owner(tmp_path, backend):
+    provider = HeldProvider()
+    async with streaming_application(tmp_path, provider, backend=backend) as app:
+        runtime = app.runtime
+        request = UserInputRequest(prompt="first")
+        ids = {"new_session_id": request.new_session_id, "input_id": request.input_id}
+        task = asyncio.create_task(runtime.run(request.prompt, **ids))
+        try:
+            assert await asyncio.wait_for(provider.started.get(), 5) == request.prompt
+            owners = set(runtime._run_resources)
+            retry = await runtime.run(request.prompt, **ids)
+            assert retry.run.status == "running"
+            assert set(runtime._run_resources) == owners == {retry.run.run_id}
+            assert provider.active == provider.maximum == 1
+        finally:
+            provider.release.set()
+            completed = await task
+        assert completed.run.run_id == retry.run.run_id
+        assert not runtime._run_resources
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
@@ -157,14 +403,14 @@ async def test_shutdown_finishes_handed_off_admission_before_applying_policy(tmp
     provider = HeldProvider()
     app = streaming_application(tmp_path, provider)
     entered, release = asyncio.Event(), asyncio.Event()
-    accept = app.runtime.accept_user_input
+    accept = app.runtime.input_admission.accept
 
     async def held_accept(request):
         entered.set()
         await release.wait()
         return await accept(request)
 
-    monkeypatch.setattr(app.runtime, "accept_user_input", held_accept)
+    monkeypatch.setattr(app.runtime.input_admission, "accept", held_accept)
     host = asyncio.create_task(
         app.supervisor.submit_user_input(UserInputRequest(prompt="shutdown"))
     )

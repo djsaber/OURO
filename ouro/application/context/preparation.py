@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Container, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Protocol, cast
@@ -27,7 +27,7 @@ from ouro.core.context import (
 from ouro.core.context_providers import (
     ContextObservation,
     ContextProviderCall,
-    ContextProviderRegistry,
+    RequestProviders,
 )
 from ouro.core.context_selection import ContextSelection
 from ouro.core.context_snapshots import (
@@ -43,7 +43,7 @@ from ouro.core.events import EventRecord
 from ouro.core.message_frames import project_tool_exchanges
 from ouro.core.messages import MessageRecord, ModelMessage, TextContent
 from ouro.core.observers import ContextPreparedObservation, FrozenJson, freeze_json
-from ouro.core.request_providers import ProviderEvaluation
+from ouro.core.request_providers import OrderedProviderRegistry, ProviderEvaluation
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict
 from ouro.core.session_ports import SessionStore
 from ouro.core.state import RunRecord, SessionRecord
@@ -76,6 +76,13 @@ class PreparedContext:
     prompt_context: PromptContext
 
 
+def _active_scope[R: OrderedProviderRegistry](registry: R, controllers: Container[str]) -> R | None:
+    if not registry.snapshot():
+        return None
+    selected = registry.scoped(controllers)
+    return selected if selected.snapshot() else None
+
+
 class ContextPreparationService:
     """Build and record model context without selecting or executing a maintenance policy."""
 
@@ -84,8 +91,7 @@ class ContextPreparationService:
         *,
         store: SessionStore,
         adapter: RuntimeAdapter,
-        context_providers: ContextProviderRegistry,
-        system_prompt_providers: SystemPromptRegistry,
+        providers_for_run: Callable[[str], tuple[RequestProviders, Container[str]]],
         events: RuntimeEventRecorder,
         context_builder: ContextBuilder,
         system_prompt: str,
@@ -96,8 +102,7 @@ class ContextPreparationService:
     ) -> None:
         self.store = store
         self.adapter = adapter
-        self.context_providers = context_providers
-        self.system_prompt_providers = system_prompt_providers
+        self.providers_for_run = providers_for_run
         self.events = events
         self.context_builder = context_builder
         self.system_prompt = system_prompt
@@ -144,17 +149,17 @@ class ContextPreparationService:
         tools: list[ToolDefinition],
         model_round: int,
         adapter: RuntimeAdapter | None = None,
-        context_providers: ContextProviderRegistry | None = None,
-        system_prompt_providers: SystemPromptRegistry | None = None,
         skill_instructions: str = "",
         prompt: str = "",
     ) -> PreparedContext:
+        providers, controllers = self.providers_for_run(run.run_id)
+        system_prompts = _active_scope(providers.system_prompts, controllers)
+        active_context_providers = _active_scope(providers.observations, controllers)
         session, active, messages = await run_blocking(self.load_history, session.session_id)
-        prompt_context = await self.resolve_prompt_context(session, run, system_prompt_providers)
+        prompt_context = await self._resolve_prompt_context(session, run, system_prompts)
         active_adapter = adapter or self.adapter
-        active_context_providers = context_providers or self.context_providers
         observations: list[ContextObservation] = []
-        if active_context_providers.snapshot():
+        if active_context_providers is not None:
             evaluation = await active_context_providers.evaluate(
                 ContextProviderCall(
                     harness=await run_blocking(
@@ -434,8 +439,18 @@ class ContextPreparationService:
                 f"{failure.error_type}"
             )
 
-    async def resolve_prompt_context(
-        self, session: SessionRecord, run: RunRecord, providers: SystemPromptRegistry | None
+    async def load_prompt_history(
+        self, session: SessionRecord, run: RunRecord
+    ) -> tuple[SessionRecord, CompactionRecord | None, list[MessageRecord], PromptContext]:
+        """Select manual compaction's system providers before the history read yields."""
+        providers, controllers = self.providers_for_run(run.run_id)
+        system_prompts = _active_scope(providers.system_prompts, controllers)
+        session, active, messages = await run_blocking(self.load_history, session.session_id)
+        prompt_context = await self._resolve_prompt_context(session, run, system_prompts)
+        return session, active, messages, prompt_context
+
+    async def _resolve_prompt_context(
+        self, session: SessionRecord, run: RunRecord, registry: SystemPromptRegistry | None
     ) -> PromptContext:
         try:
             personal = (
@@ -458,8 +473,7 @@ class ContextPreparationService:
                 },
             )
             raise ContextBlockedError(message) from exc
-        registry = providers or self.system_prompt_providers
-        if not registry.snapshot():
+        if registry is None:
             return personal
         evaluation = await registry.evaluate(session.workspace)
         await self._check_provider_failures(run, evaluation, "system_prompt_provider_failed")

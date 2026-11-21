@@ -5,6 +5,7 @@
 
 | 日期 | 记录 |
 |---|---|
+| 2026-11-21 | [OURO 核心架构重构实施方案与验收](2026-11-21-core-architecture-refactoring.md#任务状态) |
 | 2026-11-13 | [数据模型与转换边界：设计与验收](2026-11-13-data-models.md) |
 | 2026-11-05 | [上下文准备与压缩策略：设计与验收](2026-11-05-context-preparation-boundary.md) |
 | 2026-11-05 | [上下文与协议边界：设计与验收](2026-11-05-context-protocol-boundaries.md) |

@@ -100,7 +100,7 @@ class SessionRecoveryService:
 
     def _recover_runs(self, snapshot: RuntimeSessionSnapshot) -> bool:
         session, runs = snapshot.session, snapshot.runs
-        run_is_live = self.store.is_session_locked(session.session_id)
+        run_is_live = bool(runs) and self.store.is_session_locked(session.session_id)
         recovered_runs: list[RunRecord] = []
         changed_runs: list[RunRecord] = []
         changed_calls: list[ToolCallState] = []

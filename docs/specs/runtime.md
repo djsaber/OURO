@@ -32,7 +32,9 @@ Session 是长期会话容器。关键字段包括：
 首次直接用户输入通过校验与 Prompt Policy 后，Session、持久输入及原生 Session commit 回执在同一发布边界成立，
 随后通过正常队列消费边界启动 Run。Host 可用 `new_session_id` 指定新会话身份；该身份已有准备资源时原位接续其归属，文件身份和路径不变。
 没有准备资源的输入无需预留文件空间。`input_id` 标识一次 Host 提交，`SessionService.input_accepted` 按该身份定位 Input 接受事实，
-无需重放历史。回执只描述输入是否已接受；草稿保存、恢复及资源保留策略由 Host 决定。
+同一进程把首条输入从受理直接移交给执行时，共用当次策略决定与目录租约。重开宿主后，待消费输入沿用原 Run 身份与 Driver，按当前扩展目录重新评估策略。拒绝时输入保留在队列中，模型尚未派发。
+已有会话按 FIFO 推进。以输入身份重试时，终态结果取自该输入规范消息所属的 Run。占用中的会话仍可返回当前活动 Run。
+草稿保存、恢复及资源保留策略由 Host 决定。
 
 Session 可保存一个尚未消费的 `continuation_request`，记录命令提交身份、历史代次和控制修订。
 它是执行意图，不是模型输入或 Harness 业务状态。对话执行启动与凭据消费共同提交；停止命令、控制修订变化和
@@ -47,7 +49,8 @@ Run 表示一次可恢复执行。状态集合为：
 
 运行阶段为：`model_streaming`、`tool_preflight`、`human_interaction`、`tool_execution`、
 `subagent_join`、`result_commit`。Run 保存模型摘要、活动工具批次、待审批身份、终止请求和错误信息。
-原始消耗属于账本，Run 不保存 usage 或累计 usage IDs；结果与观察按需读取有限汇总，见[用量规格](usage-and-billing.md#run-消耗与宿主边界)。
+完成、失败或暂停的提交同时记录这次 Driver 调用是否返回文本、是否遇到工具错误。摘要归属于这次终态的结束时间。可续跑的失败或暂停还记录当时的会话事实修订，以便在同一 Run 的下一次执行中辨认新发布的工具结果。
+按回执读取结果时，正文来自该 Run 保留的助手消息，错误码来自 Run，用量来自账本。既有 Run 可按保留的助手消息和已发布的工具事实查询。[用量规格](usage-and-billing.md#run-消耗与宿主边界)
 ProviderStreamEvent 的 error 可附带供应商无关 error_code；原生模型请求将其传给 Driver 执行边界，
 写入 run_failed.payload.error_code 并进入 RunResult/CLI JSON 的 error_code。Core 不解释认证状态或 HTTP 对象，
 不在 RunRecord 复制认证状态；请求侧分类见[请求认证规格](request-authentication.md)。
@@ -58,7 +61,11 @@ Run 的 `current_request_id` 与最近准备输入同提交；可能开始调用
 活动 Run 可在 model turn 边界切换路由，因此不能仅凭 `RunRecord.model` 重建逐轮模型历史；每次实际 Provider
 请求使用的 provider、endpoint 与 model 以 `model_request_started` 事件和 usage 记录为权威。
 
+用户输入受理按 `input_id` 返回持久回执。创建会话时，首个输入与会话一同发布。已有会话上的直接执行在取得执行锁并重读后，一次提交输入事实、消费状态、消息与 Run。调度器消费已受理单元时沿用队列身份、Driver 和来源；执行已预留的 Run 时核对预留身份和所属会话。忙会话保留输入的 `steer` 或 `follow_up` 模式。
+
 ### Run Driver 与原生端口
+
+Driver 执行用例复用进程内的上下文准备、请求提交、用量结算和事件记录服务。每次调用持有自己的模型请求执行器、取消信号、恢复位置和流开始通知。每轮根据所属 Run 重新选择可用工具与有效预算。
 
 `RunRecord` 保存不可变的 `driver` 绑定。默认算法的身份为
 `ouro.default`；插件 Driver 保存 `plugin_id/run_drivers/id`、贡献契约，以及所属插件和传递依赖的实现引用。
@@ -83,7 +90,7 @@ Driver 不持有或累计 canonical 消息列表。模型请求只传执行身�
 输入和工具操作的消息位置由 Session 提交分配，不由 Driver 的列表长度决定。turn policy 反馈提交后只返回续跑决定。
 assistant 重试按 Run/turn 点查已提交回包。Runtime 执行快照只含 Session、当前待处理 Run 与 active/last 执行头；
 续跑按成员查询确认保留输入，已消费 Host 输入按身份定位，插件批次按消费状态确认。
-审批、回答和委派恢复点读目标 Run；冷恢复与 terminal continuation 结算只读取相应的待处理 Run。
+审批、回答和委派恢复按身份读取目标 Run。单会话冷恢复从运行快照识别当前历史代次的待结算 continuation，结算成功后重读快照。显式全局维护按会话查询待处理 Run。
 显式对话续跑候选通过执行头和待处理 Run 查询定位；Agent 预算读取原始账本汇总和窄 Run 计数，
 不扫描历史 Run 正文。当前 Run 的观察快照由 Call、Draft 和请求头构造，具体契约见
 [会话观察](session-observation.md)和[用量与计费](usage-and-billing.md)。
@@ -167,6 +174,13 @@ application 用例负责取得 mutation lock 并准备业务字段。预留与�
 成功后才发送在线通知；恢复只补齐原提交允许的存储效果。
 账本记账、continuation、tool batch 审计和消息游标等不改变 Run status 的写入不属于状态迁移。
 
+审批、回答和子任务返回均由 `ParkedRunExecution` 取得原 Run 的执行锁。它在锁内重读当前批次，按交互身份裁决，
+在一次会话提交内保存批次、等待状态和事件，再通知订阅者。审批允许覆盖参数，回答可产生下一次提问；
+子任务返回按 Run、批次、Call 和尝试编号取得已经落盘的结果。批次可运行时继续原 Driver，
+仍有等待时返回该状态。Session 的后续输入在释放执行锁后调度。
+
+运行时识别预留 Run 已写入的目录绑定时，代次集合可以为空。执行时按记录的身份取得所需实现，进程内租约由当前执行者持有。
+
 ### Message 与 model turn
 
 - `MessageRole` 包含 `system`、`user`、`assistant`、`tool_result` 和 `harness`。框架通知使用 `harness`，用户原文与工具结果使用各自的原生角色。
@@ -196,7 +210,7 @@ application 用例负责取得 mutation lock 并准备业务字段。预留与�
    检查预算、提交请求计数并调用 request-local `RuntimeAdapter`；正常模型轮次不得重新加载完整 Session 历史。
 7. 模型文本和 reasoning 先追加当前 Draft，再通知观察者；工具参数片段只作实时观察。
    `done` 后完整工具调用交给 `ToolCallCoordinator`，正式消息与请求响应关闭和 Draft 清理同提交。
-8. waiting 状态通过 approve/reject/AskUser 或 child 结果恢复同一 Run。
+8. waiting 状态通过 approve/reject/AskUser 或 child 结果恢复同一 Run。省略审批 ID 时，命令选定收到时的待审批项。等待执行锁期间，该项已裁决或提问批次已更新时，迟到的决定失败，当前等待保留。
 9. Run 退出执行时释放执行许可和环境绑定；终态清理 Observer 隔离状态，已投递的观察任务独立完成收尾。
 10. 在 model turn 边界消费 steer 输入；Run 结清并释放 session run lock 后通知会话调度，后续输入按当前队列事实取得执行机会。
 
@@ -424,7 +438,7 @@ TUI、AgentService 和任务系统共享会话推进保证。Delegation、任务
 请求携带稳定的 Session 和 input identity。相同身份与内容的重试按接受记录及生命周期状态返回小回执，消费后仍能定位消息和 Run。
 仍在持久队列中的输入直接返回待消费回执，不搜索历史消息；队列移除与消息写入共享消费提交边界。
 身份对应不同内容、已取消或已撤销的输入不能重新入队。回执表示持久受理，`UserInputSubmission.wait` 是可选的结果等待，
-取消该等待不拥有也不取消执行。提交在移交 Supervisor 前取消不会受理；移交后由 Supervisor 完成受理与调度，
+多个输入共用一次会话调度时，等待者按自身的输入身份取得相应 Run 的结果。取消等待不取消执行。提交在移交 Supervisor 前取消不会受理；移交后由 Supervisor 完成受理与调度，
 即使 Host 尚未收到结果也可能已成功，Host 用原身份查询或重试。普通输入的私有执行回执在工作结束后释放。
 继续运行、审批和 AskUser 使用同一 Supervisor；Host 放弃等待时可 detach 回执，完成后自动回收。
 
@@ -444,8 +458,9 @@ Session 的前一个本地工作尚未收尾，只有在前一个 Run 已进入�
 
 `RunExecutionOwnership` 是 Runtime 内唯一的进程内执行所有权组件：它取得/释放 Session run lock、登记和释放
 AbortSignal，并从 durable Run 轮询 abort 事实。它不写 Run status、不发事件，也不处理 queued input 或 terminal
-产品语义。Run 命令由 `RunLifecycle` 负责；approval/AskUser/child wait 仍由 RuntimeService 作为跨协作者事务入口；
-terminal continuation、Agent settlement、Observer/catalog lease 清理由明确的 terminal boundary 依次完成。
+产品语义。Run 命令由 `RunLifecycle` 负责。`RuntimeService` 的审批、回答和子任务返回入口将锁内裁决与提交交给
+`ParkedRunExecution`。问答携带所属 Run、批次、Call 和提问修订。通过 Supervisor 提交时，显式观察身份随回答入队。只提供 Run 的调用在受理时捕获当前问题。执行者在锁内核对同一个问题，再调用工具的回答处理器。过期回答不改变等待状态。
+Run 进入终态后，Runtime 先处理 Agent 结算和 continuation，发布相应通知并释放 Observer 与目录租约。
 
 完整 LocalApplication 在 Runtime、Plugin catalog、Supervisor、AgentDefinitionService 和 AgentService 全部构造后，
 通过一次性 `bind_extensions` 绑定完整 Host 扩展组合。绑定不可重复，Agent controls 不能脱离 matching definitions

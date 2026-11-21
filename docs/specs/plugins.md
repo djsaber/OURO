@@ -623,16 +623,20 @@ Canonical identity：
 
 ### 9.3 ContributionTypeAdapter
 
-Host 为每个稳定 contribution type 提供内部 adapter，统一承担：
+Host 为每种贡献在 `ContributionTypeAdapter` 清单中登记以下职责。
 
-- declaration validation；
-- SDK/worker adaptation；
-- conflict 和 optional 规则；
-- contract hash；
-- catalog projection；
-- owner cleanup 和 diagnostics。
+- 校验 Manifest 声明。
+- 将 SDK 注册或 worker 响应转换为原生注册项。
+- 判定冲突和可选实现缺失。
+- 提供契约哈希所用的材料。
+- 将注册项投影到目录。
+- 按所有者清理资源并报告诊断。
 
-Adapter 不是公开动态扩展点。不同 contribution 的组合和失败规则继续由各自类型定义。Adapter 还必须声明类型是：
+宿主用 Manifest 校验注册项，按贡献类型准备原生值，再用同一份 `PreparedContributionSet` 计算身份哈希和构造候选目录。Skill 和 MCP 的资源契约由资源准备过程提供。工具目录按显式注册、MCP 发现的顺序合并两组工具，并一次投影同一所有者的工具。各类型定义组合、缺失和失败规则。候选目录统一检查跨所有者的身份冲突。
+
+系统提示词与会话观察共用请求提供方的原生适配器。它按各自种类生成贡献身份，把优先级、超时、失败模式与 controller 条件纳入哈希，并在投影时将处理器绑定到代次 gate。请求通过已发布的具名注册表调用处理器。动态工具同时受工具组与插件代次的 gate 约束。
+
+清单由框架维护。Adapter 声明贡献的寿命。
 
 - `snapshot-bound`：投影到不可变 Catalog，当前决策或回调的租约允许旧、新 generation 并存；
 - `activation-singleton`：不进入 Run 可调用目录，在声明的 host/home 作用域内，同一插件的同一服务最多运行一代；旧服务停止失败时，不启动替代服务。
@@ -1096,7 +1100,7 @@ Host shutdown 按已发布 Catalog 的依赖顺序关闭资源，不依赖持久
 ## 15. Durable Run
 
 每次模型决策取得当前 `ExtensionCatalogLease`。同一响应及其工具调用共享该绑定，下一轮决策可以采用新环境。
-审批、用户回答和 child join 的等待不持有整组插件实例。历史消息与已完成结果不要求产生它们的工具仍然存在。
+审批、用户回答和 child join 的等待不持有整组插件实例。同一工具 Call 可以连续返回 `ToolInputRequest`。宿主按批次、Call 和提问修订将回答交给相应的 resume handler，每次修订只接受一次回答。历史消息与已完成结果不要求产生它们的工具仍然存在。
 
 待完成插件调用保存稳定工具身份、所用 contribution contract 与所属插件的 execution contract。
 插件层拥有 release、依赖、配置与协议的解释；通用工具执行器比较准备阶段提供的执行身份，不解释插件包或供应类别。
@@ -1146,7 +1150,7 @@ Active plugin 的配置更新使用相同流程：创建 immutable candidate rev
 - 有 active dependent 或本 Host 尚未退出的资源时拒绝；
 - 删除 install reference，结果列出仍保留该包的可恢复 Run、待消费输入或控制 activation；这些引用不阻止逻辑
   卸载，也不重新启用或装载代码。未安装的实现不能继续执行，恢复前需显式重新安装所需包并满足精确配置契约；
-- GC 按管理冷路径一次扫描持久引用，保留其包字节；已完成历史和 Catalog 摘要不构成保留条件。结束相关运行后
+- GC 调用 Run 恢复侧的持久引用查询，一次扫描有效排队输入、会话控制、待恢复 Driver 及其依赖和未结算 Call。查询返回归属的 Session／Run，GC 据此保留包字节；已完成历史和 Catalog 摘要不构成保留条件。结束相关运行后
   可再次 GC。仍安装的包和任一 Host 仍持有数据访问的插件也不会删除；
 - 发布包与提交 install record 使用同一个插件文件锁，GC 在锁内核对最新安装状态；发布暂存目录按插件归属，
   同一锁保护其创建和清理，不回收正在发布的文件；

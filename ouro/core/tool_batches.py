@@ -12,7 +12,7 @@ from ouro.core.base import Metadata, MetadataField, OuroModel, VersionedOuroMode
 from ouro.core.harness_calls import HarnessStateChange
 from ouro.core.interactions import ToolInputResolution
 from ouro.core.session_controls import SessionControlTransitionRequest
-from ouro.core.tool_facts import ToolCallFacts, ToolCallIdentity, ToolFactConflict
+from ouro.core.tool_facts import ToolCallFacts, ToolCallIdentity, ToolFactConflict, ToolQuestion
 from ouro.core.tools import (
     ToolCallProducer,
     ToolCallRequest,
@@ -69,6 +69,11 @@ class ToolBatchCall(OuroModel):
     result_message_id: str | None = None
     attempt: int = Field(default=0, ge=0)
     metadata: Metadata = MetadataField
+
+    def question(self, run_id: str, batch_id: str) -> ToolQuestion:
+        return ToolQuestion(
+            ToolCallIdentity(run_id, batch_id, self.request.id), self.input_revision
+        )
 
 
 class ToolCallBatchRecord(OuroModel):

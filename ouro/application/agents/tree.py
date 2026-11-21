@@ -180,6 +180,9 @@ class AgentTreeProjector:
                         task_description=relation.task_description,
                         child_session_id=relation.child_session_id,
                         child_run_id=relation.current_child_run_id,
+                        question=call.question(relation.current_child_run_id, batch.batch_id)
+                        if call.status == "waiting_user"
+                        else None,
                         tool_call_id=summary.tool_call_id,
                         tool_name=summary.tool_name,
                         request_id=summary.request_id,

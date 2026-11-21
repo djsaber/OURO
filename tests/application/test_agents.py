@@ -4,6 +4,7 @@ import asyncio
 import json
 from contextlib import AsyncExitStack
 from contextvars import ContextVar
+from dataclasses import replace
 from threading import Event, get_ident
 from xml.etree import ElementTree
 
@@ -2296,13 +2297,33 @@ async def test_async_child_user_input_is_streamed_and_routed_by_exact_identity(
             request_id=interaction.request_id,
             answer="A",
         )
-    resumed = await service.resolve_agent_input(
-        child.delegation_id,
+    assert interaction.question is not None
+    destination = dict(
         child_session_id=interaction.child_session_id,
         child_run_id=interaction.child_run_id,
         tool_call_id=interaction.tool_call_id,
         request_id=interaction.request_id,
+    )
+    with pytest.raises(ValueError, match="question changed"):
+        await service.resolve_agent_input(
+            child.delegation_id,
+            **destination,
+            answer="stale",
+            question=replace(
+                interaction.question, input_revision=interaction.question.input_revision + 1
+            ),
+        )
+    pending = service.list_agent_interactions(root.session_id)[0]
+    assert (pending.question, pending.request_id) == (interaction.question, interaction.request_id)
+    assert (
+        store.load_run(interaction.child_session_id, interaction.child_run_id).status
+        == "waiting_user"
+    )
+    resumed = await service.resolve_agent_input(
+        child.delegation_id,
+        **destination,
         answer="A",
+        question=interaction.question,
     )
     assert (await supervisor.wait(resumed)).status == "completed"
     await service.wait_agents((child.delegation_id,))
@@ -2633,14 +2654,20 @@ async def test_shared_root_budget_pauses_queued_child_and_aggregates_each_run_on
     provider.usage = Usage(input_tokens=10)
     before_request = asyncio.Event()
     start_request = asyncio.Event()
-    bind = supervisor.runtime._bind_run_capabilities
+    execution = supervisor.runtime.driver_execution
+    bind = execution.model_ports.begin_model_round
+    assert bind is not None
 
     async def bind_after_admission(**kwargs):
         before_request.set()
         await start_request.wait()
         return await bind(**kwargs)
 
-    monkeypatch.setattr(supervisor.runtime, "_bind_run_capabilities", bind_after_admission)
+    monkeypatch.setattr(
+        execution,
+        "model_ports",
+        replace(execution.model_ports, begin_model_round=bind_after_admission),
+    )
     parent = parent.model_copy(
         update={
             "metadata": {

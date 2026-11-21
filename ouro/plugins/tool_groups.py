@@ -4,10 +4,10 @@ import hashlib
 import json
 import threading
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ouro.core.base import new_id
-from ouro.plugins.catalog.bindings import bind_generation_gate
+from ouro.plugins.catalog.bindings import gate_tool
 from ouro.plugins.catalog.gates import GenerationGate
 from ouro.plugins.contributions.binding import bind_execution_contract
 from ouro.plugins.contributions.models import ContributionOwner, PreparedContributionSet
@@ -231,5 +231,7 @@ class PluginToolGroups:
         execution_hash = self.record.execution_contract_hash
         assert execution_hash is not None
         prepared = bind_execution_contract(prepared, execution_hash)
-        prepared = bind_generation_gate(prepared, self.gate)
+        prepared = replace(
+            prepared, tools=tuple(gate_tool(tool, self.gate) for tool in prepared.tools)
+        )
         return ToolGroupVersion(publication, self.record, prepared)

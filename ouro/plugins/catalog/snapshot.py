@@ -11,7 +11,11 @@ from types import MappingProxyType
 
 from ouro.core.base import new_id
 from ouro.core.compaction import CompactionStrategy, CompactionStrategyRegistry
-from ouro.core.context_providers import ContextProviderRegistration, ContextProviderRegistry
+from ouro.core.context_providers import (
+    ContextProviderRegistration,
+    ContextProviderRegistry,
+    RequestProviders,
+)
 from ouro.core.continuations import ContinuationPolicyRegistration, RunContinuationRegistry
 from ouro.core.observers import Observation, ObserverRegistration, ObserverRegistry
 from ouro.core.prompt_policies import PromptPolicyRegistration, PromptPolicyRegistry
@@ -22,7 +26,6 @@ from ouro.core.state import RunContinuationControllerRef
 from ouro.core.system_prompts import SystemPromptRegistration, SystemPromptRegistry
 from ouro.core.tool_policies import ToolPolicyRegistration, ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistration, TurnPolicyRegistry
-from ouro.plugins.catalog.bindings import bind_generation_gate
 from ouro.plugins.catalog.gates import (
     CatalogGeneration,
     CatalogToolGroup,
@@ -142,8 +145,7 @@ class ExtensionCatalog:
         generations: Sequence[CatalogGeneration],
         tools: ToolRegistry,
         observers: ObserverRegistry,
-        context_providers: ContextProviderRegistry,
-        system_prompt_providers: SystemPromptRegistry,
+        request_providers: RequestProviders,
         commands: PluginCommandRegistry,
         compaction: CompactionStrategyRegistry,
         providers: ProviderRegistry,
@@ -168,8 +170,7 @@ class ExtensionCatalog:
         )
         self.tools = tools
         self.observers = observers
-        self.context_providers = context_providers
-        self.system_prompt_providers = system_prompt_providers
+        self.request_providers = request_providers
         self.commands = commands
         self.compaction = compaction
         self.providers = providers
@@ -434,12 +435,8 @@ class ExtensionCatalogLease:
         return self.catalog.observers
 
     @property
-    def context_providers(self) -> ContextProviderRegistry:
-        return self.catalog.context_providers
-
-    @property
-    def system_prompt_providers(self) -> SystemPromptRegistry:
-        return self.catalog.system_prompt_providers
+    def request_providers(self) -> RequestProviders:
+        return self.catalog.request_providers
 
     @property
     def commands(self) -> PluginCommandRegistry:
@@ -557,9 +554,11 @@ def build_extension_catalog(
         for group in tool_groups
     )
     for owner, source in sources:
-        prepared = bind_generation_gate(source.contributions, source.gate)
+        prepared = source.contributions
         try:
-            project_prepared_contributions(targets, owner=owner, prepared=prepared)
+            project_prepared_contributions(
+                targets, owner=owner, prepared=prepared, gate=source.gate
+            )
             for identity, contract_hash in prepared.contract_hashes.items():
                 if identity in owners:
                     conflict = owners[identity]
@@ -596,8 +595,7 @@ def build_extension_catalog(
         generations=generations,
         tools=tools,
         observers=observers,
-        context_providers=context_providers,
-        system_prompt_providers=system_prompt_providers,
+        request_providers=RequestProviders(system_prompt_providers, context_providers),
         commands=commands,
         compaction=compaction,
         providers=providers,

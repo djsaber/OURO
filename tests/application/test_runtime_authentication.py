@@ -107,7 +107,7 @@ def _model_key(configs: ProviderConfigManager, model_id: str) -> str:
 
 
 async def test_unlogged_default_starts_and_shared_login_serves_all_model_consumers(
-    tmp_path, managed_runtime
+    tmp_path, managed_runtime, monkeypatch
 ):
     configs, drivers, policies, requests = managed_runtime
     app = LocalApplication.build(tmp_path, auth_drivers=drivers, service_policies=policies)
@@ -124,11 +124,21 @@ async def test_unlogged_default_starts_and_shared_login_serves_all_model_consume
         result = await app.runtime.run("hello")
         assert result.run.status == "completed"
         strategy = app.runtime.compaction_strategies.get(LLMSummaryCompactionStrategy.strategy_id)
-        summary = strategy._adapter_routes(result.session.session_id)[0].adapter
+        reads = []
+        load_record = app.runtime.store.load_session_record
+
+        def read_record(session_id):
+            reads.append(session_id)
+            return load_record(session_id)
+
+        with monkeypatch.context() as capture:
+            capture.setattr(app.runtime.store, "load_session_record", read_record)
+            summary = strategy._adapter_routes(result.session.session_id)[0].adapter
+        assert reads == [result.session.session_id]
         assert (await summary.provider.check_connection(summary.model)).ok
         child = SessionRecord(namespace="agent", current_model=_model_key(configs, "child"))
         app.runtime.store.create_session(child)
-        _, child_adapter = app.runtime._resolve_session_adapter(child)
+        _, child_adapter = app.models.bind_session(child.session_id)
         assert (await child_adapter.provider.check_connection(child_adapter.model)).ok
         assert {request["payload"]["model"] for request in requests} == {"chat", "summary", "child"}
         assert {request["headers"]["authorization"] for request in requests} == {

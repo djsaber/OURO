@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -246,6 +247,20 @@ async def test_builtin_ask_user_renders_form_and_submits_structured_answer(
         assert "Which file should OURO use?" in rendered_question
         assert "↑/↓ move • Enter choose" in rendered_question
         assert "←/→" not in rendered_question
+
+        observed = app._projection.pending_interaction
+        assert observed.question is not None
+        stale = replace(
+            observed,
+            question=replace(
+                observed.question, input_revision=observed.question.input_revision + 1
+            ),
+        )
+        # Textual can deliver a completed panel message after the displayed question changed.
+        panel.post_message(AskUserPanel.Completed(stale, {"choice": "wrong question"}))
+        await pilot.pause()
+        assert app._projection.pending_interaction == observed
+        assert panel.render().plain == rendered_question
 
         await pilot.press("left", "right")
         await pilot.pause()

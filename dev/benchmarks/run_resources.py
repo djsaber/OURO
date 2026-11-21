@@ -17,6 +17,7 @@ import sys
 import tempfile
 import tracemalloc
 import weakref
+from contextlib import nullcontext
 from pathlib import Path
 from time import perf_counter
 from types import SimpleNamespace
@@ -59,7 +60,11 @@ def make_runtime(root, backend="files"):
 
     app.bind_extensions(
         catalog=SimpleNamespace(
-            snapshot=catalog.acquire, catalog=lambda: catalog, synchronize=synchronize
+            snapshot=catalog.acquire,
+            catalog=lambda: catalog,
+            synchronize=synchronize,
+            bind_observers=catalog.bind_observers,
+            driver_scope=nullcontext,
         )
     )
     return app, catalog

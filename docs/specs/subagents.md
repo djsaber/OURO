@@ -759,8 +759,7 @@ ApprovalRecord/ToolInputRequest 构造的可重建查询视图，不是新的 ca
 - tool、参数摘要、workspace 和影响；
 - requested_at。
 
-Host 回答必须携带原 child session_id、run_id、tool_call_id/request_id。application 在 child Session lock 内验证后
-恢复该 child Run；答案不能写入父 Run 或其他 waiting child。
+Host 按原 child session_id、run_id、tool_call_id 与 request_id 路由回答。交互视图同时提供批次、Call 和提问修订，Host 将观察到的身份随回答提交。调度器保留这次提问的身份，执行者在 child Session 锁内核对后恢复该 Run。
 
 审批、问答和 child join 共用 RunExecutionOwnership 的等待态接管机制：持久化等待已可见而原 Host 尚未释放执行锁
 时，每 50ms 异步重试一次，默认最多等待 5 秒；Run 离开目标等待态即停止等待。取得锁后重新验证准确交互身份。

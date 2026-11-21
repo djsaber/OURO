@@ -5,7 +5,7 @@ from typing import cast
 
 from ouro.core.content import ContentPart
 from ouro.core.errors import PersistenceError
-from ouro.core.session_ports import SessionRepository
+from ouro.core.session_ports import ToolCallReader, ToolCallStateReader
 from ouro.core.state import RunRecord
 from ouro.core.tool_batches import (
     ToolBatchCall,
@@ -25,7 +25,7 @@ from ouro.core.tool_facts import (
 from ouro.core.tools import ToolInvocation, ToolInvocationBinding, ToolResult
 
 
-def load_batch_states(store: SessionRepository, run: RunRecord) -> tuple[ToolCallState, ...]:
+def load_batch_states(store: ToolCallStateReader, run: RunRecord) -> tuple[ToolCallState, ...]:
     """Read current per-call metadata without original parameters or result bodies."""
     head = run.active_tool_batch
     if head is None:
@@ -40,7 +40,7 @@ def load_batch_states(store: SessionRepository, run: RunRecord) -> tuple[ToolCal
         return tuple(state for state in states if state is not None)
 
 
-def load_tool_batch(store: SessionRepository, run: RunRecord) -> ToolCallBatchRecord | None:
+def load_tool_batch(store: ToolCallReader, run: RunRecord) -> ToolCallBatchRecord | None:
     """Explicitly read the selected batch; the Run itself never materializes bodies."""
     head = run.active_tool_batch
     if head is None:
@@ -54,7 +54,7 @@ def load_tool_batch(store: SessionRepository, run: RunRecord) -> ToolCallBatchRe
 
 
 def load_batch_call(
-    store: SessionRepository,
+    store: ToolCallReader,
     session_id: str,
     identity: ToolCallIdentity,
     *,
@@ -165,7 +165,7 @@ def load_batch_call(
 
 
 def prepare_batch_changes(
-    store: SessionRepository,
+    store: ToolCallReader,
     run: RunRecord,
     batch: ToolCallBatchRecord,
     *,
