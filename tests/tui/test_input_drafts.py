@@ -2,13 +2,21 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
+from ouro.application.inputs.requests import UserMessageEdit
 from ouro.core.errors import ConfigError
 from ouro.core.input_content import InputAttachment, InputFileReference, InputSkillReference
 from ouro.core.reasoning import ReasoningRequest
-from ouro.tui.composer.drafts import MAX_SESSION_DRAFTS, TuiInputDrafts, TuiInputDraftStore
+from ouro.tui.composer.drafts import (
+    MAX_SESSION_DRAFTS,
+    TuiInputDrafts,
+    TuiInputDraftStore,
+    TuiPendingInput,
+)
+from ouro.tui.composer.recovery import recover_input_drafts
 from ouro.tui.view_models import TuiDraftConfiguration
 
 
@@ -49,6 +57,30 @@ def test_input_drafts_round_trip_and_keep_a_bounded_session_mru(tmp_path: Path) 
     assert store.load() == forgotten
     assert store.load().welcome_configuration == configuration
     assert store.load().welcome.is_empty
+
+
+@pytest.mark.parametrize("accepted", (False, True))
+async def test_interrupted_edit_recovers_its_target_until_accepted(tmp_path, accepted):
+    session_id = "ses_edit"
+    target = UserMessageEdit(message_id="original", history_epoch=1, message_count=5)
+    pending = TuiPendingInput(
+        input_id="replacement",
+        session_id=session_id,
+        origin_session_id=session_id,
+        text="edited text",
+        edit=target,
+    )
+    drafts = TuiInputDrafts().remember(session_id, "next question")
+    store = TuiInputDraftStore(tmp_path)
+    store.save(drafts.edit_message(session_id, target, pending).begin_submission(pending))
+    controller = AsyncMock()
+    controller.input_accepted.return_value = accepted
+    recovered, _ = await recover_input_drafts(controller, store.load())
+    controller.input_accepted.assert_awaited_once_with(session_id, pending.input_id)
+    assert recovered.pending == ()
+    assert recovered.edit_for(session_id) == (None if accepted else target)
+    assert recovered.draft_for(session_id) == ("next question" if accepted else pending.text)
+    assert recovered.finish_edit(session_id).draft_for(session_id) == "next question"
 
 
 def test_editing_and_reloading_a_draft_preserves_its_attachment_selection(tmp_path):

@@ -119,6 +119,23 @@ def test_accepted_input_owns_sparse_body_and_history_materializes_independent_vi
     )
 
 
+def test_native_history_cut_preserves_fifo_for_ordinary_input(store):
+    session = SessionRecord()
+    store.create_session(session)
+    message = MessageRecord.text(session_id=session.session_id, role="assistant", text="old reply")
+    waiting = accepted(session, "waiting")
+    before = store.commit_session(
+        SessionCommit(
+            before=session, steps=(SessionCommitStep(message=message),), inputs=(waiting,)
+        )
+    ).session
+    new = accepted(before.model_copy(update={"history_epoch": before.history_epoch + 1}), "next")
+    result = store.commit_session(
+        SessionCommit(before=before, before_message_id=message.message_id, inputs=(new,))
+    )
+    assert result.session.pending_input_ids == (waiting.item.queue_id, new.item.queue_id)
+
+
 def test_terminal_input_retains_acceptance_and_rejects_identity_reuse(store):
     session = SessionRecord()
     store.create_session(session)

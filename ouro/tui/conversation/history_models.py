@@ -66,6 +66,8 @@ class TranscriptEntry:
     error: bool = False
     # Source coordinates merge canonical windows; they do not change visual identity.
     source_sequence: int | None = field(default=None, compare=False)
+    message_id: str | None = field(default=None, compare=False)
+    direct_user_input: bool = field(default=False, compare=False)
     # Character offset of the semantic reference suffix in the complete copy text.
     reference_start: int | None = None
     message_source: MessageSource | None = None

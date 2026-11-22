@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from typing import Literal
 
 from ouro.application.contracts.execution import RuntimeToolCallActivity
-from ouro.core.attachment_input import is_editable_user_input
+from ouro.core.attachment_input import is_direct_user_input, is_editable_user_input
 from ouro.core.compaction import CompactionRecord
 from ouro.core.message_statistics import delegation_input_id
 from ouro.core.messages import MessageRecord, ModelMessage, SkillActivationContent
@@ -143,7 +143,6 @@ def _input_transcript_entry(
     if not text:
         return None
     return TranscriptEntry(
-        # Revealing internal messages must not renumber /fork and /navigate targets.
         kind=kind,
         text=text,
         created_at=message.created_at,
@@ -151,6 +150,8 @@ def _input_transcript_entry(
         reference_start=reference_start,
         message_source=_agent_message_source(message) if kind == "harness" else None,
         source_sequence=message.sequence,
+        message_id=message.message_id,
+        direct_user_input=is_direct_user_input(message),
     )
 
 

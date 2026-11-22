@@ -502,9 +502,11 @@ Runtime 在一个环境绑定内惰性构造并复用 `ToolCallCoordinator`。�
 Run 在开始时绑定 history_epoch。模型、工具、Controller 和续跑操作捕获基准 Harness，并在原生提交边界
 检查代次及实际使用的状态前置条件。消息和对应状态变化按逻辑顺序一起提交；回调不持有 Store 写入器。
 
-canonical 撤销由 `SessionService.undo` 取得执行所有权，活跃执行未结清时要求用户先中断。
-`RuntimeService.undo` 调用该入口撤回指定直接用户输入及其后缀，并结清输入租约和绑定子会话；待消费输入取消复用
-同一队列身份。成功后恢复消息前 Harness，清除当前/最近 Run 与旧许可。保留的其他用户队列项不因撤销
+应用在取得会话执行所有权后撤回 canonical 消息，活跃执行未结清时要求用户先中断。
+编辑通过 `UserInputRequest.edit` 指定主会话中的直接用户消息及观察到的历史范围。应用按切口前的 Harness 检查控制器和输入策略，
+在同一次原生提交中撤回旧后缀并将替换输入排在保留输入之前。Supervisor 从替换输入开始执行，保留输入维持相对顺序。
+`RuntimeService.undo` 通过 `SessionService.undo` 单独撤回指定用户输入。取消待消费输入按队列身份结算。
+撤回已消费输入时恢复消息前 Harness，清除当前/最近 Run 与旧许可，再协调绑定旧历史的子会话。保留的其他用户队列项不因撤销
 自动运行，旧 child 交付、审批、工具恢复或 Continuation 不得进入新代次。
 
 `/continue` 不追加输入，同代次中断通过合法检查点继续并保留原 Run 预算；历史被撤销后创建新 Run，

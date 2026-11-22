@@ -798,7 +798,7 @@ async def test_child_view_keeps_browsing_actions_and_nested_tool_navigation(tmp_
         await app._open_session(child_id)
         choices = {choice.value for choice in app._action_choices()}
         assert {"/new", "/sessions", "/help"} <= choices
-        assert not {"/model", "/fork", "/undo", "/continue"} & choices
+        assert not {"/model", "/fork", "/edit", "/continue"} & choices
         resolve = AsyncMock(return_value=None)
         monkeypatch.setattr(app._controller, "resolve_agent_navigation", resolve)
         await app.on_tool_navigation_requested(

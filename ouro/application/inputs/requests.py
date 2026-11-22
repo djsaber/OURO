@@ -48,12 +48,23 @@ class InputSessionSettings:
             )
             if value is not None and value != getattr(session, name)
         }
-        if changes and (executing or session.active_run_id is not None):
+        if not changes:
+            return session
+        if executing or session.active_run_id is not None:
             name = next(iter(changes)).replace("_", " ")
             raise SessionBusyError(
                 f"cannot change {name} while the session has an active run: {session.session_id}"
             )
-        return session.model_copy(update=changes) if changes else session
+        now = utc_now()
+        return session.model_copy(update={**changes, "updated_at": now, "last_activity_at": now})
+
+
+class UserMessageEdit(ApplicationDTO):
+    """A selected input and the extent of the history the user agreed to replace."""
+
+    message_id: str
+    history_epoch: int = Field(ge=0)
+    message_count: int = Field(ge=1)
 
 
 class UserInputRequest(ApplicationDTO):
@@ -62,6 +73,7 @@ class UserInputRequest(ApplicationDTO):
     prompt: str
     session_id: str | None = None
     new_session_id: str | None = None
+    edit: UserMessageEdit | None = None
     input_id: str = Field(default_factory=lambda: new_id("queued"))
     title: str | None = None
     initial_model: str | None = None
@@ -76,6 +88,8 @@ class UserInputRequest(ApplicationDTO):
 
     @model_validator(mode="after")
     def validate_input(self) -> Self:
+        if self.edit is not None and self.session_id is None:
+            raise ValueError("Editing a message requires an existing session")
         if self.session_id is not None:
             if self.new_session_id is not None:
                 raise ValueError("new_session_id requires a new direct-user Session")
@@ -156,7 +170,7 @@ class IncomingRunInput:
 
     def materialize(
         self,
-        session: SessionRecord,
+        history_epoch: int,
         *,
         skills: tuple[SkillActivationContent, ...] = (),
         enqueue: bool = False,
@@ -165,7 +179,7 @@ class IncomingRunInput:
         request = self.request
         if isinstance(request, UserInputRequest):
             return QueuedInput(
-                history_epoch=session.history_epoch,
+                history_epoch=history_epoch,
                 queue_id=request.input_id,
                 prompt=request.prompt,
                 driver=self.driver,
@@ -181,7 +195,7 @@ class IncomingRunInput:
             )
         item = partial(
             QueuedInput,
-            history_epoch=session.history_epoch,
+            history_epoch=history_epoch,
             prompt=request.prompt,
             driver=self.driver,
             title=request.title,
@@ -218,8 +232,8 @@ class IncomingRunInput:
 
 
 @dataclass
-class InitialUserInput:
-    """A first input owns its admission catalog until execution claims it."""
+class PreparedUserInput:
+    """A prepared user input owns its admission catalog until execution claims it."""
 
     session: SessionRecord
     item: QueuedInput

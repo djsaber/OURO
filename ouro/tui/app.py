@@ -40,6 +40,7 @@ from ouro.application.contracts.sessions import (
     SessionSummary,
 )
 from ouro.application.inputs.queue import QueuedInputMode, QueuedUserInputView
+from ouro.application.inputs.requests import UserMessageEdit
 from ouro.application.inputs.skills import SkillInvocationRequest
 from ouro.application.observations.content import restore_session_content
 from ouro.application.observations.sessions import SessionObservation, observation_event
@@ -223,6 +224,7 @@ class HistoryLoadRequest:
     revision: int
     all_pages: bool = False
     navigate_to: str | None = None
+    worker: Worker[None] | None = None
 
 
 _AGENT_SWITCH_DEBOUNCE_SECONDS = 0.1
@@ -514,7 +516,7 @@ class OuroTuiApp(App[int]):
         self._resume_session_id = resume_session_id
         self._projection: TuiSessionProjection | None = None
         self._activity_override: str | None = None
-        self._history_edit_in_progress = False
+        self._continuing_session = False
         self._visible_read_only = False
         self._visible_agent: AgentTreeNode | None = None
         self._observation_subscription: SessionObservation | None = None
@@ -542,6 +544,7 @@ class OuroTuiApp(App[int]):
         self._models: tuple[AvailableModel, ...] = ()
         self._model_menu_loading = False
         self._composer_submission_lock = asyncio.Lock()
+        self._loading_edit_session: str | None = None
         self._sessions: tuple[SessionCatalogEntry, ...] = ()
         self._active_model = ""
         self._active_title = DEFAULT_SESSION_TITLE
@@ -1756,28 +1759,12 @@ class OuroTuiApp(App[int]):
             if panel.display and panel.awaiting_freeform:
                 panel.accept_freeform(message.text)
             return
-        self._execute_composer_input(
-            message, self._controller.selection_revision, self._controller.session_id
+        self._submit_run(
+            message.text,
+            message.mode,
+            attachments=message.content.attachments,
+            skills=message.content.skills,
         )
-
-    @work(group="composer-input")
-    async def _execute_composer_input(
-        self, message: Composer.Submitted, revision: int, origin_session_id: str | None
-    ) -> None:
-        with self.query_one(ActivityIndicator).pending_operation():
-            async with self._composer_submission_lock:
-                if revision != self._controller.selection_revision or self._visible_read_only:
-                    self._restore_unsent_input(message.content, revision, origin_session_id)
-                    self.notify(
-                        "Session changed while preparing input; the original draft was restored"
-                    )
-                    return
-                self._submit_run(
-                    message.text,
-                    message.mode,
-                    attachments=message.content.attachments,
-                    skills=message.content.skills,
-                )
 
     def on_composer_attachment_requested(self, message: Composer.AttachmentRequested) -> None:
         if self._visible_read_only or self._interaction is not None:
@@ -2108,11 +2095,6 @@ class OuroTuiApp(App[int]):
     ) -> None:
         if self._visible_read_only:
             return
-        welcome_on_failure = self.query_one(ConversationView).showing_welcome
-        self._set_welcome_mode(False)
-        active_run = self._has_active_run()
-        if not active_run:
-            self.query_one(StatusLine).set_activity("queued")
         attachments = (
             attachments
             if attachments is not None
@@ -2124,6 +2106,7 @@ class OuroTuiApp(App[int]):
             input_id=new_id("queued"),
             session_id=identity,
             origin_session_id=origin,
+            edit=self._input_drafts.edit_for(origin),
             text=prompt,
             attachments=attachments,
             skills=skills,
@@ -2137,14 +2120,34 @@ class OuroTuiApp(App[int]):
                 }
             )
         self._set_input_drafts(drafts)
+        if pending.edit is not None:
+            self._edit_draft(drafts.content_for(origin))
         self._sync_input_state(self._interaction)
-        self._run_prompt(
-            pending,
-            queue_mode,
-            revision=self._controller.selection_revision,
-            view_revision=self._view_revision,
-            welcome_on_failure=welcome_on_failure,
-        )
+        self._execute_composer_input(pending, queue_mode, self._controller.selection_revision)
+
+    @work(group="composer-input")
+    async def _execute_composer_input(
+        self, pending: TuiPendingInput, queue_mode: QueuedInputMode, revision: int
+    ) -> None:
+        with self.query_one(ActivityIndicator).pending_operation():
+            async with self._composer_submission_lock:
+                if revision != self._controller.selection_revision or self._visible_read_only:
+                    self._set_input_drafts(self._input_drafts.finish_submission(pending.input_id))
+                    self._restore_unsent_input(pending, revision, pending.origin_session_id)
+                    self._sync_input_state(self._interaction)
+                    self.notify("Session changed while preparing input. The draft was restored.")
+                    return
+                welcome_on_failure = self.query_one(ConversationView).showing_welcome
+                self._set_welcome_mode(False)
+                if not self._has_active_run():
+                    self.query_one(StatusLine).set_activity("queued")
+                self._run_prompt(
+                    pending,
+                    queue_mode,
+                    revision=revision,
+                    view_revision=self._view_revision,
+                    welcome_on_failure=welcome_on_failure,
+                )
 
     @work(group="run")
     async def _run_prompt(
@@ -2209,6 +2212,7 @@ class OuroTuiApp(App[int]):
                 on_input_accepted=input_accepted,
                 new_session_id=pending.session_id if origin_session_id is None else None,
                 input_id=pending.input_id,
+                edit=pending.edit,
             )
             await self._refresh_welcome_status()
             await self._sync_queued_inputs(result.session.session_id)
@@ -2244,6 +2248,13 @@ class OuroTuiApp(App[int]):
         same_selection = revision == self._controller.selection_revision
         target_session = self._controller.session_id if same_selection else origin_session_id
         editable = same_selection and not self._visible_read_only
+        if isinstance(content, TuiPendingInput) and content.edit is not None:
+            self._set_input_drafts(
+                self._input_drafts.edit_message(content.session_id, content.edit, content)
+            )
+            if editable:
+                self._edit_draft(content)
+            return False
         current = (
             self.query_one(Composer).draft_content
             if editable
@@ -2636,13 +2647,23 @@ class OuroTuiApp(App[int]):
         )
         popup.hide()
         self._dismissed_command_text = None
-        self._execute_composer_command(value)
+        self._execute_composer_command(value, self._visible_history())
 
     @work(group="composer-command")
-    async def _execute_composer_command(self, value: str) -> None:
+    async def _execute_composer_command(
+        self, value: str, history: tuple[str, int, int] | None
+    ) -> None:
         with self.query_one(ActivityIndicator).pending_operation():
             # Preserve submission order while leaving the message pump available.
             async with self._composer_submission_lock:
+                if history != self._visible_history():
+                    command, _ = resolve_command(value)
+                    if command is not None and command.name in {"/edit", "/fork"}:
+                        self.notify(
+                            "Conversation history changed. Select the message again.",
+                            severity="warning",
+                        )
+                        return
                 await self._dispatch_command(value)
 
     def on_composer_command_navigated(self, message: Composer.CommandNavigated) -> None:
@@ -2661,6 +2682,12 @@ class OuroTuiApp(App[int]):
             self._close_attachment_menu()
             return
         context = composer.command_context()
+        session_id = self._controller.session_id
+        if context is None and session_id is not None and self._input_drafts.edit_for(session_id):
+            self._set_input_drafts(self._input_drafts.finish_edit(session_id))
+            self._sync_input_state(self._interaction)
+            self._edit_draft(self._input_drafts.content_for(session_id))
+            return
         if context is not None and context[1]:
             composer.restore_command_draft(context[1])
             self._dismissed_command_text = None
@@ -2893,12 +2920,15 @@ class OuroTuiApp(App[int]):
         if self._host_closing or not self.query(Composer):
             return
         composer = self.query_one(Composer)
-        composer.attachments_enabled = not self._visible_read_only and interaction is None
-        preparing_first_input = self._controller.session_id is None and any(
-            item.origin_session_id is None for item in self._input_drafts.pending
+        session_id = self._controller.session_id
+        editable = not self._visible_read_only and interaction is None
+        composer.editing_message = editable and self._input_drafts.edit_for(session_id) is not None
+        selecting_edit = session_id is not None and self._loading_edit_session == session_id
+        composer.submission_pending = selecting_edit or any(
+            item.origin_session_id == session_id and (session_id is None or item.edit is not None)
+            for item in self._input_drafts.pending
         )
-        composer.submission_pending = preparing_first_input
-        composer.attachments_enabled = composer.attachments_enabled and not preparing_first_input
+        composer.attachments_enabled = editable and not composer.submission_pending
         if not composer.attachments_enabled:
             self._close_attachment_menu()
         if self._visible_read_only:
@@ -2972,7 +3002,10 @@ class OuroTuiApp(App[int]):
             else InputContent()
         )
         if not self._preferences.input_draft_memory_enabled:
-            self._remember_input_draft(session_id, "")
+            if session_id is None:
+                self._remember_input_draft(None, "")
+            else:
+                self._set_input_drafts(self._input_drafts.forget_sessions((session_id,)))
         self.query_one(Composer).restore_command_draft("")
         self.query_one(Composer).load_input(draft)
 
@@ -3053,11 +3086,20 @@ class OuroTuiApp(App[int]):
             self.action_sessions()
         elif command.name == "/actions":
             self.action_actions()
-        elif command.name in {"/continue", "/undo"}:
+        elif command.name == "/continue":
             if argument:
                 self.notify(f"{command.name} does not accept arguments", severity="warning")
             else:
-                self._edit_session_history(command.name)
+                self._continue_session()
+        elif command.name == "/edit":
+            if argument:
+                await self._edit_message(argument)
+            elif self._history_before_cursor is None and not self._user_message_arguments(
+                direct_only=True
+            ):
+                self.notify("There is no user message to edit", severity="warning")
+            else:
+                self._edit_command("/edit ", draft=self.query_one(Composer).text)
         elif command.name == "/fork":
             if argument:
                 self._fork_session(argument.casefold())
@@ -3103,9 +3145,6 @@ class OuroTuiApp(App[int]):
     def _command_catalog(self) -> tuple[TuiCommand, ...]:
         catalog = list(TUI_COMMANDS)
         argument_owner = self._active_builtin_argument_command()
-        user_message_options = (
-            self._user_message_arguments() if argument_owner in {"/fork", "/navigate"} else ()
-        )
         for index, command in enumerate(catalog):
             if command.name == "/workspace" and argument_owner == command.name:
                 catalog[index] = replace(
@@ -3119,16 +3158,16 @@ class OuroTuiApp(App[int]):
             elif command.name == "/navigate" and argument_owner == command.name:
                 catalog[index] = replace(
                     command,
-                    argument_options=self._navigate_options(
-                        user_message_options=user_message_options
-                    ),
+                    argument_options=self._navigate_options(),
                 )
             elif command.name == "/fork" and argument_owner == command.name:
                 catalog[index] = replace(
                     command,
-                    argument_options=self._fork_arguments(
-                        user_message_options=user_message_options
-                    ),
+                    argument_options=self._fork_arguments(),
+                )
+            elif command.name == "/edit" and argument_owner == command.name:
+                catalog[index] = replace(
+                    command, argument_options=self._user_message_arguments(direct_only=True)
                 )
             elif (
                 command.name == "/thinking"
@@ -3255,27 +3294,15 @@ class OuroTuiApp(App[int]):
         if self._restore_unsent_input(content, revision, session_id):
             self.notify("Restored queued input after the current draft")
 
-    def _navigate_options(
-        self,
-        *,
-        user_message_options: tuple[TuiCommandArgument, ...] | None = None,
-    ) -> tuple[TuiCommandArgument, ...]:
+    def _navigate_options(self) -> tuple[TuiCommandArgument, ...]:
         """Build /navigate argument options from the live dialogue state."""
         return (
             TuiCommandArgument("top", "Jump to the first message"),
             TuiCommandArgument("bottom", "Jump to the latest message"),
-            *(
-                user_message_options
-                if user_message_options is not None
-                else self._user_message_arguments()
-            ),
+            *self._user_message_arguments(),
         )
 
-    def _fork_arguments(
-        self,
-        *,
-        user_message_options: tuple[TuiCommandArgument, ...] | None = None,
-    ) -> tuple[TuiCommandArgument, ...]:
+    def _fork_arguments(self) -> tuple[TuiCommandArgument, ...]:
         """Build /fork targets through the same numbered user-message projection."""
 
         if self._controller.session_id is None:
@@ -3286,14 +3313,12 @@ class OuroTuiApp(App[int]):
                 "Fork the complete current session",
                 label="Full",
             ),
-            *(
-                user_message_options
-                if user_message_options is not None
-                else self._user_message_arguments()
-            ),
+            *self._user_message_arguments(),
         )
 
-    def _user_message_arguments(self) -> tuple[TuiCommandArgument, ...]:
+    def _user_message_arguments(
+        self, *, direct_only: bool = False
+    ) -> tuple[TuiCommandArgument, ...]:
         """Project visible user turns as stable numbered command options."""
 
         if self._history_before_cursor is not None:
@@ -3301,12 +3326,13 @@ class OuroTuiApp(App[int]):
                 self._request_earlier_history(all_pages=True)
             return ()
         try:
-            conversation = self.query_one(ConversationView)
+            history = self.query_one(ConversationHistory)
         except Exception:  # noqa: BLE001 — app may not have mounted the view yet.
             return ()
         return tuple(
-            TuiCommandArgument(f"#{index}", _summarize(text))
-            for index, text in enumerate(conversation.user_turn_summaries(), start=1)
+            TuiCommandArgument(f"#{index}", _summarize(entry.text), is_suggestion=direct_only)
+            for index, entry in enumerate(history.user_entries, start=1)
+            if not direct_only or entry.direct_user_input
         )
 
     def _plugin_commands(self) -> tuple[TuiCommand, ...]:
@@ -4394,19 +4420,21 @@ class OuroTuiApp(App[int]):
 
     def _request_earlier_history(
         self, *, all_pages: bool = False, navigate_to: str | None = None
-    ) -> None:
+    ) -> Worker[None] | None:
         if self._history_before_cursor is None:
-            return
+            return None
         request = self._history_request
         if request is not None and request.revision == self._view_revision:
             request.all_pages |= all_pages
             if navigate_to is not None:
                 request.navigate_to = navigate_to
-            return
+            return request.worker
         request = HistoryLoadRequest(self._view_revision, all_pages, navigate_to)
         self._history_request = request
         self._history_load_failed = False
-        self._load_earlier_history(request)
+        worker: Worker[None] = self._load_earlier_history(request)
+        request.worker = worker
+        return worker
 
     @property
     def _history_loading(self) -> bool:
@@ -4550,67 +4578,111 @@ class OuroTuiApp(App[int]):
         )
 
     @work(group="session-history")
-    async def _edit_session_history(self, command: str) -> None:
+    async def _continue_session(self) -> None:
         if (
             self._visible_read_only
-            or (command != "/undo" and self._has_active_run())
+            or self._has_active_run()
             or self._activity_override is not None
-            or self._history_edit_in_progress
+            or self._continuing_session
         ):
             self.notify("This operation requires an idle main session", severity="warning")
             return
         if self._controller.session_id is None:
-            self.notify("There is no session history to edit", severity="warning")
+            self.notify("There is no session to continue", severity="warning")
             return
-        self._history_edit_in_progress = True
+        self._continuing_session = True
         session_id = self._controller.session_id
         revision = self._controller.selection_revision
-        if command == "/undo":
-            self._activity_override = "undoing"
-            self.query_one(Composer).disabled = True
-        self.query_one(StatusLine).set_activity(
-            "preparing_model" if command == "/continue" else "undoing"
-        )
+        self.query_one(StatusLine).set_activity("preparing_model")
         try:
-            if command == "/undo":
-                selected = await self._controller.undo()
-                attachments = selected.attachments or await self._controller.input_attachments(
-                    selected.session.session_id, selected.resource_refs
+            result = await self._controller.continue_session()
+            await self._refresh_welcome_status()
+            if not self._owns_session_surface(session_id):
+                return
+            if result.run.status == "paused":
+                self.notify(describe_run_pause(result.run), severity="warning", markup=False)
+            elif result.run.status == "failed":
+                self.notify(
+                    f"Continue failed: {result.run.error}", severity="warning", markup=False
                 )
-                content = editable_input_content(selected.input, attachments)
-                self._remember_input_draft(
-                    selected.session.session_id,
-                    content.text,
-                    attachments=content.attachments,
-                    skills=content.skills,
-                )
-                if not self._owns_session_surface(session_id):
-                    return
-                await self._show_main_session()
-                self._edit_draft(content)
-                if selected.resource_refs:
-                    self.notify(
-                        f"Restored {len(selected.resource_refs)} attachment(s) to this input"
-                    )
-            else:
-                result = await self._controller.continue_session()
-                await self._refresh_welcome_status()
-                if not self._owns_session_surface(session_id):
-                    return
-                if result.run.status == "paused":
-                    self.notify(describe_run_pause(result.run), severity="warning", markup=False)
-                elif result.run.status == "failed":
-                    self.notify(
-                        f"Continue failed: {result.run.error}", severity="warning", markup=False
-                    )
         except Exception as exc:  # noqa: BLE001 - command failures are user-visible.
             self.notify(str(exc), severity="warning", markup=False)
         finally:
-            self._history_edit_in_progress = False
-            self._activity_override = None
+            self._continuing_session = False
             if revision == self._controller.selection_revision:
                 self._restore_projection_activity(self._projection)
                 self._sync_input_state(self._interaction, focus=True)
+
+    async def _numbered_user_message(
+        self, session_id: str, target: str, *, direct_only: bool = False
+    ) -> MessageRecord:
+        number = target.removeprefix("#")
+        if number == target or not number.isdecimal() or int(number) < 1:
+            raise ValueError("Choose a user message by number, such as #1")
+        revision = self._view_revision
+        if worker := self._request_earlier_history(all_pages=True):
+            await worker.wait()
+        if revision != self._view_revision or self._history_before_cursor is not None:
+            raise ValueError("Conversation history changed or could not be loaded")
+        entries = self.query_one(ConversationHistory).user_entries
+        index = int(number) - 1
+        if index >= len(entries):
+            raise ValueError(f"There is no user message {target}")
+        entry = entries[index]
+        if entry.message_id is None or (direct_only and not entry.direct_user_input):
+            raise ValueError(f"Message {target} is not a directly submitted user input")
+        return await self._controller.message(session_id, entry.message_id)
+
+    async def _message_draft(self, session_id: str, message: MessageRecord) -> InputContent:
+        attachments = message.input_attachments or await self._controller.input_attachments(
+            session_id, tuple(message.resource_refs)
+        )
+        return editable_input_content(message, attachments)
+
+    def _visible_history(self) -> tuple[str, int, int] | None:
+        observation = self._observation_subscription
+        projection = self._projection
+        if observation is None or projection is None:
+            return None
+        return (
+            projection.session_id,
+            projection.history_epoch,
+            observation.applied_position.message_sequence,
+        )
+
+    async def _edit_message(self, target: str) -> None:
+        if (
+            self._visible_read_only
+            or self._has_active_run()
+            or self._continuing_session
+            or self.query_one(Composer).submission_pending
+        ):
+            self.notify("Editing requires an idle main session", severity="warning")
+            return
+        history = self._visible_history()
+        if history is None:
+            self.notify("There is no user message to edit", severity="warning")
+            return
+        session_id, history_epoch, message_count = history
+        self._loading_edit_session = session_id
+        self._sync_input_state(self._interaction)
+        try:
+            selected = await self._numbered_user_message(session_id, target, direct_only=True)
+            content = await self._message_draft(session_id, selected)
+            if history != self._visible_history():
+                raise ValueError("Conversation history changed. Select the message again.")
+            edit = UserMessageEdit(
+                message_id=selected.message_id,
+                history_epoch=history_epoch,
+                message_count=message_count,
+            )
+            self._set_input_drafts(self._input_drafts.edit_message(session_id, edit, content))
+            self._edit_draft(content)
+        except Exception as exc:  # noqa: BLE001 - report an unavailable history selection.
+            self.notify(str(exc), severity="warning", markup=False)
+        finally:
+            self._loading_edit_session = None
+            self._sync_input_state(self._interaction)
 
     @work(exclusive=True, group="session-fork")
     async def _fork_session(
@@ -4620,7 +4692,8 @@ class OuroTuiApp(App[int]):
         if self._has_active_run():
             self.notify("Stop the current task before copying the conversation", severity="warning")
             return
-        if self._controller.session_id is None:
+        session_id = self._controller.session_id
+        if session_id is None:
             return
         content: InputContent | None = None
         previous_projection = self._projection
@@ -4630,21 +4703,11 @@ class OuroTuiApp(App[int]):
             if target == "full":
                 result = await self._controller.branch_session()
             else:
-                points = await self._controller.branch_points()
-                if not target.startswith("#") or not target[1:].isdigit():
-                    raise ValueError(f"unknown fork target: {target}")
-                index = int(target[1:]) - 1
-                if not 0 <= index < len(points):
-                    raise ValueError(f"user message is not a fork point: {target}")
-                selected_message = points[index]
+                selected_message = await self._numbered_user_message(session_id, target)
+                if not self._owns_session_surface(session_id):
+                    raise ValueError("The selected session changed while choosing a message")
                 result = await self._controller.branch_session(selected_message.message_id)
-                attachments = (
-                    selected_message.input_attachments
-                    or await self._controller.input_attachments(
-                        result.session.session_id, tuple(selected_message.resource_refs)
-                    )
-                )
-                content = editable_input_content(selected_message, attachments)
+                content = await self._message_draft(result.session.session_id, selected_message)
                 self._remember_input_draft(
                     result.session.session_id,
                     content.text,
@@ -5775,6 +5838,11 @@ class OuroTuiApp(App[int]):
             welcome_resource_id=self._input_drafts.welcome_resource_id,
             welcome_workspace=self._input_drafts.welcome_workspace,
             pending=self._input_drafts.pending,
+            sessions=tuple(
+                draft
+                for draft in self._input_drafts.sessions
+                if draft.session_id == self._controller.session_id and not self._visible_read_only
+            ),
         )
         if not self._visible_read_only and self.query(Composer):
             drafts = drafts.remember(

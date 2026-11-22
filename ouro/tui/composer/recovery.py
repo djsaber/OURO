@@ -21,6 +21,8 @@ async def recover_input_drafts(
             if pending.origin_session_id is None:
                 resume = pending.session_id
                 drafts = drafts.model_copy(update={"welcome_resource_id": None})
+        elif pending.edit is not None:
+            drafts = drafts.edit_message(pending.session_id, pending.edit, pending)
         else:
             content = drafts.content_for(pending.origin_session_id).followed_by(pending)
             drafts = drafts.remember(

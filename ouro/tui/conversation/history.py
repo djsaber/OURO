@@ -156,8 +156,12 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
             message.stop()
 
     @property
+    def user_entries(self) -> tuple[TranscriptEntry, ...]:
+        return tuple(entry for entry in self._entries if entry.kind == "user")
+
+    @property
     def user_turns(self) -> tuple[str, ...]:
-        return tuple(entry.text for entry in self._entries if entry.kind == "user")
+        return tuple(entry.text for entry in self.user_entries)
 
     @property
     def user_lines(self) -> tuple[int, ...]:

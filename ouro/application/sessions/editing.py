@@ -1,15 +1,26 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
+
 from ouro.application.contracts.sessions import SessionUndoResult
-from ouro.application.inputs.queue import QueuedInputQueue
+from ouro.application.inputs.queue import QueuedInputQueue, queued_input_event
+from ouro.application.inputs.requests import InputSessionSettings, UserMessageEdit
 from ouro.application.sessions.recovery import SessionRecoveryService
-from ouro.core.attachment_input import is_editable_user_input
+from ouro.application.usage import UsageService
+from ouro.core.attachment_input import is_direct_user_input
 from ouro.core.base import new_id
 from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.events import EventRecord
-from ouro.core.inputs import InputStateChange
+from ouro.core.harness_calls import HarnessCallSnapshot
+from ouro.core.inputs import InputRecord, InputStateChange
 from ouro.core.messages import ContentBlock, MessageRecord, ModelMessage, TextContent
-from ouro.core.session_commits import SessionCommit, SessionCommitConflict
+from ouro.core.session_commits import (
+    HistoryBoundaryUnavailable,
+    SessionCommit,
+    SessionCommitConflict,
+    SessionCommitResult,
+)
 from ouro.core.session_ports import RuntimeSessionSnapshot, SessionStore
 from ouro.core.state import ACTIVE_RUN_STATUSES, RESUMABLE_RUN_STATUSES, RunRecord, SessionRecord
 
@@ -90,7 +101,7 @@ def undo_user_input(
             if pending is not None:
                 if pending.source != "user" or pending.role != "user":
                     raise ValueError("Undo requires a directly submitted user input")
-                committed = _commit_undo(
+                committed = _commit_history_change(
                     store,
                     SessionCommit(
                         before=session,
@@ -112,7 +123,7 @@ def undo_user_input(
                 if pending.prompt:
                     content.append(TextContent(text=pending.prompt))
                 return SessionUndoResult(
-                    session=committed,
+                    session=committed.session,
                     input=ModelMessage(role="user", content=content),
                     resource_refs=pending.resource_refs,
                     attachments=pending.attachments,
@@ -124,92 +135,151 @@ def undo_user_input(
                 if consumed is None:
                     raise ValueError("The selected queue input is no longer available")
                 message_id = consumed.message_id
-    # Orphaned active work uses the ordinary recovery command before taking ownership.
+    with _idle_history(store, session) as session:
+        if message_id is not None:
+            selected = store.load_message(session_id, message_id)
+        else:
+            # The store iterator starts at the head and stops at the first direct input.
+            with closing(store.iter_messages_before(session_id)) as messages:
+                latest = next((m for _, m in messages if is_direct_user_input(m)), None)
+            if latest is None:
+                raise ValueError("There is no user message to undo")
+            selected = latest
+        boundary = _input_boundary(store, selected)
+        event, cancelled = _withdrawal_event(store, session, boundary.message_id)
+        committed = _commit_history_change(
+            store,
+            SessionCommit(before=session, before_message_id=boundary.message_id, events=(event,)),
+        )
+    store.refresh_catalog(session_id)
+    return SessionUndoResult(
+        session=committed.session,
+        input=ModelMessage(
+            role="user",
+            content=[] if selected.semantic_tag == "attachments" else selected.content,
+        ),
+        resource_refs=tuple(boundary.resource_refs),
+        attachments=selected.input_attachments,
+        message_id=selected.message_id,
+        queue_id=selected.input_id,
+        run_id=selected.run_id,
+        removed_count=session.message_count - committed.session.message_count,
+        cancelled_queue_ids=cancelled,
+    )
+
+
+def read_edit_boundary(
+    store: SessionStore, session: SessionRecord, edit: UserMessageEdit, usage: UsageService | None
+) -> tuple[str, HarnessCallSnapshot]:
+    """Resolve the complete submitted input and the policy state before it."""
+    if session.session_kind != "primary":
+        raise ValueError("Editing a user message requires a primary session")
+    if session.active_run_id is not None:
+        raise SessionBusyError("Abort the active run before editing a message")
+    if (session.history_epoch, session.message_count) != (edit.history_epoch, edit.message_count):
+        raise SessionCommitConflict("Session history changed. Select the message again to edit it.")
+    with store.session_read(session.session_id):
+        selected = store.load_message(session.session_id, edit.message_id)
+        boundary = _input_boundary(store, selected)
+        if boundary.before_harness_version is None:
+            raise HistoryBoundaryUnavailable("Message has no recoverable Harness boundary")
+        version = store.load_harness(session.session_id, boundary.before_harness_version)
+        return boundary.message_id, HarnessCallSnapshot(
+            session_id=session.session_id,
+            harness_version=version.version_id,
+            history_epoch=session.history_epoch + 1,
+            last_message_id=(
+                store.message_id_at(session.session_id, boundary.sequence - 1)
+                if boundary.sequence > 1
+                else None
+            ),
+            state=version.state,
+            usage_tokens=usage.session_scope_tokens(session.session_id) if usage else None,
+        )
+
+
+def accept_message_edit(
+    store: SessionStore,
+    before: SessionRecord,
+    boundary_id: str,
+    replacement: InputRecord,
+    settings: InputSessionSettings,
+) -> SessionCommitResult:
+    with _idle_history(store, before) as current:
+        # The original head and Harness remain commit preconditions across policy evaluation.
+        event, cancelled = _withdrawal_event(store, current, boundary_id)
+        queued = queued_input_event(
+            current, replacement.item, len(current.pending_input_ids) - len(cancelled) + 1
+        )
+        configured = settings.apply(before)
+        result = _commit_history_change(
+            store,
+            SessionCommit(
+                before=before,
+                after=configured if configured is not before else None,
+                before_message_id=boundary_id,
+                inputs=(replacement,),
+                prepend_inputs=True,
+                events=(event, queued),
+            ),
+        )
+    store.refresh_catalog(before.session_id)
+    return result
+
+
+def _input_boundary(store: SessionStore, selected: MessageRecord) -> MessageRecord:
+    if not is_direct_user_input(selected):
+        raise ValueError("Editing requires a directly submitted user input")
+    attachment_id = selected.metadata.get("attachment_message_id")
+    if isinstance(attachment_id, str):
+        return store.load_message(selected.session_id, attachment_id)
+    return selected
+
+
+@contextmanager
+def _idle_history(store: SessionStore, session: SessionRecord) -> Iterator[SessionRecord]:
+    session_id = session.session_id
     if session.active_run_id is not None and not store.is_session_locked(session_id):
         run = store.load_run(session_id, session.active_run_id)
         if run.status in {"queued", "running"}:
             SessionRecoveryService(store).recover_runtime(session_id)
-    lock = store.acquire_session_lock(session_id, new_id("undo"))
+    lock = store.acquire_session_lock(session_id, new_id("edit"))
     if lock is None:
-        raise SessionBusyError("Abort the active run before undoing a message")
+        raise SessionBusyError("Abort the active run before editing a message")
     try:
         with store.session_mutation(session_id):
             session = store.load_session_record(session_id)
             if session.active_run_id is not None:
-                raise SessionBusyError("Abort the active run before undoing a message")
-            selected: MessageRecord | None
-            if message_id is not None:
-                selected = store.load_message(session_id, message_id)
-                if not _direct_user_message(selected):
-                    raise ValueError("Undo requires a directly submitted user input")
-            else:
-                # Work is bounded by the selected suffix, not the retained conversation.
-                limit = 32
-                while True:
-                    tail = store.load_messages_tail(session_id, limit=limit)
-                    selected = next((m for m in tail if _direct_user_message(m)), None)
-                    if selected is not None:
-                        break
-                    if len(tail) < limit:
-                        raise ValueError("There is no user message to undo")
-                    limit *= 2
-            attachment_id = selected.metadata.get("attachment_message_id")
-            boundary = (
-                store.load_message(session_id, attachment_id)
-                if isinstance(attachment_id, str)
-                else selected
-            )
-            after, cancelled = queue.after_withdrawal(session)
-            committed = _commit_undo(
-                store,
-                SessionCommit(
-                    before=session,
-                    after=after,
-                    before_message_id=boundary.message_id,
-                    events=(
-                        EventRecord(
-                            session_id=session_id,
-                            event_type="session_history_withdrawn",
-                            payload={
-                                "before_message_id": boundary.message_id,
-                                "history_epoch": session.history_epoch + 1,
-                                "cancelled_queue_ids": list(cancelled),
-                            },
-                        ),
-                    ),
-                ),
-            )
-        store.refresh_catalog(session_id)
-        return SessionUndoResult(
-            session=committed,
-            input=ModelMessage(
-                role="user",
-                content=[] if selected.semantic_tag == "attachments" else selected.content,
-            ),
-            resource_refs=tuple(boundary.resource_refs),
-            attachments=selected.input_attachments,
-            message_id=selected.message_id,
-            queue_id=selected.input_id,
-            run_id=selected.run_id,
-            removed_count=session.message_count - committed.message_count,
-            cancelled_queue_ids=cancelled,
-        )
+                raise SessionBusyError("Abort the active run before editing a message")
+            yield session
     finally:
         lock.release()
 
 
-def _direct_user_message(message: MessageRecord) -> bool:
-    return is_editable_user_input(message) and (
-        message.role == "harness" or message.metadata.get("session_input_source") == "user"
+def _withdrawal_event(
+    store: SessionStore, session: SessionRecord, boundary_id: str
+) -> tuple[EventRecord, tuple[str, ...]]:
+    cancelled = QueuedInputQueue(store).cancelled_by_withdrawal(session)
+    event = EventRecord(
+        session_id=session.session_id,
+        event_type="session_history_withdrawn",
+        payload={
+            "before_message_id": boundary_id,
+            "history_epoch": session.history_epoch + 1,
+            "cancelled_queue_ids": list(cancelled),
+        },
     )
+    return event, cancelled
 
 
-def _commit_undo(store: SessionStore, request: SessionCommit) -> SessionRecord:
+def _commit_history_change(store: SessionStore, request: SessionCommit) -> SessionCommitResult:
     try:
-        return store.commit_session(request).session
+        return store.commit_session(request)
+    except SessionCommitConflict, HistoryBoundaryUnavailable:
+        raise
     except OSError, PersistenceError:
         with store.session_mutation(request.before.session_id):
             current = store.load_session_record(request.before.session_id)
             if current.last_commit_id != request.operation_id:
                 raise
-            return current
+            return SessionCommitResult(operation_id=request.operation_id, session=current)

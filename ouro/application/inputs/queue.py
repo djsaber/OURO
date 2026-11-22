@@ -49,9 +49,7 @@ class PendingInputs:
         return state
 
     def _pending_item(self, session: SessionRecord, state: InputState) -> QueuedInput | None:
-        if state.history_epoch != session.history_epoch and (
-            state.history_bound or state.source in {"plugin", "delegation"}
-        ):
+        if not state.valid_in_history(session.history_epoch):
             return None
         record = self.store.load_input(session.session_id, state.input_id)
         if record is None:
@@ -186,7 +184,7 @@ class QueuedInputQueue(PendingInputs):
                 raise SessionCommitConflict("Queued input belongs to withdrawn Session history")
             record = self.store.load_input(latest.session_id, item.queue_id)
             if record is not None:
-                if not same_queued_input(record.item, item):
+                if not same_input_submission(record, InputRecord(session_id=session_id, item=item)):
                     raise ValueError("Input id is already bound to another input")
                 state = self._state(latest.session_id, item.queue_id)
                 if state.status in {"cancelled", "withdrawn"}:
@@ -196,14 +194,9 @@ class QueuedInputQueue(PendingInputs):
                 return latest, record.item, len(latest.pending_input_ids), ()
             staged = self.stage_batch(latest, (item,))
             configured = session_settings.apply(latest) if session_settings is not None else latest
-            if configured is not latest:
-                if self.store.is_session_locked(latest.session_id):
-                    assert session_settings is not None
-                    session_settings.apply(latest, executing=True)
-                now = utc_now()
-                configured = configured.model_copy(
-                    update={"updated_at": now, "last_activity_at": now}
-                )
+            if configured is not latest and self.store.is_session_locked(latest.session_id):
+                assert session_settings is not None
+                session_settings.apply(latest, executing=True)
             committed = self.store.commit_session(
                 SessionCommit(
                     before=latest,
@@ -460,14 +453,14 @@ class QueuedInputQueue(PendingInputs):
             )
             return committed.session, item, committed.events
 
-    def after_withdrawal(self, session: SessionRecord) -> tuple[SessionRecord, tuple[str, ...]]:
-        cancelled = tuple(
+    def cancelled_by_withdrawal(self, session: SessionRecord) -> tuple[str, ...]:
+        return tuple(
             identity
             for identity in session.pending_input_ids
-            if (state := self._pending_state(session, identity)).history_bound
-            or state.source in {"plugin", "delegation"}
+            if not self._pending_state(session, identity).valid_in_history(
+                session.history_epoch + 1
+            )
         )
-        return session, cancelled
 
     def without_session_control(
         self,
@@ -607,8 +600,9 @@ def project_queued_user_input(
     )
 
 
-def same_queued_input(first: QueuedInput, second: QueuedInput) -> bool:
+def same_input_submission(accepted: InputRecord, proposed: InputRecord) -> bool:
     """Compare the submitted input, independent of its later execution bindings."""
+    first, second = accepted.item, proposed.item
     fields = (
         "prompt",
         "mode",
@@ -626,7 +620,8 @@ def same_queued_input(first: QueuedInput, second: QueuedInput) -> bool:
         "contribution_id",
     )
     return (
-        all(getattr(first, name) == getattr(second, name) for name in fields)
+        accepted.replaces_message_id == proposed.replaces_message_id
+        and all(getattr(first, name) == getattr(second, name) for name in fields)
         and (first.driver.driver_id if first.driver else None)
         == (second.driver.driver_id if second.driver else None)
         and [(item.name, item.text_offset, item.order) for item in first.skill_activations]

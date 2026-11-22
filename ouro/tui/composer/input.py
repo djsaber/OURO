@@ -12,6 +12,7 @@ from textual.binding import Binding
 from textual.color import Color
 from textual.content import Content
 from textual.message import Message
+from textual.reactive import reactive
 from textual.strip import Strip
 from textual.style import Style
 from textual.widgets import TextArea
@@ -49,6 +50,7 @@ _PlaceholderPart = tuple[str, _PlaceholderTone]
 
 
 class Composer(AttachmentTextArea):
+    editing_message = reactive(False, toggle_class="editing-message")
     DEFAULT_PLACEHOLDER = "Ask anything..."
     ACTIVE_RUN_PLACEHOLDER = DEFAULT_TUI_THEME.inline_separator.join(
         ("Enter queues a follow-up", "Ctrl+G guides the active run…")
@@ -121,6 +123,7 @@ class Composer(AttachmentTextArea):
             )
         )
         self.theme = "ouro-composer"
+        self.border_title = "Editing message · Enter replaces history from here · Esc cancels"
         self._history: list[InputContent] = []
         self._history_index = 0
         self._clipboard_reader = clipboard_reader
@@ -309,6 +312,8 @@ class Composer(AttachmentTextArea):
     def command_context(self) -> tuple[str, str] | None:
         """Return command text separately from any pre-existing draft."""
 
+        if self.editing_message and not self.attachment_menu_open:
+            return None
         draft = self._command_draft
         if draft is not None:
             command_text = self._prefix_before_draft(draft)
@@ -615,5 +620,5 @@ class Composer(AttachmentTextArea):
         )
 
     def action_dismiss_command(self) -> None:
-        if self.command_context() is not None:
+        if self.command_context() is not None or self.editing_message:
             self.post_message(self.CommandDismissed())

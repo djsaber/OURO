@@ -25,9 +25,11 @@ from ouro.tools import ToolRegistry
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.drafts import TuiInputDraftStore
 from ouro.tui.composer.input import Composer
+from ouro.tui.composer.popup import CommandPopup
 from ouro.tui.conversation.history import ConversationHistory
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
+from tests.application.test_skill_activations import CapturingProvider
 from tests.run_facts import run_events
 from tests.tui.helpers import run_ready_app, wait_for_workers, wait_until
 
@@ -60,7 +62,7 @@ def application_at(tmp_path, provider=None, *, backend="files", skills=None):
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
-async def test_undo_skill_and_attachment_survive_navigation_restart_and_submission(
+async def test_edit_skill_and_attachment_survive_navigation_restart_and_submission(
     tmp_path, backend
 ):
     skill = tmp_path / "skills" / "demo" / "SKILL.md"
@@ -83,7 +85,7 @@ async def test_undo_skill_and_attachment_survive_navigation_restart_and_submissi
     other = runtime.create_session(title="other")
     app = OuroTuiApp(application=application, resume_session_id=session.session_id)
     async with run_ready_app(app, size=(100, 32)) as pilot:
-        await command(app, pilot, "/undo")
+        await command(app, pilot, "/edit #1")
         assert app.query_one(Composer).input_content.text == "original"
         await app._open_session(other.session_id)
         assert app._input_drafts.resources_for(other.session_id) == ()
@@ -152,14 +154,20 @@ async def command(app, pilot, value, *, attachments=(), skills=()):
     await pilot.press("enter")
     await pilot.pause()
     async with asyncio.timeout(10):
-        workers = tuple(worker for worker in app.workers if worker.group == "session-history")
+        workers = tuple(
+            worker
+            for worker in app.workers
+            if worker.group in {"composer-command", "session-history"}
+        )
         if workers:
             await wait_for_workers(app, workers)
     await pilot.pause()
 
 
 @pytest.mark.parametrize("remember", [True, False])
-async def test_failed_undo_and_submit_keep_text_and_resources(tmp_path, monkeypatch, remember):
+async def test_failed_edit_selection_and_submit_keep_text_and_resources(
+    tmp_path, monkeypatch, remember
+):
     TuiPreferencesStore(tmp_path).save(TuiPreferences(input_draft_memory_enabled=remember))
     application = application_at(tmp_path)
     first = await application.runtime.run("original")
@@ -177,9 +185,22 @@ async def test_failed_undo_and_submit_keep_text_and_resources(tmp_path, monkeypa
         async def fail(*args, **kwargs):
             raise PersistenceError("injected failure")
 
-        monkeypatch.setattr(app._controller, "undo", fail)
-        await app._edit_session_history("/undo").wait()
-        assert app.query_one(Composer).input_content.text == "draft"
+        reading, release = asyncio.Event(), asyncio.Event()
+
+        async def fail_selection(*args):
+            reading.set()
+            await release.wait()
+            await fail()
+
+        monkeypatch.setattr(app._controller, "message", fail_selection)
+        selection = asyncio.create_task(app._edit_message("#1"))
+        await asyncio.wait_for(reading.wait(), 5)
+        try:
+            await pilot.press("enter")
+            assert app.query_one(Composer).input_content.text == "draft"
+        finally:
+            release.set()
+            await selection
         assert app._input_drafts.resources_for(first.session.session_id) == ("res_selected",)
         monkeypatch.setattr(app._controller, "submit", fail)
         await command(
@@ -198,33 +219,170 @@ async def test_failed_undo_and_submit_keep_text_and_resources(tmp_path, monkeypa
     assert stored.resources_for(first.session.session_id) == (("res_selected",) if remember else ())
 
 
-async def test_undo_returns_latest_user_message_to_composer_and_edit_stays_in_session(tmp_path):
-    application = application_at(tmp_path)
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_edit_numbered_message_replaces_suffix_on_submit(tmp_path, monkeypatch, backend):
+    provider = CapturingProvider()
+    application = application_at(tmp_path, provider=provider, backend=backend)
     first = await application.runtime.run("first question")
-    second = await application.runtime.run("second question", session_id=first.session.session_id)
-    app = OuroTuiApp(application=application, resume_session_id=first.session.session_id)
-    async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause()
-        await command(app, pilot, "/undo")
-        assert app.query_one(Composer).text == "second question"
-        assert app._controller.session_id == first.session.session_id
-        assert app.query_one(ConversationView).user_turn_summaries() == ("first question",)
-        await app._apply_runtime_events(run_events(application.runtime.store, second))
-        assert app._projection.assistant_text == ""
-        messages = application.runtime.store.load_session(first.session.session_id).messages
-        assert all(message.run_id != second.run.run_id for message in messages)
-        app.query_one(Composer).load_text("edited question")
-        await pilot.press("enter")
-        await pilot.pause()
-        async with asyncio.timeout(10):
-            workers = tuple(w for w in app.workers if w.group == "run")
-            if workers:
-                await wait_for_workers(app, workers)
-        messages = application.runtime.store.load_session(first.session.session_id).messages
-        assert [message.text_content for message in messages if message.role == "user"] == [
+    session_id = first.session.session_id
+    store = application.runtime.store
+    prefix = store.load_session(session_id).messages
+    await application.runtime.run("second question", session_id=session_id)
+    third = await application.runtime.run("third question", session_id=session_id)
+    before = store.load_session(session_id).messages
+    cuts = []
+    commit = store.commit_session
+
+    def capture_cut(request):
+        if request.before_message_id:
+            cuts.append((request.before_message_id, [r.item.prompt for r in request.inputs]))
+        return commit(request)
+
+    monkeypatch.setattr(store, "commit_session", capture_cut)
+    app = OuroTuiApp(application=application, resume_session_id=session_id)
+    async with run_ready_app(app, size=(100, 32)) as pilot:
+        await pilot.press("slash", *"edit", "enter")
+        popup = app.query_one(CommandPopup)
+        assert [option.value for option in popup._arguments] == ["#1", "#2", "#3"]
+        await pilot.press("down", "enter")
+        composer = app.query_one(Composer)
+        await wait_until(
+            lambda: composer.text == "second question", pilot, description="edit draft"
+        )
+        assert store.load_session(session_id).messages == before
+        assert cuts == []
+        await command(app, pilot, "edited question")
+        await wait_until(
+            lambda: (
+                app.query_one(ConversationView).user_turn_summaries()
+                == ("first question", "edited question")
+                and app._projection.activity.status == "completed"
+            ),
+            pilot,
+            description="edited run completed",
+        )
+        after = store.load_session(session_id)
+        assert app._controller.session_id == session_id
+        assert after.messages[: len(prefix)] == prefix
+        assert after.session.history_epoch == 1
+        assert cuts == [(before[len(prefix)].message_id, ["edited question"])]
+        assert [m.text_content for m in provider.calls[-1] if m.role == "user"] == [
             "first question",
             "edited question",
         ]
+        assert {m.message_id for m in after.messages}.isdisjoint(
+            m.message_id for m in before[len(prefix) :]
+        )
+        await app._apply_runtime_events(run_events(store, third))
+        assert app.query_one(ConversationView).user_turn_summaries() == (
+            "first question",
+            "edited question",
+        )
+
+
+async def test_failed_edit_can_retry_or_cancel_to_previous_draft(tmp_path, monkeypatch):
+    application = application_at(tmp_path)
+    runtime = application.runtime
+    first = await runtime.run("original")
+    session_id = first.session.session_id
+    before = runtime.store.load_session(session_id)
+    app = OuroTuiApp(application=application, resume_session_id=session_id)
+    async with run_ready_app(app) as pilot:
+        composer = app.query_one(Composer)
+        composer.load_text("unsent follow-up")
+        await pilot.pause()
+        await app._edit_message("#1")
+        assert composer.text == "original"
+
+        async def fail(*args, **kwargs):
+            raise PersistenceError("not accepted")
+
+        monkeypatch.setattr(app._controller, "submit", fail)
+        await command(app, pilot, "updated")
+        await wait_until(
+            lambda: composer.text == "updated" and composer.has_class("editing-message"),
+            pilot,
+            description="rejected edit restored",
+        )
+        assert app._input_drafts.edit_for(session_id).message_id == before.messages[0].message_id
+        await pilot.press("escape")
+        assert composer.text == "unsent follow-up"
+        assert app._input_drafts.edit_for(session_id) is None
+        assert runtime.store.load_session(session_id) == before
+
+
+async def test_submitted_edit_keeps_its_target_while_waiting_for_a_command(tmp_path):
+    application = application_at(tmp_path)
+    runtime = application.runtime
+    session_id = (await runtime.run("original")).session.session_id
+    app = OuroTuiApp(application=application, resume_session_id=session_id)
+    async with run_ready_app(app) as pilot:
+        composer = app.query_one(Composer)
+        composer.load_text("unsent follow-up")
+        await pilot.pause()
+        await app._edit_message("#1")
+        async with app._composer_submission_lock:
+            composer.load_text("replacement")
+            await pilot.press("enter", "escape")
+            assert composer.text == "unsent follow-up"
+        await wait_until(
+            lambda: app.query_one(ConversationView).user_turn_summaries() == ("replacement",),
+            pilot,
+            description="submitted edit replaced the selected input",
+        )
+        assert runtime.store.load_session_record(session_id).history_epoch == 1
+
+
+async def test_numbered_edit_waiting_on_a_command_cannot_select_another_session(tmp_path):
+    application = application_at(tmp_path)
+    runtime = application.runtime
+    first = (await runtime.run("first session")).session
+    other = (await runtime.run("other session")).session
+    app = OuroTuiApp(application=application, resume_session_id=first.session_id)
+    async with run_ready_app(app) as pilot:
+        composer = app.query_one(Composer)
+        async with app._composer_submission_lock:
+            composer.load_text("/edit #1")
+            await pilot.pause()
+            await pilot.press("enter")
+            commands = tuple(w for w in app.workers if w.group == "composer-command")
+            assert commands
+            await app._open_session(other.session_id)
+        await wait_for_workers(app, commands)
+        assert app._input_drafts.edit_for(other.session_id) is None
+        assert composer.text == ""
+
+
+async def test_edit_loads_global_numbers_and_preserves_direct_input_identity(tmp_path, monkeypatch):
+    application = application_at(tmp_path)
+    runtime = application.runtime
+    session = runtime.create_session()
+    messages = [
+        MessageRecord.text(
+            session_id=session.session_id, role="user", text=f"message {n}"
+        ).model_copy(
+            update={"metadata": {"session_input_source": "user" if n in (1, 205) else "host"}}
+        )
+        for n in range(1, 206)
+    ]
+    runtime.store.append_messages(messages)
+    app = OuroTuiApp(application=application, resume_session_id=session.session_id)
+    async with run_ready_app(app) as pilot:
+        assert app._history_before_cursor is not None
+        await command(app, pilot, "/edit #1")
+        assert app.query_one(Composer).text == "message 1"
+        assert app._history_before_cursor is None
+        assert [arg.value for arg in app._user_message_arguments(direct_only=True)] == [
+            "#1",
+            "#205",
+        ]
+        await pilot.press("escape")
+        warnings = []
+        monkeypatch.setattr(app, "notify", lambda message, **kwargs: warnings.append(str(message)))
+        await command(app, pilot, "/edit #2")
+        assert "directly submitted" in warnings[-1]
+        assert app._input_drafts.edit_for(session.session_id) is None
+        assert runtime.store.load_session_record(session.session_id).history_epoch == 0
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
@@ -286,7 +444,7 @@ async def test_tui_message_query_reloads_if_history_changes_during_event_deliver
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
 @pytest.mark.parametrize("edited", ["other question", "a longer replacement question"])
-async def test_abort_undo_edit_resubmit_and_restart_in_tui(tmp_path, backend, edited):
+async def test_abort_edit_resubmit_and_restart_in_tui(tmp_path, backend, edited):
     class InterruptedProvider(FauxProvider):
         def __init__(self):
             super().__init__()
@@ -317,9 +475,9 @@ async def test_abort_undo_edit_resubmit_and_restart_in_tui(tmp_path, backend, ed
         assert app._projection.activity.status == "aborted"
         session_id = app._controller.session_id
         original = application.runtime.store.load_messages_tail(session_id)[0]
-        await command(app, pilot, "/undo")
+        await command(app, pilot, "/edit #1")
         assert app.query_one(Composer).text == "first question"
-        assert app.query_one(ConversationView).user_turn_summaries() == ()
+        assert app.query_one(ConversationView).user_turn_summaries() == ("first question",)
         # A delayed input notification must not reload the withdrawn message.
         late = EventRecord.model_validate(
             EventRecord(
@@ -330,15 +488,14 @@ async def test_abort_undo_edit_resubmit_and_restart_in_tui(tmp_path, backend, ed
                 payload={"message_id": original.message_id},
             )
         )
-        await app._apply_runtime_events((late,))
-        assert app._projection.history_epoch == 1
-        assert app._projection.activity.activity == "idle"
         await command(app, pilot, edited)
         async with asyncio.timeout(10):
             workers = tuple(w for w in app.workers if w.group == "run")
             if workers:
                 await wait_for_workers(app, workers)
         await pilot.pause()
+        await app._apply_runtime_events((late,))
+        assert app._projection.history_epoch == 1
         assert app._controller.session_id == session_id
         assert app._projection.activity.status == "completed"
         assert app.query_one(ConversationView).user_turn_summaries() == (edited,)
@@ -397,8 +554,7 @@ async def test_continue_completed_and_empty_commands_show_warning_without_new_ru
         assert "completed" in warnings[-1][0]
         assert warnings[-1][1]["severity"] == "warning"
         assert len(application.runtime.store.load_runs(result.session.session_id)) == 1
-        await command(app, pilot, "/undo")
-        await command(app, pilot, "/undo")
+        await command(app, pilot, "/edit #2")
         assert "no user message" in warnings[-1][0]
         assert warnings[-1][1]["severity"] == "warning"
         assert not app.query_one(Composer).disabled
@@ -450,7 +606,7 @@ async def test_continue_interrupted_run_uses_command_without_a_user_message(tmp_
         ]
 
 
-async def test_undo_after_repeated_partial_failure_restores_editable_input(tmp_path):
+async def test_edit_after_repeated_partial_failure_restores_editable_input(tmp_path):
     class PartialProvider(FauxProvider):
         async def stream(self, **kwargs):
             yield ProviderStreamEvent(type="text_delta", text="partial reply")
@@ -461,12 +617,15 @@ async def test_undo_after_repeated_partial_failure_restores_editable_input(tmp_p
     await application.runtime.run("continue", session_id=first.session.session_id)
     app = OuroTuiApp(application=application, resume_session_id=first.session.session_id)
     async with app.run_test(size=(100, 32)) as pilot:
-        await command(app, pilot, "/undo")
+        await command(app, pilot, "/edit #2")
         assert app.query_one(Composer).text == "continue"
         assert not app.query_one(Composer).disabled
-        assert app.query_one(ConversationView).user_turn_summaries() == ("first question",)
+        assert app.query_one(ConversationView).user_turn_summaries() == (
+            "first question",
+            "continue",
+        )
         snapshot = application.runtime.store.load_session(first.session.session_id)
-        assert len(snapshot.messages) == 2
+        assert len(snapshot.messages) == 4
         assert snapshot.messages[-1].metadata["incomplete"]
 
 

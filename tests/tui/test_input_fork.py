@@ -20,7 +20,7 @@ from tests.tui.test_history_commands import application_at
 
 @pytest.mark.parametrize("backend", ("files", "sqlite"))
 @pytest.mark.parametrize("kind", ("mixed", "upload_only", "reference_only", "skill_only"))
-async def test_fork_and_undo_restore_complete_input_without_reupload(
+async def test_fork_and_edit_restore_complete_input_without_reupload(
     tmp_path, monkeypatch, backend, kind
 ):
     skill = tmp_path / "skills" / "reviewer" / "SKILL.md"
@@ -69,13 +69,15 @@ async def test_fork_and_undo_restore_complete_input_without_reupload(
     source.unlink()  # Fork and resubmit must use the owned upload, not the original file.
 
     def unexpected_upload(*args, **kwargs):
-        pytest.fail("Restoring a fork or undo must not upload the attachment again")
+        pytest.fail("Restoring a fork or edit must not upload the attachment again")
 
     monkeypatch.setattr(runtime.resources, "import_resource", unexpected_upload)
     app = OuroTuiApp(application=application, resume_session_id=session.session_id)
     async with run_ready_app(app) as pilot:
-        points = await app._controller.branch_points()
-        assert len(points) == 2
+        assert [item.value for item in app._user_message_arguments(direct_only=True)] == [
+            "#1",
+            "#2",
+        ]
         assert [item.value for item in app._fork_arguments()] == ["full", "#1", "#2"]
         await app._fork_session("#2").wait()
         await pilot.pause()
@@ -118,7 +120,7 @@ async def test_fork_and_undo_restore_complete_input_without_reupload(
                 upload_paths
             )
             if attempt < 2:
-                await app._edit_session_history("/undo").wait()
+                await app._edit_message("#2")
                 await pilot.pause()
                 assert composer.input_content == original
-                assert len(runtime.store.load_session(branch_id).messages) == len(retained)
+                assert len(runtime.store.load_session(branch_id).messages) == len(before)

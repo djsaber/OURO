@@ -69,6 +69,7 @@ class SessionCommit(OuroModel):
     events: tuple[EventRecord, ...] = ()
     before_message_id: str | None = None
     inputs: tuple[InputRecord, ...] = ()
+    prepend_inputs: bool = False
     input_changes: tuple[InputStateChange, ...] = ()
     tool_facts: ToolCallFacts = Field(default_factory=ToolCallFacts)
     call_states: tuple[ToolCallState, ...] = ()
@@ -487,16 +488,19 @@ def _prepare_inputs(
     if any(state.session_id != session.session_id for state in current_states):
         raise PersistenceError("input state belongs to another Session")
     changed: dict[str, InputState] = {}
-    pending = dict.fromkeys(session.pending_input_ids)
     for record in request.inputs:
         identity = record.item.queue_id
         if identity in states:
             raise InputAlreadyAccepted(identity)
-        if record.item.history_epoch != request.before.history_epoch:
+        if record.item.history_epoch != session.history_epoch:
             raise SessionCommitConflict("input belongs to withdrawn Session history")
         state = InputState.pending(record)
         states[identity] = changed[identity] = state
-        pending[identity] = None
+    pending = dict.fromkeys(
+        (*changed, *session.pending_input_ids)
+        if request.prepend_inputs
+        else (*session.pending_input_ids, *changed)
+    )
     if len({change.input_id for change in request.input_changes}) != len(request.input_changes):
         raise SessionCommitConflict("input has more than one transition in a decision")
     message_ids = {message.message_id for message in messages}
@@ -547,7 +551,7 @@ def _prepare_inputs(
             pending_state = states.get(identity)
             if pending_state is None:
                 raise PersistenceError(f"pending input state not found: {identity}")
-            if pending_state.history_bound or pending_state.source in {"plugin", "delegation"}:
+            if not pending_state.valid_in_history(session.history_epoch):
                 changed[identity] = pending_state.model_copy(update={"status": "cancelled"})
                 del pending[identity]
     session.pending_input_ids = tuple(pending)

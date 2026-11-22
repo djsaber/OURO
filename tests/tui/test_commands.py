@@ -44,6 +44,7 @@ def test_resolve_command_returns_canonical_command_and_argument() -> None:
     compact, compact_argument = resolve_command("/compact")
     skill, skill_argument = resolve_command("@skill reviewer", REFERENCE_COMMANDS)
     fork, fork_argument = resolve_command("/branch #1")
+    edit, edit_argument = resolve_command("/edit #3")
     unqueue, unqueue_argument = resolve_command("/unqueue queued_123")
     workspace, workspace_argument = resolve_command("/workspace C:/work/project")
     quit_command, quit_argument = resolve_command("/exit")
@@ -53,6 +54,7 @@ def test_resolve_command_returns_canonical_command_and_argument() -> None:
             "/approval-mode",
             "/compaction",
             "/quite",
+            "/undo",
         )
     )
     removed_help_alias, _ = resolve_command("/?")
@@ -70,13 +72,14 @@ def test_resolve_command_returns_canonical_command_and_argument() -> None:
     assert skill_argument == "reviewer"
     assert fork is not None and fork.name == "/fork"
     assert fork_argument == "#1"
+    assert edit is not None and edit.name == "/edit" and edit_argument == "#3"
     assert unqueue is not None and unqueue.name == "/unqueue"
     assert unqueue_argument == "queued_123"
     assert workspace is not None and workspace.name == "/workspace"
     assert workspace_argument == "C:/work/project"
     assert quit_command is not None and quit_command.name == "/quit"
     assert quit_argument == ""
-    assert removed_aliases == (None,) * 3
+    assert removed_aliases == (None,) * 4
     assert removed_help_alias is None
     assert unknown is None
 

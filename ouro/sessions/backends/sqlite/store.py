@@ -1404,6 +1404,16 @@ class SQLiteSessionStore:
             )
         return records, int(rows[limit - 1][0]) if len(rows) > limit else None
 
+    def message_id_at(self, session_id: str, sequence: int) -> str:
+        with self.session_read(session_id) as connection:
+            row = connection.execute(
+                "SELECT message_id FROM messages WHERE session_id = ? AND sequence = ?",
+                (session_id, sequence),
+            ).fetchone()
+            if row is None:
+                raise PersistenceError(f"No message at position {sequence}")
+            return str(row[0])
+
     def load_message(self, session_id: str, message_id: str) -> MessageRecord:
         with self.session_read(session_id) as connection:
             self._require_session(connection, session_id)

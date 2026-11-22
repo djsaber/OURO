@@ -168,6 +168,7 @@ class InputRecord(VersionedOuroModel):
 
     session_id: str
     item: QueuedInput
+    replaces_message_id: str | None = None
 
 
 def validate_input_message_semantics(
@@ -254,6 +255,11 @@ class InputState(VersionedOuroModel):
             self.session_id == record.session_id
             and self.input_id == record.item.queue_id
             and all(getattr(self, name) == getattr(record.item, name) for name in _ROUTING_FIELDS)
+        )
+
+    def valid_in_history(self, epoch: int) -> bool:
+        return self.history_epoch == epoch or (
+            not self.history_bound and self.source not in {"plugin", "delegation"}
         )
 
 

@@ -4,13 +4,8 @@ from collections.abc import Awaitable, Callable
 
 from ouro.application.contracts.execution import HostInputReceipt
 from ouro.application.harness import capture_harness
-from ouro.application.inputs.queue import same_queued_input
-from ouro.application.inputs.requests import (
-    IncomingRunInput,
-    InitialUserInput,
-    InputSessionSettings,
-    UserInputRequest,
-)
+from ouro.application.inputs.queue import same_input_submission
+from ouro.application.inputs.requests import PreparedUserInput, UserInputRequest
 from ouro.application.resources import ResourceService
 from ouro.application.runs.lifecycle import maybe_active_run
 from ouro.application.usage import UsageService
@@ -49,12 +44,12 @@ class InputAdmissionService:
         synchronize: Callable[[], Awaitable[None]],
         prepare_initial: Callable[
             [UserInputRequest, RunDriverBinding | None],
-            Awaitable[InitialUserInput],
+            Awaitable[PreparedUserInput],
         ],
         load_target: Callable[[str], Awaitable[RuntimeSessionSnapshot]],
-        enqueue: Callable[
-            [RuntimeSessionSnapshot, RunRecord | None, IncomingRunInput, InputSessionSettings],
-            Awaitable[tuple[SessionRecord, QueuedInput]],
+        accept_existing: Callable[
+            [RuntimeSessionSnapshot, RunRecord | None, UserInputRequest],
+            Awaitable[None],
         ],
         resources: ResourceService | None = None,
         usage_service: UsageService | None = None,
@@ -64,7 +59,7 @@ class InputAdmissionService:
         self.synchronize = synchronize
         self.prepare_initial = prepare_initial
         self.load_target = load_target
-        self.enqueue = enqueue
+        self.accept_existing = accept_existing
         self.resources = resources
         self.usage = usage_service
 
@@ -96,14 +91,21 @@ class InputAdmissionService:
         self.validate_resources(session, request.input_resource_refs, request.attachments)
         if active is not None:
             request.session_settings.apply(session, executing=True)
-        await self.enqueue(snapshot, active, IncomingRunInput(request), request.session_settings)
+        try:
+            await self.accept_existing(snapshot, active, request)
+        except PersistenceError, OSError, SessionBusyError:
+            # Resolve a lost response or competing retry from the same durable input identity.
+            accepted = await run_blocking(self._accepted_submission, session_id, request)
+            if accepted is None:
+                raise
+            return accepted
         accepted = await run_blocking(self._accepted_submission, session_id, request)
         assert accepted is not None
         return accepted
 
     async def accept_new(
         self, request: UserInputRequest, driver: RunDriverBinding | None = None
-    ) -> InitialUserInput | HostInputReceipt:
+    ) -> PreparedUserInput | HostInputReceipt:
         initial = await self.prepare_initial(request, driver)
         try:
             accepted = await run_blocking(self.accept_initial, initial.session, initial.item)
@@ -163,6 +165,7 @@ class InputAdmissionService:
                 and (item.driver is None or item.driver.driver_id != driver_id)
             )
             or item.prompt != request.prompt
+            or record.replaces_message_id != (request.edit.message_id if request.edit else None)
             or item.title != request.title
             or item.mode != request.queue_mode
             or item.attachments != request.attachments
@@ -206,6 +209,7 @@ class InputAdmissionService:
         self, session: SessionRecord, item: QueuedInput
     ) -> SessionRecord | HostInputReceipt:
         """Publish the first durable input and adopt its existing files in one boundary."""
+        proposed = InputRecord(session_id=session.session_id, item=item)
         with self.store.session_mutation(session.session_id):
             try:
                 self.store.load_session_record(session.session_id)
@@ -214,7 +218,7 @@ class InputAdmissionService:
             else:
                 record = self.store.load_input(session.session_id, item.queue_id)
             if record is not None:
-                if not same_queued_input(record.item, item):
+                if not same_input_submission(record, proposed):
                     raise ValueError("Input id is already bound to another input")
                 return self._item_receipt(session.session_id, record.item)
             references = (
@@ -241,7 +245,7 @@ class InputAdmissionService:
                 session,
                 [],
                 harness_versions=[harness],
-                inputs=(InputRecord(session_id=session.session_id, item=item),),
+                inputs=(proposed,),
                 resource_references=references,
                 prepared_resources=references is not None,
             )

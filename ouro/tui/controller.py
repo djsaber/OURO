@@ -65,12 +65,11 @@ from ouro.application.contracts.sessions import (
     SessionHistoryWindow,
     SessionObservationSnapshot,
     SessionSummary,
-    SessionUndoResult,
     SessionView,
 )
 from ouro.application.events import RuntimeEventSinkRegistration
 from ouro.application.inputs.queue import QueuedInputMode, QueuedUserInputView
-from ouro.application.inputs.requests import UserInputRequest
+from ouro.application.inputs.requests import UserInputRequest, UserMessageEdit
 from ouro.application.inputs.skills import SkillInvocationRequest
 from ouro.application.plugins.commands import consume_plugin_command, submit_plugin_command
 from ouro.application.provider_auth.service import ProviderAuthService
@@ -86,7 +85,6 @@ from ouro.config import QueuedInputConsumptionMode
 from ouro.config.endpoints import EndpointChanges
 from ouro.config.prompts import PromptDraft, PromptKind
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
-from ouro.core.attachment_input import is_editable_user_input
 from ouro.core.base import Metadata, new_id
 from ouro.core.billing import UsageFilter
 from ouro.core.callbacks import CallbackCancelled, invoke_owned_callback, run_blocking
@@ -472,6 +470,7 @@ class TuiController:
         on_input_accepted: Callable[[], None] | None = None,
         new_session_id: str | None = None,
         input_id: str | None = None,
+        edit: UserMessageEdit | None = None,
     ) -> RunResult:
         services = self._services()
         revision = self._selection_revision
@@ -508,6 +507,7 @@ class TuiController:
             assert self._application is not None
             request = UserInputRequest(
                 prompt=prompt,
+                edit=edit,
                 skill_invocations=skill_invocations,
                 session_id=self._session_id,
                 new_session_id=new_session_id if is_new_session else None,
@@ -560,9 +560,6 @@ class TuiController:
         if result.session.archived:
             await self.set_session_archived(result.session.session_id, archived=False)
         return result
-
-    async def undo(self) -> SessionUndoResult:
-        return await self._runtime().undo(self._require_session())
 
     async def abort(self) -> RunResult | None:
         if self._session_id is None:
@@ -887,18 +884,6 @@ class TuiController:
             removed.extend(result.session_ids)
             remaining.difference_update(result.session_ids)
         return tuple(dict.fromkeys(removed))
-
-    async def branch_points(self) -> tuple[MessageRecord, ...]:
-        """Return user requests that can become an editable branch draft."""
-
-        session_id = self._require_session()
-        return await asyncio.to_thread(
-            lambda: tuple(
-                message
-                for message in self._session_messages(session_id)
-                if is_editable_user_input(message)
-            )
-        )
 
     async def branch_session(self, message_id: str | None = None) -> SessionBranchResult:
         session_id = self._require_session()
@@ -2183,17 +2168,6 @@ class TuiController:
             ),
             reasoning_state=reasoning,
         )
-
-    def _session_messages(self, session_id: str) -> list[MessageRecord]:
-        sessions = self._services().sessions
-        messages: list[MessageRecord] = []
-        cursor = 0
-        while True:
-            page = sessions.message_page(session_id, cursor=cursor, limit=200)
-            messages.extend(page.messages)
-            if page.next_cursor is None:
-                return messages
-            cursor = page.next_cursor
 
     def _services(self) -> LocalApplication:
         if not self._started or self._application is None:

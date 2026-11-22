@@ -16,6 +16,13 @@ def is_editable_user_input(message: MessageRecord) -> bool:
     )
 
 
+def is_direct_user_input(message: MessageRecord) -> bool:
+    """Identify a user's own input, including a standalone attachment receipt."""
+    return is_editable_user_input(message) and (
+        message.role == "harness" or message.metadata.get("session_input_source") == "user"
+    )
+
+
 def editable_input_content(
     message: MessageRecord | ModelMessage, attachments: tuple[InputFile, ...]
 ) -> InputContent:

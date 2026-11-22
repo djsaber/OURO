@@ -194,7 +194,7 @@ async def test_mixed_references_survive_restart_and_form_one_complete_attachment
         assert body.text_content == "inspect"
         assert [item.name for item in body.skill_activations] == ["reviewer", "writer"]
         assert len({item.path for item in body.input_attachments}) == 2
-        await restarted._edit_session_history("/undo").wait()
+        await restarted._edit_message("#1")
         await pilot.pause()
         assert composer.input_content == original and composer.text == display
 

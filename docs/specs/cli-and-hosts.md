@@ -191,10 +191,9 @@ application 的类型值。消费批量由配置决定。
 
 同一 RunResult 在 Print 和 JSON 模式下必须得到相同语义退出码。
 
-## 会话撤销与维护
+## 会话编辑与维护
 
-TUI 的撤销、输入恢复和继续执行通过 Application 完成，具体行为见
-[会话撤销规格](session-undo.md)。
+TUI 的 `/edit` 将所选用户消息载入草稿。用户提交后，Application 在原会话撤回旧后缀、受理替换输入并启动新的 Run。详见[会话撤销规格](session-undo.md)。
 
 CLI 不提供历史数据或 Harness 状态迁移命令；不支持的数据格式明确报错。
 
