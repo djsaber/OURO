@@ -3,6 +3,9 @@
   "plugin_id": "dev.ouro.examples.model_review",
   "namespace": "model_review",
   "name": "Model Review",
+  "author": {
+    "name": "ouro"
+  },
   "version": "0.1.0",
   "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
   "runtime": {"kind": "python-inprocess", "entrypoint": "model_review_plugin:create_plugin"},

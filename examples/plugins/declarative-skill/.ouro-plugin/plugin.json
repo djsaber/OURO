@@ -2,6 +2,9 @@
   "schema_version": 3,
   "plugin_id": "dev.ouro.examples.declarative_skill",
   "name": "Declarative Skill Example",
+  "author": {
+    "name": "ouro"
+  },
   "version": "0.1.0",
   "description": "Contributes an Agent Skill without executable plugin code.",
   "namespace": "declarative_skill",

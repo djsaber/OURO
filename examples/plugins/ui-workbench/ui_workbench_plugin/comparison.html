@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="$csp">
+  <meta name="referrer" content="no-referrer">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>$title · UI Workbench</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%2324251e'/%3E%3Cpath d='M3 4h4v8H3zm6 0h4v8H9z' fill='%23e0eca5'/%3E%3C/svg%3E">
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f6f3eb;
+      --sheet: #fffcf5;
+      --ink: #25231c;
+      --quiet: #61574a;
+      --rule: #c9bfae;
+      --mast: #24251e;
+      --light: #fbf6e9;
+      --accent: #e0eca5;
+      --focus: #465d12;
+      --aside: #91351f;
+      --serif: Georgia, 'Times New Roman', serif;
+      --mono: ui-monospace, Consolas, monospace;
+      --gutter: clamp(1rem, 4vw, 4rem);
+      font: 100%/1.55 system-ui, sans-serif;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin: 0; background: var(--paper); color: var(--ink); }
+    h1, h2, h3, p, ol { margin: 0; }
+    a { color: inherit; }
+    :focus-visible, .direction:focus, main:focus {
+      outline: 3px solid var(--focus);
+      outline-offset: 4px;
+    }
+    .wrap { max-inline-size: 112rem; margin-inline: auto; padding-inline: var(--gutter); }
+    .skip {
+      position: absolute;
+      z-index: 1;
+      inset-block-start: .75rem;
+      inset-inline-start: var(--gutter);
+      padding: .75rem 1rem;
+      color: var(--ink);
+      background: var(--accent);
+    }
+    .skip:not(:focus) { clip-path: inset(50%); }
+    .masthead {
+      color: var(--light);
+      background: var(--mast);
+      border-block-start: .35rem solid var(--accent);
+      padding-block: clamp(1rem, 3vw, 2rem) clamp(1.5rem, 4vw, 3rem);
+    }
+    .masthead :focus-visible { outline-color: var(--accent); }
+    .mast-meta {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: .35rem 1rem;
+      border-block-end: 1px solid #676856;
+      padding-block-end: .75rem;
+      font: 650 .8rem/1.4 var(--mono);
+      letter-spacing: .09em;
+      text-transform: uppercase;
+    }
+    .mast-meta p:last-child { color: var(--accent); }
+    h1, h2, h3 { font-family: var(--serif); overflow-wrap: anywhere; }
+    h1 {
+      font-size: clamp(2.25rem, 1.4rem + 3.2vw, 4.75rem);
+      line-height: 1.06;
+      font-weight: 400;
+      margin-block-start: clamp(1rem, 3vw, 2rem);
+      max-inline-size: 28ch;
+    }
+    .brief, .summary { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .brief { margin-block-start: .75rem; color: #e4dece; max-inline-size: 68ch; }
+    main { padding-block: clamp(1.25rem, 3vw, 2.25rem) 2.75rem; }
+    .board-guide {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: end;
+      justify-content: space-between;
+      gap: .75rem 2rem;
+      margin-block-end: 1.25rem;
+    }
+    h2 { font-size: clamp(1.5rem, 1.2rem + 1vw, 2.1rem); line-height: 1.15; }
+    #preview-note { color: var(--quiet); max-inline-size: 52ch; margin-block-start: .4rem; }
+    .jumps, .directions { list-style: none; padding: 0; }
+    .jumps { display: flex; flex-wrap: wrap; gap: .5rem; }
+    .jumps a {
+      display: inline-flex;
+      align-items: baseline;
+      min-block-size: 2.75rem;
+      gap: .5rem;
+      padding: .55rem .75rem;
+      border: 1px solid var(--rule);
+      background: var(--sheet);
+      border-radius: .25rem;
+      text-decoration: none;
+      overflow-wrap: anywhere;
+    }
+    .jumps a:hover, .jumps a:focus-visible { text-decoration: underline; }
+    .jumps span, .direction-number {
+      color: var(--aside);
+      font: 650 .8rem/1.35 var(--mono);
+    }
+    .directions {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr));
+      gap: 1.25rem;
+    }
+    .direction {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      min-inline-size: 0;
+      border: 1px solid var(--rule);
+      border-block-start: .25rem solid var(--mast);
+      background: var(--sheet);
+      scroll-margin-block-start: 1rem;
+    }
+    @supports (grid-template-rows: subgrid) {
+      .direction { grid-row: span 2; grid-template-rows: subgrid; row-gap: 0; }
+    }
+    .direction:target { border-block-start-color: var(--aside); }
+    .direction-heading { padding: .95rem 1rem 1rem; }
+    .direction-number { margin-block-end: .3rem; letter-spacing: .07em; text-transform: uppercase; }
+    h3 { font-size: clamp(1.35rem, 1.15rem + .8vw, 1.85rem); line-height: 1.15; }
+    .summary { margin-block-start: .4rem; color: var(--quiet); }
+    iframe {
+      display: block;
+      inline-size: 100%;
+      block-size: clamp(25rem, 65vh, 44rem);
+      border: 0;
+      border-block-start: 1px solid var(--rule);
+      background: white;
+    }
+    iframe:focus-visible { outline-offset: -4px; }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#review">Skip to comparisons</a>
+  <header class="masthead">
+    <div class="wrap">
+      <div class="mast-meta"><p>UI Workbench / Comparison board</p><p>$count directions</p></div>
+      <h1 dir="auto">$title</h1>
+      $brief
+    </div>
+  </header>
+  <main class="wrap" id="review" tabindex="-1">
+    <div class="board-guide">
+      <div>
+        <h2>Design directions</h2>
+        <p id="preview-note">Scroll each read-only preview to inspect the full direction. Links and controls are inactive.</p>
+      </div>
+      <nav aria-label="Jump to a direction">
+        <ol class="jumps" role="list">$jumps</ol>
+      </nav>
+    </div>
+    <ol class="directions" role="list">$cards</ol>
+  </main>
+</body>
+</html>

@@ -11,6 +11,7 @@ These packages are focused examples and validate against the current development
 - `inprocess-prompt-policy`: fail-closed rejection before a user prompt is persisted.
 - [`deepseek-search`](deepseek-search/README.md): read-only web Search and Fetch tools backed by the DeepSeek APIs, with configurable endpoint, credentials, retries, and result limits.
 - [`tavily-search`](tavily-search/README.md): read-only Tavily Search, Extract, Crawl and Map tools with configurable depth, filters, answer generation, and bounded retries.
+- [`ui-workbench`](ui-workbench/README.md): explore and compare interface directions in an offline board, then review a trusted local page with real browser evidence and optional image tools.
 - `memory-service` and `memory-client`: SQLite-backed memory sharing through declared dependencies and scoped filters across two workers. Both peers run at a root concurrency limit of one.
 - `worker-exec`: permission-bound Python execution through the Host process port, with ordered output callbacks.
 - `review-service`: native model review and tool execution inside the caller's Run; the in-process and worker entries share the same service implementation.

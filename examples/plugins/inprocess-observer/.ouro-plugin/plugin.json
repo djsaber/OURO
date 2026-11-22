@@ -2,6 +2,9 @@
   "schema_version": 3,
   "plugin_id": "dev.ouro.examples.observer",
   "name": "Observer Example",
+  "author": {
+    "name": "ouro"
+  },
   "version": "1.0.0",
   "description": "Observes selected non-sensitive runtime facts.",
   "namespace": "observer_example",

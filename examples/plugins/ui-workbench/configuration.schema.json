@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OURO UI Workbench configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "webdriver_url": {
+      "title": "Local WebDriver URL",
+      "description": "Loopback address of a WebDriver you started, such as http://127.0.0.1:9515. Leave empty to disable capture.",
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^(?:$|https?://(?:127\\.0\\.0\\.1|localhost|\\[::1\\]):[0-9]{1,5}(?:/[^?#]*)?)$",
+      "default": ""
+    },
+    "browser": {
+      "title": "Browser",
+      "description": "Browser matching the selected WebDriver.",
+      "enum": ["chrome", "edge"],
+      "default": "chrome"
+    },
+    "media_enabled": {
+      "title": "Enable public-domain media catalog",
+      "description": "Permit explicitly requested search and download from the Metropolitan Museum of Art collection.",
+      "type": "boolean",
+      "default": false
+    },
+    "image_api_base": {
+      "title": "Image API base URL",
+      "description": "HTTPS API root, including its version path if needed. Leave empty to disable generation and editing.",
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^(?:$|https://[^/?#@\\s]+(?:/[^?#\\s]*)?)$",
+      "default": ""
+    },
+    "image_model": {
+      "title": "Image model",
+      "description": "Exact model ID accepted by the configured image API.",
+      "type": "string",
+      "maxLength": 120,
+      "default": ""
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["image_api_base"],
+        "properties": {"image_api_base": {"minLength": 1}}
+      },
+      "then": {
+        "required": ["image_model"],
+        "properties": {"image_model": {"pattern": "\\S"}}
+      },
+      "else": {
+        "properties": {"image_model": {"maxLength": 0}}
+      }
+    }
+  ]
+}

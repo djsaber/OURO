@@ -2,6 +2,9 @@
   "schema_version": 3,
   "plugin_id": "dev.ouro.examples.review_driver",
   "name": "Review Run Driver",
+  "author": {
+    "name": "ouro"
+  },
   "namespace": "review_driver",
   "version": "0.1.0",
   "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},

@@ -3,6 +3,9 @@
   "plugin_id": "dev.ouro.examples.faux_provider",
   "namespace": "faux_provider",
   "name": "Faux Model Protocol",
+  "author": {
+    "name": "ouro"
+  },
   "version": "0.1.0",
   "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
   "runtime": {"kind": "python-inprocess", "entrypoint": "faux_provider_plugin:create_plugin"},

@@ -2,6 +2,9 @@
   "schema_version": 3,
   "plugin_id": "dev.ouro.examples.tavily_search",
   "name": "Tavily Search",
+  "author": {
+    "name": "ouro"
+  },
   "version": "0.1.0",
   "description": "Read-only web search, extraction, crawling and mapping tools backed by the Tavily Search, Extract, Crawl and Map APIs.",
   "namespace": "tavily_search",

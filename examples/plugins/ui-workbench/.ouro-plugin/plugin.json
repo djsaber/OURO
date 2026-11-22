@@ -1,0 +1,65 @@
+{
+  "schema_version": 3,
+  "plugin_id": "dev.ouro.examples.ui_workbench",
+  "name": "OURO UI Workbench",
+  "author": {
+    "name": "ouro"
+  },
+  "version": "0.1.0",
+  "description": "Explore, compare, and review interface designs in the current workspace.",
+  "namespace": "ui_workbench",
+  "engines": {
+    "ouro": ">=0.4.10",
+    "plugin_api": "^6.0.0"
+  },
+  "runtime": {
+    "kind": "python-inprocess",
+    "entrypoint": "ui_workbench_plugin.plugin:create_plugin"
+  },
+  "configuration": {
+    "schema": "./configuration.schema.json",
+    "version": 1,
+    "credentials": {
+      "image_api_key": {
+        "title": "Image API key",
+        "description": "Sent only to the explicitly configured image API over HTTPS.",
+        "required": false
+      }
+    }
+  },
+  "permissions": [
+    {
+      "id": "network.outbound",
+      "reason": "Connect to the configured local browser driver, optional public media catalog, or optional image API on request."
+    },
+    {
+      "id": "credentials.use",
+      "scopes": ["image_api_key"],
+      "reason": "Authenticate an explicitly requested image generation or edit."
+    },
+    {
+      "id": "sessions.write",
+      "reason": "Queue attributed instructions for explicit exploration and review commands."
+    },
+    {
+      "id": "background.run",
+      "reason": "Use OURO's follow-up Run contract for explicit exploration and review commands."
+    }
+  ],
+  "contributes": {
+    "skills": [{"id": "ui-workbench", "path": "./skills/ui-workbench"}],
+    "commands": [
+      {"id": "status", "description": "Show local UI Workbench capability and configuration status."},
+      {"id": "compare", "description": "Build an offline comparison board from a workspace manifest.", "usage": "<manifest.json>"},
+      {"id": "explore", "description": "Start a three-direction interface design exploration.", "usage": "<design brief>", "requires_session": true},
+      {"id": "review", "description": "Start a visual and usability review of an interface.", "usage": "[page or review focus]", "requires_session": true}
+    ],
+    "tools": [
+      {"id": "status", "exposed_name": "ui_workbench__status", "description": "Read UI Workbench capability and configuration status without network access.", "permission_mode": "auto", "effect": "read_only"},
+      {"id": "compare", "exposed_name": "ui_workbench__compare", "description": "Package workspace HTML candidates into an offline comparison board.", "permission_mode": "approval", "effect": "state_changing"},
+      {"id": "capture", "exposed_name": "ui_workbench__capture", "description": "Capture and inspect a trusted UI in a local browser across viewports and interaction states.", "permission_mode": "approval", "effect": "state_changing", "batch_behavior": "exclusive"},
+      {"id": "media", "exposed_name": "ui_workbench__media", "description": "Find or download public-domain collection images with rights and attribution metadata.", "permission_mode": "approval", "effect": "state_changing"},
+      {"id": "image", "exposed_name": "ui_workbench__image", "description": "Generate or edit an image using the explicitly configured image API.", "permission_mode": "approval", "effect": "state_changing"}
+    ]
+  }
+}

@@ -2,6 +2,9 @@
   "schema_version": 3,
   "plugin_id": "dev.ouro.examples.memory",
   "name": "Memory Service",
+  "author": {
+    "name": "ouro"
+  },
   "namespace": "memory_example",
   "version": "0.1.0",
   "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},

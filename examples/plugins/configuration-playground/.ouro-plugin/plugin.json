@@ -2,6 +2,9 @@
   "schema_version": 3,
   "plugin_id": "dev.ouro.configuration_playground",
   "name": "Configuration Playground",
+  "author": {
+    "name": "ouro"
+  },
   "description": "Explore the generic plugin configuration contract without business logic.",
   "version": "1.0.0",
   "namespace": "configuration_playground",
