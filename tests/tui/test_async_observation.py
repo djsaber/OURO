@@ -137,7 +137,7 @@ async def test_cancelled_session_installation_releases_its_live_subscription(tmp
     entered = asyncio.Event()
     subscriptions = []
 
-    async def delayed_install(loaded, *, subscription, revision, selection=None):
+    async def delayed_install(loaded, *, subscription, **selection):
         subscriptions.append(subscription)
         entered.set()
         await asyncio.Event().wait()

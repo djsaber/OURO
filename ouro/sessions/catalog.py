@@ -65,6 +65,7 @@ def catalog_entry_from_session(
         session_kind=session.session_kind,
         root_session_id=session.root_session_id or session.session_id,
         parent_session_id=session.parent_session_id,
+        context_source_session_id=session.context_source_session_id,
         title=session.title,
         title_source=session.title_source,
         created_at=session.created_at,

@@ -1,4 +1,8 @@
+"""Interaction and layout of the session navigation row."""
+
 from __future__ import annotations
+
+from dataclasses import replace
 
 import pytest
 from rich.color import Color
@@ -6,7 +10,9 @@ from textual.app import App, ComposeResult
 
 from ouro.application.contracts.agents import AgentTreeNode
 from ouro.application.contracts.execution import RuntimeActivitySnapshot
-from ouro.tui.subagent_navigation import SubagentNavigationPanel
+from ouro.application.contracts.sessions import SessionCatalogEntry
+from ouro.core.base import utc_now
+from ouro.tui.session_navigation import SessionNavigationPanel
 from ouro.tui.theme import theme_for
 
 
@@ -44,45 +50,49 @@ def _agent(
     )
 
 
-def test_subagent_panel_keeps_latest_ten_nodes_and_reframes_around_current_child() -> None:
-    panel = SubagentNavigationPanel()
+def test_session_panel_keeps_latest_ten_nodes_and_reframes_around_current_child() -> None:
+    panel = SessionNavigationPanel()
     agents = tuple(_agent(index, parent_run_id=f"run_{(index - 1) // 4}") for index in range(1, 13))
 
-    panel.set_tree(root_session_id="ses_root", agents=agents, root_status="running")
+    panel.set_nodes(main_session_id="ses_root", subagents=agents, main_status="running")
     panel.set_current_session("ses_root")
 
-    assert panel.visible_session_ids == tuple(f"ses_child_{index}" for index in range(3, 13))
+    assert panel.visible_related_session_ids == tuple(
+        f"ses_child_{index}" for index in range(3, 13)
+    )
     assert panel.render_content(80).plain.rstrip().endswith("▣ | ■■ ■■■■ ■■■■")
 
     panel.set_current_session("ses_child_2")
 
-    assert panel.visible_session_ids == tuple(f"ses_child_{index}" for index in range(1, 11))
+    assert panel.visible_related_session_ids == tuple(
+        f"ses_child_{index}" for index in range(1, 11)
+    )
     assert "Inspect task 2 • Worker 2" in panel.render_content(80).plain
     assert panel.render_content(80).plain.rstrip().endswith("■ | ■▣■■ ■■■■ ■■")
 
 
-def test_subagent_panel_keeps_its_reserved_row_when_the_tree_is_empty() -> None:
-    panel = SubagentNavigationPanel()
+def test_session_panel_keeps_its_reserved_row_when_the_tree_is_empty() -> None:
+    panel = SessionNavigationPanel()
     panel.display = True
 
-    panel.set_tree(root_session_id="ses_root", agents=(), root_status="idle")
+    panel.set_nodes(main_session_id="ses_root", subagents=(), main_status="idle")
 
     assert panel.display is True
-    assert panel.visible_session_ids == ()
+    assert panel.visible_related_session_ids == ()
     assert panel.render_content(20).plain == " " * 20
 
-    panel.set_tree(
-        root_session_id="ses_root",
-        agents=(_agent(1, parent_run_id="run_root"),),
-        root_status="running",
+    panel.set_nodes(
+        main_session_id="ses_root",
+        subagents=(_agent(1, parent_run_id="run_root"),),
+        main_status="running",
     )
 
     assert panel.display is True
     assert panel.render_content(20).plain.rstrip().endswith("▣ | ■")
 
 
-def test_subagent_panel_includes_nested_agents_from_the_same_root_session() -> None:
-    panel = SubagentNavigationPanel()
+def test_session_panel_includes_nested_agents_from_the_same_root_session() -> None:
+    panel = SessionNavigationPanel()
     direct = _agent(1, parent_run_id="run_root")
     nested = _agent(
         2,
@@ -90,53 +100,52 @@ def test_subagent_panel_includes_nested_agents_from_the_same_root_session() -> N
         parent_session_id=direct.session_id,
     )
 
-    panel.set_tree(
-        root_session_id="ses_root",
-        agents=(direct, nested),
-        root_status="running",
+    panel.set_nodes(
+        main_session_id="ses_root",
+        subagents=(direct, nested),
+        main_status="running",
     )
 
-    assert panel.visible_session_ids == (direct.session_id, nested.session_id)
+    assert panel.visible_related_session_ids == (direct.session_id, nested.session_id)
     assert panel.render_content(80).plain.rstrip().endswith("▣ | ■ ■")
 
 
-def test_subagent_panel_keeps_interleaved_dispatches_in_stable_run_groups() -> None:
-    panel = SubagentNavigationPanel()
+def test_session_panel_keeps_interleaved_dispatches_in_stable_run_groups() -> None:
+    panel = SessionNavigationPanel()
     agents = (
         _agent(1, parent_run_id="run_a"),
         _agent(2, parent_run_id="run_b"),
         _agent(3, parent_run_id="run_a"),
     )
 
-    panel.set_tree(root_session_id="ses_root", agents=agents, root_status="running")
+    panel.set_nodes(main_session_id="ses_root", subagents=agents, main_status="running")
 
-    assert panel.visible_session_ids == (
+    assert panel.visible_related_session_ids == (
         agents[0].session_id,
         agents[2].session_id,
         agents[1].session_id,
     )
     assert panel.render_content(80).plain.rstrip().endswith("▣ | ■■ ■")
     panel.begin_navigation()
-    assert panel.select_last_child() == agents[1].session_id
+    assert panel.select_last_node() == agents[1].session_id
 
 
-def test_subagent_panel_navigation_selects_root_last_and_adjacent_children() -> None:
-    panel = SubagentNavigationPanel()
+def test_session_panel_navigation_selects_root_last_and_adjacent_children() -> None:
+    panel = SessionNavigationPanel()
     agents = tuple(_agent(index, parent_run_id="run_root") for index in range(1, 4))
-    panel.set_tree(root_session_id="ses_root", agents=agents, root_status="running")
+    panel.set_nodes(main_session_id="ses_root", subagents=agents, main_status="running")
     panel.set_current_session("ses_child_2")
 
     panel.begin_navigation()
     assert panel.select_relative(-1) == "ses_child_1"
-    assert panel.selected_agent == agents[0]
     assert "Inspect task 1 • Worker 1" in panel.render_content(80).plain
     assert panel.select_relative(-1) == "ses_root"
     assert panel.select_relative(-1) == "ses_root"
     assert panel.select_relative(1) == "ses_child_1"
     assert panel.select_relative(1) == "ses_child_2"
-    assert panel.select_root() == "ses_root"
+    assert panel.select_main() == "ses_root"
     assert "Inspect task" not in panel.render_content(80).plain
-    assert panel.select_last_child() == "ses_child_3"
+    assert panel.select_last_node() == "ses_child_3"
     assert panel.select_relative(1) == "ses_child_3"
 
     panel.end_navigation()
@@ -145,15 +154,15 @@ def test_subagent_panel_navigation_selects_root_last_and_adjacent_children() -> 
     assert panel.selected_session_id == "ses_child_2"
 
 
-class _SubagentNavigationApp(App[None]):
+class _SessionNavigationApp(App[None]):
     def __init__(self, agents: tuple[AgentTreeNode, ...]) -> None:
         super().__init__()
-        self.panel = SubagentNavigationPanel()
+        self.panel = SessionNavigationPanel()
         self.panel.display = True
-        self.panel.set_tree(
-            root_session_id="ses_root",
-            agents=agents,
-            root_status="running",
+        self.panel.set_nodes(
+            main_session_id="ses_root",
+            subagents=agents,
+            main_status="running",
         )
         self.panel.set_current_session("ses_root")
         self.navigation: list[str] = []
@@ -161,9 +170,9 @@ class _SubagentNavigationApp(App[None]):
     def compose(self) -> ComposeResult:
         yield self.panel
 
-    def on_subagent_navigation_panel_navigation_requested(
+    def on_session_navigation_panel_navigation_requested(
         self,
-        message: SubagentNavigationPanel.NavigationRequested,
+        message: SessionNavigationPanel.NavigationRequested,
     ) -> None:
         self.panel.begin_navigation()
         self.panel.select_session(message.session_id)
@@ -171,13 +180,53 @@ class _SubagentNavigationApp(App[None]):
 
 
 @pytest.mark.asyncio
-async def test_subagent_panel_hover_previews_stable_visible_node_and_click_requests_it() -> None:
+async def test_side_and_agent_nodes_share_one_row_and_click_target() -> None:
+    agents = tuple(_agent(i, parent_run_id="run_root") for i in range(3))
+    sides = tuple(
+        SessionCatalogEntry(
+            session_id=f"ses_side_{i}",
+            root_session_id=f"ses_side_{i}",
+            context_source_session_id="ses_root",
+            title=f"Side {i}",
+            created_at=utc_now(),
+            updated_at=utc_now(),
+            last_activity_at=utc_now(),
+            status="idle",
+        )
+        for i in range(2)
+    )
+    app = _SessionNavigationApp(agents)
+    async with app.run_test(size=(80, 6)) as pilot:
+        panel = app.panel
+        panel.set_nodes(
+            main_session_id="ses_root", subagents=agents, main_status="running", side_sessions=sides
+        )
+        app.tui_theme = replace(theme_for(panel), inline_separator_mark="~")
+        row = panel.render_content(80).plain
+        assert row.endswith("■■ | ▣ | ■■■")
+        x = row.index("■■")
+        await pilot.hover(panel, offset=(x, 0))
+        assert panel.current_session_id == panel.selected_session_id == "ses_root"
+        assert panel.render_content(80).plain.strip() == (
+            f"Side 0{theme_for(panel).inline_separator}▣■ | ■ | ■■■"
+        )
+        await pilot.click(panel, offset=(x, 0))
+        assert app.navigation == ["ses_side_0"]
+        assert panel.selected_session_id == sides[0].session_id
+        panel.set_current_session("ses_side_0")
+        assert panel.select_relative(1) == "ses_side_1"
+        assert panel.select_relative(1) == "ses_root"
+        assert panel.select_relative(1) == agents[0].session_id
+
+
+@pytest.mark.asyncio
+async def test_session_panel_hover_previews_stable_visible_node_and_click_requests_it() -> None:
     agents = tuple(_agent(index, parent_run_id=f"run_{(index - 1) // 4}") for index in range(1, 13))
-    app = _SubagentNavigationApp(agents)
+    app = _SessionNavigationApp(agents)
 
     async with app.run_test(size=(80, 6)) as pilot:
         panel = app.panel
-        visible_before = panel.visible_session_ids
+        visible_before = panel.visible_related_session_ids
         rendered = panel.render_content(panel.content_region.width).plain
         nodes = rendered[rendered.rfind("▣ | ") :]
         first_child_x = rendered.rfind("▣ | ") + nodes.index("■")
@@ -185,7 +234,7 @@ async def test_subagent_panel_hover_previews_stable_visible_node_and_click_reque
         await pilot.hover(panel, offset=(first_child_x, 0))
         await pilot.pause()
 
-        assert panel.visible_session_ids == visible_before
+        assert panel.visible_related_session_ids == visible_before
         assert panel.selected_session_id == "ses_root"
         assert "Inspect task 3 • Worker 3" in panel.render_content(80).plain
         assert panel.render_content(80).plain.rstrip().endswith("■ | ▣■ ■■■■ ■■■■")
@@ -221,12 +270,12 @@ async def test_subagent_panel_hover_previews_stable_visible_node_and_click_reque
         assert panel.selected_session_id == "ses_root"
 
 
-def test_subagent_panel_skips_equivalent_tree_and_selection_refreshes(
+def test_session_panel_skips_equivalent_tree_and_selection_refreshes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    panel = SubagentNavigationPanel()
+    panel = SessionNavigationPanel()
     agents = (_agent(1, parent_run_id="run_root"),)
-    panel.set_tree(root_session_id="ses_root", agents=agents, root_status="running")
+    panel.set_nodes(main_session_id="ses_root", subagents=agents, main_status="running")
     panel.set_current_session("ses_child_1")
 
     refreshes = 0
@@ -237,7 +286,7 @@ def test_subagent_panel_skips_equivalent_tree_and_selection_refreshes(
 
     monkeypatch.setattr(panel, "_refresh_content", record_refresh)
 
-    panel.set_tree(root_session_id="ses_root", agents=agents, root_status="running")
+    panel.set_nodes(main_session_id="ses_root", subagents=agents, main_status="running")
     panel.set_current_session("ses_child_1")
 
     assert refreshes == 0

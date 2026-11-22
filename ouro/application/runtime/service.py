@@ -49,6 +49,7 @@ from ouro.application.inputs.requests import (
     queued_run,
 )
 from ouro.application.inputs.skills import SkillActivationService, SkillInvocationRequest
+from ouro.application.inputs.source_history import freeze_source_history, prepend_source_history
 from ouro.application.models.catalog import (
     FixedRuntimeAdapterCatalog,
     RuntimeAdapterCatalog,
@@ -120,7 +121,7 @@ from ouro.core.input_content import (
     InputContent,
     InputFile,
 )
-from ouro.core.inputs import InputRecord
+from ouro.core.inputs import InputRecord, SourceHistory
 from ouro.core.interactions import (
     SESSION_INTERACTION_MODES,
     SessionInteractionMode,
@@ -1018,6 +1019,10 @@ class RuntimeService:
     def current_model(self, session_id: str | None = None) -> AvailableModel:
         return self.session_models.current_model(session_id)
 
+    def source_progress(self, session_id: str) -> SourceHistory | None:
+        budget = self.current_model(session_id).context_budget.input_tokens
+        return freeze_source_history(self.store, session_id, input_budget=budget)
+
     def session_context_metrics(self, session_id: str) -> ContextMetrics | None:
         """Read durable usage, projecting current model limits when resolvable.
 
@@ -1565,7 +1570,7 @@ class RuntimeService:
                     continuation_request=continuation_request,
                 )
             else:
-                input_messages = await run_blocking(
+                input_messages, input_events = await run_blocking(
                     self._prepare_input_messages,
                     session=session,
                     run=run,
@@ -1584,7 +1589,7 @@ class RuntimeService:
                         for item in pending_inputs
                     ),
                     consumed_inputs=tuple(item.queue_id for item in pending_inputs),
-                    events=input_message_events(run, pending_inputs, input_messages, queued=False),
+                    events=input_events,
                 )
 
             await self.event_recorder.publish_committed(committed_events)
@@ -2577,20 +2582,71 @@ class RuntimeService:
         run: RunRecord,
         inputs: Sequence[QueuedInput],
         is_queued: bool,
-    ) -> list[MessageRecord]:
+        turn_id: str | None = None,
+    ) -> tuple[list[MessageRecord], tuple[EventRecord, ...]]:
         """Project complete inputs in order, independently of their delivery boundary."""
-        messages: list[MessageRecord] = []
+        units = []
+        sequence = session.message_count + 1
         for item in inputs:
-            messages.extend(
-                self._prepare_input(
-                    session=session,
-                    run=run,
-                    item=item,
-                    sequence=session.message_count + len(messages) + 1,
-                    is_queued=is_queued,
-                )
+            unit = self._prepare_input(
+                session=session,
+                run=run,
+                item=item,
+                sequence=sequence,
+                is_queued=is_queued,
             )
-        return messages
+            units.append(unit)
+            sequence += len(unit)
+        remaining = (
+            self._remaining_input_budget(session, run, [m for unit in units for m in unit])
+            if any(item.source_history is not None for item in inputs)
+            else 0
+        )
+        messages: list[MessageRecord] = []
+        diagnostics: list[EventRecord] = []
+        for item, unit in zip(inputs, units, strict=True):
+            if item.source_history is not None:
+                remaining, diagnostic = prepend_source_history(
+                    self.store,
+                    session,
+                    run.run_id,
+                    item.source_history,
+                    messages,
+                    unit,
+                    remaining,
+                    self.context_builder.token_estimator,
+                )
+                if diagnostic is not None:
+                    diagnostics.append(diagnostic)
+            for member in unit:
+                member.sequence = session.message_count + len(messages) + 1
+                messages.append(member)
+        events = input_message_events(run, inputs, messages, queued=is_queued, turn_id=turn_id)
+        return messages, (*events, *diagnostics)
+
+    def _remaining_input_budget(
+        self, session: SessionRecord, run: RunRecord, inputs: list[MessageRecord]
+    ) -> int:
+        """Reserve the current history, tools and all accepted questions before adding evidence."""
+        _, active, history = self.context_preparation.load_history(session.session_id)
+        view = self.context_preparation.project(
+            session=session,
+            messages=history + inputs,
+            active=active,
+            tools=self._tools_for_run(run.run_id).definitions(),
+            adapter=self.session_models.adapter_for_session_id(session.session_id),
+            skill_instructions=self._instructions_for_run(run),
+            prompt_context=self.context_preparation.local_prompt_context(),
+        )
+        # Plugins can add system instructions during request preparation. Reserve their
+        # last measured fixed cost without invoking a provider from an input transaction.
+        previous = self.sessions.effective_context_metrics(session.session_id)
+        extra_fixed = (
+            max(0, previous.estimated_fixed_tokens - view.metrics.estimated_fixed_tokens)
+            if previous
+            else 0
+        )
+        return (view.metrics.estimated_remaining_tokens or 0) - extra_fixed
 
     def _prepare_input(
         self,
@@ -2697,7 +2753,7 @@ class RuntimeService:
             latest_session = self.store.load_session_record(session.session_id)
             if not self.queued_inputs.matches_pending(latest_session, inputs):
                 raise QueuedInputSelectionChanged
-            messages = self._prepare_input_messages(
+            messages, input_events = self._prepare_input_messages(
                 session=latest_session, run=run, inputs=inputs, is_queued=True
             )
             started_session, started_run, events = self.run_lifecycle.start(
@@ -2706,7 +2762,7 @@ class RuntimeService:
                 snapshot=snapshot,
                 input_messages=tuple(messages),
                 consumed_inputs=tuple(item.queue_id for item in inputs),
-                events=input_message_events(run, inputs, messages, queued=True),
+                events=input_events,
                 continuation_request=continuation_request,
             )
         return started_session, started_run, messages, events
@@ -2724,15 +2780,15 @@ class RuntimeService:
             latest = self.store.load_session_record(run.session_id)
             if not self.queued_inputs.matches_pending(latest, inputs):
                 return [], ()
-            messages = self._prepare_input_messages(
-                session=latest, run=run, inputs=inputs, is_queued=True
+            messages, input_events = self._prepare_input_messages(
+                session=latest, run=run, inputs=inputs, is_queued=True, turn_id=turn_id
             )
             events = self.run_lifecycle.append_messages(
                 session=latest,
                 run=run,
                 messages=messages,
                 consumed_inputs=tuple(item.queue_id for item in inputs),
-                events=input_message_events(run, inputs, messages, queued=True, turn_id=turn_id),
+                events=input_events,
             )
             return messages, events
 

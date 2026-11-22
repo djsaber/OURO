@@ -11,7 +11,7 @@ _HELP_SHORTCUTS = (
     ("Ctrl+N", "new session", "Ctrl+O", "sessions"),
     ("Ctrl+T", "tasks", "Ctrl+S", "skills"),
     ("Alt+T", "cycle model thinking", "Alt+A", "cycle tool approval"),
-    ("Alt+← / Alt+→", "previous / next agent", "Alt+↑ / Alt+↓", "main / last agent"),
+    ("Alt+← / Alt+→", "previous / next session node", "Alt+↑ / Alt+↓", "main / last node"),
     ("Alt+P", "plugins", "Ctrl+P", "actions"),
     ("F1", "help", "Alt+Home / Alt+End", "conversation top / bottom"),
     ("Alt+PageUp", "previous user message", "Alt+PageDown", "next user message / bottom"),

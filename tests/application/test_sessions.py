@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-from contextlib import closing
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing, contextmanager
+from threading import Barrier, Event
 
 import pytest
 
 import ouro.application.sessions.service as session_service_module
 from ouro.application.contracts.sessions import SessionCatalogQuery, SessionView
+from ouro.application.inputs.source_history import freeze_source_history
 from ouro.application.sessions.service import SessionService
 from ouro.core.agents import (
     AgentCatalogSnapshot,
@@ -26,6 +29,7 @@ from ouro.core.context import (
     ProviderContext,
     estimate_message_tokens,
 )
+from ouro.core.context_selection import ContextSelection, MessageBoundary
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.errors import PersistenceError, SessionBranchError, SessionBusyError
 from ouro.core.messages import MessageRecord, ToolResultReference
@@ -39,6 +43,7 @@ from ouro.sessions.layout import DATA_LAYOUT_VERSION
 from tests.context_facts import save_context
 from tests.harness_state import replace_harness_state
 from tests.session_storage import read_session_payload, session_connection, write_session_payload
+from tests.session_summaries import commit_summary
 from tests.tool_batches import seed_tool_messages
 
 
@@ -652,6 +657,7 @@ def test_catalog_scoped_trash_does_not_decode_canonical_records(
     store.initialize()
     sessions = SessionService(store)
     root = sessions.create(session_id="ses_corrupt_root", title="Corrupt root").session
+    side = sessions.create_side_conversation(root.session_id, "Explain the failure").session
     child = SessionRecord(
         session_id="ses_corrupt_child",
         title="Child",
@@ -663,11 +669,18 @@ def test_catalog_scoped_trash_does_not_decode_canonical_records(
     store.create_session(child)
     if backend == "files":
         write_session_payload(store, root.session_id, "{broken")
+        side_payload = json.loads(read_session_payload(store, side.session_id))
+        write_session_payload(store, side.session_id, json.dumps({**side_payload, "title": []}))
     else:
         with closing(sqlite3.connect(store.database)) as connection:
             connection.execute(
                 "UPDATE sessions SET payload = '{broken' WHERE session_id = ?",
                 (root.session_id,),
+            )
+            connection.execute(
+                "UPDATE sessions SET payload = json_set(payload, '$.title', json('[]')) "
+                "WHERE session_id = ?",
+                (side.session_id,),
             )
             connection.commit()
     store.rebuild_catalog()
@@ -681,9 +694,9 @@ def test_catalog_scoped_trash_does_not_decode_canonical_records(
     result = sessions.trash_from_catalog(root.session_id)
 
     assert result.session_id == root.session_id
-    assert set(result.session_ids) == {root.session_id, child.session_id}
+    assert set(result.session_ids) == {root.session_id, child.session_id, side.session_id}
     assert store.read_catalog().sessions == []
-    for session_id in (root.session_id, child.session_id):
+    for session_id in result.session_ids:
         with pytest.raises(FileNotFoundError):
             load_session_record(session_id)
     if backend == "files":
@@ -860,8 +873,13 @@ def test_branch_rejects_incomplete_tool_exchange_and_reports_previous_boundary(t
         sessions.branch(source.session_id, assistant.message_id)
 
 
-def test_branch_applies_extension_copy_and_reset_policies(tmp_path) -> None:
-    store, sessions = _service(tmp_path)
+@pytest.mark.parametrize("backend", ("files", "sqlite"))
+def test_branch_applies_extension_copy_and_reset_policies(tmp_path, backend) -> None:
+    store = (
+        LocalSessionStore(tmp_path) if backend == "files" else SQLiteSessionStore(tmp_path / "db")
+    )
+    store.initialize()
+    sessions = SessionService(store)
     source = sessions.create(title="Extension lifecycle").session
     first = MessageRecord.text(
         session_id=source.session_id,
@@ -882,7 +900,10 @@ def test_branch_applies_extension_copy_and_reset_policies(tmp_path) -> None:
         text="continue",
         sequence=3,
     )
-    for message in (first, projection, branch_point):
+    tail = MessageRecord.text(
+        session_id=source.session_id, role="assistant", text="done", sequence=4
+    )
+    for message in (first, projection, branch_point, tail):
         store.append_message(message)
     replace_harness_state(
         store,
@@ -912,17 +933,59 @@ def test_branch_applies_extension_copy_and_reset_policies(tmp_path) -> None:
         "dev.example.preferences",
     }
 
-    result = sessions.branch(source.session_id, branch_point.message_id)
-    snapshot = store.load_session(result.session.session_id)
-
-    assert [message.text_content for message in snapshot.messages] == [
-        "define state",
-        "continue",
-    ]
-    assert projection.message_id not in result.message_id_map
-    assert len(snapshot.extension_states) == 1
-    assert snapshot.extension_states[0].owner_id == "dev.example.preferences"
-    assert snapshot.extension_states[0].session_id == result.session.session_id
+    summary = CompactionRecord(
+        session_id=source.session_id,
+        strategy_id="test",
+        trigger="manual",
+        summary="RESET-ONLY: active state. The task continues.",
+        covered_message_count=3,
+        covered_end_message_id=branch_point.message_id,
+        history_boundary_message_id=tail.message_id,
+    )
+    safe = summary.model_copy(
+        update={
+            "compaction_id": "cmp_safe_prefix",
+            "summary": "The user defined the task.",
+            "covered_message_count": 1,
+            "covered_end_message_id": first.message_id,
+            "history_boundary_message_id": first.message_id,
+        }
+    )
+    commit_summary(store, safe)
+    summary.previous_compaction_id = safe.compaction_id
+    commit_summary(store, summary)
+    sessions.set_context_selection(
+        source.session_id,
+        ContextSelection(
+            compaction_id=summary.compaction_id,
+            media_elided_through=MessageBoundary(message_id=projection.message_id, sequence=2),
+        ),
+    )
+    for result in (
+        sessions.branch(source.session_id, tail.message_id),
+        sessions.create_side_conversation(source.session_id, "Explain the task"),
+    ):
+        snapshot = store.load_session(result.session.session_id)
+        assert [message.text_content for message in snapshot.messages] == [
+            "define state",
+            "continue",
+            "done",
+        ]
+        assert projection.message_id not in result.message_id_map
+        assert len(snapshot.extension_states) == 1
+        assert snapshot.extension_states[0].owner_id == "dev.example.preferences"
+        assert snapshot.extension_states[0].session_id == result.session.session_id
+        (inherited,) = snapshot.compactions
+        assert inherited.summary == safe.summary
+        assert inherited.covered_message_count == 1
+        assert inherited.covered_end_message_id == snapshot.messages[0].message_id
+        assert inherited.history_boundary_message_id == snapshot.messages[0].message_id
+        assert snapshot.session.context_selection == ContextSelection(
+            compaction_id=inherited.compaction_id,
+            media_elided_through=MessageBoundary(
+                message_id=snapshot.messages[0].message_id, sequence=1
+            ),
+        )
 
 
 def test_branch_rejects_reset_projection_as_branch_point(tmp_path) -> None:
@@ -950,6 +1013,35 @@ def test_branch_rejects_reset_projection_as_branch_point(tmp_path) -> None:
 
     with pytest.raises(SessionBranchError, match="must reset"):
         sessions.branch(source.session_id, projection.message_id)
+    side = sessions.create_side_conversation(source.session_id, "Explain the plan")
+    assert side.source_message_id is None
+    assert not store.load_session(side.session.session_id).messages
+    assert freeze_source_history(store, side.session.session_id, input_budget=1024) is None
+    question = MessageRecord.text(session_id=source.session_id, role="user", text="test result")
+    store.append_message(question)
+    tail = MessageRecord.text(
+        session_id=source.session_id,
+        role="system",
+        text="current state",
+        semantic_tag="plan-context",
+    )
+    store.append_message(tail)
+    progress = freeze_source_history(store, side.session.session_id, input_budget=1024)
+    assert progress and progress.after and progress.after.message_id == projection.message_id
+    summary = CompactionRecord(
+        session_id=source.session_id,
+        strategy_id="test",
+        trigger="manual",
+        summary="Test finished.",
+        covered_message_count=3,
+        covered_end_message_id=tail.message_id,
+        history_boundary_message_id=tail.message_id,
+    )
+    commit_summary(store, summary)
+    after_summary = sessions.create_side_conversation(source.session_id, "Explain the result")
+    inherited = store.load_active_compaction(after_summary.session.session_id)
+    assert inherited is None
+    assert after_summary.source_message_id == question.message_id
 
 
 def test_branch_honors_extension_reject_policy(tmp_path) -> None:
@@ -1224,8 +1316,6 @@ def test_branch_inherits_only_compaction_lineage_available_at_boundary(
         # A later display anchor does not make valid coverage unavailable to a branch.
         history_boundary_message_id=messages[5].message_id,
     )
-    from tests.session_summaries import commit_summary
-
     commit_summary(store, first)
     commit_summary(store, later)
 
@@ -1512,32 +1602,172 @@ def test_trash_tree_refuses_concurrent_live_owner_without_partial_removal(
     store.initialize()
     sessions = SessionService(store)
     root = SessionRecord(session_id="ses_live_root")
+    store.create_session(root)
+    side = sessions.create_side_conversation(root.session_id, "Explain timeout").session
+    nested = sessions.create_side_conversation(side.session_id, "Explain retry").session
     child = SessionRecord(
         session_id="ses_live_child",
         session_kind="subagent",
-        root_session_id=root.session_id,
-        parent_session_id=root.session_id,
+        root_session_id=side.session_id,
+        parent_session_id=side.session_id,
         delegation_id="dlg_live_child",
     )
-    store.create_session(root)
     store.create_session(child)
+    delegation = store.create_delegation(
+        DelegationRecord(
+            delegation_id=child.delegation_id,
+            idempotency_key="side/child",
+            root_session_id=side.session_id,
+            parent_session_id=side.session_id,
+            parent_run_id="run_side",
+            child_session_id=child.session_id,
+            task_description="Inspect retry",
+            prompt_digest="sha256:retry",
+            definition=AgentDefinition(agent_id="general", name="General", description="Inspect"),
+        )
+    )
+    unrelated = sessions.create(title="Other investigation").session.session_id
     store.rebuild_catalog()
     live_lock = store.acquire_session_lock(child.session_id, "run_live")
     assert live_lock is not None
 
+    trash = sessions.trash if scope_source == "canonical" else sessions.trash_from_catalog
     try:
         with pytest.raises(SessionBusyError, match="live runtime owns"):
-            if scope_source == "canonical":
-                sessions.trash(root.session_id)
-            else:
-                sessions.trash_from_catalog(root.session_id)
+            trash(root.session_id)
     finally:
         live_lock.release()
 
-    assert {record.session_id for record in store.list_sessions()} == {
-        root.session_id,
-        child.session_id,
-    }
+    tree = {root.session_id, side.session_id, nested.session_id, child.session_id}
+    assert {record.session_id for record in store.list_sessions()} == tree | {unrelated}
+    assert set(sessions.trash_scope(side.session_id)[1]) == tree - {root.session_id}
+    result = trash(root.session_id)
+    assert set(result.session_ids) == tree
+    assert [entry.session_id for entry in store.read_catalog().sessions] == [unrelated]
+    assert [record.session_id for record in store.list_sessions()] == [unrelated]
+    if backend == "files":
+        archived = store.trash_sessions_dir / result.trash_id / "sessions"
+        assert {item.name for item in archived.iterdir()} == tree
+        assert (
+            archived / side.session_id / "delegations" / f"{delegation.delegation_id}.json"
+        ).is_file()
+    else:
+        with closing(sqlite3.connect(store.database)) as connection:
+            (payload,) = connection.execute(
+                "SELECT payload FROM trashed_sessions WHERE trash_id = ?", (result.trash_id,)
+            ).fetchone()
+        archive = json.loads(payload)
+        assert set(archive["session_ids"]) == tree
+        records = archive["records"]["delegations"]
+        assert [row[records["columns"].index("delegation_id")] for row in records["rows"]] == [
+            delegation.delegation_id
+        ]
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+@pytest.mark.parametrize("scope_source", ["canonical", "catalog"])
+def test_trash_detects_branch_published_while_acquiring_locks(
+    tmp_path, backend, scope_source, monkeypatch
+):
+    store = (
+        LocalSessionStore(tmp_path)
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "ouro.db")
+    )
+    store.initialize()
+    sessions = SessionService(store)
+    source = sessions.create().session.session_id
+    trash = sessions.trash if scope_source == "canonical" else sessions.trash_from_catalog
+    acquire = store.acquire_session_lock
+
+    def publish_branch(session_id, owner):
+        lock = acquire(session_id, owner)
+        sessions.create_side_conversation(source, "Created during deletion")
+        return lock
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "acquire_session_lock", publish_branch)
+        with pytest.raises(SessionBusyError, match="tree changed"):
+            trash(source)
+    (side,) = sessions.catalog(SessionCatalogQuery(context_source_session_ids={source})).entries
+    assert sessions.view(source).session_id == source
+    if scope_source == "canonical":
+
+        def unexpected_catalog_read():
+            raise AssertionError("Canonical removal must be independent of the catalog")
+
+        monkeypatch.setattr(store, "read_catalog", unexpected_catalog_read)
+    result = trash(source)
+    assert set(result.session_ids) == {source, side.session_id}
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+def test_concurrent_removals_publish_separate_trees(tmp_path, backend, monkeypatch):
+    store = (
+        LocalSessionStore(tmp_path)
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "ouro.db")
+    )
+    store.initialize()
+    sessions = SessionService(store)
+    roots = [sessions.create().session.session_id for _ in range(2)]
+    sides = [
+        sessions.create_side_conversation(root, "Explain").session.session_id for root in roots
+    ]
+    ready = Barrier(2)
+    publish = store.trash_session_tree
+
+    def publish_together(root_id, members, *, validate_scope):
+        ready.wait(timeout=10)
+        return publish(root_id, members, validate_scope=validate_scope)
+
+    monkeypatch.setattr(store, "trash_session_tree", publish_together)
+    with ThreadPoolExecutor(max_workers=2) as threads:
+        results = list(threads.map(sessions.trash, roots))
+    assert [set(result.session_ids) for result in results] == [
+        {root, side} for root, side in zip(roots, sides, strict=True)
+    ]
+    assert results[0].trash_id != results[1].trash_id
+    assert store.list_sessions() == []
+
+
+def test_sqlite_snapshot_reads_finish_while_trash_waits_for_the_writer(tmp_path, monkeypatch):
+    writer = SQLiteSessionStore(tmp_path / "ouro.db")
+    remover = SQLiteSessionStore(writer.database)
+    writer.initialize()
+    sessions = SessionService(writer)
+    source = sessions.create().session.session_id
+    reading, attempted = Event(), Event()
+    load_messages = sessions._load_messages
+    resource_lock = remover._resource_lock
+
+    def read_source(session_id):
+        reading.set()
+        assert attempted.wait(10)
+        return load_messages(session_id)
+
+    @contextmanager
+    def lock_to_remove(session_id):
+        lock = resource_lock(session_id)
+        acquired = lock.acquire(timeout=0)
+        attempted.set()
+        if not acquired:
+            assert lock.acquire(timeout=10)
+        try:
+            yield lock
+        finally:
+            lock.release()
+
+    monkeypatch.setattr(sessions, "_load_messages", read_source)
+    monkeypatch.setattr(remover, "_resource_lock", lock_to_remove)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        create = pool.submit(sessions.create_side_conversation, source, "During removal")
+        assert reading.wait(10)
+        trash = pool.submit(SessionService(remover).trash, source)
+        side = create.result(timeout=15).session.session_id
+        with pytest.raises(SessionBusyError, match="tree changed"):
+            trash.result(timeout=15)
+    assert set(sessions.trash_scope(source)[1]) == {source, side}
 
 
 @pytest.mark.asyncio

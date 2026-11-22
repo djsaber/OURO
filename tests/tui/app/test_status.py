@@ -28,8 +28,8 @@ from ouro.tui.composer.popup import CommandPopup
 from ouro.tui.conversation.history import ConversationHistory
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.menus.choice import ChoiceScreen
+from ouro.tui.session_navigation import SessionNavigationPanel
 from ouro.tui.state import TuiSessionProjection
-from ouro.tui.subagent_navigation import SubagentNavigationPanel
 from ouro.tui.theme import DEFAULT_TUI_THEME
 from ouro.tui.view_models import TuiSystemStatus
 from ouro.tui.welcome.components import WelcomeSystem
@@ -222,7 +222,7 @@ async def test_repeated_runtime_activity_skips_unchanged_presentations(
             reject_redundant_render,
         )
         monkeypatch.setattr(
-            app.query_one(SubagentNavigationPanel),
+            app.query_one(SessionNavigationPanel),
             "_refresh_content",
             reject_redundant_render,
         )

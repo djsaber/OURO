@@ -39,6 +39,7 @@ class SessionIndexEntry(OuroModel):
     session_kind: Literal["primary", "subagent"] | None = None
     root_session_id: str
     parent_session_id: str | None = None
+    context_source_session_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
     title: str
     title_source: SessionTitleSource = "fallback"
     created_at: datetime

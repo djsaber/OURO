@@ -15,7 +15,7 @@ from ouro.tui.interactions.approval import (
 from ouro.tui.interactions.bar import InteractionBar
 from ouro.tui.interactions.plan import PlanConfirmationPanel
 from ouro.tui.interactions.questions import AskUserPanel
-from ouro.tui.subagent_navigation import SubagentNavigationPanel
+from ouro.tui.session_navigation import SessionNavigationPanel
 from ouro.tui.view_models import TuiSystemStatus
 from ouro.tui.welcome import DEFAULT_WELCOME_STYLE, WELCOME_STYLES, WelcomeStyle
 from ouro.tui.welcome.host import WelcomeHost
@@ -36,13 +36,12 @@ class WelcomePanel(WelcomeHost):
         *,
         welcome_style: WelcomeStyle = WELCOME_STYLES[DEFAULT_WELCOME_STYLE],
     ) -> None:
-        self._subagent_navigation = SubagentNavigationPanel()
         self._command_popup = CommandPopup()
         self._interaction_bar = InteractionBar()
         self._composer = Composer()
         self._composer.display = False
         surface = Vertical(
-            self._subagent_navigation,
+            SessionNavigationPanel(),
             self._command_popup,
             AskUserPanel(),
             PlanConfirmationPanel(),

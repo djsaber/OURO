@@ -291,7 +291,8 @@ Call 的完整 payload 拥有原参数，同一行另存不含 arguments 的小�
 保留完整参数，包括空对象与显式空参数覆盖的区别。structured 结果仍由显式 Outcome 查询读取。
 一次 Session 读作用域共用原生连接与读事务，涵盖消息定位、调用事实、摘要、请求头及嵌套查询。
 Files 的同会话嵌套读取共用最外层作用域：只在进入边界时取得锁、检查未决提交并观察目录身份，
-退出边界时统一释放资源。SQLite 的同会话嵌套读取复用当前资源锁；切换会话仍取得对应资源锁。
+退出边界时统一释放资源。SQLite 的独立读取持有所选会话的资源锁，同一会话的嵌套读取复用该锁。
+写事务中的读取复用已有写入权。回收和替换资源目录也在写事务内进行，普通回滚先恢复已移动的文件，再释放写入权。
 读取范围不含工具引用时不查询 Call/Outcome；返回对象独立解码，不跨查询保留正文或共享可变观察结果。
 Files 提交准备同样在一个读事务中完成 Session、Run、所选事实、消息位置和计数读取；该事务在文件发布和
 原生写事务之前结束。独立 Outcome 的准备与写入共用其写事务连接。连接由读作用域或既有 Run 执行所有权释放，
@@ -586,9 +587,9 @@ Catalog 与 Host DTO 均不保存完整 transcript；文本查询只覆盖 title
 model 和 tags。最后消息预览选择 user/assistant 消息。全文搜索是独立未来能力，不能借 disposable Catalog 复制
 canonical 对话。
 
-root Session 有 active 或无法判定的 Agent descendant 时不能归档。trash 与归档语义不同：正常生命周期路径通过
-`SessionRecord.parent_session_id` 解析 owning primary 和传递 subagent scope；Host 已取得用户明确删除确认、但 canonical
-记录无法可靠解码时，Application 可改用 Catalog 中稳定的 `session_id/root_session_id/parent_session_id` 确定可见树范围。
+root Session 有 active 或无法判定的 Agent descendant 时不能归档。正常删除通过 `parent_session_id` 解析 owning primary，
+递归纳入其子智能体和以范围内会话为直接来源的会话。Host 明确确认的目录删除使用 Catalog 中的根、父会话和直接来源标识
+确定所选会话的整棵树，包含普通分支。入口已经向用户列出成员时，停止运行和最终回收均使用确认的成员集合。两种删除都在发布前复核锁定范围，发现成员变化则保留整组并重新预览。
 两条路径都不得通过 Run 或 Delegation 反推删除 scope；`session_kind`、Catalog health 和 canonical 可读性不是删除授权条件。
 
 ## Branch
@@ -597,10 +598,12 @@ root Session 有 active 或无法判定的 Agent descendant 时不能归档。tr
 - 工具交换必须完整；请求或结果中间不能作为孤立边界。
 - 分支消息获得新 id、清除 run/turn id，并记录 source identity。
 - 分支 lineage 写入 root/parent/fork 字段。
+- `context_source_session_id` 记录上下文的直接来源，独立于运行树的根和父会话。应用层按该字段查询 Catalog、确定删除范围。继承游标使用源历史版本、消息 ID 和序号定位已处理的位置。
 - 含 `resource_refs` 的分支通过 ResourceService 验证存在性，并与消息一起原子发布引用关系。
 - 分支当前 Harness 取所选消息之后的边界；分支头取当前版本。`copy/reset/reject` 一致作用于保留消息
   锚点引用的全部版本。reset 移除 owner 状态和声明的框架消息投影，不能经分支内撤销复活；reject 不能被当前
-  空状态绕过。分支点若是必须 reset 的投影则拒绝。
+  空状态绕过。普通分支若指定了必须 reset 的投影作为分支点，则拒绝创建。旁问在应用这些策略后记录实际保留的最后一条源消息。
+- 压缩摘要和媒体边界先按来源消息 ID 与序号核验，再映射到实际保留的消息。摘要及前驱所覆盖的内容均可继承时才能复用摘要文本。剔除范围内投影时退回最近可用的前驱，由分支投影剩余消息。
 - 重映射 Session、消息与版本身份。activation identity 按 Session 归属，与不透明 owner payload 一起保留，
   不单独重写其中一侧引用。
 - 完整 snapshot/export 包含 canonical Session、Harness 版本、Input 事实与生命周期状态；File/SQLite 转换保留锚点、代次

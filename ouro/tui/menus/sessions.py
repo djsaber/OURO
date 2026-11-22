@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from calendar import month_name
+from collections.abc import Iterable
 from datetime import date, datetime
 
 from rich.text import Text
@@ -42,21 +43,44 @@ def _session_choice_label(item: SessionCatalogEntry, *, theme: TuiTheme) -> str:
     return _truncate_session_title(title)
 
 
-def _sessions_in_domain(
-    sessions: tuple[SessionCatalogEntry, ...], domain: str
+def _has_navigation_node(item: SessionCatalogEntry) -> bool:
+    return (
+        item.session_kind == "primary"
+        and not item.archived
+        and item.health in {"ok", "recoverable"}
+        and item.catalog_error is None
+    )
+
+
+def _side_session_nodes(related: Iterable[SessionCatalogEntry]) -> tuple[SessionCatalogEntry, ...]:
+    visible = (item for item in related if _has_navigation_node(item))
+    return tuple(sorted(visible, key=lambda item: (item.created_at, item.session_id)))
+
+
+def _session_open_targets(
+    sessions: tuple[SessionCatalogEntry, ...],
 ) -> tuple[SessionCatalogEntry, ...]:
+    navigable = {item.session_id for item in sessions if _has_navigation_node(item)}
     return tuple(
         item
         for item in sessions
-        if (
-            item.archived
-            if domain == "archived"
-            else not item.archived
-            and (
-                item.session_kind == "subagent"
-                if domain == "subagent"
-                else item.session_kind != "subagent" and item.namespace == domain
-            )
+        if item.context_source_session_id not in navigable or item.session_id not in navigable
+    )
+
+
+def _sessions_in_domain(
+    sessions: tuple[SessionCatalogEntry, ...], domain: str
+) -> tuple[SessionCatalogEntry, ...]:
+    if domain == "archived":
+        return tuple(item for item in sessions if item.archived)
+    return tuple(
+        item
+        for item in sessions
+        if not item.archived
+        and (
+            item.session_kind == "subagent"
+            if domain == "subagent"
+            else item.session_kind != "subagent" and item.namespace == domain
         )
     )
 

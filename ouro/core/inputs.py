@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import Field, field_validator, model_validator
 
 from ouro.core.base import OuroModel, VersionedOuroModel
+from ouro.core.context_selection import MessageBoundary
 from ouro.core.errors import PersistenceError
 from ouro.core.input_content import InputContent, InputFile
 from ouro.core.message_roles import MessageRole
@@ -33,6 +34,20 @@ _ROUTING_FIELDS = (
 )
 
 
+class HistoryExcerpt(MessageBoundary):
+    text: str
+    omitted: bool = Field(default=False, exclude_if=lambda value: not value)
+
+
+class SourceHistory(OuroModel):
+    """Published evidence frozen with an input, in canonical source order."""
+
+    session_id: str
+    history_epoch: int
+    after: MessageBoundary | None
+    entries: tuple[HistoryExcerpt, ...] = Field(min_length=1)
+
+
 class QueuedInput(MessageSemantics):
     history_epoch: int = Field(default=0, ge=0)
     history_bound: bool = False
@@ -44,6 +59,9 @@ class QueuedInput(MessageSemantics):
     title: str | None = None
     resource_refs: tuple[str, ...] = ()
     attachments: tuple[InputFile, ...] = Field(default=(), max_length=16)
+    source_history: SourceHistory | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     queued_at: datetime
     source: QueuedInputSource
     role: MessageRole
@@ -258,8 +276,11 @@ class InputState(VersionedOuroModel):
         )
 
     def valid_in_history(self, epoch: int) -> bool:
-        return self.history_epoch == epoch or (
-            not self.history_bound and self.source not in {"plugin", "delegation"}
+        return (
+            self.history_epoch == epoch
+            or self.source == "user"
+            or self.source == "host"
+            and not self.history_bound
         )
 
 

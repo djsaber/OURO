@@ -4,7 +4,7 @@ import json
 import re
 import sqlite3
 import threading
-from collections.abc import Generator, Iterable, Mapping
+from collections.abc import Callable, Generator, Iterable, Mapping
 from contextlib import AbstractContextManager, ExitStack, closing, contextmanager, nullcontext
 from datetime import datetime
 from functools import partial
@@ -876,6 +876,8 @@ class SQLiteSessionStore:
         self,
         root_session_id: str,
         session_ids: tuple[str, ...],
+        *,
+        validate_scope: Callable[[], None] | None = None,
     ) -> str:
         _validated_record_id(root_session_id, kind="session")
         normalized = tuple(dict.fromkeys(session_ids))
@@ -889,6 +891,8 @@ class SQLiteSessionStore:
             with self.session_mutation(root_session_id):
                 state: _TransactionState = self._transaction_state.value
                 state.resource_locks.enter_context(resource_locks.pop_all())
+                if validate_scope is not None:
+                    validate_scope()
                 connection = self._transaction_connection()
                 for session_id in normalized:
                     self._require_session(connection, session_id)
@@ -902,9 +906,7 @@ class SQLiteSessionStore:
                             table: self._raw_trash_tree_rows(
                                 connection,
                                 table,
-                                session_ids=(
-                                    (root_session_id,) if table == "delegations" else normalized
-                                ),
+                                session_ids=normalized,
                                 key=("root_session_id" if table == "delegations" else "session_id"),
                             )
                             for table in (
@@ -1690,8 +1692,14 @@ class SQLiteSessionStore:
         # SQLite snapshots protect records, while the existing resource namespace
         # lock keeps their external files alive until selected bytes are owned.
         previous_session = getattr(self._read_state, "session_id", None)
+        # Removing or replacing published files requires the SQLite writer. A read
+        # within that transaction already owns their lifetime and must not wait
+        # for a remover holding the resource lock while it waits for the writer.
+        writer = getattr(self._transaction_state, "value", None)
         resources = (
-            nullcontext() if previous_session == session_id else self._resource_lock(session_id)
+            nullcontext()
+            if previous_session == session_id or writer is not None
+            else self._resource_lock(session_id)
         )
         with resources, self._read_connection() as connection:
             previous = getattr(self._read_state, "connection", None)
@@ -2052,13 +2060,16 @@ class _TransactionState:
         self.file_moves: list[tuple[Path, Path]] = []
         self.resource_locks = ExitStack()
 
-    def restore_files(self) -> None:
-        for source, target in reversed(self.file_moves):
-            if source.exists():
-                # Keep uncommitted replacement bytes for diagnosis without touching old data.
-                source.rename(target.with_name(new_id("uncommitted")))
-            source.parent.mkdir(parents=True, exist_ok=True)
-            target.rename(source)
+    def rollback(self) -> None:
+        try:
+            # The next writer can read these files as soon as the database rolls back.
+            for source, target in reversed(self.file_moves):
+                if source.exists():
+                    source.rename(target.with_name(new_id("uncommitted")))
+                source.parent.mkdir(parents=True, exist_ok=True)
+                target.rename(source)
+        finally:
+            self.connection.rollback()
 
 
 class _SQLiteMutation(AbstractContextManager[object, None]):
@@ -2111,13 +2122,12 @@ class _SQLiteMutation(AbstractContextManager[object, None]):
             return
         try:
             if state.failed:
-                state.connection.rollback()
-                state.restore_files()
+                state.rollback()
             else:
                 state.connection.commit()
         except sqlite3.Error as error:
-            state.connection.rollback()
-            state.restore_files()
+            if not state.failed:
+                state.rollback()
             raise PersistenceError(f"SQLite transaction failed: {error}") from error
         finally:
             self.store._connections.return_connection(state.connection)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Generator, Iterable
+from collections.abc import Callable, Generator, Iterable
 from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import Protocol
@@ -275,7 +275,11 @@ class SessionRepository(SessionObservationReader, RunReferenceReader, Protocol):
         self,
         root_session_id: str,
         session_ids: tuple[str, ...],
-    ) -> str: ...
+        *,
+        validate_scope: Callable[[], None] | None = None,
+    ) -> str:
+        """Validate the caller's scope under the mutation locks before publication."""
+        ...
 
     def append_message(self, message: MessageRecord) -> None: ...
 

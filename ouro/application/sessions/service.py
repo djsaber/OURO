@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Iterable, Mapping
-from contextlib import closing
+from contextlib import ExitStack, closing
 from datetime import datetime
 from time import monotonic
 from typing import TYPE_CHECKING, Protocol
@@ -44,8 +44,9 @@ from ouro.application.sessions.editing import undo_user_input
 from ouro.application.sessions.history import (
     apply_extension_branch_policies,
     branch_input_boundary,
-    copy_branch_compactions,
+    copy_branch_context,
     copy_branch_messages,
+    published_history,
     select_branch_messages,
     select_history_suffix,
 )
@@ -70,9 +71,13 @@ from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.core.session_commits import SessionCommitConflict
 from ouro.core.session_observation import SessionObservationPosition
-from ouro.core.session_ports import SessionLock, SessionSnapshot, SessionStore
+from ouro.core.session_ports import SessionSnapshot, SessionStore
 from ouro.core.session_queries import SessionIndexEntry
-from ouro.core.session_titles import normalize_session_title, with_session_title
+from ouro.core.session_titles import (
+    fallback_session_title,
+    normalize_session_title,
+    with_session_title,
+)
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord, SessionTitleSource
 from ouro.core.tool_facts import ToolCallFacts
 
@@ -80,6 +85,44 @@ if TYPE_CHECKING:
     from ouro.application.resources import ResourceService
 
 _TITLE_CONTEXT_MESSAGE_LIMIT = 20
+
+
+class SessionTreeChangedError(SessionBusyError):
+    """The proposed removal no longer covers the confirmed sessions."""
+
+
+def _check_trash_scope(current: tuple[str, ...], expected: tuple[str, ...] | None) -> None:
+    if expected is not None and current != expected:
+        raise SessionTreeChangedError(
+            "Session tree changed during removal. Review the current sessions."
+        )
+
+
+def _trash_session_ids(
+    root_id: str,
+    records: Mapping[str, SessionRecord | SessionIndexEntry],
+    *,
+    include_forks: bool,
+) -> tuple[str, ...]:
+    children: dict[str, list[str]] = {}
+    for record in records.values():
+        owners = [record.context_source_session_id]
+        if include_forks or record.session_kind == "subagent":
+            owners.append(record.parent_session_id)
+            if include_forks or root_id not in records or record.parent_session_id not in records:
+                owners.append(record.root_session_id)
+        for owner in owners:
+            if owner is not None and owner != record.session_id:
+                children.setdefault(owner, []).append(record.session_id)
+
+    pending = [root_id]
+    scoped: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current not in scoped:
+            scoped.add(current)
+            pending.extend(children.get(current, ()))
+    return tuple(sorted(scoped.intersection(records), key=lambda item: (item != root_id, item)))
 
 
 class SessionTitleGenerator(Protocol):
@@ -710,13 +753,15 @@ class SessionService:
         self,
         session_id: str,
         *,
+        confirmed_session_ids: tuple[str, ...] | None = None,
         timeout_seconds: float = 10.0,
     ) -> SessionTrashResult:
         """Cooperatively stop live Runs in one Session tree, then trash it atomically."""
 
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
-        _, records = self._trash_scope_records(session_id)
+        _, records = self._trash_scope_records(session_id, confirmed_session_ids)
+        members = tuple(record.session_id for record in records)
         live_records = [
             record
             for record in reversed(records)
@@ -744,10 +789,12 @@ class SessionService:
                     f"timed out waiting for live Session Runs to stop before removal: {identities}"
                 )
             await asyncio.sleep(0.05)
-        return self.trash(session_id)
+        return self.trash(session_id, confirmed_session_ids=members)
 
-    def trash(self, session_id: str) -> SessionTrashResult:
-        root_session_id, records = self._trash_scope_records(session_id)
+    def trash(
+        self, session_id: str, *, confirmed_session_ids: tuple[str, ...] | None = None
+    ) -> SessionTrashResult:
+        root_session_id, records = self._trash_scope_records(session_id, confirmed_session_ids)
         session_ids = tuple(record.session_id for record in records)
         active_session_ids = tuple(
             record.session_id
@@ -755,25 +802,7 @@ class SessionService:
             if record.status in {"running", "waiting_approval", "waiting_user"}
             or record.active_run_id is not None
         )
-        locks: list[SessionLock] = []
         diagnostics: list[Diagnostic] = []
-        lock_owner = new_id("trash_tree")
-        try:
-            for record in records:
-                lock = self._store.acquire_session_lock(record.session_id, lock_owner)
-                if lock is None:
-                    raise SessionBusyError(
-                        f"cannot remove Session tree while a live runtime owns {record.session_id}"
-                    )
-                locks.append(lock)
-
-            trash_id = self._store.trash_session_tree(root_session_id, session_ids)
-        finally:
-            for lock in reversed(locks):
-                lock.release()
-
-        for removed_session_id in session_ids:
-            diagnostics.extend(self._refresh_index_diagnostics(removed_session_id))
         if active_session_ids:
             diagnostics.append(
                 Diagnostic(
@@ -788,11 +817,8 @@ class SessionService:
                     metadata={"session_ids": list(active_session_ids)},
                 )
             )
-        return SessionTrashResult(
-            session_id=root_session_id,
-            trash_id=trash_id,
-            session_ids=session_ids,
-            diagnostics=tuple(diagnostics),
+        return self._trash_tree(
+            root_session_id, session_ids, from_catalog=False, diagnostics=diagnostics
         )
 
     def trash_from_catalog(self, session_id: str) -> SessionTrashResult:
@@ -802,45 +828,59 @@ class SessionService:
         if session_id not in catalog:
             raise SessionNotFoundError(f"session not found: {session_id}")
 
-        scoped_ids = {session_id}
-        changed = True
-        while changed:
-            changed = False
-            for entry in catalog.values():
-                if entry.session_id not in scoped_ids and (
-                    entry.parent_session_id in scoped_ids or entry.root_session_id == session_id
-                ):
-                    scoped_ids.add(entry.session_id)
-                    changed = True
-        session_ids = tuple(sorted(scoped_ids, key=lambda item: (item != session_id, item)))
-        locks: list[SessionLock] = []
-        diagnostics: list[Diagnostic] = []
-        lock_owner = new_id("trash_catalog_tree")
-        try:
+        session_ids = _trash_session_ids(session_id, catalog, include_forks=True)
+        return self._trash_tree(session_id, session_ids, from_catalog=True)
+
+    def _trash_tree(
+        self,
+        session_id: str,
+        session_ids: tuple[str, ...],
+        *,
+        from_catalog: bool,
+        diagnostics: Iterable[Diagnostic] = (),
+    ) -> SessionTrashResult:
+        def validate_scope() -> None:
+            # A source can publish a branch while a Run owns it. Recheck through
+            # the original discovery path inside the store's publication boundary.
+            entries = (
+                self._store.read_catalog().sessions if from_catalog else self._store.list_sessions()
+            )
+            current = _trash_session_ids(
+                session_id,
+                {entry.session_id: entry for entry in entries},
+                include_forks=from_catalog,
+            )
+            _check_trash_scope(current, session_ids)
+
+        lock_owner = new_id("trash_tree")
+        with ExitStack() as locks:
             for scoped_session_id in session_ids:
                 lock = self._store.acquire_session_lock(scoped_session_id, lock_owner)
                 if lock is None:
                     raise SessionBusyError(
                         f"cannot remove Session tree while a live runtime owns {scoped_session_id}"
                     )
-                locks.append(lock)
-            trash_id = self._store.trash_session_tree(session_id, session_ids)
-        finally:
-            for lock in reversed(locks):
-                lock.release()
+                locks.callback(lock.release)
+            trash_id = self._store.trash_session_tree(
+                session_id, session_ids, validate_scope=validate_scope
+            )
 
-        for removed_session_id in session_ids:
-            diagnostics.extend(self._refresh_index_diagnostics(removed_session_id))
+        index_diagnostics = (
+            diagnostic
+            for identity in session_ids
+            for diagnostic in self._refresh_index_diagnostics(identity)
+        )
         return SessionTrashResult(
             session_id=session_id,
             trash_id=trash_id,
             session_ids=session_ids,
-            diagnostics=tuple(diagnostics),
+            diagnostics=(*index_diagnostics, *diagnostics),
         )
 
     def _trash_scope_records(
         self,
         session_id: str,
+        confirmed_session_ids: tuple[str, ...] | None = None,
     ) -> tuple[str, tuple[SessionRecord, ...]]:
         try:
             requested = self._store.load_session_record(session_id)
@@ -869,33 +909,9 @@ class SessionService:
             if root is not None
             else requested.root_session_id or requested.session_id
         )
-        scoped_ids = {root.session_id if root is not None else requested.session_id}
-        changed = True
-        while changed:
-            changed = False
-            for record in all_records.values():
-                if (
-                    record.session_kind == "subagent"
-                    and record.parent_session_id in scoped_ids
-                    and record.session_id not in scoped_ids
-                ):
-                    scoped_ids.add(record.session_id)
-                    changed = True
-        if root is None:
-            scoped_ids.update(
-                record.session_id
-                for record in all_records.values()
-                if record.session_kind == "subagent" and record.root_session_id == root_session_id
-            )
-        scoped_ids.add(requested.session_id)
-        records = [all_records[record_id] for record_id in scoped_ids]
-        records.sort(
-            key=lambda record: (
-                record.session_id != root_session_id,
-                record.session_id,
-            )
-        )
-        return root_session_id, tuple(records)
+        scoped_ids = _trash_session_ids(root_session_id, all_records, include_forks=False)
+        _check_trash_scope(scoped_ids, confirmed_session_ids)
+        return root_session_id, tuple(all_records[identity] for identity in scoped_ids)
 
     @staticmethod
     def _agent_descendant_conflict(
@@ -960,44 +976,62 @@ class SessionService:
             )
         try:
             with self._store.session_mutation(source_session_id):
-                return self._branch_locked(
-                    source_session_id,
-                    message_id,
-                    before_input=before_input,
+                source = self._load_session_record(source_session_id)
+                if (
+                    source.active_run_id is not None
+                    or source.status in {"running", "waiting_approval", "waiting_user"}
+                    or any(
+                        run.status in ACTIVE_RUN_STATUSES
+                        and run.history_epoch == source.history_epoch
+                        for run in self._store.load_runs(source_session_id)
+                    )
+                ):
+                    raise SessionBusyError(
+                        f"cannot branch Session while it has an active Run: {source_session_id}"
+                    )
+                messages = self._load_messages(source_session_id)
+                resource_refs: tuple[str, ...] = ()
+                if before_input:
+                    message_id, resource_refs = branch_input_boundary(messages, message_id)
+                selected, point = select_branch_messages(messages, message_id)
+                return self._copy_branch(
+                    source, messages, selected, source_message=point, resource_refs=resource_refs
                 )
         finally:
             lock.release()
 
-    def _branch_locked(
-        self,
-        source_session_id: str,
-        message_id: str | None,
-        *,
-        before_input: bool,
+    def create_side_conversation(
+        self, source_session_id: str, question: str
     ) -> SessionBranchResult:
-        source = self._load_session_record(source_session_id)
-        messages = self._load_messages(source_session_id)
-        runs = self._store.load_runs(source_session_id)
-        compactions = self._store.load_compactions(source_session_id)
-        if (
-            source.active_run_id is not None
-            or source.status in {"running", "waiting_approval", "waiting_user"}
-            or any(
-                run.status in ACTIVE_RUN_STATUSES and run.history_epoch == source.history_epoch
-                for run in runs
-            )
-        ):
-            raise SessionBusyError(
-                f"cannot branch Session while it has an active Run: {source_session_id}"
-            )
-        resource_refs: tuple[str, ...] = ()
-        if before_input:
-            message_id, resource_refs = branch_input_boundary(messages, message_id)
-        selected_messages, source_message = select_branch_messages(messages, message_id)
+        title = fallback_session_title(question)
+        if title is None:
+            raise ValueError("A side conversation needs a question")
+        with self._store.session_mutation(source_session_id):
+            source = self._load_session_record(source_session_id)
+            if source.session_kind != "primary":
+                raise SessionBranchError("A side conversation requires a writable source session")
+            messages = self._load_messages(source_session_id)
+            selected, _ = published_history(self._store, source, messages)
+            return self._copy_branch(source, messages, selected, side_title=title)
+
+    def _copy_branch(
+        self,
+        source: SessionRecord,
+        messages: list[MessageRecord],
+        selected_messages: list[MessageRecord],
+        *,
+        source_message: MessageRecord | None = None,
+        resource_refs: tuple[str, ...] = (),
+        side_title: str | None = None,
+    ) -> SessionBranchResult:
+        """Copy the selected history and its dependencies under the source mutation lock."""
+        source_session_id = source.session_id
+        source_end = selected_messages[-1] if selected_messages else None
+        end_sequence = source_end.sequence if source_end else 0
         head_version = (
             source.harness_version
-            if len(selected_messages) == len(messages)
-            else messages[len(selected_messages)].before_harness_version
+            if end_sequence == len(messages)
+            else messages[end_sequence].before_harness_version
         )
         if head_version is None:
             raise SessionBranchError("branch point predates the recorded Harness baseline")
@@ -1013,11 +1047,7 @@ class SessionService:
 
         now = utc_now()
         branch = SessionRecord(
-            root_session_id=source.root_session_id or source.session_id,
-            parent_session_id=source.session_id,
             namespace=source.namespace,
-            forked_from_message_id=(source_message.message_id if source_message else None),
-            forked_from_run_id=(source_message.run_id if source_message else None),
             title=source.title,
             title_source=source.title_source,
             created_at=now,
@@ -1036,6 +1066,25 @@ class SessionService:
             versions,
             branch.session_id,
         )
+        if side_title is not None:
+            source_message = selected_messages[-1] if selected_messages else None
+            branch = with_session_title(branch, side_title)
+            branch.context_source_session_id = source_session_id
+            branch.metadata = {
+                "source_history_epoch": source.history_epoch,
+                "source_boundary": {
+                    "sequence": source_end.sequence,
+                    "message_id": source_end.message_id,
+                }
+                if source_end
+                else None,
+            }
+        else:
+            branch.root_session_id = source.root_session_id or source.session_id
+            branch.parent_session_id = source_session_id
+        if source_message is not None:
+            branch.forked_from_message_id = source_message.message_id
+            branch.forked_from_run_id = source_message.run_id
         resource_ids = list(
             dict.fromkeys(
                 [
@@ -1142,33 +1191,14 @@ class SessionService:
             if version.version_id == branch.harness_version
         )
 
-        copied_compactions = copy_branch_compactions(
+        selection, copied_compactions = copy_branch_context(
             branch.session_id,
-            selected_messages,
+            messages,
             copied_messages,
-            compactions,
-            source.context_selection.compaction_id,
+            self._store.load_compactions(source_session_id),
+            source.context_selection,
             message_id_map,
-        )
-        selection = source.context_selection.retain_prefix(
-            selected_messages[-1] if selected_messages else None
-        )
-        if (boundary := selection.media_elided_through) is not None:
-            selection = selection.model_copy(
-                update={
-                    "media_elided_through": boundary.model_copy(
-                        update={
-                            "message_id": message_id_map[boundary.message_id],
-                        }
-                    ),
-                }
-            )
-        selection = selection.model_copy(
-            update={
-                "compaction_id": copied_compactions[-1].compaction_id
-                if copied_compactions
-                else None,
-            }
+            source_end_sequence=end_sequence,
         )
         branch = branch.model_copy(
             update={
@@ -1316,6 +1346,11 @@ def _filter_entries(
 
 def _matches_query(entry: SessionIndexEntry, query: SessionCatalogQuery) -> bool:
     if query.namespace is not None and entry.namespace != query.namespace:
+        return False
+    if (
+        query.context_source_session_ids
+        and entry.context_source_session_id not in query.context_source_session_ids
+    ):
         return False
     if query.statuses and entry.status not in query.statuses:
         return False

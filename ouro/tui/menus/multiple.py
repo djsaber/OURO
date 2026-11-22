@@ -59,7 +59,7 @@ class MultiChoiceScreen(ChoiceScreen):
         selected_marker: str,
         unselected_marker: str = "",
         confirm_label: str = "Confirm",
-        destructive: bool = False,
+        destructive_prompt: str = "",
         selected_values: tuple[str, ...] = (),
         interaction_hint: str | None = None,
         on_tab: ChoiceTabHandler | None = None,
@@ -76,7 +76,7 @@ class MultiChoiceScreen(ChoiceScreen):
         self._selected_marker = selected_marker
         self._unselected_marker = unselected_marker
         self._confirm_label = confirm_label
-        self._destructive = destructive
+        self._destructive_prompt = destructive_prompt
         self._confirmation_values: tuple[str, ...] = ()
         self._catalog_choices: tuple[Choice, ...] = ()
         self._catalog_filter = ""
@@ -203,12 +203,8 @@ class MultiChoiceScreen(ChoiceScreen):
             Choice(
                 "__multi_confirm__",
                 f"{self._confirm_label} selected ({len(selected)})",
-                description=(
-                    "Permanently delete the selected items? This cannot be undone."
-                    if self._destructive
-                    else ""
-                ),
-                destructive=self._destructive,
+                description=self._destructive_prompt,
+                destructive=bool(self._destructive_prompt),
             ),
         )
         self.query_one("#choice-title", Static).update(

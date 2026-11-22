@@ -7,6 +7,7 @@
 | 规划 | 范围与进入条件 |
 |---|---|
 | [会话协作验收](session-observation.md) | 多会话与多终端协作的跨平台重复终端验收、严格响应性指标和长时资源界限 |
+| [TUI 会话旁问](side-conversations.md) | 单向上下文继承、会话节点导航、Provider 请求前缀与远端缓存验收 |
 | [桌面 Host](desktop-host.md) | 复用 Application / Supervisor 的本地桌面产品面 |
 | [高级智能体能力](advanced-agents.md) | 长期记忆与通用 Workflow；需独立业务需求和持久化边界 |
 | [订阅验证与扩展](subscription-validation.md) | 设备码、模型能力和跨平台验证；未验收能力不得声明支持 |

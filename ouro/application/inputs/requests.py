@@ -14,7 +14,7 @@ from ouro.core.approvals import SessionApprovalMode
 from ouro.core.base import new_id, utc_now
 from ouro.core.errors import SessionBusyError
 from ouro.core.input_content import InputContent, InputFile
-from ouro.core.inputs import QueuedInput
+from ouro.core.inputs import QueuedInput, SourceHistory
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import SkillActivationContent
 from ouro.core.reasoning import ReasoningRequest
@@ -85,11 +85,14 @@ class UserInputRequest(ApplicationDTO):
     skill_invocations: tuple[SkillInvocationRequest, ...] = ()
     resource_refs: tuple[str, ...] = ()
     attachments: tuple[InputFile, ...] = Field(default=(), max_length=16)
+    source_history: SourceHistory | None = None
 
     @model_validator(mode="after")
     def validate_input(self) -> Self:
         if self.edit is not None and self.session_id is None:
             raise ValueError("Editing a message requires an existing session")
+        if self.source_history is not None and self.session_id is None:
+            raise ValueError("Source history requires an existing session")
         if self.session_id is not None:
             if self.new_session_id is not None:
                 raise ValueError("new_session_id requires a new direct-user Session")
@@ -187,6 +190,7 @@ class IncomingRunInput:
                 mode=request.queue_mode,
                 resource_refs=request.input_resource_refs,
                 attachments=request.attachments,
+                source_history=request.source_history,
                 skill_activations=skills,
                 queued_at=utc_now(),
                 source="user",

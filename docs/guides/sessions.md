@@ -11,6 +11,9 @@
 长历史先显示近期完整消息帧。向上滚动到顶部会自动加载更早内容，并保持当前阅读位置。
 导航、分支和编辑命令按需补齐历史，再解析全局编号。已加载的范围可在缓存内复用，历史替换后重新加载。导出始终包含完整历史。
 
+排查测试时，可输入 `/btw 刚才日志里的超时是什么意思？`。旁问能引用已有日志，消息区只显示自己的提问和答复。
+点击中间的来源节点或按 `Alt+↑` 回到排查现场。再从左侧节点打开原旁问，下一次追问会在模型预算内带上主会话新发布的进展。如果工具结果过大，或撤回使上次同步的位置失效，界面会提示，仍可继续提问。
+
 ## 编辑历史消息与继续运行
 
 在空闲的主会话中输入 `/edit`，按 Enter 后从列表中选择要修改的用户消息。也可以直接输入 `/edit #3`。
@@ -59,10 +62,9 @@ uv run --frozen ouro resource remove <session_id> <resource_id> --home ./.ouro-d
 uv run --frozen ouro run --session <session_id> --resource <text_resource_id> "Use this context"
 ```
 
-`session remove` resolves the owning primary Session and moves its complete subagent tree to one
-trash entry. It first requests canonical abort for genuinely live Runs and waits for their locks,
-then acquires the complete tree lock set and discards stale unfinished records. Tree scope never
-depends on deserializing historical Run or Delegation records.
+`session remove` 会把所选主会话、它的各级旁问和所属子智能体放入同一条回收记录。直接删除旁问时，来源会话保留。
+确认预览后，命令先请求停止范围内仍在执行的 Run 并等待释放锁，再锁定整组会话并回收，包括已失去执行者的未完成记录。
+如果预览之后新增了旁问，请以更新后的范围重新确认。回收范围由会话关系确定。
 
 附件提供全文、首尾预览、原生媒体或引用。PNG/JPEG/GIF/WebP 图片、WAV/MP3 音频与 MP4 视频在端点声明对应输入能力且预算允许时提供媒体内容；
 PDF、Office、压缩包等以元信息和引用提交，不自动解析。模型获得原名称、来源与真实路径，自主使用现有 Read 等工具读取或处理。引用降级会明确说明尚未读取的内容。

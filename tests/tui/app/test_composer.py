@@ -27,7 +27,7 @@ from ouro.tui.conversation.view import ConversationView
 from ouro.tui.interactions.approval import INTERACTION_PANEL_MAX_HEIGHT
 from ouro.tui.interactions.bar import InteractionBar
 from ouro.tui.menus.choice import ChoiceScreen
-from ouro.tui.subagent_navigation import SubagentNavigationPanel
+from ouro.tui.session_navigation import SessionNavigationPanel
 from ouro.tui.widgets.status import StatusLine
 from tests.tui.app.providers import BlockingStreamProvider
 from tests.tui.app.support import (
@@ -262,7 +262,7 @@ async def test_growing_composer_rebounds_adjacent_panels_and_conversation(
         # The conversation absorbs the growth, so the surface never overflows.
         assert conversation_after == conversation_before - grown
         # The fixed navigation row still separates conversation from composer.
-        navigation = app.query_one(SubagentNavigationPanel)
+        navigation = app.query_one(SessionNavigationPanel)
         assert navigation.region.y == conversation.region.bottom
         assert composer.region.y == navigation.region.bottom
 

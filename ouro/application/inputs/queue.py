@@ -610,6 +610,7 @@ def same_input_submission(accepted: InputRecord, proposed: InputRecord) -> bool:
         "title",
         "resource_refs",
         "attachments",
+        "source_history",
         "source",
         "role",
         "semantic_tag",

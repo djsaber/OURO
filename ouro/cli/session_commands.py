@@ -11,7 +11,7 @@ from ouro.application.contracts.sessions import (
     SessionCatalogStatus,
     SessionSort,
 )
-from ouro.application.sessions.service import SessionService
+from ouro.application.sessions.service import SessionService, SessionTreeChangedError
 from ouro.cli.context_output import (
     NO_PREPARED_CONTEXT,
     render_context_snapshot,
@@ -388,6 +388,14 @@ async def show_session_context(
     return 0
 
 
+def _confirm_session_removal(root_id: str, members: tuple[str, ...]) -> bool:
+    answer = input(
+        f"Move the complete Session tree {root_id} ({len(members)} Session(s): "
+        f"{', '.join(members)}) to trash and discard unfinished runs? [y/N] "
+    )
+    return answer.strip().lower() in {"y", "yes"}
+
+
 def remove_session(
     session_id: str,
     *,
@@ -398,27 +406,24 @@ def remove_session(
 ) -> int:
     try:
         sessions = _sessions(home, session_backend)
-        root_session_id, session_ids = sessions.trash_scope(session_id)
-        if not force:
-            preview = ", ".join(session_ids[:4])
-            if len(session_ids) > 4:
-                preview += ", ..."
-            confirm = (
-                input(
-                    "Move the complete Session tree "
-                    f"{root_session_id} ({len(session_ids)} Session(s): {preview}) to trash "
-                    "and discard unfinished runs? [y/N] "
-                )
-                .strip()
-                .lower()
-            )
-            if confirm not in {"y", "yes"}:
-                if json_mode:
-                    print(json.dumps({"status": "cancelled"}, ensure_ascii=False))
-                else:
-                    print("Cancelled.")
-                return 0
-        result = asyncio.run(sessions.stop_and_trash(session_id))
+        if force:
+            result = asyncio.run(sessions.stop_and_trash(session_id))
+        else:
+            while True:
+                root_session_id, session_ids = sessions.trash_scope(session_id)
+                if not _confirm_session_removal(root_session_id, session_ids):
+                    if json_mode:
+                        print(json.dumps({"status": "cancelled"}, ensure_ascii=False))
+                    else:
+                        print("Cancelled.")
+                    return 0
+                try:
+                    result = asyncio.run(
+                        sessions.stop_and_trash(session_id, confirmed_session_ids=session_ids)
+                    )
+                    break
+                except SessionTreeChangedError as exc:
+                    print(str(exc), file=sys.stderr)
     except OuroError as exc:
         _print_error(exc, json_mode=json_mode)
         return error_exit_code(exc)

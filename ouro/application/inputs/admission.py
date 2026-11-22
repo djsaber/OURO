@@ -85,6 +85,11 @@ class InputAdmissionService:
             ), initial.session
         snapshot = await self.load_target(session_id)
         session = snapshot.session
+        if (
+            request.source_history
+            and request.source_history.session_id != session.context_source_session_id
+        ):
+            raise ValueError("Input context belongs to another source session")
         if snapshot.pending_continuation is not None:
             raise SessionBusyError("Session has an unresolved terminal Run continuation")
         active = maybe_active_run(snapshot.runs, history_epoch=session.history_epoch)
@@ -169,6 +174,7 @@ class InputAdmissionService:
             or item.title != request.title
             or item.mode != request.queue_mode
             or item.attachments != request.attachments
+            or item.source_history != request.source_history
             or item.resource_refs != request.input_resource_refs
             or [(skill.name, skill.text_offset, skill.order) for skill in item.skill_activations]
             != [(skill.name, skill.text_offset, skill.order) for skill in request.skill_invocations]

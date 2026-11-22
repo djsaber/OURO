@@ -22,7 +22,7 @@ from ouro.tui.conversation.history import ConversationHistory
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.interactions.bar import InteractionBar
 from ouro.tui.menus.choice import ChoiceScreen
-from ouro.tui.subagent_navigation import SubagentNavigationPanel
+from ouro.tui.session_navigation import SessionNavigationPanel
 from ouro.tui.theme import DEFAULT_TUI_THEME
 from tests.event_capture import recorded_events
 from tests.tui.app.providers import BlockingStreamProvider, QueuedSubagentApprovalProvider
@@ -358,11 +358,11 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(
             app, pilot, tool_call_id="child_approval_call"
         )
         assert approval_panel.display is True
-        subagent_panel = app.query_one(SubagentNavigationPanel)
+        session_panel = app.query_one(SessionNavigationPanel)
         queue_panel = app.query_one(QueuedInputPanel)
-        assert subagent_panel.display is True
+        assert session_panel.display is True
         await pilot.pause()
-        assert subagent_panel.region.bottom == approval_panel.region.y
+        assert session_panel.region.bottom == approval_panel.region.y
         assert approval_panel.region.bottom == app.query_one(Composer).region.y
         assert app.query_one(Composer).region.bottom == queue_panel.region.y
         assert (

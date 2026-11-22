@@ -197,6 +197,7 @@ class SessionRecord(VersionedOuroModel):
     namespace: str = Field(default="default", min_length=1, max_length=128)
     root_session_id: str | None = None
     parent_session_id: str | None = None
+    context_source_session_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
     session_kind: Literal["primary", "subagent"] = "primary"
     delegation_id: str | None = None
     forked_from_message_id: str | None = None

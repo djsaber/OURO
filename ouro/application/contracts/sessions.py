@@ -58,6 +58,7 @@ class SessionUndoResult(ApplicationDTO):
 
 class SessionCatalogQuery(ApplicationDTO):
     namespace: str | None = None
+    context_source_session_ids: frozenset[str] = Field(default_factory=frozenset)
     text: str | None = None
     statuses: frozenset[SessionCatalogStatus] = Field(default_factory=frozenset)
     archived: bool | None = None
@@ -79,6 +80,7 @@ class SessionCatalogEntry(ApplicationDTO):
     session_kind: Literal["primary", "subagent"] | None = None
     root_session_id: str
     parent_session_id: str | None = None
+    context_source_session_id: str | None = None
     title: str
     title_source: SessionTitleSource = "fallback"
     created_at: datetime
@@ -115,6 +117,7 @@ class SessionView(ApplicationDTO):
     session_kind: Literal["primary", "subagent"] = "primary"
     root_session_id: str
     parent_session_id: str | None = None
+    context_source_session_id: str | None = None
     delegation_id: str | None = None
     forked_from_message_id: str | None = None
     forked_from_run_id: str | None = None
@@ -148,6 +151,7 @@ class SessionView(ApplicationDTO):
             session_kind=session.session_kind,
             root_session_id=session.root_session_id or session.session_id,
             parent_session_id=session.parent_session_id,
+            context_source_session_id=session.context_source_session_id,
             delegation_id=session.delegation_id,
             forked_from_message_id=session.forked_from_message_id,
             forked_from_run_id=session.forked_from_run_id,

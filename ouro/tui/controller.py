@@ -61,6 +61,7 @@ from ouro.application.contracts.plugins import (
 from ouro.application.contracts.sessions import (
     SessionBranchResult,
     SessionCatalogEntry,
+    SessionCatalogQuery,
     SessionHistoryAnchor,
     SessionHistoryWindow,
     SessionObservationSnapshot,
@@ -92,6 +93,7 @@ from ouro.core.compaction import CompactionCommandResult
 from ouro.core.errors import ConfigError, PersistenceError, SessionNotFoundError
 from ouro.core.events import EventRecord
 from ouro.core.input_content import InputAttachment, InputFile, InputFileReference
+from ouro.core.inputs import SourceHistory
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
 from ouro.core.model_selection import DEFAULT_MODEL
@@ -213,6 +215,7 @@ class TuiController:
         self._close_application = close_application
         self._started = False
         self._session_id: str | None = None
+        self._source_history: SourceHistory | None = None
         self._selection_revision = 0
         self._session_archived = False
         self._initial_model: str | None = None
@@ -228,6 +231,10 @@ class TuiController:
     @property
     def session_id(self) -> str | None:
         return self._session_id
+
+    @property
+    def pending_source_history(self) -> SourceHistory | None:
+        return self._source_history
 
     @property
     def selection_revision(self) -> int:
@@ -507,6 +514,7 @@ class TuiController:
             assert self._application is not None
             request = UserInputRequest(
                 prompt=prompt,
+                source_history=self._source_history if not is_new_session else None,
                 edit=edit,
                 skill_invocations=skill_invocations,
                 session_id=self._session_id,
@@ -530,6 +538,12 @@ class TuiController:
                 request, on_session_created=session_created, on_input_accepted=input_accepted
             )
             result = await submission.wait()
+            if (
+                request.source_history is not None
+                and revision == self._selection_revision
+                and result.run.status == "completed"
+            ):
+                self._source_history = None
             if result.session.archived:
                 await self.set_session_archived(result.session.session_id, archived=False)
             return result
@@ -730,6 +744,7 @@ class TuiController:
         self._selection_revision += 1
         self._creating_session = False
         self._session_id = None
+        self._source_history = None
         self._session_archived = False
         self._draft_workspace = prepared.workspace
         self._initial_model = prepared.initial_model
@@ -868,6 +883,7 @@ class TuiController:
         removed = await asyncio.to_thread(self._delete_sessions, session_ids)
         if self._session_id in removed:
             self._session_id = None
+            self._source_history = None
             self._session_archived = False
         return removed
 
@@ -899,6 +915,11 @@ class TuiController:
     def _branch_current_session(self, session_id: str) -> SessionBranchResult:
         session = self._services().sessions.view(session_id)
         return self._services().sessions.branch(session_id, session.last_message_id)
+
+    async def create_side_conversation(self, question: str) -> SessionBranchResult:
+        return await asyncio.to_thread(
+            self._services().sessions.create_side_conversation, self._require_session(), question
+        )
 
     async def queued_user_inputs(
         self,
@@ -2063,11 +2084,29 @@ class TuiController:
             await self._application.supervisor.schedule_session(session_id)
         return await self.observe_session(session_id, history_anchor=history_anchor)
 
-    def activate_observation(self, observation: TuiSessionObservation) -> None:
+    async def side_conversations(
+        self, source_id: str, *related_sources: str
+    ) -> tuple[SessionCatalogEntry, ...]:
+        query = SessionCatalogQuery(
+            context_source_session_ids=frozenset((source_id, *related_sources))
+        )
+        catalog = await asyncio.to_thread(self._services().sessions.catalog, query)
+        return catalog.entries
+
+    async def session_view(self, session_id: str) -> SessionView:
+        return await asyncio.to_thread(self._services().sessions.view, session_id)
+
+    async def source_progress(self, session_id: str) -> SourceHistory | None:
+        return await asyncio.to_thread(self._services().runtime.source_progress, session_id)
+
+    def activate_observation(
+        self, observation: TuiSessionObservation, *, source_history: SourceHistory | None = None
+    ) -> None:
         """Commit a prepared selection only when its view is ready to take the surface."""
         self._selection_revision += 1
         self._creating_session = False
         self._session_id = observation.control_session.session_id
+        self._source_history = source_history
         self._session_archived = observation.control_session.archived
         self._initial_model = None
 

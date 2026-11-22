@@ -12,7 +12,6 @@ from textual.containers import Vertical
 from textual.widgets import Input, OptionList, Static, TextArea
 
 import ouro.tui.conversation.markdown_stream as conversation_history_markdown_stream
-from ouro.application.contracts.agents import AgentTreeNode
 from ouro.core.events import EventRecord
 from ouro.local_application import LocalApplication
 from ouro.local_configuration import build_local_configuration
@@ -264,7 +263,7 @@ async def test_runtime_event_prefix_mounts_one_complete_tool_batch(
 
 
 @pytest.mark.asyncio
-async def test_agent_node_navigation_finishes_current_load_before_latest_target(
+async def test_session_node_navigation_finishes_current_load_before_latest_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -279,10 +278,9 @@ async def test_agent_node_navigation_finishes_current_load_before_latest_target(
         await _wait_until(
             lambda: app._visible_session_id() == root_session_id,
             pilot,
-            description="root surface before coalesced agent navigation",
+            description="main session before switching nodes",
         )
-        original_open_child = app._open_child_session
-        original_show_main = app._show_main_session
+        show = app._show_observed_session
         release_child = asyncio.Event()
         child_started = asyncio.Event()
         child_finished = asyncio.Event()
@@ -291,32 +289,24 @@ async def test_agent_node_navigation_finishes_current_load_before_latest_target(
         active_loads = 0
         peak_active_loads = 0
 
-        async def delayed_open_child(agent: AgentTreeNode) -> None:
+        async def delayed_show(session_id: str) -> None:
             nonlocal active_loads, peak_active_loads
             active_loads += 1
             peak_active_loads = max(peak_active_loads, active_loads)
-            order.append(agent.session_id)
-            child_started.set()
+            order.append(session_id)
             try:
-                await release_child.wait()
-                await original_open_child(agent)
-                child_finished.set()
+                if session_id == child_session_id:
+                    child_started.set()
+                    await release_child.wait()
+                else:
+                    main_started.set()
+                await show(session_id)
+                if session_id == child_session_id:
+                    child_finished.set()
             finally:
                 active_loads -= 1
 
-        async def observed_show_main() -> None:
-            nonlocal active_loads, peak_active_loads
-            active_loads += 1
-            peak_active_loads = max(peak_active_loads, active_loads)
-            order.append(root_session_id)
-            main_started.set()
-            try:
-                await original_show_main()
-            finally:
-                active_loads -= 1
-
-        monkeypatch.setattr(app, "_open_child_session", delayed_open_child)
-        monkeypatch.setattr(app, "_show_main_session", observed_show_main)
+        monkeypatch.setattr(app, "_show_observed_session", delayed_show)
 
         app.post_message(events.Key("alt+right", None))
         await asyncio.wait_for(child_started.wait(), timeout=2)

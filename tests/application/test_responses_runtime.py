@@ -85,6 +85,8 @@ async def responses_runtime(tmp_path, monkeypatch, request):
         payload = json.loads(request.content)
         requests.append((payload, dict(request.headers)))
         reply = replies.popleft()
+        if callable(reply):
+            reply = reply(payload)
         if isinstance(reply, int):
             return httpx.Response(reply)
         if isinstance(reply, httpx.Response):

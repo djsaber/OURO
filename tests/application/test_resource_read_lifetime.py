@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
+from pathlib import Path
 from threading import Event
 
 import pytest
@@ -51,6 +54,34 @@ def test_export_and_resource_catalog_do_not_enter_mutation(services, monkeypatch
     archive = SessionTransferService(store, files).export((session.session_id,))
     assert list(archive.files.values()) == [b"complete exported content"]
     assert not store.is_session_locked(session.session_id)
+
+
+@pytest.mark.parametrize("services", ["sqlite"], indirect=True)
+def test_trash_rollback_restores_resource_bytes_before_releasing_sqlite_writer(
+    services, monkeypatch
+):
+    store, _, resources, sessions, session, resource = services
+    blob = resources.resource_path(session.session_id, resource.resource_id)
+    retire, rename = store._retire_resource_directory, Path.rename
+    restored = []
+
+    def fail_after_move(session_id, trash_id):
+        retire(session_id, trash_id)
+        raise RuntimeError("interrupted trash")
+
+    def observe_restore(path, destination):
+        if path.is_relative_to(store.database.parent / "trash"):
+            with closing(sqlite3.connect(store.database, timeout=0)) as other:
+                with pytest.raises(sqlite3.OperationalError, match="locked"):
+                    other.execute("BEGIN IMMEDIATE")
+            restored.append(destination)
+        return rename(path, destination)
+
+    monkeypatch.setattr(store, "_retire_resource_directory", fail_after_move)
+    monkeypatch.setattr(Path, "rename", observe_restore)
+    with pytest.raises(RuntimeError, match="interrupted trash"):
+        sessions.trash(session.session_id)
+    assert len(restored) == 1 and blob.read_bytes() == b"complete exported content"
 
 
 def test_export_owns_resource_closure_without_blocking_other_sessions(services, monkeypatch):

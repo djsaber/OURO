@@ -136,7 +136,7 @@ _OURO_TUI_CSS = """
 
     #input-region.welcome-page #composer,
     #input-region.welcome-page #command-popup,
-    #input-region.welcome-page #subagent-navigation-panel,
+    #input-region.welcome-page #session-navigation-panel,
     #input-region.welcome-page StatusLine {
         width: 100%;
         margin-left: 0;
@@ -207,7 +207,7 @@ _OURO_TUI_CSS = """
         background: transparent;
     }
 
-    #subagent-navigation-panel {
+    #session-navigation-panel {
         width: 100%;
         height: 1;
         margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;

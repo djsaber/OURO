@@ -22,7 +22,7 @@ def invalid_session_index_entry(
 
     if isinstance(payload, dict):
         raw_session_kind = payload.get("session_kind")
-        session_kind = raw_session_kind if raw_session_kind in {"primary", "subagent"} else None
+        session_kind = raw_session_kind if raw_session_kind in ("primary", "subagent") else None
         candidate = {
             **payload,
             "session_kind": session_kind,
@@ -35,18 +35,24 @@ def invalid_session_index_entry(
         try:
             return SessionIndexEntry.model_validate(candidate)
         except ValidationError:
-            session_id = payload.get("session_id")
-            title = payload.get("title")
+            pass  # Keep independently readable identities when another field is invalid.
     else:
-        session_id = None
-        title = None
+        payload = {}
         session_kind = None
+
+    def identifier(field: str) -> str | None:
+        value = payload.get(field)
+        return value if isinstance(value, str) and value else None
+
     now = utc_now()
-    identity = session_id if isinstance(session_id, str) and session_id else fallback_session_id
+    identity = identifier("session_id") or fallback_session_id
+    title = payload.get("title")
     return SessionIndexEntry(
         session_id=identity,
         session_kind=session_kind,
-        root_session_id=identity,
+        root_session_id=identifier("root_session_id") or identity,
+        parent_session_id=identifier("parent_session_id"),
+        context_source_session_id=identifier("context_source_session_id"),
         title=(
             title
             if isinstance(title, str) and title

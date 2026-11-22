@@ -128,6 +128,8 @@ def _input_transcript_entry(
 ) -> TranscriptEntry | None:
     """Project model inputs and Driver receipts into the visible transcript."""
     kind: Literal["user", "harness"]
+    if message.semantic_tag == "source-session-context":
+        return None
     if is_editable_user_input(message):
         kind = "user"
     elif show_harness_messages and (
@@ -153,6 +155,28 @@ def _input_transcript_entry(
         message_id=message.message_id,
         direct_user_input=is_direct_user_input(message),
     )
+
+
+def _answer_entries(message: MessageRecord) -> Iterable[TranscriptEntry]:
+    for block in split_markdown_blocks(message.text_content):
+        yield TranscriptEntry(
+            kind="assistant", text=block, run_id=message.run_id, source_sequence=message.sequence
+        )
+
+
+def project_dialogue_entries(messages: Iterable[MessageRecord]) -> tuple[TranscriptEntry, ...]:
+    """Show only questions and public answers authored in the selected conversation."""
+    entries: list[TranscriptEntry] = []
+    for message in messages:
+        if "source_message_id" in message.metadata:
+            continue
+        if message.role == "assistant":
+            entries.extend(_answer_entries(message))
+        elif is_direct_user_input(message):
+            entry = _input_transcript_entry(message, show_harness_messages=False)
+            if entry is not None:
+                entries.append(entry)
+    return tuple(entries)
 
 
 def project_transcript_entries(
@@ -201,15 +225,7 @@ def project_transcript_entries(
                     reasoning_seconds=(request.reasoning_seconds if request is not None else None),
                 )
             )
-        entries.extend(
-            TranscriptEntry(
-                kind="assistant",
-                text=block,
-                run_id=message.run_id,
-                source_sequence=message.sequence,
-            )
-            for block in split_markdown_blocks(message.text_content)
-        )
+        entries.extend(_answer_entries(message))
         for key in _tool_call_keys(message).values():
             if key in mutable_tool_call_keys:
                 continue

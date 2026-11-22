@@ -88,11 +88,14 @@ class Composer(AttachmentTextArea):
         pass
 
     class CommandSubmitted(Message):
-        def __init__(self, text: str, *, command_text: str, draft: str) -> None:
+        def __init__(
+            self, text: str, *, command_text: str, draft: str, session_id: str | None
+        ) -> None:
             super().__init__()
             self.text = text
             self.command_text = command_text
             self.draft = draft
+            self.session_id = session_id
 
     class CommandNavigated(Message):
         def __init__(self, offset: int) -> None:
@@ -135,6 +138,7 @@ class Composer(AttachmentTextArea):
         self._attachment_selection = self.selection
         self._suggestion_resolver: Callable[[], str] | None = None
         self._command_matcher: Callable[[], bool] | None = None
+        self.command_session_id: Callable[[], str | None] = lambda: self._history_session_id
         self._placeholder_parts: tuple[_PlaceholderPart, ...] = ()
         self._placeholder_kind: Literal["active_run", "subagent"] | None = None
         # Some terminals emit Paste alongside the right-click mouse event.
@@ -527,6 +531,9 @@ class Composer(AttachmentTextArea):
             self.post_message(self.AttachmentToggled())
             return
         position = self.plain_document.get_index_from_location(self.selection.end)
+        if event.character == "/" and position == 0 and self.selection.is_empty and context is None:
+            # Capture the draft before the edit, even immediately after restoring a surface.
+            self._command_draft = self.text or None
         if (
             event.character == "@"
             and self.attachments_enabled
@@ -567,6 +574,7 @@ class Composer(AttachmentTextArea):
                     value,
                     command_text=command_text.strip(),
                     draft=draft,
+                    session_id=self.command_session_id(),
                 )
             )
             return

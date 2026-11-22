@@ -8,7 +8,7 @@ import pytest
 from ouro.core.input_content import InputAttachment, InputContent, InputSkillReference
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
-from ouro.tui.subagent_navigation import SubagentNavigationPanel
+from ouro.tui.session_navigation import SessionNavigationPanel
 from ouro.tui.widgets.activity import ActivityIndicator
 from tests.tui.app.providers import MultiChildStreamingProvider
 from tests.tui.app.support import (
@@ -26,7 +26,7 @@ from tests.tui.helpers import (
 
 
 @pytest.mark.parametrize("finish_at_child", [False, True])
-async def test_rapid_agent_navigation_loads_only_settled_target(
+async def test_rapid_session_node_navigation_loads_only_settled_target(
     tmp_path, monkeypatch, finish_at_child
 ):
     application = _application(tmp_path)
@@ -41,21 +41,21 @@ async def test_rapid_agent_navigation_loads_only_settled_target(
 
         def capture_worker(work, **kwargs):
             worker = run_worker(work, **kwargs)
-            if work == app._switch_agent_nodes:
+            if work == app._switch_session_nodes:
                 switches.append(worker)
             return worker
 
         monkeypatch.setattr(app, "run_worker", capture_worker)
-        panel = app.query_one(SubagentNavigationPanel)
+        panel = app.query_one(SessionNavigationPanel)
         for _ in range(10):
-            app.action_agent_node_right()
+            app.action_session_node_right()
             assert panel.selected_session_id == child_id
             await asyncio.sleep(0)
-            app.action_agent_node_root()
+            app.action_main_session()
             assert panel.selected_session_id == root_id
             await asyncio.sleep(0)
         if finish_at_child:
-            app.action_agent_node_right()
+            app.action_session_node_right()
         assert observe.await_count == 0
         await wait_for_worker_group(app, pilot, group="navigation")
         assert len(switches) == 1
@@ -82,12 +82,12 @@ async def test_input_waiting_on_a_command_returns_to_its_full_draft_after_child_
             composer.load_input(pending)
             await pilot.press("enter")
             composer.load_input(draft)
-            app.action_agent_node_right()
+            app.action_session_node_right()
             await wait_for_worker_group(app, pilot, group="navigation")
             assert app._visible_session_id() == child_id
         await wait_for_worker_group(app, pilot, group="composer-input")
         assert composer.input_content.is_empty
-        app.action_agent_node_root()
+        app.action_main_session()
         await wait_for_worker_group(app, pilot, group="navigation")
         assert composer.input_content == InputContent(
             text="Next\nReview",
@@ -115,11 +115,11 @@ async def test_repeated_target_does_not_restart_inflight_agent_load(tmp_path, mo
 
         monkeypatch.setattr(app._controller, "observe_session", delayed_observe)
         try:
-            app.action_agent_node_right()
+            app.action_session_node_right()
             await wait_for_events(entered, pilot=pilot, description="inflight child load")
             revision = app._view_revision
             for _ in range(10):
-                app.action_agent_node_right()
+                app.action_session_node_right()
             assert app._view_revision == revision
         finally:
             release.set()
@@ -139,7 +139,7 @@ async def test_menu_navigation_cancels_pending_switch_and_allows_next_switch(
         await app._open_session(root_id)
         observe = AsyncMock(wraps=app._controller.observe_session)
         monkeypatch.setattr(app._controller, "observe_session", observe)
-        app.action_agent_node_right()
+        app.action_session_node_right()
         if yield_before_cancel:
             for _ in range(5):
                 await asyncio.sleep(0)
@@ -147,11 +147,11 @@ async def test_menu_navigation_cancels_pending_switch_and_allows_next_switch(
         await wait_for_worker_group(app, pilot, group="navigation")
         assert app._visible_session_id() == root_id
         assert observe.await_count == 0
-        panel = app.query_one(SubagentNavigationPanel)
+        panel = app.query_one(SessionNavigationPanel)
         assert panel.selected_session_id == root_id
         assert not panel.navigation_active
         await pilot.press("escape")
-        app.action_agent_node_right()
+        app.action_session_node_right()
         await wait_for_worker_group(app, pilot, group="navigation")
         assert app._visible_session_id() == child_id
         assert observe.await_count == 1
@@ -179,9 +179,9 @@ async def test_return_to_visible_session_discards_inflight_load_without_reloadin
 
         monkeypatch.setattr(app._controller, "observe_session", delayed_observe)
         try:
-            app.action_agent_node_right()
+            app.action_session_node_right()
             await wait_for_events(entered, pilot=pilot, description="prepared child load")
-            app.action_agent_node_root()
+            app.action_main_session()
         finally:
             release.set()
             await wait_for_worker_group(app, pilot, group="navigation")
@@ -221,7 +221,7 @@ async def test_cancelled_child_load_preserves_final_surface_and_draft(
 
         monkeypatch.setattr(app, "_install_session_surface", delayed_install)
         try:
-            app.action_agent_node_right()
+            app.action_session_node_right()
             await wait_for_events(entered, pilot=pilot, description="prepared child before cancel")
             if destination == "welcome":
                 app.action_new_session()
@@ -279,8 +279,8 @@ async def test_late_child_load_cannot_replace_latest_target_or_interrupt_runs_an
             pilot,
             description="both navigation nodes",
         )
-        panel = app.query_one(SubagentNavigationPanel)
-        first_id, second_id = panel.visible_session_ids
+        panel = app.query_one(SessionNavigationPanel)
+        first_id, second_id = panel.visible_related_session_ids
         composer.load_text("Original root draft")
         await pilot.pause()
         install = app._install_session_surface
@@ -299,14 +299,14 @@ async def test_late_child_load_cannot_replace_latest_target_or_interrupt_runs_an
             return installed
 
         monkeypatch.setattr(app, "_install_session_surface", delayed_install)
-        app.action_agent_node_right()
+        app.action_session_node_right()
         await wait_for_events(entered, pilot=pilot, description="stale first child load")
         composer.load_text("Edited while switching")
         await pilot.pause()
         for _ in range(5):
-            app.action_agent_node_last()
-            app.action_agent_node_root()
-        app.action_agent_node_last()
+            app.action_session_node_last()
+            app.action_main_session()
+        app.action_session_node_last()
         assert app._visible_session_id() == root_id
         assert not composer.disabled
         release.set()
@@ -333,7 +333,7 @@ async def test_late_child_load_cannot_replace_latest_target_or_interrupt_runs_an
             description="all Agent runs complete after rapid navigation",
         )
         assert app._visible_session_id() == second_id
-        app.action_agent_node_root()
+        app.action_main_session()
         await wait_for_worker_group(app, pilot, group="navigation")
         assert app._visible_session_id() == root_id
         assert composer.text == "Edited while switching"

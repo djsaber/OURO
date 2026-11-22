@@ -6,7 +6,7 @@ import re
 import shutil
 import sqlite3
 from collections import OrderedDict
-from collections.abc import Generator, Iterable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from contextlib import ExitStack, closing, contextmanager, suppress
 from datetime import datetime
 from itertools import islice
@@ -73,7 +73,7 @@ from ouro.local_io import (
     write_json_atomic,
     write_model_atomic,
 )
-from ouro.local_locks import is_lock_held
+from ouro.local_locks import FileMutationLock, is_lock_held
 from ouro.resources.files import (
     create_resource,
     read_resource_content,
@@ -714,15 +714,22 @@ class LocalSessionStore:
         self,
         root_session_id: str,
         session_ids: tuple[str, ...],
+        *,
+        validate_scope: Callable[[], None] | None = None,
     ) -> str:
         _validated_record_id(root_session_id, kind="session")
         normalized = tuple(dict.fromkeys(session_ids))
         if not normalized:
             raise ValueError("session tree cannot be empty")
         with ExitStack() as stack:
+            # A scope check can read other Session headers. Serialize tree publications
+            # before taking their per-Session locks so disjoint removals cannot deadlock.
+            stack.enter_context(FileMutationLock(self.root / "locks" / "session-trash.lock"))
             for session_id in sorted(normalized):
                 _validated_record_id(session_id, kind="session")
                 stack.enter_context(self.session_mutation(session_id))
+            if validate_scope is not None:
+                validate_scope()
             return self._trash_session_tree(root_session_id, normalized)
 
     def _trash_session_tree(

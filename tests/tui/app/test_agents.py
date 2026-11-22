@@ -27,7 +27,7 @@ from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.editable import EditableChoiceScreen
 from ouro.tui.menus.models import Choice
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
-from ouro.tui.subagent_navigation import SubagentNavigationPanel
+from ouro.tui.session_navigation import SessionNavigationPanel
 from ouro.tui.theme import DEFAULT_TUI_THEME
 from ouro.tui.widgets.brand import BrandHeader
 from tests.tui.app.providers import MultiChildStreamingProvider
@@ -138,10 +138,10 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             assert entry is not None
             assert entry.agent is not None
             assert entry.agent.task_description == f"Observe child {index}"
-        subagent_panel = app.query_one(SubagentNavigationPanel)
-        assert subagent_panel.display is True
-        assert subagent_panel.current_session_id == root_session_id
-        assert subagent_panel.visible_session_ids == (first.session_id, second.session_id)
+        session_panel = app.query_one(SessionNavigationPanel)
+        assert session_panel.display is True
+        assert session_panel.current_session_id == root_session_id
+        assert session_panel.visible_related_session_ids == (first.session_id, second.session_id)
         await pilot.press("f1")
         await _wait_for_screen(app, ChoiceScreen, title="KEYBOARD HELP")
         app.post_message(events.Key("alt+right", None))
@@ -353,8 +353,8 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         )
         await _wait_for_worker_group(app, pilot, group="navigation")
         assert app._controller.session_id == root_session_id
-        assert subagent_panel.current_session_id == second.session_id
-        assert "Observe child 2" in subagent_panel.render_content(80).plain
+        assert session_panel.current_session_id == second.session_id
+        assert "Observe child 2" in session_panel.render_content(80).plain
         rendered_during_cached_switch.clear()
 
         app.post_message(events.Key("alt+up", None))
@@ -491,7 +491,7 @@ async def test_session_picker_groups_child_and_agent_tree_keeps_it_navigable(
             description="direct child session surface from session picker",
         )
 
-        panel = app.query_one(SubagentNavigationPanel)
+        panel = app.query_one(SessionNavigationPanel)
         composer = app.query_one(Composer)
         assert app._controller.session_id == root_session_id
         assert app._visible_read_only is True
@@ -501,7 +501,7 @@ async def test_session_picker_groups_child_and_agent_tree_keeps_it_navigable(
         assert composer.has_class("read-only-session")
         assert panel.display is True
         assert panel.current_session_id == child_session_id
-        assert panel.visible_session_ids == (child_session_id,)
+        assert panel.visible_related_session_ids == (child_session_id,)
         await pilot.press("ctrl+o")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • SUBAGENT")
         assert app.screen._choices[0].marker == DEFAULT_TUI_THEME.selected_choice_marker
@@ -568,7 +568,7 @@ async def test_startup_resume_preserves_canonical_child_read_only_state(
         )
 
         composer = app.query_one(Composer)
-        panel = app.query_one(SubagentNavigationPanel)
+        panel = app.query_one(SessionNavigationPanel)
         assert app._controller.session_id == root_session_id
         assert app._visible_read_only is True
         assert composer.disabled is True

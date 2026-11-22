@@ -6,6 +6,7 @@ from contextlib import closing, contextmanager
 from ouro.application.contracts.sessions import SessionUndoResult
 from ouro.application.inputs.queue import QueuedInputQueue, queued_input_event
 from ouro.application.inputs.requests import InputSessionSettings, UserMessageEdit
+from ouro.application.sessions.history import input_resource_refs
 from ouro.application.sessions.recovery import SessionRecoveryService
 from ouro.application.usage import UsageService
 from ouro.core.attachment_input import is_direct_user_input
@@ -158,7 +159,7 @@ def undo_user_input(
             role="user",
             content=[] if selected.semantic_tag == "attachments" else selected.content,
         ),
-        resource_refs=tuple(boundary.resource_refs),
+        resource_refs=input_resource_refs(selected) or tuple(boundary.resource_refs),
         attachments=selected.input_attachments,
         message_id=selected.message_id,
         queue_id=selected.input_id,
@@ -230,9 +231,11 @@ def accept_message_edit(
 def _input_boundary(store: SessionStore, selected: MessageRecord) -> MessageRecord:
     if not is_direct_user_input(selected):
         raise ValueError("Editing requires a directly submitted user input")
-    attachment_id = selected.metadata.get("attachment_message_id")
-    if isinstance(attachment_id, str):
-        return store.load_message(selected.session_id, attachment_id)
+    first_id = selected.metadata.get("input_context_message_id") or selected.metadata.get(
+        "attachment_message_id"
+    )
+    if isinstance(first_id, str):
+        return store.load_message(selected.session_id, first_id)
     return selected
 
 

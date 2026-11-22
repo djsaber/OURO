@@ -449,15 +449,16 @@ class ContextPreparationService:
         prompt_context = await self._resolve_prompt_context(session, run, system_prompts)
         return session, active, messages, prompt_context
 
+    def local_prompt_context(self) -> PromptContext:
+        if self.prompt_context_resolver is not None:
+            return self.prompt_context_resolver()
+        return PromptContext(system_prompt=self.system_prompt)
+
     async def _resolve_prompt_context(
         self, session: SessionRecord, run: RunRecord, registry: SystemPromptRegistry | None
     ) -> PromptContext:
         try:
-            personal = (
-                await run_blocking(self.prompt_context_resolver)
-                if self.prompt_context_resolver is not None
-                else PromptContext(system_prompt=self.system_prompt)
-            )
+            personal = await run_blocking(self.local_prompt_context)
         except ConfigError as exc:
             message = f"Cannot prepare system instructions: {exc}"
             await self.events.emit(

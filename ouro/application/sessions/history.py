@@ -1,18 +1,21 @@
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections.abc import Iterable
 
 from ouro.core.attachment_input import is_editable_user_input
 from ouro.core.base import new_id
-from ouro.core.compaction import (
-    CompactionRecord,
-)
+from ouro.core.compaction import CompactionRecord, validate_compaction_sources
 from ouro.core.context import estimate_message_tokens
+from ouro.core.context_selection import ContextSelection, MessageBoundary, validate_media_selection
 from ouro.core.errors import CompactionStateError, SessionBranchError
 from ouro.core.harness import HarnessState, HarnessVersion
 from ouro.core.input_content import InputAttachment
+from ouro.core.message_frames import project_tool_exchanges
 from ouro.core.messages import MessageRecord
 from ouro.core.session_controls import SessionControlState
+from ouro.core.session_ports import SessionRepository
+from ouro.core.state import SessionRecord
 
 
 def select_history_suffix(
@@ -65,16 +68,6 @@ def branch_input_boundary(
     if index is None or not is_editable_user_input(messages[index]):
         raise SessionBranchError(f"user message is not a fork point: {message_id}")
     selected = messages[index]
-    resource_refs = tuple(
-        dict.fromkeys(
-            [
-                item.resource_id
-                for item in selected.input_attachments
-                if isinstance(item, InputAttachment)
-            ]
-            + selected.resource_refs
-        )
-    )
     batch_id = selected.metadata.get("session_input_batch_id")
     while (
         index > 0
@@ -82,7 +75,38 @@ def branch_input_boundary(
         and messages[index - 1].metadata.get("session_input_batch_id") == batch_id
     ):
         index -= 1
-    return messages[index - 1].message_id if index else None, resource_refs
+    return messages[index - 1].message_id if index else None, input_resource_refs(selected)
+
+
+def input_resource_refs(message: MessageRecord) -> tuple[str, ...]:
+    uploads = (
+        item.resource_id for item in message.input_attachments if isinstance(item, InputAttachment)
+    )
+    return tuple(dict.fromkeys((*uploads, *message.resource_refs)))
+
+
+def published_history(
+    store: SessionRepository, source: SessionRecord, messages: list[MessageRecord]
+) -> tuple[list[MessageRecord], bool]:
+    """Return published source records and whether a recoverable tool batch blocks the suffix."""
+    _, excluded = project_tool_exchanges(messages)
+    missing = set(excluded)
+    visible: list[MessageRecord] = []
+    for message in messages:
+        if message.message_id in missing:
+            if message.tool_calls and message.run_id:
+                run = store.load_run(source.session_id, message.run_id)
+                batch = run.active_tool_batch
+                if (
+                    run.history_epoch == source.history_epoch
+                    and run.needs_recovery
+                    and batch is not None
+                    and batch.assistant_message_id == message.message_id
+                ):
+                    return visible, True
+        elif not message.metadata.get("incomplete"):
+            visible.append(message)
+    return visible, False
 
 
 def select_branch_messages(
@@ -140,11 +164,12 @@ def copy_branch_messages(
             metadata["source_run_id"] = message.run_id
         if message.turn_id is not None:
             metadata["source_turn_id"] = message.turn_id
-        attachment_id = metadata.get("attachment_message_id")
-        if isinstance(attachment_id, str):
-            if attachment_id not in message_id_map:
-                raise SessionBranchError("attachment input is missing its receipt")
-            metadata["attachment_message_id"] = message_id_map[attachment_id]
+        for reference in ("attachment_message_id", "input_context_message_id"):
+            receipt = metadata.get(reference)
+            if isinstance(receipt, str):
+                if receipt not in message_id_map:
+                    raise SessionBranchError("input is missing its receipt")
+                metadata[reference] = message_id_map[receipt]
         copied.append(
             message.model_copy(
                 update={
@@ -160,72 +185,66 @@ def copy_branch_messages(
     return copied, message_id_map
 
 
-def copy_branch_compactions(
+def copy_branch_context(
     session_id: str,
     source_messages: list[MessageRecord],
     copied_messages: list[MessageRecord],
     compactions: list[CompactionRecord],
-    active_compaction_id: str | None,
+    selection: ContextSelection,
     message_id_map: dict[str, str],
-) -> list[CompactionRecord]:
-    """Copy the usable active compaction lineage into a branch.
+    *,
+    source_end_sequence: int,
+) -> tuple[ContextSelection, list[CompactionRecord]]:
+    """Validate anchors in the source and project them onto the retained branch history."""
+    if not copied_messages or (not selection.compaction_id and not selection.media_elided_through):
+        return ContextSelection(), []
+    sources = {message.message_id: message for message in source_messages}
+    retained_sequences = [m.sequence for m in source_messages if m.message_id in message_id_map]
+    source_id = source_messages[0].session_id
 
-    Coverage and predecessor summaries are dependencies. A display anchor beyond
-    the copied tail is moved to the branch head without discarding valid coverage.
-    """
+    def copied_through(sequence: int) -> MessageRecord | None:
+        count = bisect_right(retained_sequences, sequence)
+        return copied_messages[count - 1] if count else None
 
-    if active_compaction_id is None:
-        return []
-    if len(source_messages) != len(copied_messages):
-        raise ValueError("source and copied branch messages must have equal lengths")
-
-    lineage = _active_compaction_lineage(compactions, active_compaction_id)
-    source_ids = [message.message_id for message in source_messages]
-    source_positions = {message_id: index for index, message_id in enumerate(source_ids)}
-    compaction_id_map: dict[str, str] = {}
+    media = selection.media_elided_through
+    if media is not None:
+        validate_media_selection(selection, source_id, sources.get(media.message_id))
+        retained = copied_through(media.sequence)
+        media = (
+            MessageBoundary(message_id=retained.message_id, sequence=retained.sequence)
+            if retained
+            else None
+        )
     copied: list[CompactionRecord] = []
-
-    for compaction in lineage:
-        covered_count = compaction.covered_message_count
-        if covered_count > len(source_ids):
+    for compaction in _active_compaction_lineage(compactions, selection.compaction_id):
+        if compaction.covered_message_count > source_end_sequence:
             break
-        if source_ids[covered_count - 1] != compaction.covered_end_message_id:
-            raise CompactionStateError("compaction coverage boundary does not match branch history")
-
-        boundary_index = source_positions.get(compaction.history_boundary_message_id)
-        if boundary_index is not None and boundary_index < covered_count - 1:
-            raise CompactionStateError(
-                f"compaction {compaction.compaction_id} history boundary precedes its summary"
-            )
-
-        previous_id = compaction.previous_compaction_id
-        if previous_id is not None and previous_id not in compaction_id_map:
+        validate_compaction_sources(compaction, source_id, len(source_messages), sources)
+        endpoint = copied_through(compaction.covered_message_count)
+        # Every later summary incorporates this prefix, including any reset projection.
+        if endpoint is None or endpoint.sequence != compaction.covered_message_count:
             break
-
-        copied_id = new_id("cmp")
-        compaction_id_map[compaction.compaction_id] = copied_id
+        placement = sources[compaction.history_boundary_message_id]
+        boundary = copied_through(placement.sequence)
+        assert boundary is not None  # The validated placement is at or after coverage.
         metadata = dict(compaction.metadata)
         metadata["source_compaction_id"] = compaction.compaction_id
         copied.append(
             compaction.model_copy(
                 update={
-                    "compaction_id": copied_id,
+                    "compaction_id": new_id("cmp"),
                     "session_id": session_id,
-                    "previous_compaction_id": (
-                        compaction_id_map[previous_id] if previous_id is not None else None
-                    ),
-                    "covered_end_message_id": message_id_map[compaction.covered_end_message_id],
+                    "previous_compaction_id": copied[-1].compaction_id if copied else None,
+                    "covered_message_count": endpoint.sequence,
+                    "covered_end_message_id": endpoint.message_id,
                     "retained_skill_message_ids": tuple(
                         message_id_map[identity]
                         for identity in compaction.retained_skill_message_ids
+                        if identity in message_id_map
                     ),
-                    "history_boundary_message_id": (
-                        message_id_map[compaction.history_boundary_message_id]
-                        if boundary_index is not None
-                        else copied_messages[-1].message_id
-                    ),
+                    "history_boundary_message_id": boundary.message_id,
                     "context_metrics_after": compaction.context_metrics_after
-                    if boundary_index is not None
+                    if boundary.sequence == placement.sequence
                     else None,
                     "metadata": metadata,
                 }
@@ -233,12 +252,15 @@ def copy_branch_compactions(
         )
     if copied:
         copied[-1] = _extend_branch_context_metrics(copied[-1], copied_messages)
-    return copied
+    return ContextSelection(
+        compaction_id=copied[-1].compaction_id if copied else None,
+        media_elided_through=media,
+    ), copied
 
 
 def _active_compaction_lineage(
     compactions: list[CompactionRecord],
-    active_compaction_id: str,
+    active_compaction_id: str | None,
 ) -> list[CompactionRecord]:
     records = {compaction.compaction_id: compaction for compaction in compactions}
     reverse_lineage: list[CompactionRecord] = []

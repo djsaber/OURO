@@ -98,6 +98,13 @@ class TuiCommand:
 TUI_COMMANDS: tuple[TuiCommand, ...] = (
     TuiCommand("/export", "Export current session", "Save the current session and attachments"),
     TuiCommand("/new", "New session", "Start a clean conversation"),
+    TuiCommand(
+        "/btw",
+        "Side conversation",
+        "Ask about this conversation in a separate session",
+        "<question>",
+        freeform_arguments=True,
+    ),
     TuiCommand("/continue", "Continue task", "Resume an interrupted task"),
     TuiCommand(
         "/edit",

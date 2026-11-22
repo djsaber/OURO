@@ -38,6 +38,7 @@ from ouro.application.contracts.sessions import (
     SessionObservationBatch,
     SessionObservationSnapshot,
     SessionSummary,
+    SessionView,
 )
 from ouro.application.inputs.queue import QueuedInputMode, QueuedUserInputView
 from ouro.application.inputs.requests import UserMessageEdit
@@ -53,6 +54,8 @@ from ouro.core.errors import (
     InvalidConfigDataError,
     OuroError,
     PersistenceError,
+    SessionBranchError,
+    SessionNotFoundError,
     UnsupportedDataVersionError,
 )
 from ouro.core.events import SESSION_INPUT_MESSAGE_EVENTS, SESSION_MESSAGE_ADDED_EVENTS, EventRecord
@@ -94,7 +97,7 @@ from ouro.tui.conversation.history_models import ConversationHistoryState, Trans
 from ouro.tui.conversation.markdown_stream import AssistantMarkdownStream
 from ouro.tui.conversation.messages import MessageSourceRequested, ToolNavigationRequested
 from ouro.tui.conversation.tools import is_terminal_tool
-from ouro.tui.conversation.transcript import project_transcript_entries
+from ouro.tui.conversation.transcript import project_dialogue_entries, project_transcript_entries
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.features.configuration.workflows import (
     SYSTEM_SETTING_ACTIONS,
@@ -133,7 +136,9 @@ from ouro.tui.menus.sessions import (
     _SESSION_DOMAIN_LABELS,
     _SESSION_GROUPING_LABELS,
     _session_choices,
+    _session_open_targets,
     _sessions_in_domain,
+    _side_session_nodes,
 )
 from ouro.tui.menus.sorting import sorted_models
 from ouro.tui.menus.styles import MENU_CSS
@@ -143,6 +148,7 @@ from ouro.tui.preferences import (
     TuiPreferences,
     TuiPreferencesStore,
 )
+from ouro.tui.session_navigation import SessionNavigationPanel
 from ouro.tui.startup import TerminalStartup
 from ouro.tui.startup_driver import startup_driver
 from ouro.tui.startup_screen import StartupScreen
@@ -156,7 +162,6 @@ from ouro.tui.state import (
 )
 from ouro.tui.status import project_mcp_system_status, project_usage_system_status
 from ouro.tui.styles import _OURO_TUI_CSS
-from ouro.tui.subagent_navigation import SubagentNavigationPanel
 from ouro.tui.theme import (
     DEFAULT_TUI_THEME,
     THEME_SATURATION_LEVELS,
@@ -227,7 +232,7 @@ class HistoryLoadRequest:
     worker: Worker[None] | None = None
 
 
-_AGENT_SWITCH_DEBOUNCE_SECONDS = 0.1
+_SESSION_SWITCH_DEBOUNCE_SECONDS = 0.1
 _RUNTIME_EVENT_APPLY_MAX = 64
 _SESSION_HISTORY_CACHE_SIZE = 3
 _RUNTIME_RENDER_BOUNDARY_EVENTS = {
@@ -386,10 +391,12 @@ class OuroTuiApp(App[int]):
             show=False,
             priority=True,
         ),
-        Binding("alt+left", "agent_node_left", "Previous subagent", show=False, priority=True),
-        Binding("alt+right", "agent_node_right", "Next subagent", show=False, priority=True),
-        Binding("alt+up", "agent_node_root", "Main session", show=False, priority=True),
-        Binding("alt+down", "agent_node_last", "Last subagent", show=False, priority=True),
+        Binding(
+            "alt+left", "session_node_left", "Previous session node", show=False, priority=True
+        ),
+        Binding("alt+right", "session_node_right", "Next session node", show=False, priority=True),
+        Binding("alt+up", "main_session", "Main session", show=False, priority=True),
+        Binding("alt+down", "session_node_last", "Last session node", show=False, priority=True),
         Binding(
             "ctrl+c",
             "copy_or_abort",
@@ -521,12 +528,15 @@ class OuroTuiApp(App[int]):
         self._visible_agent: AgentTreeNode | None = None
         self._observation_subscription: SessionObservation | None = None
         self._agent_tree_subscription: AgentTreeSubscription | None = None
+        self._agent_root_session_id: str | None = None
+        self._navigation_source: SessionView | None = None
+        self._interrupted_commands: dict[str, str] = {}
+        self._side_sessions: tuple[SessionCatalogEntry, ...] = ()
         self._agent_tree_revision = 0
         self._agent_nodes: dict[str, AgentTreeNode] = {}
         self._agent_root_status = "idle"
-        self._agent_switch_worker: Worker[None] | None = None
-        self._agent_switch_deadline = 0.0
-        self._pending_agent_switch: tuple[str, AgentTreeNode | None] | None = None
+        self._session_switch_worker: Worker[None] | None = None
+        self._pending_session_switch: tuple[str, float] | None = None
         self._held_session_scroll_y: dict[str, float] = {}
         self._session_history_states: OrderedDict[str, CachedSessionHistory] = OrderedDict()
         self._history_anchor: SessionHistoryAnchor | None = None
@@ -772,6 +782,7 @@ class OuroTuiApp(App[int]):
         popup = self.query_one(CommandPopup)
         composer.set_suggestion_resolver(lambda: self._command_suggestion(composer, popup))
         composer.set_command_matcher(lambda: self._matches_command(composer))
+        composer.command_session_id = lambda: self._controller.session_id
         composer.disabled = True
         _worker: Worker[None] = self.run_worker(self._start, name="tui-start", exclusive=True)
         if self._preferences_error is not None:
@@ -1148,15 +1159,21 @@ class OuroTuiApp(App[int]):
             subscription.close()
 
     async def _replace_agent_tree(
-        self, root_session_id: str | None, *, prepared: AgentTreeSubscription | None = None
+        self,
+        root_session_id: str | None,
+        *,
+        prepared: AgentTreeSubscription | None = None,
+        navigation_source: SessionView | None = None,
     ) -> tuple[AgentTreeNode, ...]:
         self._agent_tree_revision += 1
         revision = self._agent_tree_revision
+        self._agent_root_session_id = root_session_id
+        self._navigation_source = navigation_source
         previous = self._agent_tree_subscription
         if previous is not None and previous.root_session_id == root_session_id:
             if prepared is not None and prepared is not previous:
                 prepared.close()
-            self._sync_subagent_navigation_panel(root_session_id=root_session_id)
+            self._sync_session_navigation_panel()
             return tuple(self._agent_nodes.values())
         if previous is not None:
             previous.close()
@@ -1164,11 +1181,12 @@ class OuroTuiApp(App[int]):
         self._agent_nodes.clear()
         self._agent_root_status = "idle"
         if root_session_id is None:
-            self._sync_subagent_navigation_panel(root_session_id=None)
+            self._side_sessions = ()
+            self._sync_session_navigation_panel()
             return ()
         subscription = prepared or await self._controller.subscribe_agent_tree(root_session_id)
         if subscription is None:
-            self._sync_subagent_navigation_panel(root_session_id=root_session_id)
+            self._sync_session_navigation_panel()
             return ()
         if self._host_closing or revision != self._agent_tree_revision:
             subscription.close()
@@ -1178,7 +1196,7 @@ class OuroTuiApp(App[int]):
         self._agent_nodes = {node.delegation_id: node for node in snapshot.nodes}
         if snapshot.root_activity is not None:
             self._agent_root_status = snapshot.root_activity.status
-        self._sync_subagent_navigation_panel(root_session_id=root_session_id)
+        self._sync_session_navigation_panel()
 
         _worker: Worker[None] = self.run_worker(
             partial(self._consume_agent_tree, subscription),
@@ -1188,24 +1206,22 @@ class OuroTuiApp(App[int]):
         )
         return tuple(self._agent_nodes.values())
 
-    def _sync_subagent_navigation_panel(
-        self,
-        *,
-        root_session_id: str | None,
-        current_session_id: str | None = None,
-    ) -> None:
-        if self._host_closing or not self.query(SubagentNavigationPanel):
+    def _sync_session_navigation_panel(self) -> None:
+        if self._host_closing or not self.query(SessionNavigationPanel):
             return
-        panel = self.query_one(SubagentNavigationPanel)
-        panel.set_tree(
-            root_session_id=root_session_id,
-            agents=self._agent_nodes.values(),
-            root_status=self._agent_root_status,
+        panel = self.query_one(SessionNavigationPanel)
+        source = self._navigation_source
+        panel.set_nodes(
+            main_session_id=source.session_id if source else self._agent_root_session_id,
+            subagents=self._agent_nodes.values(),
+            main_status=source.status if source else self._agent_root_status,
+            side_sessions=self._side_sessions,
         )
         panel.display = (
-            bool(panel.visible_session_ids) or not self.query_one(WelcomePanel).welcome_active
+            bool(panel.visible_related_session_ids)
+            or not self.query_one(WelcomePanel).welcome_active
         )
-        visible_session_id = current_session_id or self._visible_session_id()
+        visible_session_id = self._visible_session_id()
         if visible_session_id is not None:
             panel.set_current_session(visible_session_id)
 
@@ -1253,9 +1269,7 @@ class OuroTuiApp(App[int]):
                             if updated_agent is not None:
                                 self._visible_agent = updated_agent
                                 self.query_one(StatusLine).set_subagent(updated_agent)
-                        self._sync_subagent_navigation_panel(
-                            root_session_id=subscription.root_session_id
-                        )
+                        self._sync_session_navigation_panel()
         except StopAsyncIteration, asyncio.CancelledError:
             return
         finally:
@@ -1342,7 +1356,7 @@ class OuroTuiApp(App[int]):
         self.query_one(BrandHeader).display = not enabled
         self.query_one("#main", Vertical).set_class(enabled, "welcome-page")
         self.query_one(WelcomePanel).set_welcome_mode(enabled)
-        self._sync_subagent_navigation_panel(root_session_id=self._controller.session_id)
+        self._sync_session_navigation_panel()
 
     def _set_welcome_system_status(self, status: TuiSystemStatus) -> None:
         self.query_one(WelcomePanel).set_system_status(status)
@@ -1692,7 +1706,8 @@ class OuroTuiApp(App[int]):
             if update.run_finished:
                 await flush_stream()
                 await flush_tools()
-                await self._sync_run_summary_from_event(event, model=projection.model)
+                if not conversation.dialogue_only:
+                    await self._sync_run_summary_from_event(event, model=projection.model)
 
         await flush_stream()
         await flush_tools()
@@ -2582,6 +2597,8 @@ class OuroTuiApp(App[int]):
         )
 
     def on_composer_command_submitted(self, message: Composer.CommandSubmitted) -> None:
+        if self._side_command_interrupted(message.command_text, message.session_id):
+            return
         if self._visible_read_only:
             self.notify("Subagent sessions are read-only", severity="warning")
             return
@@ -2647,15 +2664,30 @@ class OuroTuiApp(App[int]):
         )
         popup.hide()
         self._dismissed_command_text = None
-        self._execute_composer_command(value, self._visible_history())
+        self._execute_composer_command(value, self._visible_history(), message.session_id)
+
+    def _side_command_interrupted(self, value: str, source_id: str | None) -> bool:
+        if source_id == self._controller.session_id and not self._visible_read_only:
+            return False
+        command, _ = resolve_command(value)
+        if command is None or command.name != "/btw":
+            return False
+        if source_id is not None:
+            self._interrupted_commands[source_id] = value
+        self.notify(
+            "Conversation changed. Reopen the source to resume the question.", severity="warning"
+        )
+        return True
 
     @work(group="composer-command")
     async def _execute_composer_command(
-        self, value: str, history: tuple[str, int, int] | None
+        self, value: str, history: tuple[str, int, int] | None, source_id: str | None
     ) -> None:
         with self.query_one(ActivityIndicator).pending_operation():
             # Preserve submission order while leaving the message pump available.
             async with self._composer_submission_lock:
+                if self._side_command_interrupted(value, source_id):
+                    return
                 if history != self._visible_history():
                     command, _ = resolve_command(value)
                     if command is not None and command.name in {"/edit", "/fork"}:
@@ -2793,12 +2825,12 @@ class OuroTuiApp(App[int]):
                 model_max_attempts=activity.model_max_attempts,
             )
         status_line.set_context_metrics(activity.effective_context_metrics)
-        if activity.session_id == self._controller.session_id:
-            root_status_changed = activity.status != self._agent_root_status
+        if (
+            activity.session_id == self._agent_root_session_id
+            and activity.status != self._agent_root_status
+        ):
             self._agent_root_status = activity.status
-            root_session_id = self._controller.session_id
-            if root_status_changed and root_session_id is not None:
-                self._sync_subagent_navigation_panel(root_session_id=root_session_id)
+            self._sync_session_navigation_panel()
         self._sync_composer_placeholder()
 
     async def _refresh_interaction(
@@ -2993,21 +3025,25 @@ class OuroTuiApp(App[int]):
         composer.move_cursor((composer.document.line_count - 1, len(composer.document.lines[-1])))
         composer.focus()
 
-    def _restore_input_draft(self, session_id: str | None) -> None:
+    def _restore_input_draft(self, session_id: str | None, *, retain: bool = False) -> None:
         self._close_attachment_menu()
         self.query_one(Composer).bind_history(session_id)
+        command = self._interrupted_commands.pop(session_id, None) if session_id else None
+        retain = retain or command is not None
         draft = (
             self._input_drafts.content_for(session_id)
-            if self._preferences.input_draft_memory_enabled
+            if self._preferences.input_draft_memory_enabled or retain
             else InputContent()
         )
-        if not self._preferences.input_draft_memory_enabled:
+        if not self._preferences.input_draft_memory_enabled and not retain:
             if session_id is None:
                 self._remember_input_draft(None, "")
             else:
                 self._set_input_drafts(self._input_drafts.forget_sessions((session_id,)))
         self.query_one(Composer).restore_command_draft("")
         self.query_one(Composer).load_input(draft)
+        if command is not None:
+            self.query_one(Composer).load_command(command, draft=draft.text)
 
     def _remember_input_draft(
         self,
@@ -3037,8 +3073,8 @@ class OuroTuiApp(App[int]):
             )
 
     def _forget_input_drafts(self, session_ids: Sequence[str]) -> None:
-        if not self._preferences.input_draft_memory_enabled:
-            return
+        for session_id in session_ids:
+            self._interrupted_commands.pop(session_id, None)
         self._set_input_drafts(self._input_drafts.forget_sessions(session_ids))
 
     def _set_input_drafts(
@@ -3077,6 +3113,24 @@ class OuroTuiApp(App[int]):
             await self.action_quit()
         elif command.name == "/new":
             await self._new_session()
+        elif command.name == "/btw":
+            if not argument or self._controller.session_id is None or self._visible_read_only:
+                self.notify("Use /btw <question> in a writable conversation.", severity="warning")
+                return
+            revision = self._view_revision
+            try:
+                branch = await self._controller.create_side_conversation(argument)
+                side_id = branch.session.session_id
+                self._remember_input_draft(side_id, argument)
+                if revision == self._view_revision:
+                    await self._show_observed_session(side_id, inherit_progress=False)
+                    if self._controller.session_id == side_id and self._owns_session_surface(
+                        side_id
+                    ):
+                        self.query_one(Composer).clear()
+                        self._submit_run(argument, "follow_up", attachments=())
+            except (OuroError, ValueError) as exc:
+                self.notify(str(exc), severity="error", markup=False)
         elif command.name == "/workspace":
             if argument.casefold() == _CLEAR_WORKSPACE_HISTORY_ARGUMENT:
                 await self._clear_recent_workspaces()
@@ -3543,157 +3597,144 @@ class OuroTuiApp(App[int]):
     def action_sessions(self) -> None:
         self._request_menu_navigation(_MENU_SESSIONS)
 
+    def action_session_node_left(self) -> None:
+        self._navigate_session_node("left")
+
+    def action_session_node_right(self) -> None:
+        self._navigate_session_node("right")
+
     def action_main_session(self) -> None:
-        if not self._visible_read_only and not self._agent_switch_in_progress:
-            return
-        self._navigate_agent_node("root")
+        self._navigate_session_node("main")
 
-    def action_agent_node_left(self) -> None:
-        self._navigate_agent_node("left")
+    def action_session_node_last(self) -> None:
+        self._navigate_session_node("last")
 
-    def action_agent_node_right(self) -> None:
-        self._navigate_agent_node("right")
-
-    def action_agent_node_root(self) -> None:
-        self._navigate_agent_node("root")
-
-    def action_agent_node_last(self) -> None:
-        self._navigate_agent_node("last")
-
-    def on_subagent_navigation_panel_navigation_requested(
+    def on_session_navigation_panel_navigation_requested(
         self,
-        message: SubagentNavigationPanel.NavigationRequested,
+        message: SessionNavigationPanel.NavigationRequested,
     ) -> None:
         message.stop()
-        self._navigate_to_agent_session(message.session_id)
+        self._navigate_to_session_node(message.session_id)
 
     def on_message_source_requested(self, message: MessageSourceRequested) -> None:
         message.stop()
         delegation_id = message.source.child_delegation_id
         if delegation_id is None:
             if self._visible_agent is not None:
-                self._navigate_to_agent_session(self._visible_agent.parent_session_id)
+                self._navigate_to_session_node(self._visible_agent.parent_session_id)
             return
         agent = self._agent_nodes.get(delegation_id)
         if agent is None or agent.parent_session_id != self._visible_session_id():
             self.notify("This subagent session is not available yet", severity="warning")
             return
-        self._navigate_to_agent_session(agent.session_id)
+        self._navigate_to_session_node(agent.session_id)
 
-    def _navigate_to_agent_session(self, session_id: str) -> None:
+    def _navigate_to_session_node(self, session_id: str) -> None:
         if (
             self._host_closing
             or len(self.screen_stack) > 1
-            or not self.query(SubagentNavigationPanel)
+            or not self.query(SessionNavigationPanel)
         ):
             return
-        panel = self.query_one(SubagentNavigationPanel)
+        panel = self.query_one(SessionNavigationPanel)
         if not panel.display:
             return
         panel.begin_navigation()
-        self._request_agent_switch(panel.select_session(session_id))
+        self._request_session_switch(panel.select_session(session_id))
 
-    def _navigate_agent_node(
+    def _navigate_session_node(
         self,
-        direction: Literal["left", "right", "root", "last"],
+        direction: Literal["left", "right", "main", "last"],
     ) -> None:
         if (
             self._host_closing
             or len(self.screen_stack) > 1
-            or not self.query(SubagentNavigationPanel)
+            or not self.query(SessionNavigationPanel)
         ):
             return
-        panel = self.query_one(SubagentNavigationPanel)
+        panel = self.query_one(SessionNavigationPanel)
         if not panel.display:
             return
-        if not self._agent_switch_in_progress:
+        if not self._session_switch_in_progress:
             panel.end_navigation()
         panel.begin_navigation()
         if direction == "left":
             target_session_id = panel.select_relative(-1)
         elif direction == "right":
             target_session_id = panel.select_relative(1)
-        elif direction == "root":
-            target_session_id = panel.select_root()
+        elif direction == "main":
+            target_session_id = panel.select_main()
         else:
-            target_session_id = panel.select_last_child()
-        self._request_agent_switch(target_session_id)
+            target_session_id = panel.select_last_node()
+        self._request_session_switch(target_session_id)
 
     @property
-    def _agent_switch_in_progress(self) -> bool:
-        worker = self._agent_switch_worker
+    def _session_switch_in_progress(self) -> bool:
+        worker = self._session_switch_worker
         return worker is not None and not worker.is_finished and not worker.is_cancelled
 
-    def _request_agent_switch(self, target_session_id: str | None) -> None:
-        panel = self.query_one(SubagentNavigationPanel)
+    def _request_session_switch(self, target_session_id: str | None) -> None:
+        panel = self.query_one(SessionNavigationPanel)
         if target_session_id is None:
-            if not self._agent_switch_in_progress:
+            if not self._session_switch_in_progress:
                 panel.end_navigation()
             return
-        target_agent = panel.selected_agent
-        if target_session_id != self._controller.session_id and target_agent is None:
-            if not self._agent_switch_in_progress:
-                panel.end_navigation()
-            return
-        if not self._agent_switch_in_progress and target_session_id == self._visible_session_id():
+        if not self._session_switch_in_progress and target_session_id == self._visible_session_id():
             panel.end_navigation()
             return
-        pending = self._pending_agent_switch
+        pending = self._pending_session_switch
         if (
-            self._agent_switch_in_progress
+            self._session_switch_in_progress
             and pending is not None
             and pending[0] == target_session_id
         ):
             return
         self._view_revision += 1
-        self._agent_switch_deadline = (
-            asyncio.get_running_loop().time() + _AGENT_SWITCH_DEBOUNCE_SECONDS
+        self._pending_session_switch = (
+            target_session_id,
+            asyncio.get_running_loop().time() + _SESSION_SWITCH_DEBOUNCE_SECONDS,
         )
-        self._pending_agent_switch = (target_session_id, target_agent)
-        if self._agent_switch_in_progress:
+        if self._session_switch_in_progress:
             return
-        self._agent_switch_worker = self.run_worker(
-            self._switch_agent_nodes,
+        self._session_switch_worker = self.run_worker(
+            self._switch_session_nodes,
             exclusive=True,
             group="navigation",
         )
 
-    async def _switch_agent_nodes(self) -> None:
+    async def _switch_session_nodes(self) -> None:
         worker = get_current_worker()
         loop = asyncio.get_running_loop()
         try:
-            while self._pending_agent_switch is not None:
-                delay = self._agent_switch_deadline - loop.time()
+            while self._pending_session_switch is not None:
+                request = self._pending_session_switch
+                target_session_id, deadline = request
+                delay = deadline - loop.time()
                 if delay > 0:
                     await asyncio.sleep(delay)
                     continue
-                request = self._pending_agent_switch
-                target_session_id, target_agent = request
                 if target_session_id == self._visible_session_id():
-                    self._pending_agent_switch = None
+                    self._pending_session_switch = None
                     if self._projection is not None:
                         self._sync_activity(self._projection.activity)
                     continue
                 try:
                     self.query_one(StatusLine).set_activity("loading_session")
-                    if target_session_id == self._controller.session_id:
-                        await self._show_main_session()
-                    elif target_agent is not None:
-                        await self._open_child_session(target_agent)
+                    await self._show_observed_session(target_session_id)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001 - navigation failures are visible.
                     if self._surface_available():
                         self.notify(str(exc), severity="error", markup=False)
                 finally:
-                    if self._pending_agent_switch is request:
-                        self._pending_agent_switch = None
+                    if self._pending_session_switch is request:
+                        self._pending_session_switch = None
         finally:
-            if self._agent_switch_worker is worker:
-                self._pending_agent_switch = None
-                self._agent_switch_worker = None
-                if self.query(SubagentNavigationPanel):
-                    panel = self.query_one(SubagentNavigationPanel)
+            if self._session_switch_worker is worker:
+                self._pending_session_switch = None
+                self._session_switch_worker = None
+                if self.query(SessionNavigationPanel):
+                    panel = self.query_one(SessionNavigationPanel)
                     panel.set_current_session(self._visible_session_id())
                     panel.end_navigation()
 
@@ -3864,7 +3905,7 @@ class OuroTuiApp(App[int]):
                     severity="warning",
                 )
                 return
-            self._navigate_to_agent_session(agent.session_id)
+            self._navigate_to_session_node(agent.session_id)
         except Exception as exc:  # noqa: BLE001 - navigation failures are user-visible.
             self.notify(str(exc), severity="error", markup=False)
 
@@ -3905,7 +3946,7 @@ class OuroTuiApp(App[int]):
         operation: Literal["open", "rename", "archive", "delete"] = "open",
     ) -> None:
         revision = menu.page_revision if menu is not None else None
-        if not await self._refresh_sessions(include_subagents=True):
+        if not await self._refresh_sessions():
             return
         if menu is not None and (not menu.is_attached or menu.page_revision != revision):
             return
@@ -3913,8 +3954,11 @@ class OuroTuiApp(App[int]):
         session_menu: ChoiceScreen
 
         def choices() -> tuple[Choice, ...]:
+            catalog = (
+                _session_open_targets(self._sessions) if operation == "open" else self._sessions
+            )
             return _session_choices(
-                _sessions_in_domain(self._sessions, domain),
+                _sessions_in_domain(catalog, domain),
                 selected_session_id=self._visible_session_id(),
                 grouping=self._preferences.session_grouping,
                 theme=self._tui_theme,
@@ -3948,14 +3992,14 @@ class OuroTuiApp(App[int]):
             )
 
         async def refresh_choices() -> tuple[Choice, ...] | None:
-            if not await self._refresh_sessions(include_subagents=True):
+            if not await self._refresh_sessions():
                 return None
             return choices()
 
         async def switch_domain() -> None:
             nonlocal domain
             revision = session_menu.page_revision
-            if not await self._refresh_sessions(include_subagents=True):
+            if not await self._refresh_sessions():
                 return
             if (
                 not session_menu.is_attached
@@ -4015,7 +4059,7 @@ class OuroTuiApp(App[int]):
                 return await refresh_choices()
 
         async def delete_selected(session_ids: tuple[str, ...]) -> tuple[Choice, ...] | None:
-            if not await self._refresh_sessions(include_subagents=True):
+            if not await self._refresh_sessions():
                 return None
             archived_ids = {item.session_id for item in _sessions_in_domain(self._sessions, domain)}
             if not set(session_ids).issubset(archived_ids):
@@ -4029,8 +4073,11 @@ class OuroTuiApp(App[int]):
                 self.notify(str(exc), severity="error", markup=False)
                 return None
             self._forget_input_drafts(removed)
-            if current_session_id in removed:
+            if current_session_id in removed or self._visible_session_id() in removed:
                 await self._new_session()
+            for removed_id in removed:
+                self._session_history_states.pop(removed_id, None)
+                self._held_session_scroll_y.pop(removed_id, None)
             return await refresh_choices()
 
         if operation in {"archive", "delete"}:
@@ -4048,7 +4095,12 @@ class OuroTuiApp(App[int]):
                 else "Unarchive"
                 if domain == "archived"
                 else "Archive",
-                destructive=operation == "delete",
+                destructive_prompt=(
+                    "Permanently delete the selected sessions and all their "
+                    "side conversations and child sessions?"
+                )
+                if operation == "delete"
+                else "",
                 interaction_hint=hint(),
                 on_tab=switch_domain if operation == "archive" else None,
             )
@@ -4095,12 +4147,20 @@ class OuroTuiApp(App[int]):
         else:
             self.push_screen(session_menu)
 
-    async def _refresh_sessions(self, *, include_subagents: bool = False) -> bool:
+    async def _refresh_sessions(self) -> bool:
         try:
-            self._sessions = await self._controller.sessions(include_subagents=include_subagents)
+            self._sessions = await self._controller.sessions(include_subagents=True)
         except Exception as exc:  # noqa: BLE001
             self.notify(str(exc), severity="error", markup=False)
             return False
+        owner = self._agent_root_session_id
+        if owner is not None:
+            source = self._navigation_source
+            source_ids = (source.session_id if source else owner, owner)
+            self._side_sessions = _side_session_nodes(
+                entry for entry in self._sessions if entry.context_source_session_id in source_ids
+            )
+            self._sync_session_navigation_panel()
         return True
 
     async def _open_session(self, session_id: str) -> None:
@@ -4167,6 +4227,7 @@ class OuroTuiApp(App[int]):
         subscription: SessionObservation,
         revision: int,
         selection: TuiSessionObservation | None = None,
+        inherit_progress: bool = True,
     ) -> bool:
         session = loaded.snapshot.session
         snapshot, retained_prefix, retained_anchor = await self._prepare_retained_history(
@@ -4194,10 +4255,38 @@ class OuroTuiApp(App[int]):
             transcript = (*retained_prefix, *transcript)
         if self._host_closing or revision != self._view_revision:
             return False
+        tree_root = session.agent_root_session_id
+        navigation_source = None
+        progress = None
+        warning = None
+        if session.context_source_session_id is not None:
+            try:
+                navigation_source = await self._controller.session_view(
+                    session.context_source_session_id
+                )
+                if self._visible_session_id() == session.session_id:
+                    progress = self._controller.pending_source_history
+                elif selection is not None and inherit_progress:
+                    progress = await self._controller.source_progress(session.session_id)
+            except (SessionBranchError, ConfigError) as exc:
+                warning = str(exc)
+            except (FileNotFoundError, SessionNotFoundError, PersistenceError) as exc:
+                navigation_source = None
+                warning = f"Source session is unavailable. Previous context is retained. {exc}"
+        return_id = navigation_source.session_id if navigation_source else tree_root
+        sides = (
+            _side_session_nodes(
+                await self._controller.side_conversations(return_id, session.session_id)
+            )
+            if selection is not None
+            or tree_root != self._agent_root_session_id
+            or navigation_source != self._navigation_source
+            else self._side_sessions
+        )
         tree = self._agent_tree_subscription
         prepared_tree = (
-            await self._controller.subscribe_agent_tree(session.agent_root_session_id)
-            if tree is None or tree.root_session_id != session.agent_root_session_id
+            await self._controller.subscribe_agent_tree(tree_root)
+            if tree is None or tree.root_session_id != tree_root
             else None
         )
         if self._host_closing or revision != self._view_revision:
@@ -4233,9 +4322,12 @@ class OuroTuiApp(App[int]):
                         prepared_tree.close()
                     return False
                 if selection is not None:
-                    self._controller.activate_observation(selection)
+                    self._controller.activate_observation(selection, source_history=progress)
+                    if warning:
+                        self.notify(warning, severity="warning", markup=False)
+                self._side_sessions = sides
                 await self._replace_agent_tree(
-                    session.agent_root_session_id, prepared=prepared_tree
+                    tree_root, prepared=prepared_tree, navigation_source=navigation_source
                 )
                 # Commit the prepared content; the history owns deferred layout.
                 with self.batch_update():
@@ -4254,31 +4346,44 @@ class OuroTuiApp(App[int]):
                         reusable_history = None
                         self._held_session_scroll_y.pop(session.session_id, None)
                     composer = self.query_one(Composer)
+                    side_switch = bool(sides) and (
+                        visible_session_id == return_id
+                        or any(s.session_id == visible_session_id for s in sides)
+                        or self._visible_agent is not None
+                        and self._visible_agent.root_session_id == tree_root
+                    )
+                    if (
+                        not self._visible_read_only
+                        and visible_session_id != session.session_id
+                        and (
+                            side_switch
+                            or read_only
+                            and visible_session_id == session.agent_root_session_id
+                        )
+                    ):
+                        content = composer.draft_content
+                        self._remember_input_draft(
+                            visible_session_id,
+                            content.text,
+                            attachments=content.attachments,
+                            skills=content.skills,
+                        )
                     if read_only and not self._visible_read_only:
-                        if visible_session_id == session.agent_root_session_id:
-                            content = composer.draft_content
-                            self._remember_input_draft(
-                                visible_session_id,
-                                content.text,
-                                attachments=content.attachments,
-                                skills=content.skills,
-                            )
                         composer.restore_command_draft("")
                     elif not read_only and self._visible_read_only:
-                        if (
+                        returning_to_owner = (
                             self._visible_agent is not None
                             and self._visible_agent.root_session_id == session.session_id
-                        ):
-                            composer.bind_history(session.session_id)
-                            composer.load_input(self._input_drafts.content_for(session.session_id))
-                        else:
-                            self._restore_input_draft(session.session_id)
+                        )
+                        self._restore_input_draft(
+                            session.session_id, retain=side_switch or returning_to_owner
+                        )
                     elif (
                         not read_only
                         and visible_session_id != session.session_id
                         and selection is not None
                     ):
-                        self._restore_input_draft(session.session_id)
+                        self._restore_input_draft(session.session_id, retain=side_switch)
                     # The selected Session now owns the surface. Clear every interaction
                     # projected by the previous Session before yielding while its history
                     # is mounted; the new projection will restore its own pending request.
@@ -4286,12 +4391,15 @@ class OuroTuiApp(App[int]):
                     self._session_status_harness_version = session.harness_version
                     self._visible_agent = agent
                     composer.set_class(read_only, "read-only-session")
-                    self.query_one(SubagentNavigationPanel).set_current_session(session.session_id)
+                    self.query_one(SessionNavigationPanel).set_current_session(session.session_id)
                     self._projection = None
                     self._interaction = None
                     self._sync_interaction(None)
                     has_conversation = bool(
-                        transcript or snapshot.queued_inputs or session.active_run_id
+                        session.context_source_session_id
+                        or transcript
+                        or snapshot.queued_inputs
+                        or session.active_run_id
                     )
                     if (
                         selection is not None
@@ -4304,6 +4412,7 @@ class OuroTuiApp(App[int]):
                         self._set_welcome_mode(not has_conversation)
                     await conversation.load_transcript(
                         transcript,
+                        dialogue_only=session.context_source_session_id is not None,
                         held_scroll_y=self._held_session_scroll_y.get(session.session_id),
                         reusable_history=reusable_history.state if reusable_history else None,
                     )
@@ -4317,7 +4426,11 @@ class OuroTuiApp(App[int]):
                     self._history_before_cursor = (
                         retained_before_cursor
                         if retained_anchor is not None
-                        else snapshot.history_before_cursor
+                        else _transcript_before_cursor(
+                            snapshot.messages,
+                            snapshot.history_before_cursor,
+                            dialogue_only=conversation.dialogue_only,
+                        )
                     )
                     self._history_run_ids = {
                         message.run_id
@@ -4382,15 +4495,9 @@ class OuroTuiApp(App[int]):
                 prepared_tree.close()
         return True
 
-    async def _open_child_session(self, agent: AgentTreeNode) -> None:
-        await self._show_observed_session(agent.session_id)
-
-    async def _show_main_session(self) -> None:
-        session_id = self._controller.session_id
-        if session_id is not None:
-            await self._show_observed_session(session_id)
-
-    async def _show_observed_session(self, session_id: str) -> None:
+    async def _show_observed_session(
+        self, session_id: str, *, inherit_progress: bool = True
+    ) -> None:
         self._view_revision += 1
         revision = self._view_revision
         observation: TuiSessionObservation | None = None
@@ -4398,8 +4505,16 @@ class OuroTuiApp(App[int]):
             observation = await self._controller.observe_session(
                 session_id, history_anchor=self._history_reprojection_anchor(session_id)
             )
+            select_control = (
+                observation.control_session.session_id != self._controller.session_id
+                or observation.loaded.snapshot.session.context_source_session_id is not None
+            )
             await self._install_session_surface(
-                observation.loaded, subscription=observation.subscription, revision=revision
+                observation.loaded,
+                subscription=observation.subscription,
+                revision=revision,
+                selection=observation if select_control else None,
+                inherit_progress=inherit_progress,
             )
         except Exception, asyncio.CancelledError:
             if revision == self._view_revision and self._projection is not None:
@@ -4500,6 +4615,8 @@ class OuroTuiApp(App[int]):
         cursor = self._history_before_cursor
         if projection is None or cursor is None:
             return False
+        conversation = self.query_one(ConversationView)
+        dialogue_only = conversation.dialogue_only
         window = await self._controller.history_window(
             projection.session_id, before=cursor, history_epoch=projection.history_epoch
         )
@@ -4508,8 +4625,9 @@ class OuroTuiApp(App[int]):
         transcript = await asyncio.to_thread(
             self._prepare_history_window,
             window,
-            frozenset(self._history_run_ids) | self.query_one(ConversationView).presented_run_ids,
+            frozenset(self._history_run_ids) | conversation.presented_run_ids,
             self._models,
+            dialogue_only=dialogue_only,
             show_harness_messages=self._preferences.show_harness_messages,
         )
         async with self._runtime_event_apply_lock:
@@ -4520,11 +4638,13 @@ class OuroTuiApp(App[int]):
                 or cursor != self._history_before_cursor
             ):
                 return False
-            self.query_one(ConversationView).prepend_transcript(transcript)
+            conversation.prepend_transcript(transcript)
             self._history_anchor = (
                 _history_anchor(window.history_epoch, window.messages) or self._history_anchor
             )
-            self._history_before_cursor = window.before_cursor
+            self._history_before_cursor = _transcript_before_cursor(
+                window.messages, window.before_cursor, dialogue_only=dialogue_only
+            )
             self._history_run_ids.update(run.run_id for run in window.runs)
             if self._history_anchor is not None and self._observation_subscription is not None:
                 self._observation_subscription.retain_history_from(self._history_anchor)
@@ -4536,8 +4656,11 @@ class OuroTuiApp(App[int]):
         newer_run_ids: frozenset[str],
         models: tuple[AvailableModel, ...],
         *,
+        dialogue_only: bool = False,
         show_harness_messages: bool = False,
     ) -> tuple[TranscriptEntry, ...]:
+        if dialogue_only:
+            return project_dialogue_entries(window.messages)
         presentations = project_run_presentations(
             (run for run in window.runs if run.kind == "agent"), window.messages, models=models
         )
@@ -4754,22 +4877,32 @@ class OuroTuiApp(App[int]):
         """Build persisted projections without occupying Textual's event loop."""
 
         projection = restore_session_content(snapshot)
-        presentations = project_run_presentations(
-            (run for run in snapshot.runs if run.kind == "agent"), snapshot.messages, models=models
+        dialogue_only = snapshot.session.context_source_session_id is not None
+        tools = (
+            ()
+            if dialogue_only
+            else tuple(tool for tool in projection.activity.tool_calls if tool.tool_name)
         )
-        tools = tuple(tool for tool in projection.activity.tool_calls if tool.tool_name)
         terminal_tools = all(is_terminal_tool(tool) for tool in tools)
-        entries = project_transcript_entries(
-            snapshot.messages,
-            snapshot.compactions,
-            presentations,
-            mutable_tool_call_keys=frozenset(
-                (projection.activity.run_id, tool.batch_id, tool.tool_call_id)
-                for tool in tools
-                if not terminal_tools
-            ),
-            show_harness_messages=show_harness_messages,
-        )
+        if dialogue_only:
+            entries = project_dialogue_entries(snapshot.messages)
+        else:
+            presentations = project_run_presentations(
+                (run for run in snapshot.runs if run.kind == "agent"),
+                snapshot.messages,
+                models=models,
+            )
+            entries = project_transcript_entries(
+                snapshot.messages,
+                snapshot.compactions,
+                presentations,
+                mutable_tool_call_keys=frozenset(
+                    (projection.activity.run_id, tool.batch_id, tool.tool_call_id)
+                    for tool in tools
+                    if not terminal_tools
+                ),
+                show_harness_messages=show_harness_messages,
+            )
         prepared = list(entries)
         if tools and terminal_tools:
             historical_tools = {
@@ -4786,7 +4919,8 @@ class OuroTuiApp(App[int]):
 
         # A snapshot installs complete state; it does not replay streaming handoffs.
         # Prepare stable blocks together with history, leaving only the open tail live.
-        reasoning, answer = projection.reasoning_text, projection.assistant_text
+        reasoning = "" if dialogue_only else projection.reasoning_text
+        answer = projection.assistant_text
         stream = AssistantMarkdownStream()
         blocks, _ = stream.append(answer)
         if tools and not terminal_tools:
@@ -4993,7 +5127,7 @@ class OuroTuiApp(App[int]):
             return
         if menu is not None and menu.navigation_id == destination:
             return
-        self.query_one(SubagentNavigationPanel).end_navigation()
+        self.query_one(SessionNavigationPanel).end_navigation()
 
         async def navigate() -> None:
             active_menu = self._active_navigation_menu()
@@ -5973,6 +6107,15 @@ class OuroTuiApp(App[int]):
             await self._controller.abort()
         except Exception as exc:  # noqa: BLE001
             self.notify(str(exc), severity="error", markup=False)
+
+
+def _transcript_before_cursor(
+    messages: tuple[MessageRecord, ...], before_cursor: int | None, *, dialogue_only: bool
+) -> int | None:
+    # The copied source history is a contiguous prefix of the side conversation.
+    if dialogue_only and messages and "source_message_id" in messages[0].metadata:
+        return None
+    return before_cursor
 
 
 def _history_anchor(

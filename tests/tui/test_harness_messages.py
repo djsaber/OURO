@@ -222,7 +222,7 @@ async def test_agent_source_text_links_both_sessions_and_preserves_body_copy(
                 await pilot.hover(history, offset=(miss, y))
                 assert footer_colors(y) == {Color.parse(theme.text_lowlight)}
                 await pilot.click(history, offset=(miss, y))
-                assert not app._agent_switch_in_progress
+                assert not app._session_switch_in_progress
 
             if target == child_id:
                 await pilot.click(history, offset=(body_x, y - 1), button=3)
@@ -250,12 +250,12 @@ async def test_agent_source_text_links_both_sessions_and_preserves_body_copy(
                     app.post_message(event(None, screen_x, screen_y, 0, 0, 1, False, False, False))
                     await pilot.pause()
                 assert source_text in app.screen.get_selected_text()
-                assert app._visible_session_id() == root_id and not app._agent_switch_in_progress
+                assert app._visible_session_id() == root_id and not app._session_switch_in_progress
 
             await pilot.click(history, offset=(end - 1, y))
             await wait_until(
                 lambda target=target: (
-                    app._visible_session_id() == target and not app._agent_switch_in_progress
+                    app._visible_session_id() == target and not app._session_switch_in_progress
                 ),
                 pilot,
                 description=f"source label opened {target}",

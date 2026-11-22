@@ -1,4 +1,4 @@
-"""Compact, root-scoped subagent navigation for the TUI input surface."""
+"""One navigation row for side conversations, the return target, and the controlled Agent tree."""
 
 from __future__ import annotations
 
@@ -11,10 +11,11 @@ from textual.message import Message
 from textual.widgets import Static
 
 from ouro.application.contracts.agents import AgentTreeNode
+from ouro.application.contracts.sessions import SessionCatalogEntry
 from ouro.tui.theme import theme_for
 
-_MAX_VISIBLE_CHILDREN = 10
-_SESSION_NODE_META = "ouro.subagent_navigation.session_id"
+_MAX_NODES_PER_GROUP = 10
+_SESSION_NODE_META = "ouro.session_navigation.session_id"
 _FAILED_STATUSES = frozenset({"failed", "aborted", "recoverable"})
 _RUNNING_STATUSES = frozenset(
     {
@@ -30,8 +31,8 @@ _RUNNING_STATUSES = frozenset(
 )
 
 
-class SubagentNavigationPanel(Static):
-    """Reserve and render the agent-navigation row for one controlled root Session."""
+class SessionNavigationPanel(Static):
+    """Navigate the main session, its side conversations, and its subagents."""
 
     class NavigationRequested(Message):
         def __init__(self, session_id: str) -> None:
@@ -39,11 +40,12 @@ class SubagentNavigationPanel(Static):
             self.session_id = session_id
 
     def __init__(self) -> None:
-        super().__init__(id="subagent-navigation-panel")
+        super().__init__(id="session-navigation-panel")
         self.display = False
-        self._root_session_id: str | None = None
-        self._root_status = "idle"
-        self._agents: tuple[AgentTreeNode, ...] = ()
+        self._main_session_id: str | None = None
+        self._main_status = "idle"
+        self._subagents: tuple[AgentTreeNode, ...] = ()
+        self._side_sessions: tuple[SessionCatalogEntry, ...] = ()
         self._current_session_id: str | None = None
         self._selected_session_id: str | None = None
         self._hovered_session_id: str | None = None
@@ -62,51 +64,52 @@ class SubagentNavigationPanel(Static):
         return self._navigation_active
 
     @property
-    def selected_agent(self) -> AgentTreeNode | None:
-        selected = self._selected_session_id
-        return next((agent for agent in self._agents if agent.session_id == selected), None)
+    def visible_related_session_ids(self) -> tuple[str, ...]:
+        return (
+            *(side.session_id for side in self._visible_nodes(self._side_sessions)),
+            *(agent.session_id for agent in self._visible_nodes(self._subagents)),
+        )
 
     @property
-    def visible_session_ids(self) -> tuple[str, ...]:
-        return tuple(agent.session_id for agent in self._visible_agents())
+    def _node_ids(self) -> tuple[str, ...]:
+        if self._main_session_id is None:
+            return ()
+        return (
+            *(side.session_id for side in self._side_sessions),
+            self._main_session_id,
+            *(agent.session_id for agent in self._subagents),
+        )
 
-    def set_tree(
+    def set_nodes(
         self,
         *,
-        root_session_id: str | None,
-        agents: Iterable[AgentTreeNode],
-        root_status: str,
+        main_session_id: str | None,
+        subagents: Iterable[AgentTreeNode],
+        main_status: str,
+        side_sessions: tuple[SessionCatalogEntry, ...] = (),
     ) -> None:
         groups: dict[str, list[AgentTreeNode]] = {}
-        for agent in agents:
-            if root_session_id is not None and agent.root_session_id == root_session_id:
-                groups.setdefault(agent.parent_run_id, []).append(agent)
+        for agent in subagents:
+            groups.setdefault(agent.parent_run_id, []).append(agent)
         materialized = tuple(agent for group in groups.values() for agent in group)
         if (
-            root_session_id == self._root_session_id
-            and root_status == self._root_status
-            and materialized == self._agents
+            main_session_id == self._main_session_id
+            and main_status == self._main_status
+            and materialized == self._subagents
+            and side_sessions == self._side_sessions
         ):
             return
-        root_changed = root_session_id != self._root_session_id
-        self._root_session_id = root_session_id
-        self._root_status = root_status
-        self._agents = materialized
-        available = {agent.session_id for agent in self._agents}
-        if root_changed or (
-            self._current_session_id != root_session_id
-            and self._current_session_id not in available
-        ):
-            self._current_session_id = root_session_id
-        if (
-            self._selected_session_id != root_session_id
-            and self._selected_session_id not in available
-        ):
+        main_changed = main_session_id != self._main_session_id
+        self._main_session_id = main_session_id
+        self._main_status = main_status
+        self._subagents = materialized
+        self._side_sessions = side_sessions
+        available = self._node_ids
+        if main_changed:
+            self._current_session_id = main_session_id
+        if self._selected_session_id not in available:
             self._selected_session_id = self._current_session_id
-        if (
-            self._hovered_session_id != root_session_id
-            and self._hovered_session_id not in available
-        ):
+        if self._hovered_session_id not in available:
             self._hovered_session_id = None
         self._refresh_content()
 
@@ -117,9 +120,6 @@ class SubagentNavigationPanel(Static):
             and selected_session_id == self._selected_session_id
         ):
             return
-        available = {agent.session_id for agent in self._agents}
-        if session_id != self._root_session_id and session_id not in available:
-            return
         self._current_session_id = session_id
         if not self._navigation_active:
             self._selected_session_id = session_id
@@ -128,11 +128,11 @@ class SubagentNavigationPanel(Static):
     def begin_navigation(self) -> None:
         hover_changed = self._hovered_session_id is not None
         self._hovered_session_id = None
-        if not self._agents or self._navigation_active:
+        if not (self._subagents or self._side_sessions) or self._navigation_active:
             if hover_changed:
                 self._refresh_content()
             return
-        self._selected_session_id = self._current_session_id or self._root_session_id
+        self._selected_session_id = self._current_session_id or self._main_session_id
         self._navigation_active = True
         self._refresh_content()
 
@@ -144,27 +144,23 @@ class SubagentNavigationPanel(Static):
         self._refresh_content()
 
     def select_relative(self, offset: int) -> str | None:
-        if not self._agents or offset == 0:
+        session_ids = self._node_ids
+        if not session_ids or offset == 0:
             return self._selected_session_id
-        session_ids = (
-            self._root_session_id,
-            *(agent.session_id for agent in self._agents),
-        )
         selected = self._selected_session_id
         index = session_ids.index(selected) if selected in session_ids else 0
         index = min(max(index + offset, 0), len(session_ids) - 1)
         return self._select(session_ids[index])
 
-    def select_root(self) -> str | None:
-        return self._select(self._root_session_id)
+    def select_main(self) -> str | None:
+        return self._select(self._main_session_id)
 
-    def select_last_child(self) -> str | None:
-        target = self._agents[-1].session_id if self._agents else self._root_session_id
-        return self._select(target)
+    def select_last_node(self) -> str | None:
+        nodes = self._node_ids
+        return self._select(nodes[-1] if nodes else None)
 
     def select_session(self, session_id: str) -> str | None:
-        available = {agent.session_id for agent in self._agents}
-        if session_id != self._root_session_id and session_id not in available:
+        if session_id not in self._node_ids:
             return None
         return self._select(session_id)
 
@@ -196,17 +192,21 @@ class SubagentNavigationPanel(Static):
         suffix = self._node_text()
         detail = Text()
         selected = self._hovered_session_id or self._selected_session_id
-        selected_agent = next(
-            (agent for agent in self._agents if agent.session_id == selected),
+        selected_subagent = next(
+            (agent for agent in self._subagents if agent.session_id == selected),
             None,
         )
-        if selected_agent is not None:
-            identity = selected_agent.nickname or selected_agent.agent_name
+        if selected_subagent is not None:
+            identity = selected_subagent.nickname or selected_subagent.agent_name
             detail.append(
-                theme.inline_separator.join((selected_agent.task_description, identity))
+                theme.inline_separator.join((selected_subagent.task_description, identity))
                 + theme.inline_separator,
                 style=theme.text_lowlight,
             )
+        elif side := next(
+            (item for item in self._side_sessions if item.session_id == selected), None
+        ):
+            detail.append(side.title + theme.inline_separator, style=theme.text_lowlight)
         available_detail_width = max(0, width - suffix.cell_len)
         detail.truncate(available_detail_width, overflow="ellipsis")
         content = Text(" " * max(0, width - detail.cell_len - suffix.cell_len))
@@ -229,47 +229,50 @@ class SubagentNavigationPanel(Static):
         self._hovered_session_id = session_id
         self._refresh_content()
 
-    def _visible_agents(self) -> tuple[AgentTreeNode, ...]:
-        ordered = self._agents
-        if len(ordered) <= _MAX_VISIBLE_CHILDREN:
-            return ordered
-        selected = self._selected_session_id
-        if selected == self._root_session_id or selected is None:
-            selected = ordered[-1].session_id
+    def _visible_nodes[T: (SessionCatalogEntry, AgentTreeNode)](
+        self, nodes: tuple[T, ...]
+    ) -> tuple[T, ...]:
+        if len(nodes) <= _MAX_NODES_PER_GROUP:
+            return nodes
         index = next(
-            (index for index, agent in enumerate(ordered) if agent.session_id == selected),
-            len(ordered) - 1,
+            (i for i, node in enumerate(nodes) if node.session_id == self._selected_session_id),
+            len(nodes) - 1,
         )
-        max_start = len(ordered) - _MAX_VISIBLE_CHILDREN
-        start = min(max(0, index - _MAX_VISIBLE_CHILDREN // 2), max_start)
-        return ordered[start : start + _MAX_VISIBLE_CHILDREN]
+        max_start = len(nodes) - _MAX_NODES_PER_GROUP
+        start = min(max(0, index - _MAX_NODES_PER_GROUP // 2), max_start)
+        return nodes[start : start + _MAX_NODES_PER_GROUP]
 
     def _node_text(self) -> Text:
-        if not self._agents or self._root_session_id is None:
+        if self._main_session_id is None or (
+            self._current_session_id == self._main_session_id
+            and not self._subagents
+            and not self._side_sessions
+        ):
             return Text()
         theme = theme_for(self)
         selected = self._hovered_session_id or self._selected_session_id
         nodes = Text()
-        root_mark = (
-            theme.selected_session_node_mark
-            if selected == self._root_session_id
-            else theme.session_node_mark
-        )
-        nodes.append(
-            root_mark,
-            style=self._node_style(self._root_status, self._root_session_id),
-        )
-        nodes.append(" | ", style=theme.text_lowlight)
-        previous_run_id: str | None = None
-        for agent in self._visible_agents():
-            if previous_run_id is not None and agent.parent_run_id != previous_run_id:
-                nodes.append(" ")
+
+        def append_node(session_id: str, status: str) -> None:
             mark = (
                 theme.selected_session_node_mark
-                if selected == agent.session_id
+                if selected == session_id
                 else theme.session_node_mark
             )
-            nodes.append(mark, style=self._node_style(agent.status, agent.session_id))
+            nodes.append(mark, style=self._node_style(status, session_id))
+
+        for side in self._visible_nodes(self._side_sessions):
+            append_node(side.session_id, side.status)
+        if self._side_sessions:
+            nodes.append(" | ", style=theme.text_lowlight)
+        append_node(self._main_session_id, self._main_status)
+        if self._subagents:
+            nodes.append(" | ", style=theme.text_lowlight)
+        previous_run_id: str | None = None
+        for agent in self._visible_nodes(self._subagents):
+            if previous_run_id is not None and agent.parent_run_id != previous_run_id:
+                nodes.append(" ")
+            append_node(agent.session_id, agent.status)
             previous_run_id = agent.parent_run_id
         return nodes
 
@@ -293,4 +296,4 @@ class SubagentNavigationPanel(Static):
         self.refresh(layout=True)
 
 
-__all__ = ["SubagentNavigationPanel"]
+__all__ = ["SessionNavigationPanel"]

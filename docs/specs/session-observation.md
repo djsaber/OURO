@@ -1,4 +1,4 @@
-# Host 会话观察与子智能体导航规格
+# Host 会话观察与节点导航规格
 
 > 文档类型：现行规格
 
@@ -173,31 +173,30 @@ Session、消息页和活动投影携带 `history_epoch`；Run 通知保留其�
 
 TUI 必须实现：
 
-1. 主会话保持 controlled；visible 可以是主会话或其已知 child。
+1. 切换到普通会话或旁问时，该会话同时成为 controlled 和 visible。观察子智能体时，visible 是该子会话，controlled 是它的可写主会话。
 2. 历史和实时 SpawnAgent 工具展示均携带 `(parent_session_id, parent_run_id, parent_tool_call_id)` 点击身份。
 3. 点击只能通过 Application relation 投影打开 child；不存在/尚未绑定时不猜测。
 4. child 视图明确显示只读状态，禁用 composer、提交、abort、交互应答和会话写配置。
 5. 从 root Agent tree 投影同一主会话下全部已知 child（包括嵌套派发），按 `parent_run_id` 保留 Run 分组，并提供
    root/child 与 child/child 直接切换路径。
-6. 主会话和每个 child 使用独立 projection/cursor；交错事件不能串流、覆盖或错误去重。
+6. 各会话使用独立的 projection/cursor，交错事件按所属会话应用。
 7. 切换期间新到事件必须被缓存、投影或在 事实补齐中恢复，不能因 widget 重建而丢失。
 8. active root 或 active child 不得成为只读视图切换的阻止条件。
 9. 视图切换不应阻塞 Textual event loop 的持续刷新；大历史装载必须分块/yield。
 10. 关闭 TUI 必须释放所有观察任务/订阅；复用共享 Application 时不得终止后台 Session。若 TUI 是 Application 的
     composition root，则整体退出遵循既有 Runtime shutdown policy，而不是由会话视图逻辑隐式控制 child。
-11. composer 上方的导航面板只消费 Agent tree DTO，不读取 store 或解析工具文本；正文布局保留单行导航区域，
-    无 child 时内容为空。空正文页面有 child 时仍显示导航；root/child surface 使用同一 widget，按当前/选中节点
-    调整最多十个 child 的有界窗口。已打开 Session 的身份独立于正文是否为空，不因欢迎页布局丢失命令或导航目标。
+11. composer 上方的导航面板使用 Application 的会话目录和当前受控会话的 Agent tree DTO。单行按旁问、返回节点、子智能体排列，
+    左右各组按选中节点展示最多十个节点。有关联节点的空正文页面仍显示导航。已打开 Session 的身份独立于正文是否为空。
 12. 导航面板必须保持在当前最上层 inline 菜单（命令、审批、问答或计划确认）的上方，使菜单与 composer 相邻；
     运行、结束和失败节点分别使用运行语义色、常规低亮色和失败语义色，不复制颜色常量。
 13. 终端协议只产生带 modifier 的按键事件，不产生独立 Alt key-up。`Alt+方向键` 必须立即更新节点选择，但 TUI
     同时只能执行一笔 visible Session 切换；切换期间的新目标覆盖唯一待处理目标，当前切换完成后只处理最新目标。
     不得排队每次重复按键，也不得用全局键盘轮询或超时猜测模拟 key-up。
-14. 鼠标悬停会话节点只改变临时选择和详情展示，不触发 Session 观察；移出后恢复当前或键盘选择。左键点击 root
-    或 child 节点都通过与键盘相同的单飞切换入口打开目标 Session；child 选中时展示 Agent 名称和任务描述。
+14. 悬停节点可预览详情，移出后恢复当前或键盘选择。左键点击与键盘选择共用观察入口，浏览节点不调度执行。
+    旁问标签使用会话标题，子智能体标签展示 Agent 名称和任务描述。
 15. 安装 Session surface 时先重建 snapshot 内的未完成响应，再接入同一有界事件队列，继续使用原有按帧批量渲染。
     切换后旧订阅不得继续向新 surface 投递事件；安装被取消时必须关闭尚未接管的订阅。
-16. Run 结束标签由终态通知或补齐事实驱动的同一呈现逻辑生成，执行端的 `RunResult` 回调不单独追加标签。Host 通过 Application
+16. 显示运行轨迹的会话使用同一呈现逻辑从终态通知或补齐事实生成 Run 结束标签，执行端的 `RunResult` 回调只负责执行结果。旁问正文仅显示本会话的提问和公开答复。Host 通过 Application
     按 `(session_id, run_id)` 读取精确 Run 记录，用持久化起止时间计算耗时，并使用该 Run 的模型请求端点名称。
     标签按 Run 去重，在本次内容之后、下次 Run 内容之前插入；不得为结束标签重载整个 Session 历史。
 

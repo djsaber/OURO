@@ -166,6 +166,35 @@ def test_session_context_reports_latest_request_status_and_provider_content(
     assert "context_digest" not in content_payload
 
 
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+def test_session_removal_reconfirms_a_side_created_after_preview(tmp_path, monkeypatch, backend):
+    sessions = build_local_session_services(tmp_path, session_backend=backend).sessions
+    source = sessions.create().session.session_id
+    for index in range(4):
+        sessions.create_side_conversation(source, f"Question {index}")
+    original = set(sessions.trash_scope(source)[1])
+    prompts = []
+
+    def confirm(prompt):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            sessions.create_side_conversation(source, "New during confirmation")
+            return "y"
+        return "n"
+
+    monkeypatch.setattr("builtins.input", confirm)
+    assert (
+        main(["session", "remove", source, "--home", str(tmp_path), "--session-backend", backend])
+        == 0
+    )
+    assert len(prompts) == 2
+    updated = set(sessions.trash_scope(source)[1])
+    assert len(updated - original) == 1 and original < updated
+    assert all(identity in prompts[0] for identity in original)
+    assert all(identity not in prompts[0] for identity in updated - original)
+    assert all(identity in prompts[1] for identity in updated)
+
+
 def test_session_remove_with_force(tmp_path, capsys) -> None:
     run_code = main(["run", "--json", "--home", str(tmp_path), "hello"])
     run_payload = json.loads(capsys.readouterr().out)
