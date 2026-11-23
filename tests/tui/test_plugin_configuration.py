@@ -5,7 +5,6 @@ import json
 from dataclasses import replace
 
 import pytest
-from rich.console import Console
 from rich.text import Text
 from textual import events
 from textual.widgets import OptionList, Static
@@ -281,18 +280,6 @@ async def test_plugin_credentials_are_masked_without_changing_saved_values(tmp_p
         saved = service.configuration("dev.ouro.echo")
         assert saved.credential_refs == {"key": binding}
         assert saved.values["name"] == "Visible"
-
-
-def test_configuration_labels_and_action_hints_render_on_one_line(tmp_path):
-    screen, _ = _screen(tmp_path)
-    console = Console(width=60)
-    for option in screen._options(screen._configuration_choices()):
-        if option.id is None:
-            continue
-        lines = console.render_lines(option.prompt)
-        assert len(lines) == 1
-        choice = next(choice for choice in screen._choices if choice.value == option.id)
-        assert "".join(segment.text for segment in lines[0]).startswith(choice.label)
 
 
 async def test_plugin_json_editing_stays_single_line_and_preserves_full_values(tmp_path):

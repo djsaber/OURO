@@ -33,7 +33,7 @@ from tests.tui.helpers import (
     wait_until,
 )
 from tests.tui.helpers import wait_for_screen as _wait_for_screen
-from tests.tui.test_live_session_attachment import visible
+from tests.tui.test_live_session_attachment import visible, visible_text
 from tests.tui.test_tasks import choose, streaming_application
 
 
@@ -347,7 +347,7 @@ async def test_background_completion_preserves_destination_and_draft(
         assert app._projection is projection
         assert app.query_one(Composer).text == "Destination draft"
         assert not app.query_one(Composer).disabled
-        assert "Finished" not in app.export_screenshot()
+        assert "Finished in background." not in visible_text(app)
         assert not app.query_one(QueuedInputPanel).display
         assert usage_queries == (1 if destination == "welcome" else 0)
         await app._open_session(session_id)
@@ -555,7 +555,7 @@ async def test_three_running_sessions_keep_content_and_drafts_during_overlapping
         assert app._controller.session_id == sessions[0]
         assert app._projection.session_id == sessions[0]
         assert app.query_one(Composer).text == "Alpha draft"
-        assert "background end" not in app.export_screenshot()
+        assert "background end" not in visible_text(app)
         assert not workers[0].is_finished
         provider.finish("Alpha")
         await asyncio.gather(*(worker.wait() for worker in workers))

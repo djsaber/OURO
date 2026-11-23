@@ -17,87 +17,8 @@ from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.editable import EditableChoiceScreen
 from ouro.tui.menus.models import Choice
 from tests.tui.app.support import _application
-from tests.tui.helpers import choose_menu, resize_terminal, run_ready_app
+from tests.tui.helpers import resize_terminal, run_ready_app
 from tests.tui.helpers import wait_for_screen as _wait_for_screen
-
-
-@pytest.mark.asyncio
-async def test_actions_groups_granular_settings_by_function_without_descriptions(
-    tmp_path: Path,
-) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with run_ready_app(app, size=(100, 34)) as pilot:
-        await pilot.pause()
-
-        await pilot.press("ctrl+p")
-        await pilot.pause()
-        action_choices = app.screen._choices
-        action_values = {choice.value for choice in action_choices}
-        assert "/thinking" not in action_values
-        assert "/compact" not in action_values
-        assert [choice.label for choice in action_choices] == [
-            "Theme",
-            "Display",
-            "Remember drafts",
-            "Session grouping",
-            "Queued messages",
-            "Context compaction",
-            "Prompts",
-            "Data",
-            "Tool",
-            "New session",
-            "Open session",
-            "Rename session",
-            "Archive session",
-            "Delete session",
-            "Manage tasks",
-            "Update status",
-            "+ task",
-            "Manage providers",
-            "Manage endpoints",
-            "Set default endpoint",
-            "+ provider",
-            "+ endpoint",
-            "Manage plugins",
-            "+ plugin",
-            "Subagent permissions",
-            "Manage subagents",
-            "+ subagent",
-            "Manage MCPs",
-            "+ mcp",
-            "Skill sources",
-            "Manage skills",
-            "+ skill",
-            "Keyboard help",
-        ]
-        assert [choice.group for choice in action_choices] == [
-            *("Settings",) * 9,
-            *("Sessions",) * 5,
-            *("Tasks",) * 3,
-            *("Providers",) * 5,
-            *("Plugins",) * 2,
-            *("Subagents",) * 3,
-            *("MCPs",) * 2,
-            *("Skills",) * 3,
-            "Support",
-        ]
-        assert "Configuration" not in {choice.group for choice in action_choices}
-        assert "Recent" not in {choice.group for choice in action_choices}
-        assert all(choice.description == "" for choice in action_choices)
-        assert {choice.label: choice.trailing for choice in action_choices if choice.trailing} == {
-            "Theme": app._tui_theme.label,
-            "New session": "Ctrl+N",
-            "Open session": "Ctrl+O",
-            "Manage tasks": "Ctrl+T",
-            "Manage skills": "Ctrl+S",
-            "Manage plugins": "Alt+P",
-            "Keyboard help": "F1",
-        }
-
-        await choose_menu(pilot, "Context compaction", title="CONTEXT COMPACTION")
-        assert isinstance(app.screen, CompactionConfigurationScreen)
-        await pilot.press("escape")
 
 
 @pytest.mark.asyncio

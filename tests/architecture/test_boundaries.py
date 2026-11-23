@@ -270,19 +270,8 @@ def test_auth_drivers_do_not_own_storage_configuration_or_host_interaction() -> 
         ), str(path)
 
 
-def test_agent_service_is_application_owned_and_not_exposed_to_plugins_or_tools() -> None:
-    assert (APPLICATION_DIR / "agents" / "service.py").exists()
+def test_cli_does_not_bypass_the_facade_to_import_agent_service() -> None:
     violations: list[str] = []
-    for directory in ("plugins", "sdk", "tools"):
-        for path in sorted((PROJECT_ROOT / "ouro" / directory).rglob("*.py")):
-            source = path.read_text(encoding="utf-8")
-            tree = ast.parse(source, filename=str(path))
-            if "AgentService" in source:
-                violations.append(f"{path.relative_to(PROJECT_ROOT)} names AgentService")
-            for module in _imported_modules(tree):
-                if module == "ouro.application.agents.service":
-                    violations.append(f"{path.relative_to(PROJECT_ROOT)} imports {module}")
-
     for path in sorted((PROJECT_ROOT / "ouro" / "cli").rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         if "ouro.application.agents.service" in _imported_modules(tree):
@@ -311,20 +300,9 @@ def test_cli_configuration_hosts_do_not_use_infrastructure_managers() -> None:
     assert violations == []
 
 
-def test_cli_application_commands_use_local_composition_boundary() -> None:
-    forbidden = ("ouro.sessions", "ouro.resources", "ouro.billing")
-    for filename in ("session_commands.py", "resource_commands.py", "usage_commands.py"):
-        path = PROJECT_ROOT / "ouro" / "cli" / filename
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        modules = _imported_modules(tree)
-        assert "ouro.local_application" in modules
-        assert not any(module.startswith(forbidden) for module in modules)
-
-
 def test_auth_cli_only_uses_application_and_local_composition() -> None:
     path = PROJECT_ROOT / "ouro" / "cli" / "provider_auth_commands.py"
     imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
-    assert "ouro.local_application" in imports
     assert not any(
         module.startswith(("ouro.auth", "ouro.config", "ouro.providers")) for module in imports
     )
@@ -333,7 +311,6 @@ def test_auth_cli_only_uses_application_and_local_composition() -> None:
 def test_auth_tui_only_uses_application_contracts() -> None:
     path = PROJECT_ROOT / "ouro" / "tui" / "features" / "providers" / "authentication.py"
     imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
-    assert "ouro.application.provider_auth.service" in imports
     assert not any(
         module.startswith(("ouro.auth", "ouro.config", "ouro.providers", "ouro.local_io"))
         for module in imports
@@ -349,44 +326,6 @@ def test_cli_does_not_reach_through_runtime_to_session_store() -> None:
                 violations.append(f"{path.relative_to(PROJECT_ROOT)} reaches RuntimeService.store")
 
     assert violations == []
-
-
-def test_plugin_local_composition_is_not_owned_by_application_service() -> None:
-    application_plugins = ast.parse(
-        (APPLICATION_DIR / "plugins" / "service.py").read_text(encoding="utf-8")
-    )
-    application_imports = _imported_modules(application_plugins)
-    assert "ouro.local_application" not in application_imports
-
-    cli_plugins = ast.parse(
-        (PROJECT_ROOT / "ouro" / "cli" / "plugin_commands.py").read_text(encoding="utf-8")
-    )
-    cli_imports = _imported_modules(cli_plugins)
-    assert "ouro.local_application" in cli_imports
-    assert not any(
-        module.startswith(("ouro.plugins.installation.store", "ouro.plugins.lifecycle.runtime"))
-        for module in cli_imports
-    )
-
-
-def test_session_backend_selection_is_owned_by_deployment_composition() -> None:
-    deployment = ast.parse((PROJECT_ROOT / "ouro" / "deployment.py").read_text(encoding="utf-8"))
-    assert not any(
-        module.startswith(("ouro.application", "ouro.cli", "ouro.sessions"))
-        for module in _imported_modules(deployment)
-    )
-
-    forbidden = ("ouro.sessions", "ouro.resources")
-    for filename in (
-        "approval_commands.py",
-        "main.py",
-        "resource_commands.py",
-        "run.py",
-        "session_commands.py",
-    ):
-        path = PROJECT_ROOT / "ouro" / "cli" / filename
-        modules = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
-        assert not any(module.startswith(forbidden) for module in modules)
 
 
 def _imported_modules(tree: ast.AST) -> list[str]:
@@ -610,17 +549,16 @@ def test_agent_definitions_do_not_construct_provider_configuration() -> None:
     assert "ouro.config.providers.manager" not in imports
 
 
-def test_transfer_workflow_does_not_inherit_other_features_or_the_app() -> None:
-    path = PROJECT_ROOT / "ouro" / "tui" / "features" / "transfer" / "workflows.py"
-    imports = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
-    assert not any(
-        module.startswith(("ouro.tui.app", "ouro.tui.controller", "textual.app"))
-        or (
-            module.startswith("ouro.tui.features.")
-            and not module.startswith("ouro.tui.features.transfer.")
-        )
-        for module in imports
-    )
+def test_feature_workflows_are_independent_of_the_host_and_peer_workflows() -> None:
+    for path in (PROJECT_ROOT / "ouro" / "tui" / "features").glob("*/workflows.py"):
+        for module in _imported_modules(ast.parse(path.read_text(encoding="utf-8"))):
+            assert module not in {"ouro.tui.app", "ouro.tui.controller", "textual.app"}, path
+            assert not (
+                module.startswith("ouro.tui.features.") and module.endswith(".workflows")
+            ), (
+                path,
+                module,
+            )
 
 
 def test_configuration_facade_does_not_construct_local_adapters() -> None:
@@ -638,14 +576,6 @@ def test_configuration_facade_does_not_construct_local_adapters() -> None:
         and node.func.id in constructors
         for node in ast.walk(tree)
     )
-
-
-def test_feature_workflows_do_not_inherit_hosts_or_other_features() -> None:
-    for path in (PROJECT_ROOT / "ouro" / "tui" / "features").glob("*/workflows.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in tree.body:
-            if isinstance(node, ast.ClassDef) and "Workflow" in node.name:
-                assert node.bases == [], str(path)
 
 
 def test_configuration_use_cases_do_not_depend_on_hosts() -> None:

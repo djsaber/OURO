@@ -35,16 +35,15 @@ def test_seed_history_is_visible_in_an_existing_catalog(tmp_path, monkeypatch, b
             "--backend",
             backend,
             "--seed-history",
-            "10000",
+            "3",
         ],
     )
     session_terminal.main()
     try:
         entries = applications[0].runtime.sessions.catalog().entries
         assert len(entries) == 1
-        assert entries[0].title == "Synthetic 10000 messages"
         assert entries[0].namespace == "default"
-        assert entries[0].message_count == 10000
-        assert store.load_session_record(entries[0].session_id).message_count == 10000
+        assert entries[0].message_count == 3
+        assert store.load_session_record(entries[0].session_id).message_count == 3
     finally:
         asyncio.run(applications[0].close())

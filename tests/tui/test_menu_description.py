@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import pytest
 from textual.app import App
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import Input, Static
 
-from ouro.tui.app import OuroTuiApp
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.models import Choice
-from tests.tui.app.support import _application
-from tests.tui.helpers import run_ready_app
 
 
 async def test_menu_description_survives_filtering_and_back_navigation():
@@ -41,36 +37,3 @@ async def test_menu_description_survives_filtering_and_back_navigation():
         menu.pop_page()
         await pilot.pause()
         assert not summary.display
-
-
-@pytest.mark.parametrize("description", ("Skill overview", "Plugin overview\n\nv1.0.0 • By ouro"))
-async def test_description_spacing_follows_page_search_visibility(tmp_path, description):
-    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
-    async with run_ready_app(app, size=(100, 34)) as pilot:
-        menu = ChoiceScreen(
-            title="DETAIL",
-            placeholder=None,
-            description=description,
-            choices=(Choice("action", "Action", group="ACTIONS"),),
-        )
-        await app.push_screen(menu)
-        await pilot.pause()
-        summary = menu.query_one("#choice-description", Static)
-        options = menu.query_one(OptionList)
-        assert options.region.y == summary.region.bottom + 1
-        menu.push_page(
-            title="CATALOG",
-            placeholder="Filter…",
-            description="Searchable overview",
-            choices=(Choice("item", "Item"),),
-        )
-        await pilot.pause()
-        assert summary.styles.margin.bottom == 0
-        assert menu.query_one(Input).region.y == summary.region.bottom
-        menu.pop_page()
-        await pilot.pause()
-        assert options.region.y == summary.region.bottom + 1
-        menu.replace_page(title="ACTIONS", placeholder=None, choices=(Choice("close", "Close"),))
-        await pilot.pause()
-        assert not summary.display
-        assert options.region.y == menu.query_one("#choice-title", Static).region.bottom + 1

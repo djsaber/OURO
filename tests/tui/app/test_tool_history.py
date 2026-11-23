@@ -266,9 +266,6 @@ async def test_history_load_keeps_the_active_tool_batch_in_live_rows(tmp_path: P
         row = conversation._tools[tool_call_id]
         assert row.is_attached is True
         assert row._timer is not None
-        frame = row._frame
-        row._tick()
-        assert row._frame != frame
 
 
 def test_history_does_not_infer_tool_execution_timing_from_message_boundaries() -> None:

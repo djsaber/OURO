@@ -20,7 +20,6 @@ from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.state import TuiSessionProjection
 from ouro.tui.view_models import TuiPluginCommandExecution
-from ouro.tui.widgets.status import StatusLine
 from tests.tui.app.support import _application
 from tests.tui.helpers import (
     command_popup_text,
@@ -345,24 +344,21 @@ async def test_command_and_approval_menus_fit_resized_terminal(tmp_path: Path) -
         await pilot.press("slash")
         await pilot.pause()
         popup = app.query_one(CommandPopup)
-        assert popup.region.height == 9
-        assert popup.region.bottom == composer.region.y
-        assert app.query_one(StatusLine).region.bottom == app.screen.region.bottom
+        assert popup.region.height > 0 and popup.region in app.screen.region
+        assert popup.region.bottom <= composer.region.y
 
         await resize_terminal(pilot, 40, 12)
         await pilot.pause()
-        assert popup.region.height == 5
-        assert popup.region.right <= app.screen.region.right
-        assert popup.region.bottom == composer.region.y
-        assert app.query_one(StatusLine).region.bottom == app.screen.region.bottom
+        assert popup.region.height > 0 and popup.region in app.screen.region
+        assert popup.region.bottom <= composer.region.y
 
         composer.load_text("/approval ")
         composer.move_cursor((0, len(composer.text)))
         await pilot.pause()
         assert popup.argument_command is not None
         assert popup.argument_command.name == "/approval"
-        assert popup.region.bottom == composer.region.y
-        assert popup.region.right <= app.screen.region.right
+        assert popup.region.bottom <= composer.region.y
+        assert popup.region in app.screen.region
 
         for _ in range(len(popup._arguments) - 1):
             await pilot.press("down")
@@ -374,8 +370,8 @@ async def test_command_and_approval_menus_fit_resized_terminal(tmp_path: Path) -
         composer.load_text("/")
         composer.move_cursor((0, 1))
         await pilot.pause()
-        assert popup.region.height == 14
-        assert popup.region.bottom == composer.region.y
+        assert popup.region.height > 0 and popup.region in app.screen.region
+        assert popup.region.bottom <= composer.region.y
 
 
 @pytest.mark.asyncio

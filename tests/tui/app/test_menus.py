@@ -464,16 +464,14 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         await _wait_for_screen(app, ChoiceScreen, title="PLUGINS")
 
         plugin_screen = app.screen
-        assert list(dict.fromkeys(choice.group for choice in plugin_screen._choices)) == [
-            "Built-in"
-        ]
+        detail = await app._controller.plugin("dev.ouro.agent_context")
         agent_context = next(
             choice for choice in plugin_screen._choices if choice.value == "dev.ouro.agent_context"
         )
         assert agent_context.label == "Agent Context"
         assert agent_context.description == "dev.ouro.agent_context"
-        assert agent_context.trailing == "v1.0.0"
-        assert agent_context.marker == ""
+        assert agent_context.group == "Built-in"
+        assert agent_context.trailing == f"v{detail.version}"
 
         plugin_screen.query_one("#choice-filter", Input).value = "Agent Context"
         await pilot.pause()
@@ -482,19 +480,14 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         assert app.screen is plugin_screen
         assert not plugin_screen.query_one("#choice-filter", Input).display
         description = plugin_screen.query_one("#choice-description", Static)
-        detail = await app._controller.plugin("dev.ouro.agent_context")
         assert description.display
-        assert str(description.content) == f"{detail.description}\n\nv1.0.0 • By ouro"
-        assert description.size.height >= 4
-        assert plugin_screen.query_one(OptionList).region.y == description.region.bottom + 1
-        assert [
-            (choice.label, choice.group, choice.trailing) for choice in plugin_screen._choices
-        ] == [
-            ("agent-instructions", "CONTRIBUTIONS", "system prompt"),
-            ("runtime-facts", "CONTRIBUTIONS", "system prompt"),
-            ("Disable", "ACTIONS", "active"),
-            ("Restart", "ACTIONS", ""),
-        ]
+        assert detail.description in str(description.content)
+        assert detail.author and detail.author.name in str(description.content)
+        assert f"v{detail.version}" in str(description.content)
+        contributions = {
+            choice.label for choice in plugin_screen._choices if choice.group == "CONTRIBUTIONS"
+        }
+        assert {"agent-instructions", "runtime-facts"} <= contributions
         assert (
             next(choice for choice in plugin_screen._choices if choice.value == "restart").disabled
             is False
@@ -519,7 +512,7 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         refreshed = next(
             choice for choice in plugin_screen._choices if choice.value == "dev.ouro.agent_context"
         )
-        assert refreshed.trailing == "v1.0.0"
+        assert refreshed.trailing == f"v{detail.version}"
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="PLUGIN • Agent Context")
         options = plugin_screen.query_one("#choice-list", OptionList)

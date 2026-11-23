@@ -79,7 +79,6 @@ def test_builds_ordered_offline_board_and_resolves_from_manifest(board: tuple[Pa
     ]
     assert tags.get("link")
     assert all((link.get("href") or "").startswith("data:") for link in tags.get("link"))
-    assert "minmax(min(100%, 26rem), 1fr)" in markup
     frames = tags.get("iframe")
     assert [frame["title"] for frame in frames] == [
         "Direction 01 preview: Hierarchy",

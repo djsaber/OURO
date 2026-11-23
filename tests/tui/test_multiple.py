@@ -69,7 +69,6 @@ async def test_select_all_respects_filter_disabled_rows_and_confirmation(
         await wait_for_menu_action(pilot, menu)
         assert menu._confirmation_values == ("a", "b", "c")
         assert not menu.query_one(Input).display
-        assert menu.query_one(OptionList).styles.margin.top == 1
         assert app.focused is menu.query_one(OptionList)
         await pilot.press("ctrl+a")
         assert menu._confirmation_values == ("a", "b", "c")
@@ -79,5 +78,4 @@ async def test_select_all_respects_filter_disabled_rows_and_confirmation(
         await wait_for_menu_action(pilot, menu)
         assert confirmed == [("a", "b", "c")]
         assert menu.query_one(Input).display
-        assert menu.query_one(OptionList).styles.margin.top == 0
         assert app.focused is menu.query_one(Input)

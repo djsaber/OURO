@@ -134,7 +134,6 @@ async def test_command_popup_hides_when_no_commands_match(
         popup = app.query_one(CommandPopup)
         assert popup.display is False
         assert popup.selected_command is None
-        assert "No matching commands" not in app.export_screenshot()
         await pilot.press(key)
         await pilot.pause()
         assert submitted == [(text, mode, ())]

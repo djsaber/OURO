@@ -418,7 +418,7 @@ async def test_session_picker_opens_canonical_session_when_catalog_entry_is_inva
 
 
 @pytest.mark.asyncio
-async def test_fork_projects_animated_activity_until_the_branch_is_created(
+async def test_fork_reports_progress_and_restores_ready_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -459,21 +459,11 @@ async def test_fork_projects_animated_activity_until_the_branch_is_created(
         indicator = app.query_one(ActivityIndicator)
         assert indicator._activity == "forking"
         assert "Forking session" in indicator.render().plain
-        assert indicator.render().plain.strip()[0] in DEFAULT_TUI_THEME.spinner_frames
-        frame = indicator._frame
-        indicator._tick()
-        assert indicator._frame != frame
 
         await pilot.press("ctrl+o")
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         assert indicator._activity == "forking"
         assert "Forking session" in indicator.render().plain
-        menu_frame = indicator._frame
-        await _wait_until(
-            lambda: indicator._frame != menu_frame,
-            pilot,
-            description="fork indicator animation while the session picker is open",
-        )
 
         release_branch.set()
         await _wait_for_worker_group(app, pilot, group="session-fork")

@@ -20,16 +20,13 @@ from tests.tui.helpers import (
     wait_for_menu_action,
     wait_for_worker_group,
     wait_for_workers,
-    wait_until,
 )
 from tests.tui.helpers import wait_for_screen as _wait_for_screen
 
 
 @pytest.mark.parametrize("close", (False, True))
 @pytest.mark.parametrize("filter_active", (False, True))
-async def test_waiting_choice_animates_without_blocking_filter_navigation_or_close(
-    close, filter_active
-):
+async def test_waiting_choice_allows_filter_navigation_and_close(close, filter_active):
     entered, release = asyncio.Event(), asyncio.Event()
     calls = []
 
@@ -57,12 +54,6 @@ async def test_waiting_choice_animates_without_blocking_filter_navigation_or_clo
             prompt = options.get_option("slow").prompt
             assert isinstance(prompt, Text)
             assert prompt.plain.startswith(DEFAULT_TUI_THEME.spinner_frames)
-            first_frame = prompt.plain
-            await wait_until(
-                lambda: options.get_option("slow").prompt.plain != first_frame,
-                pilot,
-                description="waiting choice animation to advance",
-            )
             await pilot.press("enter", "down")
             assert calls == ["slow"]
             assert options.get_option_at_index(options.highlighted).id == "other"

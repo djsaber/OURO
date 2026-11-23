@@ -439,7 +439,7 @@ async def test_streaming_tool_row_mounts_after_its_name_and_updates_in_place_on_
         assert conversation.query_one(tui_widgets_tools.ToolActivityRow) is row
         assert row.tool.status == "streaming"
         assert row.tool.argument_stream_tail == '{"path":"out'
-        assert f"Write {DEFAULT_TUI_THEME.inline_separator_mark}" in str(row.render())
+        assert '{"path":"out' in str(row.render())
 
         await app._apply_runtime_events(
             (

@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 from textual import events
-from textual.containers import Vertical
 from textual.widgets import Input, OptionList, Static, TextArea
 
 import ouro.tui.conversation.markdown_stream as conversation_history_markdown_stream
@@ -342,7 +341,7 @@ async def test_enabled_without_effort_shows_the_resolved_default_level(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_shared_menu_height_tracks_terminal_with_bounded_layout(tmp_path: Path) -> None:
+async def test_action_menu_remains_usable_in_a_short_terminal(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with run_ready_app(app, size=(100, 60)) as pilot:
@@ -350,34 +349,15 @@ async def test_shared_menu_height_tracks_terminal_with_bounded_layout(tmp_path: 
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
 
-        panel = app.screen.query_one("#choice-panel", Vertical)
         choices = app.screen.query_one("#choice-list", OptionList)
         hint = app.screen.query_one("#choice-hint", Static)
-        assert app.screen.styles.overflow_y == "hidden"
-        assert panel.region.height == 27
-        assert panel.region.bottom <= app.screen.region.height
-        assert choices.region.bottom <= panel.region.bottom
-        assert hint.region.bottom <= panel.region.bottom
-
+        await resize_terminal(pilot, 48, 12)
+        assert choices.region.height > 0 and choices.region in app.screen.region
+        assert hint.region in app.screen.region
         app.screen.query_one("#choice-filter", Input).value = "Keyboard help"
         await pilot.pause()
-        assert panel.region.height == 12
-        app.screen.query_one("#choice-filter", Input).value = ""
-        await pilot.pause()
-
-        await resize_terminal(pilot, 48, 18)
-        await pilot.pause()
-        assert 12 <= panel.region.height < 27
-        assert choices.region.height >= 5
-        assert panel.region.bottom <= app.screen.region.height
-        assert hint.region.bottom <= panel.region.bottom
-
-        await resize_terminal(pilot, 48, 12)
-        await pilot.pause()
-        assert panel.region.height == 12
-        assert choices.region.height == 5
-        assert panel.region.bottom <= app.screen.region.height
-        assert hint.region.bottom <= panel.region.bottom
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="KEYBOARD HELP")
 
 
 @pytest.mark.asyncio

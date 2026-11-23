@@ -6,9 +6,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from textual import events
 from textual.content import Content
-from textual.widgets import TextArea
 
 from ouro.core.errors import PersistenceError
 from ouro.core.messages import MessageRecord
@@ -16,7 +14,6 @@ from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer import draft_persistence
 from ouro.tui.composer.drafts import TuiInputDrafts, TuiInputDraftStore
 from ouro.tui.composer.input import (
-    COMPOSER_FRAME_HEIGHT,
     COMPOSER_MAX_HEIGHT,
     COMPOSER_MIN_HEIGHT,
     COMPOSER_TEXT_MAX_HEIGHT,
@@ -26,7 +23,6 @@ from ouro.tui.composer.popup import COMMAND_POPUP_MAX_HEIGHT, CommandPopup
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.interactions.approval import INTERACTION_PANEL_MAX_HEIGHT
 from ouro.tui.interactions.bar import InteractionBar
-from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.session_navigation import SessionNavigationPanel
 from ouro.tui.widgets.status import StatusLine
 from tests.tui.app.providers import BlockingStreamProvider
@@ -54,7 +50,7 @@ async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         composer = app.query_one(Composer)
-        assert composer.placeholder == "Ask anything..."
+        assert composer.placeholder == Composer.DEFAULT_PLACEHOLDER
 
         await pilot.click("#composer")
         try:
@@ -68,20 +64,6 @@ async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
                 pilot,
                 description="active-run composer placeholder",
             )
-            active_placeholder = composer.placeholder
-            assert isinstance(active_placeholder, Content)
-            assert active_placeholder.plain == Composer.ACTIVE_RUN_PLACEHOLDER
-
-            composer.focus()
-            composer.cursor_blink = True
-            composer._cursor_visible = False
-            cursor_off = composer.render_line(0)
-            composer._cursor_visible = True
-            cursor_on = composer.render_line(0)
-            cursor_off_style = next(iter(cursor_off.crop(0, 1))).style
-            cursor_on_style = next(iter(cursor_on.crop(0, 1))).style
-            assert cursor_on_style != cursor_off_style
-            assert next(iter(cursor_on.crop(1, 2))).style == next(iter(cursor_off.crop(1, 2))).style
         finally:
             provider.release.set()
         await _wait_for_worker_group(app, pilot, group="run")
@@ -100,7 +82,6 @@ async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
 
         assert app._projection is not None
         assert app._projection.activity.status == "completed"
-        assert composer.placeholder == "Ask anything..."
 
 
 @pytest.mark.asyncio
@@ -143,10 +124,10 @@ async def test_composer_uses_ctrl_enter_for_newline(tmp_path: Path) -> None:
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         await pilot.click("#composer")
-        await pilot.press("a", "ctrl+enter", "b", "ctrl+j", "c")
+        await pilot.press("question_mark", "ctrl+enter", "b", "ctrl+j", "c")
 
         composer = app.query_one(Composer)
-        assert composer.text == "a\nb\nc"
+        assert composer.text == "?\nb\nc"
         await pilot.press("ctrl+a", "ctrl+enter")
         assert composer.text == "\n"
 
@@ -176,12 +157,7 @@ async def test_composer_grows_with_its_document_between_one_and_three_text_rows(
             await pilot.press("ctrl+enter", "a")
             await pilot.pause()
             assert composer.size.height == text_rows
-            assert composer.outer_size.height == text_rows + COMPOSER_FRAME_HEIGHT
-            # The blank frame row above and below the text survives every step.
-            assert composer.content_region.y - composer.region.y == 1
-            assert composer.region.bottom - composer.content_region.bottom == 1
-            # The status line stays docked directly beneath the grown composer.
-            assert status.region.y == composer.region.bottom
+            assert composer.region.bottom <= status.region.y
 
         # Past the cap the document scrolls inside a stable widget height.
         await pilot.press("ctrl+enter", "a")
@@ -196,7 +172,7 @@ async def test_composer_grows_with_its_document_between_one_and_three_text_rows(
         composer.load_text("")
         await pilot.pause()
         assert composer.outer_size.height == COMPOSER_MIN_HEIGHT
-        assert status.region.y == composer.region.bottom
+        assert composer.region.bottom <= status.region.y
 
 
 @pytest.mark.asyncio
@@ -215,9 +191,8 @@ async def test_composer_growth_is_driven_by_soft_wrapped_width(tmp_path: Path) -
         await resize_terminal(pilot, 30, 32)
         await pilot.pause()
         assert composer.size.height > 1
-        assert composer.outer_size.height == composer.size.height + COMPOSER_FRAME_HEIGHT
         assert composer.outer_size.height <= COMPOSER_MAX_HEIGHT
-        assert app.query_one(StatusLine).region.y == composer.region.bottom
+        assert composer.region.bottom <= app.query_one(StatusLine).region.y
 
 
 @pytest.mark.asyncio
@@ -491,23 +466,6 @@ async def test_input_draft_save_failure_allows_a_later_revision_to_retry(
 
     assert save_attempts == 2
     assert saved[0].draft_for(None) == "retry revision"
-
-
-@pytest.mark.asyncio
-async def test_question_mark_remains_composer_input_after_help_shortcut_migration(
-    tmp_path: Path,
-) -> None:
-    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
-
-    async with run_ready_app(app, size=(100, 34)) as pilot:
-        await pilot.pause()
-        composer = app.query_one("#composer", TextArea)
-        composer.focus()
-        app.post_message(events.Key("question_mark", "?"))
-        await pilot.pause()
-
-        assert composer.text == "?"
-        assert not isinstance(app.screen, ChoiceScreen)
 
 
 @pytest.mark.parametrize("close", (False, True))

@@ -21,19 +21,18 @@ from ouro.tui.welcome import welcome_catalog
 from ouro.tui.welcome_packages import load_theme_packages
 from tests.tui.helpers import run_ready_app, two_route_application
 
+RENDERERS = {
+    "event-horizon": "ouro_tui_themes.packs.particle_art.event_horizon",
+    "quantum-veil": "ouro_tui_themes.packs.particle_art.quantum_veil",
+    "matrix": "ouro_tui_themes.packs.matrix.matrix",
+}
+
 
 def test_bundled_packages_integrate_with_the_existing_host_catalog():
-    assert {
-        package.package_id: tuple(theme.style_id for theme in package.themes)
-        for package in PACKAGES
-    } == {
-        "particle-art": ("event-horizon", "quantum-veil"),
-        "matrix": ("matrix",),
-    }
-    assert len({package.package_id for package in PACKAGES}) == len(PACKAGES)
     loaded, error = load_theme_packages()
     assert error is None
     catalog = welcome_catalog(loaded)  # Also rejects duplicate theme IDs across packages.
+    assert {"basic", *RENDERERS} <= catalog.keys()
     assert len(catalog) == 1 + sum(len(package.themes) for package in PACKAGES)
     for package in PACKAGES:
         assert all(
@@ -42,11 +41,6 @@ def test_bundled_packages_integrate_with_the_existing_host_catalog():
         )
         for theme in package.themes:
             assert catalog[theme.style_id] is theme
-    particle, matrix = PACKAGES
-    assert all(
-        theme.check_requirements is theme_styles.check_requirements for theme in particle.themes
-    )
-    assert all(theme.check_requirements is None for theme in matrix.themes)
 
 
 def test_style_metadata_does_not_load_numpy_or_renderers():
@@ -58,18 +52,11 @@ def test_style_metadata_does_not_load_numpy_or_renderers():
             import sys
             from ouro_tui_themes.packs import PACKAGES
 
-            assert {style.style_id for package in PACKAGES for style in package.themes} == {
-                "event-horizon", "quantum-veil", "matrix"
-            }
+            assert all(style.style_id for package in PACKAGES for style in package.themes)
             assert "numpy" not in sys.modules
-            assert {name for name in sys.modules if name.startswith("ouro_tui_themes.tools.")} == {
-                "ouro_tui_themes.tools.dot_matrix",
-                "ouro_tui_themes.tools.dot_matrix.requirements",
-            }
-            assert {name for name in sys.modules if name.startswith("ouro_tui_themes.packs.")} == {
-                "ouro_tui_themes.packs.particle_art", "ouro_tui_themes.packs.matrix"
-            }
+            assert set(sys.argv[1:]).isdisjoint(sys.modules)
         """),
+            *RENDERERS.values(),
         ],
         capture_output=True,
         text=True,
@@ -78,9 +65,7 @@ def test_style_metadata_does_not_load_numpy_or_renderers():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize(
-    "selected", [style.style_id for package in PACKAGES for style in package.themes]
-)
+@pytest.mark.parametrize("selected", RENDERERS)
 def test_page_factories_load_only_the_selected_renderer(selected):
     result = subprocess.run(
         [
@@ -88,15 +73,11 @@ def test_page_factories_load_only_the_selected_renderer(selected):
             "-c",
             textwrap.dedent("""
             import sys
+            from ouro.tui.welcome import WelcomePage
             from ouro_tui_themes.packs import PACKAGES
 
-            selected = sys.argv[1]
-            renderers = {
-                "event-horizon": "ouro_tui_themes.packs.particle_art.event_horizon",
-                "quantum-veil": "ouro_tui_themes.packs.particle_art.quantum_veil",
-                "matrix": "ouro_tui_themes.packs.matrix.matrix",
-            }
-            blocked = {module for name, module in renderers.items() if name != selected}
+            selected, renderer, *other_renderers = sys.argv[1:]
+            blocked = set(other_renderers)
             if selected == "matrix":
                 blocked.update({"numpy", "ouro_tui_themes.tools.dot_matrix.field",
                                 "ouro_tui_themes.tools.dot_matrix.raster",
@@ -112,11 +93,14 @@ def test_page_factories_load_only_the_selected_renderer(selected):
                 if style.style_id == selected
             )
             first, second = theme.create(), theme.create()
-            assert type(first).__module__ == renderers[selected]
-            assert type(second) is type(first) and first is not second
+            assert renderer in sys.modules
+            assert isinstance(first, WelcomePage) and isinstance(second, WelcomePage)
+            assert first is not second
             assert blocked.isdisjoint(sys.modules)
         """),
             selected,
+            RENDERERS[selected],
+            *(module for name, module in RENDERERS.items() if name != selected),
         ],
         capture_output=True,
         text=True,

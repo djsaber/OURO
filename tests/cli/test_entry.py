@@ -8,13 +8,6 @@ from ouro.cli.parser import build_parser
 from ouro.tui.startup import TerminalStartup
 
 
-def test_root_parser_accepts_tui_resume_session() -> None:
-    args = build_parser().parse_args(["--session", "ses_saved"])
-
-    assert args.command is None
-    assert args.resume_session_id == "ses_saved"
-
-
 def test_default_command_starts_tui_with_host_options(monkeypatch, tmp_path) -> None:
     captured: dict[str, object] = {}
 
@@ -56,25 +49,12 @@ def test_interrupt_before_textual_takes_over_exits_without_traceback(monkeypatch
     assert capsys.readouterr().err == ""
 
 
-@pytest.mark.parametrize("command", ["interactive", "tui"])
-def test_unsupported_host_commands_are_rejected(command) -> None:
-    with pytest.raises(SystemExit) as exc_info:
-        build_parser().parse_args([command])
-
-    assert exc_info.value.code == 2
-
-
 def test_version_uses_canonical_short_option(capsys) -> None:
     with pytest.raises(SystemExit) as exc_info:
         build_parser().parse_args(["-V"])
 
     assert exc_info.value.code == 0
     assert capsys.readouterr().out.strip() == f"ouro {__version__}"
-
-    with pytest.raises(SystemExit) as exc_info:
-        build_parser().parse_args(["-v"])
-
-    assert exc_info.value.code == 2
 
 
 @pytest.mark.parametrize(

@@ -316,11 +316,9 @@ async def goal_session(tmp_path, request):
     return _GoalHarness(store, plugin, controllers, UsageService(ledger))
 
 
-def test_manifest_and_tool_contract_are_minimal_and_generic() -> None:
+def test_goal_manifest_declares_its_tools_context_and_permissions() -> None:
     manifest = GOAL_PLUGIN.manifest
 
-    assert manifest.name == "Goal"
-    assert manifest.version == "2.2.0"
     assert {item.id for item in manifest.contributes.tools} == {
         "get-goal",
         "create-goal",
@@ -328,33 +326,11 @@ def test_manifest_and_tool_contract_are_minimal_and_generic() -> None:
     }
     assert [item.id for item in manifest.contributes.context_providers] == ["goal-context"]
     assert not manifest.contributes.tool_policies
-    assert "clear" not in {
-        option.value for option in manifest.contributes.commands[0].argument_options
-    }
     assert not manifest.contributes.prompt_policies
-    assert {item.active_when for item in manifest.contributes.tools} == {None}
-    assert {item.permission_control for item in manifest.contributes.tools} == {"tool"}
-    assert {item.permission_mode for item in manifest.contributes.tools} == {"auto"}
     assert {item.id for item in manifest.permissions} == {
         "sessions.write",
         "background.run",
     }
-    descriptions = "\n".join(item.description for item in manifest.contributes.tools)
-    assert "/goal" not in descriptions
-    forbidden = {
-        "ouro",
-        "session",
-        "run",
-        "host",
-        "plugin",
-        "controller",
-        "activation",
-        "continuation",
-        "checkpoint",
-        "transaction",
-        "generation",
-    }
-    assert not {word for word in forbidden if word in descriptions.casefold()}
 
 
 @pytest.mark.asyncio

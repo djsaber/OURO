@@ -48,7 +48,7 @@ async def test_declared_contributions_and_default_capabilities(tmp_path):
     status = commands["status"].handler(sdk.CommandCall("status"))
     assert isinstance(status, sdk.CommandOutput)
     assert status.data == {
-        "version": "0.1.0",
+        "version": manifest["version"],
         "bundled_skill": "ui-workbench",
         "comparison_available": True,
         "capture_configured": False,

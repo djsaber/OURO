@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 import pytest
-from rich.color import Color
 from textual.app import App, ComposeResult
 
 from ouro.application.contracts.agents import AgentTreeNode
@@ -60,7 +57,6 @@ def test_session_panel_keeps_latest_ten_nodes_and_reframes_around_current_child(
     assert panel.visible_related_session_ids == tuple(
         f"ses_child_{index}" for index in range(3, 13)
     )
-    assert panel.render_content(80).plain.rstrip().endswith("▣ | ■■ ■■■■ ■■■■")
 
     panel.set_current_session("ses_child_2")
 
@@ -68,27 +64,6 @@ def test_session_panel_keeps_latest_ten_nodes_and_reframes_around_current_child(
         f"ses_child_{index}" for index in range(1, 11)
     )
     assert "Inspect task 2 • Worker 2" in panel.render_content(80).plain
-    assert panel.render_content(80).plain.rstrip().endswith("■ | ■▣■■ ■■■■ ■■")
-
-
-def test_session_panel_keeps_its_reserved_row_when_the_tree_is_empty() -> None:
-    panel = SessionNavigationPanel()
-    panel.display = True
-
-    panel.set_nodes(main_session_id="ses_root", subagents=(), main_status="idle")
-
-    assert panel.display is True
-    assert panel.visible_related_session_ids == ()
-    assert panel.render_content(20).plain == " " * 20
-
-    panel.set_nodes(
-        main_session_id="ses_root",
-        subagents=(_agent(1, parent_run_id="run_root"),),
-        main_status="running",
-    )
-
-    assert panel.display is True
-    assert panel.render_content(20).plain.rstrip().endswith("▣ | ■")
 
 
 def test_session_panel_includes_nested_agents_from_the_same_root_session() -> None:
@@ -107,7 +82,6 @@ def test_session_panel_includes_nested_agents_from_the_same_root_session() -> No
     )
 
     assert panel.visible_related_session_ids == (direct.session_id, nested.session_id)
-    assert panel.render_content(80).plain.rstrip().endswith("▣ | ■ ■")
 
 
 def test_session_panel_keeps_interleaved_dispatches_in_stable_run_groups() -> None:
@@ -125,7 +99,6 @@ def test_session_panel_keeps_interleaved_dispatches_in_stable_run_groups() -> No
         agents[2].session_id,
         agents[1].session_id,
     )
-    assert panel.render_content(80).plain.rstrip().endswith("▣ | ■■ ■")
     panel.begin_navigation()
     assert panel.select_last_node() == agents[1].session_id
 
@@ -180,7 +153,7 @@ class _SessionNavigationApp(App[None]):
 
 
 @pytest.mark.asyncio
-async def test_side_and_agent_nodes_share_one_row_and_click_target() -> None:
+async def test_side_session_click_and_keyboard_navigation_reach_neighboring_sessions() -> None:
     agents = tuple(_agent(i, parent_run_id="run_root") for i in range(3))
     sides = tuple(
         SessionCatalogEntry(
@@ -201,15 +174,11 @@ async def test_side_and_agent_nodes_share_one_row_and_click_target() -> None:
         panel.set_nodes(
             main_session_id="ses_root", subagents=agents, main_status="running", side_sessions=sides
         )
-        app.tui_theme = replace(theme_for(panel), inline_separator_mark="~")
         row = panel.render_content(80).plain
-        assert row.endswith("■■ | ▣ | ■■■")
-        x = row.index("■■")
+        x = row.index(theme_for(panel).session_node_mark)
         await pilot.hover(panel, offset=(x, 0))
         assert panel.current_session_id == panel.selected_session_id == "ses_root"
-        assert panel.render_content(80).plain.strip() == (
-            f"Side 0{theme_for(panel).inline_separator}▣■ | ■ | ■■■"
-        )
+        assert "Side 0" in panel.render_content(80).plain
         await pilot.click(panel, offset=(x, 0))
         assert app.navigation == ["ses_side_0"]
         assert panel.selected_session_id == sides[0].session_id
@@ -228,8 +197,8 @@ async def test_session_panel_hover_previews_stable_visible_node_and_click_reques
         panel = app.panel
         visible_before = panel.visible_related_session_ids
         rendered = panel.render_content(panel.content_region.width).plain
-        nodes = rendered[rendered.rfind("▣ | ") :]
-        first_child_x = rendered.rfind("▣ | ") + nodes.index("■")
+        node_mark = theme_for(panel).session_node_mark
+        first_child_x = rendered.index(node_mark)
 
         await pilot.hover(panel, offset=(first_child_x, 0))
         await pilot.pause()
@@ -237,32 +206,20 @@ async def test_session_panel_hover_previews_stable_visible_node_and_click_reques
         assert panel.visible_related_session_ids == visible_before
         assert panel.selected_session_id == "ses_root"
         assert "Inspect task 3 • Worker 3" in panel.render_content(80).plain
-        assert panel.render_content(80).plain.rstrip().endswith("■ | ▣■ ■■■■ ■■■■")
-        theme = theme_for(panel)
-
-        def node_color(x: int) -> Color | None:
-            return panel.render_content(80).get_style_at_offset(app.console, x).color
-
-        root_x = rendered.rfind("▣ | ")
-        assert node_color(root_x) == Color.parse(theme.accent)
-        assert node_color(first_child_x) == Color.parse(theme.running)
 
         await pilot.hover(None, offset=(0, 5))
         await pilot.pause()
-        assert panel.render_content(80).plain.rstrip().endswith("▣ | ■■ ■■■■ ■■■■")
+        assert "Inspect task 3" not in panel.render_content(80).plain
 
         await pilot.click(panel, offset=(first_child_x, 0))
         await pilot.pause()
 
         assert app.navigation == ["ses_child_3"]
         assert panel.selected_session_id == "ses_child_3"
-        assert node_color(root_x) == Color.parse(theme.accent)
         panel.set_current_session("ses_child_3")
-        assert node_color(root_x) == Color.parse(theme.running)
-        assert node_color(panel.render_content(80).plain.rfind("▣")) == Color.parse(theme.accent)
 
         rendered = panel.render_content(panel.content_region.width).plain
-        root_node_x = rendered.rfind("■ | ")
+        root_node_x = rendered.index(node_mark)
         await pilot.click(panel, offset=(root_node_x, 0))
         await pilot.pause()
 

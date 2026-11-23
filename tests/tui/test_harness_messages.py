@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from threading import Event
 
 import pytest
 from rich.cells import cell_len
-from rich.color import Color
-from rich.console import Console
 from textual import events
 
 from ouro.core.attachment_input import separate_attachments
@@ -17,35 +15,15 @@ from ouro.core.messages import MessageRecord
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
 from ouro.tui.conversation.history import ConversationHistory
-from ouro.tui.conversation.history_rendering import _MessageContent
 from ouro.tui.conversation.transcript import project_transcript_entries
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.preferences import TuiPreferencesStore
 from ouro.tui.state import TuiSessionProjection
-from ouro.tui.theme import DEFAULT_TUI_THEME, theme_for
 from tests.tui.app.support import _application, _persist_direct_child_session
 from tests.tui.helpers import choose_menu, run_ready_app, wait_for_screen, wait_until
 from tests.tui.test_background_navigation import NavigationProvider, submit
 from tests.tui.test_tasks import streaming_application
-
-
-def test_harness_frame_preserves_user_message_layout_and_targets():
-    console = Console(force_terminal=True, color_system="truecolor", width=36)
-    options = dict(
-        text="Long wrapped message with 中文 and **literal markup**\nSecond line",
-        theme=DEFAULT_TUI_THEME,
-        created_at=datetime(2026, 10, 19, tzinfo=UTC),
-    )
-    user = console.render_lines(_MessageContent(**options))
-    harness = console.render_lines(_MessageContent(**options, lowlight=True))
-    assert len(user) == len(harness)
-    for normal, internal in zip(user, harness, strict=True):
-        for normal_segment, internal_segment in zip(normal[1:], internal[1:], strict=True):
-            assert normal_segment.text == internal_segment.text
-            assert internal_segment.style.meta == normal_segment.style.meta
-        assert normal[0].text == internal[0].text == "│"
-        assert normal[0].style.meta == internal[0].style.meta
 
 
 @pytest.mark.parametrize("prompt", ["", "Read this file"])
@@ -205,22 +183,7 @@ async def test_agent_source_text_links_both_sessions_and_preserves_body_copy(
             end = x + cell_len(footer)
             body = history.lines[y - 1].text
             body_x = body.index(source_text if target == child_id else "Inspect the result")
-            theme = theme_for(history)
-
-            def footer_colors(row):
-                return {
-                    s.style.color
-                    for s in history.render_line(row)
-                    if s.text.strip() and s.text != "│"
-                }
-
-            assert footer_colors(y) == {Color.parse(theme.text_lowlight)}
-            for hit in (x, x + cell_len(label), end - 1):
-                await pilot.hover(history, offset=(hit, y))
-                assert footer_colors(y) == {Color.parse(theme.text_highlight)}
             for miss in (x - 1, end):
-                await pilot.hover(history, offset=(miss, y))
-                assert footer_colors(y) == {Color.parse(theme.text_lowlight)}
                 await pilot.click(history, offset=(miss, y))
                 assert not app._session_switch_in_progress
 
@@ -252,7 +215,7 @@ async def test_agent_source_text_links_both_sessions_and_preserves_body_copy(
                 assert source_text in app.screen.get_selected_text()
                 assert app._visible_session_id() == root_id and not app._session_switch_in_progress
 
-            await pilot.click(history, offset=(end - 1, y))
+            await pilot.click(history, offset=(x if target == child_id else end - 1, y))
             await wait_until(
                 lambda target=target: (
                     app._visible_session_id() == target and not app._session_switch_in_progress

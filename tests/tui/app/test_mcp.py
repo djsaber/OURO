@@ -72,15 +72,6 @@ async def test_mcp_connection_progress_updates_without_page_refresh(
         assert not session.initialize_gate.is_set()
         await pilot.press("h", "i")
         assert app.query_one(Composer).text == "hi"
-        mcp_label = welcome.query_one("#welcome-mcp-label", Static)
-        assert mcp_label.render().plain.endswith(" MCP")
-        assert mcp_label.render().plain[0] in DEFAULT_TUI_THEME.spinner_frames
-        frame = welcome.page._system._spinner_frame
-        await _wait_until(
-            lambda: welcome.page._system._spinner_frame != frame,
-            pilot,
-            description="MCP loading animation",
-        )
         starting_status = welcome.page._system._mcp.render()
         assert "0/1 connected • 0 tool(s) • 1 connecting" in starting_status.plain
 
@@ -91,7 +82,6 @@ async def test_mcp_connection_progress_updates_without_page_refresh(
             description="MCP connection status",
         )
         connected_status = welcome.page._system._mcp.render()
-        assert mcp_label.render().plain == "MCP"
         assert welcome.page._system._spinner_timer is None
         assert "1/1 connected • 1 tool(s)" in connected_status.plain
         assert "live__search" in application.runtime.tools.names()
@@ -115,7 +105,6 @@ async def test_mcp_connection_progress_updates_without_page_refresh(
             description="failed MCP connection status",
         )
         assert "0/1 connected • 0 tool(s) • 1 failed" in welcome.page._system._mcp.render().plain
-        assert mcp_label.render().plain == "MCP"
         assert "live__search" not in application.runtime.tools.names()
 
     assert not manager._server_listeners

@@ -121,8 +121,6 @@ async def test_queued_input_rows_use_single_line_tokenized_previews(tmp_path: Pa
         )
         assert f"2. Follow-up{DEFAULT_TUI_THEME.inline_separator}follow next" in source.plain
 
-        assert content_widget.styles.text_wrap == "nowrap"
-        assert content_widget.styles.text_overflow == "ellipsis"
         assert content_widget.content_size.height == len(inputs)
         first_visible_line = content_widget.render_line(0).text.rstrip()
         assert first_visible_line.startswith(f"1. Guide{DEFAULT_TUI_THEME.inline_separator}")

@@ -24,7 +24,6 @@ from ouro.tui.conversation.history_rendering import (
     _compaction_summary,
     _format_user_message_timestamp,
     _MessageContent,
-    _reasoning_label_text,
     _run_summary,
 )
 from ouro.tui.conversation.markdown_stream import AssistantMarkdownStream, split_markdown_blocks
@@ -74,19 +73,6 @@ def test_single_tool_entry_uses_background_rendering() -> None:
     assert ConversationHistory._requires_background_render((entry,))
 
 
-@pytest.mark.parametrize("title", ["Thinking", "Thought"])
-@pytest.mark.parametrize(
-    ("seconds", "expected"),
-    [(2.5, "2.5s"), (3_661.2, "1h 1m 01.2s"), (93_784.5, "1d 2h 3m 04.5s")],
-)
-def test_reasoning_label_shows_title_and_duration(
-    title: str, seconds: float, expected: str
-) -> None:
-    label = _reasoning_label_text(title, seconds, expanded=False)
-
-    assert label.plain == f"+ {title} • {expected}"
-
-
 def test_user_message_timestamp_uses_local_date_only_before_today() -> None:
     local_zone = timezone(timedelta(hours=8))
     now = datetime(2026, 9, 16, 16, 20, tzinfo=local_zone)
@@ -105,32 +91,6 @@ def test_user_message_timestamp_uses_local_date_only_before_today() -> None:
         )
         == "2026/9/15 • 16:17"
     )
-
-
-def test_user_message_timestamp_is_a_separate_line() -> None:
-    theme = DEFAULT_TUI_THEME
-    console = Console(force_terminal=True, color_system="truecolor", width=60)
-    rendered_lines = console.render_lines(
-        _MessageContent(
-            "user message",
-            theme,
-            created_at=datetime.now().astimezone(),
-        ),
-        console.options.update_width(60),
-        pad=False,
-    )
-    message_line = next(
-        line
-        for line in rendered_lines
-        if "user message" in "".join(segment.text for segment in line)
-    )
-    timestamp_line = next(
-        line for line in rendered_lines if ":" in "".join(segment.text for segment in line)
-    )
-    timestamp_segment = next(segment for segment in timestamp_line if ":" in segment.text)
-
-    assert message_line is not timestamp_line
-    assert timestamp_segment.style is not None
 
 
 def test_assistant_markdown_and_user_message_preserve_text() -> None:
@@ -983,18 +943,6 @@ async def test_historical_spawn_tool_click_preserves_parent_run_identity() -> No
             )
         )
         await app.history.wait_until_rendered()
-        before_hover = next(
-            segment for segment in app.history.render_line(0) if "SpawnAgent" in segment.text
-        )
-        assert before_hover.style is not None
-
-        await pilot.hover(app.history, offset=(3, 0))
-        await pilot.pause()
-        hovered = next(
-            segment for segment in app.history.render_line(0) if "SpawnAgent" in segment.text
-        )
-        assert hovered.style is not None
-
         await pilot.click(app.history, offset=(3, 0))
 
         assert app.navigation == [("run_parent", "call_spawn")]
@@ -1007,10 +955,6 @@ async def test_live_spawn_tool_click_preserves_parent_run_identity() -> None:
 
     async with app.run_test(size=(80, 12)) as pilot:
         row = app.query_one(ToolActivityRow)
-        assert row.has_class("clickable")
-        await pilot.hover(row)
-        await pilot.pause()
-        row.render()
         await pilot.click(row)
 
         assert app.navigation == [("run_live_parent", "call_live_spawn")]

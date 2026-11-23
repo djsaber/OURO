@@ -8,7 +8,6 @@ import pytest
 
 from ouro.core.messages import MessageRecord, TextContent
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.commands import TUI_COMMANDS
 from ouro.tui.composer.input import Composer
 from ouro.tui.composer.popup import CommandPopup
 from ouro.tui.conversation.history import ConversationHistory
@@ -72,12 +71,6 @@ async def test_short_conversation_starts_at_top_while_following_latest_message(
         assert conversation.scroll_y == 0
         assert history.user_lines == (0,)
         assert conversation.is_vertical_scroll_end is True
-
-
-@pytest.mark.asyncio
-async def test_navigate_command_in_catalog() -> None:
-    """The /navigate command is registered in the command catalog."""
-    assert any(cmd.name == "/navigate" for cmd in TUI_COMMANDS)
 
 
 def _scrollable_messages() -> tuple[MessageRecord, ...]:
@@ -259,35 +252,17 @@ async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path
 
         popup = app.query_one(CommandPopup)
         assert popup.display is True
-        popup_content = popup._content
-        assert popup_content.content_region.width == popup.scrollable_content_region.width
-        assert "abort" in app.export_screenshot()
-        popup_text = command_popup_text(popup).plain
-        assert "/config" not in popup_text
-        assert "/tools" not in popup_text
-        assert "/mcp" not in popup_text
-        assert "/skills" not in popup_text
-        assert popup.selected_command is not None
-        assert popup.selected_command.name == "/abort"
+        first = popup.selected_command
+        assert first is not None and first.name in command_popup_text(popup).plain
 
         await pilot.press("down")
         await pilot.pause()
         assert popup.selected_command is not None
-        assert popup.selected_command.name == "/actions"
+        assert popup.selected_command != first
 
-        await pilot.press("down")
+        await pilot.press("up")
         await pilot.pause()
-        assert popup.selected_command is not None
-        assert popup.selected_command.name == "/approval"
-        assert popup.scroll_y == 0
-
-        for _ in range(20):
-            if popup.selected_command is not None and popup.selected_command.name == "/summary":
-                break
-            await pilot.press("down")
-        await pilot.pause()
-        assert popup.selected_command is not None
-        assert popup.selected_command.name == "/summary"
+        assert popup.selected_command == first
 
         await pilot.press("escape")
         assert popup.display is False

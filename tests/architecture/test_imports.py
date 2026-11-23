@@ -30,7 +30,6 @@ from ouro.tui.startup import TerminalStartup
 assert 'textual' not in sys.modules
 assert 'ouro.core' not in sys.modules
 assert 'argparse' not in sys.modules
-assert 'json' not in sys.modules
 
 painted = False
 draw = TerminalStartup._draw

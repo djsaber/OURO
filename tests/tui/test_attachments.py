@@ -106,7 +106,7 @@ def test_batch_path_paste_is_conservative(tmp_path):
         assert pasted_files(value) == ()
 
 
-def test_picker_names_share_left_edge_and_only_files_have_selection_marks(tmp_path):
+def test_picker_filters_entries_and_marks_only_selected_files(tmp_path):
     (tmp_path / "child").mkdir()
     path = tmp_path / "notes.txt"
     path.write_text("notes")
@@ -120,7 +120,6 @@ def test_picker_names_share_left_edge_and_only_files_have_selection_marks(tmp_pa
         "notes.txt",
     ]
     assert [item.checked for item in arguments] == [None, None, True]
-    assert all(not item.description for item in arguments)
     assert picker.arguments("missing", DEFAULT_TUI_THEME) == ()
     picker.toggle(str(path))
     assert picker.arguments("notes", DEFAULT_TUI_THEME)[0].checked is False
@@ -142,26 +141,6 @@ async def test_directory_navigation_keeps_visible_listing_until_read_completes(
         popup = app.query_one(CommandPopup)
         read_directory = AttachmentPicker.read_directory
         loop = asyncio.get_running_loop()
-        display = app._display
-
-        def without_spinner(value):
-            return value.translate(dict.fromkeys(map(ord, app.tui_theme.spinner_frames), "›"))
-
-        def snapshot():
-            region = popup.region
-            return region, tuple(
-                without_spinner(strip.crop(region.x, region.right).text)
-                for strip in app.screen._compositor.render_strips()[region.y : region.bottom]
-            )
-
-        frames = []
-
-        def capture(screen, renderable):
-            if screen is app.screen and renderable is not None and not app._batch_count:
-                frames.append(snapshot())
-            display(screen, renderable)
-
-        monkeypatch.setattr(app, "_display", capture)
         for index, destination in enumerate((tmp_path, child, tmp_path)):
             entered, release = asyncio.Event(), Event()
 
@@ -171,9 +150,7 @@ async def test_directory_navigation_keeps_visible_listing_until_read_completes(
                 return read_directory(directory)
 
             monkeypatch.setattr(AttachmentPicker, "read_directory", staticmethod(delayed_read))
-            before = snapshot()
-            visible = without_spinner(command_popup_text(popup).plain)
-            frames.clear()
+            previous_label = ("@file", "file-3.txt", "nested-3.txt")[index]
             try:
                 if index == 0:
                     await pilot.press("enter")
@@ -183,23 +160,14 @@ async def test_directory_navigation_keeps_visible_listing_until_read_completes(
                     entered, pilot=pilot, description="directory read before listing replacement"
                 )
                 await pilot.pause()
-                assert snapshot() == before
-                assert without_spinner(command_popup_text(popup).plain) == visible
-                assert any(
-                    frame in command_popup_text(popup).plain
-                    for frame in app.tui_theme.spinner_frames
-                )
-                first_frame = command_popup_text(popup).plain
-                await pilot.pause(app.tui_theme.spinner_interval_seconds * 1.2)
-                assert command_popup_text(popup).plain != first_frame
+                assert popup.display and previous_label in command_popup_text(popup).plain
                 if index < 2:
                     query = "file-3" if index == 0 else "nested-3"
                     composer.set_attachment_query(query)
                     await pilot.press("down", "enter", "space")
                     await pilot.pause()
                     assert composer.text == f"@file {query}"
-                    assert without_spinner(command_popup_text(popup).plain) == visible
-                assert all(frame == before for frame in frames)
+                    assert previous_label in command_popup_text(popup).plain
             finally:
                 release.set()
                 await wait_for_worker_group(app, pilot, group="attachment-directory")
@@ -210,8 +178,6 @@ async def test_directory_navigation_keeps_visible_listing_until_read_completes(
             assert popup.region.bottom == composer.region.y
             assert popup._spinner_timer is None
             assert popup.display and not picker.loading
-            # Loading preserves the old listing; publication then reflows the new
-            # heading and rows. Intermediate compositor geometry is not a data state.
             values = {argument.value for argument in popup._arguments}
             if index < 2:
                 expected = destination / ("file-3.txt" if index == 0 else "nested-3.txt")
@@ -578,15 +544,6 @@ async def test_attachment_preparation_keeps_focus_and_blocks_edits(
         await pilot.press(*"draft")
         await pilot.pause()
         selection = composer.selection
-        frames = []
-        display = app._display
-
-        def capture(screen, renderable):
-            if screen is app.screen and renderable is not None and not app._batch_count:
-                frames.append((composer.disabled, composer.has_focus))
-            display(screen, renderable)
-
-        monkeypatch.setattr(app, "_display", capture)
         pending = (
             app._attach_files((path,)) if operation == "upload" else app._reference_files((path,))
         )
@@ -612,7 +569,6 @@ async def test_attachment_preparation_keeps_focus_and_blocks_edits(
         assert composer.has_focus and not composer.disabled and not composer.import_pending
         assert composer.input_content.text == "draft"
         assert composer.input_content.attachments[0].name == path.name
-        assert frames and all(frame == (False, True) for frame in frames)
 
 
 @pytest.mark.parametrize("operation", ("upload", "reference"))

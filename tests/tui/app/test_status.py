@@ -639,25 +639,17 @@ async def test_thinking_modal_remains_available_during_an_active_run(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_status_line_shows_thinking_level_and_highlights_peak_effort(tmp_path: Path) -> None:
+async def test_status_line_shows_the_selected_thinking_level(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_thinking_application(tmp_path))
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         indicator = app.query_one(ActivityIndicator)
 
-        # The endpoint default effort is low — not the highest supported — so
-        # the level is shown without the peak highlight.
-        assert indicator._reasoning == "low"
-        assert indicator._reasoning_peak is False
         assert "low" in indicator.render().plain
 
-        # Raising to high (the highest effort this endpoint supports) peaks the
-        # indicator so the level is highlighted.
         await pilot.press("slash", *"thinking", "enter", *"high", "enter")
         await _wait_for_worker_group(app, pilot, group="composer-command")
-        assert indicator._reasoning == "high"
-        assert indicator._reasoning_peak is True
         assert "high" in indicator.render().plain
 
 

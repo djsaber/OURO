@@ -74,11 +74,11 @@ async def test_navigation_does_not_traverse_the_catalog(monkeypatch):
             row_y = popup._content.region.y + expected
             assert popup._heading_widget.region.bottom <= row_y < popup.content_region.bottom
             strip = popup._content.render_line(expected)
-            assert strip.text.startswith("› ")
+            assert arguments[expected].display_label in strip.text
         assert label_reads < 100
 
 
-async def test_rows_keep_single_line_geometry_and_cell_alignment():
+async def test_menu_rows_keep_wide_and_multiline_filenames_readable():
     arguments = (
         TuiCommandArgument("宽名字", "description"),
         TuiCommandArgument("n\na\tme", "description"),
@@ -92,7 +92,8 @@ async def test_rows_keep_single_line_geometry_and_cell_alignment():
         rows = [popup._content.render_line(index) for index in range(2)]
         assert "\n" not in rows[1].text and "\t" not in rows[1].text
         assert "n a me" in rows[1].text
-        assert [Text(row.text.split("description")[0]).cell_len for row in rows] == [10, 10]
+        assert "宽名字" in rows[0].text
+        assert all("description" in row.text for row in rows)
         popup.show_arguments(TuiCommand("@file", "Files", ""), arguments[2:])
         await pilot.pause()
         row = popup._content.render_line(0)

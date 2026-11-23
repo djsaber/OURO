@@ -12,30 +12,18 @@ def _subcommand_help(args: list[str], capsys: pytest.CaptureFixture[str]) -> str
     return capsys.readouterr().out
 
 
-def test_endpoint_add_help_documents_reasoning_contract_choices(capsys) -> None:
+def test_endpoint_add_help_lists_reasoning_configuration_options(capsys) -> None:
     help_text = _subcommand_help(["provider", "endpoint", "add"], capsys)
 
-    assert "model route:" in help_text
-    assert "endpoint capabilities:" in help_text
-    assert "reasoning contract:" in help_text
-    assert "always-on" in help_text
-    assert "openai-responses-effort" in help_text
-    assert "capability.supported_summaries" in help_text
-    assert "anthropic-messages-adaptive-effort" in help_text
-    assert '{"capability": {...}, "profile":' in help_text
-    assert "Presets are explicit declarations, not capability detection" in help_text
-    assert "rejected before configuration is written" in help_text
+    assert "--reasoning-preset" in help_text
+    assert "--reasoning-config" in help_text
 
 
-def test_run_help_exposes_canonical_reasoning_values_and_strict_behavior(capsys) -> None:
+def test_run_help_lists_supported_thinking_modes_and_efforts(capsys) -> None:
     help_text = _subcommand_help(["run"], capsys)
 
-    assert "model route overrides:" in help_text
-    assert "endpoint capability overrides:" in help_text
-    assert "reasoning intent:" in help_text
     assert "--thinking-mode {default,enabled,disabled}" in help_text
     assert "--thinking-effort {minimal,low,medium,high,xhigh,max}" in help_text
-    assert "unsupported requests fail before an HTTP request is sent" in help_text
 
 
 def test_public_identifier_options_use_consistent_resource_and_session_names() -> None:

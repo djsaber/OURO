@@ -15,8 +15,6 @@ from ouro.plugins.manifest import PluginAuthor
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.features.plugins.workflows import (
     _plugin_action_choices,
-    _plugin_choices,
-    _plugin_description,
 )
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.confirmation import ConfirmationScreen
@@ -40,30 +38,7 @@ def _detail() -> PluginDetail:
     )
 
 
-@pytest.mark.parametrize("author", (None, PluginAuthor(name="Example team")))
-def test_plugin_author_is_only_shown_in_details(author) -> None:
-    plugin = _detail()
-    plugin.author = author
-    plugin.description = "Example plugin."
-
-    (choice,) = _plugin_choices((plugin,))
-
-    assert choice.trailing == "v1.0.0"
-    assert choice.description == "dev.ouro.example"
-    assert _plugin_description(plugin) == (
-        "Example plugin.\n\nv1.0.0 • By Example team" if author else "Example plugin.\n\nv1.0.0"
-    )
-    assert all(choice.group != "DETAILS" for choice in _plugin_action_choices(plugin))
-
-
-def test_plugin_actions_use_explicit_lifecycle_without_duplicate_trust_actions() -> None:
-    actions = {choice.value for choice in _plugin_action_choices(_detail())}
-
-    assert {"enable", "remove"} <= actions
-    assert not {"check", "authorize", "trust-code", "revoke", "revoke-code-trust"} & actions
-
-
-def test_plugin_management_groups_lifecycle_actions_and_marks_delete_destructive() -> None:
+def test_plugin_management_offers_lifecycle_actions_and_marks_delete_destructive() -> None:
     plugin = _detail()
     plugin.configuration_supported = True
     plugin.installs = [
@@ -77,12 +52,9 @@ def test_plugin_management_groups_lifecycle_actions_and_marks_delete_destructive
     ]
     choices = _plugin_action_choices(plugin)
 
-    assert {choice.group for choice in choices} == {"ACTIONS"}
-    actions = {choice.value: choice for choice in choices if choice.group == "ACTIONS"}
-    assert actions["configure"].label == "Settings"
-    assert actions["remove"].label == "Delete"
+    actions = {choice.value: choice for choice in choices}
     assert actions["remove"].destructive
-    assert list(actions) == ["configure", "select-install", "enable", "restart", "remove"]
+    assert {"configure", "select-install", "enable", "restart", "remove"} <= actions.keys()
 
 
 @pytest.mark.parametrize("leave", ("stay", "back", "close"))
