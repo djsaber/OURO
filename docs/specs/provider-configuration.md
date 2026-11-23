@@ -489,14 +489,16 @@ usage/error 与 SSE event 映射。适配器保存完整、有序的 assistant c
 续接 envelope 必须包含完整 content 数组，工具调用身份及参数必须与 canonical 工具记录一致。
 协议差异留在各自 codec/adapter 中。
 
-Endpoint 声明 structured output 能力后才接受结构化 `response_format`。共享请求重试只对明确可重试的
-timeout/HTTP 状态执行有界退避；一旦已经收到模型输出，就不再重放请求。每次重试形成可持久化
-的 `run_retry_scheduled` 事件。
+Endpoint 声明 structured output 能力后才接受结构化 `response_format`。
 
 ### 请求等待、错误与资源生命周期
 
+三种内建 HTTP 模型协议在每次尝试时按目标 URL 读取环境或系统的代理设置。命中绕过规则或没有适用代理时直连。
+其余目标首选对应协议的代理，未指定时使用通用代理。网络传输失败或等待超时后，同一目标的下一次尝试在代理和直连之间切换。
+同一源（协议、主机、端口）的后续请求沿用所选路径，有效代理设置变化时重新选择。HTTP 状态由服务错误策略处理。
+共享传输按实际使用的代理地址或直连复用连接池。调用方注入的 HTTP client 自行决定路由。
+
 `Provider.timeout_seconds`（默认 60 秒）是等待响应进展的预算，必须为正有限数。
-三种 HTTP 协议统一由 `HttpxProviderHTTPTransport` 执行，协议 adapter 不持有总生成时限：
 
 - SSE 每次等待下一条完整 JSON 事件时启动新预算；首次等待包括连接、发送请求和响应头。
   文本、工具参数、思考、生命周期与扩展事件均属于响应进展，不依赖该事件是否产生可见输出。
@@ -509,15 +511,14 @@ timeout/HTTP 状态执行有界退避；一旦已经收到模型输出，就不�
   已知网络异常按实际异常类型保留连接、读取、写入、连接池等错误码；这些安全诊断与认证方式、
   协议或模型名无关。HTTP、认证和协议内容错误各自保留所属边界的分类，未知敏感响应仍须脱敏。
 
-`stream_with_retries` 统一拥有模型尝试预算和退避，认证恢复最多一次且共享该预算。
-只允许在模型输出之前重试；隐藏的思考输出也会禁止重放，展示过滤发生在该判断之后。
+`stream_with_retries` 统一管理尝试次数和退避。每次尝试至多发送一次模型 POST，换路和最多一次认证恢复都计入同一预算。
+每次安排重试时产生可持久化的 `run_retry_scheduled` 事件。重试限于模型输出前，隐藏的思考也计为输出。
 流式工具参数是尚未获执行许可的增量；失败不会补造成功完成事件，也不会执行部分工具调用。
 超时、取消、协议提前结束和显式关闭均逐层关闭当前流，借用的 HTTP client 与认证服务保持可用。
 替换 HTTP transport 的实现必须遵守同一等待和关闭契约；协议 adapter 不补设另一套计时器。
 
-跨协议验证见 `tests/providers/test_model_request_timeout.py` 与
-`tests/providers/test_transport_diagnostics.py`；完整工具执行边界见
-`tests/application/test_responses_runtime.py`。
+网络选路、等待与错误分类分别见 `tests/providers/test_network_routes.py`、`tests/providers/test_model_request_timeout.py`
+与 `tests/providers/test_transport_diagnostics.py`。完整工具执行边界见 `tests/application/test_responses_runtime.py`。
 
 ## 配置分区
 

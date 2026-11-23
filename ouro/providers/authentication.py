@@ -102,8 +102,7 @@ def _safe_transport_failure(error: ProviderTransportError) -> tuple[str, str] | 
         return "provider_response_timeout", (
             f"Model response timed out after {error.timeout_seconds:g} seconds of inactivity."
         )
-    # The transport chains the actual httpx failure, including the final route
-    # after fallback. Expose only known class names, never messages or URLs.
+    # Expose the HTTPX exception type for this attempt. Its text may contain private URLs.
     if error.status_code is None:
         for exception_type, code, message in _SAFE_NETWORK_ERRORS:
             if isinstance(error.__cause__, exception_type):

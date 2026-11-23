@@ -86,7 +86,7 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
     original_client = httpx.AsyncClient
 
     def client_factory(**kwargs):
-        kwargs.setdefault("transport", httpx.MockTransport(respond))
+        kwargs["transport"] = httpx.MockTransport(respond)
         client = original_client(**kwargs)
         clients.append(client)
         return client

@@ -3,21 +3,24 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-from collections.abc import AsyncGenerator, Mapping
-from contextlib import aclosing
+from collections.abc import AsyncGenerator, Iterator, Mapping
+from contextlib import aclosing, contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
-from urllib.request import getproxies
+from urllib.request import getproxies, proxy_bypass
 
 import httpx
 
 _RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
-_HTTP_PROXY_KEYS = frozenset({"all", "http", "https"})
-_PROXY_PROFILE_KEYS = _HTTP_PROXY_KEYS | {"no"}
-
-type _ProxyProfile = tuple[tuple[str, str], ...]
-type _NetworkRoute = tuple[str, httpx.AsyncClient]
+_ROUTE_FAILURES = (
+    TimeoutError,
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    httpx.ProxyError,
+    httpx.RemoteProtocolError,
+)
 
 
 class ProviderTransportError(RuntimeError):
@@ -63,62 +66,67 @@ class ProviderHTTPTransport(Protocol):
     ) -> dict[str, Any]: ...
 
 
+@dataclass
+class _ProxyPreference:
+    proxy: str
+    prefer_direct: bool = False
+
+
 class HttpxProviderHTTPTransport:
     """Shared JSON and SSE transport with request-time network route selection."""
 
     def __init__(self, client: httpx.AsyncClient | None = None) -> None:
-        self.client = client
-        self._owns_client = client is None
-        self._system_clients: dict[_ProxyProfile, httpx.AsyncClient] = {}
-        self._direct_client: httpx.AsyncClient | None = None
+        self._provided_client = client
+        self._clients: dict[str | None, httpx.AsyncClient] = {}
+        self._preferences: dict[tuple[str, bytes], _ProxyPreference] = {}
 
-    def _client(self) -> httpx.AsyncClient:
-        if not self._owns_client:
-            assert self.client is not None
-            return self.client
-        return self._system_client(_proxy_profile())
+    def _preference_for(self, url: str) -> _ProxyPreference | None:
+        target = httpx.URL(url)
+        origin = (target.scheme, target.netloc)
+        proxies = getproxies()
+        proxy = proxies.get(target.scheme) or proxies.get("all")
+        if not proxy or proxy_bypass(target.netloc.decode("ascii")):
+            self._preferences.pop(origin, None)
+            return None
+        if "://" not in proxy:
+            proxy = f"http://{proxy}"
 
-    def _system_client(self, profile: _ProxyProfile) -> httpx.AsyncClient:
-        client = self._system_clients.get(profile)
+        preference = self._preferences.get(origin)
+        if preference is None or preference.proxy != proxy:
+            preference = self._preferences[origin] = _ProxyPreference(proxy)
+        return preference
+
+    @contextmanager
+    def _request_client(self, url: str, timeout: float) -> Iterator[httpx.AsyncClient]:
+        _validate_timeout(timeout)
+        client = self._provided_client
+        preference = None
+        proxy = None
         if client is None:
-            # httpx resolves environment and OS proxy settings when the client is
-            # constructed. Keep one connection pool per observed profile so a
-            # long-running Host follows proxy changes without sacrificing reuse.
-            client = httpx.AsyncClient()
-            self._system_clients[profile] = client
-        self.client = client
-        return client
-
-    def _clients_for_request(self) -> tuple[_NetworkRoute, ...]:
-        if not self._owns_client:
-            return (("configured client", self._client()),)
-
-        profile = _proxy_profile()
-        system_client = self._system_client(profile)
-        if not _profile_has_http_proxy(profile):
-            return (("system network", system_client),)
-
-        if self._direct_client is None:
-            # Disabling trust_env removes proxy discovery. Build the SSL context
-            # separately so enterprise SSL_CERT_FILE/SSL_CERT_DIR settings remain
-            # authoritative on the direct fallback route.
-            ssl_context = httpx.create_ssl_context(trust_env=True)
-            self._direct_client = httpx.AsyncClient(verify=ssl_context, trust_env=False)
-        return (
-            ("system proxy", system_client),
-            ("direct network", self._direct_client),
-        )
+            preference = self._preference_for(url)
+            if preference is not None and not preference.prefer_direct:
+                proxy = preference.proxy
+            client = self._clients.get(proxy)
+            if client is None:
+                # The transport loads trusted CAs. The client uses the route we already resolved.
+                client = httpx.AsyncClient(
+                    transport=httpx.AsyncHTTPTransport(proxy=proxy), trust_env=False
+                )
+                self._clients[proxy] = client
+        try:
+            yield client
+        except (httpx.RequestError, TimeoutError) as exc:
+            if preference is not None and isinstance(exc, _ROUTE_FAILURES):
+                preference.prefer_direct = proxy is not None
+            if isinstance(exc, TimeoutError):
+                raise ProviderResponseTimeout(timeout) from None
+            raise _provider_network_error(exc) from exc
 
     async def aclose(self) -> None:
-        if self._owns_client:
-            clients = {id(client): client for client in self._system_clients.values()}
-            if self._direct_client is not None:
-                clients[id(self._direct_client)] = self._direct_client
-            for client in clients.values():
-                await client.aclose()
-            self._system_clients.clear()
-            self._direct_client = None
-            self.client = None
+        for client in self._clients.values():
+            await client.aclose()
+        self._clients.clear()
+        self._preferences.clear()
 
     async def post_json(
         self,
@@ -128,44 +136,22 @@ class HttpxProviderHTTPTransport:
         payload: Mapping[str, Any],
         timeout: float,
     ) -> dict[str, Any]:
-        _validate_timeout(timeout)
         request_headers = {
             "content-type": "application/json",
             "accept": "application/json",
             **headers,
         }
-        routes = self._clients_for_request()
-        failures: list[tuple[str, httpx.RequestError]] = []
-        for index, (route, client) in enumerate(routes):
-            try:
-                async with asyncio.timeout(timeout):
-                    response = await client.post(
-                        url,
-                        headers=dict(request_headers),
-                        json=dict(payload),
-                        timeout=timeout,
-                        follow_redirects=False,
-                    )
-                response.raise_for_status()
-                break
-            except httpx.HTTPStatusError as exc:
-                status_code = exc.response.status_code
-                raise ProviderTransportError(
-                    f"provider HTTP {status_code}: {_compact_body(exc.response.text)}",
-                    retryable=status_code in _RETRYABLE_STATUS_CODES,
-                    status_code=status_code,
-                    retry_after=_retry_after(exc.response),
-                    service_error_code=_service_error_code(exc.response),
-                ) from exc
-            except httpx.RequestError as exc:
-                failures.append((route, exc))
-                if index + 1 < len(routes):
-                    continue
-                raise _provider_network_error(failures) from exc
-            except TimeoutError:
-                raise ProviderResponseTimeout(timeout) from None
-        else:  # pragma: no cover - every failed route raises above.
-            raise AssertionError("provider request exhausted network routes")
+        with self._request_client(url, timeout) as client:
+            async with asyncio.timeout(timeout):
+                response = await client.post(
+                    url,
+                    headers=request_headers,
+                    json=dict(payload),
+                    timeout=timeout,
+                    follow_redirects=False,
+                )
+        if not response.is_success:
+            raise _http_status_error(response)
 
         if not response.content:
             return {}
@@ -191,39 +177,22 @@ class HttpxProviderHTTPTransport:
         payload: Mapping[str, Any],
         timeout: float,
     ) -> AsyncGenerator[Mapping[str, Any]]:
-        _validate_timeout(timeout)
         request_headers = {
             "content-type": "application/json",
             "accept": "text/event-stream",
             **headers,
         }
-        routes = self._clients_for_request()
-        failures: list[tuple[str, httpx.RequestError]] = []
-        for index, (route, client) in enumerate(routes):
-            emitted_item = False
-            try:
-                async with aclosing(
-                    _stream_request(client, url, request_headers, payload, timeout)
-                ) as items:
-                    while True:
-                        # Time only the next complete SSE item, including opening
-                        # the response on the first pull. Decoding and consumer
-                        # backpressure must not spend the provider's wait budget.
-                        try:
-                            async with asyncio.timeout(timeout):
-                                item = await anext(items)
-                        except StopAsyncIteration:
-                            break
-                        emitted_item = True
-                        yield item
-                return
-            except httpx.RequestError as exc:
-                failures.append((route, exc))
-                if not emitted_item and index + 1 < len(routes):
-                    continue
-                raise _provider_network_error(failures) from exc
-            except TimeoutError:
-                raise ProviderResponseTimeout(timeout) from None
+        with self._request_client(url, timeout) as client:
+            items = _stream_request(client, url, request_headers, payload, timeout)
+            async with aclosing(items):
+                while True:
+                    # Consumer processing time is outside the next event's wait budget.
+                    try:
+                        async with asyncio.timeout(timeout):
+                            item = await anext(items)
+                    except StopAsyncIteration:
+                        return
+                    yield item
 
 
 def _validate_timeout(timeout: float) -> None:
@@ -253,68 +222,29 @@ async def _stream_request(
                 yield item
 
 
-def _compact_body(body: str) -> str:
-    return " ".join(body.split())[:500]
-
-
-def _describe_request_error(exc: httpx.RequestError) -> str:
-    """Render an httpx transport failure whose meaning lives in its type.
-
-    Connection-drop errors (``ReadError``, ``ConnectError``, ``RemoteProtocolError``,
-    ...) frequently stringify to an empty message, which would otherwise erase the
-    failure detail. Fall back to the exception type so the boundary always yields a
-    diagnosable reason.
-    """
-
-    detail = str(exc).strip()
-    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
-
-
-def _provider_network_error(
-    failures: list[tuple[str, httpx.RequestError]],
-) -> ProviderTransportError:
-    if len(failures) == 1:
-        exc = failures[0][1]
-        if isinstance(exc, httpx.TimeoutException):
-            return ProviderTransportError("provider request timed out", retryable=True)
-        return ProviderTransportError(
-            f"provider connection failed: {_describe_request_error(exc)}",
-            retryable=True,
-        )
-
-    details = "; ".join(f"{route}: {_describe_request_error(exc)}" for route, exc in failures)
+def _http_status_error(response: httpx.Response) -> ProviderTransportError:
+    body = " ".join(response.text.split())[:500]
     return ProviderTransportError(
-        f"provider connection failed after route fallback: {details}",
-        retryable=True,
+        f"provider HTTP {response.status_code}: {body}",
+        retryable=response.status_code in _RETRYABLE_STATUS_CODES,
+        status_code=response.status_code,
+        retry_after=_retry_after(response),
+        service_error_code=_service_error_code(response),
     )
 
 
-def _proxy_profile() -> _ProxyProfile:
-    """Snapshot the proxy inputs httpx consumes from the environment or OS."""
-
-    return tuple(
-        sorted(
-            (str(key).lower(), str(value).strip())
-            for key, value in getproxies().items()
-            if str(key).lower() in _PROXY_PROFILE_KEYS and value
-        )
-    )
-
-
-def _profile_has_http_proxy(profile: _ProxyProfile) -> bool:
-    return any(key in _HTTP_PROXY_KEYS for key, _ in profile)
+def _provider_network_error(exc: httpx.RequestError) -> ProviderTransportError:
+    if isinstance(exc, httpx.TimeoutException):
+        return ProviderTransportError("provider request timed out", retryable=True)
+    detail = str(exc).strip()
+    reason = f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+    return ProviderTransportError(f"provider connection failed: {reason}", retryable=True)
 
 
 async def _stream_sse_json(response: httpx.Response) -> AsyncGenerator[Mapping[str, Any]]:
-    if response.status_code >= 300:
-        body = (await response.aread()).decode(errors="replace")
-        raise ProviderTransportError(
-            f"provider HTTP {response.status_code}: {_compact_body(body)}",
-            retryable=response.status_code in _RETRYABLE_STATUS_CODES,
-            status_code=response.status_code,
-            retry_after=_retry_after(response),
-            service_error_code=_service_error_code(response),
-        )
+    if not response.is_success:
+        await response.aread()
+        raise _http_status_error(response)
 
     data_lines: list[str] = []
     async for line in response.aiter_lines():
