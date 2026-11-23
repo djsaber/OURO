@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator, Callable, Coroutine, Mapping
 from dataclasses import replace
 from functools import partial, wraps
 from pathlib import Path
-from typing import Any, Concatenate, cast
+from typing import TYPE_CHECKING, Any, Concatenate, cast
 
 from pydantic import JsonValue
 
@@ -59,6 +59,7 @@ from ouro.application.contracts.plugins import (
     PluginSummary,
 )
 from ouro.application.contracts.sessions import (
+    QueuedUserInputView,
     SessionBranchResult,
     SessionCatalogEntry,
     SessionCatalogQuery,
@@ -68,8 +69,8 @@ from ouro.application.contracts.sessions import (
     SessionSummary,
     SessionView,
 )
+from ouro.application.contracts.tool_activity import PendingInteraction
 from ouro.application.events import RuntimeEventSinkRegistration
-from ouro.application.inputs.queue import QueuedInputMode, QueuedUserInputView
 from ouro.application.inputs.requests import UserInputRequest, UserMessageEdit
 from ouro.application.inputs.skills import SkillInvocationRequest
 from ouro.application.plugins.commands import consume_plugin_command, submit_plugin_command
@@ -100,6 +101,7 @@ from ouro.core.model_selection import DEFAULT_MODEL
 from ouro.core.reasoning import ReasoningRequest, resolve_reasoning
 from ouro.core.results import RunResult
 from ouro.core.session_commits import SessionCommitConflict
+from ouro.core.session_controls import SessionInputMode
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tasks import TaskConfiguration, TaskCounts, TaskExecution, TaskRecord
 from ouro.core.tools import PermissionMode
@@ -108,7 +110,6 @@ from ouro.deployment import SessionBackend, TaskBackend
 from ouro.local_application import LocalApplication
 from ouro.local_configuration import build_local_configuration
 from ouro.skills import SkillMetadata
-from ouro.tui.state import PendingInteraction
 from ouro.tui.status import (
     project_mcp_system_status,
     project_plugin_system_status,
@@ -141,6 +142,9 @@ from ouro.tui.view_models import (
     TuiToolConfiguration,
     TuiToolExecutionConfiguration,
 )
+
+if TYPE_CHECKING:
+    from ouro.tui.composer.drafts import TuiPendingInput
 
 _CHILD_CONTROL_EVENT_TYPES = frozenset(
     {
@@ -298,7 +302,7 @@ class TuiController:
         models_task = asyncio.create_task(self.models())
         model_task = asyncio.create_task(self.default_model())
         usage_task = asyncio.create_task(self.usage_summary())
-        skills_task = asyncio.create_task(runtime.available_skills())
+        skills_task = asyncio.create_task(self._application.available_skills())
         tasks_task = asyncio.create_task(self.task_status())
         # Settle all bootstrap readers before a failure can hand the home to maintenance.
         await asyncio.gather(
@@ -327,7 +331,7 @@ class TuiController:
         """Project current process-owned resources for a newly opened Host view."""
 
         models, usage, skills = await asyncio.gather(
-            self.models(), self.usage_summary(), self._runtime().available_skills()
+            self.models(), self.usage_summary(), self._services().available_skills()
         )
         status = await asyncio.to_thread(
             self._project_system_status, models, usage, self.mcp_servers(), skills
@@ -341,16 +345,13 @@ class TuiController:
         mcp_servers: tuple[McpServerStatus, ...],
         skills: tuple[SkillMetadata, ...],
     ) -> TuiSystemStatus:
-        runtime = self._runtime()
-        assert self._application is not None
-        plugins = (
-            tuple(self._application.plugins.list()) if self._application.plugins is not None else ()
-        )
+        application = self._services()
+        plugins = tuple(application.plugins.list()) if application.plugins is not None else ()
         return project_plugin_system_status(
             project_mcp_system_status(
                 project_usage_system_status(
                     TuiSystemStatus(
-                        workspace=self._draft_workspace or runtime.default_workspace,
+                        workspace=self._draft_workspace or application.runtime.default_workspace,
                         model_names=tuple(
                             sorted(
                                 (model.display_name or model.model_id for model in models),
@@ -378,21 +379,6 @@ class TuiController:
         if application is not None and self._close_application:
             await application.close()
 
-    async def attachment_target(
-        self, session_id: str | None, prepared_session_id: str
-    ) -> SessionView | str:
-        """Capture an existing Session epoch or reserve a new input's file namespace."""
-        services = self._services()
-        if session_id is not None:
-            return await asyncio.to_thread(services.sessions.view, session_id)
-        await self.prepare_input_resources(prepared_session_id)
-        return prepared_session_id
-
-    async def prepare_input_resources(self, identity: str) -> None:
-        resources = self._services().resources
-        if resources is not None:
-            await asyncio.to_thread(resources.reserve, identity)
-
     async def release_input_resources(self, identity: str, retain: tuple[str, ...]) -> None:
         resources = self._services().resources
         if resources is not None:
@@ -403,20 +389,48 @@ class TuiController:
             self._services().sessions.input_accepted, session_id, input_id
         )
 
-    async def import_attachment(self, session: SessionView | str, path: Path) -> InputAttachment:
-        resources = self._services().resources
+    async def import_attachments(
+        self,
+        paths: tuple[Path, ...],
+        *,
+        target_id: str,
+        welcome_draft: bool,
+        on_error: Callable[[str], None],
+    ) -> tuple[InputAttachment, ...]:
+        """Keep partial imports in selection order and bind them to the captured history."""
+        services = self._services()
+        resources = services.resources
+        session = (
+            None if welcome_draft else await asyncio.to_thread(services.sessions.view, target_id)
+        )
+        imported = []
         if resources is None:
-            raise ConfigError("Resource storage is unavailable")
-        if isinstance(session, str):
-            result = await run_blocking(resources.import_prepared_resource, session, path)
+            for path in paths:
+                on_error(f"{path.name}: Resource storage is unavailable")
         else:
-            result = await run_blocking(
-                resources.import_resource,
-                session.session_id,
-                path,
-                history_epoch=session.history_epoch,
-            )
-        return InputAttachment(resource_id=result.resource.resource_id, name=path.name)
+            if session is None:
+                await asyncio.to_thread(resources.reserve, target_id)
+                import_file = partial(resources.import_prepared_resource, target_id)
+            else:
+                import_file = partial(
+                    resources.import_resource, target_id, history_epoch=session.history_epoch
+                )
+            for path in paths:
+                try:
+                    result = await run_blocking(import_file, path)
+                    imported.append(
+                        InputAttachment(resource_id=result.resource.resource_id, name=path.name)
+                    )
+                except Exception as exc:  # Each file has an independent import result.
+                    on_error(f"{path.name}: {exc}")
+
+        if session is not None:
+            latest = await asyncio.to_thread(services.sessions.view, target_id)
+            if latest.history_epoch != session.history_epoch:
+                raise SessionCommitConflict(
+                    "Session history changed while importing attachments; select the files again"
+                )
+        return tuple(imported)
 
     async def reference_files(self, paths: tuple[Path, ...]) -> tuple[InputFile, ...]:
         """Capture selected paths and their workspace without creating a Session."""
@@ -445,15 +459,6 @@ class TuiController:
 
         return await asyncio.to_thread(capture)
 
-    async def validate_attachment_session(self, session: SessionView | str) -> None:
-        if isinstance(session, str):
-            return
-        latest = await asyncio.to_thread(self._services().sessions.view, session.session_id)
-        if latest.history_epoch != session.history_epoch:
-            raise SessionCommitConflict(
-                "Session history changed while importing attachments; select the files again"
-            )
-
     async def input_attachments(
         self, session_id: str, resource_refs: tuple[str, ...]
     ) -> tuple[InputFile, ...]:
@@ -466,11 +471,38 @@ class TuiController:
             items.append(InputAttachment(resource_id=resource_id, name=resource.source.name))
         return tuple(items)
 
+    def submit_pending(
+        self,
+        pending: TuiPendingInput,
+        *,
+        queue_mode: SessionInputMode,
+        on_input_accepted: Callable[[], None],
+    ) -> Coroutine[Any, Any, RunResult]:
+        """Translate a retained composer input into a submission with its durable identity."""
+        return self.submit(
+            pending.text,
+            queue_mode=queue_mode,
+            skill_invocations=tuple(
+                SkillInvocationRequest(
+                    name=item.name,
+                    arguments=pending.text,
+                    text_offset=item.text_offset,
+                    order=item.order,
+                )
+                for item in pending.skills
+            ),
+            attachments=pending.attachments,
+            new_session_id=pending.session_id if pending.origin_session_id is None else None,
+            input_id=pending.input_id,
+            edit=pending.edit,
+            on_input_accepted=on_input_accepted,
+        )
+
     async def submit(
         self,
         prompt: str,
         *,
-        queue_mode: QueuedInputMode = "follow_up",
+        queue_mode: SessionInputMode = "follow_up",
         skill_invocations: tuple[SkillInvocationRequest, ...] = (),
         resource_refs: tuple[str, ...] = (),
         attachments: tuple[InputFile, ...] = (),
@@ -511,7 +543,6 @@ class TuiController:
                 self._creating_session = False
 
         try:
-            assert self._application is not None
             request = UserInputRequest(
                 prompt=prompt,
                 source_history=self._source_history if not is_new_session else None,
@@ -534,7 +565,7 @@ class TuiController:
                 if self._started and on_input_accepted is not None:
                     on_input_accepted()
 
-            submission = await self._application.supervisor.submit_user_input(
+            submission = await services.supervisor.submit_user_input(
                 request, on_session_created=session_created, on_input_accepted=input_accepted
             )
             result = await submission.wait()
@@ -560,12 +591,12 @@ class TuiController:
                 description=skill.description,
                 argument_hint=skill.argument_hint,
             )
-            for skill in await self._runtime().available_skills()
+            for skill in await self._services().available_skills()
             if skill.enabled and skill.user_invocable
         )
 
     async def runtime_skill_names(self) -> tuple[str, ...]:
-        return tuple(skill.name for skill in await self._runtime().available_skills())
+        return tuple(skill.name for skill in await self._services().available_skills())
 
     async def continue_session(self) -> RunResult:
         assert self._application is not None
@@ -982,9 +1013,7 @@ class TuiController:
 
     def provider_auth(self) -> ProviderAuthService:
         """Borrow the application's authentication use cases without owning their lifetime."""
-        self._runtime()
-        assert self._application is not None
-        service = self._application.provider_auth
+        service = self._services().provider_auth
         if service is None:
             raise ConfigError("authentication management is unavailable for this Runtime")
         return service
@@ -1184,18 +1213,16 @@ class TuiController:
         return await asyncio.to_thread(self._tool_configurations)
 
     def _tool_configurations(self) -> tuple[TuiToolConfiguration, ...]:
-        definitions = {item.name: item for item in self._runtime().available_tool_definitions()}
+        application = self._services()
+        runtime = application.runtime
+        definitions = {item.name: item for item in runtime.available_tool_definitions()}
         permissions = self._require_configuration().permission_config()
         configured_overrides = permissions.tools
-        runtime_overrides = self._runtime().tool_permission_overrides()
-        plugin_overrides = self._runtime().plugin_permission_overrides()
+        runtime_overrides = runtime.tool_permission_overrides()
+        plugin_overrides = runtime.plugin_permission_overrides()
         plugin_names = {
             item.plugin_id: item.name
-            for item in (
-                self._application.plugins.list()
-                if self._application is not None and self._application.plugins is not None
-                else ()
-            )
+            for item in (application.plugins.list() if application.plugins is not None else ())
         }
         names = sorted(set(definitions).union(configured_overrides))
         items: list[TuiToolConfiguration] = []
@@ -1364,9 +1391,7 @@ class TuiController:
         return await asyncio.to_thread(self._agent_definition_catalog)
 
     def _agent_definition_catalog(self) -> AgentDefinitionCatalogView:
-        self._runtime()
-        assert self._application is not None
-        with self._application.agent_definition_services() as services:
+        with self._services().agent_definition_services() as services:
             return services.definitions.list(tools=services.tools)
 
     async def agent_definition(
@@ -1376,18 +1401,14 @@ class TuiController:
         return await asyncio.to_thread(self._agent_definition, agent_id)
 
     def _agent_definition(self, agent_id: str) -> AgentDefinitionDetail:
-        self._runtime()
-        assert self._application is not None
-        with self._application.agent_definition_services() as services:
+        with self._services().agent_definition_services() as services:
             return services.definitions.get(agent_id, tools=services.tools)
 
     async def agent_definition_tools(self) -> tuple[AgentToolOptionView, ...]:
         return await asyncio.to_thread(self._agent_definition_tools)
 
     def _agent_definition_tools(self) -> tuple[AgentToolOptionView, ...]:
-        self._runtime()
-        assert self._application is not None
-        with self._application.agent_definition_services() as services:
+        with self._services().agent_definition_services() as services:
             return services.definitions.tool_options(services.tools)
 
     @publishes_status
@@ -1425,9 +1446,7 @@ class TuiController:
         expected_revision: int,
         agent_id: str | None,
     ) -> AgentDefinitionCatalogView:
-        self._runtime()
-        assert self._application is not None
-        with self._application.agent_definition_services() as services:
+        with self._services().agent_definition_services() as services:
             operation = (
                 services.definitions.create
                 if agent_id is None
@@ -1454,9 +1473,7 @@ class TuiController:
     def _set_agent_definition_enabled(
         self, agent_id: str, enabled: bool, expected_revision: int
     ) -> AgentDefinitionCatalogView:
-        self._runtime()
-        assert self._application is not None
-        with self._application.agent_definition_services() as services:
+        with self._services().agent_definition_services() as services:
             return services.definitions.set_enabled(
                 agent_id, enabled=enabled, expected_revision=expected_revision, tools=services.tools
             )
@@ -1479,9 +1496,7 @@ class TuiController:
         agent_id: str,
         expected_revision: int,
     ) -> AgentDefinitionCatalogView:
-        self._runtime()
-        assert self._application is not None
-        with self._application.agent_definition_services() as services:
+        with self._services().agent_definition_services() as services:
             return services.definitions.delete(
                 agent_id,
                 expected_revision=expected_revision,
@@ -1551,40 +1566,28 @@ class TuiController:
         return await self._require_configuration().check_mcp_server(server_id)
 
     def mcp_servers(self) -> tuple[McpServerStatus, ...]:
-        self._runtime()
-        assert self._application is not None
-        return tuple(self._mcp_status(record) for record in self._application.mcp_runtime_servers())
+        return tuple(self._mcp_status(record) for record in self._services().mcp_runtime_servers())
 
     @publishes_status
     async def start_mcp_server(self, server_id: str) -> McpServerStatus:
-        self._runtime()
-        assert self._application is not None
-        return self._mcp_status(await self._application.start_mcp_server(server_id))
+        return self._mcp_status(await self._services().start_mcp_server(server_id))
 
     @publishes_status
     async def stop_mcp_server(self, server_id: str) -> McpServerStatus:
-        self._runtime()
-        assert self._application is not None
-        return self._mcp_status(await self._application.stop_mcp_server(server_id))
+        return self._mcp_status(await self._services().stop_mcp_server(server_id))
 
     @publishes_status
     async def restart_mcp_server(self, server_id: str) -> McpServerStatus:
-        self._runtime()
-        assert self._application is not None
-        return self._mcp_status(await self._application.restart_mcp_server(server_id))
+        return self._mcp_status(await self._services().restart_mcp_server(server_id))
 
     @publishes_status
     async def refresh_mcp_tools(self, server_id: str) -> McpServerStatus:
-        self._runtime()
-        assert self._application is not None
-        record = await self._application.refresh_mcp_server_tools(server_id)
+        record = await self._services().refresh_mcp_server_tools(server_id)
         return self._mcp_status(record)
 
     @publishes_status
     async def transfer_data(self, request: DataTransferRequest) -> DataTransferResult:
-        self._runtime()
-        assert self._application is not None
-        return await asyncio.to_thread(self._application.transfer_data, request)
+        return await asyncio.to_thread(self._services().transfer_data, request)
 
     async def data_archive_kind(self, path: Path) -> DataKind:
         assert self._application is not None
@@ -1602,9 +1605,7 @@ class TuiController:
             configuration.skill_catalog,
             include_disabled=True,
         )
-        self._runtime()
-        assert self._application is not None
-        effective = await self._application.available_skills()
+        effective = await self._services().available_skills()
         skills = {skill.name: skill for skill in configured.skills}
         for metadata in effective:
             configured_skill = skills.get(metadata.name)
@@ -2114,9 +2115,7 @@ class TuiController:
         self, session_id: str, *, history_anchor: SessionHistoryAnchor | None = None
     ) -> TuiSessionObservation:
         """Prepare display facts without changing selection or recovering execution."""
-        application = self._application
-        if not self._started or application is None:
-            raise RuntimeError("TUI controller is not started")
+        application = self._services()
         subscription = await application.supervisor.observe_session(
             session_id, history_limit=200, history_anchor=history_anchor
         )
@@ -2153,17 +2152,13 @@ class TuiController:
         )
 
     async def subscribe_agent_tree(self, root_session_id: str) -> AgentTreeSubscription | None:
-        application = self._application
-        if not self._started or application is None:
-            raise RuntimeError("TUI controller is not started")
+        application = self._services()
         if application.agents is None:
             return None
         return await application.agents.subscribe_agent_tree(root_session_id)
 
     async def agent_tree_snapshot(self, root_session_id: str) -> AgentTreeSnapshot | None:
-        application = self._application
-        if not self._started or application is None:
-            raise RuntimeError("TUI controller is not started")
+        application = self._services()
         if application.agents is None:
             return None
         return await asyncio.to_thread(application.agents.agent_tree_snapshot, root_session_id)
@@ -2227,7 +2222,7 @@ class TuiController:
         return self._application.agents
 
     def _require_configuration(self) -> ConfigurationFacade:
-        self._runtime()
+        self._services()
         if self._configuration is None:
             raise RuntimeError("configuration is unavailable for this Runtime")
         return self._configuration
@@ -2260,15 +2255,9 @@ class TuiController:
         # Selection can change while an accepted event is waiting in the mailbox.
         if not self._accepts_event(event):
             return
-        if event.session_id != controlled_session_id:
-            if (
-                await asyncio.to_thread(
-                    self._event_root_session_id,
-                    event.session_id,
-                )
-                != controlled_session_id
-            ):
-                return
+        root = await asyncio.to_thread(self._event_root_session_id, event.session_id)
+        if root != controlled_session_id:
+            return
         if revision != self._selection_revision:
             return
         self._publish_event(event)

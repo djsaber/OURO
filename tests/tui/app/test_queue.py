@@ -337,7 +337,7 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(
             # Neither is visible before that commit completes.
             await application.runtime.drain_events()
             await app._flush_pending_runtime_events()
-            async with app._runtime_event_apply_lock:
+            async with app._session_surface_lock:
                 assert app._interaction is None
         finally:
             release_checkpoint.set()
@@ -379,9 +379,6 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(
                 and app._projection is not None
                 and app._projection.activity.status == "completed"
                 and app._interaction is None
-                and not app._pending_runtime_events
-                and not app._runtime_events_ready_posted
-                and not app._runtime_events_frame_scheduled
                 and any(
                     entry.kind == "assistant" and "queued input consumed" in entry.text
                     for entry in history.entries

@@ -388,7 +388,7 @@ async def test_compaction_completion_updates_context_and_transcript_without_next
                 "context_metrics_after": metrics.model_dump(mode="json"),
             },
         )
-        await app._apply_runtime_events((completed,))
+        await app._apply_runtime_event_batch((completed,), input_messages={})
         await pilot.pause()
 
         history = app.query_one(ConversationHistory)
@@ -508,23 +508,22 @@ async def test_completed_live_turns_keep_the_widget_tree_bounded(tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_run_result_replays_events_when_live_sink_is_delayed(tmp_path: Path) -> None:
-    app = OuroTuiApp(application=_application(tmp_path, "Recovered response"))
+async def test_submitted_response_appears_once_in_the_transcript(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path, "Observed response"))
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
-        await pilot.pause()
-        app._controller._publish_event = lambda _event: None
         await pilot.click("#composer")
         await pilot.press("h", "e", "l", "l", "o", "enter")
+        history = app.query_one(ConversationHistory)
         await _wait_until(
-            lambda: app._projection is not None and app._projection.activity.status == "completed",
+            lambda: any(entry.run and entry.run.status == "completed" for entry in history.entries),
             pilot,
-            description="replayed run result",
+            description="completed run in the transcript",
         )
 
-        assert app._projection is not None
-        assert app._projection.assistant_text == "Recovered response"
-        assert app._projection.activity.status == "completed"
+        assert [entry.text for entry in history.entries if entry.kind == "assistant"] == [
+            "Observed response"
+        ]
 
 
 @pytest.mark.asyncio

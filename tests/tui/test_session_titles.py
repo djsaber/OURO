@@ -28,10 +28,11 @@ async def test_first_text_titles_prepared_and_new_sessions(tmp_path, backend, so
         if source == "reference":
             attachments = await controller.reference_files((path,))
         else:
-            target = await controller.attachment_target(None, identity)
-            attachment = await controller.import_attachment(target, path)
-            attachments = (attachment,) if source == "upload" else ()
+            attachments = await controller.import_attachments(
+                (path,), target_id=identity, welcome_draft=True, on_error=pytest.fail
+            )
             if source == "removed":
+                attachments = ()
                 await controller.release_input_resources(identity, ())
         assert controller.session_id is None
         assert application.runtime.store.list_sessions() == []
@@ -111,10 +112,11 @@ async def test_attachment_only_session_keeps_placeholder_until_text_arrives(tmp_
     await controller.start()
     try:
         identity = new_id("ses")
-        target = await controller.attachment_target(None, identity)
-        attachment = await controller.import_attachment(target, path)
+        attachments = await controller.import_attachments(
+            (path,), target_id=identity, welcome_draft=True, on_error=pytest.fail
+        )
         assert application.runtime.store.list_sessions() == []
-        first = await controller.submit("", attachments=(attachment,), new_session_id=identity)
+        first = await controller.submit("", attachments=attachments, new_session_id=identity)
         assert first.run.status == "completed"
         assert first.session.session_id == identity
         assert first.session.title == "New conversation"

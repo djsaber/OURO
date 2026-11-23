@@ -189,6 +189,9 @@ async def wait_for_observed_status(pilot, *, status: str) -> None:
     subscription = app._observation_subscription
     assert subscription is not None
 
+    session = await app._controller.session_view(subscription.session_id)
+    history = app.query_one(ConversationHistory)
+
     def applied() -> bool:
         projection = app._projection
         return (
@@ -196,7 +199,13 @@ async def wait_for_observed_status(pilot, *, status: str) -> None:
             and projection.session_id == subscription.session_id
             and app._observation_subscription is subscription
             and projection.activity.status == status
-            and app._observation_delivery is None
+            and subscription.applied_position.message_sequence >= session.message_count
+            and any(
+                entry.run is not None
+                and entry.run_id == session.last_run_id
+                and entry.run.status == status
+                for entry in history.entries
+            )
         )
 
     await wait_until(

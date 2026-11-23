@@ -259,13 +259,13 @@ async def test_both_pages_keep_files_in_original_draft_during_navigation(
     app = OuroTuiApp(application=application, resume_session_id=origin)
     async with run_ready_app(app):
         reached, release = asyncio.Event(), asyncio.Event()
-        operation = "import_attachment" if kind == "upload" else "reference_files"
+        operation = "import_attachments" if kind == "upload" else "reference_files"
         prepare_files = getattr(app._controller, operation)
 
-        async def delayed(*args):
+        async def delayed(*args, **kwargs):
             reached.set()
             await release.wait()
-            return await prepare_files(*args)
+            return await prepare_files(*args, **kwargs)
 
         monkeypatch.setattr(app._controller, operation, delayed)
         worker = (

@@ -140,7 +140,7 @@ class ReasoningView(RangeSelectionOnly, Vertical):
             if duration_seconds is not None:
                 elapsed = duration_seconds
             elif self._clock_started_at is None and self._completed_seconds is not None:
-                elapsed = self._completed_seconds
+                return
             else:
                 elapsed = self._elapsed_seconds()
             self._completed_seconds = elapsed

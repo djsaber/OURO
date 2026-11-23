@@ -14,6 +14,7 @@ from textual.app import App
 from textual.worker import WorkerCancelled
 
 import ouro.tui.composer.attachment_paths as attachment_paths
+from ouro.application.inputs.requests import UserInputRequest, UserMessageEdit
 from ouro.core.attachment_input import separate_attachments
 from ouro.core.errors import PersistenceError, UnsafeResourcePathError
 from ouro.core.input_content import InputAttachment, InputContent
@@ -36,6 +37,7 @@ from tests.tui.helpers import (
     wait_for_events,
     wait_for_worker_group,
     wait_for_workers,
+    wait_until,
 )
 from tests.tui.test_history_commands import application_at
 
@@ -393,7 +395,7 @@ async def test_composer_at_and_plain_paste_do_not_confuse_attachment_identity(
     monkeypatch.setattr(
         app,
         "_submit_run",
-        lambda text, mode, *, attachments, skills: submitted.append((text, mode, attachments)),
+        lambda content, mode: submitted.append((content.text, mode, content.attachments)),
     )
     async with run_ready_app(app) as pilot:
         composer = app.query_one(Composer)
@@ -504,9 +506,7 @@ async def test_submit_preflight_restores_original_session_after_navigation(tmp_p
         )
         with monkeypatch.context() as patch:
             patch.setattr(app._controller, "models", delayed_models)
-            app.on_composer_submitted(
-                Composer.Submitted(content.text, "follow_up", content.attachments)
-            )
+            app.on_composer_submitted(Composer.Submitted(content, "follow_up"))
             await asyncio.wait_for(entered.wait(), timeout=2)
         try:
             await app._open_session(second.session_id)
@@ -531,13 +531,13 @@ async def test_attachment_preparation_keeps_focus_and_blocks_edits(
     path.write_text("material", encoding="utf-8")
     async with run_ready_app(app) as pilot:
         entered, release = asyncio.Event(), asyncio.Event()
-        method = "import_attachment" if operation == "upload" else "reference_files"
+        method = "import_attachments" if operation == "upload" else "reference_files"
         prepare = getattr(app._controller, method)
 
-        async def delayed_prepare(*args):
+        async def delayed_prepare(*args, **kwargs):
             entered.set()
             await release.wait()
-            return await prepare(*args)
+            return await prepare(*args, **kwargs)
 
         monkeypatch.setattr(app._controller, method, delayed_prepare)
         composer = app.query_one(Composer)
@@ -582,13 +582,13 @@ async def test_preparation_completion_preserves_focus_moved_to_conversation(
     path.write_text("material", encoding="utf-8")
     async with run_ready_app(app) as pilot:
         entered, release = asyncio.Event(), asyncio.Event()
-        method = "import_attachment" if operation == "upload" else "reference_files"
+        method = "import_attachments" if operation == "upload" else "reference_files"
         prepare = getattr(app._controller, method)
 
-        async def delayed_prepare(*args):
+        async def delayed_prepare(*args, **kwargs):
             entered.set()
             await release.wait()
-            return await prepare(*args)
+            return await prepare(*args, **kwargs)
 
         monkeypatch.setattr(app._controller, method, delayed_prepare)
         composer = app.query_one(Composer)
@@ -622,14 +622,14 @@ async def test_late_import_preserves_original_position_and_new_session_is_editab
     path.write_text("material", encoding="utf-8")
     async with run_ready_app(app):
         entered, release = asyncio.Event(), asyncio.Event()
-        import_attachment = app._controller.import_attachment
+        import_attachments = app._controller.import_attachments
 
-        async def delayed_import(session, path):
+        async def delayed_import(paths, **target):
             entered.set()
             await release.wait()
-            return await import_attachment(session, path)
+            return await import_attachments(paths, **target)
 
-        monkeypatch.setattr(app._controller, "import_attachment", delayed_import)
+        monkeypatch.setattr(app._controller, "import_attachments", delayed_import)
         composer = app.query_one(Composer)
         composer.load_text("before after")
         composer.move_cursor((0, 7))
@@ -661,6 +661,90 @@ async def test_unsupported_draft_file_is_not_overwritten_by_new_input(tmp_path):
         app.query_one(Composer).load_text("new draft")
         await pilot.pause()
     assert path.read_bytes() == original
+
+
+async def test_history_edit_during_upload_keeps_withdrawn_attachment_out_of_draft(
+    tmp_path, monkeypatch
+):
+    application = application_at(tmp_path / "home")
+    session_id = (await application.runtime.run("first question")).session.session_id
+    snapshot = application.sessions.observation_snapshot(session_id)
+    first = next(message for message in snapshot.messages if message.role == "user")
+    path = tmp_path / "note.txt"
+    path.write_text("note", encoding="utf-8")
+    app = OuroTuiApp(application=application, resume_session_id=session_id)
+    copied, release = asyncio.Event(), Event()
+    loop = asyncio.get_running_loop()
+    import_file = application.resources.import_resource
+
+    def finish_copy(*args, **kwargs):
+        result = import_file(*args, **kwargs)
+        loop.call_soon_threadsafe(copied.set)
+        assert release.wait(10)
+        return result
+
+    monkeypatch.setattr(application.resources, "import_resource", finish_copy)
+    async with run_ready_app(app):
+        errors = []
+        monkeypatch.setattr(app, "notify", lambda message, **_kwargs: errors.append(message))
+        importing = app._attach_files((path,))
+        try:
+            await asyncio.wait_for(copied.wait(), 5)
+            submission = await application.supervisor.submit_user_input(
+                UserInputRequest(
+                    prompt="edited question",
+                    session_id=session_id,
+                    edit=UserMessageEdit(
+                        message_id=first.message_id,
+                        history_epoch=snapshot.session.history_epoch,
+                        message_count=snapshot.session.message_count,
+                    ),
+                )
+            )
+        finally:
+            release.set()
+        await importing.wait()
+        await submission.wait()
+        assert (
+            "Session history changed while importing attachments; select the files again" in errors
+        )
+        assert not app.query_one(Composer).input_content.attachments
+        assert not app._input_drafts.content_for(session_id).attachments
+
+
+async def test_batch_upload_reports_each_failure_before_importing_the_next_file(
+    tmp_path, monkeypatch
+):
+    application = application_at(tmp_path / "home")
+    app = OuroTuiApp(application=application)
+    paths = tuple(tmp_path / name for name in ("first.txt", "missing.txt", "last.txt"))
+    for path in paths:
+        path.write_text(path.name, encoding="utf-8")
+    seen = []
+    import_file = application.resources.import_prepared_resource
+
+    def read(identity, path):
+        seen.append(path.name)
+        if path == paths[1]:
+            raise OSError("read failed")
+        return import_file(identity, path)
+
+    monkeypatch.setattr(application.resources, "import_prepared_resource", read)
+    async with run_ready_app(app) as pilot:
+        monkeypatch.setattr(app, "notify", lambda message, **_kwargs: seen.append(message))
+        composer = app.query_one(Composer)
+        composer.post_message(events.Paste(" ".join(f'"{path}"' for path in paths)))
+        await wait_until(
+            lambda: len(composer.input_content.attachments) == 2 and not composer.import_pending,
+            pilot,
+            description="successful attachments from the batch",
+        )
+        assert seen == ["first.txt", "missing.txt", "missing.txt: read failed", "last.txt"]
+        assert [item.name for item in composer.input_content.attachments] == [
+            "first.txt",
+            "last.txt",
+        ]
+        assert TuiInputDraftStore(tmp_path / "home").load().welcome == composer.input_content
 
 
 async def test_import_keeps_original_in_ouro_data_without_writing_workspace(tmp_path):

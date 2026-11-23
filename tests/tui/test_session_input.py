@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import gc
 import re
 import sys
 import threading
@@ -11,17 +10,31 @@ from rich.control import Control
 from textual import events
 from textual.geometry import Size
 from textual.widgets import Input, Static
-from textual.worker import WorkerCancelled
 
 import ouro.tui.conversation.history as conversation_history
 import ouro.tui.conversation.markdown_stream as conversation_history_markdown_stream
+from ouro.application.contracts.events import project_runtime_event
+from ouro.application.contracts.sessions import SessionObservationBatch
 from ouro.core.events import EventRecord
-from ouro.tui.app import OuroTuiApp, RuntimeEventsReady
+from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.widgets.status import StatusLine
 from tests.tui.helpers import run_ready_app, two_route_application, wait_until
+
+
+async def present_events(app: OuroTuiApp, *records: EventRecord) -> None:
+    subscription = app._observation_subscription
+    assert subscription is not None
+    await app._present_observation_events(
+        subscription,
+        SessionObservationBatch(
+            session_id=subscription.session_id,
+            history_epoch=records[0].history_epoch,
+            events=tuple(project_runtime_event(record) for record in records),
+        ),
+    )
 
 
 @pytest.mark.parametrize("target", ("message", "blank", "composer"))
@@ -34,7 +47,7 @@ async def test_stream_refresh_preserves_pointer_focus_and_terminal_blur(tmp_path
         composer = app.query_one(Composer)
         composer.load_text("unsent draft")
         await conversation.add_user("Existing conversation")
-        await app._apply_runtime_events(
+        await app._apply_runtime_event_batch(
             [
                 EventRecord(
                     session_id=session.session_id,
@@ -43,7 +56,8 @@ async def test_stream_refresh_preserves_pointer_focus_and_terminal_blur(tmp_path
                     event_type="run_started",
                     payload={"trigger": "user"},
                 )
-            ]
+            ],
+            input_messages={},
         )
         await pilot.pause()
         if target == "message":
@@ -57,7 +71,7 @@ async def test_stream_refresh_preserves_pointer_focus_and_terminal_blur(tmp_path
         assert app.focused is expected
 
         async def stream(sequence):
-            await app._apply_runtime_events(
+            await app._apply_runtime_event_batch(
                 [
                     EventRecord(
                         session_id=session.session_id,
@@ -66,7 +80,8 @@ async def test_stream_refresh_preserves_pointer_focus_and_terminal_blur(tmp_path
                         event_type="model_text_delta",
                         payload={"text": "More text. "},
                     )
-                ]
+                ],
+                input_messages={},
             )
             await pilot.pause()
 
@@ -114,22 +129,28 @@ async def test_session_dispatches_input_while_stream_rendering_is_pending(
             return original(*args, **kwargs)
 
         monkeypatch.setattr(render_module, operation, slow_render)
-        for sequence, (kind, payload) in enumerate(
-            (
-                ("run_started", {"trigger": "user"}),
-                ("model_text_delta", {"text": "```python\n" + "print(1)\n" * 350 + "```\n\nNext"}),
-            ),
-            start=1,
-        ):
-            app._queue_runtime_event(
-                EventRecord(
-                    session_id=session.session_id,
-                    run_id="run_input",
-                    sequence=sequence,
-                    event_type=kind,
-                    payload=payload,
-                )
+        monkeypatch.setattr("ouro.tui.conversation.observation.EVENTS_PER_FRAME", 2)
+        records = tuple(
+            EventRecord(
+                session_id=session.session_id,
+                run_id="run_input",
+                sequence=sequence,
+                event_type=kind,
+                payload=payload,
             )
+            for sequence, (kind, payload) in enumerate(
+                (
+                    ("run_started", {"trigger": "user"}),
+                    (
+                        "model_text_delta",
+                        {"text": "```python\n" + "print(1)\n" * 350 + "```\n\nNext"},
+                    ),
+                    ("model_text_delta", {"text": " continuation"}),
+                ),
+                start=1,
+            )
+        )
+        presenting = asyncio.create_task(present_events(app, *records))
         try:
             assert await asyncio.to_thread(started.wait, 2)
             expected = ""
@@ -145,15 +166,6 @@ async def test_session_dispatches_input_while_stream_rendering_is_pending(
             assert app.cursor_position == composer.cursor_screen_offset
             # A visible-content handoff keeps frame order while the editor
             # remains responsive; later deltas cannot overtake that transfer.
-            app._queue_runtime_event(
-                EventRecord(
-                    session_id=session.session_id,
-                    run_id="run_input",
-                    sequence=3,
-                    event_type="model_text_delta",
-                    payload={"text": " continuation"},
-                )
-            )
             draining = asyncio.create_task(app._flush_pending_runtime_events())
             await asyncio.sleep(0)
             assert not draining.done()
@@ -162,6 +174,7 @@ async def test_session_dispatches_input_while_stream_rendering_is_pending(
             release.set()
             await pilot.pause()
         await draining
+        await presenting
         assert app._projection.assistant_text.endswith("Next continuation")
         assert app._projection.last_sequence == 3
         assert composer.text == "你界"
@@ -182,13 +195,16 @@ async def test_session_status_query_does_not_block_input_dispatch(tmp_path, monk
             return ()
 
         monkeypatch.setattr(app._controller, "agent_interactions", read_interactions)
-        app._queue_runtime_event(
-            EventRecord(
-                session_id=session.session_id,
-                run_id="run_status",
-                sequence=1,
-                event_type="agent_wait_requested",
-                payload={},
+        presenting = asyncio.create_task(
+            present_events(
+                app,
+                EventRecord(
+                    session_id=session.session_id,
+                    run_id="run_status",
+                    sequence=1,
+                    event_type="agent_wait_requested",
+                    payload={},
+                ),
             )
         )
         try:
@@ -202,6 +218,7 @@ async def test_session_status_query_does_not_block_input_dispatch(tmp_path, monk
             assert app.cursor_position == composer.cursor_screen_offset
         finally:
             release.set()
+            await presenting
             await pilot.pause()
 
 
@@ -247,27 +264,29 @@ async def test_session_frames_preserve_editor_and_menu_cursor_during_live_update
 
         async def stream():
             sequence = 1
-            app._queue_runtime_event(
+            await present_events(
+                app,
                 EventRecord(
                     session_id=session.session_id,
                     run_id="run_frames",
                     sequence=sequence,
                     event_type="run_started",
                     payload={"trigger": "user"},
-                )
+                ),
             )
             while not stop.is_set():
                 sequence += 1
                 reasoning = sequence < 6
                 text = f"Evidence {sequence} 中文 **answer**.\n\n"
-                app._queue_runtime_event(
+                await present_events(
+                    app,
                     EventRecord(
                         session_id=session.session_id,
                         run_id="run_frames",
                         sequence=sequence,
                         event_type="model_reasoning_delta" if reasoning else "model_text_delta",
                         payload={"reasoning_content" if reasoning else "text": text},
-                    )
+                    ),
                 )
                 app.query_one(StatusLine).set_session_controls(("Plan",) if sequence % 2 else ())
                 await asyncio.sleep(0.02)
@@ -322,29 +341,6 @@ async def test_session_frames_preserve_editor_and_menu_cursor_during_live_update
         ]
 
 
-async def test_cancelling_event_frame_before_start_does_not_leave_an_unawaited_coroutine(
-    tmp_path, recwarn
-):
-    app = OuroTuiApp(application=two_route_application(tmp_path))
-    async with run_ready_app(app) as pilot:
-        app.on_runtime_events_ready(RuntimeEventsReady())
-        worker = app._runtime_events_worker
-        assert worker is not None
-        worker.cancel()
-        with pytest.raises(WorkerCancelled):
-            await worker.wait()
-        await pilot.pause()
-        app._runtime_events_worker = None
-        del worker
-        gc.collect()
-        assert not [
-            warning
-            for warning in recwarn
-            if "_flush_pending_runtime_events" in str(warning.message)
-            and "was never awaited" in str(warning.message)
-        ]
-
-
 async def test_cancelling_transcript_removal_preserves_widget_teardown(tmp_path):
     entered, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
@@ -392,21 +388,24 @@ async def test_closing_session_cancels_pending_presentation_without_waiting_for_
     try:
         async with run_ready_app(app, size=(100, 30)):
             monkeypatch.setattr(conversation_history_markdown_stream, "_block_starts", slow_parse)
-            app._queue_runtime_event(
-                EventRecord(
-                    session_id=session.session_id,
-                    run_id="run_close",
-                    sequence=1,
-                    event_type="model_text_delta",
-                    payload={"text": "```\n" + "code\n" * 500},
+            worker = app.run_worker(
+                present_events(
+                    app,
+                    EventRecord(
+                        session_id=session.session_id,
+                        run_id="run_close",
+                        sequence=1,
+                        event_type="model_text_delta",
+                        payload={"text": "```\n" + "code\n" * 500},
+                    ),
                 )
             )
             assert await asyncio.to_thread(started.wait, 2)
             app.exit()
         assert not finished.is_set()
-        assert app._runtime_events_worker is not None and app._runtime_events_worker.is_cancelled
-        assert not app._runtime_event_flush_lock.locked()
-        assert not app._runtime_event_apply_lock.locked()
+        assert worker.is_cancelled
+        assert app._observation_frame is None
+        assert not app._session_surface_lock.locked()
     finally:
         release.set()
         assert await asyncio.to_thread(finished.wait, 2)

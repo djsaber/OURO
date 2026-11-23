@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from ouro.core.events import EventRecord
+from ouro.core.input_content import InputContent
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.session_commits import SessionCommit
 from ouro.providers import FauxProvider
@@ -63,7 +64,7 @@ async def test_live_run_summary_matches_reloaded_history(tmp_path, backend, exec
         async with run_ready_app(app, size=(100, 30)) as pilot:
             await app._open_session(session.session_id)
             if execution == "local":
-                app._submit_run("Show the answer", "follow_up")
+                app._submit_run(InputContent(text="Show the answer"), "follow_up")
             else:
                 await owner.supervisor.submit("Show the answer", session_id=session.session_id)
             await asyncio.wait_for(provider.started.wait(), 5)
@@ -114,7 +115,7 @@ async def test_observer_keeps_each_run_summary_before_the_next_runs_content(tmp_
             await app._open_session(session.session_id)
             run_ids = []
             # Let execution finish twice while rendering catches up later.
-            async with app._runtime_event_apply_lock:
+            async with app._session_surface_lock:
                 for prompt in ("First answer", "Second answer"):
                     handle = await owner.supervisor.submit(prompt, session_id=session.session_id)
                     result = await owner.supervisor.wait(handle)

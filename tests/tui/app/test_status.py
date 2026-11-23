@@ -496,7 +496,9 @@ async def test_live_host_event_updates_context_without_reloading(tmp_path: Path)
             },
         )
 
-        await app._apply_runtime_events((observation_event(project_runtime_event(started)),))
+        await app._apply_runtime_event_batch(
+            (observation_event(project_runtime_event(started)),), input_messages={}
+        )
         await pilot.pause()
 
         assert app.query_one("#context-detail", Static).render().plain.startswith("250 ")

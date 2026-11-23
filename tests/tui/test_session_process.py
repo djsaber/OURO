@@ -39,11 +39,11 @@ async def observe(home, backend, session_id, connection):
     release.set()
     original = app._apply_observation_facts
 
-    async def hold_body(batch):
+    async def hold_body(facts, messages, *, through):
         if not release.is_set():
             held.set()
             await release.wait()
-        await original(batch)
+        await original(facts, messages, through=through)
 
     app._apply_observation_facts = hold_body
     original_events = app._apply_runtime_event_batch
@@ -73,7 +73,6 @@ async def observe(home, backend, session_id, connection):
                     connection.send(
                         (
                             app._observation_subscription.applied_position.revision,
-                            len(app._pending_runtime_events),
                             app.query_one(Composer).text,
                         )
                     )
@@ -136,8 +135,8 @@ async def test_two_process_tuis_keep_execution_and_slow_observation_independent(
             assert await receive(reader) == "ready"
             before = await request(reader, "hold")
             provider.text("Alpha", "held boundary, ")
-            applied, pending, draft = await request(reader, "held")
-            assert applied == before and pending <= 128 and draft == "v"
+            applied, draft = await request(reader, "held")
+            assert applied == before and draft == "v"
             provider.text("Beta", "Background progress. ")
             provider.text("Gamma", "Independent progress. ")
             committed = await application.supervisor.subscribe(sessions[0])
@@ -184,8 +183,8 @@ async def test_two_process_tuis_keep_execution_and_slow_observation_independent(
                 sessions[0], header.context_id, limit=1000
             )
             assert response is not None and len(response.chunks) > 128
-            applied, pending, draft = await request(reader, "held")
-            assert applied == before and pending <= 128 and draft == "vv"
+            applied, draft = await request(reader, "held")
+            assert applied == before and draft == "vv"
             text, summaries = await request(
                 reader,
                 (

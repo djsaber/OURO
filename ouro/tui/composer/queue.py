@@ -8,7 +8,7 @@ from textual.app import ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import Static
 
-from ouro.application.inputs.queue import QueuedUserInputView
+from ouro.application.contracts.sessions import QueuedUserInputView
 from ouro.tui.composer.attachment_editor import file_count_label
 from ouro.tui.composer.popup import _trailing_badge
 from ouro.tui.input_presentation import reference_labels
@@ -36,6 +36,22 @@ class QueuedInputPanel(VerticalScroll):
 
     def on_resize(self, event: events.Resize) -> None:
         self.set_inputs(self._inputs)
+
+    def apply_changes(
+        self,
+        queued: tuple[QueuedUserInputView, ...],
+        *,
+        changed_ids: set[str],
+        active_run_id: str | None,
+    ) -> None:
+        queue = {item.queue_id: item for item in self._inputs if item.queue_id not in changed_ids}
+        queue.update((item.queue_id, item) for item in queued)
+        self.set_inputs(
+            tuple(
+                item.model_copy(update={"waiting_on_run_id": active_run_id})
+                for item in queue.values()
+            )
+        )
 
     def set_inputs(self, inputs: tuple[QueuedUserInputView, ...]) -> None:
         with self.app.batch_update():

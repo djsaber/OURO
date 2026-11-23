@@ -11,12 +11,14 @@ from textual import events
 from textual.widgets import Input, OptionList, Static, TextArea
 
 import ouro.tui.conversation.markdown_stream as conversation_history_markdown_stream
+from ouro.application.contracts.events import project_runtime_event
 from ouro.core.events import EventRecord
 from ouro.local_application import LocalApplication
 from ouro.local_configuration import build_local_configuration
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
 from ouro.tui.conversation.history import ConversationHistory
+from ouro.tui.conversation.observation import event_frames
 from ouro.tui.conversation.turn import AssistantTurn
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.menus.choice import ChoiceScreen
@@ -73,119 +75,26 @@ async def test_long_live_markdown_closes_without_blocking_the_ui_event_loop(
         assert not conversation.query_one(AssistantTurn).display
 
 
-@pytest.mark.asyncio
-async def test_visible_subscription_owns_events_without_global_sink_duplicates(
-    tmp_path: Path,
-) -> None:
-    application = _application(tmp_path)
-    session = application.runtime.sessions.create(title="Observed once").session
-    app = OuroTuiApp(application=application, resume_session_id=session.session_id)
-
-    async with run_ready_app(app, size=(100, 32)) as pilot:
-        await _wait_until(
-            lambda: app._visible_session_id() == session.session_id,
-            pilot,
-            description="visible subscribed Session",
+@pytest.mark.parametrize(
+    "kinds, sizes",
+    [
+        (("model_text_delta",) * 129, (64, 64, 1)),
+        (("model_tool_call_delta", "model_message_completed", "run_completed"), (1, 2)),
+        (("model_text_delta", "model_tool_call_delta", "model_message_completed"), (2, 1)),
+    ],
+)
+def test_observation_frames_preserve_event_order_and_tool_preview(kinds, sizes):
+    events = tuple(
+        project_runtime_event(
+            EventRecord(session_id="ses_frames", event_type=kind, sequence=index + 1)
         )
-        await _wait_until(
-            lambda: not app._pending_runtime_events,
-            pilot,
-            description="settled event buffer",
-        )
-        assert app._observation_subscription is not None
-        event = EventRecord(
-            session_id=session.session_id,
-            run_id="run_duplicate",
-            event_type="model_text_delta",
-            sequence=1,
-            payload={"text": "duplicate sink delivery"},
-        )
-
-        await app._controller._receive_event(event)
-
-        assert app._pending_runtime_events == []
-
-
-@pytest.mark.asyncio
-async def test_tui_runtime_event_staging_applies_one_bounded_prefix_per_frame(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("ouro.tui.app._RUNTIME_EVENT_APPLY_MAX", 2)
-    app = OuroTuiApp(application=_application(tmp_path))
-    applied: list[tuple[EventRecord, ...]] = []
-
-    async def apply(events):
-        applied.append(tuple(events))
-
-    async with run_ready_app(app, size=(100, 32)) as pilot:
-        await pilot.pause()
-        events = tuple(
-            EventRecord(
-                session_id="ses_prefix",
-                run_id="run_prefix",
-                event_type="model_text_delta",
-                sequence=sequence,
-                payload={"text": str(sequence)},
-            )
-            for sequence in range(1, 4)
-        )
-        monkeypatch.setattr(app, "_apply_runtime_events", apply)
-        app._pending_runtime_events.extend(events)
-
-        await app._flush_pending_runtime_events()
-
-        assert applied == [events[:2]]
-        assert app._pending_runtime_events == [events[2]]
-        assert app._runtime_events_frame_scheduled is not None
-        app._pending_runtime_events.clear()
-
-
-@pytest.mark.asyncio
-async def test_tui_runtime_event_staging_preserves_a_streamed_tool_frame(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-    applied: list[tuple[EventRecord, ...]] = []
-
-    async def apply(events):
-        applied.append(tuple(events))
-
-    async with run_ready_app(app, size=(100, 32)) as pilot:
-        await pilot.pause()
-        events = (
-            EventRecord(
-                session_id="ses_tool_frame",
-                run_id="run_tool_frame",
-                event_type="model_tool_call_delta",
-                sequence=1,
-                payload={"turn_id": "turn_1", "index": 0, "name_delta": "Write"},
-            ),
-            EventRecord(
-                session_id="ses_tool_frame",
-                run_id="run_tool_frame",
-                event_type="model_tool_call_delta",
-                sequence=2,
-                payload={"turn_id": "turn_1", "index": 0, "arguments_delta": "{}"},
-            ),
-            EventRecord(
-                session_id="ses_tool_frame",
-                run_id="run_tool_frame",
-                event_type="model_message_completed",
-                sequence=3,
-                payload={"tool_call_count": 1},
-            ),
-        )
-        monkeypatch.setattr(app, "_apply_runtime_events", apply)
-        app._pending_runtime_events.extend(events)
-
-        await app._flush_pending_runtime_events()
-
-        assert applied == [events[:2]]
-        assert app._pending_runtime_events == [events[2]]
-        assert app._runtime_events_frame_scheduled is not None
-        app._pending_runtime_events.clear()
+        for index, kind in enumerate(kinds)
+    )
+    frames = tuple(event_frames(events))
+    assert tuple(map(len, frames)) == sizes
+    assert [event.event_id for frame in frames for event in frame] == [
+        event.event_id for event in events
+    ]
 
 
 @pytest.mark.asyncio
@@ -255,7 +164,7 @@ async def test_runtime_event_prefix_mounts_one_complete_tool_batch(
             await mount_all(rows, **kwargs)
 
         monkeypatch.setattr(conversation._transcript, "mount_all", record_mount_all)
-        await app._apply_runtime_events(events)
+        await app._apply_runtime_event_batch(events, input_messages={})
 
         assert mounted_batches == [tuple(f"call_prefix_{index}" for index in range(4))]
         assert len(conversation.query(".tool-row")) == 4

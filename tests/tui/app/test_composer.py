@@ -72,9 +72,6 @@ async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
                 app._projection is not None
                 and app._projection.activity.status == "completed"
                 and composer.placeholder == Composer.DEFAULT_PLACEHOLDER
-                and not app._pending_runtime_events
-                and not app._runtime_events_ready_posted
-                and not app._runtime_events_frame_scheduled
             ),
             pilot,
             description="completed streamed run with settled TUI events",

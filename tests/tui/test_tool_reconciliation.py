@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from ouro.application.contracts.execution import RuntimeToolCallActivity
+from ouro.core.input_content import InputContent
 from ouro.core.messages import MessageRecord, ToolResultReference
 from ouro.core.provider import ProviderStreamEvent
 from ouro.core.tools import ToolCallRequest
@@ -35,7 +36,7 @@ async def test_tool_preparation_failure_reconciles_live_layout(tmp_path, monkeyp
 
     monkeypatch.setattr(application.runtime.run_lifecycle, "save_batch_state", fail_preparation)
     async with run_ready_app(app, size=(100, 30)) as pilot, release_on_exit(release):
-        app._submit_run("Read the workspace", "follow_up")
+        app._submit_run(InputContent(text="Read the workspace"), "follow_up")
         conversation = app.query_one(ConversationView)
         await wait_until(
             lambda: bool(conversation.query(".tool-row")),

@@ -10,7 +10,7 @@ from pathlib import Path
 from pydantic import Field, ValidationError, field_validator
 
 from ouro.application.inputs.requests import UserMessageEdit
-from ouro.core.base import VersionedOuroModel
+from ouro.core.base import VersionedOuroModel, new_id
 from ouro.core.errors import ConfigError
 from ouro.core.input_content import InputContent, InputFile, InputSkillReference
 from ouro.local_io import read_text_atomic, write_model_atomic
@@ -158,13 +158,32 @@ class TuiInputDrafts(VersionedOuroModel):
             return self
         return self.model_copy(update={"sessions": sessions})
 
-    def begin_submission(self, item: TuiPendingInput) -> TuiInputDrafts:
-        drafts = (
-            self.finish_edit(item.session_id)
-            if item.edit
-            else self.remember(item.origin_session_id, "")
+    def begin_submission(
+        self, content: InputContent, *, session_id: str | None, workspace: str | None
+    ) -> tuple[TuiInputDrafts, TuiPendingInput]:
+        identity = session_id or self.welcome_resource_id or new_id("ses")
+        pending = TuiPendingInput(
+            input_id=new_id("queued"),
+            session_id=identity,
+            origin_session_id=session_id,
+            edit=self.edit_for(session_id),
+            text=content.text,
+            attachments=content.attachments,
+            skills=content.skills,
         )
-        return drafts.model_copy(update={"pending": (*self.pending, item)})
+        if session_id is None:
+            drafts = self.model_copy(
+                update={
+                    "welcome": InputContent(),
+                    "welcome_resource_id": identity,
+                    "welcome_workspace": workspace,
+                    "pending": (*self.pending, pending),
+                }
+            )
+        else:
+            drafts = self.finish_edit(session_id) if pending.edit else self.remember(session_id, "")
+            drafts = drafts.model_copy(update={"pending": (*self.pending, pending)})
+        return drafts, pending
 
     def finish_submission(self, input_id: str) -> TuiInputDrafts:
         return self.model_copy(

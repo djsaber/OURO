@@ -190,7 +190,7 @@ async def test_runtime_tool_event_does_not_query_session_controls(
             sequence=app._projection.last_sequence + 1,
             payload={"tool_call_id": "call_control_refresh"},
         )
-        await app._apply_runtime_events((event,))
+        await app._apply_runtime_event_batch((event,), input_messages={})
         await pilot.pause()
 
         statuses.assert_not_awaited()

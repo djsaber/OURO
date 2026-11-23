@@ -8,6 +8,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Input, Static
 
 from ouro.application.contracts.execution import RuntimeToolCallActivity
+from ouro.core.input_content import InputContent
 from ouro.core.messages import MessageRecord, TextContent
 from ouro.core.provider import ProviderStreamEvent
 from ouro.core.state import RunRecord
@@ -433,7 +434,7 @@ async def test_real_tool_loop_stays_visible_until_completion_and_matches_reload(
         await app._set_reasoning_expanded("expand")
         session = application.runtime.sessions.create(title="Tool trace").session
         await app._open_session(session.session_id)
-        app._submit_run("Read sample.txt", "follow_up")
+        app._submit_run(InputContent(text="Read sample.txt"), "follow_up")
         await wait_for_events(
             provider.started, pilot=pilot, description="tool loop resumed model stream"
         )

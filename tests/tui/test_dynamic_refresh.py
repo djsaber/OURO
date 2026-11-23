@@ -81,7 +81,7 @@ async def test_text_frames_reuse_interactions_and_notifications_coalesce(tmp_pat
         assert reads == 2
         assert app._interaction.is_subagent
         for sequence in range(1, 6):
-            await app._apply_runtime_events(
+            await app._apply_runtime_event_batch(
                 (
                     EventRecord(
                         session_id="session",
@@ -90,7 +90,8 @@ async def test_text_frames_reuse_interactions_and_notifications_coalesce(tmp_pat
                         event_type="model_text_delta",
                         payload={"text": "next "},
                     ),
-                )
+                ),
+                input_messages={},
             )
         assert reads == 2
         assert app._interaction.request_id == "approval"

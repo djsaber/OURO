@@ -18,8 +18,8 @@ from textual.style import Style
 from textual.widgets import TextArea
 from textual.widgets.text_area import TextAreaTheme
 
-from ouro.application.inputs.queue import QueuedInputMode
-from ouro.core.input_content import InputContent, InputFile, InputSkillReference
+from ouro.core.input_content import InputContent
+from ouro.core.session_controls import SessionInputMode
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
 from ouro.tui.composer.attachment_editor import AttachmentTextArea
 from ouro.tui.composer.attachment_paths import PASTED_TEXT_ATTACHMENT_THRESHOLD
@@ -67,17 +67,10 @@ class Composer(AttachmentTextArea):
     ]
 
     class Submitted(Message):
-        def __init__(
-            self,
-            text: str,
-            mode: QueuedInputMode,
-            attachments: tuple[InputFile, ...] = (),
-            skills: tuple[InputSkillReference, ...] = (),
-        ) -> None:
+        def __init__(self, content: InputContent, mode: SessionInputMode) -> None:
             super().__init__()
-            self.text = text
+            self.content = content
             self.mode = mode
-            self.content = InputContent(text=text, attachments=attachments, skills=skills)
 
     class AttachmentRequested(Message):
         def __init__(self, paste: str | None = None) -> None:
@@ -561,9 +554,8 @@ class Composer(AttachmentTextArea):
     def action_submit_steer(self) -> None:
         self._submit("steer")
 
-    def _submit(self, mode: QueuedInputMode) -> None:
+    def _submit(self, mode: SessionInputMode) -> None:
         content = self.input_content
-        value = content.text
         if content.is_empty or self.import_pending:
             return
         context = self.command_context()
@@ -571,7 +563,7 @@ class Composer(AttachmentTextArea):
             command_text, draft = context
             self.post_message(
                 self.CommandSubmitted(
-                    value,
+                    content.text,
                     command_text=command_text.strip(),
                     draft=draft,
                     session_id=self.command_session_id(),
@@ -584,12 +576,11 @@ class Composer(AttachmentTextArea):
             self.finish_attachment_menu()
             self.insert_plain_paste(context[0])
             content = self.input_content
-            value = content.text
         self._command_draft = None
         self._history.append(content)
         self._history_index = len(self._history)
         self.clear()
-        self.post_message(self.Submitted(value, mode, content.attachments, content.skills))
+        self.post_message(self.Submitted(content, mode))
 
     def action_cursor_right(self, select: bool = False) -> None:
         if self.suggestion and not self.command_cursor_at_end():

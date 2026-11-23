@@ -43,16 +43,15 @@ async def test_closing_overlay_does_not_strand_pending_stream_frame(tmp_path, mo
             observation = app._observation_subscription
             before = observation.applied_position
             scheduled = asyncio.Event()
-            invoke_later = overlay._invoke_later
+            call_after_refresh = app.call_after_refresh
 
-            def hold_stream_frame(callback, sender):
-                if getattr(callback, "func", None) == app._post_runtime_events_ready:
+            def hold_overlay_refresh(callback, *args, **kwargs):
+                if app.screen is overlay and app._observation_frame is not None:
                     scheduled.set()
-                    return
-                invoke_later(callback, sender)
+                    return True
+                return call_after_refresh(callback, *args, **kwargs)
 
-            # Hold the frame at the screen boundary, then unmount that screen.
-            monkeypatch.setattr(overlay, "_invoke_later", hold_stream_frame)
+            monkeypatch.setattr(app, "call_after_refresh", hold_overlay_refresh)
             provider.release.set()
             await asyncio.wait_for(scheduled.wait(), 5)
             assert observation.applied_position == before
@@ -168,12 +167,12 @@ async def test_body_application_acknowledges_pages_after_apply_and_recovers_lag(
         assert observation is not None
         original = app._apply_observation_facts
 
-        async def held_apply(batch):
+        async def held_apply(facts, messages, *, through):
             if not entered.is_set():
                 entered.set()
                 await release.wait()
-            await original(batch)
-            applied.extend(message.sequence for message in batch.messages)
+            await original(facts, messages, through=through)
+            applied.extend(message.sequence for message in messages)
 
         monkeypatch.setattr(app, "_apply_observation_facts", held_apply)
         before = observation.applied_position
@@ -185,7 +184,6 @@ async def test_body_application_acknowledges_pages_after_apply_and_recovers_lag(
                     append, application.runtime.store, session.session_id, str(index)
                 )
             assert observation.applied_position == before
-            assert len(app._pending_runtime_events) <= 128
             await pilot.press("x")
             assert app.query_one(Composer).text == "x"
         finally:

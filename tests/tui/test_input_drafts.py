@@ -8,13 +8,17 @@ import pytest
 
 from ouro.application.inputs.requests import UserMessageEdit
 from ouro.core.errors import ConfigError
-from ouro.core.input_content import InputAttachment, InputFileReference, InputSkillReference
+from ouro.core.input_content import (
+    InputAttachment,
+    InputContent,
+    InputFileReference,
+    InputSkillReference,
+)
 from ouro.core.reasoning import ReasoningRequest
 from ouro.tui.composer.drafts import (
     MAX_SESSION_DRAFTS,
     TuiInputDrafts,
     TuiInputDraftStore,
-    TuiPendingInput,
 )
 from ouro.tui.composer.recovery import recover_input_drafts
 from ouro.tui.view_models import TuiDraftConfiguration
@@ -63,16 +67,12 @@ def test_input_drafts_round_trip_and_keep_a_bounded_session_mru(tmp_path: Path) 
 async def test_interrupted_edit_recovers_its_target_until_accepted(tmp_path, accepted):
     session_id = "ses_edit"
     target = UserMessageEdit(message_id="original", history_epoch=1, message_count=5)
-    pending = TuiPendingInput(
-        input_id="replacement",
-        session_id=session_id,
-        origin_session_id=session_id,
-        text="edited text",
-        edit=target,
-    )
+    content = InputContent(text="edited text")
     drafts = TuiInputDrafts().remember(session_id, "next question")
+    editing = drafts.edit_message(session_id, target, content)
+    submitted, pending = editing.begin_submission(content, session_id=session_id, workspace=None)
     store = TuiInputDraftStore(tmp_path)
-    store.save(drafts.edit_message(session_id, target, pending).begin_submission(pending))
+    store.save(submitted)
     controller = AsyncMock()
     controller.input_accepted.return_value = accepted
     recovered, _ = await recover_input_drafts(controller, store.load())

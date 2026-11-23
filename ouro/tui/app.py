@@ -29,22 +29,22 @@ from textual.worker import Worker, get_current_worker
 
 from ouro.application.agents.tree import AgentTreeSubscription
 from ouro.application.contracts.agents import AgentInteractionView, AgentTreeNode
-from ouro.application.contracts.execution import RuntimeActivitySnapshot, RuntimeToolCallActivity
+from ouro.application.contracts.execution import RuntimeActivitySnapshot
 from ouro.application.contracts.models import AvailableModel, ModelReasoningState
 from ouro.application.contracts.sessions import (
+    QueuedUserInputView,
     SessionCatalogEntry,
     SessionHistoryAnchor,
     SessionHistoryWindow,
     SessionObservationBatch,
+    SessionObservationFacts,
     SessionObservationSnapshot,
     SessionSummary,
     SessionView,
 )
-from ouro.application.inputs.queue import QueuedInputMode, QueuedUserInputView
 from ouro.application.inputs.requests import UserMessageEdit
-from ouro.application.inputs.skills import SkillInvocationRequest
 from ouro.application.observations.content import restore_session_content
-from ouro.application.observations.sessions import SessionObservation, observation_event
+from ouro.application.observations.sessions import SessionObservation
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.attachment_input import editable_input_content
 from ouro.core.base import new_id
@@ -63,7 +63,8 @@ from ouro.core.input_content import InputContent, InputFile, InputSkillReference
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import REASONING_EFFORTS, ReasoningRequest
-from ouro.core.state import DEFAULT_SESSION_TITLE, RunRecord
+from ouro.core.session_controls import SessionInputMode
+from ouro.core.state import DEFAULT_SESSION_TITLE
 from ouro.deployment import SessionBackend, TaskBackend, access_home, resolve_home
 from ouro.local_application import LocalApplication
 from ouro.tui.commands import (
@@ -96,6 +97,7 @@ from ouro.tui.conversation.history import ConversationHistory
 from ouro.tui.conversation.history_models import ConversationHistoryState, TranscriptEntry
 from ouro.tui.conversation.markdown_stream import AssistantMarkdownStream
 from ouro.tui.conversation.messages import MessageSourceRequested, ToolNavigationRequested
+from ouro.tui.conversation.observation import event_frames, present_committed_messages
 from ouro.tui.conversation.tools import is_terminal_tool
 from ouro.tui.conversation.transcript import project_transcript_entries
 from ouro.tui.conversation.view import ConversationView
@@ -195,10 +197,6 @@ if TYPE_CHECKING:
 _LOG = logging.getLogger(__name__)
 
 
-class RuntimeEventsReady(Message):
-    """Signal that the UI-owned Runtime event buffer has a prefix to render."""
-
-
 class LifecycleStatusReceived(Message):
     def __init__(self, status: TuiLifecycleStatus) -> None:
         super().__init__()
@@ -206,11 +204,11 @@ class LifecycleStatusReceived(Message):
 
 
 @dataclass
-class ObservationDelivery:
-    subscription: SessionObservation
-    batch: SessionObservationBatch
-    done: asyncio.Event = field(default_factory=asyncio.Event)
-    error: BaseException | None = None
+class ObservationFrame:
+    """The observer waits for display cadence. Explicit drains wait for application."""
+
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
+    applied: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 @dataclass(frozen=True)
@@ -233,7 +231,6 @@ class HistoryLoadRequest:
 
 
 _SESSION_SWITCH_DEBOUNCE_SECONDS = 0.1
-_RUNTIME_EVENT_APPLY_MAX = 64
 _SESSION_HISTORY_CACHE_SIZE = 3
 _RUNTIME_RENDER_BOUNDARY_EVENTS = {
     "compaction_completed",
@@ -472,7 +469,7 @@ class OuroTuiApp(App[int]):
         self._home = resolve_home(preference_home)
         self._controller_factory = partial(
             TuiController,
-            self._publish_control_event,
+            lambda _event: self._request_agent_interactions(),
             self._publish_lifecycle_status,
             home=self._home,
             system_prompt=system_prompt,
@@ -566,14 +563,9 @@ class OuroTuiApp(App[int]):
         self._dismissed_command_text: str | None = None
         self._attachment_picker: AttachmentPicker | None = None
         self._skill_picker: SkillPicker | None = None
-        self._pending_runtime_events: list[EventRecord] = []
-        self._observation_delivery: ObservationDelivery | None = None
+        self._observation_frame: ObservationFrame | None = None
         self._view_revision = 0
-        self._runtime_events_ready_posted = False
-        self._runtime_events_frame_scheduled = False
-        self._runtime_events_worker: Worker[None] | None = None
-        self._runtime_event_flush_lock = asyncio.Lock()
-        self._runtime_event_apply_lock = asyncio.Lock()
+        self._session_surface_lock = asyncio.Lock()
         self._session_status_refresh_requested = False
         self._session_status_harness_version: str | None = None
         self._session_status_refresh_task: asyncio.Task[None] | None = None
@@ -849,7 +841,6 @@ class OuroTuiApp(App[int]):
             self._agent_tree_subscription.close()
             self._agent_tree_subscription = None
         self._agent_nodes.clear()
-        self._runtime_events_frame_scheduled = False
         self._session_status_refresh_requested = False
         if self._session_status_refresh_task is not None:
             self._session_status_refresh_task.cancel()
@@ -1062,23 +1053,6 @@ class OuroTuiApp(App[int]):
         finally:
             self._session_status_refresh_task = None
 
-    def _publish_control_event(self, event: EventRecord) -> None:
-        """Refresh child interactions without admitting another body delivery path."""
-        self._request_agent_interactions()
-
-    def _queue_runtime_event(self, event: EventRecord) -> None:
-        self._pending_runtime_events.append(event)
-        if event.event_type in _RUNTIME_RENDER_BOUNDARY_EVENTS:
-            self._post_runtime_events_ready()
-            return
-        if not self._runtime_events_ready_posted and not self._runtime_events_frame_scheduled:
-            # The compositor already owns the display cadence. Schedule one
-            # prefix per native frame instead of undersampling it with a
-            # second fixed-period timer.
-            self._runtime_events_frame_scheduled = self.call_after_refresh(
-                self._post_runtime_events_ready,
-            )
-
     def _replace_observation(self, subscription: SessionObservation | None) -> None:
         if self._host_closing:
             if subscription is not None:
@@ -1089,20 +1063,14 @@ class OuroTuiApp(App[int]):
             return
         if previous is not None:
             previous.close()
-        delivery = self._observation_delivery
-        if delivery is not None:
-            delivery.done.set()
-        self._observation_delivery = None
-        self._pending_runtime_events.clear()
+        if self._observation_frame is not None:
+            self._observation_frame.ready.set()
         self._observation_subscription = subscription
         if subscription is None:
             return
 
-        async def consume() -> None:
-            await self._consume_observation(subscription)
-
         _worker: Worker[None] = self.run_worker(
-            consume,
+            partial(self._consume_observation, subscription),
             name=f"observe-{subscription.session_id}",
             group="session-observation",
             exclusive=True,
@@ -1124,20 +1092,16 @@ class OuroTuiApp(App[int]):
                     ):
                         return
                     continue
-                delivery = ObservationDelivery(subscription, batch)
-                self._observation_delivery = delivery
                 if batch.facts is not None:
-                    async with self._runtime_event_apply_lock:
-                        await self._apply_observation_facts(batch)
-                for event in batch.events:
-                    self._queue_runtime_event(observation_event(event))
-                if not batch.events:
-                    delivery.done.set()
-                await delivery.done.wait()
+                    async with self._session_surface_lock:
+                        if self._observation_subscription is not subscription:
+                            return
+                        await self._apply_observation_facts(
+                            batch.facts, batch.messages, through=batch.position.message_sequence
+                        )
+                if batch.events:
+                    await self._present_observation_events(subscription, batch)
                 if self._host_closing or self._observation_subscription is not subscription:
-                    return
-                if delivery.error is not None:
-                    self.notify(str(delivery.error), severity="error", markup=False)
                     return
                 subscription.acknowledge(batch)
                 if self._projection is not None:
@@ -1148,7 +1112,6 @@ class OuroTuiApp(App[int]):
                         history_epoch=batch.history_epoch, first_sequence=1
                     )
                     subscription.retain_history_from(self._history_anchor)
-                self._observation_delivery = None
         except Exception as exc:  # noqa: BLE001 - observation failure is local to this view.
             if self._observation_subscription is subscription and not self._host_closing:
                 self.notify(str(exc), severity="error", markup=False)
@@ -1257,7 +1220,7 @@ class OuroTuiApp(App[int]):
                 self._agent_root_status = (
                     root_activity.status if root_activity is not None else "idle"
                 )
-                async with self._runtime_event_apply_lock:
+                async with self._session_surface_lock:
                     if self._agent_tree_subscription is subscription and self._surface_available():
                         self.query_one(ConversationView).sync_agents(nodes)
                         visible_agent = self._visible_agent
@@ -1273,17 +1236,46 @@ class OuroTuiApp(App[int]):
             subscription.close()
 
     def _resume_runtime_event_frame(self, _screen: Screen) -> None:
-        # Refresh callbacks belong to the screen that accepted them. Navigation
-        # may remove that screen before its callback releases the frame gate.
-        if self._runtime_events_frame_scheduled:
-            self._post_runtime_events_ready()
+        # The old screen can unmount before it calls its after-refresh callbacks.
+        if self._observation_frame is not None:
+            self._observation_frame.ready.set()
 
-    def _post_runtime_events_ready(self) -> None:
-        self._runtime_events_frame_scheduled = False
-        if self._host_closing or not self._pending_runtime_events:
+    async def _present_observation_events(
+        self, subscription: SessionObservation, batch: SessionObservationBatch
+    ) -> None:
+        messages = {message.message_id: message for message in batch.messages}
+        immediate = any(
+            event.event_type in _RUNTIME_RENDER_BOUNDARY_EVENTS for event in batch.events
+        )
+        for prefix in event_frames(batch.events):
+            frame = ObservationFrame()
+            self._observation_frame = frame
+            try:
+                if immediate:
+                    self.call_later(frame.ready.set)
+                    immediate = False
+                else:
+                    self.call_after_refresh(frame.ready.set)
+                await frame.ready.wait()
+                async with self._session_surface_lock:
+                    if self._host_closing or self._observation_subscription is not subscription:
+                        return
+                    await self._apply_runtime_event_batch(prefix, input_messages=messages)
+            finally:
+                frame.applied.set()
+                if self._observation_frame is frame:
+                    self._observation_frame = None
+
+    async def _flush_pending_runtime_events(self) -> None:
+        # A compaction completing during a render waits for it, then releases the next prefix.
+        if self._observation_frame is None:
             return
-        if not self._runtime_events_ready_posted:
-            self._runtime_events_ready_posted = self.post_message(RuntimeEventsReady())
+        async with self._session_surface_lock:
+            frame = self._observation_frame
+            if frame is None:
+                return
+            frame.ready.set()
+        await frame.applied.wait()
 
     def _publish_lifecycle_status(self, status: TuiLifecycleStatus) -> None:
         if not self._host_closing:
@@ -1379,56 +1371,12 @@ class OuroTuiApp(App[int]):
         self._system_status = status
         self.query_one(ConversationView).set_system_status(status)
 
-    def on_runtime_events_ready(self, _message: RuntimeEventsReady) -> None:
-        self._runtime_events_ready_posted = False
-        if self._host_closing or not self.query(ConversationView):
-            self._pending_runtime_events.clear()
-            return
-        # Awaiting rendering here stalls the App message pump, including key
-        # dispatch, even when the renderer itself runs off-loop. A single worker
-        # preserves frame cadence while leaving the input dispatcher available.
-        if self._runtime_events_worker is None or self._runtime_events_worker.is_finished:
-            # Create the coroutine only when the worker starts; it may be cancelled first.
-            self._runtime_events_worker = self.run_worker(
-                self._flush_pending_runtime_events,
-                name="runtime-event-frame",
-                group="runtime-events",
-            )
-
-    async def _flush_pending_runtime_events(self) -> None:
-        # Explicit completion drains and frame workers share the same ordering
-        # boundary, including the asynchronous reads preceding projection.
-        async with self._runtime_event_flush_lock:
-            if not self._pending_runtime_events or self._host_closing:
-                return
-            events = _runtime_event_frame_prefix(self._pending_runtime_events)
-            del self._pending_runtime_events[: len(events)]
-            delivery = self._observation_delivery
-            try:
-                await self._apply_runtime_events(events)
-            except Exception as exc:  # noqa: BLE001 - fail only this content observer.
-                if delivery is None:
-                    raise
-                delivery.error = exc
-                delivery.done.set()
-                self._pending_runtime_events.clear()
-                return
-            if not self._pending_runtime_events and delivery is not None:
-                delivery.done.set()
-        if (
-            self._pending_runtime_events
-            and not self._runtime_events_ready_posted
-            and not self._runtime_events_frame_scheduled
-        ):
-            self._runtime_events_frame_scheduled = self.call_after_refresh(
-                self._post_runtime_events_ready,
-            )
-
-    async def _apply_observation_facts(self, batch: SessionObservationBatch) -> None:
-        """Apply missing work and changed state without replacing the conversation surface."""
+    async def _apply_observation_facts(
+        self, facts: SessionObservationFacts, messages: tuple[MessageRecord, ...], *, through: int
+    ) -> None:
+        """Apply committed changes to the conversation and its surrounding controls."""
         projection = self._projection
-        facts = batch.facts
-        if projection is None or facts is None or not self._surface_available():
+        if projection is None or not self._surface_available():
             return
         if not self._visible_read_only and self._active_title != facts.session.title:
             self._active_title = facts.session.title
@@ -1436,127 +1384,23 @@ class OuroTuiApp(App[int]):
         if facts.session.harness_version != self._session_status_harness_version:
             self._session_status_harness_version = facts.session.harness_version
             self._schedule_session_status_refresh()
-        conversation = self.query_one(ConversationView)
-        history = self.query_one(ConversationHistory)
-        if facts.session.active_run_id is not None:
-            await history.reopen_run(facts.session.active_run_id)
-        self._history_run_ids.update(message.run_id for message in batch.messages if message.run_id)
-        boundaries = sorted(
-            [
-                (end, run.ended_at, run)
-                for run in facts.runs
-                if run.kind == "agent"
-                and run.ended_at is not None
-                and (
-                    run.run_id in self._history_run_ids
-                    or (
-                        run.run_id == facts.session.last_run_id
-                        and run.history_epoch == batch.history_epoch
-                    )
-                )
-                and (end := facts.run_ends[run.run_id]) <= batch.position.message_sequence
-            ]
-            + [
-                (facts.compaction_ends[item.compaction_id], item.created_at, item)
-                for item in facts.compactions
-            ],
-            key=lambda item: (item[0], item[1]),
+        await present_committed_messages(
+            self.query_one(ConversationView),
+            projection,
+            facts,
+            messages,
+            through=through,
+            history_run_ids=self._history_run_ids,
+            models=self._models,
         )
-        boundary_index = 0
-
-        async def finish_through(sequence: int) -> None:
-            nonlocal boundary_index
-            while boundary_index < len(boundaries) and boundaries[boundary_index][0] <= sequence:
-                record = boundaries[boundary_index][2]
-                boundary_index += 1
-                if isinstance(record, RunRecord):
-                    await conversation.sync_run_summary(
-                        project_run_presentation(record, models=self._models)
-                    )
-                else:
-                    await conversation.add_compaction(
-                        compaction_id=record.compaction_id,
-                        covered_message_count=record.covered_message_count,
-                        tokens_before=record.estimated_tokens_before,
-                        tokens_after=record.estimated_tokens_after,
-                        duration_seconds=record.duration_seconds,
-                    )
-
-        for message in batch.messages:
-            await finish_through(message.sequence - 1)
-            if projection.has_message(message.message_id, message.sequence):
-                continue
-            if message.run_id is not None:
-                await history.reopen_run(message.run_id)
-            kind = message.run_message_kind
-            if kind == "assistant_response":
-                if not projection.is_current_response(message):
-                    await conversation.finish_assistant()
-                conversation.begin_model_request(run_id=message.run_id)
-                answer, reasoning, duration = projection.apply_response(message)
-                if reasoning:
-                    await conversation.append_reasoning(reasoning)
-                if duration is not None:
-                    conversation.finish_reasoning(duration)
-                if answer:
-                    await conversation.append_assistant(answer)
-                if message.tool_calls:
-                    batches = {ref.tool_call_id: ref.batch_id for ref in message.call_refs}
-                    await conversation.sync_tools(
-                        tuple(
-                            RuntimeToolCallActivity(
-                                run_id=message.run_id,
-                                batch_id=batches.get(call.id),
-                                tool_call_id=call.id,
-                                tool_name=call.name,
-                                status="planned",
-                                source_index=call.source_index,
-                                arguments=call.arguments,
-                                requested_at=message.created_at,
-                            )
-                            for call in message.tool_calls
-                        )
-                    )
-            elif kind == "tool_result":
-                conversation.begin_model_request(run_id=message.run_id)
-                await conversation.apply_tool_result(message)
-            else:
-                await conversation.finish_assistant()
-                await conversation.add_input_message(message)
-            projection.remember_message(message.message_id, message.sequence)
-        if projection.apply_facts(facts):
-            await conversation.finish_assistant()
-            conversation.begin_model_request(run_id=projection.activity.run_id)
-        await conversation.sync_tools(projection.activity.tool_calls)
-        await finish_through(batch.position.message_sequence)
         if not self._visible_read_only:
-            panel = self.query_one(QueuedInputPanel)
-            changed = {state.input_id for state in facts.inputs}
-            queue = {item.queue_id: item for item in panel.inputs if item.queue_id not in changed}
-            queue.update((item.queue_id, item) for item in facts.queued_inputs)
-            panel.set_inputs(
-                tuple(
-                    item.model_copy(update={"waiting_on_run_id": facts.session.active_run_id})
-                    for item in queue.values()
-                )
+            self.query_one(QueuedInputPanel).apply_changes(
+                facts.queued_inputs,
+                changed_ids={state.input_id for state in facts.inputs},
+                active_run_id=facts.session.active_run_id,
             )
         self._sync_activity(projection.activity)
         await self._refresh_interaction()
-
-    async def _apply_runtime_events(
-        self,
-        events: Sequence[EventRecord],
-    ) -> None:
-        delivery = self._observation_delivery
-        input_messages = (
-            {message.message_id: message for message in delivery.batch.messages}
-            if delivery is not None
-            else {}
-        )
-        async with self._runtime_event_apply_lock:
-            if delivery is not self._observation_delivery:
-                return
-            await self._apply_runtime_event_batch(events, input_messages=input_messages)
 
     async def _apply_runtime_event_batch(
         self,
@@ -1564,8 +1408,6 @@ class OuroTuiApp(App[int]):
         *,
         input_messages: dict[str, MessageRecord],
     ) -> None:
-        if self._host_closing or not events or not self.query(ConversationView):
-            return
         projection = self._projection
         if projection is None:
             return
@@ -1764,18 +1606,13 @@ class OuroTuiApp(App[int]):
         if interaction is not None and interaction.kind == "question":
             plan_panel = self.query_one(PlanConfirmationPanel)
             if plan_panel.display and plan_panel.awaiting_feedback:
-                plan_panel.accept_feedback(message.text)
+                plan_panel.accept_feedback(message.content.text)
                 return
             panel = self.query_one(AskUserPanel)
             if panel.display and panel.awaiting_freeform:
-                panel.accept_freeform(message.text)
+                panel.accept_freeform(message.content.text)
             return
-        self._submit_run(
-            message.text,
-            message.mode,
-            attachments=message.content.attachments,
-            skills=message.content.skills,
-        )
+        self._submit_run(message.content, message.mode)
 
     def on_composer_attachment_requested(self, message: Composer.AttachmentRequested) -> None:
         if self._visible_read_only or self._interaction is not None:
@@ -2035,7 +1872,7 @@ class OuroTuiApp(App[int]):
             if len(original.attachments) + len(paths) > 16:
                 self.notify("A message can contain at most 16 attachments", severity="warning")
                 return
-            identity = self._input_drafts.welcome_resource_id or new_id("ses")
+            identity = original_session or self._input_drafts.welcome_resource_id or new_id("ses")
             if original_session is None:
                 self._set_input_drafts(
                     self._input_drafts.model_copy(
@@ -2046,17 +1883,15 @@ class OuroTuiApp(App[int]):
                     )
                 )
                 await self._flush_input_drafts()
-            session = await self._controller.attachment_target(original_session, identity)
-            imported: list[InputFile] = []
-            for path in paths:
-                try:
-                    imported.append(await self._controller.import_attachment(session, path))
-                except Exception as exc:  # noqa: BLE001 - report each failed file and retain successes.
-                    self.notify(f"{path.name}: {exc}", severity="error", markup=False)
-            await self._controller.validate_attachment_session(session)
+            imported = await self._controller.import_attachments(
+                paths,
+                target_id=identity,
+                welcome_draft=original_session is None,
+                on_error=partial(self.notify, severity="error", markup=False),
+            )
             if revision != self._controller.selection_revision:
                 # The import belongs to its captured Session, never to a later navigation.
-                restored = insert_into_original(tuple(imported)) if imported else original
+                restored = insert_into_original(imported) if imported else original
                 self._remember_input_draft(
                     original_session,
                     restored.text,
@@ -2067,7 +1902,7 @@ class OuroTuiApp(App[int]):
                 return
             composer.load_input(original)
             composer.selection = selection
-            composer.insert_attachments(tuple(imported))
+            composer.insert_attachments(imported)
             content = composer.input_content
             self._remember_input_draft(
                 original_session,
@@ -2096,40 +1931,13 @@ class OuroTuiApp(App[int]):
         if models and not self._active_model:
             self.notify("Select a model with /model before sending your draft")
 
-    def _submit_run(
-        self,
-        prompt: str,
-        queue_mode: QueuedInputMode,
-        *,
-        skills: tuple[InputSkillReference, ...] = (),
-        attachments: tuple[InputFile, ...] | None = None,
-    ) -> None:
+    def _submit_run(self, content: InputContent, queue_mode: SessionInputMode) -> None:
         if self._visible_read_only:
             return
-        attachments = (
-            attachments
-            if attachments is not None
-            else self._input_drafts.content_for(self._controller.session_id).attachments
-        )
         origin = self._controller.session_id
-        identity = origin or self._input_drafts.welcome_resource_id or new_id("ses")
-        pending = TuiPendingInput(
-            input_id=new_id("queued"),
-            session_id=identity,
-            origin_session_id=origin,
-            edit=self._input_drafts.edit_for(origin),
-            text=prompt,
-            attachments=attachments,
-            skills=skills,
+        drafts, pending = self._input_drafts.begin_submission(
+            content, session_id=origin, workspace=self._controller.draft_workspace
         )
-        drafts = self._input_drafts.begin_submission(pending)
-        if origin is None:
-            drafts = drafts.model_copy(
-                update={
-                    "welcome_resource_id": identity,
-                    "welcome_workspace": self._controller.draft_workspace,
-                }
-            )
         self._set_input_drafts(drafts)
         if pending.edit is not None:
             self._edit_draft(drafts.content_for(origin))
@@ -2138,7 +1946,7 @@ class OuroTuiApp(App[int]):
 
     @work(group="composer-input")
     async def _execute_composer_input(
-        self, pending: TuiPendingInput, queue_mode: QueuedInputMode, revision: int
+        self, pending: TuiPendingInput, queue_mode: SessionInputMode, revision: int
     ) -> None:
         with self.query_one(ActivityIndicator).pending_operation():
             async with self._composer_submission_lock:
@@ -2164,7 +1972,7 @@ class OuroTuiApp(App[int]):
     async def _run_prompt(
         self,
         pending: TuiPendingInput,
-        queue_mode: QueuedInputMode,
+        queue_mode: SessionInputMode,
         *,
         revision: int,
         view_revision: int,
@@ -2206,24 +2014,8 @@ class OuroTuiApp(App[int]):
             await self._flush_input_drafts()
             if revision != self._controller.selection_revision:
                 raise ConfigError("Input target changed before submission; the draft was retained")
-            result = await self._controller.submit(
-                pending.text,
-                queue_mode=queue_mode,
-                skill_invocations=tuple(
-                    SkillInvocationRequest(
-                        name=item.name,
-                        arguments=pending.text,
-                        text_offset=item.text_offset,
-                        order=item.order,
-                    )
-                    for item in pending.skills
-                ),
-                resource_refs=pending.resource_refs,
-                attachments=pending.attachments,
-                on_input_accepted=input_accepted,
-                new_session_id=pending.session_id if origin_session_id is None else None,
-                input_id=pending.input_id,
-                edit=pending.edit,
+            result = await self._controller.submit_pending(
+                pending, queue_mode=queue_mode, on_input_accepted=input_accepted
             )
             await self._refresh_welcome_status()
             await self._sync_queued_inputs(result.session.session_id)
@@ -3124,7 +2916,7 @@ class OuroTuiApp(App[int]):
                         side_id
                     ):
                         self.query_one(Composer).clear()
-                        self._submit_run(argument, "follow_up", attachments=())
+                        self._submit_run(InputContent(text=argument), "follow_up")
             except (OuroError, ValueError) as exc:
                 self.notify(str(exc), severity="error", markup=False)
         elif command.name == "/workspace":
@@ -3494,7 +3286,7 @@ class OuroTuiApp(App[int]):
             _LOG.warning("Could not load session summaries: %s", exc)
             self.notify("Could not load summaries for the current session", severity="error")
             return
-        async with self._runtime_event_apply_lock:
+        async with self._session_surface_lock:
             if not self._surface_available() or self._visible_session_id() != session_id:
                 return
             await self.query_one(ConversationView).add_command_output(
@@ -3535,7 +3327,7 @@ class OuroTuiApp(App[int]):
             return
         if self._host_closing or revision != self._view_revision:
             return
-        async with self._runtime_event_apply_lock:
+        async with self._session_surface_lock:
             if self._host_closing or revision != self._view_revision:
                 return
             self._controller.activate_new_session(prepared)
@@ -3551,7 +3343,6 @@ class OuroTuiApp(App[int]):
                 self._history_before_cursor = None
                 self._history_request = None
                 self._history_load_failed = False
-                self._pending_runtime_events.clear()
                 self._visible_read_only = False
                 self._visible_agent = None
                 self.query_one(Composer).set_class(False, "read-only-session")
@@ -4312,7 +4103,7 @@ class OuroTuiApp(App[int]):
                 f"{session.agent_root_session_id}"
             )
         try:
-            async with self._runtime_event_apply_lock:
+            async with self._session_surface_lock:
                 if self._host_closing or revision != self._view_revision:
                     if prepared_tree is not None:
                         prepared_tree.close()
@@ -4626,7 +4417,7 @@ class OuroTuiApp(App[int]):
             hide_inherited=hide_inherited,
             show_harness_messages=self._preferences.show_harness_messages,
         )
-        async with self._runtime_event_apply_lock:
+        async with self._session_surface_lock:
             if (
                 self._host_closing
                 or revision != self._view_revision
@@ -6123,20 +5914,6 @@ def _model_display_name(route: str, models: tuple[AvailableModel, ...]) -> str:
 
 def _status_model_label(model: AvailableModel) -> str:
     return "" if model.provider_id == "faux" else model_display_label(model)
-
-
-def _runtime_event_frame_prefix(events: Sequence[EventRecord]) -> tuple[EventRecord, ...]:
-    """Keep a streamed tool snapshot visible before its lifecycle advances."""
-
-    prefix = events[:_RUNTIME_EVENT_APPLY_MAX]
-    saw_tool_stream = False
-    for index, event in enumerate(prefix):
-        if event.event_type == "model_tool_call_delta":
-            saw_tool_stream = True
-        elif saw_tool_stream:
-            prefix = prefix[:index]
-            break
-    return tuple(prefix)
 
 
 def _next_cycle_value(values: Sequence[str], current: str) -> str:

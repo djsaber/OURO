@@ -273,7 +273,7 @@ async def test_edit_numbered_message_replaces_suffix_on_submit(tmp_path, monkeyp
         assert {m.message_id for m in after.messages}.isdisjoint(
             m.message_id for m in before[len(prefix) :]
         )
-        await app._apply_runtime_events(run_events(store, third))
+        await app._apply_runtime_event_batch(run_events(store, third), input_messages={})
         assert app.query_one(ConversationView).user_turn_summaries() == (
             "first question",
             "edited question",
@@ -494,7 +494,7 @@ async def test_abort_edit_resubmit_and_restart_in_tui(tmp_path, backend, edited)
             if workers:
                 await wait_for_workers(app, workers)
         await pilot.pause()
-        await app._apply_runtime_events((late,))
+        await app._apply_runtime_event_batch((late,), input_messages={})
         assert app._projection.history_epoch == 1
         assert app._controller.session_id == session_id
         assert app._projection.activity.status == "completed"

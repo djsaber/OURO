@@ -193,7 +193,7 @@ async def test_reasoning_stream_renders_markup_syntax_as_plain_text(tmp_path: Pa
             ),
         )
 
-        await app._apply_runtime_events(events)
+        await app._apply_runtime_event_batch(events, input_messages={})
         await pilot.pause()
 
         expected = "".join(fragments)
@@ -271,7 +271,7 @@ async def test_reasoning_stream_renders_each_completed_line_once(
         # One batch per fragment exercises the append path fragment by
         # fragment, the way runtime event batches arrive while thinking.
         for event in events:
-            await app._apply_runtime_events((event,))
+            await app._apply_runtime_event_batch((event,), input_messages={})
         await pilot.pause()
 
         expected_lines = [f"thought {number}" for number in range(40)]
@@ -304,7 +304,7 @@ async def test_reasoning_stream_lines_match_whole_block_rendering(tmp_path: Path
         events = _reasoning_delta_events(session_id, "run_reasoning_parity", fragments)
 
         for event in events:
-            await app._apply_runtime_events((event,))
+            await app._apply_runtime_event_batch((event,), input_messages={})
         await pilot.pause()
 
         body = app.query_one(AssistantTurn).reasoning._content
@@ -387,7 +387,7 @@ async def test_streaming_tool_row_mounts_after_its_name_and_updates_in_place_on_
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         conversation = app.query_one(ConversationView)
-        await app._apply_runtime_events(
+        await app._apply_runtime_event_batch(
             (
                 EventRecord(
                     session_id=session_id,
@@ -413,7 +413,8 @@ async def test_streaming_tool_row_mounts_after_its_name_and_updates_in_place_on_
                         "name_delta": "Write",
                     },
                 ),
-            )
+            ),
+            input_messages={},
         )
         row = conversation.query_one(tui_widgets_tools.ToolActivityRow)
         assert row.tool.status == "streaming"
@@ -421,7 +422,7 @@ async def test_streaming_tool_row_mounts_after_its_name_and_updates_in_place_on_
         assert "Write" in str(row.render())
         provisional_id = row.tool_call_id
 
-        await app._apply_runtime_events(
+        await app._apply_runtime_event_batch(
             (
                 EventRecord(
                     session_id=session_id,
@@ -434,14 +435,15 @@ async def test_streaming_tool_row_mounts_after_its_name_and_updates_in_place_on_
                         "arguments_delta": '{"path":"out',
                     },
                 ),
-            )
+            ),
+            input_messages={},
         )
         assert conversation.query_one(tui_widgets_tools.ToolActivityRow) is row
         assert row.tool.status == "streaming"
         assert row.tool.argument_stream_tail == '{"path":"out'
         assert '{"path":"out' in str(row.render())
 
-        await app._apply_runtime_events(
+        await app._apply_runtime_event_batch(
             (
                 EventRecord(
                     session_id=session_id,
@@ -480,7 +482,8 @@ async def test_streaming_tool_row_mounts_after_its_name_and_updates_in_place_on_
                         "source_index": 0,
                     },
                 ),
-            )
+            ),
+            input_messages={},
         )
 
         assert conversation.query_one(tui_widgets_tools.ToolActivityRow) is row

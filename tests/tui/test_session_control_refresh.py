@@ -5,7 +5,6 @@ import asyncio
 import pytest
 
 from ouro.application.contracts.sessions import (
-    SessionObservationBatch,
     SessionObservationFacts,
     SessionView,
 )
@@ -216,13 +215,7 @@ async def test_control_refresh_reads_only_changed_harness_facts(tmp_path, monkey
                     update={"harness_version": version}
                 )
             )
-            await app._apply_observation_facts(
-                SessionObservationBatch(
-                    session_id=session.session_id,
-                    history_epoch=session.history_epoch,
-                    facts=facts,
-                )
-            )
+            await app._apply_observation_facts(facts, (), through=0)
             task = app._session_status_refresh_task
             if task is not None:
                 await task
@@ -284,20 +277,12 @@ async def test_fact_refresh_burst_coalesces_without_blocking_presentation(tmp_pa
         return ()
 
     async def apply_version(version):
-        await app._apply_observation_facts(
-            SessionObservationBatch(
-                session_id=session.session_id,
-                history_epoch=session.history_epoch,
-                facts=SessionObservationFacts(
-                    session=SessionView.from_record(session).model_copy(
-                        update={
-                            "harness_version": f"harness_{version}",
-                            "title": f"Title {version}",
-                        }
-                    )
-                ),
+        facts = SessionObservationFacts(
+            session=SessionView.from_record(session).model_copy(
+                update={"harness_version": f"harness_{version}", "title": f"Title {version}"}
             )
         )
+        await app._apply_observation_facts(facts, (), through=0)
 
     async with run_ready_app(app) as pilot:
         await app._open_session(session.session_id)

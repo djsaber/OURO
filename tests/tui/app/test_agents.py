@@ -10,6 +10,7 @@ from textual.app import App
 from textual.widgets import Input, OptionList
 
 from ouro.application.contracts.agents import AgentToolOptionView
+from ouro.core.input_content import InputContent
 from ouro.core.messages import MessageRecord, TextContent
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
@@ -224,7 +225,7 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
 
         monkeypatch.setattr(app._controller, "submit", reject_submit)
         monkeypatch.setattr(app._controller, "abort", reject_abort)
-        app.post_message(Composer.Submitted("must not submit", "follow_up"))
+        app.post_message(Composer.Submitted(InputContent(text="must not submit"), "follow_up"))
         app.action_abort()
         await pilot.pause()
         assert writes == []

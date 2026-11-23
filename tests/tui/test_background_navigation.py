@@ -10,6 +10,7 @@ import pytest
 from ouro.application.contracts.execution import ShutdownPolicy
 from ouro.application.inputs.queue import QueuedUserInputView
 from ouro.core.billing import UsageFilter
+from ouro.core.input_content import InputContent
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ProviderStreamEvent
 from ouro.core.usage_queries import UsageSummary, UsageTotals
@@ -475,7 +476,8 @@ async def test_two_owned_sessions_keep_streaming_across_welcome_and_reentry(
     tmp_path, monkeypatch, backend
 ):
     provider = NavigationProvider()
-    app = OuroTuiApp(application=streaming_application(tmp_path, provider, backend=backend))
+    application = streaming_application(tmp_path, provider, backend=backend)
+    app = OuroTuiApp(application=application)
     async with run_ready_app(app, size=(100, 32)) as pilot:
         alpha, alpha_worker = await submit(app, pilot, provider, "Alpha")
         await app._dispatch_command("/new")
@@ -513,10 +515,18 @@ async def test_two_owned_sessions_keep_streaming_across_welcome_and_reentry(
             # Execution and the terminal projection precede the summary application
             # and transcript freeze. Neither is the content-application receipt.
             assert app._projection.activity.status == "completed"
-            assert app._observation_delivery is not None
+            observation = app._observation_subscription
+            terminal = await asyncio.to_thread(
+                application.sessions.observation_snapshot, alpha, history_limit=1
+            )
+            assert observation.applied_position.revision < terminal.position.revision
         finally:
             release.set()
-        await wait_for_observed_status(pilot, status="completed")
+        await wait_until(
+            lambda: observation.applied_position.revision >= terminal.position.revision,
+            pilot,
+            description="terminal summary acknowledged",
+        )
         entries = app.query_one(ConversationHistory).entries
         answers = [entry.text for entry in entries if entry.kind == "assistant"]
         assert answers == ["Alpha prefix. While away. After return."]
@@ -611,7 +621,7 @@ async def test_late_submission_failure_does_not_restore_input_into_another_sessi
     async with run_ready_app(app, size=(100, 32)) as pilot:
         app._remember_input_draft(destination, "Destination draft")
         monkeypatch.setattr(app._controller, "submit", fail)
-        app._submit_run("Original prompt", "follow_up")
+        app._submit_run(InputContent(text="Original prompt"), "follow_up")
         await asyncio.wait_for(entered.wait(), 5)
         worker = next(w for w in app.workers if w.group == "run")
         await app._open_session(destination)

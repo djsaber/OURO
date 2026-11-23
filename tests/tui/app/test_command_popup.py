@@ -123,7 +123,7 @@ async def test_command_popup_hides_when_no_commands_match(
     monkeypatch.setattr(
         app,
         "_submit_run",
-        lambda text, mode, *, attachments, skills: submitted.append((text, mode, attachments)),
+        lambda content, mode: submitted.append((content.text, mode, content.attachments)),
     )
 
     async with run_ready_app(app, size=(100, 32)) as pilot:

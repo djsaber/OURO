@@ -20,8 +20,9 @@ TUI 不得：
 ## 组合与生命周期
 
 `ouro` 无子命令时，CLI 解析 `--home`、`--session-backend`、`--system-prompt`、`--session`、
-`--approval-mode` 与 `--afk`，再由本地 composition root 创建 `LocalApplication`、`TuiController` 和
-`OuroTuiApp`。TUI 只使用 controller 暴露的 DTO、命令与借用的 Application 用例服务。
+`--approval-mode` 与 `--afk`，由 `run_tui` 启动 `OuroTuiApp`。App 装配 `TuiController`。
+控制器在启动期间构建或接收 `LocalApplication`，管理运行订阅，并向工作流提供命令及借用的 Application 服务。
+注入 Application 且未指定 home 时，App 从 `application.runtime.environment.home` 定位本机偏好和草稿。
 
 启动流程必须满足：
 
@@ -72,12 +73,13 @@ TUI 不得：
 提交准备期间保留输入焦点，用户可继续编辑草稿。首次提交等待会话绑定、读取编辑目标或等待替换输入受理时暂停再次发送。
 只读会话与审批、问答等交互约束单独决定输入是否可用。
 
-TUI 状态分为三类：
+各类状态有独立的所有者。
 
 | 状态 | 所有者 | 示例 |
 |---|---|---|
 | 业务事实 | Application/SessionStore | Session、Run、消息、工具批次、审批、交互、Delegation |
-| Host 控制状态 | TUI controller | controlled Session、当前模型选择、待提交输入 |
+| Host 控制状态 | TuiController | controlled Session、当前模型选择 |
+| 本机输入草稿 | TuiInputDrafts | 欢迎页与各会话的草稿、编辑目标、等待受理的输入 |
 | 纯呈现状态 | Widget/App | visible Session、滚动锚点、选中项、弹层、展开状态、输入光标 |
 
 `controlled Session` 是允许提交输入和控制 Run 的主会话；`visible Session` 是时间线当前展示的会话。
@@ -209,12 +211,14 @@ TUI 偏好 `session_grouping`。所有会话列表共用同一分组投影：日
 新会话、重新进入、root/child 和外部进程会话统一调用 `RuntimeSupervisor.observe_session`。
 Application 拥有一致快照、消息点查、history_epoch、分页追赶与已应用游标；TUI 在内容批次应用成功后确认，
 读取或排版排队不推进游标。历史代次变化交付新快照，当前代次中缺失消息报告读取错误。
+批次中的 `RuntimeEventView` 通过 Application 的 `observation_event` 转为 `SessionContentProjection.apply`
+接收的 `EventRecord`。同批消息按标识配对，保留 Application 提供的正文和附件。
 正文不通过本地 event sink 或 RunResult 回填，执行结果只用于命令反馈和非正文状态。
 
 会话选择先准备 Application 观察与正文投影，再检查目标版本并提交到共享视图。失效准备结果不能改变
 controlled Session、草稿或可见内容，未接管的订阅必须关闭。连续选择节点时合并待切换目标。
 视图提交与内容应用共享顺序边界。快照中的稳定正文和流式尾部先准备后安装，初始历史排版独立推进；
-运行中已可见的内容转入历史时，呈现 worker 异步等待替代内容就绪，再释放活动表面。
+运行中已可见的内容转入历史时，会话观察 worker 异步等待替代内容就绪，再释放活动表面。
 事件按刷新帧合并；页面栈切换时重新唤醒待处理帧，流式进度不依赖已关闭弹层的刷新回调。
 
 Session 历史读取与模型执行配置解耦。模型路由失效、Provider 不可用或 reasoning 无法解析，不得阻止打开和
@@ -251,15 +255,19 @@ composer 支持多行编辑、历史、命令补全和运行中排队：
 直接用户输入必须保持 `role=user` 和用户 provenance。命令只负责选择 Application 动作；
 有效命令不得作为普通用户消息误提交；无法匹配的命令或固定参数作为原始正文发送。
 Enter 与 Ctrl+G 提交同一份完整输入，仅指定不同交付模式；正文、技能引用、文件引用和上传附件均可混排或单独提交。
-TUI 负责选择、编辑与恢复输入元素，Application 负责解析技能、接受输入和准备文件内容。
+`Composer.Submitted` 携带编辑器的 `InputContent` 和交付模式。`TuiInputDrafts.begin_submission` 将正文、
+文件和技能位置与目标会话、稳定输入 ID、编辑目标一同记入待提交草稿。App 在提交前等待草稿写入完成。
+`TuiController.submit_pending` 将技能引用映射为调用，并将附件、编辑目标和稳定身份交给 `UserInputRequest`。
+`RuntimeSupervisor.submit_user_input` 的受理回调触发草稿清理和会话观察，执行结果单独等待。
 排队输入使用 Application 的 durable queue、消费模式和去重语义。
 Application 提供待处理输入及其正在等待的活动 Run，TUI 据此区分发送准备和运行中追加。
 空闲会话提交期间保持输入焦点，以状态栏表达等待调度；消息在 canonical 消费提交后进入正文。
 只有等待活动 Run 消费的后续输入或 steer 才展开输入框下方的队列提示。全部未消费输入仍可通过 `/unqueue` 取回。
 这些呈现规则统一用于主页提交、空会话和已有历史的会话；Application 不持有页面、焦点或组件布局状态。
 
-队列提示和 `/unqueue` 候选共用同一投影。TUI 将实时事件、提交结果和撤回操作触发的队列读取与发布串行化，
-不以请求发起顺序推断后台线程实际取得快照的顺序；读取仍离开事件循环，消息泵保持可交互。
+队列提示和 `/unqueue` 候选共用同一投影。控制器通过 `RuntimeService.pending_user_inputs` 读取完整队列，
+通过 `RuntimeService.cancel_pending_user_input` 撤回选中项。实时事件、提交结果和撤回操作触发的队列读取与发布串行执行。
+读取在后台线程完成，输入消息泵可以继续处理按键。
 刷新绑定可见视图及其投影实例，切换会话或安装替换快照使在途结果和等待中的旧刷新失效。
 读取失败保留已显示的队列并向调用方传播错误；失败或取消均释放后续刷新。
 
@@ -390,7 +398,8 @@ Windows 输出适配器在 Textual 的 flush 边界合并画面片段，复用�
 `/model` 与模型选择器使用完整 `provider/endpoint` 路由。已有 Session 的切换只影响下一次模型请求；已发出的
 请求继续使用原路由。`/thinking` 写入供应商中立意图，Endpoint 能力不支持时在网络调用前失败。
 
-`/compact` 调用应用层的压缩用例。上下文详情从最近一次真实 Provider 请求的快照读取当时的系统提示词、消息和工具。
+`/compact` 通过 `TuiController.compact` 调用 `RuntimeService.compact` 压缩受控会话。
+上下文详情从最近一次真实 Provider 请求的快照读取当时的系统提示词、消息和工具。
 状态栏的用量保留实际请求或压缩记录中的估算值；模型可解析时，额度与占比使用当前模型配置。
 模型、推理与审批设置以及配置命令结束后，当前页面异步刷新状态；运行中的请求仍遵循其已捕获的配置。
 配置刷新不重载对话正文，不改变滚动、输入或焦点。欢迎页可见时同步刷新系统摘要。
@@ -451,7 +460,9 @@ Provider 子菜单的 `Authentication` 入口通过 `TuiController.provider_auth
 通过 Supervisor 的持久化 Run 状态订阅等待 `waiting_approval` 检查点，再向捕获的目标 Session
 提交一次；终态与取消必须结束等待，不使用固定延迟、轮询或重复提交来跨越此边界。
 
-Plan 的退出确认可使用专用计划正文视图，但提交仍走通用 resumable tool/Session control 契约。
+根会话的继续执行、审批和问答共用 `TuiController._supervised_result`。Supervisor 返回 `RunHandle`，
+`wait(handle)` 提供状态与 Run 标识。控制器据此通过 `sessions.run_result` 读取结果，并在结束等待时调用
+`detach_handle` 释放本机句柄。Plan 的退出确认也使用通用 resumable tool/Session control 契约。
 
 ## 子智能体视图
 
@@ -461,6 +472,10 @@ Agent tree 在主会话和多个 child 之间切换，也可从 child 的工具�
 child surface 为只读：禁止普通输入、steer、follow-up、abort、fork、模型修改、审批策略修改和 destructive
 Session 操作。root interaction inbox 中的 child 审批与 AskUser 仍由 controlled root 的交互面板处理；只读限制
 不等于丢弃 HITL。不可见 child 继续运行，重新打开时使用 snapshot/high-water/cursor 衔接全部缺失事件。
+
+`TuiController` 通过 `runtime.add_event_sink` 接收子会话的审批、问答和 Run 状态通知。
+它按 `sessions.view` 提供的 `agent_root_session_id` 筛选当前主会话的通知，App 再通过
+`agents.list_agent_interactions` 刷新主会话交互面板。子会话的正文继续由其 `SessionObservation` 提供。
 
 ## 渲染与性能
 
@@ -474,7 +489,7 @@ Session 操作。root interaction inbox 中的 child 审批与 AskUser 仍由 co
 历史区和 assistant 活动区由 ConversationView 持续持有。模型轮次结束或切换会话时，活动区清空内容、身份及计时状态，
 收到新内容后显示；工具活动行按批次创建，位于历史区与 assistant 活动区之间。组件生命周期和页面布局均由 TUI 管理。
 正文、思考及工具批次转入历史时，原表面保持可见，直到历史完成对应排版；排版失败保留原内容并报告错误。
-该交接只约束当前呈现 worker 的顺序，不阻塞 App 消息泵、执行者或其他观察者。
+该交接只约束当前会话观察 worker 的顺序，不阻塞 App 消息泵、执行者或其他观察者。
 
 首次进入通过 Application 读取近期 200 条消息的完整帧窗口，首个正文画面直接定位到该窗口末尾。
 向上滚动到已加载历史的顶部时自动补入一页；
@@ -545,11 +560,17 @@ TUI sink 只接收子会话控制候选事件；子会话归属在线程中确�
 子会话控制事件包括 `run_status_changed`。审批和输入交互以当前 Call 状态为准；根界面通过通用状态订阅
 刷新权威交互，通知遗漏时由同一事实管线补齐。此处不转发子会话高频正文流，也不增加 TUI 自有轮询。
 无关后台文本、reasoning 和工具流不占用 TUI sink mailbox；欢迎页没有控制会话时不接收会话事件。
-ready message 只启动一个呈现 worker，不在 App 消息泵中等待解析、排版或查询，以保持按键分发可用。
-正文观察一次只交付一个待确认批次，帧 worker 从中取走有界前缀，按 sequence 更新投影并合并连续文本增量；
-工具与交互面板按规范快照刷新。批次全部应用后才能确认并读取下一批，慢消费者在 Application 中分页追赶。
-帧消费共享顺序锁，后续内容不能越过仍在应用或交接显示所有权的前缀；冷加载快照的确认不等待历史排版。
-工具 delta 与后续生命周期事件位于同一前缀时，在相位边界分开呈现，下一原生刷新帧再处理后缀。
+可见会话的观察 worker 串行消费 `SessionObservation`。对增量批次，先应用持久化事实，再呈现事件。
+`conversation/observation.py` 按消息序号安放正文、Run 摘要和压缩记录，并从当前批次划出每帧至多 64 个事件。
+帧中的消息事件使用同批次的消息 ID 索引。`SessionContentProjection` 归约框架状态，`ConversationView`
+负责正文、思考与工具的显示交接，`QueuedInputPanel` 合并队列变化。
+
+观察 worker 等待 Textual 原生刷新后应用下一帧。含 Run 终态或压缩完成事件的批次可在消息泵下一次回调时开始。
+连续工具增量和随后的生命周期事件分帧显示。弹层切换可以唤醒等待旧页面刷新的观察者。
+正文继续到达时沿用已完成的思考耗时标签，收到明确耗时或切换展开状态、主题时再更新标签。
+帧应用、会话表面切换和历史安装共享一把锁。显式压缩完成时可以唤醒待呈现帧并等待其应用完成。
+批次全部应用后，观察者调用 `acknowledge` 并读取下一批。失败向当前视图报告，切换视图或退出释放订阅。
+冷加载快照的确认仍以内容安装为界，历史排版可在后台继续。
 
 会话控制状态在命令提交及当前观察会话的持久化事实中 `harness_version` 变化时刷新。
 快照安装建立版本基线；相同版本的事实和文本增量不触发额外控制状态读取。
@@ -605,6 +626,10 @@ Textual worker 合并为最新请求，revision 保护异步保存与渲染结�
 主页资源空间不创建正式 Session。TUI 在启动恢复和关闭时释放不再被草稿或待确认输入需要的准备资源，编辑期间保留撤销所需副本；引用删除不修改源文件。
 TUI 批量拖入保存会话副本，`@file` 目录多选添加原路径引用，`@skill` 多选添加技能引用；二者复用与输入框衔接的 CommandPopup，输入框负责过滤，目录不显示多选标记。
 引用命令仅在输入框首位键入 `@` 时触发。文件菜单顶部常驻当前目录路径，技能菜单顶部常驻 `Skills` 标题；右侧固定以低亮度 `[x]` 显示已选数量，滚动及无匹配时保持可见，数量不占用列表条目。
+上传时，App 捕获草稿和插入位置。`TuiController.import_attachments` 为欢迎页预留资源标识，
+或读取已有会话的历史代次，再通过 ResourceService 按选中顺序逐文件导入。每个失败即时通知，
+成功项保留原顺序。控制器在返回已有会话的附件前核对代次，App 将结果写回发起操作的草稿。
+
 聊天页和欢迎页在同一终端事件入口识别拖入或文件粘贴的路径，不要求输入框预先聚焦；开始接收时聚焦输入框，导入后填入附件元素。
 终端粘贴按用户输入恢复应用焦点，再分发给失焦前的控件；终端确认弹窗后的粘贴不依赖焦点恢复通知先到达。
 弹层内的粘贴仍交给该弹层的输入控件，不转入聊天草稿。

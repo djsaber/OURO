@@ -160,8 +160,8 @@ Provider 和工具执行中的 `AbortSignal.is_aborted()` 是高频同步检查�
   immutable transcript 渲染在 worker 上完成；
 - TUI 每个 compositor frame 最多应用 64 条，暂存不超过一个 Application 观察批次；整批内容应用成功后确认。
   缓存 lag 从已应用位置分页追赶；快照确认不等待历史排版，可见活动内容的转移须等待替代行就绪；
-- 帧消费由单个 Textual worker 执行，App 消息处理不等待后台解析和排版；显式排空与帧消费串行取得和应用前缀，
-  包括投影前的异步读取。Host 关闭取消呈现 worker，计算线程完成后不能再发布已取消的结果；
+- 会话观察 worker 在 Textual 刷新后应用下一帧，输入消息泵继续处理交互。显式压缩可以唤醒待呈现帧并等待其应用完成。
+  会话切换与帧应用共享同一把锁，关闭 Host 时释放订阅并取消观察任务。
 - `batch_update()` 只用于合并可合并的刷新，不能被当作消除 `AwaitMount`、`AwaitRemove` 或结构布局成本的替代品。
 
 ## 文件搜索与技能目录
