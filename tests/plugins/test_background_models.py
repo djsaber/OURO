@@ -26,7 +26,7 @@ def package(tmp_path, kind, scope):
         runtime = {
             "kind": kind,
             "command": ["{python}", "model_plugin.py"],
-            "protocol": "3.0",
+            "protocol": "4.0",
         }
     (root / ".ouro-plugin/plugin.json").write_text(
         json.dumps(
@@ -36,7 +36,7 @@ def package(tmp_path, kind, scope):
                 "namespace": "model",
                 "name": PLUGIN,
                 "version": "1.0.0",
-                "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
+                "engines": {"ouro": ">=0.4.0", "plugin_api": "^7.0.0"},
                 "runtime": runtime,
                 "configuration": {"schema": "./configuration.json", "version": 1},
                 "permissions": [{"id": "models.request", "reason": "Initialize service"}],

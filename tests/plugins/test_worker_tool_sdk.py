@@ -6,7 +6,7 @@ from types import MappingProxyType
 
 import pytest
 
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 from ouro.sdk.plugins.worker_tools import invoke_worker_tool
 
 

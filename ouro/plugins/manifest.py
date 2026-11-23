@@ -18,6 +18,9 @@ from ouro.core.tools import (
 )
 from ouro.plugins.semver import SemVer, validate_version_range
 
+PLUGIN_API_VERSION = "7.0.0"
+WORKER_PROTOCOL_VERSION = "4.0"
+
 PluginCapability = Literal[
     "tools",
     "commands",
@@ -110,7 +113,7 @@ class PluginRuntimeSpec(OuroModel):
     kind: PluginRuntimeKind = "declarative"
     entrypoint: str | None = None
     command: list[str] = Field(default_factory=list)
-    protocol: str = "3.0"
+    protocol: str = WORKER_PROTOCOL_VERSION
 
     @model_validator(mode="after")
     def _validate_runtime(self) -> PluginRuntimeSpec:

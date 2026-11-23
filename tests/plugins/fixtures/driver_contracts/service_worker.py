@@ -22,7 +22,7 @@ class Worker:
 
     async def initialize(self, params):
         self.plugin = Plugin(SimpleNamespace(configuration=params["configuration"]))
-        return {"protocol_version": "3.0"}
+        return {"protocol_version": "4.0"}
 
     async def prepare(self, params):
         return {"services": ["value"], "background_services": ["watcher"]}

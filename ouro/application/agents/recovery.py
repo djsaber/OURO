@@ -5,14 +5,14 @@ from collections.abc import Iterable
 from ouro.application.contracts.base import Diagnostic
 from ouro.core.agents import DelegationRecord
 from ouro.core.errors import PersistenceError
-from ouro.core.session_ports import SessionStore
+from ouro.core.session_ports import SessionRepository
 from ouro.core.state import RunRecord, SessionRecord
 
 
 class AgentRecoveryService:
     """Reconcile durable subagent identity without replaying child execution."""
 
-    def __init__(self, store: SessionStore) -> None:
+    def __init__(self, store: SessionRepository) -> None:
         self.store = store
 
     def reconcile(self) -> tuple[Diagnostic, ...]:

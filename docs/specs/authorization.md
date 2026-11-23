@@ -3,7 +3,7 @@
 > 文档类型：现行规格
 > 范围：受管理认证契约、单次授权资源生命周期与 OpenAI 浏览器驱动实现；CLI/TUI 使用统一认证用例，OpenAI 浏览器驱动由本地组合注册为订阅产品。
 
-凭据的持久化、刷新协调和条件提交以[凭据核心规格](credentials.md)为准。Application 操作状态见[Provider 认证用例规格](provider-authentication.md)，产品接入契约见[订阅认证规格](subscription-authentication.md)，待验证能力见[验证计划](../plans/subscription-validation.md)。
+凭据的持久化、刷新协调和条件提交以[凭据核心规格](credentials.md)为准。Application 操作状态见[Provider 认证用例规格](provider-authentication.md)，产品接入契约见[订阅认证规格](subscription-authentication.md)，实际验证范围见[订阅指南](../guides/subscriptions.md#证据范围)。
 
 ## 驱动契约与边界
 

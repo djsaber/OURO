@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from functools import partial
 from typing import Literal, Protocol, cast
@@ -73,7 +73,7 @@ from ouro.core.run_budget import RunPauseReason
 from ouro.core.run_transitions import plan_run_transition
 from ouro.core.session_commits import SessionCommit, SessionCommitConflict
 from ouro.core.session_controls import DelegatedTaskInput, HostSessionInput
-from ouro.core.session_ports import SessionStore
+from ouro.core.session_ports import RuntimeSessionSnapshot, SessionStore
 from ouro.core.state import (
     ACTIVE_RUN_STATUSES,
     RESUMABLE_RUN_STATUSES,
@@ -1463,7 +1463,57 @@ class AgentService:
             )
         )
 
-    def recovery_session_ids(self, session: SessionRecord) -> tuple[str, ...]:
+    async def reconcile_for_execution(
+        self, session: SessionRecord, recover: Callable[[str], Awaitable[RuntimeSessionSnapshot]]
+    ) -> tuple[RuntimeSessionSnapshot, tuple[Diagnostic, ...]]:
+        """Settle the target and its bounded delegation tree before executing another Run."""
+        session_id = session.session_id
+        diagnostics: list[Diagnostic] = []
+        root_session_id = session.agent_root_session_id
+        for candidate_id in await run_blocking(self._recovery_session_ids, session):
+            try:
+                await recover(candidate_id)
+            except FileNotFoundError:
+                if candidate_id in {root_session_id, session_id}:
+                    raise
+            except PersistenceError as exc:
+                if candidate_id in {root_session_id, session_id}:
+                    raise
+                diagnostics.append(
+                    self._execution_recovery_diagnostic(
+                        root_session_id=root_session_id,
+                        session_id=candidate_id,
+                        error=exc,
+                    )
+                )
+        diagnostics.extend(await self.reconcile_session(session))
+        return await run_blocking(self.store.load_runtime_session, session_id), tuple(diagnostics)
+
+    @staticmethod
+    def _execution_recovery_diagnostic(
+        *,
+        root_session_id: str,
+        session_id: str,
+        error: PersistenceError,
+    ) -> Diagnostic:
+        return Diagnostic(
+            code="session_runtime_incompatible",
+            severity="warning",
+            component="runtime.recovery",
+            message=(
+                f"Session {session_id} was excluded from Agent aggregate recovery because "
+                f"its persisted execution data is incompatible: {error}"
+            ),
+            session_id=session_id,
+            recoverable=True,
+            suggested_action="Inspect the retained Session data before an explicit retry.",
+            metadata={
+                "root_session_id": root_session_id,
+                "error_type": type(error).__name__,
+            },
+        )
+
+    def _recovery_session_ids(self, session: SessionRecord) -> tuple[str, ...]:
         """Return the bounded execution scope required before Agent reconciliation."""
 
         root_session_id = session.agent_root_session_id

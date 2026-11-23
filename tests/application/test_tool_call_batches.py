@@ -19,7 +19,7 @@ from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolCallRequest, ToolInvocation
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.providers import FauxProvider
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult

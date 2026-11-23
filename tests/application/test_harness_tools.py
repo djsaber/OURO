@@ -16,7 +16,7 @@ from ouro.core.tools import ToolInvocation
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.worker.instance import WorkerPluginInstance
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 from ouro.sessions.backends.files.commits import FileSessionCommits
 from ouro.tools import ToolExecutionContext, ToolExecutor
 from tests.application.helpers import running_runtime_task

@@ -59,8 +59,7 @@ uv run --frozen ouro provider check $subscriptionProviderId --home "$subscriptio
 ## 证据范围
 
 仓库中的真实验收记录使用 Windows、浏览器授权与当时的 gpt-5.5 默认参数组合，不代表当前默认模型或服务可用性。
-当前模板默认值见[预置供应商配置](../specs/provider-presets.md)，待验证范围见
-[订阅验证计划](../plans/subscription-validation.md)。已有证据分为三层：
+当前模板默认值见[预置供应商配置](../specs/provider-presets.md)。下表列出已验证的范围，完整验收要求见[订阅认证规格](../specs/subscription-authentication.md#s10-验收矩阵)。
 
 | 层次 | 覆盖范围 |
 |---|---|

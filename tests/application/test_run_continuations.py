@@ -300,7 +300,7 @@ def _write_goal_plugin(source) -> None:
                 "name": "Goal",
                 "version": "1.0.0",
                 "namespace": "goal",
-                "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
+                "engines": {"ouro": ">=0.4.0", "plugin_api": "^7.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "goal_plugin:create_plugin",
@@ -326,7 +326,7 @@ def _write_goal_plugin(source) -> None:
         encoding="utf-8",
     )
     (source / "goal_plugin.py").write_text(
-        """from ouro.sdk.plugins.v6 import (
+        """from ouro.sdk.plugins.v7 import (
     CommandContribution,
     CommandOutput,
     ContinuationDecision,

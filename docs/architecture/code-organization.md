@@ -55,19 +55,23 @@ ConfigurationFacade 修改配置，不启动运行环境。配置管理器拥有
 压缩配置的在线保存由 LiveConfigurationService 解析所选模型的运行适配器并校验推理选项，再调用 ConfigurationFacade
 保存持久配置。运行目录可以由嵌入宿主注入，其模型能力与磁盘配置各自保留约束；TUI 只转换表单和路由格式。
 
-单条输入以完整的 QueuedInput 交给队列，队列负责受理事务、顺序和替换；
-用户、任务、Agent 及插件入口拥有各自的身份和调度规则。Runtime 为待入队用户输入构造一次意图，
-完成策略检查后附上检查凭据并提交；检查所用的扩展租约覆盖受理提交，在提交结束时释放。
-插件命令的输入与 Harness 变更在同一事务中提交，保证整批操作的原子性。
+用户提交由 `UserInputRequest` 表达。`InputAdmissionService` 识别重复提交和目标历史，取得技能、附件与控制器快照，
+在持久受理前执行输入策略。附件与资源引用的文件读取在事件循环之外执行。`SkillActivationService` 拥有技能发现与本次激活材料。策略读取的扩展租约覆盖受理提交。
+`QueuedInputQueue` 持久化输入顺序和替换关系。`InputSessionSettings` 随受理在同一事务生效。
+插件命令的输入和 Harness 变更共用一次会话提交。
 
-用户输入约束由 `UserInputRequest` 表达。`RuntimeService.run` 与 Supervisor 受理共用该请求和新会话输入准备；
-`run` 等待本次执行结果，Supervisor 受理返回持久回执并拥有后续调度。已受理输入通过 `run_pending_inputs`，
-预留 Run 通过 `run_prepared` 进入内部执行边界。Supervisor 从受理提交或同一次一致性读取取得回执与会话头，使用头中的活动 Run 身份安排等待。
-`InputSessionSettings` 表达随输入提交的会话选项；队列受理和直接 Run 启动在各自的原子提交内应用同一规则。
-策略检查在持久提交前完成；输入拒绝或受理提交失败不发布这些选项。
+已有空闲会话通过 `RuntimeService.run` 取得执行权后，可用一次提交受理输入并启动 Run。新会话先原子发布会话与首条输入，持久回执可在 Run 启动前返回。
+Supervisor 使用受理提交返回的回执与会话头调度 Run。重复提交从同一次存储读取取得两者。
+`run_pending_inputs` 消费已受理输入，`run_prepared` 执行预留 Run。
 用户入口准备直接输入，队列入口选择一个可消费单元，预留入口核对 Run 和锁。`RunStartExecution` 取得会话执行权，在锁内重读、恢复并绑定模型，调用该入口的启动提交，再交给 `RunDriverExecution`。执行结束后释放锁并调度后续工作。
 `application/runs/interactions.py` 负责审批、回答和子任务交付。每个入口核对自己的交互身份，
 共用锁内读与裁决、原子提交、通知和释放后调度的顺序。
+
+工具协调通过 `AgentControlExecutor` 发起控制操作或等待子任务。`RunModelRequests` 使用装配时提供的预算查询。
+Run 恢复与终态结算由对应流程在持久边界调用 Agent 服务。
+
+`sessions/snapshots.py` 在内存中准备会话头、消息顺序、Harness 检查点以及输入与工具事实。
+Files 在暂存目录完成写入后发布，SQLite 在单个事务内发布。两个后端各自处理资源流和已有资源。
 
 Runtime 通过 `RuntimeExtensions` 获取当前能力，通过 `RuntimeCapabilities` 持有一次决策的租约。
 RunResources 拥有单次 Run 的工具选择：控制器可见范围、派遣能力上限与 Agent 控制工具在此组合。

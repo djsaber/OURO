@@ -115,7 +115,9 @@ ExtensionCatalog
 - 相同 version、不同 digest 是不同内容，不能静默覆盖。
 
 所有插件使用同一执行契约：plugin identity、`release_id`、runtime、不可变配置修订、dependency lock、
-Plugin API 与 worker protocol。依赖指纹绑定实际装载的直接依赖及其 execution contract，并通过依赖自身的
+执行 API 版本与 worker protocol。用户插件使用宿主公开的 Plugin API 版本。内置发布定义以
+`execution_api_version` 固定该 release 的执行身份，`contract_version` 表达其持久执行语义。
+Manifest 的兼容范围在安装和选版装载时按公开版本判断。依赖指纹绑定实际装载的直接依赖及其 execution contract，并通过依赖自身的
 契约覆盖传递闭包。依赖锁只保存插件身份、版本、发布身份和直接依赖关系；来源归属由装配和加载边界管理。
 
 待完成工具调用绑定工具身份、执行权限和变体。同一发布、配置与依赖下，无关贡献的可用性变化不阻止
@@ -140,7 +142,7 @@ Builtin plugin：
 - 由 application composition root 提供；
 - 由显式、不可变的 builtin definition registry 提供，不扫描 workspace、`OURO_HOME` 或用户插件目录；
 - definition 包含稳定 identity、version、Manifest contribution/dependency contract、in-process factory、
-  `default_enabled` 与持久执行契约版本 `contract_version`；
+  `default_enabled`、持久执行契约版本 `contract_version` 和本次发布的 `execution_api_version`；
 - 与 user plugin 复用同一 generation、gate、owner、contribution preparation、catalog transaction 和 durable
   execution contract；builtin 不是 Host baseline，也不建立第二套 runtime；
 - 不经过 user install/select/remove 流程；
@@ -245,7 +247,7 @@ calendar-plugin/
   "namespace": "calendar",
   "engines": {
     "ouro": ">=0.4.0",
-    "plugin_api": "^6.0.0"
+    "plugin_api": "^7.0.0"
   },
   "runtime": {
     "kind": "python-inprocess",
@@ -391,7 +393,7 @@ Provider 输出从 SDK 事件属性直接验证为核心事件；不透明 conti
 
 ## 8. Plugin API
 
-插件只依赖 `ouro.sdk.plugins.v6`，不依赖 `ouro.core.*`、`ouro.application.*`、具体 registry
+插件只依赖 `ouro.sdk.plugins.v7`，不依赖 `ouro.core.*`、`ouro.application.*`、具体 registry
 或 Host 类型。
 
 ```python
@@ -599,7 +601,7 @@ Context Provider 的消息片段以会话、提供方和片段位置标识。可
 prepare、contract、projection 与文档删除，不保留空 adapter 或迁移别名。
 
 观察型扩展只公开 `observers`；`prompt_policies` 是独立语义边界。Manifest schema 3 不接受 `hooks` 字段；
-Plugin API 使用 6.0.0，worker protocol 使用 3.0；Python SDK 入口为 `ouro.sdk.plugins.v6`。
+Plugin API 使用 7.0.0，worker protocol 使用 4.0；Python SDK 入口为 `ouro.sdk.plugins.v7`。
 
 公开交互 DTO 位于 `ouro.sdk.plugins.interactions`。计划确认请求包含预览文本、计划引用、可选方案和明确的动作，
 答案包含动作及用户选择或反馈。Host 按 DTO 类型呈现，不以 builtin 身份或工具显示名赋予特殊界面；请求来源仍
@@ -1067,19 +1069,18 @@ Manifest 的每个 `background_services` 声明可指定 `scope`：默认 `host`
 
 Disable：
 
-1. 持久化 desired disabled；
-2. 关闭该插件当前及退休 generation 的 gate，阻止新调用并取消正在执行的回调；
-3. 发布不含该 generation 的新 catalog；
-4. 等待实际执行的回调退出；已撤销的空闲 Catalog 引用不阻止清理；
-5. 停止 Background Service、instance、task、MCP 和 worker，释放模块；
-6. 清理成功后释放 owner 并呈现 `disabled`。
+1. 在管理锁内核对活动依赖和选版，准备目录并条件提交停用意图。提交成功即受理。拒绝时会话激活、待答交互和插件私有状态保持原值。
+2. 撤销相关代次的普通调用入口，发布目录并登记控制权的释放责任，再唤醒代次退役任务。取消在途普通回调并等待其退出。
+3. 会话协调器按 activation ID 释放该插件的控制权，优先在持有该激活的原代次调用相符控制器的 deactivate，原子提交私有状态、控制权及关联取消。已释放的激活直接跳过。原控制器缺失时，Host 在释放事件中记录原因与私有清理状态，并通过 `plugin_controls_force_released` 诊断报告强制释放数量。
+4. 停止后台服务、实例、任务、MCP 和 worker，释放模块及代次资源。资源全部退出后状态为 `disabled`。
 
 `disable(wait=True)` 在本 Host 的停止预算内等待，未结束返回 `stopping`，清理失败返回 `failed`。
 `disable(wait=False)` 只等待入口撤销和目录发布；`wait_stopped(plugin_id)` 可再次等待本 Host 的清理结果。
 调用方取消不会遗弃清理；失败资源保留归属，显式再次 disable 或 Host shutdown 可以重试清理。
 插件撤销的取消限于回调范围，对外呈现不可用反馈；它不取消等待回调的 Host 任务，也不接受吞掉取消后的业务提案。
 工具的确定迟到返回仅作为原执行的观察保存，不把撤销后的回调视为当前业务执行成功。
-卸载和私有数据清除必须等待本 Host 相应资源退出；卸载某一 digest 不要求无关版本退出。
+移除当前启用的安装先按同一用例停用。会话提交失败时保留所属代次及安装，显式重试继续处理仍在的激活。
+移除前须完成目标安装在本 Host 的退役与控制权释放。移除事务按目标 digest 操作，移除所选安装时核对停用意图和活动依赖。一并清除共享私有数据时，插件的本地资源须已退出，且目标须是最后一个安装版本。
 Host shutdown 按已发布 Catalog 的依赖顺序关闭资源，不依赖持久状态文件仍然可读。
 
 进程内插件遵守合作式停止。同步回调的线程不能强杀，取消后仍保留执行归属直到线程结束；迟到观察的保存不提交
@@ -1251,7 +1252,7 @@ correlation id，并经过敏感值脱敏。每个 generation 的 diagnostic 必
 | `ouro/plugins/catalog/` | 不可变目录、贡献绑定与调用门控 |
 | `ouro/plugins/lifecycle/` | 候选构建、激活、资源交接、退役及关闭 |
 | `ouro/plugins/inprocess/`、`ouro/plugins/worker/` | 同一公开契约的进程内适配与 worker 协议实现 |
-| `ouro/sdk/plugins/v6.py` | 面向插件作者的公开接口 |
+| `ouro/sdk/plugins/v7.py` | 面向插件作者的公开接口 |
 | `ouro/application/plugins/` | Host 中立的管理、命令和配置用例 |
 | `ouro/builtin_plugins/` | 产品自带的插件实现，由应用组合根装配 |
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Container, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING
@@ -76,12 +77,11 @@ from ouro.application.runs.recovery import RunRecoveryService
 from ouro.application.runs.start import QueuedInputSelectionChanged, RunStartExecution
 from ouro.application.runtime.environment import RuntimeEnvironment
 from ouro.application.runtime.resources import RunResources, RuntimeRegistries
-from ouro.application.session_controls import SessionControlContractError, SessionControlCoordinator
-from ouro.application.sessions.editing import (
-    accept_message_edit,
-    continuable_run,
-    read_edit_boundary,
+from ouro.application.session_controls import (
+    SessionControlCoordinator,
+    require_available_controls,
 )
+from ouro.application.sessions.editing import continuable_run
 from ouro.application.sessions.recovery import SessionRecoveryService
 from ouro.application.sessions.service import SessionService
 from ouro.application.tool_calls import ToolCallCoordinator
@@ -95,7 +95,7 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import AgentWaitResolution
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.attachment_input import separate_attachments
-from ouro.core.base import new_id, utc_now
+from ouro.core.base import new_id
 from ouro.core.callbacks import run_blocking
 from ouro.core.cancellation import AbortSignal, settle_owned_tasks
 from ouro.core.compaction import (
@@ -114,8 +114,6 @@ from ouro.core.errors import (
     SessionBusyError,
 )
 from ouro.core.events import EventRecord
-from ouro.core.harness import HarnessState
-from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.input_content import (
     InputAttachment,
     InputContent,
@@ -129,7 +127,6 @@ from ouro.core.interactions import (
 from ouro.core.messages import (
     InputMessageReference,
     MessageRecord,
-    SkillActivationContent,
 )
 from ouro.core.observers import (
     Observation,
@@ -143,7 +140,7 @@ from ouro.core.prompt_policies import (
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.redaction import redact_text
 from ouro.core.results import RunResult
-from ouro.core.run_budget import RunBudgetPolicy, RunPauseReason
+from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.run_drivers import DEFAULT_DRIVER_ID, RunDriverBinding
 from ouro.core.run_transitions import prepare_run_continuation
 from ouro.core.session_commits import InputAlreadyAccepted, SessionCommitConflict
@@ -153,7 +150,6 @@ from ouro.core.session_controls import (
     AttributedSessionInputBatch,
     DelegatedTaskInput,
     HostSessionInput,
-    RunControlSnapshot,
     SessionControlActivation,
     SessionControlState,
     SessionControlTransitionResult,
@@ -182,9 +178,9 @@ from ouro.skills import SkillMetadata
 from ouro.tools import ToolExecutor, ToolRegistry
 
 if TYPE_CHECKING:
+    from ouro.application.agents.service import AgentService
     from ouro.application.resources import ResourceService
     from ouro.application.runtime.extensions import RuntimeCapabilities, RuntimeExtensions
-    from ouro.application.tool_calls import AgentControlExecutor
 
 
 _LOG = logging.getLogger(__name__)
@@ -264,10 +260,7 @@ class RuntimeService:
         self._owned_auxiliary_adapters = owned_auxiliary_adapters
         self._closed = False
         self._close_task: asyncio.Task[None] | None = None
-        self.skills = tuple(skill.model_copy(deep=True) for skill in skills)
-        self.skill_catalog_resolver = skill_catalog_resolver
-        self._skill_refresh_lock = asyncio.Lock()
-        self.skill_activations = SkillActivationService()
+        self.skill_activations = SkillActivationService(skills, skill_catalog_resolver)
         self.default_workspace = (
             str(Path(default_workspace).expanduser().resolve())
             if default_workspace is not None
@@ -376,16 +369,19 @@ class RuntimeService:
         self._extensions_bound = False
         self._run_resources: dict[str, RunResources] = {}
         self._agent_definitions: AgentDefinitionService | None = None
-        self._agent_controls: AgentControlExecutor | None = None
+        self._agent_controls: AgentService | None = None
         self.input_admission = InputAdmissionService(
             store,
             resources=resources,
             usage_service=usage_service,
-            refresh_skills=self.refresh_skills,
-            synchronize=self._synchronize_extensions,
-            prepare_initial=self._prepare_initial_user_input,
-            load_target=self._load_submission_snapshot,
-            accept_existing=self._accept_existing_user_input,
+            models=self.session_models,
+            queue=self.queued_inputs,
+            events=self.event_recorder,
+            recovery=self.session_recovery,
+            skill_activations=self.skill_activations,
+            refresh_configuration=self.refresh_configuration,
+            prompt_policies=self.prompt_policies,
+            default_workspace=self.default_workspace,
         )
         self.driver_execution = RunDriverExecution(
             runs=self.run_lifecycle,
@@ -405,7 +401,6 @@ class RuntimeService:
                 begin_model_round=self._bind_run_capabilities,
                 prepare_configuration=self._prepare_request_configuration,
                 commit_model_request=self.run_lifecycle.commit_model_request,
-                shared_budget_reason=self._shared_budget_reason,
                 events=self.event_recorder,
             ),
             budget_for_run=self._run_budget_for_run,
@@ -528,7 +523,7 @@ class RuntimeService:
         *,
         catalog: RuntimeExtensions | None = None,
         agent_definitions: AgentDefinitionService | None = None,
-        agent_controls: AgentControlExecutor | None = None,
+        agent_controls: AgentService | None = None,
     ) -> None:
         """Bind one complete Host extension assembly before executing Runs."""
 
@@ -541,6 +536,14 @@ class RuntimeService:
         self._extension_catalog = catalog
         self._agent_definitions = agent_definitions
         self._agent_controls = agent_controls
+        self.input_admission.extensions = catalog
+        self.input_admission.reconcile_agent = (
+            agent_controls.reconcile_session if agent_controls else None
+        )
+        if agent_controls is not None:
+            self.driver_execution.model_ports = replace(
+                self.driver_execution.model_ports, shared_budget_reason=agent_controls.budget_reason
+            )
         self._extensions_bound = True
         if catalog is not None:
             self.event_recorder.set_observer_registry_resolver(self._observers_for_observation)
@@ -612,23 +615,10 @@ class RuntimeService:
 
     def _skills_for_run(self, run_id: str) -> tuple[SkillMetadata, ...]:
         snapshot = self._extension_snapshot_for_run(run_id)
-        return snapshot.skills if snapshot is not None else self.skills
+        return snapshot.skills if snapshot is not None else self.skill_activations.base_skills
 
     def _skill_instructions_for_run(self, run_id: str) -> str:
         return render_agent_skills_prompt(self._skills_for_run(run_id))
-
-    async def _resolve_skill_activations(
-        self,
-        snapshot: RuntimeCapabilities | None,
-        requests: tuple[SkillInvocationRequest, ...],
-    ) -> tuple[SkillActivationContent, ...]:
-        if not requests:
-            return ()
-        return await run_blocking(
-            self.skill_activations.resolve_user_activations,
-            snapshot.skills if snapshot is not None else self.skills,
-            requests,
-        )
 
     def _compaction_for_run(self, run_id: str) -> CompactionStrategyRegistry:
         snapshot = self._extension_snapshot_for_run(run_id)
@@ -786,54 +776,8 @@ class RuntimeService:
             if isinstance(target, SessionRecord)
             else await run_blocking(self.store.load_session_record, session_id)
         )
-        diagnostics: list[Diagnostic] = []
-        root_session_id = session.agent_root_session_id
-        target_snapshot: RuntimeSessionSnapshot | None = None
-        for candidate_id in await run_blocking(self._agent_controls.recovery_session_ids, session):
-            try:
-                recovered = await self.reconcile_execution_session(candidate_id)
-                if candidate_id == session_id:
-                    target_snapshot = recovered
-            except FileNotFoundError:
-                if candidate_id in {root_session_id, session_id}:
-                    raise
-            except PersistenceError as exc:
-                if candidate_id in {root_session_id, session_id}:
-                    raise
-                diagnostics.append(
-                    self._execution_recovery_diagnostic(
-                        root_session_id=root_session_id,
-                        session_id=candidate_id,
-                        error=exc,
-                    )
-                )
-        diagnostics.extend(await self._agent_controls.reconcile_session(session))
-        if target_snapshot is None:
-            raise FileNotFoundError(session_id)
-        return await run_blocking(self.store.load_runtime_session, session_id), tuple(diagnostics)
-
-    @staticmethod
-    def _execution_recovery_diagnostic(
-        *,
-        root_session_id: str,
-        session_id: str,
-        error: PersistenceError,
-    ) -> Diagnostic:
-        return Diagnostic(
-            code="session_runtime_incompatible",
-            severity="warning",
-            component="runtime.recovery",
-            message=(
-                f"Session {session_id} was excluded from Agent aggregate recovery because "
-                f"its persisted execution data is incompatible: {error}"
-            ),
-            session_id=session_id,
-            recoverable=True,
-            suggested_action="Inspect the retained Session data before an explicit retry.",
-            metadata={
-                "root_session_id": root_session_id,
-                "error_type": type(error).__name__,
-            },
+        return await self._agent_controls.reconcile_for_execution(
+            session, self.reconcile_execution_session
         )
 
     @staticmethod
@@ -969,14 +913,7 @@ class RuntimeService:
     async def refresh_skills(self, skills: tuple[SkillMetadata, ...] | None = None) -> None:
         """Resolve and publish directory skills at a use boundary, without polling."""
 
-        async with self._skill_refresh_lock:
-            if skills is None:
-                if self.skill_catalog_resolver is None:
-                    return
-                skills = await run_blocking(self.skill_catalog_resolver)
-            if self._extension_catalog is not None:
-                await self._extension_catalog.replace_base_skills(skills)
-            self.skills = tuple(skill.model_copy(deep=True) for skill in skills)
+        await self.skill_activations.refresh(self._extension_catalog, skills)
 
     async def available_skills(self) -> tuple[SkillMetadata, ...]:
         """Return current directory and active plugin skills for one Host query."""
@@ -984,7 +921,7 @@ class RuntimeService:
         await self.refresh_skills()
         await self._synchronize_extensions()
         if self._extension_catalog is None:
-            return self.skill_activations.list_for_host(self.skills)
+            return self.skill_activations.list_for_host(self.skill_activations.base_skills)
         lease = self._extension_catalog.snapshot()
         try:
             return self.skill_activations.list_for_host(lease.skills)
@@ -1234,106 +1171,6 @@ class RuntimeService:
         receipt, _ = await self.input_admission.accept(request)
         return receipt
 
-    async def _prepare_initial_user_input(
-        self,
-        request: UserInputRequest,
-        input_driver: RunDriverBinding | None,
-    ) -> PreparedUserInput:
-        selected_model = (
-            self.resolve_model(request.initial_model)
-            if request.initial_model is not None
-            else self.models.default_model()
-        )
-        selected_reasoning = request.initial_reasoning_request or ReasoningRequest()
-        self.session_models.reasoning_state(selected_model, selected_reasoning)
-        candidate_session = SessionRecord(
-            session_id=request.new_session_id or new_id("ses"),
-            workspace=(
-                str(Path(request.workspace).expanduser().resolve())
-                if request.workspace is not None
-                else self.default_workspace
-            ),
-            current_model=selected_model.key,
-            reasoning_request=selected_reasoning,
-            approval_mode=request.approval_mode or "inherit",
-            interaction_mode=request.interaction_mode or "interactive",
-        )
-        candidate_session = with_session_title(candidate_session, request.title)
-        if request.attachments:
-            if self.resources is None:
-                raise ResourceAttachmentError("File inputs require a configured ResourceService")
-            self.resources.validate_file_inputs(request.attachments, candidate_session.workspace)
-        return await self._prepare_user_input(
-            request,
-            candidate_session,
-            input_driver,
-            HarnessCallSnapshot(
-                session_id=candidate_session.session_id,
-                harness_version=candidate_session.harness_version,
-                history_epoch=candidate_session.history_epoch,
-                state=HarnessState(controls=candidate_session.controls),
-                usage_tokens={} if self.usage is not None else None,
-            ),
-        )
-
-    async def _prepare_user_input(
-        self,
-        request: UserInputRequest,
-        session: SessionRecord,
-        input_driver: RunDriverBinding | None,
-        harness: HarnessCallSnapshot,
-    ) -> PreparedUserInput:
-        prospective_run = RunRecord(
-            session_id=session.session_id,
-            history_epoch=harness.history_epoch,
-            status="running",
-            origin="user",
-            trigger="user",
-            driver=input_driver or RunDriverBinding(),
-        )
-        snapshot = (
-            self._extension_catalog.snapshot() if self._extension_catalog is not None else None
-        )
-        try:
-            item = await self._checked_user_input(
-                IncomingRunInput(request, input_driver),
-                session,
-                prospective_run,
-                snapshot,
-                harness=harness.model_copy(update={"run_id": prospective_run.run_id}),
-            )
-        except BaseException:
-            if snapshot is not None:
-                snapshot.close()
-            raise
-        return PreparedUserInput(session, item, prospective_run, snapshot)
-
-    async def _checked_user_input(
-        self,
-        incoming: IncomingRunInput,
-        session: SessionRecord,
-        run: RunRecord,
-        catalog: RuntimeCapabilities | None,
-        *,
-        harness: HarnessCallSnapshot | None = None,
-    ) -> QueuedInput:
-        skills = await self._resolve_skill_activations(catalog, incoming.skills)
-        item = incoming.materialize(run.history_epoch, skills=skills)
-        await self._evaluate_prompt_policies(
-            session=session, run=run, inputs=[item], harness=harness, catalog_snapshot=catalog
-        )
-        return item.model_copy(
-            update={
-                "queued_at": utc_now(),
-                "prompt_policy_checked": True,
-                "prospective_run_id": run.run_id,
-                "extension_catalog_id": catalog.catalog_id if catalog is not None else None,
-                "extension_generations": tuple(catalog.generation_metadata())
-                if catalog is not None
-                else (),
-            }
-        )
-
     async def run(
         self,
         prompt: str,
@@ -1411,9 +1248,7 @@ class RuntimeService:
         if receipt is None:
             if refs:
                 await self.refresh_configuration()
-            if request.skill_invocations:
-                await self.refresh_skills()
-            await self._synchronize_extensions()
+            await self.input_admission.refresh_sources(request)
             driver = self._select_input_driver(driver_id)
             if target is not None:
                 snapshot = await self._input_target(target)
@@ -1439,7 +1274,8 @@ class RuntimeService:
                         raise
                 admitted = receipt
             else:
-                admitted = await self.input_admission.accept_new(request, driver)
+                initial = await self.input_admission.accept_new(request, driver)
+                admitted = initial if isinstance(initial, PreparedUserInput) else initial[0]
         else:
             admitted = receipt
         destination = (
@@ -1491,7 +1327,7 @@ class RuntimeService:
     async def _input_target(self, target: str | SessionRecord) -> RuntimeSessionSnapshot:
         session_id = target.session_id if isinstance(target, SessionRecord) else target
         if await run_blocking(self.run_ownership.is_locked, session_id):
-            return await run_blocking(self._load_runtime_snapshot, session_id, recover=False)
+            return await run_blocking(self.store.load_runtime_session, session_id)
         snapshot, diagnostics = await self._reconcile_session(target)
         self._raise_incompatible_target(snapshot.session, diagnostics)
         return snapshot
@@ -1512,16 +1348,18 @@ class RuntimeService:
         accepted = inputs if isinstance(inputs, tuple) else ()
         settings = incoming.settings if incoming else InputSessionSettings()
         if incoming is not None:
-            self.input_admission.validate_resources(
+            await self.input_admission.validate_resources(
                 snapshot.session, incoming.resource_refs, incoming.attachments
             )
         elif run.status == "queued":
-            self.input_admission.validate_resources(snapshot.session, accepted[0].resource_refs)
+            await self.input_admission.validate_resources(
+                snapshot.session, accepted[0].resource_refs
+            )
 
         async def enqueue(current: RuntimeSessionSnapshot, active: RunRecord) -> RunResult:
             assert incoming is not None
             settings.apply(current.session, executing=True)
-            session, _ = await self._queue_input(
+            session, _ = await self.input_admission.enqueue(
                 current, active, incoming, on_input_accepted=on_input_accepted
             )
             await self.advance_session(session.session_id, session.history_epoch)
@@ -1537,28 +1375,25 @@ class RuntimeService:
                 await self._ensure_extension_snapshot(run)
             else:
                 run = await self._attach_extension_snapshot(run)
+            catalog = self._extension_snapshot_for_run(run.run_id)
             if incoming is not None:
-                skills = (
-                    await self._resolve_skill_activations(
-                        self._extension_snapshot_for_run(run.run_id), incoming.skills
-                    )
-                    if incoming.skills
-                    else ()
-                )
-                pending_inputs = [incoming.materialize(session.history_epoch, skills=skills)]
+                pending_inputs = [
+                    await self.input_admission.materialize(incoming, session.history_epoch, catalog)
+                ]
             else:
                 pending_inputs = list(accepted)
             for pending_input in pending_inputs:
-                self.input_admission.validate_resources(
+                await self.input_admission.validate_resources(
                     session,
                     pending_input.resource_refs,
                     pending_input.attachments,
                 )
             if initial is None:
-                await self._evaluate_prompt_policies(
+                await self.input_admission.evaluate_policies(
                     session=session,
                     run=run,
                     inputs=pending_inputs,
+                    catalog=catalog,
                 )
             if accepted:
                 session, run, input_messages, committed_events = await run_blocking(
@@ -1835,9 +1670,7 @@ class RuntimeService:
             ):
                 await self.refresh_configuration()
             await self._synchronize_extensions()
-            snapshot = await run_blocking(
-                self._load_runtime_snapshot, run.session_id, recover=False
-            )
+            snapshot = await run_blocking(self.store.load_runtime_session, run.session_id)
             if (
                 isinstance(session_input, HostSessionInput)
                 and session_input.history_epoch is not None
@@ -1875,20 +1708,10 @@ class RuntimeService:
             return self.run_budget
         return run.budget_policy or self.run_budget
 
-    async def _shared_budget_reason(
-        self,
-        run: RunRecord,
-        next_model_round: int,
-    ) -> RunPauseReason | None:
-        controls = self._agent_controls
-        if controls is None:
-            return None
-        return await run_blocking(controls.budget_reason, run, next_model_round)
-
     async def compact(self, *, session_id: str) -> CompactionCommandResult:
         """Manually compact a session through the same durable summary pipeline as auto mode."""
 
-        snapshot = await run_blocking(self._load_runtime_snapshot, session_id, recover=True)
+        snapshot = await run_blocking(self.session_recovery.recover_runtime, session_id)
         if (
             maybe_active_run(snapshot.runs, history_epoch=snapshot.session.history_epoch)
             is not None
@@ -2092,7 +1915,7 @@ class RuntimeService:
         """Durably accept and consume one attributed atomic input unit."""
 
         await self._synchronize_extensions()
-        snapshot = await self._load_submission_snapshot(session_id)
+        snapshot = await run_blocking(self.session_recovery.submission_snapshot, session_id)
         active = maybe_active_run(snapshot.runs, history_epoch=snapshot.session.history_epoch)
         queued_session, queued = await self._queue_input_batch(
             snapshot=snapshot,
@@ -2104,7 +1927,7 @@ class RuntimeService:
             return RunResult(session=queued_session, run=active)
         target_ids = {item.queue_id for item in queued}
         while True:
-            snapshot = await self._load_submission_snapshot(session_id)
+            snapshot = await run_blocking(self.session_recovery.submission_snapshot, session_id)
             active = maybe_active_run(snapshot.runs, history_epoch=snapshot.session.history_epoch)
             if active is not None:
                 return RunResult(session=snapshot.session, run=active)
@@ -2141,7 +1964,7 @@ class RuntimeService:
 
         await self._synchronize_extensions()
         session = await run_blocking(self.store.load_session_record, session_id)
-        self.input_admission.validate_resources(
+        await self.input_admission.validate_resources(
             session,
             session_input.resource_refs,
         )
@@ -2179,7 +2002,7 @@ class RuntimeService:
         on_provider_stream_start: Callable[[], None] | None = None,
     ) -> RunResult | None:
         while True:
-            snapshot = await self._load_submission_snapshot(session_id)
+            snapshot = await run_blocking(self.session_recovery.submission_snapshot, session_id)
             require_current_continuation(snapshot.session, continuation_request)
             item = await run_blocking(self.queued_inputs.find_session, snapshot.session, queue_id)
             if item is None:
@@ -2213,106 +2036,6 @@ class RuntimeService:
         raise PersistenceError(
             f"accepted Host input is missing from queue and canonical history: {receipt.queue_id}"
         )
-
-    async def _accept_existing_user_input(
-        self, snapshot: RuntimeSessionSnapshot, active: RunRecord | None, request: UserInputRequest
-    ) -> None:
-        if request.edit is None:
-            await self._queue_input(
-                snapshot, active, IncomingRunInput(request), request.session_settings
-            )
-            return
-        before = snapshot.session
-        boundary_id, harness = await run_blocking(
-            read_edit_boundary, self.store, before, request.edit, self.usage
-        )
-        prepared = await self._prepare_user_input(request, before, None, harness)
-        try:
-            committed = await run_blocking(
-                accept_message_edit,
-                self.store,
-                before,
-                boundary_id,
-                InputRecord(
-                    session_id=before.session_id,
-                    item=prepared.item,
-                    replaces_message_id=request.edit.message_id,
-                ),
-                request.session_settings,
-            )
-        finally:
-            prepared.close()
-        if self._agent_controls is not None:
-            await self._agent_controls.reconcile_session(committed.session)
-        await self.event_recorder.publish_committed(committed.events)
-
-    async def _queue_input(
-        self,
-        snapshot: RuntimeSessionSnapshot,
-        active_run: RunRecord | None,
-        incoming: IncomingRunInput,
-        session_settings: InputSessionSettings | None = None,
-        *,
-        on_input_accepted: Callable[[], None] | None = None,
-    ) -> tuple[SessionRecord, QueuedInput]:
-        request = incoming.request
-        if (
-            isinstance(request, HostSessionInput)
-            and request.history_epoch is not None
-            and request.history_epoch != snapshot.session.history_epoch
-        ):
-            raise SessionCommitConflict("Host input belongs to withdrawn Session history")
-        prospective: RunRecord | None = None
-        try:
-            if isinstance(request, UserInputRequest):
-                child_run = active_run if snapshot.session.session_kind == "subagent" else None
-                if snapshot.session.session_kind == "subagent" and child_run is None:
-                    raise PersistenceError("Child prompt binding requires an active delegated Run")
-                prospective = RunRecord(
-                    session_id=snapshot.session.session_id,
-                    history_epoch=snapshot.session.history_epoch,
-                    status="running",
-                    origin="user",
-                    driver=incoming.driver or RunDriverBinding(),
-                    parent_run_id=child_run.parent_run_id if child_run is not None else None,
-                    initiator_id=child_run.initiator_id if child_run is not None else None,
-                    metadata=(
-                        {
-                            name: child_run.metadata[name]
-                            for name in (
-                                "root_session_id",
-                                "delegation_id",
-                                "agent_id",
-                            )
-                        }
-                        if child_run is not None
-                        else {}
-                    ),
-                )
-                prospective = await self._attach_extension_snapshot(prospective)
-                queued_input = await self._checked_user_input(
-                    incoming,
-                    snapshot.session,
-                    prospective,
-                    self._extension_snapshot_for_run(prospective.run_id),
-                )
-            else:
-                queued_input = incoming.materialize(
-                    snapshot.session.history_epoch, enqueue=True, active=active_run
-                )
-            session, queued_input, _, events = await run_blocking(
-                self.queued_inputs.enqueue,
-                session_id=snapshot.session.session_id,
-                item=queued_input,
-                session_settings=session_settings,
-            )
-        finally:
-            if prospective is not None:
-                self._release_run_resources(prospective.run_id)
-        if on_input_accepted is not None:
-            on_input_accepted()
-        await self.event_recorder.publish_committed(events)
-        return session, queued_input
 
     async def _queue_input_batch(
         self,
@@ -2473,11 +2196,11 @@ class RuntimeService:
 
         current = self._extension_catalog.snapshot() if self._extension_catalog else None
         try:
-            await self._evaluate_prompt_policies(
+            await self.input_admission.evaluate_policies(
                 session=session,
                 run=run,
                 inputs=eligible,
-                catalog_snapshot=current,
+                catalog=current or self._extension_snapshot_for_run(run.run_id),
             )
         finally:
             if current is not None:
@@ -2791,54 +2514,6 @@ class RuntimeService:
             )
             return messages, events
 
-    async def _evaluate_prompt_policies(
-        self,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        inputs: list[QueuedInput],
-        harness: HarnessCallSnapshot | None = None,
-        catalog_snapshot: RuntimeCapabilities | None = None,
-    ) -> None:
-        snapshot = catalog_snapshot or self._extension_snapshot_for_run(run.run_id)
-        if harness is not None or snapshot is not None:
-            controls = harness.state.controls if harness is not None else session.controls
-            self._session_control_snapshot(controls, model_round=0, catalog=snapshot)
-            active = {activation.controller_id for activation in controls.activations}
-        else:
-            active = self._active_controller_ids_for_run(run.run_id)
-        policies = snapshot.prompt_policies if snapshot is not None else self.prompt_policies
-        await self.input_admission.evaluate_policies(
-            session=session,
-            run=run,
-            inputs=inputs,
-            registry=policies.scoped(lambda: active),
-            catalog_id=snapshot.catalog_id if snapshot is not None else None,
-            execution_contracts=snapshot.execution_contracts() if snapshot is not None else {},
-            harness=harness,
-            default_workspace=self.default_workspace,
-        )
-
-    async def _load_submission_snapshot(self, session_id: str) -> RuntimeSessionSnapshot:
-        """Load one Host submission snapshot without blocking the orchestration loop."""
-
-        locked = await run_blocking(self.run_ownership.is_locked, session_id)
-        return await run_blocking(
-            self._load_runtime_snapshot,
-            session_id,
-            recover=not locked,
-        )
-
-    def _load_runtime_snapshot(
-        self,
-        session_id: str,
-        *,
-        recover: bool,
-    ) -> RuntimeSessionSnapshot:
-        if recover:
-            return self.session_recovery.recover_runtime(session_id)
-        return self.store.load_runtime_session(session_id)
-
     async def approve_tool(
         self,
         *,
@@ -2927,9 +2602,8 @@ class RuntimeService:
                 )
                 return await self.run_lifecycle.finalize_requested_abort(failed)
             latest = await run_blocking(
-                self._load_runtime_snapshot,
+                self.session_recovery.recover_runtime,
                 session.session_id,
-                recover=True,
             )
             session = latest.session
             run = await run_blocking(self.store.load_run, session.session_id, run.run_id)
@@ -2971,7 +2645,8 @@ class RuntimeService:
         usage = await run_blocking(self.run_lifecycle.usage_for_run, run)
         if run.status not in ACTIVE_RUN_STATUSES:
             try:
-                await self._settle_terminal_run(run)
+                if self._agent_controls is not None:
+                    await self._agent_controls.settle_terminal_run(run)
                 settlement = await self._settle_run_continuation(
                     run,
                     final_text=result.final_text,
@@ -3059,19 +2734,6 @@ class RuntimeService:
             final_text=final_text,
         )
 
-    async def _settle_terminal_run(self, run: RunRecord) -> None:
-        """Run product semantics after the terminal record is durable.
-
-        Agent lifecycle settlement is part of the Runtime boundary, not an
-        observational event callback. The operation is intentionally idempotent:
-        an explicit abort may settle here and then pass through the ordinary Run
-        finalizer again when its active owner unwinds.
-        """
-
-        if run.status in ACTIVE_RUN_STATUSES or self._agent_controls is None:
-            return
-        await self._agent_controls.settle_terminal_run(run)
-
     def _finish_run_observers(self, run: RunRecord) -> None:
         if run.status not in ACTIVE_RUN_STATUSES:
             self.event_recorder.finish_run_observers(run.run_id)
@@ -3146,14 +2808,12 @@ class RuntimeService:
                 return latest
             metadata = dict(latest.metadata)
             snapshot = self._extension_snapshot_for_run(latest.run_id)
-            metadata["session_control_snapshot"] = self._session_control_snapshot(
-                session.controls,
-                model_round=model_round,
-                catalog=snapshot,
+            require_available_controls(
+                session.controls, snapshot.session_controllers if snapshot is not None else None
             )
-            self._run_resources[latest.run_id].controller_ids = frozenset(
-                item["controller_id"]
-                for item in metadata["session_control_snapshot"]["activations"]
+            metadata["session_control_snapshot"] = session.controls.run_snapshot(model_round)
+            resources.controller_ids = frozenset(
+                item.controller_id for item in session.controls.activations
             )
             update: dict[str, object] = {"metadata": metadata}
             if latest.kind == "agent" and snapshot is not None:
@@ -3184,24 +2844,6 @@ class RuntimeService:
             updated = latest.model_copy(update=update)
             self.store.save_run(updated)
             return updated
-
-    @staticmethod
-    def _session_control_snapshot(
-        controls: SessionControlState,
-        *,
-        model_round: int,
-        catalog: RuntimeCapabilities | None = None,
-    ) -> RunControlSnapshot:
-        unavailable = (
-            catalog.session_controllers.unavailable_controls(controls)
-            if catalog is not None
-            else tuple(activation.controller_id for activation in controls.activations)
-        )
-        if unavailable:
-            raise SessionControlContractError(
-                f"Session controller contract is unavailable: {unavailable[0]}"
-            )
-        return controls.run_snapshot(model_round)
 
     def _bind_control_state(self, run_id: str, controls: SessionControlState) -> str | None:
         resources = self._run_resources[run_id]
@@ -3253,11 +2895,8 @@ class RuntimeService:
                 metadata.setdefault("run_budget", self.run_budget.model_dump(mode="json"))
             update: dict[str, object] = {"metadata": metadata}
             if snapshot is not None:
-                metadata["session_control_snapshot"] = self._session_control_snapshot(
-                    session.controls,
-                    model_round=0,
-                    catalog=snapshot,
-                )
+                require_available_controls(session.controls, snapshot.session_controllers)
+                metadata["session_control_snapshot"] = session.controls.run_snapshot(0)
                 resources.controller_ids = frozenset(
                     activation.controller_id for activation in session.controls.activations
                 )

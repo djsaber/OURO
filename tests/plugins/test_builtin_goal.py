@@ -34,7 +34,7 @@ from ouro.local_application import LocalApplication
 from ouro.plugins.harness_calls import invoke_plugin_callback
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.plugins.resources import ScopedPluginDataStore
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult

@@ -26,7 +26,7 @@ from ouro.local_application import LocalApplication
 from ouro.local_configuration import RuntimeConfigurationResolver
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.providers import FauxProvider
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import (
     Tool,
@@ -1471,7 +1471,7 @@ def _write_guard_plugin(source, command_tool_name: str) -> None:
                 "name": "Guard",
                 "version": "1.0.0",
                 "namespace": "guard",
-                "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
+                "engines": {"ouro": ">=0.4.0", "plugin_api": "^7.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "guard_plugin:create_plugin",
@@ -1486,7 +1486,7 @@ def _write_guard_plugin(source, command_tool_name: str) -> None:
         ),
         encoding="utf-8",
     )
-    plugin_source = """from ouro.sdk.plugins.v6 import (
+    plugin_source = """from ouro.sdk.plugins.v7 import (
     ContributionSet,
     ToolPolicyContribution,
     ToolPolicyDecision,
@@ -1530,7 +1530,7 @@ def _write_observer_retire_plugin(source) -> None:
                 "name": "Observer Retire",
                 "version": "1.0.0",
                 "namespace": "observer_retire",
-                "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
+                "engines": {"ouro": ">=0.4.0", "plugin_api": "^7.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "observer_retire_plugin:create_plugin",
@@ -1554,7 +1554,7 @@ def _write_observer_retire_plugin(source) -> None:
     )
     (source / "observer_retire_plugin.py").write_text(
         """import asyncio
-from ouro.sdk.plugins.v6 import CommandContribution, ContributionSet, ObserverContribution
+from ouro.sdk.plugins.v7 import CommandContribution, ContributionSet, ObserverContribution
 
 class Plugin:
     def __init__(self, context):
@@ -1601,7 +1601,7 @@ def _write_prompt_policy_plugin(source) -> None:
                 "name": "Prompt Guard",
                 "version": "1.0.0",
                 "namespace": "prompt_guard",
-                "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
+                "engines": {"ouro": ">=0.4.0", "plugin_api": "^7.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "prompt_guard_plugin:create_plugin",
@@ -1627,7 +1627,7 @@ def _write_prompt_policy_plugin(source) -> None:
     (source / "prompt_guard_plugin.py").write_text(
         """import asyncio
 import json
-from ouro.sdk.plugins.v6 import (
+from ouro.sdk.plugins.v7 import (
     CommandContribution,
     ContributionSet,
     PromptPolicyContribution,
@@ -1705,7 +1705,7 @@ def _write_catalog_plugin(source, *, version: str = "1.0.0") -> None:
                 "name": "Catalog",
                 "version": version,
                 "namespace": "catalog",
-                "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
+                "engines": {"ouro": ">=0.4.0", "plugin_api": "^7.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "catalog_plugin:create_plugin",
@@ -1733,7 +1733,7 @@ def _write_catalog_plugin(source, *, version: str = "1.0.0") -> None:
         encoding="utf-8",
     )
     (source / "catalog_plugin.py").write_text(
-        """from ouro.sdk.plugins.v6 import (
+        """from ouro.sdk.plugins.v7 import (
     CommandContribution,
     CommandOutput,
     ContributionSet,
@@ -1782,7 +1782,7 @@ def _write_resumable_plugin(source) -> None:
                 "name": "Resume",
                 "version": "1.0.0",
                 "namespace": "resume",
-                "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
+                "engines": {"ouro": ">=0.4.0", "plugin_api": "^7.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "resume_plugin:create_plugin",
@@ -1808,7 +1808,7 @@ def _write_resumable_plugin(source) -> None:
         encoding="utf-8",
     )
     (source / "resume_plugin.py").write_text(
-        """from ouro.sdk.plugins.v6 import (
+        """from ouro.sdk.plugins.v7 import (
     ContributionSet,
     ToolContribution,
     ToolInputRequest,
@@ -1863,7 +1863,7 @@ def _write_skill_plugin(source) -> None:
                 "name": "Skill Prompt",
                 "version": "1.0.0",
                 "namespace": "skill_prompt",
-                "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
+                "engines": {"ouro": ">=0.4.0", "plugin_api": "^7.0.0"},
                 "runtime": {"kind": "declarative"},
                 "contributes": {"skills": [{"id": "calendar", "path": "./skills/calendar"}]},
                 "permissions": [],

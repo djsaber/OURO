@@ -6,7 +6,7 @@ import asyncio
 from pathlib import Path
 from uuid import uuid4
 
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 from ouro.sdk.plugins.services import ServiceCall, ServiceContribution
 from ouro.sdk.plugins.worker import WorkerPeer
 from ouro.sdk.plugins.worker_services import WorkerServices
@@ -92,7 +92,7 @@ class Worker:
         self.removals = {}
 
     async def initialize(self, params):
-        return {"protocol_version": "3.0"}
+        return {"protocol_version": "4.0"}
 
     async def prepare(self, params):
         return {"services": ["api"]}

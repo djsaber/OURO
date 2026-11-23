@@ -7,7 +7,7 @@ import json
 from collections.abc import Mapping
 from time import monotonic
 
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 
 from .client import (
     MAX_FETCH_URL_CHARS,

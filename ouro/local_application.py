@@ -259,7 +259,7 @@ class LocalApplication:
         plugin_runtime, plugins = _build_local_plugin_runtime(
             configured_home,
             registries=runtime.registries,
-            skills=runtime.skills,
+            skills=runtime.skill_activations.base_skills,
             session_store=runtime.store,
             usage_service=runtime.usage,
         )

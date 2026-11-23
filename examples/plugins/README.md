@@ -18,7 +18,7 @@ These packages are focused examples and validate against the current development
 - `model-review`: independent text generation through configured model routes, with plugin-attributed native usage and no synthetic Session or Run; both runtime entries share the command implementation.
 - `dynamic-records`: whole-group tool discovery with replaceable record schemas, Session state proposals, and lease-driven worker handler release; the same SDK tool implementation also runs in process.
 - `scheduled-sync`: owner-scoped persistent plans and native execution receipts; shared worker/in-process synchronization, preparation-time format checks, and an explicit stopped-data backup/restore command.
-- `worker-tool`: protocol 3.0 stdio worker with one approval-gated Tool; its call count and last value are proposed through the call-scoped Session state, then committed with the result.
+- `worker-tool`: protocol 4.0 stdio worker with one approval-gated Tool; its call count and last value are proposed through the call-scoped Session state, then committed with the result.
 
 Validate any example before installing it:
 

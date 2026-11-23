@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 from ouro.sdk.plugins.models import ModelInput, ModelRequest
 from ouro.sdk.plugins.providers import (
     ProviderCheck,
@@ -93,7 +93,7 @@ class Worker:
 
     async def initialize(self, params):
         self.plugin = Plugin(self.models, params["configuration"])
-        return {"protocol_version": "3.0"}
+        return {"protocol_version": "4.0"}
 
     async def prepare(self, params):
         contributions = await self.plugin.prepare()

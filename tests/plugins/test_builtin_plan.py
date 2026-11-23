@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import shutil
 from collections.abc import AsyncIterator
@@ -28,6 +29,9 @@ from ouro.core.session_controls import AttributedSessionControlTransition
 from ouro.core.state import SessionRecord
 from ouro.core.tools import ToolCallRequest
 from ouro.local_application import LocalApplication
+from ouro.plugins.dependencies import PluginDependencyError
+from ouro.plugins.installation.scaffold import create_plugin_scaffold
+from ouro.plugins.installation.store import PluginStateConflictError
 from ouro.providers.openai_responses.codec import responses_input
 from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import (
@@ -844,27 +848,56 @@ async def test_runtime_lists_and_releases_plan_through_controller(
 
 
 @pytest.mark.asyncio
-async def test_disabling_plugin_revokes_its_session_controller_gate(tmp_path) -> None:
+async def test_disable_preserves_pending_plan_until_dependents_release_it(
+    tmp_path, monkeypatch
+) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    runtime, store = _runtime(home, workspace, FinalProvider())
-    application = LocalApplication.from_runtime(runtime, home=home)
-    await _enable_plan_mode(application)
-    session = runtime.create_session(title="Disable controller owner")
-    assert application.plugins is not None
-    await application.plugins.execute_command(
-        f"{PLUGIN_ID}:plan",
-        "",
-        session_id=session.session_id,
-        workspace=str(workspace),
-    )
+    provider = PlanBuildProvider()
+    runtime, store = _runtime(home, workspace, provider)
+    dependent = tmp_path / "dependent"
+    plugin_id = "dev.ouro.plan-client"
+    create_plugin_scaffold(dependent, plugin_id=plugin_id, name="Plan client")
+    manifest_path = dependent / ".ouro-plugin" / "plugin.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["dependencies"]["plugins"] = [{"plugin_id": PLUGIN_ID, "version": ">=0.0.0"}]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-    disabled = await application.plugins.disable(PLUGIN_ID)
+    async with LocalApplication.from_runtime(runtime, home=home) as application:
+        plugins = application.plugins
+        assert plugins is not None
+        plugins.install(dependent)
+        assert (await plugins.enable(plugin_id)).status == "active"
+        waiting = await runtime.run("Design the implementation", approval_mode="auto")
+        session_id = waiting.session.session_id
+        assert waiting.run.status == "waiting_user"
+        controls = store.load_session_record(session_id).controls
+        assert controls.activations
+        assert provider.plan_path is not None
+        plan = provider.plan_path.read_bytes()
 
-    assert disabled.status == "disabled"
-    assert store.load_session_record(session.session_id).controls.activations == []
-    await application.close()
+        with pytest.raises(PluginDependencyError, match="active dependents"):
+            await plugins.disable(PLUGIN_ID)
+        assert store.load_session_record(session_id).controls == controls
+        assert store.load_run(session_id, waiting.run.run_id).status == "waiting_user"
+
+        await plugins.remove(plugin_id)
+
+        def concurrent_selection(expected, candidate):
+            raise PluginStateConflictError("concurrent selection")
+
+        with monkeypatch.context() as conflict:
+            conflict.setattr(plugins.store, "commit_candidate_state", concurrent_selection)
+            with pytest.raises(PluginStateConflictError, match="concurrent selection"):
+                await plugins.disable(PLUGIN_ID)
+        assert store.load_session_record(session_id).controls == controls
+        assert store.load_run(session_id, waiting.run.run_id).status == "waiting_user"
+
+        assert (await plugins.disable(PLUGIN_ID)).status == "disabled"
+        assert not store.load_session_record(session_id).controls.activations
+        assert store.load_run(session_id, waiting.run.run_id).status == "aborted"
+        assert provider.plan_path.read_bytes() == plan
 
 
 @pytest.mark.asyncio

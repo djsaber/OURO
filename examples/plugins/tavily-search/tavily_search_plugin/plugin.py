@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from time import monotonic
 from typing import cast
 
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 
 from .client import (
     MAX_EXTRACT_CHUNKS,

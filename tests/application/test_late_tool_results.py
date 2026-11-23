@@ -17,7 +17,7 @@ from ouro.plugins.catalog.gates import GenerationGate
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.worker.instance import WorkerPluginInstance
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 from ouro.tools import Tool
 from tests.application.tool_runtime import runtime
 from tests.application.tool_runtime import store as store

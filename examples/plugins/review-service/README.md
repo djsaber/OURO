@@ -36,7 +36,7 @@ To run this service in a separate worker, set its manifest runtime to:
 
 ```json
 {
-  "runtime": {"kind": "worker", "command": ["{python}", "worker.py"], "protocol": "3.0"}
+  "runtime": {"kind": "worker", "command": ["{python}", "worker.py"], "protocol": "4.0"}
 }
 ```
 

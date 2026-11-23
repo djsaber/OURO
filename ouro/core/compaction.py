@@ -194,13 +194,12 @@ def validate_compaction_sources(
 
 def validate_compaction_snapshot(
     session: SessionRecord,
-    messages: Sequence[MessageRecord],
+    messages: Mapping[str, MessageRecord],
     records: Sequence[CompactionRecord],
 ) -> None:
     """Validate imported dependencies once before publishing a new Session."""
     if not records and session.context_selection.compaction_id is None:
         return
-    sources = {item.message_id: item for item in messages}
     accepted: set[str] = set()
     for record in records:
         if record.compaction_id in accepted:
@@ -211,7 +210,7 @@ def validate_compaction_snapshot(
         ):
             raise PersistenceError("Session snapshot has a missing compaction predecessor")
         try:
-            validate_compaction_sources(record, session.session_id, len(messages), sources)
+            validate_compaction_sources(record, session.session_id, len(messages), messages)
         except CompactionStateError as exc:
             raise PersistenceError(str(exc)) from exc
         accepted.add(record.compaction_id)

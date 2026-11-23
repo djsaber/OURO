@@ -20,7 +20,7 @@ await runtime.run(
 For worker execution, set the manifest runtime to:
 
 ```json
-{"kind": "worker", "command": ["{python}", "worker.py"], "protocol": "3.0"}
+{"kind": "worker", "command": ["{python}", "worker.py"], "protocol": "4.0"}
 ```
 
 Both entry points import only the public SDK. `RunAgents` submits typed controls through

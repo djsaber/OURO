@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 
 from .browser import CAPTURE_PARAMETERS, capture
 from .comparison import build_comparison

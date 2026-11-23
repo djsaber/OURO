@@ -24,7 +24,7 @@ class Execution:
         self.peer.handlers["processes.output"] = self.processes.output
 
     async def initialize(self, params):
-        return {"protocol_version": "3.0"}
+        return {"protocol_version": "4.0"}
 
     async def prepare(self, params):
         return {"commands": ["python"]}

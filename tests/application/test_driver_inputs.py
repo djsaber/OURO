@@ -12,7 +12,7 @@ from ouro.core.prompt_policies import (
 )
 from ouro.core.provider import ProviderStreamEvent, ToolCallDelta
 from ouro.core.session_controls import HostSessionInput
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from tests.application.helpers import wait_for_runtime_event

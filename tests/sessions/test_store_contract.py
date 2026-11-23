@@ -77,6 +77,19 @@ def session_store(request: pytest.FixtureRequest, tmp_path) -> Iterator[SessionS
     yield store
 
 
+def test_duplicate_snapshot_message_can_be_corrected_before_publication(session_store):
+    session = SessionRecord()
+    message = MessageRecord.text(session_id=session.session_id, role="user", text="one")
+    with pytest.raises(PersistenceError, match="duplicate message identities"):
+        session_store.create_session_snapshot(session, [message, message])
+    with pytest.raises(FileNotFoundError):
+        session_store.load_session_record(session.session_id)
+    session_store.create_session_snapshot(session, [message])
+    assert session_store.load_messages_tail(session.session_id) == [
+        message.model_copy(update={"sequence": 1})
+    ]
+
+
 def test_sqlite_concurrent_initialization_preserves_all_sessions(tmp_path):
     barrier = Barrier(8)
     database = tmp_path / "ouro.db"

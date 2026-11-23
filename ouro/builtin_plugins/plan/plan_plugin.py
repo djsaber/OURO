@@ -11,7 +11,7 @@ from ouro.sdk.plugins.interactions import (
     PlanConfirmationRequest,
     PlanOption,
 )
-from ouro.sdk.plugins.v6 import (
+from ouro.sdk.plugins.v7 import (
     CommandContribution,
     CommandOutput,
     ContextContribution,

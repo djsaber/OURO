@@ -10,7 +10,6 @@ from typing import Literal, Protocol, cast
 
 from pydantic import JsonValue, TypeAdapter
 
-from ouro.application.contracts.base import Diagnostic
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.harness import capture_harness
 from ouro.application.runs.lifecycle import RunLifecycle
@@ -22,7 +21,6 @@ from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.agents import (
     AgentControlRequest,
     AgentControlResult,
-    AgentSpawnPolicy,
     AgentWaitRequest,
 )
 from ouro.core.base import new_id, utc_now
@@ -40,7 +38,6 @@ from ouro.core.observers import (
     freeze_json,
 )
 from ouro.core.redaction import redact_text
-from ouro.core.run_budget import RunPauseReason
 from ouro.core.run_drivers import DriverCheckpoint
 from ouro.core.session_controller_registry import SessionControllerRegistry
 from ouro.core.session_controls import (
@@ -80,28 +77,6 @@ _OBSERVER_TOOL_CONTENT_LIMIT = 32_768
 
 
 class AgentControlExecutor(Protocol):
-    async def prepare_history_continuation(self, run: RunRecord) -> RunRecord:
-        """Bind a new child execution to its existing frozen Delegation contract."""
-        ...
-
-    async def continue_children(self, run: RunRecord) -> None:
-        """Schedule interrupted children of the original Run without new input."""
-        ...
-
-    def recovery_session_ids(self, session: SessionRecord) -> tuple[str, ...]:
-        """Return the bounded execution scope required by one Agent aggregate."""
-
-        ...
-
-    @property
-    def spawn_policy(self) -> AgentSpawnPolicy: ...
-
-    def budget_reason(
-        self,
-        run: RunRecord,
-        next_model_round: int,
-    ) -> RunPauseReason | None: ...
-
     async def execute_control(
         self,
         request: AgentControlRequest,
@@ -121,16 +96,6 @@ class AgentControlExecutor(Protocol):
         tool_call_id: str,
         wait: AgentWaitRequest,
     ) -> None: ...
-
-    async def settle_terminal_run(self, run: RunRecord) -> None:
-        """Settle subagent lifecycle work caused by a durable Run terminal state."""
-
-        ...
-
-    async def reconcile_session(self, session: SessionRecord) -> tuple[Diagnostic, ...]:
-        """Recover the bounded Agent aggregate required by one Session."""
-
-        ...
 
 
 def _optional_text(value: object) -> str | None:

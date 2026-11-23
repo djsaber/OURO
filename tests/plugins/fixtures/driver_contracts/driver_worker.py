@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from review_driver_plugin import ReviewPlugin
 
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 from ouro.sdk.plugins.worker import WorkerPeer
 from ouro.sdk.plugins.worker_drivers import WorkerRunDrivers
 from ouro.sdk.plugins.worker_services import WorkerServices
@@ -30,7 +30,7 @@ class Worker:
         self.drivers = WorkerRunDrivers(
             self.peer, [sdk.RunDriverContribution("review", self.plugin.review)]
         )
-        return {"protocol_version": "3.0"}
+        return {"protocol_version": "4.0"}
 
     async def prepare(self, params):
         return {"run_drivers": ["review"]}

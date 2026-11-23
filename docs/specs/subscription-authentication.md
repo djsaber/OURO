@@ -3,7 +3,7 @@
 > 文档类型：订阅接入规格；浏览器登录为当前产品能力，设备码及其他未验证能力属于扩展范围
 > 范围：多厂商认证边界与 OpenAI / ChatGPT 订阅组合。
 
-设计理由见[认证设计](../architecture/authentication.md)，扩展条件见[认证验证计划](../plans/subscription-validation.md)。本文件定义通用认证契约与浏览器订阅接入，未验收的设备码及其他能力在对应章节明确标注。配置和运行行为遵循[Provider 配置](provider-configuration.md)、[类型与协议](provider-protocols.md)、[模板](provider-templates.md)及[核心运行时](runtime.md)规格。
+设计理由见[认证设计](../architecture/authentication.md)。本文件定义通用认证契约与浏览器订阅接入，未验收的设备码及其他能力在对应章节明确标注。配置和运行行为遵循[Provider 配置](provider-configuration.md)、[类型与协议](provider-protocols.md)、[模板](provider-templates.md)及[核心运行时](runtime.md)规格。
 
 ## S1. 范围与不变量
 
@@ -188,4 +188,4 @@ CLI 入口为 `provider auth login/status/logout <provider_id>`，以及 `provid
 | S7 协议 | 两轮及多轮工具、交错工具、reasoning 续接、scope 改变、完整 items 不重复编码、分支/恢复/压缩、EOF、usage 去重 |
 | S8–S9 集成 | 主/压缩/child/default adapter、非交互错误、费用未知、关闭顺序、第二驱动、依赖规则 |
 
-表中用例由对应领域测试验证；设备码及跨平台要求按扩展计划单独验收。真实账户验证须显式启用，fixture 只保留脱敏协议事实。支持范围必须与使用指南一致。
+领域测试覆盖对应契约。设备码与各平台的文件权限分别验收，真实账户验证须显式启用，fixture 只保留脱敏协议事实。已验证的账户、模型和平台范围见[订阅指南](../guides/subscriptions.md#证据范围)。

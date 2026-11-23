@@ -5,7 +5,7 @@ from dataclasses import asdict
 
 from review_driver_plugin import request_review, review
 
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 from ouro.sdk.plugins.worker import WorkerPeer
 from ouro.sdk.plugins.worker_drivers import WorkerRunDrivers
 
@@ -26,7 +26,7 @@ class Worker:
         self.drivers = WorkerRunDrivers(self.peer, [sdk.RunDriverContribution("review", review)])
 
     async def initialize(self, params):
-        return {"protocol_version": "3.0"}
+        return {"protocol_version": "4.0"}
 
     async def prepare(self, params):
         return {"run_drivers": ["review"], "commands": ["review"]}

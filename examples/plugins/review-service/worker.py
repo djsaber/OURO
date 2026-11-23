@@ -25,7 +25,7 @@ class Worker:
         self.service = ReviewService(ports.models, ports.tools)
 
     async def initialize(self, params):
-        return {"protocol_version": "3.0"}
+        return {"protocol_version": "4.0"}
 
     async def prepare(self, params):
         return {"services": ["review"]}

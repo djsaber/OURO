@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import inspect
 import threading
-from collections.abc import AsyncGenerator, Callable, Generator
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
 from contextlib import AbstractContextManager, asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import Any
 
 from ouro.core.base import new_id
@@ -26,6 +27,7 @@ from ouro.core.run_drivers import (
     RunDriverContext,
     RunDriverRegistration,
 )
+from ouro.core.session_controller_registry import SessionController
 from ouro.core.session_ports import SessionRepository
 from ouro.core.system_prompts import SystemPromptRegistry
 from ouro.core.task_ports import TaskServicePort
@@ -55,10 +57,10 @@ from ouro.plugins.dependencies import (
     LockedPluginDependency,
     PluginDependencyError,
     PluginLockGraph,
-    active_dependents,
     builtin_desired_enabled,
     desired_dependant_closure,
     plan_desired_plugin_activation,
+    require_no_active_dependents,
     resolve_plugin_dependencies,
 )
 from ouro.plugins.driver_contracts import resolve_driver_contract
@@ -70,7 +72,7 @@ from ouro.plugins.implementation_contracts import plugin_implementation
 from ouro.plugins.inprocess.context import BoundCredentialResolver, build_plugin_context
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.plugins.inprocess.loading import load_plugin_factory
-from ouro.plugins.installation.package import PLUGIN_API_VERSION
+from ouro.plugins.installation.package import validate_manifest_compatibility
 from ouro.plugins.installation.store import PluginPackageStore, PluginStateConflictError
 from ouro.plugins.instructions import AgentInstructionLoader
 from ouro.plugins.lifecycle.candidates import PluginRuntimeCandidate
@@ -78,7 +80,7 @@ from ouro.plugins.lifecycle.generation import PluginGeneration, revoke_dependent
 from ouro.plugins.lifecycle.generation_resources import GenerationResourceRequest
 from ouro.plugins.lifecycle.readiness import plugin_install_readiness
 from ouro.plugins.lifecycle.resource_preparation import prepare_generation_resources
-from ouro.plugins.manifest import plugin_module_namespace
+from ouro.plugins.manifest import PLUGIN_API_VERSION, plugin_module_namespace
 from ouro.plugins.models import (
     BuiltinPluginActivationOverride,
     PluginAuditEvent,
@@ -100,10 +102,12 @@ from ouro.plugins.services import ServiceEndpoint
 from ouro.plugins.tasks import PluginTaskBinding, bind_plugin_task
 from ouro.plugins.tool_groups import PluginToolGroups, ToolGroupPublication, ToolGroupVersion
 from ouro.plugins.worker.instance import WorkerPluginInstance
-from ouro.sdk.plugins import v6 as sdk
-from ouro.sdk.plugins.v6 import StopReason
+from ouro.sdk.plugins import v7 as sdk
+from ouro.sdk.plugins.v7 import StopReason
 from ouro.skills import SkillMetadata
 from ouro.tools.registry import ToolRegistry
+
+type ReleasePluginControls = Callable[[str, tuple[SessionController, ...]], Awaitable[int]]
 
 
 class PluginGenerationStartError(RuntimeError):
@@ -120,6 +124,13 @@ class PluginCandidateBuildError(RuntimeError):
 @dataclass
 class _LifecycleAdmission:
     catalog: ExtensionCatalog | None
+
+
+@dataclass(frozen=True)
+class _ControlRelease:
+    package_digest: str | None
+    callback: ReleasePluginControls
+    task: asyncio.Task[None]
 
 
 class PluginRuntimeResource:
@@ -174,6 +185,7 @@ class PluginRuntimeResource:
         self._catalog_base: ExtensionCatalogBase | None = None
         self._current_catalog: ExtensionCatalog | None = None
         self._retirement_tasks: set[asyncio.Task[None]] = set()
+        self._control_releases: dict[str, _ControlRelease] = {}
         self._started = False
         self._closed = False
         self._close_task: asyncio.Task[None] | None = None
@@ -426,19 +438,27 @@ class PluginRuntimeResource:
                 return "failed"
             return self.status(plugin_id)
 
-    async def disable(self, plugin_id: str, *, wait: bool = True) -> PluginStatus:
+    async def disable(
+        self,
+        plugin_id: str,
+        *,
+        wait: bool = True,
+        release_controls: ReleasePluginControls | None = None,
+        selected_digest: str | None = None,
+    ) -> PluginStatus:
         async with self._mutation_lock:
             expected = self.store.read_state()
             candidate_definition = self._runtime_candidate(expected, plugin_id)
-            dependents = active_dependents(
-                expected,
-                plugin_id,
-                builtin_contracts=self.builtin_contracts,
-            )
-            if dependents:
-                raise PluginDependencyError(
-                    f"plugin has active dependents: {plugin_id}: {', '.join(dependents)}"
+            if (
+                selected_digest is not None
+                and candidate_definition.package_digest != selected_digest
+            ):
+                raise PluginStateConflictError(
+                    f"selected install changed before removal: {plugin_id}"
                 )
+            require_no_active_dependents(
+                expected, plugin_id, builtin_contracts=self.builtin_contracts
+            )
             candidate = expected.model_copy(deep=True)
             self._set_desired_enabled(candidate, plugin_id, False)
             await self._transition_state_locked(
@@ -446,6 +466,7 @@ class PluginRuntimeResource:
                 candidate_state=candidate,
                 remove_ids={plugin_id},
                 close_gate_ids={plugin_id},
+                disable_request=(candidate_definition, release_controls),
                 reason="disable",
             )
             self.store.append_audit(
@@ -459,12 +480,6 @@ class PluginRuntimeResource:
                     },
                 )
             )
-            for generation in tuple(self._retired.values()):
-                if generation.candidate.plugin_id == plugin_id:
-                    generation.revoke(cancel=True)
-                    if generation.cleanup is None or generation.cleanup.done():
-                        generation.cleanup_error = None
-                        self._schedule_retirement(generation, reason="disable")
         return await self.wait_stopped(plugin_id) if wait else self.status(plugin_id)
 
     async def wait_stopped(self, plugin_id: str) -> PluginStatus:
@@ -475,11 +490,18 @@ class PluginRuntimeResource:
             for generation in self._retired.values()
             if generation.candidate.plugin_id == plugin_id and generation.cleanup is not None
         ]
+        if release := self._control_releases.get(plugin_id):
+            tasks.append(release.task)
         if tasks:
             await asyncio.wait(tasks, timeout=self.stop_timeout_seconds)
         return self.status(plugin_id)
 
     def _cleanup_status(self, plugin_id: str) -> PluginStatus | None:
+        if release := self._control_releases.get(plugin_id):
+            if not release.task.done():
+                return "stopping"
+            if release.task.cancelled() or release.task.exception() is not None:
+                return "failed"
         generations = [
             generation
             for generation in self._retired.values()
@@ -890,6 +912,11 @@ class PluginRuntimeResource:
     def has_resources(self, plugin_id: str, *, package_digest: str | None = None) -> bool:
         """Include retired and failed owners when deciding whether files may be removed."""
 
+        release = self._control_releases.get(plugin_id)
+        if release is not None and (
+            package_digest is None or package_digest == release.package_digest
+        ):
+            return True
         return any(
             generation.candidate.plugin_id == plugin_id
             and (package_digest is None or generation.candidate.package_digest == package_digest)
@@ -945,6 +972,13 @@ class PluginRuntimeResource:
                 self._retired[generation.record.generation_id] = generation
             self._active.clear()
             self._publish_catalog(self._build_catalog({}))
+            for plugin_id, release in tuple(self._control_releases.items()):
+                if release.task.done() and (
+                    release.task.cancelled() or release.task.exception() is not None
+                ):
+                    self._schedule_control_release(
+                        plugin_id, release.package_digest, release.callback
+                    )
 
         errors: list[Exception] = []
         seen: set[str] = set()
@@ -967,6 +1001,18 @@ class PluginRuntimeResource:
                 )
             elif generation.cleanup_error is not None:
                 errors.append(generation.cleanup_error)
+        releases = tuple(release.task for release in self._control_releases.values())
+        if releases:
+            finished, pending_releases = await asyncio.wait(
+                releases, timeout=self.stop_timeout_seconds
+            )
+            for task in finished:
+                if task.cancelled():
+                    errors.append(RuntimeError("Session controller cleanup was cancelled"))
+                elif isinstance(error := task.exception(), Exception) and error not in errors:
+                    errors.append(error)
+            if pending_releases:
+                errors.append(TimeoutError("Session controller cleanup is still running"))
         if errors:
             raise ExceptionGroup("plugin runtime shutdown failed", errors)
 
@@ -979,6 +1025,7 @@ class PluginRuntimeResource:
         remove_ids: set[str] | None = None,
         close_gate_ids: set[str] | None = None,
         startup_graph: PluginLockGraph | None = None,
+        disable_request: tuple[PluginRuntimeCandidate, ReleasePluginControls | None] | None = None,
         reason: str,
     ) -> None:
         """Prepare a complete candidate before committing state and catalog together."""
@@ -1105,6 +1152,18 @@ class PluginRuntimeResource:
             for generation in previous.values():
                 generation.retiring = True
                 self._retired[generation.record.generation_id] = generation
+
+            if disable_request is not None:
+                target, release = disable_request
+                self._schedule_control_release(target.plugin_id, target.package_digest, release)
+                for generation in self._retired.values():
+                    if (
+                        generation.record.plugin_id == target.plugin_id
+                        and generation.cleanup is not None
+                        and generation.cleanup.done()
+                    ):
+                        generation.cleanup_error = None
+                        self._schedule_retirement(generation, reason="disable")
 
             handover = asyncio.create_task(
                 self._finish_publication(previous, candidates, graph=graph, reason=reason),
@@ -1643,6 +1702,7 @@ class PluginRuntimeResource:
         *,
         dependencies: dict[str, PluginGeneration],
     ) -> PluginGeneration:
+        validate_manifest_compatibility(candidate.manifest)
         configuration = candidate.configuration
         generation = PluginGenerationRecord(
             generation_id=new_id("plg"),
@@ -1902,7 +1962,7 @@ class PluginRuntimeResource:
                 runtime_kind=generation.runtime_kind,
                 configuration_revision_id=generation.configuration_revision_id,
                 dependencies=(plugin_implementation(item.record) for item in dependencies.values()),
-                plugin_api_version=generation.plugin_api_version,
+                plugin_api_version=candidate.execution_api_version,
                 worker_protocol_version=generation.worker_protocol_version,
             )
             prepared = bind_execution_contract(
@@ -1944,12 +2004,82 @@ class PluginRuntimeResource:
                 ) from None
             raise
 
+    def _schedule_control_release(
+        self, plugin_id: str, package_digest: str | None, release: ReleasePluginControls | None
+    ) -> None:
+        previous = self._control_releases.get(plugin_id)
+        if previous is not None:
+            if not previous.task.done():
+                return
+            release = previous.callback
+            package_digest = previous.package_digest
+        if release is None:
+            return
+        # Claim all available owners before their revoked gates wake retirement tasks.
+        owners = tuple(
+            generation
+            for generation in self._retired.values()
+            if generation.record.plugin_id == plugin_id and generation.can_release_controls
+        )
+        task = asyncio.create_task(
+            self._release_retiring_controls(plugin_id, owners, release),
+            name=f"ouro-plugin-controls-{plugin_id}",
+        )
+        self._control_releases[plugin_id] = _ControlRelease(package_digest, release, task)
+        task.add_done_callback(partial(self._control_release_finished, plugin_id, bool(owners)))
+
+    async def _release_retiring_controls(
+        self, plugin_id: str, owners: tuple[PluginGeneration, ...], release: ReleasePluginControls
+    ) -> None:
+        for owner in owners:
+            await owner.gate.wait_drained()
+        controllers = tuple(
+            controller
+            for owner in owners
+            if not isinstance(owner.instance, WorkerPluginInstance) or owner.instance.is_healthy
+            for controller in owner.contributions.session_controllers
+        )
+        if forced := await release(plugin_id, controllers):
+            self._diagnostics.append(
+                PluginDiagnostic(
+                    code="plugin_controls_force_released",
+                    phase="retire",
+                    severity="warning",
+                    plugin_id=plugin_id,
+                    message=f"Host released {forced} activations. Private cleanup is unconfirmed.",
+                )
+            )
+
+    def _control_release_finished(
+        self, plugin_id: str, has_retiring_owner: bool, task: asyncio.Task[None]
+    ) -> None:
+        if task.cancelled():
+            return
+        if (error := task.exception()) is not None:
+            if has_retiring_owner:
+                # Its retirement publishes the error with the generation credential redactor.
+                return
+            self._diagnostics.append(
+                PluginDiagnostic(
+                    code="plugin_control_release_failed",
+                    phase="retire",
+                    plugin_id=plugin_id,
+                    message=redact_text(str(error)),
+                    retryable=True,
+                    suggested_action="Resolve the Session error and disable the plugin again.",
+                )
+            )
+        elif self._control_releases[plugin_id].task is task:
+            del self._control_releases[plugin_id]
+
     async def _stop_generation(
         self,
         generation: PluginGeneration,
         *,
         reason: StopReason,
     ) -> None:
+        if release := self._control_releases.get(generation.candidate.plugin_id):
+            await release.task
         await generation.stop(reason=reason, timeout=self.stop_timeout_seconds)
         self._diagnostics.extend(generation.diagnostics)
         generation.diagnostics.clear()
@@ -1998,6 +2128,7 @@ class PluginRuntimeResource:
                 source_kind="builtin",
                 public_source="bundled with OURO",
                 factory=definition.factory,
+                execution_api_version=definition.execution_api_version,
             )
         record = _state_plugin_record(state, plugin_id)
         installed = record.selected()

@@ -508,6 +508,41 @@ async def test_execution_failure_releases_private_job_and_reports_original_error
         await app.close()
 
 
+async def test_initial_retry_returns_receipt_and_head_from_one_read(
+    open_input_runtime, monkeypatch
+):
+    runtime = open_input_runtime(FauxProvider())
+    request = UserInputRequest(prompt="shared first input")
+    admission = runtime.input_admission
+    accept_new = admission.accept_new
+    first_waiting, published = asyncio.Event(), asyncio.Event()
+
+    async def interleaved(value):
+        if first_waiting.is_set():
+            initial = await accept_new(value)
+            published.set()
+            return initial
+        first_waiting.set()
+        await published.wait()
+        duplicate = await accept_new(value)
+        result = await runtime.run(
+            value.prompt, new_session_id=value.new_session_id, input_id=value.input_id
+        )
+        assert result.run.status == "completed"
+        return duplicate
+
+    monkeypatch.setattr(admission, "accept_new", interleaved)
+    async with runtime:
+        retry = asyncio.create_task(admission.accept(request))
+        await first_waiting.wait()
+        await runtime.accept_user_input(request)
+        receipt, head = await retry
+        assert receipt.run_id is None
+        assert head.pending_input_ids == (receipt.queue_id,)
+        consumed = await runtime.accept_user_input(request)
+        assert consumed.run_id is not None
+
+
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
 async def test_pending_input_receipt_does_not_search_canonical_message_history(
     tmp_path, monkeypatch, backend

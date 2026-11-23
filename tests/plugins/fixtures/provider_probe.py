@@ -2,7 +2,7 @@ import asyncio
 import json
 from dataclasses import asdict
 
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 from ouro.sdk.plugins.models import ModelInput, ModelRequest, ModelUsage
 from ouro.sdk.plugins.providers import (
     ProviderCheck,
@@ -167,7 +167,7 @@ class Worker:
         self.probe = Probe(self.models)
 
     async def initialize(self, params):
-        return {"protocol_version": "3.0"}
+        return {"protocol_version": "4.0"}
 
     async def prepare(self, params):
         contributions = await self.probe.prepare()

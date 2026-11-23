@@ -20,9 +20,8 @@ from pydantic import ValidationError
 
 from ouro.core.agents import DelegationRecord
 from ouro.core.base import OuroModel, new_id, utc_now
-from ouro.core.compaction import CompactionRecord, validate_compaction_snapshot
+from ouro.core.compaction import CompactionRecord
 from ouro.core.content import media_resource_ids
-from ouro.core.context_selection import validate_media_selection
 from ouro.core.context_snapshots import (
     ContextSnapshotRecord,
     ModelRequestHeader,
@@ -35,9 +34,8 @@ from ouro.core.errors import (
     SessionRecoveryRequiredError,
     UnsupportedDataVersionError,
 )
-from ouro.core.harness import HarnessState, HarnessVersion
-from ouro.core.inputs import InputRecord, InputState, validate_input_snapshot
-from ouro.core.message_content import validate_tool_message_snapshot
+from ouro.core.harness import HarnessVersion
+from ouro.core.inputs import InputRecord, InputState
 from ouro.core.message_frames import MessageTruncation
 from ouro.core.message_statistics import RunMessageCounts, RunResultReferences
 from ouro.core.messages import MessageFact, MessageRecord
@@ -84,7 +82,6 @@ from ouro.resources.media import (
     capture_outcome_media,
     materialize_context_media,
     materialize_outcome_media,
-    validate_media_references,
 )
 from ouro.resources.prepared import validate_prepared_resources
 from ouro.sessions import sqlite_facts, sqlite_resources
@@ -119,6 +116,7 @@ from ouro.sessions.index import SessionIndex
 from ouro.sessions.layout import DATA_LAYOUT_VERSION, DataLayoutManifest
 from ouro.sessions.locks import SessionMutationLock, SessionRunLock
 from ouro.sessions.portable import SessionBundle, populate_sessions
+from ouro.sessions.snapshots import prepare_session_snapshot
 from ouro.sessions.sqlite_compactions import insert_compaction
 from ouro.sessions.sqlite_connections import ExecutionConnections, NativeSessionRunLock
 from ouro.sessions.sqlite_drafts import append_chunk as append_draft_chunk
@@ -547,34 +545,20 @@ class LocalSessionStore:
         request_headers: tuple[ModelRequestHeader, ...] = (),
         latest_manifest: RequestManifestRecord | None = None,
     ) -> None:
-        messages = [
-            item if item.sequence == index else item.model_copy(update={"sequence": index})
-            for index, item in enumerate(messages, start=1)
-        ]
-        validate_request_snapshot(session.session_id, request_headers, latest_manifest)
-        validate_media_references(
-            messages,
-            latest_manifest,
-            (record.resource_id for record in resource_references or []),
-            (tool_facts or ToolCallFacts()).outcomes,
-        )
         compaction_records = compactions or []
-        validate_compaction_snapshot(session, messages, compaction_records)
-        if (boundary := session.context_selection.media_elided_through) is not None:
-            validate_media_selection(
-                session.context_selection,
-                session.session_id,
-                next((item for item in messages if item.message_id == boundary.message_id), None),
-            )
-        states = validate_input_snapshot(
-            session.session_id, session.pending_input_ids, inputs, input_states, messages=messages
+        session, messages, versions, states = prepare_session_snapshot(
+            session,
+            messages,
+            resource_references=resource_references,
+            harness_versions=harness_versions,
+            compactions=compaction_records,
+            inputs=inputs,
+            input_states=input_states,
+            tool_facts=tool_facts,
+            call_states=call_states,
+            request_headers=request_headers,
+            latest_manifest=latest_manifest,
         )
-        if tool_facts is not None:
-            tool_facts.validate_snapshot(session.session_id)
-        validate_call_states(
-            call_states, tool_facts or ToolCallFacts(), session_id=session.session_id
-        )
-        validate_tool_message_snapshot(messages, tool_facts or ToolCallFacts())
         session_dir = self._session_dir(session.session_id)
         database = session_dir / "session-data.sqlite3"
         published = False
@@ -601,46 +585,10 @@ class LocalSessionStore:
                     if path.exists():
                         shutil.rmtree(path)
             (staging_dir / "harness").mkdir(parents=True, exist_ok=prepared_resources)
-            versions = (
-                harness_versions
-                if harness_versions is not None
-                else [
-                    HarnessVersion(
-                        session_id=session.session_id,
-                        version_id=session.harness_version,
-                        state=HarnessState(controls=session.controls),
-                    )
-                ]
-            )
-            checkpoints = {version.version_id: version for version in versions}
-            if session.harness_version not in checkpoints or any(
-                message.before_harness_version is not None
-                and message.before_harness_version not in checkpoints
-                for message in messages
-            ):
-                raise PersistenceError("Session snapshot has a missing Harness checkpoint")
             staged = FileSessionCommits(lambda _session_id: staging_dir)
             for version in versions:
-                if version.session_id != session.session_id:
-                    raise PersistenceError("Harness checkpoint belongs to another Session")
                 staged.save_version(version)
-            session = session.model_copy(
-                update={
-                    "message_count": len(messages),
-                    "controls": checkpoints[session.harness_version].state.controls,
-                    "run_count": 0,
-                    "resource_count": len({item.resource_id for item in resource_references or ()}),
-                    "last_message_id": messages[-1].message_id if messages else None,
-                }
-            )
-            for message in messages:
-                if message.session_id != session.session_id:
-                    raise PersistenceError(
-                        f"message {message.message_id} does not belong to "
-                        f"session {session.session_id}"
-                    )
-            if len({message.message_id for message in messages}) != len(messages):
-                raise PersistenceError("Session snapshot contains duplicate message identities")
+            session.resource_count = len({item.resource_id for item in resource_references or ()})
             write_resource_contents(
                 staging_dir / "resources" / "files",
                 resource_contents,

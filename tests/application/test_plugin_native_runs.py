@@ -42,7 +42,7 @@ def service_packages(tmp_path, kind):
         manifest["runtime"] = {
             "kind": "worker",
             "command": ["{python}", "worker.py"],
-            "protocol": "3.0",
+            "protocol": "4.0",
         }
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     return driver, service

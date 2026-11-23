@@ -6,7 +6,7 @@ import asyncio
 import threading
 from pathlib import Path
 
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 from ouro.sdk.plugins.worker import HostRequestError, WorkerPeer
 from ouro.sdk.plugins.worker_tools import WorkerSessionState, invoke_worker_tool
 
@@ -65,7 +65,7 @@ async def main() -> None:
         return await finish(call)
 
     async def initialize(params):
-        return {"protocol_version": "3.0"}
+        return {"protocol_version": "4.0"}
 
     async def prepare(params):
         return {"tools": {"echo": {}}}

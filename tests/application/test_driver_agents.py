@@ -147,7 +147,7 @@ async def test_driver_parallel_agents_review_and_conditional_approved_action(
         value["runtime"] = {
             "kind": "worker",
             "command": ["{python}", "worker.py"],
-            "protocol": "3.0",
+            "protocol": "4.0",
         }
     manifest.write_text(json.dumps(value), encoding="utf-8")
     service.install(package)

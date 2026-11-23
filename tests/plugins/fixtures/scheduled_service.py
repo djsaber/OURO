@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 from ouro.sdk.plugins.scheduled import ScheduledInvocation
 from ouro.sdk.plugins.services import ServiceCall, ServiceContribution
 from ouro.sdk.plugins.worker import WorkerPeer
@@ -110,7 +110,7 @@ class Worker:
         self.probe.scheduler = WorkerScheduler(self.peer)
 
     async def initialize(self, params):
-        return {"protocol_version": "3.0"}
+        return {"protocol_version": "4.0"}
 
     async def prepare(self, params):
         return {"services": ["sync"]}

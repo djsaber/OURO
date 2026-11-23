@@ -14,7 +14,7 @@ from ouro.plugins.installation.store import PluginPackageStore
 from ouro.plugins.invocation import plugin_invocation
 from ouro.plugins.lifecycle.runtime import PluginRuntimeResource
 from ouro.plugins.manifest import PluginManifest
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 from ouro.sdk.plugins.services import ServiceContribution
 from ouro.tools import ToolRegistry
 
@@ -105,7 +105,7 @@ async def service_runtime(tmp_path):
                     "namespace": namespace,
                     "name": namespace,
                     "version": "1.0.0",
-                    "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
+                    "engines": {"ouro": ">=0.4.0", "plugin_api": "^7.0.0"},
                     "runtime": {
                         "kind": "python-inprocess",
                         "entrypoint": f"{namespace}_plugin:create",

@@ -6,7 +6,7 @@ from ouro.core.context_providers import ContextFragment, ContextObservation
 from ouro.core.continuations import ContinuationDecision
 from ouro.core.session_controls import HostSessionInput, SessionInputRequest
 from ouro.core.state import RunContinuationSettlementPlan
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 
 
 @pytest.mark.parametrize(

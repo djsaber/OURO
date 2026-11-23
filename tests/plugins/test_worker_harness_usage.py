@@ -9,7 +9,7 @@ from ouro.core.session_controls import RunControlBinding
 from ouro.plugins.harness_calls import PluginStateView
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.worker.instance import WorkerPluginInstance
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 
 
 async def test_worker_receives_native_usage_and_returns_a_controller_scope(tmp_path):
@@ -30,7 +30,7 @@ for line in sys.stdin:
     method = request['method']
     result = {}
     if method == 'initialize':
-        result = {'protocol_version': '3.0'}
+        result = {'protocol_version': '4.0'}
     elif method == 'contributions.prepare':
         result = {'tools': {'echo': {}}, 'session_controllers': ['mode']}
     elif method == 'session_controller.call':

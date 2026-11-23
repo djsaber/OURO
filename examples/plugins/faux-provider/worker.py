@@ -21,7 +21,7 @@ class Worker:
         self.plugin = FauxPlugin()
 
     async def initialize(self, params):
-        return {"protocol_version": "3.0"}
+        return {"protocol_version": "4.0"}
 
     async def prepare(self, params):
         contributions = await self.plugin.prepare()

@@ -4,7 +4,7 @@ import asyncio
 
 from delegating_driver_plugin import delegate
 
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 from ouro.sdk.plugins.worker import WorkerPeer
 from ouro.sdk.plugins.worker_drivers import WorkerRunDrivers
 
@@ -26,7 +26,7 @@ class Worker:
         )
 
     async def initialize(self, params):
-        return {"protocol_version": "3.0"}
+        return {"protocol_version": "4.0"}
 
     async def prepare(self, params):
         return {"run_drivers": ["delegate"]}

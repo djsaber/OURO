@@ -16,9 +16,8 @@ from pydantic import ValidationError
 
 from ouro.core.agents import DelegationRecord
 from ouro.core.base import VersionedOuroModel, new_id, utc_now
-from ouro.core.compaction import CompactionRecord, validate_compaction_snapshot
+from ouro.core.compaction import CompactionRecord
 from ouro.core.content import media_resource_ids
-from ouro.core.context_selection import validate_media_selection
 from ouro.core.context_snapshots import (
     ContextSnapshotRecord,
     ModelRequestHeader,
@@ -30,12 +29,11 @@ from ouro.core.errors import (
     PersistenceError,
     UnsupportedDataVersionError,
 )
-from ouro.core.harness import HarnessState, HarnessVersion
-from ouro.core.inputs import InputRecord, InputState, resolve_input_content, validate_input_snapshot
+from ouro.core.harness import HarnessVersion
+from ouro.core.inputs import InputRecord, InputState, resolve_input_content
 from ouro.core.message_content import (
     decode_message_content,
     materialize_owned_message,
-    validate_tool_message_snapshot,
 )
 from ouro.core.message_frames import MessageTruncation
 from ouro.core.message_statistics import RunMessageCounts, RunResultReferences
@@ -77,7 +75,6 @@ from ouro.resources.media import (
     materialize_context_media,
     materialize_message_media,
     materialize_outcome_media,
-    validate_media_references,
 )
 from ouro.resources.prepared import validate_prepared_resources
 from ouro.sessions import sqlite_resources
@@ -98,6 +95,7 @@ from ouro.sessions.index import SessionIndex, invalid_session_index_entry
 from ouro.sessions.locks import SessionRunLock
 from ouro.sessions.message_reads import resolve_messages
 from ouro.sessions.portable import SessionBundle, populate_sessions
+from ouro.sessions.snapshots import prepare_session_snapshot
 from ouro.sessions.sqlite_compactions import insert_compaction
 from ouro.sessions.sqlite_connections import ExecutionConnections, NativeSessionRunLock
 from ouro.sessions.sqlite_drafts import append_chunk as append_draft_chunk
@@ -731,34 +729,20 @@ class SQLiteSessionStore:
         request_headers: tuple[ModelRequestHeader, ...] = (),
         latest_manifest: RequestManifestRecord | None = None,
     ) -> None:
-        messages = [
-            item if item.sequence == index else item.model_copy(update={"sequence": index})
-            for index, item in enumerate(messages, start=1)
-        ]
-        validate_request_snapshot(session.session_id, request_headers, latest_manifest)
-        validate_media_references(
-            messages,
-            latest_manifest,
-            (record.resource_id for record in resource_references or []),
-            (tool_facts or ToolCallFacts()).outcomes,
-        )
         compaction_records = compactions or []
-        validate_compaction_snapshot(session, messages, compaction_records)
-        if (boundary := session.context_selection.media_elided_through) is not None:
-            validate_media_selection(
-                session.context_selection,
-                session.session_id,
-                next((item for item in messages if item.message_id == boundary.message_id), None),
-            )
-        states = validate_input_snapshot(
-            session.session_id, session.pending_input_ids, inputs, input_states, messages=messages
+        session, messages, versions, states = prepare_session_snapshot(
+            session,
+            messages,
+            resource_references=resource_references,
+            harness_versions=harness_versions,
+            compactions=compaction_records,
+            inputs=inputs,
+            input_states=input_states,
+            tool_facts=tool_facts,
+            call_states=call_states,
+            request_headers=request_headers,
+            latest_manifest=latest_manifest,
         )
-        if tool_facts is not None:
-            tool_facts.validate_snapshot(session.session_id)
-        validate_call_states(
-            call_states, tool_facts or ToolCallFacts(), session_id=session.session_id
-        )
-        validate_tool_message_snapshot(messages, tool_facts or ToolCallFacts())
         with self.session_mutation(session.session_id):
             if prepared_resources:
                 validate_prepared_resources(
@@ -766,38 +750,9 @@ class SQLiteSessionStore:
                 )
             connection = self._transaction_connection()
             try:
-                versions = (
-                    harness_versions
-                    if harness_versions is not None
-                    else [
-                        HarnessVersion(
-                            session_id=session.session_id,
-                            version_id=session.harness_version,
-                            state=HarnessState(controls=session.controls),
-                        )
-                    ]
-                )
-                checkpoints = {version.version_id: version for version in versions}
-                if session.harness_version not in checkpoints or any(
-                    message.before_harness_version is not None
-                    and message.before_harness_version not in checkpoints
-                    for message in messages
-                ):
-                    raise PersistenceError("Session snapshot has a missing Harness checkpoint")
                 connection.execute(
                     "INSERT INTO sessions(session_id, payload) VALUES(?, ?)",
-                    (
-                        session.session_id,
-                        session.model_copy(
-                            update={
-                                "message_count": len(messages),
-                                "controls": checkpoints[session.harness_version].state.controls,
-                                "run_count": 0,
-                                "resource_count": 0,
-                                "last_message_id": messages[-1].message_id if messages else None,
-                            }
-                        ).model_dump_json(),
-                    ),
+                    (session.session_id, session.model_dump_json()),
                 )
                 storage = SQLiteSessionCommits(connection)
                 for fact in tool_facts.records if tool_facts is not None else ():
@@ -809,14 +764,7 @@ class SQLiteSessionStore:
                 for state in states:
                     write_state(connection, state)
                 for version in versions:
-                    if version.session_id != session.session_id:
-                        raise PersistenceError("Harness checkpoint belongs to another Session")
                     storage.save_version(version)
-                for message in messages:
-                    if message.session_id != session.session_id:
-                        raise PersistenceError(
-                            f"message {message.message_id} does not belong to {session.session_id}"
-                        )
                 write_messages(connection, messages)
                 for compaction in compaction_records:
                     insert_compaction(connection, compaction)

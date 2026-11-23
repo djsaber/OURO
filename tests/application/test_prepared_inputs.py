@@ -194,7 +194,7 @@ async def test_prepared_input_rejection_keeps_resources_without_session(
     async def reject(**_kwargs):
         raise ValueError("Input policy rejected")
 
-    monkeypatch.setattr(runtime, "_evaluate_prompt_policies", reject)
+    monkeypatch.setattr(runtime.input_admission, "evaluate_policies", reject)
     with pytest.raises(ValueError, match="Input policy rejected"):
         await runtime.run(
             "read",

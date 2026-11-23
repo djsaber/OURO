@@ -38,7 +38,6 @@ from ouro.application.usage import UsageService
 from ouro.core.callbacks import run_blocking
 from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.redaction import redact_text
-from ouro.core.session_controls import AttributedSessionControlTransition
 from ouro.core.session_ports import SessionStore
 from ouro.core.state import SessionRecord
 from ouro.local_processes.commands import run_process
@@ -47,7 +46,6 @@ from ouro.plugins.compatibility import inspect_community_package
 from ouro.plugins.configuration.service import declared_credential_slots
 from ouro.plugins.dependencies import (
     PluginDependencyError,
-    active_dependents,
     builtin_desired_enabled,
     desired_dependant_closure,
     resolve_plugin_dependencies,
@@ -500,10 +498,20 @@ class PluginService:
         return PluginActionResult(action="enable", plugin_id=plugin_id, status=status)
 
     async def disable(self, plugin_id: str, *, wait: bool = True) -> PluginActionResult:
-        runtime = self._require_runtime()
-        await self._release_plugin_session_controls(plugin_id)
-        status = await runtime.disable(plugin_id, wait=wait)
+        status = await self._disable(plugin_id, wait=wait)
         return PluginActionResult(action="disable", plugin_id=plugin_id, status=status)
+
+    async def _disable(
+        self, plugin_id: str, *, wait: bool = True, selected_digest: str | None = None
+    ) -> PluginStatus:
+        return await self._require_runtime().disable(
+            plugin_id,
+            wait=wait,
+            selected_digest=selected_digest,
+            release_controls=self.session_controls.release_plugin
+            if self.session_controls
+            else None,
+        )
 
     async def restart(self, plugin_id: str) -> PluginActionResult:
         runtime = self._require_runtime()
@@ -623,31 +631,21 @@ class PluginService:
             raise ValueError(f"plugin has no selected install: {plugin_id}")
         target = _select_install(record, target_digest)
         target_digest = target.package_digest
-        if purge_data and any(
-            install.package_digest != target_digest for install in record.installs
-        ):
-            raise ValueError(
-                "plugin data can only be purged while removing the final installed digest"
-            )
+        if purge_data:
+            record.require_final_install(target_digest)
         references = self._durable_references(plugin_id, target_digest)
         if purge_data and references:
             raise ValueError(
                 "plugin digest is retained by active durable runs: " + ", ".join(references)
             )
         removing_selected = target_digest == record.activation.selected_digest
-        dependents = (
-            active_dependents(
-                self.store.read_state(),
-                plugin_id,
-                builtin_contracts=self.builtin_contracts,
-            )
-            if removing_selected
-            else []
-        )
-        if dependents:
-            raise ValueError(f"plugin has active dependents: {plugin_id}: {', '.join(dependents)}")
-        if removing_selected and record.activation.desired_enabled:
-            await self._require_runtime().disable(plugin_id)
+        if removing_selected and (
+            record.activation.desired_enabled
+            or (self.runtime is not None and (self.runtime.has_resources(plugin_id) or references))
+        ):
+            status = await self._disable(plugin_id, selected_digest=target_digest)
+            if status != "disabled":
+                raise ValueError(f"plugin resources must stop before removal: {plugin_id}")
         if self.runtime is not None and self.runtime.has_resources(
             plugin_id, package_digest=target_digest
         ):
@@ -964,41 +962,6 @@ class PluginService:
         if self.runtime is None:
             raise RuntimeError("plugin runtime lifecycle is unavailable")
         return self.runtime
-
-    async def _release_plugin_session_controls(self, plugin_id: str) -> None:
-        if self.session_store is None or self.session_controls is None or self.runtime is None:
-            return
-        lease = self.runtime.snapshot()
-        try:
-            for session in self.session_store.list_sessions():
-                activations = [
-                    activation
-                    for activation in session.controls.activations
-                    if activation.plugin_id == plugin_id
-                ]
-                for activation in activations:
-                    try:
-                        await self.session_controls.apply(
-                            AttributedSessionControlTransition(
-                                action="release",
-                                activation_id=activation.activation_id,
-                                plugin_id=activation.plugin_id,
-                                generation_id=activation.generation_id,
-                                execution_contract_hash=(activation.execution_contract_hash),
-                                reason="plugin_disable",
-                            ),
-                            session_id=session.session_id,
-                            controllers=lease.session_controllers,
-                            workspace=session.workspace,
-                        )
-                    except Exception:  # noqa: BLE001 - disable must revoke Host gates.
-                        self.session_controls.force_release(
-                            session_id=session.session_id,
-                            activation_id=activation.activation_id,
-                            reason="plugin_disable_cleanup_unavailable",
-                        )
-        finally:
-            lease.close()
 
     def _durable_references(
         self,

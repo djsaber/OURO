@@ -24,7 +24,7 @@ async def measure(args):
     sys.path.insert(0, str(args.source.resolve()))
     from ouro.plugins.manifest import PluginManifest
     from ouro.plugins.worker.instance import WorkerPluginInstance
-    from ouro.sdk.plugins import v6 as sdk
+    from ouro.sdk.plugins import v7 as sdk
 
     package = args.source / "examples/plugins/worker-tool"
     manifest = PluginManifest.model_validate_json(

@@ -5,6 +5,8 @@
 
 | 日期 | 记录 |
 |---|---|
+| 2026-11-23 | [OURO 核心架构重构：设计、实施与验收](2026-11-23-core-architecture-refactoring.md) |
+| 2026-11-23 | [TUI 会话旁问设计](2026-11-23-side-conversations.md) |
 | 2026-11-21 | [OURO 核心架构重构实施方案与验收](2026-11-21-core-architecture-refactoring.md#任务状态) |
 | 2026-11-13 | [数据模型与转换边界：设计与验收](2026-11-13-data-models.md) |
 | 2026-11-05 | [上下文准备与压缩策略：设计与验收](2026-11-05-context-preparation-boundary.md) |
@@ -13,7 +15,7 @@
 | 2026-10-29 | [TUI 性能改进计划](2026-10-29-tui-performance.md) |
 | 2026-10-26 | [会话数据与执行管线：设计与验收](2026-10-26-session-data-implementation.md) |
 | 2026-10-23 | [文档体系审查与整理](2026-10-23-documentation-review.md) |
-| 2026-10-23 | [会话协作功能实施与阶段验证](2026-10-23-session-observation.md)；剩余终端与性能验收见[当前计划](../session-observation.md) |
+| 2026-10-23 | [会话协作功能实施与阶段验证](2026-10-23-session-observation.md) |
 | 2026-10-23 | [代码组织重构实施与验证](2026-10-23-code-organization.md) |
 | 2026-10-20 | [粒子主题共用计算与帧管线改进](2026-10-20-tui-theme-pipeline.md) |
 | 2026-10-18 | [测试成本与时序稳定性优化](2026-10-18-test-performance.md) |

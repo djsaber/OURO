@@ -142,6 +142,12 @@ class PluginRecord(OuroModel):
             return None
         return next((item for item in self.installs if item.package_digest == digest), None)
 
+    def require_final_install(self, digest: str) -> None:
+        if any(install.package_digest != digest for install in self.installs):
+            raise ValueError(
+                "plugin data can only be purged while removing the final installed digest"
+            )
+
 
 class BuiltinPluginActivationOverride(OuroModel):
     desired_enabled: bool

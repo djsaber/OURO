@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ouro.plugins.builtin import EMPTY_BUILTIN_PLUGIN_REGISTRY, BuiltinPluginRegistry
+from ouro.plugins.dependencies import require_no_active_dependents
 from ouro.plugins.installation.package import PackageLimits, validate_plugin_package
 from ouro.plugins.installation.sources import PluginSourceMaterializer, source_provider
 from ouro.plugins.installation.store import PluginPackageStore
@@ -116,8 +117,14 @@ class PluginInstaller:
             digest = package_digest or record.activation.selected_digest
             if digest is None:
                 return state
-            if record.activation.desired_enabled and record.activation.selected_digest == digest:
-                raise ValueError(f"plugin must be disabled before removal: {plugin_id}")
+            if record.activation.selected_digest == digest:
+                if record.activation.desired_enabled:
+                    raise ValueError(f"plugin must be disabled before removal: {plugin_id}")
+                require_no_active_dependents(
+                    state, plugin_id, builtin_contracts=self.builtin_plugins.contracts
+                )
+            if purge_data:
+                record.require_final_install(digest)
             record.installs = [item for item in record.installs if item.package_digest != digest]
             record.activation.remove_configuration_for(digest)
             if record.activation.selected_digest == digest:

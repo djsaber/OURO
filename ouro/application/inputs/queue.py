@@ -96,6 +96,30 @@ class PendingInputs:
             item.driver for item in self.eligible_session(session) if item.driver is not None
         )
 
+    def cancelled_by_withdrawal(self, session: SessionRecord) -> tuple[str, ...]:
+        return tuple(
+            identity
+            for identity in session.pending_input_ids
+            if not self._pending_state(session, identity).valid_in_history(
+                session.history_epoch + 1
+            )
+        )
+
+    def owned_by_control(
+        self,
+        session: SessionRecord,
+        *,
+        controller_id: str,
+        activation_id: str,
+    ) -> tuple[str, ...]:
+        return tuple(
+            identity
+            for identity in session.pending_input_ids
+            if (state := self._pending_state(session, identity)).session_control_controller_id
+            == controller_id
+            and state.session_control_activation_id == activation_id
+        )
+
 
 class QueuedInputQueue(PendingInputs):
     """FIFO references to accepted inputs; bodies are immutable independent facts."""
@@ -452,31 +476,6 @@ class QueuedInputQueue(PendingInputs):
                 )
             )
             return committed.session, item, committed.events
-
-    def cancelled_by_withdrawal(self, session: SessionRecord) -> tuple[str, ...]:
-        return tuple(
-            identity
-            for identity in session.pending_input_ids
-            if not self._pending_state(session, identity).valid_in_history(
-                session.history_epoch + 1
-            )
-        )
-
-    def without_session_control(
-        self,
-        session: SessionRecord,
-        *,
-        controller_id: str,
-        activation_id: str,
-    ) -> tuple[SessionRecord, tuple[str, ...]]:
-        cancelled = tuple(
-            identity
-            for identity in session.pending_input_ids
-            if (state := self._pending_state(session, identity)).session_control_controller_id
-            == controller_id
-            and state.session_control_activation_id == activation_id
-        )
-        return session, cancelled
 
 
 def queued_input_event(session: SessionRecord, item: QueuedInput, queue_size: int) -> EventRecord:

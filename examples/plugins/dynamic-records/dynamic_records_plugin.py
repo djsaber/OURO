@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 
 
 def record_group(fields: tuple[str, ...] = ("title",)) -> sdk.ToolGroupContribution:

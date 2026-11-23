@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ouro.plugins.builtin import BuiltinPluginFactory
-from ouro.plugins.manifest import PluginManifest
+from ouro.plugins.manifest import PLUGIN_API_VERSION, PluginManifest
 from ouro.plugins.models import PluginClass, PluginConfigurationRevision
 
 
@@ -19,6 +19,7 @@ class PluginRuntimeCandidate:
     configuration: PluginConfigurationRevision
     source_kind: str
     public_source: str
+    execution_api_version: str = PLUGIN_API_VERSION
     package_digest: str | None = None
     factory: BuiltinPluginFactory | None = None
 

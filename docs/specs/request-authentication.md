@@ -3,7 +3,7 @@
 > 文档类型：现行规格
 > 范围：通用请求认证、三种模型协议 adapter、HTTP 边界、共享重试、Runtime 认证生命周期、配置重绑定及 CLI/TUI 管理。
 
-凭据生命周期以[凭据核心规格](credentials.md)为准；驱动材料见[认证驱动规格](authorization.md)，产品接入契约及待验证能力见[订阅认证规格](subscription-authentication.md)和[验证计划](../plans/subscription-validation.md)。
+凭据生命周期以[凭据核心规格](credentials.md)为准；驱动材料见[认证驱动规格](authorization.md)，产品接入契约见[订阅认证规格](subscription-authentication.md)，实际验证范围见[订阅指南](../guides/subscriptions.md#证据范围)。
 
 ## 认证端口与材料
 

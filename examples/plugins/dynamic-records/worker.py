@@ -24,7 +24,7 @@ class Worker:
         self.groups = WorkerToolGroups(self.peer)
 
     async def initialize(self, params):
-        return {"protocol_version": "3.0"}
+        return {"protocol_version": "4.0"}
 
     async def prepare(self, params):
         return {"commands": ["record-fields"], "tool_groups": self.groups.prepare([record_group()])}

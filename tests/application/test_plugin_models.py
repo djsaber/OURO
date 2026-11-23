@@ -30,7 +30,7 @@ def package(tmp_path, kind, *, probe=False, restriction=None):
         manifest["runtime"] = {
             "kind": "worker",
             "command": ["{python}", "worker.py"],
-            "protocol": "3.0",
+            "protocol": "4.0",
         }
     if probe:
         shutil.copyfile(

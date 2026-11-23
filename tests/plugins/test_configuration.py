@@ -116,7 +116,7 @@ def test_reinstall_uses_the_validated_package_size_limits(tmp_path, monkeypatch)
 def test_plugin_using_configuration_contract_can_require_its_api_version(tmp_path, monkeypatch):
     _write_native_plugin(
         tmp_path / "package",
-        extra={"engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"}},
+        extra={"engines": {"ouro": ">=0.4.0", "plugin_api": "^7.0.0"}},
     )
     validate_plugin_package(tmp_path / "package")
     monkeypatch.setattr(package_module, "PLUGIN_API_VERSION", "3.0.0")

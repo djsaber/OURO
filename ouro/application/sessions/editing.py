@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from contextlib import closing, contextmanager
 
 from ouro.application.contracts.sessions import SessionUndoResult
-from ouro.application.inputs.queue import QueuedInputQueue, queued_input_event
+from ouro.application.inputs.queue import PendingInputs, QueuedInputQueue, queued_input_event
 from ouro.application.inputs.requests import InputSessionSettings, UserMessageEdit
 from ouro.application.sessions.history import input_resource_refs
 from ouro.application.sessions.recovery import SessionRecoveryService
@@ -22,7 +22,13 @@ from ouro.core.session_commits import (
     SessionCommitConflict,
     SessionCommitResult,
 )
-from ouro.core.session_ports import RuntimeSessionSnapshot, SessionStore
+from ouro.core.session_ports import (
+    PendingInputReader,
+    RuntimeSessionSnapshot,
+    SessionObservationReader,
+    SessionRepository,
+    SessionStore,
+)
 from ouro.core.state import ACTIVE_RUN_STATUSES, RESUMABLE_RUN_STATUSES, RunRecord, SessionRecord
 
 
@@ -170,7 +176,10 @@ def undo_user_input(
 
 
 def read_edit_boundary(
-    store: SessionStore, session: SessionRecord, edit: UserMessageEdit, usage: UsageService | None
+    store: SessionRepository,
+    session: SessionRecord,
+    edit: UserMessageEdit,
+    usage: UsageService | None,
 ) -> tuple[str, HarnessCallSnapshot]:
     """Resolve the complete submitted input and the policy state before it."""
     if session.session_kind != "primary":
@@ -228,7 +237,7 @@ def accept_message_edit(
     return result
 
 
-def _input_boundary(store: SessionStore, selected: MessageRecord) -> MessageRecord:
+def _input_boundary(store: SessionObservationReader, selected: MessageRecord) -> MessageRecord:
     if not is_direct_user_input(selected):
         raise ValueError("Editing requires a directly submitted user input")
     first_id = selected.metadata.get("input_context_message_id") or selected.metadata.get(
@@ -260,9 +269,9 @@ def _idle_history(store: SessionStore, session: SessionRecord) -> Iterator[Sessi
 
 
 def _withdrawal_event(
-    store: SessionStore, session: SessionRecord, boundary_id: str
+    store: PendingInputReader, session: SessionRecord, boundary_id: str
 ) -> tuple[EventRecord, tuple[str, ...]]:
-    cancelled = QueuedInputQueue(store).cancelled_by_withdrawal(session)
+    cancelled = PendingInputs(store).cancelled_by_withdrawal(session)
     event = EventRecord(
         session_id=session.session_id,
         event_type="session_history_withdrawn",
@@ -275,7 +284,7 @@ def _withdrawal_event(
     return event, cancelled
 
 
-def _commit_history_change(store: SessionStore, request: SessionCommit) -> SessionCommitResult:
+def _commit_history_change(store: SessionRepository, request: SessionCommit) -> SessionCommitResult:
     try:
         return store.commit_session(request)
     except SessionCommitConflict, HistoryBoundaryUnavailable:

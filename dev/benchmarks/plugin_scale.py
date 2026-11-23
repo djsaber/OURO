@@ -21,7 +21,7 @@ from ouro.local_application import open_local_plugins
 from ouro.plugins.installation.installer import PluginInstaller
 from ouro.plugins.installation.store import PluginPackageStore
 
-_PLUGIN = """from ouro.sdk.plugins.v6 import CommandContribution, ContributionSet
+_PLUGIN = """from ouro.sdk.plugins.v7 import CommandContribution, ContributionSet
 
 class Plugin:
     async def prepare(self):
@@ -44,7 +44,7 @@ for line in sys.stdin:
     method = request.get("method")
     result = {}
     if method == "initialize":
-        result = {"protocol_version": "3.0"}
+        result = {"protocol_version": "4.0"}
     elif method == "contributions.prepare":
         result = {"commands": ["echo"]}
     elif method == "command.call":
@@ -78,7 +78,7 @@ def prepare_home(root: Path, kind: str, count: int) -> Path:
                 runtime["entrypoint"] = f"probe_{index}_plugin:create_plugin"
                 (source / f"probe_{index}_plugin.py").write_text(_PLUGIN, encoding="utf-8")
             else:
-                runtime.update(command=["{python}", "./worker.py"], protocol="3.0")
+                runtime.update(command=["{python}", "./worker.py"], protocol="4.0")
                 (source / "worker.py").write_text(_WORKER, encoding="utf-8")
         manifest = {
             "schema_version": 3,
@@ -86,7 +86,7 @@ def prepare_home(root: Path, kind: str, count: int) -> Path:
             "name": f"Probe {index}",
             "version": "1.0.0",
             "namespace": f"probe_{index}",
-            "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
+            "engines": {"ouro": ">=0.4.0", "plugin_api": "^7.0.0"},
             "runtime": runtime,
             "contributes": contributes,
         }

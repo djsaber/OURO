@@ -6,11 +6,8 @@
 
 | 规划 | 范围与进入条件 |
 |---|---|
-| [会话协作验收](session-observation.md) | 多会话与多终端协作的跨平台重复终端验收、严格响应性指标和长时资源界限 |
-| [TUI 会话旁问](side-conversations.md) | 单向上下文继承、会话节点导航、Provider 请求前缀与远端缓存验收 |
 | [桌面 Host](desktop-host.md) | 复用 Application / Supervisor 的本地桌面产品面 |
 | [高级智能体能力](advanced-agents.md) | 长期记忆与通用 Workflow；需独立业务需求和持久化边界 |
-| [订阅验证与扩展](subscription-validation.md) | 设备码、模型能力和跨平台验证；未验收能力不得声明支持 |
 
 ## 执行规则
 
@@ -18,6 +15,6 @@
 
 阶段执行受影响测试，整合与交付遵循[贡献指南](../../CONTRIBUTING.md)的完整门禁。不得把定向回归描述为全量通过，或以离线夹具替代真实账户、终端与平台验证。
 
-## 专项验收与完成记录
+## 完成记录
 
-[核心架构重构](archive/2026-11-21-core-architecture-refactoring.md#任务状态)列出阶段 0 至 6 的验收范围、基线和实测结果。其他已完成计划见[完成记录](archive/README.md)。各项能力的现行契约见领域规格。
+已实施的设计、过程及验收结果见[归档索引](archive/README.md)。

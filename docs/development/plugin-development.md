@@ -130,7 +130,7 @@ Host 的插件列表、详情和安装版本条目直接返回可选 `icon`：�
 
 ## 4. SDK contribution
 
-in-process 插件只从 `ouro.sdk.plugins.v6` 使用公开类型。factory 接收 `PluginContext` 并返回实现以下生命周期的对象：
+in-process 插件只从 `ouro.sdk.plugins.v7` 使用公开类型。factory 接收 `PluginContext` 并返回实现以下生命周期的对象：
 
 ```python
 class Plugin:
@@ -186,7 +186,7 @@ Tool handler 除 `ToolOutput` 或字符串外，还可返回 `ToolInputRequest(d
 
 ```python
 from ouro.sdk.plugins.interactions import PlanConfirmationRequest
-from ouro.sdk.plugins.v6 import ToolInputRequest
+from ouro.sdk.plugins.v7 import ToolInputRequest
 
 async def confirm_plan(call):
     return ToolInputRequest(
@@ -208,7 +208,7 @@ TUI 按 `plan_confirmation` 的公开结构提供计划预览与选择，不要�
 在 manifest 的 `contributes.system_prompt_providers` 声明提示词提供方，在 `ContributionSet.system_prompt_providers` 返回同 ID 的 `SystemPromptContribution`。回调接收 Session workspace，返回一份带可选标签的原始正文。
 
 ```python
-from ouro.sdk.plugins.v6 import SystemPromptCall, SystemPromptContribution, SystemPromptFragment
+from ouro.sdk.plugins.v7 import SystemPromptCall, SystemPromptContribution, SystemPromptFragment
 
 def workspace_rules(call: SystemPromptCall) -> SystemPromptFragment:
     return SystemPromptFragment(text="Use project-relative paths.", semantic_tag="workspace-rules")
@@ -221,7 +221,7 @@ rules = SystemPromptContribution(id="workspace-rules", handler=workspace_rules)
 在 `contributes.context_providers` 声明会话观察提供方，用 `ContextContribution` 注册回调。回调可读取 `ContextCall` 的轮次和会话状态。返回单条文本可直接使用字符串，多条观察放入 `ContextOutput.fragments`。片段支持字符串和 `ContextFragment`，默认角色为 `harness`。
 
 ```python
-from ouro.sdk.plugins.v6 import ContextFragment, ContextOutput
+from ouro.sdk.plugins.v7 import ContextFragment, ContextOutput
 
 def plan_context(call):
     return ContextOutput(fragments=(
@@ -322,8 +322,8 @@ Harness 版本、history_epoch 和消息头前置条件处理。
 
 ### 调用内会话状态
 
-Python SDK 入口为 `ouro.sdk.plugins.v6`，当前 Host 的 Plugin API 为 `6.0.0`，worker 使用 protocol `3.0`。
-依赖通用配置契约的插件在 `engines.plugin_api` 声明 `>=6.0.0,<7.0.0`。
+Python SDK 入口为 `ouro.sdk.plugins.v7`，当前 Host 的 Plugin API 为 `7.0.0`，worker 使用 protocol `4.0`。
+依赖通用配置契约的插件在 `engines.plugin_api` 声明 `>=7.0.0,<8.0.0`。
 PluginContext 不提供会话状态写入器。可修改状态的回调使用本次调用的 owner 视图：
 
 ```python
@@ -387,7 +387,7 @@ disable 关闭该插件所有代次的 gate 并取消正在执行的回调；实
 
 Run、Tool/Approval 和 Continuation 持久化稳定 `execution_contract_hash`。内置与用户插件使用同一契约计算和
 调用管线，覆盖 plugin identity、release_id、runtime、immutable configuration revision、传递 dependency lock、
-Plugin API/worker protocol。依赖指纹绑定实际直接依赖的 execution contract，由其覆盖传递依赖。
+执行 API 版本与 worker protocol。用户插件使用宿主的 Plugin API 版本，内置插件以发布定义中的 `execution_api_version` 固定执行身份。依赖指纹绑定实际直接依赖的 execution contract，由其覆盖传递依赖。
 随机 `generation_id` 只用于当前进程 owner 与诊断。重启后使用当前已激活的 process-local generation 检查具体调用；
 同名但不同 contract 的 Tool 不能接管 pending invocation。
 
@@ -415,7 +415,7 @@ Builtin definition 以 `contract_version` 声明持久执行兼容性，`release
 ```
 
 ```python
-from ouro.sdk.plugins.v6 import ToolContribution, ToolGroupContribution
+from ouro.sdk.plugins.v7 import ToolContribution, ToolGroupContribution
 
 group = ToolGroupContribution(
     id="sources",
@@ -711,10 +711,10 @@ stdout 污染、未知消息、过大响应、声明不一致和错误 result sh
 worker tool 以 `{"input_request": <任意 JSON 值>}` 返回同一种挂起请求；该字段不能与 `content`、
 `structured`、`resource_refs` 或 `is_error` 同时出现。
 声明 `resumable=true` 的 worker tool 通过 `tool.resume` 接收原请求和 `resolution`；如需在 AFK 下自定义业务迁移，
-还必须在 manifest 中声明 `supports_unattended=true`。Worker protocol `3.0` 只接受 `resolution` 判别联合；出现
+还必须在 manifest 中声明 `supports_unattended=true`。Worker protocol `4.0` 只接受 `resolution` 判别联合；出现
 `answer` 字段时协议校验失败。
-协议 `3.0` 在 `session_controller.call` 输入中提供 `session_kind`，允许 `continuation.call` 输出
-`session_control_transitions`，与 in-process Plugin API `6.0.0` 使用相同状态及结算语义。
+协议 `4.0` 在 `session_controller.call` 输入中提供 `session_kind`，允许 `continuation.call` 输出
+`session_control_transitions`，与 in-process Plugin API `7.0.0` 使用相同状态及结算语义。
 `system_prompt.call` 接收 `call.workspace`，返回含 `text` 和可选 `semantic_tag` 的对象。`context.call` 接收轮次、workspace 和会话状态视图，返回 `fragments`。其中每项可以是字符串，也可以是含 `text`、可选 `role`、`semantic_tag` 和 `revision` 的消息对象。
 
 ## 8. 社区资源导入前审查

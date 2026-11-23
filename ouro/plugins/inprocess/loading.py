@@ -9,7 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 
 
 class LoadedPluginModule:

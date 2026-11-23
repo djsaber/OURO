@@ -8,7 +8,7 @@ Install and enable the package, then invoke
 `/dev.ouro.examples.model_review:model-review default Review this proposal.`
 
 The manifest selects the Python in-process entry. To use the supplied worker entry, set its runtime
-to `{"kind":"worker","command":["{python}","worker.py"],"protocol":"3.0"}` before installation.
+to `{"kind":"worker","command":["{python}","worker.py"],"protocol":"4.0"}` before installation.
 Both entries execute `ModelReview.command`; the worker uses only public SDK request and output routes.
 
 The request has a 120-second deadline and the command allows 125 seconds. Plugin shutdown cancels

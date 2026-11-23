@@ -39,8 +39,7 @@ Marketplace、签名/publisher trust root、worker OS sandbox、每插件依赖�
 
 ### TUI 产品化增强
 
-TUI 的待办集中在真实终端验收、持续负载下的响应性和发布级交互体验。场景、证据和退出条件见
-[会话协作验收](session-observation.md)。
+TUI 的待办集中在真实终端验收、持续负载下的响应性和发布级交互体验。响应门槛见[性能规格](../specs/performance.md#io-所有权与响应性验证)，Windows 与 WSL 的长历史实测见[核心架构验收](archive/2026-11-23-core-architecture-refactoring.md#实际终端与放行范围)。
 
 范围：
 
@@ -50,8 +49,7 @@ TUI 的待办集中在真实终端验收、持续负载下的响应性和发布�
 - 验证持续写入与慢消费者情况下的视口锚定、持久追赶和有界内存；
 - 补齐发布级键盘兼容、颜色降级、复制与链接体验。
 
-完成条件：终端与性能证据达到对应计划的退出条件，明确记录平台和负载边界；TUI 只负责渲染和
-输入映射，不解析 Session 文件或 SQLite，也不复制 application 状态机。
+验收记录应注明终端、平台与负载，并逐项对照响应门槛。TUI 负责渲染和输入映射，会话事实读取和状态转换由 Application 与存储层负责。
 
 ### Desktop Host
 

@@ -7,11 +7,11 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from ouro.plugins.dependencies import BuiltinPluginContract, resolve_plugin_dependencies
-from ouro.plugins.manifest import PluginManifest
+from ouro.plugins.manifest import PLUGIN_API_VERSION, PluginManifest
 from ouro.plugins.models import PluginStateDocument
 
 if TYPE_CHECKING:
-    from ouro.sdk.plugins.v6 import PluginContext
+    from ouro.sdk.plugins.v7 import PluginContext
 
 
 BuiltinPluginFactory = Callable[["PluginContext"], object]
@@ -26,6 +26,7 @@ class BuiltinPluginDefinition:
     root: Path
     default_enabled: bool = True
     contract_version: int = 1
+    execution_api_version: str = PLUGIN_API_VERSION
 
     def __post_init__(self) -> None:
         root = self.root.expanduser().resolve()

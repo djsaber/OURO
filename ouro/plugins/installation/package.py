@@ -17,17 +17,11 @@ from ouro.plugins.installation.paths import (
     is_plugin_cache_path,
     resolve_manifest_path,
 )
-from ouro.plugins.manifest import PluginManifest
+from ouro.plugins.manifest import PLUGIN_API_VERSION, WORKER_PROTOCOL_VERSION, PluginManifest
 from ouro.plugins.paths import portable_relative_path
 from ouro.plugins.semver import version_satisfies
 
 OURO_VERSION = __version__
-
-
-PLUGIN_API_VERSION = "6.0.0"
-
-
-WORKER_PROTOCOL_VERSION = "3.0"
 
 
 NATIVE_MANIFEST = Path(".ouro-plugin") / "plugin.json"

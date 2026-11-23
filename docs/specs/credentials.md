@@ -3,7 +3,7 @@
 > 文档类型：现行规格
 > 范围：凭据存储与生命周期，由 Application 通用登录、CLI/TUI 管理和三种模型协议共用；Runtime 装配同一 home 的共享认证服务。
 
-本规格定义 `ouro.auth` 的供应商中立核心。内建浏览器订阅产品的接入契约见[模型订阅认证规格](subscription-authentication.md)，实际支持与验证范围见[订阅指南](../guides/subscriptions.md#证据范围)，待验证能力见[验证计划](../plans/subscription-validation.md)。
+本规格定义 `ouro.auth` 的供应商中立核心。内建浏览器订阅产品的接入契约见[模型订阅认证规格](subscription-authentication.md)，实际支持与验证范围见[订阅指南](../guides/subscriptions.md#证据范围)。
 
 ## 所有权与端口
 

@@ -1,9 +1,11 @@
 import asyncio
 import sys
+from dataclasses import replace
 from threading import Event, get_ident
 
 import pytest
 
+from ouro.application.models.requests import RunModelRequests
 from ouro.application.resources import ResourceService
 from ouro.application.runs.lifecycle import abort_run_state
 from ouro.application.runs.tool_batches import load_tool_batch
@@ -93,7 +95,6 @@ def _tools() -> ToolRegistry:
 @pytest.mark.asyncio
 async def test_shared_agent_budget_query_runs_outside_the_event_loop(
     tmp_path,
-    monkeypatch,
 ) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -121,8 +122,15 @@ async def test_shared_agent_budget_query_runs_outside_the_event_loop(
             release.wait()
             return None
 
-    monkeypatch.setattr(runtime, "_agent_controls", AgentControls())
-    checking = asyncio.create_task(runtime._shared_budget_reason(run, 2))
+    model = RunModelRequests(
+        adapter=runtime.adapter,
+        tool_definitions=runtime.tools.definitions,
+        run_budget=runtime.run_budget,
+        ports=replace(
+            runtime.driver_execution.model_ports, shared_budget_reason=AgentControls().budget_reason
+        ),
+    )
+    checking = asyncio.create_task(model._budget_reason(run, 2))
     try:
         assert await asyncio.to_thread(entered.wait, 30) is True
         assert checking.done() is False

@@ -10,7 +10,7 @@
   "namespace": "inprocess_command",
   "engines": {
     "ouro": ">=0.4.0",
-    "plugin_api": "^6.0.0"
+    "plugin_api": "^7.0.0"
   },
   "runtime": {
     "kind": "python-inprocess",

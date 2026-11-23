@@ -25,7 +25,7 @@ class ServiceWorker:
 
     async def initialize(self, params):
         self.data = Path(params["data_directory"])
-        return {"protocol_version": "3.0"}
+        return {"protocol_version": "4.0"}
 
     async def prepare(self, params):
         return {"background_services": ["singleton"]}

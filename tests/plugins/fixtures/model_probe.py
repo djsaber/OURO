@@ -1,7 +1,7 @@
 import asyncio
 from dataclasses import asdict
 
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 from ouro.sdk.plugins.models import ModelInput, ModelRequest
 from ouro.sdk.plugins.services import ServiceCall
 from ouro.sdk.plugins.worker import WorkerPeer
@@ -69,7 +69,7 @@ class Worker:
         self.plugin = Probe(self.models)
 
     async def initialize(self, params):
-        return {"protocol_version": "3.0"}
+        return {"protocol_version": "4.0"}
 
     async def prepare(self, params):
         await self.plugin.prepare()

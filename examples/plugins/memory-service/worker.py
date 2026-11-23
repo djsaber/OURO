@@ -26,7 +26,7 @@ class Memory:
 
     async def initialize(self, params):
         self.database = Path(params["data_directory"]) / "memory.sqlite3"
-        return {"protocol_version": "3.0"}
+        return {"protocol_version": "4.0"}
 
     async def prepare(self, params):
         return {"services": ["memory"]}

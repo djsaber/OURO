@@ -136,11 +136,11 @@ class IncomingRunInput:
     request: UserInputRequest | AttributedSessionInput | HostSessionInput | DelegatedTaskInput
     driver: RunDriverBinding | None = None
 
-    def new_run(self, session: SessionRecord) -> RunRecord:
+    def new_run(self, session: SessionRecord, *, history_epoch: int | None = None) -> RunRecord:
         plugin = self.request if isinstance(self.request, AttributedSessionInput) else None
         return RunRecord(
             session_id=session.session_id,
-            history_epoch=session.history_epoch,
+            history_epoch=session.history_epoch if history_epoch is None else history_epoch,
             status="running",
             driver=self.driver or RunDriverBinding(),
             origin="plugin" if plugin else "user",

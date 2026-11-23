@@ -2,7 +2,7 @@ import asyncio
 
 from model_review_plugin import ModelReview
 
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 from ouro.sdk.plugins.worker import WorkerPeer
 from ouro.sdk.plugins.worker_models import WorkerModels
 
@@ -26,7 +26,7 @@ class Worker:
     async def initialize(self, params):
         if "models" not in params["features"]:
             raise RuntimeError("This Host does not provide model requests")
-        return {"protocol_version": "3.0"}
+        return {"protocol_version": "4.0"}
 
     async def prepare(self, params):
         return {"commands": ["model-review"]}

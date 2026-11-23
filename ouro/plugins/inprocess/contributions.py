@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ouro.plugins.contributions.models import PluginContributions
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 
 
 def adapt_sdk_contributions(

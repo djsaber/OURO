@@ -8,7 +8,7 @@ The manifest selects the in-process entry point. To run the same algorithm in a 
 
 ```json
 {
-  "runtime": {"kind": "worker", "command": ["{python}", "worker.py"], "protocol": "3.0"}
+  "runtime": {"kind": "worker", "command": ["{python}", "worker.py"], "protocol": "4.0"}
 }
 ```
 

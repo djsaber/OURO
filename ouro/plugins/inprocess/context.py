@@ -12,7 +12,7 @@ from ouro.plugins.credentials import PluginCredentialBinding, resolve_credential
 from ouro.plugins.lifecycle.candidates import PluginRuntimeCandidate
 from ouro.plugins.models import PluginDiagnostic, PluginGenerationRecord
 from ouro.plugins.resources import OwnedTaskGroup, ScopedPluginDataStore
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 
 
 class BoundCredentialResolver:

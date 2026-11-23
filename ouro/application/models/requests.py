@@ -102,7 +102,7 @@ class ModelRequestPorts:
     begin_model_round: ModelRoundStarter | None = None
     # Prepare request settings before preflight and return the effective Run budget.
     prepare_configuration: Callable[[RunRecord], Awaitable[RunBudgetPolicy]] | None = None
-    shared_budget_reason: Callable[[RunRecord, int], Awaitable[RunPauseReason | None]] | None = None
+    shared_budget_reason: Callable[[RunRecord, int], RunPauseReason | None] | None = None
     run_usage: Callable[[str, str], RunUsageTotals | None] | None = None
 
 
@@ -338,7 +338,7 @@ class RunModelRequests:
         )
         if local_reason is not None or self.ports.shared_budget_reason is None:
             return local_reason
-        return await self.ports.shared_budget_reason(run, model_round)
+        return await run_blocking(self.ports.shared_budget_reason, run, model_round)
 
 
 def _model_event(

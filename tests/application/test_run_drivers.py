@@ -35,7 +35,7 @@ def plugin_source(tmp_path, kind):
         value["runtime"] = {
             "kind": "worker",
             "command": ["{python}", "worker.py"],
-            "protocol": "3.0",
+            "protocol": "4.0",
         }
     manifest.write_text(json.dumps(value), encoding="utf-8")
     return package

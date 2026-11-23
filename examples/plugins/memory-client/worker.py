@@ -24,7 +24,7 @@ class Client:
         self.peer.handlers["handlers.invoke"] = self.services.invoke_handler
 
     async def initialize(self, params):
-        return {"protocol_version": "3.0"}
+        return {"protocol_version": "4.0"}
 
     async def prepare(self, params):
         return {"commands": ["remember", "search"]}

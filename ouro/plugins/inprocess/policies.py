@@ -19,7 +19,7 @@ from ouro.core.turn_policies import (
     TurnPolicyRegistration,
 )
 from ouro.plugins.harness_calls import invoke_plugin_callback
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 
 
 def _adapt_continuation_policy(

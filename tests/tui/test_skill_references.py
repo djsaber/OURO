@@ -80,14 +80,14 @@ async def test_skill_menu_discovers_external_install_and_filters_without_rescann
             encoding="utf-8",
         )
         installed = SkillManager(home).install(str(source)).skills[0].target / "SKILL.md"
-        resolver = application.runtime.skill_catalog_resolver
+        resolver = application.runtime.skill_activations.resolver
         reads = []
 
         def discover():
             reads.append(True)
             return resolver()
 
-        monkeypatch.setattr(application.runtime, "skill_catalog_resolver", discover)
+        monkeypatch.setattr(application.runtime.skill_activations, "resolver", discover)
         composer = app.query_one(Composer)
         await pilot.press("@", *"skill", "enter")
         workers = [worker for worker in app.workers if worker.group == "skill-options"]
@@ -116,7 +116,7 @@ async def test_skill_menu_loading_keeps_composer_responsive_and_discards_closed_
     app = OuroTuiApp(application=application_with_skills(tmp_path))
     async with run_ready_app(app) as pilot:
         runtime = app._controller._application.runtime
-        resolver = runtime.skill_catalog_resolver
+        resolver = runtime.skill_activations.resolver
         started = threading.Event()
         release = threading.Event()
 
@@ -125,7 +125,7 @@ async def test_skill_menu_loading_keeps_composer_responsive_and_discards_closed_
             assert release.wait(timeout=10)
             return resolver()
 
-        monkeypatch.setattr(runtime, "skill_catalog_resolver", delayed_discovery)
+        monkeypatch.setattr(runtime.skill_activations, "resolver", delayed_discovery)
         try:
             composer = app.query_one(Composer)
             composer.load_text("draft")

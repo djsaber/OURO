@@ -87,6 +87,11 @@ class SessionRecoveryService:
             self.store.refresh_catalog(session_id)
         return recovered
 
+    def submission_snapshot(self, session_id: str) -> RuntimeSessionSnapshot:
+        if self.store.is_session_locked(session_id):
+            return self.store.load_runtime_session(session_id)
+        return self.recover_runtime(session_id)
+
     def recover_runtime(self, session_id: str) -> RuntimeSessionSnapshot:
         self.settle_request(session_id)
         with self.store.session_mutation(session_id):

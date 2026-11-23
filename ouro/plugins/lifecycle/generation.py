@@ -21,7 +21,7 @@ from ouro.plugins.models import PluginDiagnostic, PluginGenerationRecord
 from ouro.plugins.resources import OwnedTaskGroup, ScopedPluginDataStore
 from ouro.plugins.services import ServiceEndpoint
 from ouro.plugins.tool_groups import PluginToolGroups
-from ouro.sdk.plugins.v6 import StopReason
+from ouro.sdk.plugins.v7 import StopReason
 
 
 @dataclass
@@ -53,6 +53,10 @@ class PluginGeneration:
     cleanup: asyncio.Task[None] | None = field(default=None, repr=False)
     cleanup_error: Exception | None = field(default=None, repr=False)
     _instance_stopped: bool = field(default=False, repr=False)
+
+    @property
+    def can_release_controls(self) -> bool:
+        return not self.stop_lock.locked() and not self._instance_stopped
 
     def dependency_closure(self) -> tuple[PluginGeneration, ...]:
         """Return exact dependencies before their owner, once per generation."""

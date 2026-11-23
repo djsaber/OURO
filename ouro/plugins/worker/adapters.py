@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from ouro.plugins.worker.codec import _worker_schema
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 
 if TYPE_CHECKING:
     from ouro.plugins.worker.instance import WorkerPluginInstance

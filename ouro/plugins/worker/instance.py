@@ -11,8 +11,7 @@ from typing import Any
 from pydantic_core import to_jsonable_python
 
 from ouro.core.callbacks import CallbackCancelled
-from ouro.plugins.installation.package import PLUGIN_API_VERSION
-from ouro.plugins.manifest import PluginManifest
+from ouro.plugins.manifest import PLUGIN_API_VERSION, PluginManifest
 from ouro.plugins.tool_groups import PluginToolGroups, ToolGroupPublication
 from ouro.plugins.worker.client import JsonRpcWorkerClient
 from ouro.plugins.worker.codec import (
@@ -41,7 +40,7 @@ from ouro.plugins.worker.providers import WorkerProviderBridge
 from ouro.plugins.worker.scheduling import WorkerSchedulerBridge
 from ouro.plugins.worker.services import WorkerServiceBridge
 from ouro.plugins.worker.tool_groups import WorkerToolGroupBridge
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 
 
 class WorkerPluginInstance:

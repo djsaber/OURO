@@ -8,6 +8,7 @@ from ouro.plugins.manifest import PluginManifest
 from .agent_context_plugin import create_plugin
 
 AGENT_CONTEXT_PLUGIN = BuiltinPluginDefinition(
+    execution_api_version="6.0.0",
     manifest=PluginManifest.model_validate(
         {
             "schema_version": 3,
@@ -19,7 +20,7 @@ AGENT_CONTEXT_PLUGIN = BuiltinPluginDefinition(
                 "Adds hierarchical AGENTS.md instructions and runtime facts to the system prompt."
             ),
             "namespace": "agent_context",
-            "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
+            "engines": {"ouro": ">=0.4.0", "plugin_api": "^7.0.0"},
             "runtime": {
                 "kind": "python-inprocess",
                 "entrypoint": "agent_context_plugin:create_plugin",

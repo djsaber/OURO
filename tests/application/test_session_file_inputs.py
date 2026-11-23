@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from threading import get_ident
 
 import pytest
 
@@ -151,14 +152,32 @@ async def test_reference_uses_original_path_and_freezes_observed_text(tmp_path, 
     await app.close()
 
 
-async def test_file_only_reference_is_visible_to_prompt_policies_before_persistence(tmp_path):
+@pytest.mark.parametrize("kind", ("reference", "upload"))
+async def test_file_only_input_is_visible_to_prompt_policies_before_persistence(
+    tmp_path, monkeypatch, kind
+):
     from ouro.core.errors import PromptRejectedError
     from ouro.core.prompt_policies import PromptPolicyDecision, PromptPolicyRegistration
 
     app = application_at(tmp_path / "home")
     path = tmp_path / "SECURITY.md"
     path.write_text("policy", encoding="utf-8")
-    item = input_content.InputFileReference(name=path.name, path=str(path))
+    if kind == "upload":
+        session = app.runtime.create_session(title="Upload", workspace=tmp_path)
+        record = app.runtime.resources.import_resource(session.session_id, path).resource
+        item = input_content.InputAttachment(name=path.name, resource_id=record.resource_id)
+        target = {"session_id": session.session_id}
+        read = app.runtime.store.load_resource_reference
+        loop_thread = get_ident()
+
+        def read_off_loop(*args):
+            assert get_ident() != loop_thread
+            return read(*args)
+
+        monkeypatch.setattr(app.runtime.store, "load_resource_reference", read_off_loop)
+    else:
+        item = input_content.InputFileReference(name=path.name, path=str(path))
+        target = {"workspace": str(tmp_path)}
     calls = []
 
     def deny(call):
@@ -173,12 +192,17 @@ async def test_file_only_reference_is_visible_to_prompt_policies_before_persiste
         )
     )
     with pytest.raises(PromptRejectedError):
-        await app.runtime.run("", attachments=(item,), workspace=str(tmp_path))
+        await app.runtime.run("", attachments=(item,), **target)
     assert calls[0].prompt == ""
-    assert calls[0].attachments[0].kind == "reference"
-    assert calls[0].attachments[0].path == str(path)
-    assert calls[0].attachments[0].name == path.name
-    assert app.runtime.store.list_sessions() == []
+    metadata = calls[0].attachments[0]
+    assert metadata.kind == kind
+    assert metadata.name == path.name
+    if kind == "upload":
+        assert metadata.resource_id == item.resource_id
+        assert not app.runtime.store.load_session(session.session_id).runs
+    else:
+        assert metadata.path == str(path)
+        assert app.runtime.store.list_sessions() == []
     await app.close()
 
 

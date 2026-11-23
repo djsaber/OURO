@@ -188,12 +188,12 @@ def plugin_root_sort_key(plugin_id: str, state: PluginStateDocument) -> tuple[in
     return (0 if plugin_id in state.plugins else 1, plugin_id)
 
 
-def active_dependents(
+def require_no_active_dependents(
     state: PluginStateDocument,
     plugin_id: str,
     *,
     builtin_contracts: Mapping[str, BuiltinPluginContract] | None = None,
-) -> list[str]:
+) -> None:
     dependents: list[str] = []
     for candidate_id, record in state.plugins.items():
         if not record.activation.desired_enabled:
@@ -211,7 +211,10 @@ def active_dependents(
             continue
         if any(dependency_id == plugin_id for dependency_id, _ in contract.dependencies):
             dependents.append(candidate_id)
-    return sorted(set(dependents))
+    if dependents:
+        raise PluginDependencyError(
+            f"plugin has active dependents: {plugin_id}: {', '.join(sorted(set(dependents)))}"
+        )
 
 
 def desired_dependant_closure(

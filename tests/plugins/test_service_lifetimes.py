@@ -45,7 +45,7 @@ async def service_graph(tmp_path, request):
             execution = {
                 "kind": "worker",
                 "command": ["{python}", f"{namespace}_plugin.py"],
-                "protocol": "3.0",
+                "protocol": "4.0",
             }
         (source / ".ouro-plugin/plugin.json").write_text(
             json.dumps(
@@ -55,7 +55,7 @@ async def service_graph(tmp_path, request):
                     "namespace": identity.rsplit(".", 1)[1],
                     "name": identity,
                     "version": "1.0.0",
-                    "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
+                    "engines": {"ouro": ">=0.4.0", "plugin_api": "^7.0.0"},
                     "runtime": execution,
                     "dependencies": {
                         "plugins": [

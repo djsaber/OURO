@@ -11,7 +11,7 @@ from ui_workbench_plugin.files import WorkbenchError, publish_bundle, read_limit
 from ui_workbench_plugin.plugin import create_plugin
 from ui_workbench_plugin.settings import Settings
 
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 
 _ROOT = Path(__file__).resolve().parents[1]
 

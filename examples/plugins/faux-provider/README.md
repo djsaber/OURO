@@ -22,7 +22,7 @@ configuration, conversations or usage.
 For worker execution, set the manifest runtime to:
 
 ```json
-{"kind": "worker", "command": ["{python}", "worker.py"], "protocol": "3.0"}
+{"kind": "worker", "command": ["{python}", "worker.py"], "protocol": "4.0"}
 ```
 
 Both entries use the same `ProviderContribution` implementation. The worker uses a root concurrency

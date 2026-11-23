@@ -156,7 +156,7 @@ async def test_sdk_receives_recursive_read_only_snapshot(tmp_path):
     )
     (source / "echo_plugin.py").write_text(
         """
-from ouro.sdk.plugins.v6 import ContributionSet
+from ouro.sdk.plugins.v7 import ContributionSet
 class Plugin:
     def __init__(self, context): self.context = context
     async def prepare(self):
@@ -189,7 +189,7 @@ async def test_worker_receives_independent_json_configuration_snapshot(tmp_path)
     source = tmp_path / "package"
     _write_native_plugin(
         source,
-        runtime={"kind": "worker", "command": ["{python}", "./worker.py"], "protocol": "3.0"},
+        runtime={"kind": "worker", "command": ["{python}", "./worker.py"], "protocol": "4.0"},
         extra={"configuration": {"schema": "./config.json"}},
     )
     (source / "config.json").write_text(
@@ -206,7 +206,7 @@ for line in sys.stdin:
         groups = request['params']['configuration']['groups']
         assert isinstance(groups, list) and groups == [{'enabled': True}]
         groups[0]['enabled'] = False
-        result = {'protocol_version': '3.0'}
+        result = {'protocol_version': '4.0'}
     if 'id' in request:
         print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
     if method == 'shutdown':

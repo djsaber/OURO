@@ -12,7 +12,7 @@ from ouro.core.message_semantics import validate_semantic_tag
 from ouro.core.session_controls import SessionInputRequest
 from ouro.core.system_prompts import SystemPromptFragment
 from ouro.plugins.tool_content import decode_worker_content
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 
 _TOOL = TypeAdapter(sdk.ToolOutput)
 _CONTEXT = TypeAdapter(sdk.ContextOutput)

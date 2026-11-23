@@ -8,7 +8,7 @@ from pathlib import Path
 
 from scheduled_sync_plugin import ScheduledSync
 
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 from ouro.sdk.plugins.scheduled import ScheduledInvocation
 from ouro.sdk.plugins.services import ServiceCall
 from ouro.sdk.plugins.worker import WorkerPeer
@@ -58,7 +58,7 @@ class Worker:
         self.plugin = ScheduledSync(
             WorkerScheduler(self.peer), LocalData(Path(params["data_directory"]))
         )
-        return {"protocol_version": "3.0"}
+        return {"protocol_version": "4.0"}
 
     async def prepare(self, params):
         await self.plugin.prepare()

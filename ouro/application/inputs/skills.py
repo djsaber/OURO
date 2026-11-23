@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+import asyncio
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import Field, field_validator
 
 from ouro.core.base import OuroModel
+from ouro.core.callbacks import run_blocking
 from ouro.core.errors import SkillActivationError
 from ouro.core.messages import (
     MessageRecord,
@@ -13,6 +16,9 @@ from ouro.core.messages import (
     SkillActivationContent,
 )
 from ouro.skills import SkillMetadata, load_skill_from_metadata
+
+if TYPE_CHECKING:
+    from ouro.application.runtime.extensions import RuntimeExtensions
 
 
 class SkillInvocationRequest(OuroModel):
@@ -34,6 +40,27 @@ class SkillInvocationRequest(OuroModel):
 
 class SkillActivationService:
     """Resolve user selections and capture their current documents as accepted input."""
+
+    def __init__(
+        self,
+        skills: tuple[SkillMetadata, ...] = (),
+        resolver: Callable[[], tuple[SkillMetadata, ...]] | None = None,
+    ) -> None:
+        self.base_skills = tuple(item.model_copy(deep=True) for item in skills)
+        self.resolver = resolver
+        self._refresh_lock = asyncio.Lock()
+
+    async def refresh(
+        self, extensions: RuntimeExtensions | None, skills: tuple[SkillMetadata, ...] | None = None
+    ) -> None:
+        async with self._refresh_lock:
+            if skills is None:
+                if self.resolver is None:
+                    return
+                skills = await run_blocking(self.resolver)
+            if extensions is not None:
+                await extensions.replace_base_skills(skills)
+            self.base_skills = tuple(item.model_copy(deep=True) for item in skills)
 
     def list_for_host(self, skills: Sequence[SkillMetadata]) -> tuple[SkillMetadata, ...]:
         return tuple(

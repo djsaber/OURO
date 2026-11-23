@@ -9,7 +9,7 @@ from copy import deepcopy
 from dataclasses import asdict
 from typing import Any, Literal
 
-from . import v6 as sdk
+from . import v7 as sdk
 
 
 class WorkerSessionState:

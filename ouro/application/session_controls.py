@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import dataclass
 
 from ouro.application.harness import capture_session_harness
-from ouro.application.inputs.queue import QueuedInputQueue
+from ouro.application.inputs.queue import PendingInputs
 from ouro.application.runs.tool_batches import load_tool_batch, prepare_batch_changes
 from ouro.application.usage import UsageService
 from ouro.core.base import new_id, utc_now
@@ -79,6 +79,55 @@ class SessionControlCoordinator:
         self.store = store
         self.usage_service = usage_service
 
+    async def release_plugin(
+        self, plugin_id: str, controllers: tuple[SessionController, ...]
+    ) -> int:
+        """Release durable activations using the retiring implementations that own them."""
+        by_generation = {(item.canonical_id, item.generation_id): item for item in controllers}
+        by_contract = {
+            (item.canonical_id, item.release_id, item.execution_contract_hash): item
+            for item in controllers
+        }
+        forced = 0
+        registry = SessionControllerRegistry()
+        for session in await run_blocking(self.store.list_sessions):
+            for activation in session.controls.activations:
+                if activation.plugin_id != plugin_id:
+                    continue
+                controller = by_generation.get(
+                    (activation.controller_id, activation.generation_id)
+                ) or by_contract.get(
+                    (
+                        activation.controller_id,
+                        activation.release_id,
+                        activation.execution_contract_hash,
+                    )
+                )
+                if controller is None:
+                    result = await run_blocking(
+                        self.force_release,
+                        session_id=session.session_id,
+                        activation_id=activation.activation_id,
+                        reason="plugin_disable_cleanup_unavailable",
+                    )
+                    forced += int(result.changed)
+                    continue
+                registry.restore({controller.canonical_id: controller})
+                await self.apply(
+                    AttributedSessionControlTransition(
+                        action="release",
+                        activation_id=activation.activation_id,
+                        plugin_id=plugin_id,
+                        generation_id=activation.generation_id,
+                        execution_contract_hash=activation.execution_contract_hash,
+                        reason="plugin_disable",
+                    ),
+                    session_id=session.session_id,
+                    controllers=registry,
+                    workspace=session.workspace,
+                )
+        return forced
+
     async def apply(
         self,
         transition: AttributedSessionControlTransition,
@@ -99,6 +148,8 @@ class SessionControlCoordinator:
             controllers=controllers,
             workspace=workspace,
         )
+        if transition.action == "release" and not result.changed:
+            return result
         request = SessionCommit(
             operation_id=operation_id,
             before=before,
@@ -300,7 +351,7 @@ class SessionControlCoordinator:
                             payload={"reason": "session_control_released"},
                         )
                     )
-                after, queue_ids = QueuedInputQueue(self.store).without_session_control(
+                queue_ids = PendingInputs(self.store).owned_by_control(
                     after,
                     controller_id=activation.controller_id,
                     activation_id=activation.activation_id,
@@ -309,7 +360,7 @@ class SessionControlCoordinator:
                     SessionControlCancellation(
                         activation_id=activation.activation_id,
                         run_id=cancelled_run.run_id if cancelled_run else None,
-                        queue_ids=tuple(queue_ids),
+                        queue_ids=queue_ids,
                     )
                 )
                 for identity in queue_ids:
@@ -458,6 +509,8 @@ class SessionControlCoordinator:
         )
         if changed:
             operation_id = new_id("op")
+            event = self._event(session_id, operation_id, "release")
+            event.payload.update(forced=True, reason=reason, owner_cleanup_confirmed=False)
             committed = self.commit(
                 SessionCommit(
                     operation_id=operation_id,
@@ -465,7 +518,7 @@ class SessionControlCoordinator:
                     steps=(
                         SessionCommitStep(harness=state.model_copy(update={"controls": controls})),
                     ),
-                    events=(self._event(session_id, operation_id, "release"),),
+                    events=(event,),
                 ),
                 released_activation_ids=(activation_id,),
             )
@@ -678,6 +731,20 @@ def _replace_control_state(
         revision=controls.revision + 1,
         activations=activations,
     )
+
+
+def require_available_controls(
+    controls: SessionControlState, controllers: SessionControllerRegistry | None
+) -> None:
+    unavailable = (
+        controllers.unavailable_controls(controls)
+        if controllers is not None
+        else tuple(activation.controller_id for activation in controls.activations)
+    )
+    if unavailable:
+        raise SessionControlContractError(
+            f"Session controller contract is unavailable: {unavailable[0]}"
+        )
 
 
 def _select_release_activation(

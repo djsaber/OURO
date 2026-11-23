@@ -49,7 +49,7 @@ from ouro.plugins.invocation import plugin_invocation
 from ouro.plugins.providers import adapt_provider
 from ouro.plugins.registry import PluginCommand, PluginCommandRequest, PluginCommandResult
 from ouro.plugins.run_drivers import adapt_run_driver
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 
 
 @dataclass(frozen=True)

@@ -22,7 +22,7 @@ from ouro.core.state import SessionRecord
 from ouro.plugins.catalog.snapshot import ExtensionCatalogBase, build_extension_catalog
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.plugins.registry import PluginCommandRegistry
-from ouro.sdk.plugins import v6 as sdk
+from ouro.sdk.plugins import v7 as sdk
 from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 from ouro.tools import ToolRegistry

@@ -47,7 +47,7 @@ def configured_packages(tmp_path, kind="python-inprocess", *, dependency_kind="p
             "namespace": "driver_dependency",
             "name": "Driver dependency",
             "version": "1.0.0",
-            "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
+            "engines": {"ouro": ">=0.4.0", "plugin_api": "^7.0.0"},
             "runtime": {
                 "kind": "python-inprocess",
                 "entrypoint": "driver_dependency_plugin:create",
@@ -67,7 +67,7 @@ def configured_packages(tmp_path, kind="python-inprocess", *, dependency_kind="p
         manifest["runtime"] = {
             "kind": "worker",
             "command": ["{python}", "worker.py"],
-            "protocol": "3.0",
+            "protocol": "4.0",
         }
         write_json(manifest_path, manifest)
         (dependency / "worker.py").write_text(

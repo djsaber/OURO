@@ -37,7 +37,7 @@ def package(tmp_path, kind):
         runtime = {
             "kind": kind,
             "command": ["{python}", "provider_probe_plugin.py"],
-            "protocol": "3.0",
+            "protocol": "4.0",
         }
     (root / ".ouro-plugin/plugin.json").write_text(
         json.dumps(
@@ -47,7 +47,7 @@ def package(tmp_path, kind):
                 "namespace": "provider_probe",
                 "name": "Provider probe",
                 "version": "1.0.0",
-                "engines": {"ouro": ">=0.4.0", "plugin_api": "^6.0.0"},
+                "engines": {"ouro": ">=0.4.0", "plugin_api": "^7.0.0"},
                 "runtime": runtime,
                 "permissions": [
                     {"id": "models.request", "reason": "Generate"},
@@ -69,7 +69,7 @@ def test_provider_package_rejects_previous_request_contract(tmp_path: Path) -> N
     root = package(tmp_path, "python-inprocess")
     path = root / ".ouro-plugin/plugin.json"
     manifest = json.loads(path.read_text("utf-8"))
-    manifest["engines"]["plugin_api"] = "^5.0.0"
+    manifest["engines"]["plugin_api"] = "^6.0.0"
     path.write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(PluginPackageError, match="plugin API is incompatible"):
         validate_plugin_package(root)
@@ -402,7 +402,7 @@ async def test_public_provider_example_runs_through_cli_check_and_native_route(
         manifest["runtime"] = {
             "kind": "worker",
             "command": ["{python}", "worker.py"],
-            "protocol": "3.0",
+            "protocol": "4.0",
         }
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     async with LocalApplication.build(home) as app:
