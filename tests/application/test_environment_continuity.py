@@ -103,7 +103,6 @@ def tool(handler, *, release="one", permission="auto", resumable=False):
                 "plugin_class": "user",
                 "release_id": release,
                 "package_digest": release,
-                "contract_hash": release,
                 "execution_contract_hash": release,
             },
         ),
@@ -423,7 +422,6 @@ async def test_delegated_capabilities_use_current_implementation_without_adding_
             "root_session_id": relation.root_session_id,
             "delegation_id": relation.delegation_id,
             "agent_id": relation.agent_id,
-            "agent_definition_contract_hash": relation.definition.contract_hash,
         },
     )
     reserve_run(store, run)

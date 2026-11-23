@@ -711,7 +711,6 @@ async def test_subagent_definition_editor_does_not_limit_selected_tool_count(
             description=f"Tool {index}",
             effect="read_only",
             owner_id="ouro.host",
-            execution_contract_hash=f"sha256:{index}",
         )
         for index in range(40)
     )

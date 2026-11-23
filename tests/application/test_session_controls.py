@@ -68,7 +68,6 @@ def _controller(
         release_id=f"release-{controller_id}",
         package_digest=f"release-{controller_id}",
         generation_id=f"generation-{controller_id}",
-        contract_hash="d" * 64,
         execution_contract_hash=_CONTRACT,
     )
 
@@ -277,7 +276,6 @@ async def test_controller_lifecycle_receives_session_kind_and_symmetric_release_
         release_id="release-lifecycle",
         package_digest="release-lifecycle",
         generation_id="generation-lifecycle",
-        contract_hash="d" * 64,
         execution_contract_hash=_CONTRACT,
     )
     registry = SessionControllerRegistry()
@@ -398,7 +396,6 @@ async def test_replace_can_rotate_the_same_controller_activation(tmp_path, backe
         release_id="release-rotating",
         package_digest="release-rotating",
         generation_id="generation-rotating",
-        contract_hash="d" * 64,
         execution_contract_hash=_CONTRACT,
     )
     registry = SessionControllerRegistry()

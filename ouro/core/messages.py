@@ -35,7 +35,6 @@ class SkillActivationContent(OuroModel):
     location: str = Field(min_length=1)
     base_directory: str = Field(min_length=1)
     instructions: str = Field(min_length=1)
-    content_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
     @field_validator("name", "location", "base_directory", "instructions")
     @classmethod
@@ -50,7 +49,6 @@ class SkillActivationContent(OuroModel):
             "source": self.source,
             "location": self.location,
             "base-directory": self.base_directory,
-            "digest": self.content_digest,
         }
         instructions = render_semantic_envelope(
             self.instructions, "ouro-skill-activation", attributes

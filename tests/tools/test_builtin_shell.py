@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from ouro.core.cancellation import AbortSignal
-from ouro.core.tools import tool_definition_contract_hash
 from ouro.tools import (
     ProcessResult,
     ToolExecutionAborted,
@@ -141,7 +140,7 @@ def test_no_command_tool_is_selected_when_no_supported_shell_exists() -> None:
     )
 
 
-def test_shell_delegation_contract_depends_on_dialect_not_local_executable_binding():
+def test_pending_shell_call_accepts_aliases_and_rejects_a_different_dialect():
     alias = builtin_command_tool(
         CommandShell(
             "powershell",
@@ -149,7 +148,7 @@ def test_shell_delegation_contract_depends_on_dialect_not_local_executable_bindi
             "PowerShell",
             "PowerShell 7",
         )
-    ).definition
+    )
     installed = builtin_command_tool(
         CommandShell(
             "powershell",
@@ -157,7 +156,7 @@ def test_shell_delegation_contract_depends_on_dialect_not_local_executable_bindi
             "PowerShell",
             "PowerShell 7",
         )
-    ).definition
+    )
     legacy = builtin_command_tool(
         CommandShell(
             "windows_powershell",
@@ -165,10 +164,35 @@ def test_shell_delegation_contract_depends_on_dialect_not_local_executable_bindi
             "PowerShell",
             "Windows PowerShell",
         )
-    ).definition
-    assert tool_definition_contract_hash(alias) == tool_definition_contract_hash(installed)
-    assert tool_definition_contract_hash(alias) != tool_definition_contract_hash(legacy)
-    assert alias.identity == installed.identity == legacy.identity
+    )
+    original = ToolInvocation(
+        session_id="ses",
+        run_id="run",
+        tool_name=alias.definition.name,
+        arguments={"command": "Get-Location"},
+        canonical_tool_id=alias.definition.identity,
+        effect=alias.definition.effect,
+        resumable=False,
+        execution_variant=alias.definition.execution_variant,
+    )
+    old = original.model_copy(
+        update={
+            "execution_variant": None,
+            "definition_contract_hash": (
+                "sha256:006881447fddd3518bd72aac1687086e585066bb0406b83064934b39c3dee193"
+            ),
+        }
+    )
+    for tool in (installed, legacy):
+        registry = ToolRegistry()
+        registry.register(tool)
+        executor = ToolExecutor(registry)
+        for invocation in (original, old):
+            outcome = executor.preflight(invocation)
+            if tool is installed:
+                assert outcome.status == "approval_required"
+            else:
+                assert outcome.result.structured["error_type"] == "ToolExecutionContractMismatch"
 
 
 @pytest.mark.parametrize(

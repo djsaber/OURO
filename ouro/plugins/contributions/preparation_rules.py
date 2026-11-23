@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any
@@ -120,16 +118,6 @@ def _canonical_controller_id(plugin_id: str, controller_id: str | None) -> str |
     return f"{plugin_id}/session_controllers/{controller_id}"
 
 
-def _hash(value: object) -> str:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
 def prepare_tools(
     manifest: PluginManifest,
     owner: ContributionOwner,
@@ -154,10 +142,6 @@ def prepare_tools(
         if sdk_identity is not None and sdk_identity != declaration.id:
             raise ContributionValidationError(
                 f"tool contribution id does not match manifest: {sdk_identity} != {declaration.id}"
-            )
-        if sdk_identity is not None and tool.definition.description != declaration.description:
-            raise ContributionValidationError(
-                f"tool description does not match manifest: {declaration.exposed_name}"
             )
         if sdk_identity is not None and (
             tool.definition.permission_mode != declaration.permission_mode
@@ -193,11 +177,6 @@ def prepare_tools(
                     manifest.plugin_id,
                     declaration.interaction_controller,
                 ),
-            },
-        )
-        contract_hash = _hash(definition.execution_contract())
-        definition = definition.model_copy(
-            update={
                 "metadata": {
                     **tool.definition.metadata,
                     "plugin_id": manifest.plugin_id,
@@ -207,9 +186,8 @@ def prepare_tools(
                     "package_digest": owner.package_digest,
                     "generation_id": owner.generation_id,
                     "contribution_id": declaration.id,
-                    "contract_hash": contract_hash,
-                }
-            }
+                },
+            },
         )
         prepared.append(
             Tool(
@@ -311,11 +289,6 @@ def _prepare_discovered_tools(
             update={
                 "canonical_id": f"{manifest.plugin_id}/tools/mcp:{server_id}:{remote_name}",
                 "permission_mode": "approval",
-            }
-        )
-        contract_hash = _hash(definition.execution_contract())
-        definition = definition.model_copy(
-            update={
                 "metadata": {
                     **tool.definition.metadata,
                     "plugin_id": manifest.plugin_id,
@@ -325,7 +298,6 @@ def _prepare_discovered_tools(
                     "package_digest": owner.package_digest,
                     "generation_id": owner.generation_id,
                     "contribution_id": f"mcp:{server_id}:{remote_name}",
-                    "contract_hash": contract_hash,
                 },
             }
         )

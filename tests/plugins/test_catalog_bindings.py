@@ -37,7 +37,6 @@ class Generation:
             release_id="digest",
             runtime_kind="python-inprocess",
             configuration_revision_id="a" * 64,
-            dependency_lock_fingerprint="b" * 64,
             plugin_api_version="3.0.0",
             execution_contract_hash="c" * 64,
         )
@@ -122,8 +121,6 @@ def test_driver_binding_retains_only_owner_dependencies_and_requires_exact_contr
         execute,
         owner.plugin_id,
         "digest",
-        contract_hash="entry",
-        execution_contract_hash="c" * 64,
     )
     owner.contributions = replace(owner.contributions, run_drivers=(registration,))
     catalog = catalog_for(
@@ -131,7 +128,7 @@ def test_driver_binding_retains_only_owner_dependencies_and_requires_exact_contr
     )
     with catalog.bind_driver(registration.canonical_id) as selected:
         expected = selected.value.binding
-    wrong = expected.model_copy(update={"contract_hash": "other"})
+    wrong = expected.model_copy(update={"dependencies": ()})
     with pytest.raises(ValueError, match="contract is unavailable"):
         catalog.bind_driver(registration.canonical_id, expected=wrong)
     assert [item.leases for item in (owner, dependency, unrelated)] == [0, 0, 0]

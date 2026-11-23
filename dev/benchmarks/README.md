@@ -328,12 +328,12 @@ uv run --frozen python dev/benchmarks/plugin_commands.py --repeat 3
 uv run --frozen python dev/benchmarks/plugin_commands.py --mode tui --store-delay-ms 5 --repeat 3
 ```
 
-Worker 基准通过真实 handler 测量合成响应解码耗时、Python 分配峰值及输出摘要，包含单输入和控制 payload
+Worker 基准通过真实 handler 测量合成响应解码耗时、及 Python 分配峰值，包含单输入和控制 payload
 随数据量增长的场景；transport 不启动插件进程，因此不代表 IPC、进程 RSS 或插件执行成本。
 
 命令基准临时安装真实 SDK 插件，覆盖查询、预建会话、输出后创建会话及已有 120 条历史的会话。
 `--mode application|tui|all` 分别测 Application 命令用例与 headless TUI；输入批次由合成 Provider 和工具完成。
-输出包含提交、首段文本、完整消费、消息摘要、Run 终态和响应性指标；安装、启动与初始历史准备不计时。
+输出包含提交、首段文本、完整消费、Run 终态和响应性指标；安装、启动与初始历史准备不计时。
 首个模型 delta 标记模型开始输出。TUI 帧与按键回显通过[实际终端测量](#人工终端验收入口)验证，网络耗时单独记录。
 
 ```powershell

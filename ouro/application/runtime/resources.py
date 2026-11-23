@@ -91,7 +91,8 @@ class RunResources:
         """Own the validated control tools for this decision's declared capabilities."""
         if (
             self.agent_catalog is not None
-            and self.agent_catalog.contract_hash == catalog.contract_hash
+            and self.agent_catalog.entries == catalog.entries
+            and self.agent_catalog.spawn_policy == catalog.spawn_policy
         ):
             return
         tools = ToolRegistry()

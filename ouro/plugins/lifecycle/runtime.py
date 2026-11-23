@@ -64,7 +64,6 @@ from ouro.plugins.dependencies import (
 from ouro.plugins.driver_contracts import resolve_driver_contract
 from ouro.plugins.environment import PluginEnvironmentService
 from ouro.plugins.execution_contracts import (
-    build_dependency_lock_fingerprint,
     build_execution_contract_hash,
 )
 from ouro.plugins.implementation_contracts import plugin_implementation
@@ -773,7 +772,7 @@ class PluginRuntimeResource:
                 ),
                 None,
             )
-            if driver is None or driver.contract_hash != expected.contract_hash:
+            if driver is None:
                 raise ValueError(f"Run driver contract is unavailable: {expected.driver_id}")
             driver = replace(
                 gate_driver(driver, owner.gate),
@@ -1149,12 +1148,8 @@ class PluginRuntimeResource:
             if dependency.candidate.release_id != expected_release_id:
                 raise PluginDependencyError(f"required plugin generation is stale: {dependency_id}")
             dependencies[dependency_id] = dependency
-        fingerprint = build_dependency_lock_fingerprint(
-            plugin_implementation(generation.record) for generation in dependencies.values()
-        )
         return await self._build_generation(
             self._runtime_candidate(state, node.plugin_id),
-            dependency_lock_fingerprint=fingerprint,
             dependencies=dependencies,
         )
 
@@ -1646,7 +1641,6 @@ class PluginRuntimeResource:
         self,
         candidate: PluginRuntimeCandidate,
         *,
-        dependency_lock_fingerprint: str,
         dependencies: dict[str, PluginGeneration],
     ) -> PluginGeneration:
         configuration = candidate.configuration
@@ -1658,7 +1652,6 @@ class PluginRuntimeResource:
             release_id=candidate.release_id,
             runtime_kind=candidate.manifest.runtime.kind,
             configuration_revision_id=configuration.revision_id,
-            dependency_lock_fingerprint=dependency_lock_fingerprint,
             plugin_api_version=PLUGIN_API_VERSION,
             worker_protocol_version=(
                 candidate.manifest.runtime.protocol
@@ -1893,7 +1886,7 @@ class PluginRuntimeResource:
                 contributions,
                 resource_skills=prepared_resources.skills,
                 discovered_tools=prepared_resources.discovered_tools,
-                resource_contracts=prepared_resources.resource_contracts,
+                mcp_server_ids=prepared_resources.mcp_server_ids,
             )
             if prepared_resources.degraded_reasons:
                 prepared = replace(
@@ -1903,13 +1896,12 @@ class PluginRuntimeResource:
                         *prepared_resources.degraded_reasons,
                     ),
                 )
-            generation.contract_hashes = dict(prepared.contract_hashes)
             generation.execution_contract_hash = build_execution_contract_hash(
                 plugin_id=generation.plugin_id,
                 release_id=candidate.release_id,
                 runtime_kind=generation.runtime_kind,
                 configuration_revision_id=generation.configuration_revision_id,
-                dependency_lock_fingerprint=generation.dependency_lock_fingerprint,
+                dependencies=(plugin_implementation(item.record) for item in dependencies.values()),
                 plugin_api_version=generation.plugin_api_version,
                 worker_protocol_version=generation.worker_protocol_version,
             )

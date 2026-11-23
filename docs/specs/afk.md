@@ -68,7 +68,7 @@ UnattendedResolution
 
 用户实际回答产生 `AnswerResolution(resolved_by="user")`。AFK 不为未知请求猜测布尔值、空字符串、第一选项或 `null`，而是把 `UnattendedResolution` 交回原工具的 resume handler。工具拥有请求 schema 和业务语义，因此也拥有无人值守处理方式。
 
-工具定义必须显式声明 `supports_unattended`。只有同时 resumable 且声明支持的工具会收到 `UnattendedResolution`；其他工具产生标准 `UserInputUnavailable` ToolResult。该能力进入 manifest、SDK、worker descriptor 和 execution contract hash。
+工具定义必须显式声明 `supports_unattended`。只有同时 resumable 且声明支持的工具会收到 `UnattendedResolution`；其他工具产生标准 `UserInputUnavailable` ToolResult。该能力进入 manifest、SDK 和 worker descriptor。
 
 收到无人值守 resolution 的 handler 必须返回终态 ToolOutput。再次请求用户输入属于 `UnattendedInteractionLoop` 协议错误，避免 AFK 快速自循环。
 

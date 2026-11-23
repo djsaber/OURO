@@ -79,9 +79,9 @@ ProviderRequestPolicy 包含额度错误码、计费方式和 supports_output_li
 
 认证生命周期跟随 Runtime 的显式资源所有权，以覆盖独立 run/check 入口：LocalApplication 在停止消费者前关闭登录用例，Runtime.close 也负责这一前置步骤，随后关闭模型 catalog/辅助 adapter，最后关闭凭据核心。重复关闭复用同一任务；调用者取消不跳过收尾，某项失败不阻止关闭后续资源。启动失败复用相同清理路径，保留原启动错误。轻量 auth CLI 继续使用独立组合，不启动模型 Runtime。
 
-ConfiguredModelCatalog 在所有已配置路由（含初始默认路由）上比较完整运行参数的规范化摘要，覆盖 driver、credential ref、服务引用、连接参数和 inline Key；不使用隐藏秘密字段的 repr，也不读取 managed 记录生成指纹。启动缓存以构造 adapter 时的实际参数为基准，配置在构造间隙变化仍会被发现。显式进程参数只保留到原始默认路由；已配置路由删除/禁用后不退回旧 adapter。纯临时、未配置的路由仍由注入 adapter 负责。
+ConfiguredModelCatalog 在所有已配置路由（含初始默认路由）上比较规范化后的完整运行参数，覆盖 driver、credential ref、服务引用、连接参数和 inline Key；不使用隐藏秘密字段的 repr，也不读取 managed 记录构造缓存键。启动缓存以构造 adapter 时的实际参数为基准，配置在构造间隙变化仍会被发现。显式进程参数只保留到原始默认路由；已配置路由删除/禁用后不退回旧 adapter。纯临时、未配置的路由仍由注入 adapter 负责。
 
-并发 Session 请求在同一临界区内解析、构建和发布缓存，避免重复构造导致 HTTP client 失去关闭归属。替换后的 adapter 保留到 Runtime 关闭，已开始的请求不被中断；普通 Token 更新不改变配置指纹。专用压缩请求通过同一 catalog 在边界重新选择 adapter，绑定变化会生效；受管理请求失败、结构化认证/访问/额度错误以及已绑定压缩路由配置失效是终止错误，不触发其他模型或策略回退。未分类摘要质量等失败保留既有压缩回退契约。
+并发 Session 请求在同一临界区内解析、构建和发布缓存，避免重复构造导致 HTTP client 失去关闭归属。替换后的 adapter 保留到 Runtime 关闭，已开始的请求不被中断；普通 Token 更新不改变缓存键。专用压缩请求通过同一 catalog 在边界重新选择 adapter，绑定变化会生效；受管理请求失败、结构化认证/访问/额度错误以及已绑定压缩路由配置失效是终止错误，不触发其他模型或策略回退。未分类摘要质量等失败保留既有压缩回退契约。
 
 LocalApplication 与轻量认证组合均内建 openai-codex 浏览器驱动；额外注入的驱动/策略作为补充，重复 id 明确拒绝。服务策略只允许 https://chatgpt.com/backend-api/codex/responses 路径子树，billing_mode=subscription、supports_output_limit=false；标准协议 adapter 不判断产品。驱动按请求创建并关闭 HTTP client，纯构造不读秘密或发网络请求。公开客户端兼容接入与能力范围见[使用指南](../guides/subscriptions.md)。真实 adapter 探针已通过，持久凭据的真实 CLI 登录、check/run、跨进程续接及注销已通过；证据范围见上述使用指南。
 
@@ -91,7 +91,7 @@ LocalApplication 与轻量认证组合均内建 openai-codex 浏览器驱动；�
 - `tests/providers/test_request_authentication.py`：两种驱动 × 三种协议 × JSON/SSE、共同尝试预算、403/429、Retry-After、Header/重定向边界、输出后不重放、连接检查与报文错误脱敏。
 - `tests/providers/test_openai_responses.py`：scope 与请求头使用同一快照、刷新后原生重放/换账户使用 canonical 历史、静态绑定、取消/关闭/总时限及隐藏思考后的禁止重试。
 - `tests/application/test_runtime_authentication.py`：未登录启动、共享认证/注销、账户绑定切换、主/压缩/子会话路由、home 隔离及取消/失败关闭。
-- `tests/application/test_models.py`：默认/非默认路由重绑定、inline Key 指纹、进程覆盖、构造间隙更新及并发缓存发布。
+- `tests/application/test_models.py`：默认/非默认路由重绑定、inline Key 变更、进程覆盖、构造间隙更新及并发缓存发布。
 - `tests/application/test_compaction.py`：已分类服务错误不切换账户/模型，普通摘要回退回归。
 - `tests/config/test_provider_auth_config.py`：managed factory 延迟认证与静态 resolver 隔离。
 - `tests/cli/test_provider_error_codes.py`：Runtime → RunResult → CLI JSON 的安全 code 传播。

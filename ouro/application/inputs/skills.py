@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -85,7 +83,6 @@ class SkillActivationService:
             location=loaded.metadata.location,
             base_directory=str(Path(loaded.metadata.location).parent),
             instructions=loaded.content,
-            content_digest=_skill_content_digest(loaded.metadata, loaded.content),
         )
 
     def resolve_user_activations(
@@ -107,20 +104,6 @@ def compacted_skill_messages(
         )
         for message in messages
     ]
-
-
-def _skill_content_digest(metadata: SkillMetadata, instructions: str) -> str:
-    payload = {
-        "metadata": metadata.model_dump(mode="json"),
-        "instructions": instructions,
-    }
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 __all__ = ["SkillActivationService", "SkillInvocationRequest", "compacted_skill_messages"]

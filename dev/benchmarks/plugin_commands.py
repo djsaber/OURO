@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import json
 import platform
 import sys
@@ -199,11 +198,11 @@ async def run_one(backend, mode, scenario, delay_ms):
             if session_id is None:
                 assert scenario == "query"
                 assert not app.runtime.sessions.catalog().entries
-                canonical = []
+                message_count = 0
                 statuses = []
             else:
                 snapshot = await asyncio.to_thread(app.runtime.store.load_session, session_id)
-                canonical = [(m.role, m.text_content, m.semantic_tag) for m in snapshot.messages]
+                message_count = len(snapshot.messages)
                 runs = await asyncio.to_thread(app.runtime.store.load_runs, session_id)
                 statuses = [run.status for run in runs]
                 assert statuses and all(status == "completed" for status in statuses), statuses
@@ -217,11 +216,8 @@ async def run_one(backend, mode, scenario, delay_ms):
                 "elapsed_ms": round(elapsed_ms, 3),
                 "submission_ms": round(submitted_ms, 3) if submitted_ms is not None else None,
                 "first_text_ms": round(first_event_ms, 3) if first_event_ms is not None else None,
-                "message_count": len(canonical),
+                "message_count": message_count,
                 "statuses": statuses,
-                "digest": hashlib.sha256(
-                    json.dumps(canonical, ensure_ascii=False).encode()
-                ).hexdigest(),
                 **probe.report(),
             }
         finally:

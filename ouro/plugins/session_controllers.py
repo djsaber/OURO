@@ -16,7 +16,6 @@ def bind_plugin_session_controller(
     release_id: str,
     package_digest: str | None,
     generation_id: str,
-    contract_hash: str | None = None,
     execution_contract_hash: str | None = None,
     maximum_timeout_seconds: float,
 ) -> SessionController:
@@ -28,7 +27,6 @@ def bind_plugin_session_controller(
         release_id=release_id,
         package_digest=package_digest,
         generation_id=generation_id,
-        contract_hash=contract_hash,
         execution_contract_hash=execution_contract_hash,
         timeout_seconds=min(controller.timeout_seconds, maximum_timeout_seconds),
     )

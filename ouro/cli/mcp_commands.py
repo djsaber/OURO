@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ouro.cli.errors import error_exit_code
+from ouro.cli.errors import report_error
 from ouro.core.errors import OuroError
 from ouro.local_configuration import build_local_configuration
 from ouro.mcp import MCPServerConfigUpdate
@@ -19,8 +19,7 @@ def list_mcp_configs(
     try:
         snapshot = build_local_configuration(home).mcp_catalog()
     except OuroError as exc:
-        _print_mcp_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     servers = [config.model_dump(mode="json") for config in snapshot.servers]
     if json_mode:
@@ -55,8 +54,7 @@ def show_mcp_config(
         facade = build_local_configuration(home)
         config = facade.mcp_server_by_name(server_name)
     except OuroError as exc:
-        _print_mcp_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     public = config.model_dump(mode="json")
     if json_mode:
@@ -97,8 +95,7 @@ def set_mcp_config(
         facade = build_local_configuration(home)
         config = facade.set_mcp_server_by_name(server_name, update)
     except OuroError as exc:
-        _print_mcp_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     public = config.model_dump(mode="json")
     if json_mode:
@@ -123,8 +120,7 @@ def remove_mcp_config(
         config = facade.mcp_server_by_name(server_name)
         catalog = facade.remove_mcp_server(config.server_id)
     except OuroError as exc:
-        _print_mcp_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     if json_mode:
         _print_json(
@@ -148,8 +144,7 @@ async def check_mcp_connection(
         config = facade.mcp_server_by_name(server_name)
         check = await facade.check_mcp_server(config.server_id)
     except OuroError as exc:
-        _print_mcp_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     result: dict[str, Any] = {
         "status": "ok" if check.ok else "failed",
@@ -173,17 +168,6 @@ async def check_mcp_connection(
     else:
         print(f"MCP check failed: {server_name} - {result['error']}", file=sys.stderr)
     return 0 if result["status"] == "ok" else 3
-
-
-def _print_mcp_error(exc: OuroError, *, json_mode: bool) -> None:
-    if json_mode:
-        _print_json(
-            status="failed",
-            error=str(exc),
-            error_type=type(exc).__name__,
-        )
-    else:
-        print(f"Error: {exc}", file=sys.stderr)
 
 
 def _print_json(**payload: Any) -> None:

@@ -10,7 +10,15 @@ from ouro.core.state import RunRecord
 
 def test_default_driver_contract_rejects_unrecognized_implementation():
     with pytest.raises(ValidationError, match="unsupported default"):
-        RunDriverBinding(contract_hash="other")
+        RunDriverBinding(
+            implementation=dict(
+                plugin_id="example.plugin",
+                plugin_class="user",
+                release_id="release",
+                configuration_revision_id="config",
+                execution_contract_hash="execution",
+            ),
+        )
 
 
 @pytest.mark.parametrize(
@@ -18,13 +26,11 @@ def test_default_driver_contract_rejects_unrecognized_implementation():
     [
         {"implementation": None},
         {"driver_id": "other/run_drivers/main"},
-        {"contract_hash": ""},
     ],
 )
 def test_plugin_driver_requires_an_exact_owned_contract(changes):
     fields = dict(
         driver_id="example.plugin/run_drivers/main",
-        contract_hash="entry",
         implementation=dict(
             plugin_id="example.plugin",
             plugin_class="user",
@@ -48,7 +54,6 @@ def test_driver_dependency_identities_cannot_shadow_the_owner_or_each_other():
     with pytest.raises(ValidationError, match="identities must be unique"):
         RunDriverBinding(
             driver_id="example.plugin/run_drivers/main",
-            contract_hash="entry",
             implementation=implementation,
             dependencies=(implementation,),
         )

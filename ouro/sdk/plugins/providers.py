@@ -26,7 +26,6 @@ class ProviderSkillContent:
     location: str
     base_directory: str
     instructions: str
-    content_digest: str
     type: Literal["skill_activation"] = "skill_activation"
 
 

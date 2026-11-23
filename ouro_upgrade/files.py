@@ -33,25 +33,26 @@ def read_json(work: Workspace, relative: str) -> dict[str, Any]:
 
 
 def record(work: Workspace, relative: str, kind: str) -> dict[str, Any]:
-    return _record(work, relative, kind, read_json(work, relative))
+    try:
+        data = work.path(relative).read_bytes()
+    except OSError as exc:
+        raise UpgradeError(f"{relative}: cannot read record ({type(exc).__name__})") from exc
+    return _record(work, relative, kind, data)
 
 
 def records(work: Workspace, paths: list[Path], kind: str) -> Iterator[tuple[Path, dict[str, Any]]]:
     for relative, data in work.read_many(path.relative_to(work.home).as_posix() for path in paths):
-        try:
-            raw = decode(data)
-        except UpgradeDataError as exc:
-            raise UpgradeDataError(f"{relative}: {exc}") from exc
-        yield work.home / relative, _record(work, relative, kind, raw)
+        yield work.home / relative, _record(work, relative, kind, data)
 
 
-def _record(work: Workspace, relative: str, kind: str, raw: dict[str, Any]) -> dict[str, Any]:
+def _record(work: Workspace, relative: str, kind: str, data: bytes) -> dict[str, Any]:
     try:
+        raw = decode(data)
         value = convert(kind, raw)
     except UpgradeDataError as exc:
         raise UpgradeDataError(f"{relative}: {exc}") from exc
     if value is not raw:
-        work.json(relative, value)
+        work.json(relative, value, original_bytes=data)
     return value
 
 

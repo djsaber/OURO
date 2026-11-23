@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 
 import pytest
 
 from ouro.config.agents import AgentDefinitionsConfigManager
 from ouro.core.agents import AgentDefinition
-from ouro.core.errors import InvalidConfigDataError
 from ouro.tui.app import OuroTuiApp
 from ouro_upgrade.configuration import convert_agents
 from ouro_upgrade.engine import upgrade
@@ -35,9 +33,7 @@ def agent_home(tmp_path):
         },
         "can_spawn": False,
     }
-    # Persisted source content is independent of defaults in the current model.
-    encoded = json.dumps(definition, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    definition["contract_hash"] = "sha256:" + hashlib.sha256(encoded.encode()).hexdigest()
+    definition["contract_hash"] = "obsolete-digest"
     raw = {
         "agents": {
             "revision": 7,
@@ -63,8 +59,9 @@ def test_agent_upgrade_preserves_content_and_policy_without_rewriting_current_da
     original = path.read_bytes()
     raw = json.loads(original)
     before = copy.deepcopy(raw)
-    with pytest.raises(InvalidConfigDataError):
-        AgentDefinitionsConfigManager(agent_home).snapshot()
+    assert (
+        AgentDefinitionsConfigManager(agent_home).snapshot().definitions[0].agent_id == "researcher"
+    )
     assert upgrade(agent_home, check=True)["status"] == "upgrade_required"
     assert path.read_bytes() == original
     assert convert_agents(raw) == convert_agents(convert_agents(raw))
@@ -87,14 +84,12 @@ def test_agent_upgrade_preserves_content_and_policy_without_rewriting_current_da
     assert path.read_bytes() == current
 
 
-@pytest.mark.parametrize("damage", ["hash", "current_hash", "depth", "lifecycle", "shape"])
+@pytest.mark.parametrize("damage", ["definition", "depth", "lifecycle", "shape"])
 def test_invalid_agents_are_isolated_and_deleted_only_when_selected(agent_home, damage):
     path = agent_home / "config/agents.json"
     raw = json.loads(path.read_bytes())
-    if damage == "current_hash":
-        raw = convert_agents(raw)
-    if damage in ("hash", "current_hash"):
-        raw["agents"]["definitions"][0]["system_prompt"] = "changed after hashing"
+    if damage == "definition":
+        raw["agents"]["definitions"][0]["agent_id"] = "INVALID"
     elif damage == "depth":
         raw["agents"]["runtime"]["max_depth"] = 2
     elif damage == "lifecycle":
@@ -127,11 +122,11 @@ def test_invalid_agents_are_isolated_and_deleted_only_when_selected(agent_home, 
     assert AgentDefinitionsConfigManager(agent_home).snapshot().definitions == ()
 
 
-async def test_agent_startup_routes_to_offline_recovery(agent_home):
+async def test_agent_startup_accepts_edited_legacy_definition(agent_home):
     app = OuroTuiApp(home=agent_home)
     async with app.run_test(size=(100, 32)):
         await wait_until(lambda: not app._starting)
-        assert app._recovery_screen is not None
+        assert app._recovery_screen is None
     assert (
         AgentDefinitionsConfigManager(agent_home).snapshot().definitions[0].agent_id == "researcher"
     )

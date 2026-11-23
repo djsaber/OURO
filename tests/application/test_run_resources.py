@@ -217,7 +217,6 @@ def delegated_run(app, session_id="session", **updates):
             "root_session_id": relation.root_session_id,
             "delegation_id": relation.delegation_id,
             "agent_id": relation.agent_id,
-            "agent_definition_contract_hash": relation.definition.contract_hash,
         },
         **updates,
     )
@@ -295,8 +294,8 @@ async def test_invalid_delegated_binding_does_not_publish_partial_tool_cap(runti
     app, _, _ = runtime
     run = delegated_run(app)
     await app._ensure_extension_snapshot(run)
-    run.metadata["agent_definition_contract_hash"] = "different-contract"
-    with pytest.raises(PersistenceError, match="child_contract_unavailable"):
+    run.metadata["agent_id"] = "different-agent"
+    with pytest.raises(PersistenceError, match="child_delegation_mismatch"):
         await app._ensure_extension_snapshot(run)
     # The original empty cap remains usable; no partially restored name is exposed.
     assert app._tools_for_run(run.run_id).definitions() == []

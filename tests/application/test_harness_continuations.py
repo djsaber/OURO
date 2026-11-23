@@ -71,7 +71,6 @@ def setup(store, action):
                     release_id="release",
                     package_digest="release",
                     execution_contract_hash=CONTRACT,
-                    contract_hash=CONTRACT,
                     active_when_controller_id=activation.controller_id,
                     activation_id=activation.activation_id,
                 )
@@ -122,7 +121,6 @@ def setup(store, action):
                 plugin_id=OWNER,
                 generation_id="generation",
                 execution_contract_hash=CONTRACT,
-                contract_hash=CONTRACT,
                 active_when_controller_id=activation.controller_id,
             ),
         ),
@@ -273,7 +271,6 @@ async def test_failed_or_competing_policies_discard_every_owner_proposal(store, 
                 plugin_id=other_owner,
                 generation_id="generation",
                 execution_contract_hash=CONTRACT,
-                contract_hash=CONTRACT,
             ),
         ),
     )

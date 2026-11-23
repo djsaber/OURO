@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Mapping
 from contextlib import AbstractContextManager
 from copy import deepcopy
@@ -32,6 +30,7 @@ from ouro.config.provider_models import (
 from ouro.config.provider_templates import ProviderTemplate
 from ouro.config.providers.codec import provider_config_from_mapping, provider_config_to_raw
 from ouro.config.providers.runtime import merge_runtime_options, runtime_options_from_config
+from ouro.config.providers.template_store import template_fingerprint
 from ouro.config.reasoning import EndpointReasoningConfig
 from ouro.core.base import new_id
 from ouro.core.errors import ConfigError, InvalidConfigDataError
@@ -1199,13 +1198,7 @@ def _template_endpoint_fingerprint(
         if template_endpoint_id is None
         else endpoint.model_copy(update={"endpoint_id": template_endpoint_id})
     )
-    payload = json.dumps(
-        normalized.model_dump(mode="json"),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    )
-    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return template_fingerprint(normalized.model_dump(mode="json"))
 
 
 def _configured_template_endpoint(

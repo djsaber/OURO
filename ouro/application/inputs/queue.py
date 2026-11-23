@@ -500,7 +500,6 @@ def queued_input_event(session: SessionRecord, item: QueuedInput, queue_size: in
             "plugin_id": item.plugin_id,
             "contribution_id": item.contribution_id,
             "skill_names": [skill.name for skill in item.skill_activations],
-            "skill_content_digests": [skill.content_digest for skill in item.skill_activations],
         },
     )
 
@@ -541,7 +540,6 @@ def input_message_events(
                 semantic_tag=message.semantic_tag,
                 resource_refs=list(item.resource_refs),
                 skill_names=[skill.name for skill in item.skill_activations],
-                skill_content_digests=[skill.content_digest for skill in item.skill_activations],
             )
         events.append(
             EventRecord(

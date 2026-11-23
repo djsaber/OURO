@@ -14,9 +14,6 @@ def bind_execution_contract(
 ) -> PreparedContributionSet:
     """Attach one stable generation contract to every durable contribution surface."""
 
-    if len(execution_contract_hash) != 64:
-        raise ValueError("execution contract hash must be a SHA-256 digest")
-    plugin_id = prepared.owner.plugin_id
     tools = tuple(
         Tool(
             definition=tool.definition.model_copy(
@@ -36,53 +33,16 @@ def bind_execution_contract(
         replace(command, execution_contract_hash=execution_contract_hash)
         for command in prepared.commands
     )
-    continuation_policies = tuple(
-        replace(
-            policy,
-            execution_contract_hash=execution_contract_hash,
-            contract_hash=prepared.contract_hashes[
-                f"{plugin_id}/continuation_policies/{policy.policy_id}"
-            ],
-        )
-        for policy in prepared.continuation_policies
-    )
-    session_controllers = tuple(
-        replace(
-            controller,
-            contract_hash=prepared.contract_hashes[
-                f"{plugin_id}/session_controllers/{controller.controller_id}"
-            ],
-            execution_contract_hash=execution_contract_hash,
-        )
-        for controller in prepared.session_controllers
-    )
-    skills = tuple(
-        skill.model_copy(
-            update={
-                "extensions": {
-                    **skill.extensions,
-                    "ouro": {
-                        **dict(skill.extensions.get("ouro", {})),
-                        "execution_contract_hash": execution_contract_hash,
-                    },
-                }
-            }
-        )
-        for skill in prepared.skills
-    )
     return replace(
         prepared,
         tools=tools,
         commands=commands,
-        continuation_policies=continuation_policies,
-        run_drivers=tuple(
-            replace(
-                driver,
-                execution_contract_hash=execution_contract_hash,
-                contract_hash=prepared.contract_hashes[driver.canonical_id],
-            )
-            for driver in prepared.run_drivers
+        continuation_policies=tuple(
+            replace(policy, execution_contract_hash=execution_contract_hash)
+            for policy in prepared.continuation_policies
         ),
-        session_controllers=session_controllers,
-        skills=skills,
+        session_controllers=tuple(
+            replace(controller, execution_contract_hash=execution_contract_hash)
+            for controller in prepared.session_controllers
+        ),
     )

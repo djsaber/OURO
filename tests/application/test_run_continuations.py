@@ -665,7 +665,6 @@ async def test_abnormal_terminal_policy_can_pause_and_release_exact_control(
                 handler=decide,
                 generation_id="gen-mode",
                 execution_contract_hash=controller_ref.execution_contract_hash,
-                contract_hash=controller_ref.contract_hash,
                 active_when_controller_id=canonical_controller_id,
             ),
         ),
@@ -738,7 +737,6 @@ async def test_bound_terminal_policy_can_replace_its_exact_activation(tmp_path) 
                 ),
                 generation_id="gen-mode",
                 execution_contract_hash=controller_ref.execution_contract_hash,
-                contract_hash=controller_ref.contract_hash,
                 active_when_controller_id=activation.controller_id,
             ),
         ),
@@ -823,7 +821,6 @@ async def test_bound_policy_failure_preserves_controls_until_explicit_release(
                     timeout_seconds=timeout_seconds,
                     generation_id="gen-owner",
                     execution_contract_hash=controller_ref.execution_contract_hash,
-                    contract_hash=controller_ref.contract_hash,
                     active_when_controller_id=activation.controller_id,
                 ),
             ),
@@ -888,7 +885,6 @@ async def test_invalid_continuation_transition_does_not_release_another_activati
                 ),
                 generation_id="gen-owner",
                 execution_contract_hash=controller_ref.execution_contract_hash,
-                contract_hash=controller_ref.contract_hash,
                 active_when_controller_id=bound.controller_id,
             ),
         ),
@@ -927,7 +923,6 @@ async def test_staged_settlement_replay_does_not_reevaluate_or_release_new_activ
         plugin_id=plugin_id,
         policy_id="boundary",
         execution_contract_hash=controller_ref.execution_contract_hash,
-        contract_hash=controller_ref.contract_hash,
         action="complete",
         harness=capture_harness(store, session.session_id),
         session_control_transitions=[
@@ -964,7 +959,6 @@ async def test_staged_settlement_replay_does_not_reevaluate_or_release_new_activ
                 handler=should_not_run,
                 generation_id="gen-after",
                 execution_contract_hash=controller_ref.execution_contract_hash,
-                contract_hash=controller_ref.contract_hash,
                 active_when_controller_id=old_activation.controller_id,
             ),
         ),
@@ -1014,7 +1008,6 @@ async def test_runtime_startup_reconciliation_replays_pending_settlement_without
         plugin_id=controller_ref.plugin_id,
         policy_id=controller_ref.policy_id,
         execution_contract_hash=controller_ref.execution_contract_hash,
-        contract_hash=controller_ref.contract_hash,
         action="continue",
         harness=capture_harness(store, session.session_id),
         prompt="Resume the durable boundary work.",
@@ -1048,7 +1041,6 @@ async def test_runtime_startup_reconciliation_replays_pending_settlement_without
                 handler=should_not_run,
                 generation_id="gen-after",
                 execution_contract_hash=controller_ref.execution_contract_hash,
-                contract_hash=controller_ref.contract_hash,
             ),
         ),
     )
@@ -1325,7 +1317,6 @@ async def test_bound_policy_can_settle_after_its_activation_was_released(tmp_pat
                 handler=settle_owner,
                 generation_id="gen-after",
                 execution_contract_hash=controller.execution_contract_hash,
-                contract_hash=controller.contract_hash,
                 active_when_controller_id=activation.controller_id,
             ),
         ),
@@ -1410,7 +1401,7 @@ async def test_releasing_controller_cancels_its_queued_continuation(tmp_path, ba
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("plugin_class", ["builtin", "user"])
-@pytest.mark.parametrize("changed_contract", [None, "contract_hash", "execution_contract_hash"])
+@pytest.mark.parametrize("changed_contract", [None, "execution_contract_hash"])
 async def test_continuation_matches_rebuilt_generation_by_execution_contract(
     tmp_path, plugin_class, changed_contract
 ) -> None:
@@ -1587,7 +1578,6 @@ def _controller(
         version="1.0.0",
         package_digest=f"digest-{plugin_id}",
         generation_id=generation_id,
-        contract_hash=f"contract-{plugin_id}",
         execution_contract_hash=f"execution-{plugin_id}",
     )
 
@@ -1630,7 +1620,6 @@ def _session_controller_registry(
         release_id=f"release-{plugin_id}",
         package_digest=f"release-{plugin_id}",
         generation_id=generation_id,
-        contract_hash="session-controller-contract",
         execution_contract_hash=execution_contract_hash,
     )
     registry = SessionControllerRegistry()
@@ -1655,7 +1644,6 @@ def _policy(
         priority=priority,
         generation_id=generation_id,
         execution_contract_hash=f"execution-{plugin_id}",
-        contract_hash=f"contract-{plugin_id}",
     )
 
 

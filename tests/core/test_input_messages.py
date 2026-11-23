@@ -100,7 +100,6 @@ def test_materialized_message_does_not_mutate_its_input_or_message_fact():
                     location="C:/workspace/SKILL.md",
                     base_directory="C:/workspace",
                     instructions="Fixed instruction.",
-                    content_digest=f"sha256:{'a' * 64}",
                 ),
             ),
         ),

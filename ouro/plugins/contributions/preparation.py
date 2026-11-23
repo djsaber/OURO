@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any
 
 from ouro.core.extensions import PluginSource
-from ouro.plugins.contributions.contracts import build_contribution_contract_hashes
 from ouro.plugins.contributions.models import (
     ContributionOwner,
     PluginContributions,
@@ -27,7 +25,7 @@ def prepare_contributions(
     *,
     resource_skills: tuple[SkillMetadata, ...] = (),
     discovered_tools: tuple[Tool, ...] = (),
-    resource_contracts: Mapping[str, object] | None = None,
+    mcp_server_ids: tuple[str, ...] = (),
 ) -> PreparedContributionSet:
     from ouro.plugins.contributions.inventory import contribution_type_adapters
 
@@ -56,11 +54,10 @@ def prepare_contributions(
     items: dict[str, Any] = {}
     for adapter in adapters:
         adapter.prepare(context, items)
-    prepared = PreparedContributionSet(owner=owner, **items)
-    hashes = build_contribution_contract_hashes(manifest, prepared, resource_contracts or {})
+    prepared = PreparedContributionSet(owner=owner, mcp_server_ids=mcp_server_ids, **items)
     degraded_reasons = tuple(
         sorted(
             reason for adapter in adapters for reason in adapter.missing_optional(context, prepared)
         )
     )
-    return replace(prepared, contract_hashes=hashes, degraded_reasons=degraded_reasons)
+    return replace(prepared, degraded_reasons=degraded_reasons)

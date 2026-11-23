@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -31,21 +31,14 @@ class PreparedGenerationResources:
     skills: tuple[SkillMetadata, ...] = ()
     discovered_tools: tuple[Tool, ...] = ()
     degraded_reasons: tuple[str, ...] = ()
-    resource_contracts: dict[str, object] = field(default_factory=dict)
+    mcp_server_ids: tuple[str, ...] = ()
 
     def merge(self, other: PreparedGenerationResources) -> PreparedGenerationResources:
-        duplicate_contracts = self.resource_contracts.keys() & other.resource_contracts.keys()
-        if duplicate_contracts:
-            identities = ", ".join(sorted(duplicate_contracts))
-            raise ValueError(f"duplicate generation resource contract identity: {identities}")
         return PreparedGenerationResources(
             skills=(*self.skills, *other.skills),
             discovered_tools=(*self.discovered_tools, *other.discovered_tools),
             degraded_reasons=(*self.degraded_reasons, *other.degraded_reasons),
-            resource_contracts={
-                **self.resource_contracts,
-                **other.resource_contracts,
-            },
+            mcp_server_ids=(*self.mcp_server_ids, *other.mcp_server_ids),
         )
 
 
@@ -74,7 +67,6 @@ class PluginSkillResourceAdapter:
     def _prepare(self, request: GenerationResourceRequest) -> PreparedGenerationResources:
         skills: list[SkillMetadata] = []
         degraded_reasons: list[str] = []
-        contracts: dict[str, object] = {}
         for declaration in request.candidate.manifest.contributes.skills:
             declared_path = resolve_manifest_path(
                 request.package_root,
@@ -125,13 +117,9 @@ class PluginSkillResourceAdapter:
                 f"skills/{declaration.id}: {diagnostic.message}"
                 for diagnostic in catalog.diagnostics
             )
-            contracts[f"{request.candidate.plugin_id}/skills/{declaration.id}"] = {
-                "path": declaration.path
-            }
         return PreparedGenerationResources(
             skills=tuple(skills),
             degraded_reasons=tuple(degraded_reasons),
-            resource_contracts=contracts,
         )
 
 
@@ -156,14 +144,7 @@ class PluginMCPResourceAdapter:
         return PreparedGenerationResources(
             discovered_tools=tools,
             degraded_reasons=tuple(resource.degraded_reasons),
-            resource_contracts={
-                f"{request.candidate.plugin_id}/mcp_servers/{declaration.id}": {
-                    "path": declaration.path,
-                    "optional": declaration.optional,
-                }
-                for declaration in request.candidate.manifest.contributes.mcp_servers
-                if declaration.id in resource.active_server_ids
-            },
+            mcp_server_ids=tuple(sorted(resource.active_server_ids)),
         )
 
 

@@ -254,7 +254,7 @@ class AgentRecoveryService:
         if relation.current_child_run_id is None:
             candidates = [run for run in runs if self._run_mismatch_code(relation, run) is None]
             if len(candidates) != 1:
-                code = self._unattributed_run_code(relation, runs, candidates)
+                code = "child_delegation_mismatch" if runs else "delegation_run_missing"
                 self._fail_relation(relation, code)
                 return [
                     self._diagnostic(
@@ -293,11 +293,7 @@ class AgentRecoveryService:
                 self._diagnostic(
                     relation,
                     code=run_mismatch,
-                    message=(
-                        "Child Run frozen Agent contract does not match its Delegation."
-                        if run_mismatch == "child_contract_unavailable"
-                        else "Child Run provenance does not match its Delegation."
-                    ),
+                    message="Child Run provenance does not match its Delegation.",
                     session_id=child.session_id,
                     run_id=current.run_id,
                 )
@@ -426,26 +422,7 @@ class AgentRecoveryService:
         )
         if not identity_matches:
             return "child_delegation_mismatch"
-        if run.metadata.get("agent_definition_contract_hash") != relation.definition.contract_hash:
-            return "child_contract_unavailable"
         return None
-
-    @classmethod
-    def _unattributed_run_code(
-        cls,
-        relation: DelegationRecord,
-        runs: list[RunRecord],
-        candidates: list[RunRecord],
-    ) -> str:
-        if not runs:
-            return "delegation_run_missing"
-        if len(candidates) > 1:
-            return "child_delegation_mismatch"
-        if any(
-            cls._run_mismatch_code(relation, run) == "child_contract_unavailable" for run in runs
-        ):
-            return "child_contract_unavailable"
-        return "child_delegation_mismatch"
 
     def _child_mismatch_diagnostic(
         self,

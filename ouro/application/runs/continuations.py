@@ -161,7 +161,6 @@ class RunContinuationService:
                 controller.plugin_id,
                 controller.policy_id,
                 controller.execution_contract_hash,
-                controller.contract_hash,
             )
             for controller in checkpoint.controllers
         }
@@ -296,7 +295,6 @@ class RunContinuationService:
                 if controller.plugin_id == attributed.plugin_id
                 and controller.policy_id == attributed.policy_id
                 and controller.execution_contract_hash == attributed.execution_contract_hash
-                and controller.contract_hash == attributed.contract_hash
             ),
             None,
         )
@@ -326,7 +324,6 @@ class RunContinuationService:
             plugin_id=attributed.plugin_id,
             policy_id=attributed.policy_id,
             execution_contract_hash=controller_ref.execution_contract_hash,
-            contract_hash=controller_ref.contract_hash,
             action=decision.action,
             prompt=decision.prompt,
             mode=decision.mode,
@@ -550,7 +547,6 @@ class RunContinuationService:
                 if controller.plugin_id == plan.plugin_id
                 and controller.policy_id == plan.policy_id
                 and controller.execution_contract_hash == plan.execution_contract_hash
-                and controller.contract_hash == plan.contract_hash
             )
         except StopIteration as exc:
             raise ValueError("staged continuation plan has no durable controller") from exc

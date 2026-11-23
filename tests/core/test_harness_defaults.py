@@ -26,7 +26,6 @@ from ouro.sdk.plugins import v6 as sdk
                 "plugin_id": "test",
                 "policy_id": "continue",
                 "execution_contract_hash": "test",
-                "contract_hash": "test",
                 "action": "pause",
             },
         ),

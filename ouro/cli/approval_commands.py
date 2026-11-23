@@ -4,7 +4,7 @@ import json
 import sys
 from pathlib import Path
 
-from ouro.cli.errors import error_exit_code
+from ouro.cli.errors import report_error
 from ouro.core.errors import OuroError
 from ouro.core.results import RunResult
 from ouro.deployment import SessionBackend
@@ -31,8 +31,7 @@ async def approve_tool_command(
             )
     except (OuroError, ValueError, RuntimeError) as exc:
         ouro_exc = exc if isinstance(exc, OuroError) else OuroError(str(exc))
-        _print_error(ouro_exc, json_mode=json_mode)
-        return error_exit_code(ouro_exc)
+        return report_error(ouro_exc, json_mode=json_mode)
 
     return _print_run_result(result, json_mode=json_mode)
 
@@ -57,8 +56,7 @@ async def reject_tool_command(
             )
     except (OuroError, ValueError, RuntimeError) as exc:
         ouro_exc = exc if isinstance(exc, OuroError) else OuroError(str(exc))
-        _print_error(ouro_exc, json_mode=json_mode)
-        return error_exit_code(ouro_exc)
+        return report_error(ouro_exc, json_mode=json_mode)
 
     return _print_run_result(result, json_mode=json_mode)
 
@@ -82,8 +80,7 @@ async def abort_run_command(
             )
     except (OuroError, ValueError, RuntimeError) as exc:
         ouro_exc = exc if isinstance(exc, OuroError) else OuroError(str(exc))
-        _print_error(ouro_exc, json_mode=json_mode)
-        return error_exit_code(ouro_exc)
+        return report_error(ouro_exc, json_mode=json_mode)
 
     return _print_run_result(result, json_mode=json_mode)
 
@@ -116,16 +113,3 @@ def _print_run_result(result: RunResult, *, json_mode: bool) -> int:
         else:
             print(f"Run status: {result.run.status}")
     return 0 if result.run.status in {"completed", "aborted"} else 1
-
-
-def _print_error(exc: Exception, *, json_mode: bool) -> None:
-    message = str(exc)
-    if json_mode:
-        print(
-            json.dumps(
-                {"status": "failed", "error": message, "error_type": type(exc).__name__},
-                ensure_ascii=False,
-            )
-        )
-    else:
-        print(f"Error: {message}", file=sys.stderr)

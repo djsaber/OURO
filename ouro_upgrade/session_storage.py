@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -251,7 +250,7 @@ def file_session(work: Workspace, directory: Path) -> None:
                     "INSERT INTO input_states(session_id, input_id, payload) VALUES (?, ?, ?)",
                     (state.session_id, state.input_id, state.model_dump_json()),
                 )
-                work.stage(name, None)
+                work.stage(name, None, original_bytes=data)
         if not _has_schema_object(connection, "inputs"):
             connection.execute(INPUT_SCHEMA)
             expected = {
@@ -268,15 +267,13 @@ def file_session(work: Workspace, directory: Path) -> None:
                 accepted = validate(InputRecord, convert("input", decode(data)))
                 identity = accepted.item.queue_id
                 require(
-                    accepted.session_id == directory.name
-                    and identity in expected
-                    and Path(name).stem == hashlib.sha256(identity.encode()).hexdigest(),
+                    accepted.session_id == directory.name and identity in expected,
                     name,
                     "accepted input does not match its stored identity or state",
                 )
                 write_input(connection, accepted)
                 expected.remove(identity)
-                work.stage(name, None)
+                work.stage(name, None, original_bytes=data)
             require(not expected, relative, "missing accepted input body")
             changed = True
         if not _has_schema_object(connection, "assistant_responses"):

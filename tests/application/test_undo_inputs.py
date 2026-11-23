@@ -116,7 +116,6 @@ async def test_default_undo_cancels_last_queued_input_during_live_execution(runt
         location=str(tmp_path / "SKILL.md"),
         base_directory=str(tmp_path),
         instructions="Review carefully",
-        content_digest=f"sha256:{'a' * 64}",
     )
     last = enqueue(
         runtime, session.session_id, "edit", skill_activations=(skill,), resource_refs=("resource",)
@@ -362,7 +361,6 @@ async def test_app_undo_uses_provenance_and_returns_all_canonical_editor_data(ru
         location=str(tmp_path / "SKILL.md"),
         base_directory=str(tmp_path),
         instructions="Review",
-        content_digest=f"sha256:{'b' * 64}",
     )
     direct = MessageRecord(
         session_id=session_id,

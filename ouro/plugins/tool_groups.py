@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import threading
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
@@ -204,21 +202,16 @@ class PluginToolGroups:
             declarations=declarations,
         )
         bound: list[Tool] = []
-        hashes: dict[str, str] = {}
         for tool in tools:
             metadata = dict(tool.definition.metadata)
             identity = f"{group.id}/{metadata['contribution_id']}"
-            contract_hash = hashlib.sha256(
-                json.dumps(
-                    [identity, group.revision, metadata["contract_hash"]], separators=(",", ":")
-                ).encode("utf-8")
-            ).hexdigest()
-            metadata.update(contribution_id=identity, contract_hash=contract_hash)
+            metadata["contribution_id"] = identity
             bound.append(
                 Tool(
                     definition=tool.definition.model_copy(
                         update={
                             "canonical_id": f"{self.owner.plugin_id}/tools/{identity}",
+                            "execution_variant": group.revision,
                             "metadata": metadata,
                         }
                     ),
@@ -226,8 +219,7 @@ class PluginToolGroups:
                     resume_handler=tool.resume_handler,
                 )
             )
-            hashes[f"{self.owner.plugin_id}/tools/{identity}"] = contract_hash
-        prepared = PreparedContributionSet(self.owner, tools=tuple(bound), contract_hashes=hashes)
+        prepared = PreparedContributionSet(self.owner, tools=tuple(bound))
         execution_hash = self.record.execution_contract_hash
         assert execution_hash is not None
         prepared = bind_execution_contract(prepared, execution_hash)

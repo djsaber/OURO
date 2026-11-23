@@ -136,10 +136,7 @@ def write_resource_contents(
     """Publish bytes and verify the reference closure before metadata is committed."""
     published: set[tuple[str, int, str]] = set()
     for record, content in items:
-        if (
-            len(content) != record.size
-            or f"sha256:{hashlib.sha256(content).hexdigest()}" != record.digest
-        ):
+        if not record.matches_content(content):
             raise ResourceIntegrityError(f"resource integrity mismatch: {record.resource_id}")
         path = checked_file(directory, record)
         directory.mkdir(parents=True, exist_ok=True)

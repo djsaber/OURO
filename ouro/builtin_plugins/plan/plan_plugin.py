@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -340,7 +339,6 @@ class PlanPlugin:
             data=PlanConfirmationRequest(
                 plan_path=state.plan_path,
                 plan=plan,
-                plan_digest=_plan_digest(plan),
                 options=_normalize_options(call.arguments.get("options")),
             ).to_json()
         )
@@ -357,7 +355,7 @@ class PlanPlugin:
         plan, error = _read_plan(request.plan_path)
         if error is not None:
             return ToolOutput(content=error, is_error=True)
-        if _plan_digest(plan) != request.plan_digest:
+        if plan != request.plan:
             return ToolOutput(
                 content=(
                     "The plan file changed after the approval prompt was created. "
@@ -526,10 +524,6 @@ def _read_plan(plan_path: str) -> tuple[str, str | None]:
     if not plan:
         return "", f"Plan file is empty. Write a non-empty plan to {path} first."
     return plan, None
-
-
-def _plan_digest(plan: str) -> str:
-    return hashlib.sha256(plan.encode("utf-8")).hexdigest()
 
 
 def create_plugin(context: PluginContext) -> PlanPlugin:

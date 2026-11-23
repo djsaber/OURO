@@ -127,7 +127,6 @@ async def test_provider_request_preserves_model_visible_semantics_and_multimodal
             location="skills/demo/SKILL.md",
             base_directory="skills/demo",
             instructions="Be precise.",
-            content_digest="sha256:" + "a" * 64,
         ),
     ]
     messages = [

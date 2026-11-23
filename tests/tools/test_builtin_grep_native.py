@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from ouro.core.cancellation import AbortSignal
-from ouro.core.tools import tool_definition_contract_hash
 from ouro.tools import (
     ProcessResult,
     ToolExecutionAborted,
@@ -81,9 +80,10 @@ async def test_registry_binds_both_search_tools_with_one_detection(
     detect.assert_called_once_with()
 
 
-def test_contract_hash_does_not_depend_on_executable_location():
-    assert tool_definition_contract_hash(builtin_ripgrep_tool("/bin/rg").definition) == (
-        tool_definition_contract_hash(builtin_ripgrep_tool("C:/bin/rg.exe").definition)
+def test_definition_does_not_depend_on_executable_location():
+    assert (
+        builtin_ripgrep_tool("/bin/rg").definition
+        == builtin_ripgrep_tool("C:/bin/rg.exe").definition
     )
 
 

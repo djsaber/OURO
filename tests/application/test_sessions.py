@@ -1408,7 +1408,7 @@ def test_trash_accepts_session_with_incompatible_runtime_records(tmp_path, backe
     store.create_session(session)
     store.save_run(run)
     payload = json.loads(run.model_dump_json())
-    payload["agent_catalog"]["contract_hash"] = "sha256:" + "0" * 64
+    payload["agent_catalog"]["schema_version"] = 999
     if backend == "files":
         with session_connection(store, session.session_id) as connection:
             connection.execute(
@@ -1423,7 +1423,7 @@ def test_trash_accepts_session_with_incompatible_runtime_records(tmp_path, backe
             )
             connection.commit()
 
-    with pytest.raises(PersistenceError, match="agent catalog contract hash"):
+    with pytest.raises(PersistenceError):
         store.load_run(session.session_id, run.run_id)
 
     result = sessions.trash(session.session_id)

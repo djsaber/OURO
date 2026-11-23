@@ -68,7 +68,6 @@ from ouro.core.tools import (
     ToolResult,
     ToolResultFeedback,
     ToolResultValue,
-    tool_definition_contract_hash,
 )
 from ouro.tools import ToolBatchExecutor, ToolExecutionContext, ToolExecutor, ToolRegistry
 from ouro.tools.base import ToolExecutionAborted, ToolExecutionInterrupted
@@ -1386,18 +1385,13 @@ class ToolCallCoordinator:
             ),
             arguments=request.arguments,
             resumable=definition.resumable if definition is not None else None,
-            definition_contract_hash=(
-                tool_definition_contract_hash(definition)
-                if definition is not None and not metadata.get("plugin_id")
-                else None
-            ),
+            execution_variant=definition.execution_variant if definition is not None else None,
             plugin_id=_optional_text(metadata.get("plugin_id")),
             plugin_version=_optional_text(metadata.get("plugin_version")),
             plugin_class=_optional_plugin_class(metadata.get("plugin_class")),
             release_id=_optional_text(metadata.get("release_id")),
             package_digest=_optional_text(metadata.get("package_digest")),
             generation_id=_optional_text(metadata.get("generation_id")),
-            contract_hash=_optional_text(metadata.get("contract_hash")),
             execution_contract_hash=_optional_text(metadata.get("execution_contract_hash")),
             active_when_controller_id=(
                 definition.active_when_controller_id if definition is not None else None

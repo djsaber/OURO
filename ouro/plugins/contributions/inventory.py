@@ -2,21 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ouro.plugins.contributions.contract_adapters import (
-    BACKGROUND_SERVICE_CONTRACT_ADAPTER,
-    COMMAND_CONTRACT_ADAPTER,
-    COMPACTION_CONTRACT_ADAPTER,
-    CONTINUATION_CONTRACT_ADAPTER,
-    OBSERVER_CONTRACT_ADAPTER,
-    PROMPT_POLICY_CONTRACT_ADAPTER,
-    PROVIDER_CONTRACT_ADAPTER,
-    RUN_DRIVER_CONTRACT_ADAPTER,
-    SESSION_CONTROLLER_CONTRACT_ADAPTER,
-    TOOL_CONTRACT_ADAPTER,
-    TOOL_POLICY_CONTRACT_ADAPTER,
-    TURN_POLICY_CONTRACT_ADAPTER,
-    ContributionContractAdapter,
-)
 from ouro.plugins.contributions.preparation_adapters import (
     BACKGROUND_SERVICE_PREPARATION_ADAPTER,
     COMMAND_PREPARATION_ADAPTER,
@@ -104,7 +89,6 @@ class ContributionTypeAdapter:
     projection: ContributionProjectionAdapter
     sdk: SDKContributionAdapter | None = None
     worker: WorkerContributionAdapter | None = None
-    contract: ContributionContractAdapter | None = None
     resource: GenerationResourceAdapter | None = None
 
 
@@ -116,7 +100,6 @@ _CONTRIBUTION_TYPE_ADAPTERS: tuple[ContributionTypeAdapter, ...] = (
         PROVIDER_PROJECTION_ADAPTER,
         sdk=PROVIDER_SDK_ADAPTER,
         worker=PROVIDER_WORKER_ADAPTER,
-        contract=PROVIDER_CONTRACT_ADAPTER,
     ),
     ContributionTypeAdapter(
         "run_drivers",
@@ -125,7 +108,6 @@ _CONTRIBUTION_TYPE_ADAPTERS: tuple[ContributionTypeAdapter, ...] = (
         RUN_DRIVER_PROJECTION_ADAPTER,
         sdk=RUN_DRIVER_SDK_ADAPTER,
         worker=RUN_DRIVER_WORKER_ADAPTER,
-        contract=RUN_DRIVER_CONTRACT_ADAPTER,
     ),
     ContributionTypeAdapter(
         "tools",
@@ -134,7 +116,6 @@ _CONTRIBUTION_TYPE_ADAPTERS: tuple[ContributionTypeAdapter, ...] = (
         TOOL_PROJECTION_ADAPTER,
         sdk=TOOL_SDK_ADAPTER,
         worker=TOOL_WORKER_ADAPTER,
-        contract=TOOL_CONTRACT_ADAPTER,
     ),
     ContributionTypeAdapter(
         "observers",
@@ -143,7 +124,6 @@ _CONTRIBUTION_TYPE_ADAPTERS: tuple[ContributionTypeAdapter, ...] = (
         OBSERVER_PROJECTION_ADAPTER,
         sdk=OBSERVER_SDK_ADAPTER,
         worker=OBSERVER_WORKER_ADAPTER,
-        contract=OBSERVER_CONTRACT_ADAPTER,
     ),
     ContributionTypeAdapter(
         "commands",
@@ -152,7 +132,6 @@ _CONTRIBUTION_TYPE_ADAPTERS: tuple[ContributionTypeAdapter, ...] = (
         COMMAND_PROJECTION_ADAPTER,
         sdk=COMMAND_SDK_ADAPTER,
         worker=COMMAND_WORKER_ADAPTER,
-        contract=COMMAND_CONTRACT_ADAPTER,
     ),
     ContributionTypeAdapter(
         "context_providers",
@@ -161,7 +140,6 @@ _CONTRIBUTION_TYPE_ADAPTERS: tuple[ContributionTypeAdapter, ...] = (
         CONTEXT_PROVIDERS,
         sdk=CONTEXT_SDK_ADAPTER,
         worker=CONTEXT_WORKER_ADAPTER,
-        contract=CONTEXT_PROVIDERS,
     ),
     ContributionTypeAdapter(
         "system_prompt_providers",
@@ -170,7 +148,6 @@ _CONTRIBUTION_TYPE_ADAPTERS: tuple[ContributionTypeAdapter, ...] = (
         SYSTEM_PROMPT_PROVIDERS,
         sdk=SYSTEM_PROMPT_SDK_ADAPTER,
         worker=SYSTEM_PROMPT_WORKER_ADAPTER,
-        contract=SYSTEM_PROMPT_PROVIDERS,
     ),
     ContributionTypeAdapter(
         "compaction_strategies",
@@ -179,7 +156,6 @@ _CONTRIBUTION_TYPE_ADAPTERS: tuple[ContributionTypeAdapter, ...] = (
         COMPACTION_PROJECTION_ADAPTER,
         sdk=COMPACTION_SDK_ADAPTER,
         worker=COMPACTION_WORKER_ADAPTER,
-        contract=COMPACTION_CONTRACT_ADAPTER,
     ),
     ContributionTypeAdapter(
         "skills",
@@ -202,7 +178,6 @@ _CONTRIBUTION_TYPE_ADAPTERS: tuple[ContributionTypeAdapter, ...] = (
         BACKGROUND_SERVICE_PROJECTION_ADAPTER,
         sdk=BACKGROUND_SERVICE_SDK_ADAPTER,
         worker=BACKGROUND_SERVICE_WORKER_ADAPTER,
-        contract=BACKGROUND_SERVICE_CONTRACT_ADAPTER,
     ),
     ContributionTypeAdapter(
         "continuation_policies",
@@ -211,7 +186,6 @@ _CONTRIBUTION_TYPE_ADAPTERS: tuple[ContributionTypeAdapter, ...] = (
         CONTINUATION_PROJECTION_ADAPTER,
         sdk=CONTINUATION_SDK_ADAPTER,
         worker=CONTINUATION_WORKER_ADAPTER,
-        contract=CONTINUATION_CONTRACT_ADAPTER,
     ),
     ContributionTypeAdapter(
         "prompt_policies",
@@ -220,7 +194,6 @@ _CONTRIBUTION_TYPE_ADAPTERS: tuple[ContributionTypeAdapter, ...] = (
         PROMPT_POLICY_PROJECTION_ADAPTER,
         sdk=PROMPT_POLICY_SDK_ADAPTER,
         worker=PROMPT_POLICY_WORKER_ADAPTER,
-        contract=PROMPT_POLICY_CONTRACT_ADAPTER,
     ),
     ContributionTypeAdapter(
         "turn_policies",
@@ -229,7 +202,6 @@ _CONTRIBUTION_TYPE_ADAPTERS: tuple[ContributionTypeAdapter, ...] = (
         TURN_POLICY_PROJECTION_ADAPTER,
         sdk=TURN_POLICY_SDK_ADAPTER,
         worker=TURN_POLICY_WORKER_ADAPTER,
-        contract=TURN_POLICY_CONTRACT_ADAPTER,
     ),
     ContributionTypeAdapter(
         "tool_policies",
@@ -238,7 +210,6 @@ _CONTRIBUTION_TYPE_ADAPTERS: tuple[ContributionTypeAdapter, ...] = (
         TOOL_POLICY_PROJECTION_ADAPTER,
         sdk=TOOL_POLICY_SDK_ADAPTER,
         worker=TOOL_POLICY_WORKER_ADAPTER,
-        contract=TOOL_POLICY_CONTRACT_ADAPTER,
     ),
     ContributionTypeAdapter(
         "session_controllers",
@@ -247,7 +218,6 @@ _CONTRIBUTION_TYPE_ADAPTERS: tuple[ContributionTypeAdapter, ...] = (
         SESSION_CONTROLLER_PROJECTION_ADAPTER,
         sdk=SESSION_CONTROLLER_SDK_ADAPTER,
         worker=SESSION_CONTROLLER_WORKER_ADAPTER,
-        contract=SESSION_CONTROLLER_CONTRACT_ADAPTER,
     ),
 )
 

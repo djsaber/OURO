@@ -194,7 +194,7 @@ async def test_supervisor_limits_incompatible_run_to_selected_execution(
     runtime.store.create_session(session)
     runtime.store.save_run(run)
     payload = json.loads(run.model_dump_json())
-    payload["agent_catalog"]["contract_hash"] = "sha256:" + "0" * 64
+    payload["agent_catalog"]["schema_version"] = 999
     with session_connection(runtime.store, session.session_id) as connection:
         connection.execute(
             "UPDATE runs SET payload = ? WHERE session_id = ? AND run_id = ?",
@@ -206,14 +206,14 @@ async def test_supervisor_limits_incompatible_run_to_selected_execution(
 
     assert started.diagnostics == ()
     if selected:
-        with pytest.raises(PersistenceError, match="agent catalog contract hash"):
+        with pytest.raises(PersistenceError):
             await supervisor.submit("must remain strict", session_id=session.session_id)
     else:
         handle = await supervisor.submit(
             "current execution still works", session_id=session.session_id
         )
         assert (await supervisor.wait(handle)).status == "completed"
-    with pytest.raises(PersistenceError, match="agent catalog contract hash"):
+    with pytest.raises(PersistenceError):
         runtime.store.load_run(session.session_id, run.run_id)
     handle = await supervisor.submit("new session still works")
     assert (await supervisor.wait(handle)).status == "completed"

@@ -19,10 +19,7 @@ def agent_control_tools(catalog: AgentCatalogSnapshot) -> tuple[Tool, ...]:
         for entry in catalog.entries
         if entry.available
     ]
-    metadata = {
-        "ouro_agent_control": True,
-        "agent_catalog_contract_hash": catalog.contract_hash,
-    }
+    metadata: dict[str, object] = {"ouro_agent_control": True}
     controls = (
         Tool(
             definition=ToolDefinition(

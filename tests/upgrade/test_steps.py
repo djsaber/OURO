@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import sqlite3
 from contextlib import closing
@@ -119,7 +118,6 @@ def historical_agent_catalog():
     reference = EffectiveToolRef(
         public_name="Read",
         canonical_tool_id="ouro.host/tools/Read",
-        execution_contract_hash="read/1",
         effect="read_only",
         minimum_permission_mode="approval",
     )
@@ -133,13 +131,8 @@ def historical_agent_catalog():
         requires_mcp=False,
         requires_external_paths=False,
     )
-    payload = {key: raw[key] for key in ("schema_version", "revision", "entries", "spawn_policy")}
-    raw["contract_hash"] = (
-        "sha256:"
-        + hashlib.sha256(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-    )
+    raw["contract_hash"] = "old-catalog"
+    raw["entries"][0]["effective_tools"][0]["execution_contract_hash"] = "old-tool"
     return raw
 
 
@@ -152,7 +145,7 @@ def test_run_upgrade_converts_nested_tool_authority_without_changing_frozen_tool
     record = records.validate(RunRecord, upgraded)
     catalog = record.agent_catalog
     assert catalog.schema_version == 2
-    assert catalog.contract_hash != before["agent_catalog"]["contract_hash"]
+    assert "contract_hash" not in upgraded["agent_catalog"]
     assert (
         catalog.created_at.isoformat().replace("+00:00", "Z")
         == before["agent_catalog"]["created_at"]
@@ -165,11 +158,12 @@ def test_run_upgrade_converts_nested_tool_authority_without_changing_frozen_tool
     assert convert("run", upgraded) is upgraded
 
 
-def test_catalog_upgrade_rejects_changed_frozen_content():
+def test_catalog_upgrade_keeps_the_recorded_tool_authority() -> None:
     raw = historical_agent_catalog()
     raw["entries"][0]["effective_tools"][0]["minimum_permission_mode"] = "auto"
-    with pytest.raises(UpgradeError, match="contract hash"):
-        convert("agent_catalog", raw)
+    tool = convert("agent_catalog", raw)["entries"][0]["effective_tools"][0]
+    assert tool["minimum_permission_mode"] == "auto"
+    assert "execution_contract_hash" not in tool
 
 
 def test_delegation_upgrade_retains_workspace_tool_grants_and_identity():

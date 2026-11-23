@@ -6218,12 +6218,6 @@ def _format_session_summaries(summaries: tuple[SessionSummary, ...]) -> str:
     )
 
 
-def _format_reasoning_state(state: ModelReasoningState) -> str:
-    requested = _reasoning_value(state.requested)
-    effective = _reasoning_value(state.effective)
-    return f"Thinking: {requested} (effective: {effective})"
-
-
 def _queued_input_draft(item: QueuedUserInputView) -> str:
     return " ".join((*[skill.label for skill in item.skills], item.prompt)).strip()
 

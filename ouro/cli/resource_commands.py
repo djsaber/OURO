@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 from ouro.application.resources import ResourceService
-from ouro.cli.errors import error_exit_code
+from ouro.cli.errors import report_error
 from ouro.core.errors import OuroError
 from ouro.deployment import SessionBackend
 from ouro.local_application import build_local_session_services
@@ -27,7 +26,7 @@ def import_resource(
             media_type=media_type,
         )
     except (OuroError, OSError, ValueError) as exc:
-        return _error(exc, json_mode=json_mode)
+        return report_error(exc, json_mode=json_mode)
     payload = {
         "status": "ok",
         "created": result.created,
@@ -52,7 +51,7 @@ def list_resources(
     try:
         result = _resources(home, session_backend).list_resources(session_id)
     except (OuroError, OSError, ValueError) as exc:
-        return _error(exc, json_mode=json_mode)
+        return report_error(exc, json_mode=json_mode)
     if json_mode:
         print(
             json.dumps(
@@ -86,7 +85,7 @@ def show_resource(
     try:
         resource = _resources(home, session_backend).show_resource(session_id, resource_id)
     except (OuroError, OSError, ValueError) as exc:
-        return _error(exc, json_mode=json_mode)
+        return report_error(exc, json_mode=json_mode)
     if json_mode:
         print(
             json.dumps(
@@ -128,7 +127,7 @@ def export_resource(
             overwrite=force,
         )
     except (OuroError, OSError, ValueError) as exc:
-        return _error(exc, json_mode=json_mode)
+        return report_error(exc, json_mode=json_mode)
     if json_mode:
         print(
             json.dumps(
@@ -162,7 +161,7 @@ def remove_resource(
     try:
         result = _resources(home, session_backend).remove_resource(session_id, resource_id)
     except (OuroError, OSError, ValueError) as exc:
-        return _error(exc, json_mode=json_mode)
+        return report_error(exc, json_mode=json_mode)
     if json_mode:
         print(json.dumps({"status": "ok", **result.model_dump(mode="json")}, ensure_ascii=False))
     else:
@@ -175,20 +174,3 @@ def _resources(
     session_backend: SessionBackend | None,
 ) -> ResourceService:
     return build_local_session_services(home, session_backend=session_backend).resources
-
-
-def _error(exc: Exception, *, json_mode: bool) -> int:
-    if json_mode:
-        print(
-            json.dumps(
-                {
-                    "status": "failed",
-                    "error": str(exc),
-                    "error_type": type(exc).__name__,
-                },
-                ensure_ascii=False,
-            )
-        )
-    else:
-        print(f"Error: {exc}", file=sys.stderr)
-    return error_exit_code(exc) if isinstance(exc, OuroError) else 1

@@ -236,7 +236,7 @@ def providers(work: Workspace) -> None:
 
 
 def convert_agents(raw: dict[str, Any]) -> dict[str, Any]:
-    """Validate source contracts before retiring inert dispatch settings."""
+    """Remove retired Agent fields and validate the remaining configuration."""
     path = "config/agents.json"
     value = copy.deepcopy(raw)
     section = value.get("agents")

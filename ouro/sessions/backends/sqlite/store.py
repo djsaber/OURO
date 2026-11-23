@@ -136,7 +136,7 @@ from ouro.sessions.sqlite_runs import (
     read_run_abort,
     write_run,
 )
-from ouro.sessions.sqlite_sessions import read_session
+from ouro.sessions.sqlite_sessions import read_session, require_session
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 SQLITE_SCHEMA_VERSION = 30
@@ -462,21 +462,21 @@ class SQLiteSessionStore:
 
     def load_tool_call(self, session_id: str, identity: ToolCallIdentity) -> ToolCallRecord | None:
         with self._read_connection() as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             return read_fact(connection, session_id, identity, ToolCallRecord)
 
     def load_tool_call_start(
         self, session_id: str, identity: ToolCallIdentity, attempt: int
     ) -> ToolCallStart | None:
         with self._read_connection() as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             return read_fact(connection, session_id, identity, ToolCallStart, attempt=attempt)
 
     def load_tool_outcome(
         self, session_id: str, identity: ToolCallIdentity, attempt: int
     ) -> ToolOutcomeRecord | None:
         with self.session_read(session_id) as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             outcome = read_fact(
                 connection, session_id, identity, ToolOutcomeRecord, attempt=attempt
             )
@@ -524,7 +524,7 @@ class SQLiteSessionStore:
 
     def tool_outcomes_use_resource(self, session_id: str, resource_id: str) -> bool:
         with self._read_connection() as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             return (
                 connection.execute(
                     "SELECT 1 FROM tool_outcomes o WHERE session_id = ? AND ("
@@ -540,25 +540,25 @@ class SQLiteSessionStore:
 
     def load_input(self, session_id: str, input_id: str) -> InputRecord | None:
         with self._read_connection() as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             return read_input(connection, session_id, input_id)
 
     def load_tool_call_state(
         self, session_id: str, identity: ToolCallIdentity
     ) -> ToolCallState | None:
         with self._read_connection() as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             return read_call_state(connection, session_id, identity)
 
     def load_input_state(self, session_id: str, input_id: str) -> InputState | None:
         with self._read_connection() as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             return read_state(connection, session_id, input_id)
 
     def create_delegation(self, delegation: DelegationRecord) -> DelegationRecord:
         with self.session_mutation(delegation.root_session_id):
             connection = self._transaction_connection()
-            self._require_session(connection, delegation.root_session_id)
+            require_session(connection, delegation.root_session_id)
             try:
                 connection.execute(
                     "INSERT INTO delegations("
@@ -675,7 +675,7 @@ class SQLiteSessionStore:
             parameters.append(parent_run_id)
         query += " ORDER BY created_at, delegation_id"
         with self._read_connection() as connection:
-            self._require_session(connection, root_session_id)
+            require_session(connection, root_session_id)
             return self._load_models(connection, query, tuple(parameters), DelegationRecord)
 
     def find_delegation_by_child_session(
@@ -684,7 +684,7 @@ class SQLiteSessionStore:
         child_session_id: str,
     ) -> DelegationRecord | None:
         with self._read_connection() as connection:
-            self._require_session(connection, root_session_id)
+            require_session(connection, root_session_id)
             row = connection.execute(
                 "SELECT payload FROM delegations "
                 "WHERE root_session_id = ? AND child_session_id = ?",
@@ -895,7 +895,7 @@ class SQLiteSessionStore:
                     validate_scope()
                 connection = self._transaction_connection()
                 for session_id in normalized:
-                    self._require_session(connection, session_id)
+                    require_session(connection, session_id)
                 trash_id = new_id("trash")
                 payload = json.dumps(
                     {
@@ -968,7 +968,7 @@ class SQLiteSessionStore:
         if limit < 1:
             raise ValueError("message tail limit must be positive")
         with self.session_read(session_id) as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             rows = connection.execute(
                 "SELECT payload FROM messages WHERE session_id = ? ORDER BY row_id DESC LIMIT ?",
                 (session_id, limit),
@@ -983,7 +983,7 @@ class SQLiteSessionStore:
         if before is not None and before < 0:
             raise ValueError("message cursor must be nonnegative")
         with self.session_read(session_id) as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             query = "SELECT row_id, payload FROM messages WHERE session_id = ?"
             parameters: tuple[object, ...] = (session_id,)
             if before is not None:
@@ -1043,7 +1043,7 @@ class SQLiteSessionStore:
     def commit_tool_outcome(self, outcome: ToolOutcomeRecord) -> ToolOutcomeRecord:
         with self.session_mutation(outcome.session_id):
             connection = self._transaction_connection()
-            self._require_session(connection, outcome.session_id)
+            require_session(connection, outcome.session_id)
             try:
                 outcome = self._capture_tool_outcome(outcome)
                 saved = SQLiteSessionCommits(connection).commit_outcome(outcome)
@@ -1158,7 +1158,7 @@ class SQLiteSessionStore:
         self, session_id: str
     ) -> tuple[ModelRequestHeader, RequestManifestRecord] | None:
         with self._read_connection() as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             row = connection.execute(
                 "SELECT h.payload, b.payload FROM latest_contexts b "
                 "LEFT JOIN request_headers h USING(session_id, context_id) WHERE b.session_id = ?",
@@ -1180,12 +1180,12 @@ class SQLiteSessionStore:
 
     def load_latest_context_header(self, session_id: str) -> ModelRequestHeader | None:
         with self._read_connection() as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             return read_latest_header(connection, session_id)
 
     def load_request_header(self, session_id: str, context_id: str) -> ModelRequestHeader | None:
         with self._read_connection() as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             return read_request_header(connection, session_id, context_id)
 
     def load_session(self, session_id: str) -> SessionSnapshot:
@@ -1323,7 +1323,7 @@ class SQLiteSessionStore:
 
     def load_compactions(self, session_id: str) -> list[CompactionRecord]:
         with self._read_connection() as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             return self._load_models(
                 connection,
                 "SELECT payload FROM compactions WHERE session_id = ? ORDER BY row_id",
@@ -1395,7 +1395,7 @@ class SQLiteSessionStore:
     ) -> tuple[list[MessageRecord], int | None]:
         cursor, limit = _validated_page_args(cursor, limit)
         with self.session_read(session_id) as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             rows = connection.execute(
                 "SELECT row_id, payload FROM messages WHERE session_id = ? "
                 "AND row_id > ? ORDER BY row_id LIMIT ?",
@@ -1418,7 +1418,7 @@ class SQLiteSessionStore:
 
     def load_message(self, session_id: str, message_id: str) -> MessageRecord:
         with self.session_read(session_id) as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             row = connection.execute(
                 "SELECT payload FROM messages WHERE session_id = ? AND message_id = ?",
                 (session_id, message_id),
@@ -1429,7 +1429,7 @@ class SQLiteSessionStore:
 
     def load_message_fact(self, session_id: str, message_id: str) -> MessageFact:
         with self._read_connection() as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             row = connection.execute(
                 "SELECT payload FROM messages WHERE session_id = ? AND message_id = ?",
                 (session_id, message_id),
@@ -1443,21 +1443,21 @@ class SQLiteSessionStore:
 
     def load_run_message_counts(self, session_id: str, run_id: str) -> RunMessageCounts:
         with self._read_connection() as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             return read_message_counts(connection, session_id, run_id)
 
     def load_run_result_references(
         self, session_id: str, run_id: str, *, delegation_id: str
     ) -> RunResultReferences:
         with self._read_connection() as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             return read_result_references(
                 connection, session_id, run_id, delegation_id=delegation_id
             )
 
     def load_run_messages(self, session_id: str, run_id: str) -> list[MessageRecord]:
         with self.session_read(session_id) as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             return self._load_models(
                 connection,
                 "SELECT payload FROM messages WHERE session_id = ? AND run_id = ? ORDER BY row_id",
@@ -1476,7 +1476,7 @@ class SQLiteSessionStore:
 
     def has_run_messages(self, session_id: str, run_id: str) -> bool:
         with self._read_connection() as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             return (
                 connection.execute(
                     "SELECT 1 FROM messages WHERE session_id = ? AND run_id = ? LIMIT 1",
@@ -1487,7 +1487,7 @@ class SQLiteSessionStore:
 
     def has_input_messages(self, session_id: str) -> bool:
         with self._read_connection() as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             return (
                 connection.execute(
                     "SELECT 1 FROM messages WHERE session_id = ? AND kind = 'input' LIMIT 1",
@@ -1502,7 +1502,7 @@ class SQLiteSessionStore:
 
     def find_last_assistant_message(self, session_id: str, run_id: str) -> MessageRecord | None:
         with self.session_read(session_id) as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             row = connection.execute(
                 "SELECT payload FROM messages WHERE session_id = ? "
                 "AND run_id = ? "
@@ -1519,7 +1519,7 @@ class SQLiteSessionStore:
         self, session_id: str, run_id: str, turn_id: str
     ) -> MessageRecord | None:
         with self.session_read(session_id) as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             row = connection.execute(
                 "SELECT payload FROM messages WHERE session_id = ? "
                 "AND run_id = ? "
@@ -1536,7 +1536,7 @@ class SQLiteSessionStore:
         self, session_id: str, delivery_key: str
     ) -> MessageRecord | None:
         with self.session_read(session_id) as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             row = connection.execute(
                 "SELECT payload FROM messages WHERE session_id = ? "
                 "AND json_extract(payload, '$.metadata.context_provider_delivery_key') = ? "
@@ -1551,7 +1551,7 @@ class SQLiteSessionStore:
 
     def find_queued_input_message(self, session_id: str, queue_id: str) -> MessageRecord | None:
         with self.session_read(session_id) as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             row = connection.execute(
                 "SELECT payload FROM messages WHERE session_id = ? "
                 "AND json_extract(payload, '$.input_ref.input_id') = ? "
@@ -1574,12 +1574,12 @@ class SQLiteSessionStore:
 
     def load_run_request_counts(self, session_id: str) -> tuple[RunRequestCounts, ...]:
         with self._read_connection() as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             return read_request_counts(connection, session_id)
 
     def load_runs(self, session_id: str) -> list[RunRecord]:
         with self._read_connection() as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             return self._load_runs(connection, session_id)
 
     def list_sessions(self) -> list[SessionRecord]:
@@ -1593,14 +1593,14 @@ class SQLiteSessionStore:
 
     def load_resource_references(self, session_id: str) -> list[SessionResourceReference]:
         with self._read_connection() as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             return sqlite_resources.read_references(connection, session_id)
 
     def load_resource_reference(
         self, session_id: str, resource_id: str
     ) -> SessionResourceReference:
         with self._read_connection() as connection:
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             return sqlite_resources.read_reference(connection, session_id, resource_id)
 
     def attach_resource_reference(
@@ -1608,7 +1608,7 @@ class SQLiteSessionStore:
     ) -> None:
         with self.session_mutation(session_id):
             connection = self._transaction_connection()
-            self._require_session(connection, session_id)
+            require_session(connection, session_id)
             sqlite_resources.attach_reference(connection, session_id, reference)
 
     def remove_resource_reference(self, session_id: str, resource_id: str) -> None:
@@ -1869,17 +1869,6 @@ class SQLiteSessionStore:
             (session_id,),
             RunRecord,
         )
-
-    @staticmethod
-    def _require_session(connection: sqlite3.Connection, session_id: str) -> None:
-        if (
-            connection.execute(
-                "SELECT 1 FROM sessions WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-            is None
-        ):
-            raise FileNotFoundError(session_id)
 
     def _load_models(
         self,

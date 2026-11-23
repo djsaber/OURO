@@ -330,7 +330,6 @@ class InputAdmissionService:
                                 name=activation.name,
                                 source=activation.source,
                                 location=activation.location,
-                                content_digest=activation.content_digest,
                             )
                             if activation is not None
                             else None

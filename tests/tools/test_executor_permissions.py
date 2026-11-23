@@ -384,7 +384,6 @@ def test_persisted_plugin_tool_requires_the_same_execution_contract() -> None:
                     "plugin_class": "user",
                     "release_id": "a" * 64,
                     "package_digest": "a" * 64,
-                    "contract_hash": "b" * 64,
                     "execution_contract_hash": "c" * 64,
                 },
             ),
@@ -399,7 +398,6 @@ def test_persisted_plugin_tool_requires_the_same_execution_contract() -> None:
         plugin_class="user",
         release_id="a" * 64,
         package_digest="a" * 64,
-        contract_hash="b" * 64,
         execution_contract_hash="d" * 64,
     )
 
@@ -427,7 +425,6 @@ def test_plugin_tool_execution_contract_does_not_require_duplicate_release_prove
                     "plugin_class": "user",
                     "release_id": "a" * 64,
                     "package_digest": "a" * 64,
-                    "contract_hash": "b" * 64,
                     "execution_contract_hash": "c" * 64,
                 },
             ),
@@ -440,7 +437,6 @@ def test_plugin_tool_execution_contract_does_not_require_duplicate_release_prove
         tool_name="example__run",
         canonical_tool_id="dev.ouro.example/tools/run",
         source="third_party_plugin",
-        contract_hash="b" * 64,
         execution_contract_hash="c" * 64,
     )
 

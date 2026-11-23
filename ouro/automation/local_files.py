@@ -258,6 +258,13 @@ class LocalTaskRepository:
                     raise ValueError("Execution owner must match its task")
                 _validate_id(execution.execution_id)
                 marker = self._occurrence_path(execution)
+                legacy = path.parent / "occurrences"
+                if legacy.is_dir() and not marker.exists():
+                    # Previously published claims used a digest of the UTC timestamp as their key.
+                    timestamp = execution.scheduled_at.astimezone(UTC).isoformat(
+                        timespec="microseconds"
+                    )
+                    marker = legacy / hashlib.sha256(timestamp.encode("ascii")).hexdigest()
                 if marker.exists() and read_text_atomic(marker).strip() != execution.execution_id:
                     raise TaskConflictError("Scheduled occurrence was already claimed")
                 execution_path = (
@@ -305,9 +312,8 @@ class LocalTaskRepository:
             self._publish(TaskFileTransaction(task_id=task_id, record=None))
 
     def _occurrence_path(self, execution: TaskExecution) -> Path:
-        timestamp = execution.scheduled_at.astimezone(UTC).isoformat(timespec="microseconds")
-        key = hashlib.sha256(timestamp.encode("ascii")).hexdigest()
-        return self._directory(execution.task_id) / "occurrences" / key
+        instant = execution.scheduled_at.astimezone(UTC).isoformat(timespec="microseconds")
+        return self._directory(execution.task_id) / "scheduled" / instant.replace(":", "")
 
     def _publish(self, transaction: TaskFileTransaction) -> None:
         # Resolve or rebuild the catalog before accepting a durable intent.

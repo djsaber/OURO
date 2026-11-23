@@ -28,7 +28,6 @@ from ouro.core.approvals import (
 from ouro.core.base import new_id
 from ouro.core.errors import ConfigError
 from ouro.core.model_selection import DEFAULT_MODEL
-from ouro.core.tools import tool_definition_contract_hash
 from ouro.tools import ToolDefinition, ToolRegistry
 
 GENERAL_AGENT_DEFINITION = AgentDefinition(
@@ -194,7 +193,7 @@ class AgentDefinitionService:
             raise ConfigError(f"builtin agent definition not found: {agent_id}")
         copied = AgentDefinition(
             **{
-                **GENERAL_AGENT_DEFINITION.model_dump(exclude={"contract_hash"}),
+                **GENERAL_AGENT_DEFINITION.model_dump(),
                 "agent_id": self._new_agent_id(name),
                 "name": name,
             }
@@ -216,9 +215,6 @@ class AgentDefinitionService:
                 description=definition.description,
                 effect=definition.effect,
                 owner_id=self._owner_id(tools, definition.name),
-                execution_contract_hash=self.tool_reference(
-                    tools, definition
-                ).execution_contract_hash,
             )
             for definition in self._candidate_definitions(tools)
         )
@@ -330,18 +326,10 @@ class AgentDefinitionService:
         *,
         minimum_permission_mode: PermissionMode = "auto",
     ) -> EffectiveToolRef:
-        metadata = definition.metadata
-        canonical_id = definition.identity
-        execution_hash = metadata.get("execution_contract_hash")
         return EffectiveToolRef(
             public_name=definition.name,
-            canonical_tool_id=canonical_id,
+            canonical_tool_id=definition.identity,
             owner_id=cls._owner_id(tools, definition.name),
-            execution_contract_hash=(
-                execution_hash
-                if isinstance(execution_hash, str) and execution_hash
-                else tool_definition_contract_hash(definition)
-            ),
             source=definition.source,
             effect=definition.effect,
             minimum_permission_mode=minimum_permission_mode,
@@ -383,7 +371,6 @@ class AgentDefinitionService:
             allowed_by_policy=allowed_by_policy,
             compatibility="available" if entry.available else "unavailable",
             missing_tool_names=entry.missing_tool_names,
-            contract_hash=entry.definition.contract_hash,
         )
 
 

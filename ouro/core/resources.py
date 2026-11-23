@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Mapping
 from datetime import datetime
@@ -60,6 +61,12 @@ class ResourceRecord(VersionedOuroModel):
         if update:
             return type(self).model_validate({**self.model_dump(), **update})
         return self
+
+    def matches_content(self, content: bytes) -> bool:
+        return (
+            len(content) == self.size
+            and f"sha256:{hashlib.sha256(content).hexdigest()}" == self.digest
+        )
 
     @model_validator(mode="after")
     def validate_identity(self) -> Self:

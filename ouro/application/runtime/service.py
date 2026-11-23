@@ -2283,7 +2283,6 @@ class RuntimeService:
                                 "root_session_id",
                                 "delegation_id",
                                 "agent_id",
-                                "agent_definition_contract_hash",
                             )
                         }
                         if child_run is not None

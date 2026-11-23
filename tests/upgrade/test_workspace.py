@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from dataclasses import asdict
 from pathlib import Path
 from threading import current_thread, main_thread
 
@@ -33,6 +32,25 @@ def test_backup_move_failure_keeps_originals_and_allows_restore(historical_home:
     monkeypatch.setattr(workspace, "replace_path_with_retry", original)
     upgrade(historical_home, restore=True)
     assert hashes(historical_home) == before
+
+
+def test_new_outputs_skip_content_hashing(tmp_path, monkeypatch):
+    with Workspace(tmp_path) as work:
+        work.start()
+        scratch = work.temporary()
+        scratch.write_bytes(b"new database")
+        with monkeypatch.context() as checks:
+            checks.setattr(
+                workspace.hashlib, "file_digest", lambda *args: pytest.fail("hashed new file")
+            )
+            checks.setattr(
+                workspace.hashlib, "sha256", lambda *args: pytest.fail("hashed new bytes")
+            )
+            work.stage("new.db", scratch)
+            work.stage("record.json", b"{}")
+        work.publish({})
+    assert (tmp_path / "new.db").read_bytes() == b"new database"
+    assert (tmp_path / "record.json").read_bytes() == b"{}"
 
 
 def test_source_change_is_detected_before_publishing(historical_home: Path, monkeypatch):
@@ -261,7 +279,7 @@ def test_partial_publication_restores_updates_deletions_and_additions(
 
 
 @pytest.mark.parametrize("missing_backup", [False, True])
-@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("version", [1, 2, 3])
 def test_legacy_manifests_restore_according_to_backup_contract(tmp_path, missing_backup, version):
     home = tmp_path / "home"
     home.mkdir()
@@ -277,7 +295,12 @@ def test_legacy_manifests_restore_according_to_backup_contract(tmp_path, missing
             {
                 "schema_version": version,
                 "changes": [
-                    {key: value for key, value in asdict(item).items() if key != "directory"}
+                    {
+                        "path": item.path,
+                        "before": item.before,
+                        "mode": item.mode,
+                        "after": workspace.digest(work.run / "new/0"),
+                    }
                     for item in work.changes.values()
                 ],
             },

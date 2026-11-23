@@ -12,7 +12,6 @@ def test_builtin_driver_requires_the_original_available_application_contract(ava
     plugin_id = "dev.ouro.driver"
     binding = RunDriverBinding(
         driver_id=f"{plugin_id}/run_drivers/main",
-        contract_hash="entry",
         implementation=PluginImplementation(
             plugin_id=plugin_id,
             plugin_class="builtin",

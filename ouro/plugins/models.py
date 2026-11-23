@@ -57,7 +57,7 @@ class PluginConfigurationRevision(OuroModel):
 
     model_config = ConfigDict(frozen=True, hide_input_in_errors=True)
 
-    revision_id: str
+    revision_id: str = ""
     values: Mapping[str, object] = Field(default_factory=dict)
     credential_refs: Mapping[str, PluginCredentialBinding] = Field(default_factory=dict)
     schema_version: int | None = Field(default=None, ge=1, strict=True)
@@ -89,18 +89,17 @@ class PluginConfigurationRevision(OuroModel):
             return self
         return type(self).model_validate({**self.model_dump(), **update})
 
-    @model_validator(mode="after")
-    def _validate_revision_id(self) -> PluginConfigurationRevision:
+    def model_post_init(self, context: Any, /) -> None:
         expected = configuration_revision_id(
             values=self.values,
             credential_refs=self.credential_refs,
             schema_version=self.schema_version,
         )
-        if self.revision_id != expected:
+        if "revision_id" in self.model_fields_set and self.revision_id != expected:
             raise ValueError("plugin configuration revision id does not match its content")
+        object.__setattr__(self, "revision_id", expected)
         object.__setattr__(self, "values", freeze_configuration(self.values))
         object.__setattr__(self, "credential_refs", MappingProxyType(dict(self.credential_refs)))
-        return self
 
     def values_dict(self) -> dict[str, object]:
         return configuration_dict(self.values)
@@ -123,9 +122,6 @@ class PluginActivationState(OuroModel):
         package_digest: str,
         revision: PluginConfigurationRevision,
     ) -> None:
-        existing = self.configuration_revisions.get(revision.revision_id)
-        if existing is not None and existing != revision:
-            raise ValueError("plugin configuration revision id collision")
         self.configuration_revisions[revision.revision_id] = revision
         self.configuration_revision_by_digest[package_digest] = revision.revision_id
 
@@ -216,10 +212,8 @@ class PluginGenerationRecord(OuroModel):
     release_id: str = Field(min_length=1)
     runtime_kind: PluginRuntimeKind
     configuration_revision_id: str
-    dependency_lock_fingerprint: str
     plugin_api_version: str
     worker_protocol_version: str | None = None
-    contract_hashes: dict[str, str] = Field(default_factory=dict)
     execution_contract_hash: str | None = None
     status: PluginStatus = "starting"
     created_at: datetime = Field(default_factory=utc_now)
@@ -232,16 +226,6 @@ class PluginGenerationRecord(OuroModel):
     def validate_execution_contract(self) -> PluginGenerationRecord:
         if self.status in {"active", "degraded"} and self.execution_contract_hash is None:
             raise ValueError("active plugin generation requires an execution contract")
-        for field_name, value in (
-            ("configuration_revision_id", self.configuration_revision_id),
-            ("dependency_lock_fingerprint", self.dependency_lock_fingerprint),
-        ):
-            if not _is_sha256_digest(value):
-                raise ValueError(f"plugin generation {field_name} must be a SHA-256 digest")
-        if self.execution_contract_hash is not None and not _is_sha256_digest(
-            self.execution_contract_hash
-        ):
-            raise ValueError("plugin generation execution_contract_hash must be a SHA-256 digest")
         return self
 
 
@@ -262,18 +246,11 @@ def create_configuration_revision(
     credential_refs: dict[str, PluginCredentialBinding] | None = None,
     schema_version: int | None = None,
 ) -> PluginConfigurationRevision:
-    normalized_values = copy_configuration_values(values if values is not None else {})
-    normalized_references = parse_credential_bindings(
-        credential_refs if credential_refs is not None else {}
-    )
     return PluginConfigurationRevision(
-        revision_id=configuration_revision_id(
-            values=normalized_values,
-            credential_refs=normalized_references,
-            schema_version=schema_version,
+        values=values if values is not None else {},
+        credential_refs=parse_credential_bindings(
+            credential_refs if credential_refs is not None else {}
         ),
-        values=normalized_values,
-        credential_refs=normalized_references,
         schema_version=schema_version,
     )
 
@@ -296,7 +273,3 @@ def configuration_revision_id(
         allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
-
-
-def _is_sha256_digest(value: str) -> bool:
-    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)

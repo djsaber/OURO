@@ -153,7 +153,6 @@ def _adapt_prompt_policy(
                         name=call.skill_activation.name,
                         source=call.skill_activation.source,
                         location=call.skill_activation.location,
-                        content_digest=call.skill_activation.content_digest,
                     )
                     if call.skill_activation is not None
                     else None

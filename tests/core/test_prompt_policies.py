@@ -107,3 +107,25 @@ def test_prompt_policy_decisions_require_consistent_reasons() -> None:
         PromptPolicyDecision(action="deny")
     with pytest.raises(ValueError, match="cannot contain a reason"):
         PromptPolicyDecision(action="allow", reason="not applicable")
+
+
+def test_scoped_registry_freezes_membership_and_tracks_active_controllers() -> None:
+    registry = PromptPolicyRegistry()
+    policy = PromptPolicyRegistration(
+        "dev.ouro.policy",
+        "guard",
+        lambda _: PromptPolicyDecision(),
+        active_when_controller_id="plan",
+    )
+    registry.replace_owner("generation", (policy,))
+    installed = registry.snapshot()
+    active: set[str] = set()
+    scoped = registry.scoped(lambda: active)
+    registry.unregister_owner("generation")
+
+    assert scoped.registered() == []
+    active.add("plan")
+    assert scoped.registered() == installed
+    assert installed[0].owner == "generation"
+    with pytest.raises(RuntimeError, match="frozen"):
+        scoped.unregister_owner("generation")

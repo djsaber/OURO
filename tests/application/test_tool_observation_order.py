@@ -120,7 +120,6 @@ async def test_observation_precedes_control_and_remains_distinct_from_feedback(
                         "plugin_class": "user",
                         "release_id": CONTRACT,
                         "package_digest": CONTRACT,
-                        "contract_hash": CONTRACT,
                         "contribution_id": "observe",
                         "generation_id": "generation",
                         "execution_contract_hash": CONTRACT,

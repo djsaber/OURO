@@ -44,7 +44,7 @@ TUI、AgentService 和任务协调器保留自己的业务身份、授权与结�
 
 `application/models/catalog.py` 定义模型目录契约、固定模型目录和原生模型投影。
 `local_configuration.py` 装配 ConfigurationFacade 的本地配置协作者，持有文件配置解析与
-ConfiguredModelCatalog，负责配置路由、adapter fingerprint、并发构造及关闭；Runtime 通过目录协议和
+ConfiguredModelCatalog，负责配置路由、adapter 配置缓存键、并发构造及关闭；Runtime 通过目录协议和
 配置、提示词、技能查询回调取得当前能力。
 AgentDefinitionService 显式接收默认模型路由查询，在调用时取得当前路由；Agent 配置不提供 Provider 配置的装配信息。
 Provider 构造参数统一使用 `config/provider_models.py` 的 ProviderRuntimeOptions。

@@ -115,7 +115,6 @@ def test_skill_activation_service_respects_selection_and_reads_current_content(
 
     assert activation.name == "reviewer"
     assert activation.instructions == (root / "SKILL.md").read_text(encoding="utf-8")
-    assert activation.content_digest.startswith("sha256:")
     assert metadata.disable_model_invocation is True
 
     disabled = metadata.model_copy(update={"enabled": False})
@@ -283,13 +282,11 @@ async def test_runtime_persists_typed_user_activation_and_exposes_it_to_prompt_p
     assert user_message.skill_activations[0].base_directory == str(root)
     assert policy_calls[0].skill_activation is not None
     assert policy_calls[0].skill_activation.name == "reviewer"
-    assert policy_calls[0].skill_activation.content_digest == (
-        user_message.skill_activations[0].content_digest
-    )
+    assert policy_calls[0].skill_activation.location == str(root / "SKILL.md")
     serialized_events = "\n".join(
         event.model_dump_json() for event in run_events(runtime.store, result)
     )
-    assert user_message.skill_activations[0].content_digest in serialized_events
+    assert "reviewer" in serialized_events
     assert "Review the requested code carefully." not in serialized_events
 
 

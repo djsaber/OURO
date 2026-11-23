@@ -71,7 +71,7 @@ with tool permissions and invocation checks. They govern tool calls, not filesys
 
 ### Review and Resumption
 
-`ExitPlanMode` requires a readable, non-empty Plan file. It snapshots the Plan digest and may
+`ExitPlanMode` requires a readable, non-empty Plan file. It saves the reviewed text, checks that text on resume, and may
 publish one to three mutually exclusive implementation options. The Host resolves the resumable
 request with `accept`, `revise`, or `reject`:
 
@@ -88,7 +88,7 @@ handled by the native interaction and message identities.
 
 - Plan business state belongs to the `dev.ouro.plan` owner in the native Harness aggregate.
 - The owner payload contains the Plan path (schema 2), with `branch_policy="reset"`.
-- Mode activation comes from the native controller projection. Pending review data, digest,
+- Mode activation comes from the native controller projection. Pending review text,
   options and resume identity belong to the native tool interaction.
 - Controller transitions, owner state and the corresponding tool result or command effects share
   one durable decision; callbacks only stage changes.

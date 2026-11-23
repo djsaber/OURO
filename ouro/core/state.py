@@ -82,7 +82,6 @@ class RunContinuationControllerRef(OuroModel):
     release_id: str | None = None
     package_digest: str | None = None
     generation_id: str
-    contract_hash: str
     execution_contract_hash: str
     active_when_controller_id: str | None = None
     activation_id: str | None = None
@@ -106,7 +105,6 @@ class RunContinuationSettlementPlan(OuroModel):
     plugin_id: str
     policy_id: str
     execution_contract_hash: str
-    contract_hash: str
     action: Literal["continue", "complete", "pause", "fail"]
     prompt: str | None = None
     mode: SessionInputMode = "follow_up"

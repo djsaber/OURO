@@ -20,7 +20,7 @@ from ouro.sessions.sqlite_observation import advance_revision
 from ouro_upgrade import databases, session_records, workspace
 from ouro_upgrade.engine import upgrade
 from ouro_upgrade.errors import UpgradeError
-from ouro_upgrade.records import _catalog_hash, convert
+from ouro_upgrade.records import convert
 from ouro_upgrade.units import UpgradeUnit
 from tests.upgrade.conftest import FIXTURES
 from tests.upgrade.test_isolation import confirmed
@@ -218,7 +218,7 @@ def test_layout_43_requires_every_accepted_body_before_publishing(native_home):
     with pytest.raises(UpgradeError, match="missing accepted input body"):
         upgrade(home, session_backend=backend)
     assert hashes(home) == before
-    missing.write_bytes(bodies[missing])
+    (directory / "recovered-input.json").write_bytes(bodies[missing])
     assert upgrade(home, session_backend=backend)["status"] == "upgraded"
     assert not list(directory.glob("*.json"))
     store = repository(home, backend)
@@ -439,7 +439,7 @@ def test_current_container_upgrades_frozen_agents_and_isolates_invalid_contracts
     upgrade(home, session_backend=backend)
     catalog = _frozen_catalog()
     if corrupt:
-        catalog["entries"][0]["definition"]["description"] = "tampered"
+        catalog["entries"][0]["definition"]["name"] = ""
     path = database(home, backend)
     with closing(sqlite3.connect(path)) as connection:
         run = json.loads(connection.execute("SELECT payload FROM runs LIMIT 1").fetchone()[0])
@@ -453,7 +453,7 @@ def test_current_container_upgrades_frozen_agents_and_isolates_invalid_contracts
     assert hashes(home) == before
     if corrupt:
         assert report["status"] == "partial"
-        assert "contract hash" in report["failures"][0]["error"]
+        assert "invalid" in report["failures"][0]["error"]
         result = upgrade(
             home, session_backend=backend, isolate_failures=True, discard=confirmed(report)
         )
@@ -481,7 +481,7 @@ def test_current_container_upgrades_frozen_agents_and_isolates_invalid_contracts
     assert (
         loaded.agent_catalog.created_at.isoformat().replace("+00:00", "Z") == catalog["created_at"]
     )
-    assert loaded.agent_catalog.contract_hash != catalog["contract_hash"]
+    assert "contract_hash" not in loaded.agent_catalog.model_dump()
     definition = loaded.agent_catalog.entries[0].definition
     assert definition.system_prompt == catalog["entries"][0]["definition"]["system_prompt"]
     assert definition.default_budget.max_elapsed_seconds == 30
@@ -516,7 +516,6 @@ def test_native_scan_rejects_unsupported_frozen_definition_versions(native_home,
         definition.pop("schema_version")
     else:
         definition["schema_version"] = version
-    catalog["contract_hash"] = _catalog_hash(catalog)
     path = database(home, backend)
     with closing(sqlite3.connect(path)) as connection:
         if kind == "run":
@@ -595,7 +594,6 @@ def test_continuation_release_copy_is_retired_in_current_container(native_home):
                 plugin_class="builtin",
                 release_id="release",
                 generation_id="generation",
-                contract_hash="policy",
                 execution_contract_hash="execution",
             )
         ]

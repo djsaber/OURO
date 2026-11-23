@@ -28,6 +28,7 @@ from ouro.config.provider_models import (
 )
 from ouro.core.context_budget import ContextBudget
 from ouro.core.errors import ConfigError
+from ouro.tui.features.configuration.values import positive_float, positive_int
 from ouro.tui.features.providers.model_menus import SUMMARY_LABELS
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.credential_editor import (
@@ -215,7 +216,7 @@ class ProviderConfigurationScreen(CredentialEditableChoiceScreen):
             raise ValueError("Base URL is required")
         if api_key and api_key_env:
             raise ValueError("Use either an API key or an environment variable")
-        timeout = _positive_float(
+        timeout = positive_float(
             self._values["provider-timeout"],
             "Request timeout",
         )
@@ -610,12 +611,12 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
         model_id = self._values["endpoint-model-id"]
         if not model_id:
             raise ValueError("Provider model ID is required")
-        context_window = _positive_int(
+        context_window = positive_int(
             self._values["endpoint-context-window"],
             "Context window",
         )
         value = self._values["endpoint-max-output"]
-        max_output_tokens = _positive_int(value, "Max output tokens") if value else None
+        max_output_tokens = positive_int(value, "Max output tokens") if value else None
         ContextBudget(context_window=context_window, max_output_tokens=max_output_tokens)
         request_options = _json_object(
             self._values["endpoint-request-options"],
@@ -927,23 +928,3 @@ def _service_notice_choices(notice: str | None) -> tuple[Choice, ...]:
             "service-notice", "Service limits", description=notice, group="BASIC", disabled=True
         ),
     )
-
-
-def _positive_int(raw: str, label: str) -> int:
-    try:
-        value = int(raw.strip())
-    except ValueError as exc:
-        raise ValueError(f"{label} must be an integer") from exc
-    if value < 1:
-        raise ValueError(f"{label} must be positive")
-    return value
-
-
-def _positive_float(raw: str, label: str) -> float:
-    try:
-        value = float(raw.strip())
-    except ValueError as exc:
-        raise ValueError(f"{label} must be a number") from exc
-    if value <= 0:
-        raise ValueError(f"{label} must be positive")
-    return value

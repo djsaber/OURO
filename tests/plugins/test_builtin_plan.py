@@ -1107,6 +1107,17 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     third_exit = first_exit.model_copy(update={"tool_call_id": "call_exit_3", "arguments": {}})
     third_request = await exit_plan.execute(third_exit, context=context)
     assert isinstance(third_request, ToolInputRequest)
+    reviewed = plan_path.read_text(encoding="utf-8")
+    plan_path.write_text(reviewed.replace("verify", "deploy"), encoding="utf-8")
+    stale = await exit_plan.resume(
+        third_exit,
+        AnswerResolution(value={"action": "accept"}),
+        request=third_request,
+        context=context,
+    )
+    assert isinstance(stale, ToolResult)
+    assert stale.is_error and "plan file changed" in stale.content
+    plan_path.write_text(reviewed, encoding="utf-8")
     accepted = await exit_plan.resume(
         third_exit,
         AnswerResolution(value={"action": "accept"}),

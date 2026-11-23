@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from typing import Any
 
 from ouro.application.contracts.agents import SpawnAgentRequest
-from ouro.cli.errors import error_exit_code
+from ouro.cli.errors import report_error
 from ouro.core.agents import ToolSelection
 from ouro.core.errors import ConfigError, OuroError
 from ouro.local_application import LocalApplication, open_local_agent_definitions
@@ -21,8 +20,7 @@ async def run_agent_command(args: argparse.Namespace) -> int:
         else:
             payload, text = await _runtime_command(args)
     except (OuroError, FileNotFoundError, KeyError, RuntimeError, ValueError) as exc:
-        _print_error(exc, json_mode=args.json)
-        return _error_exit_code(exc)
+        return report_error(exc, json_mode=args.json)
     _print_success(payload, text=text, json_mode=args.json)
     return 0
 
@@ -210,30 +208,6 @@ def _print_success(payload: dict[str, Any], *, text: str, json_mode: bool) -> No
         print(json.dumps({"status": "ok", **payload}, ensure_ascii=False))
     else:
         print(text)
-
-
-def _print_error(exc: Exception, *, json_mode: bool) -> None:
-    if json_mode:
-        print(
-            json.dumps(
-                {
-                    "status": "failed",
-                    "error": str(exc),
-                    "error_type": type(exc).__name__,
-                },
-                ensure_ascii=False,
-            )
-        )
-    else:
-        print(f"Error: {exc}", file=sys.stderr)
-
-
-def _error_exit_code(exc: Exception) -> int:
-    if isinstance(exc, ConfigError):
-        return 2
-    if isinstance(exc, OuroError):
-        return error_exit_code(exc)
-    return 1
 
 
 def _definition_catalog_text(catalog: dict[str, Any]) -> str:

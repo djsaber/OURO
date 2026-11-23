@@ -910,7 +910,6 @@ class AgentService:
                     "delegation_id": relation.delegation_id,
                     "root_session_id": relation.root_session_id,
                     "agent_id": relation.agent_id,
-                    "agent_definition_contract_hash": relation.definition.contract_hash,
                 },
             )
             run = reserve_run(self.store, run)
@@ -1168,7 +1167,6 @@ class AgentService:
                 **({"follow_up_input_id": item.queue_id} if item is not None else {}),
                 "root_session_id": relation.root_session_id,
                 "agent_id": relation.agent_id,
-                "agent_definition_contract_hash": relation.definition.contract_hash,
             },
         )
         with self.store.session_mutation(child.session_id):

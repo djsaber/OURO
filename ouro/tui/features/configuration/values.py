@@ -63,7 +63,7 @@ def _optional_json(raw: str, label: str) -> object | None:
         raise ValueError(f"{label} must be valid JSON: {exc.msg}") from exc
 
 
-def _positive_int(raw: str, label: str) -> int:
+def positive_int(raw: str, label: str) -> int:
     value = _integer(raw, label)
     if value < 1:
         raise ValueError(f"{label} must be positive")
@@ -71,7 +71,7 @@ def _positive_int(raw: str, label: str) -> int:
 
 
 def _optional_positive_int(raw: str, label: str) -> int | None:
-    return _positive_int(raw, label) if raw.strip() else None
+    return positive_int(raw, label) if raw.strip() else None
 
 
 def _non_negative_int(raw: str, label: str) -> int:
@@ -88,7 +88,7 @@ def _integer(raw: str, label: str) -> int:
         raise ValueError(f"{label} must be an integer") from exc
 
 
-def _positive_float(raw: str, label: str) -> float:
+def positive_float(raw: str, label: str) -> float:
     try:
         value = float(raw.strip())
     except ValueError as exc:
@@ -99,7 +99,7 @@ def _positive_float(raw: str, label: str) -> float:
 
 
 def _ratio(raw: str, label: str) -> float:
-    value = _positive_float(raw, label)
+    value = positive_float(raw, label)
     if value > 1:
         raise ValueError(f"{label} must not exceed 1")
     return value

@@ -496,7 +496,6 @@ def _persist_direct_child_session(application: LocalApplication) -> tuple[str, s
                 "delegation_id": child.delegation_id,
                 "root_session_id": root.session_id,
                 "agent_id": definition.agent_id,
-                "agent_definition_contract_hash": definition.contract_hash,
             },
         )
     )

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from threading import Barrier
 
@@ -128,6 +129,33 @@ def test_backends_reject_duplicate_occurrences_without_changing_the_task(reposit
         )
     assert repository.get(task.task_id).revision == 1
     assert repository.executions(task.task_id) == (first,)
+
+
+def test_file_tasks_claim_utc_instants_and_recognize_old_claims(tmp_path):
+    repo = LocalTaskRepository(tmp_path)
+    repo.initialize()
+    task = task_record(tmp_path)
+    first = receipt(task, 1)
+    repo.commit(task, expected_revision=None, execution=first)
+    directory = tmp_path / "tasks" / "records" / task.task_id
+    (marker,) = (directory / "scheduled").iterdir()
+    assert marker.read_text().strip() == first.execution_id
+    old_markers = directory / "occurrences"
+    old_markers.mkdir()
+    timestamp = first.scheduled_at.isoformat(timespec="microseconds")
+    marker.rename(old_markers / hashlib.sha256(timestamp.encode("ascii")).hexdigest())
+
+    duplicate = first.model_copy(
+        update={
+            "execution_id": "another",
+            "scheduled_at": first.scheduled_at.astimezone(timezone(timedelta(hours=8))),
+        }
+    )
+    with pytest.raises(TaskConflictError, match="already claimed"):
+        repo.commit(
+            task.model_copy(update={"revision": 2}), expected_revision=1, execution=duplicate
+        )
+    assert repo.executions(task.task_id) == (first,)
 
 
 def test_backends_order_due_pages_and_keep_active_work_exclusive(repository, tmp_path):

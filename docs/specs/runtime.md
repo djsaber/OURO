@@ -68,7 +68,7 @@ Run 的 `current_request_id` 与最近准备输入同提交；可能开始调用
 Driver 执行用例复用进程内的上下文准备、请求提交、用量结算和事件记录服务。每次调用持有自己的模型请求执行器、取消信号、恢复位置和流开始通知。每轮根据所属 Run 重新选择可用工具与有效预算。
 
 `RunRecord` 保存不可变的 `driver` 绑定。默认算法的身份为
-`ouro.default`；插件 Driver 保存 `plugin_id/run_drivers/id`、贡献契约，以及所属插件和传递依赖的实现引用。
+`ouro.default`；插件 Driver 保存 `plugin_id/run_drivers/id`、以及所属插件和传递依赖的实现引用。
 每个实现引用包含 plugin identity/class、release、配置修订 ID 和执行契约哈希，不保存解析后的凭据。
 Host 在执行前校验精确契约，缺失或不匹配时报告错误，不切换算法。Driver 调用只租用所属插件及其依赖，
 模型轮次的工具与上下文目录仍在原生边界刷新。

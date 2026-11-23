@@ -10,13 +10,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import json
 import platform
 import sys
 import tempfile
 import tracemalloc
-from dataclasses import asdict
 from pathlib import Path
 from statistics import median
 from time import perf_counter_ns
@@ -143,10 +141,6 @@ async def measure(args):
                         peaks.append(tracemalloc.get_traced_memory()[1])
                         tracemalloc.stop()
 
-                    output = await handler(call)
-                    digest = hashlib.sha256(
-                        json.dumps(asdict(output), sort_keys=True).encode()
-                    ).hexdigest()
                     print(
                         json.dumps(
                             {
@@ -161,7 +155,6 @@ async def measure(args):
                                 "median_ms": median(samples),
                                 "samples_ms": samples,
                                 "peak_bytes": peaks,
-                                "output_digest": digest,
                             }
                         ),
                         flush=True,

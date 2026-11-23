@@ -35,7 +35,6 @@ def catalog(agents: int, tools: int) -> AgentCatalogSnapshot:
         EffectiveToolRef(
             public_name=f"Tool{index}",
             canonical_tool_id=f"ouro.host/tools/Tool{index}",
-            execution_contract_hash="sha256:" + "a" * 64,
         )
         for index in range(tools)
     )

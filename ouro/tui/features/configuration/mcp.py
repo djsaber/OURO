@@ -10,7 +10,7 @@ from ouro.tui.features.configuration.values import (
     _non_negative_int,
     _optional_json_mapping,
     _optional_json_string_list,
-    _positive_float,
+    positive_float,
 )
 from ouro.tui.menus.editable import EditableChoiceScreen
 from ouro.tui.menus.labels import PERMISSION_LABELS, TOOL_APPROVAL_LABEL
@@ -150,11 +150,11 @@ class MCPConfigurationScreen(EditableChoiceScreen):
             max_reconnect_attempts=_non_negative_int(
                 self._values["mcp-reconnect-attempts"], "Reconnect attempts"
             ),
-            reconnect_backoff_seconds=_positive_float(
+            reconnect_backoff_seconds=positive_float(
                 self._values["mcp-reconnect-backoff"], "Retry delay"
             ),
-            timeout_seconds=_positive_float(self._values["mcp-timeout"], "Timeout"),
-            health_check_interval_seconds=_positive_float(
+            timeout_seconds=positive_float(self._values["mcp-timeout"], "Timeout"),
+            health_check_interval_seconds=positive_float(
                 self._values["mcp-health-interval"], "Connection check interval"
             ),
             permission_mode=cast(PermissionMode, self._values["mcp-permission"]),

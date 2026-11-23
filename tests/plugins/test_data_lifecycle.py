@@ -97,7 +97,6 @@ async def test_uninstalled_data_remains_protected_by_resumable_run(tmp_path, sto
         status="paused",
         driver=RunDriverBinding(
             driver_id=f"{PLUGIN_ID}/run_drivers/reader",
-            contract_hash="driver",
             implementation=PluginImplementation(
                 plugin_id=PLUGIN_ID,
                 plugin_class="user",

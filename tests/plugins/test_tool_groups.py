@@ -105,13 +105,13 @@ def invocation(catalog, *, name="discovered", arguments=None):
         arguments=arguments or {"query": "term"},
         canonical_tool_id=f"{PLUGIN}/tools/{metadata['contribution_id']}",
         source=definition.source,
+        execution_variant=definition.execution_variant,
         **{
             field: metadata[field]
             for field in (
                 "plugin_id",
                 "plugin_class",
                 "release_id",
-                "contract_hash",
                 "execution_contract_hash",
             )
         },
@@ -127,7 +127,7 @@ async def test_replacement_preserves_accepted_schema_handler_and_generation_cont
         with runtime.snapshot() as current:
             updated = invocation(current, arguments={"topic": "new"})
             assert updated.execution_contract_hash == original.execution_contract_hash
-            assert updated.contract_hash != original.contract_hash
+            assert updated.execution_variant != original.execution_variant
             assert (
                 "query"
                 in accepted.tools.get("discovered").definition.parameters_schema["properties"]
@@ -209,7 +209,7 @@ async def test_invalid_publication_keeps_entire_previous_group(discovery, failur
         await instances[-1].context.tool_groups.publish(invalid)
     with runtime.snapshot() as after:
         assert after.catalog_id == before_id
-        assert invocation(after).contract_hash == original.contract_hash
+        assert invocation(after).execution_variant == original.execution_variant
         assert {item.name for item in after.tools.definitions()} == {"discovered", "host_tool"}
 
 
@@ -296,10 +296,18 @@ async def test_candidate_cannot_publish_outside_prepared_contributions(tmp_path,
         await runtime.close()
 
 
-async def test_restart_matches_revision_and_rejects_changed_implementation(discovery):
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_restart_matches_revision_and_rejects_changed_implementation(discovery, legacy):
     runtime, instances = discovery
     with runtime.snapshot() as catalog:
         original = invocation(catalog)
+    if legacy:
+        original = original.model_copy(
+            update={
+                "execution_variant": None,
+                "contract_hash": "3f55c4808f905220f33532caa844a677bfd23db8c319df4f4606e19f51d8ceb7",
+            }
+        )
     await runtime.restart(PLUGIN)
     with runtime.snapshot() as catalog:
         result = await ToolExecutor(catalog.tools).execute(original)
@@ -384,9 +392,9 @@ async def test_group_replacement_removes_missing_tools_and_preserves_static_cont
         await instances[0].context.tool_groups.publish(group("two"))
         with runtime.snapshot() as catalog:
             assert catalog.tools.names() == ["discovered", "static"]
-            assert catalog.contract_hash(f"{PLUGIN}/tools/search") is not None
-            assert catalog.contract_hash(f"{PLUGIN}/tools/remote/search") is not None
-            assert catalog.contract_hash(f"{PLUGIN}/tools/remote/other") is None
+            assert f"{PLUGIN}/tools/search" in catalog.catalog.owners
+            assert f"{PLUGIN}/tools/remote/search" in catalog.catalog.owners
+            assert f"{PLUGIN}/tools/remote/other" not in catalog.catalog.owners
         await instances[0].context.tool_groups.publish(sdk.ToolGroupContribution("remote", "empty"))
         with runtime.snapshot() as catalog:
             assert catalog.tools.names() == ["static"]

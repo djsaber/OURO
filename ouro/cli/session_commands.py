@@ -17,7 +17,7 @@ from ouro.cli.context_output import (
     render_context_snapshot,
     render_context_status,
 )
-from ouro.cli.errors import error_exit_code
+from ouro.cli.errors import report_error
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.compaction import CompactionCommandResult
 from ouro.core.errors import OuroError
@@ -52,8 +52,7 @@ def list_sessions(
         )
         sessions = _sessions(home, session_backend).catalog(query).entries
     except OuroError as exc:
-        _print_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     if json_mode:
         print(
@@ -92,8 +91,7 @@ def rename_session(
     try:
         result = _sessions(home, session_backend).rename(session_id, title)
     except (OuroError, FileNotFoundError, RuntimeError, ValueError) as exc:
-        _print_error(exc, json_mode=json_mode)
-        return error_exit_code(exc) if isinstance(exc, OuroError) else 1
+        return report_error(exc, json_mode=json_mode)
     if json_mode:
         print(
             json.dumps(
@@ -117,8 +115,7 @@ def set_session_tags(
     try:
         result = _sessions(home, session_backend).set_tags(session_id, tags)
     except (OuroError, FileNotFoundError, ValueError) as exc:
-        _print_error(exc, json_mode=json_mode)
-        return error_exit_code(exc) if isinstance(exc, OuroError) else 1
+        return report_error(exc, json_mode=json_mode)
     if json_mode:
         print(
             json.dumps(
@@ -143,8 +140,7 @@ def set_session_approval_mode(
     try:
         result = _sessions(home, session_backend).set_approval_mode(session_id, approval_mode)
     except (OuroError, FileNotFoundError, ValueError) as exc:
-        _print_error(exc, json_mode=json_mode)
-        return error_exit_code(exc) if isinstance(exc, OuroError) else 1
+        return report_error(exc, json_mode=json_mode)
     if json_mode:
         print(
             json.dumps(
@@ -168,8 +164,7 @@ def set_session_afk_mode(
     try:
         result = _sessions(home, session_backend).set_afk_mode(session_id, enabled=enabled)
     except (OuroError, FileNotFoundError, ValueError) as exc:
-        _print_error(exc, json_mode=json_mode)
-        return error_exit_code(exc) if isinstance(exc, OuroError) else 1
+        return report_error(exc, json_mode=json_mode)
     if json_mode:
         print(
             json.dumps(
@@ -194,8 +189,7 @@ def archive_session(
     try:
         result = _sessions(home, session_backend).set_archived(session_id, archived)
     except (OuroError, FileNotFoundError) as exc:
-        _print_error(exc, json_mode=json_mode)
-        return error_exit_code(exc) if isinstance(exc, OuroError) else 1
+        return report_error(exc, json_mode=json_mode)
     if json_mode:
         print(
             json.dumps(
@@ -220,8 +214,7 @@ def pin_session(
     try:
         result = _sessions(home, session_backend).set_pinned(session_id, pinned)
     except (OuroError, FileNotFoundError) as exc:
-        _print_error(exc, json_mode=json_mode)
-        return error_exit_code(exc) if isinstance(exc, OuroError) else 1
+        return report_error(exc, json_mode=json_mode)
     if json_mode:
         print(
             json.dumps(
@@ -246,8 +239,7 @@ def branch_session(
     try:
         result = _sessions(home, session_backend).branch(session_id, message_id)
     except (OuroError, FileNotFoundError) as exc:
-        _print_error(exc, json_mode=json_mode)
-        return error_exit_code(exc) if isinstance(exc, OuroError) else 1
+        return report_error(exc, json_mode=json_mode)
     if json_mode:
         print(json.dumps({"status": "ok", **result.model_dump(mode="json")}, ensure_ascii=False))
     else:
@@ -266,11 +258,9 @@ def show_session(
         snapshot = _sessions(home, session_backend).open(session_id)
     except FileNotFoundError:
         error_message = f"session not found: {session_id}"
-        _print_error(OuroError(error_message), json_mode=json_mode)
-        return 1
+        return report_error(OuroError(error_message), json_mode=json_mode)
     except OuroError as exc:
-        _print_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     if json_mode:
         print(
@@ -319,8 +309,7 @@ def show_session_summaries(
     try:
         summaries = _sessions(home, session_backend).summaries(session_id)
     except OuroError as exc:
-        _print_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     if json_mode:
         print(
@@ -364,8 +353,7 @@ async def show_session_context(
         status = snapshot.status if snapshot is not None else sessions.context_status(session_id)
     except (OuroError, FileNotFoundError, ValueError) as exc:
         ouro_exc = exc if isinstance(exc, OuroError) else OuroError(str(exc))
-        _print_error(ouro_exc, json_mode=json_mode)
-        return error_exit_code(ouro_exc)
+        return report_error(ouro_exc, json_mode=json_mode)
 
     if json_mode:
         payload: dict[str, Any] = {
@@ -424,12 +412,8 @@ def remove_session(
                     break
                 except SessionTreeChangedError as exc:
                     print(str(exc), file=sys.stderr)
-    except OuroError as exc:
-        _print_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
     except Exception as exc:  # noqa: BLE001
-        _print_error(exc, json_mode=json_mode)
-        return 1
+        return report_error(exc, json_mode=json_mode)
 
     if json_mode:
         print(
@@ -468,12 +452,10 @@ def list_session_messages(
         )
     except FileNotFoundError:
         error_message = f"session not found: {session_id}"
-        _print_error(OuroError(error_message), json_mode=json_mode)
-        return 1
+        return report_error(OuroError(error_message), json_mode=json_mode)
     except (OuroError, ValueError) as exc:
         ouro_exc = exc if isinstance(exc, OuroError) else OuroError(str(exc))
-        _print_error(ouro_exc, json_mode=json_mode)
-        return error_exit_code(ouro_exc)
+        return report_error(ouro_exc, json_mode=json_mode)
 
     if json_mode:
         print(
@@ -515,12 +497,10 @@ async def compact_session(
             result = await runtime.compact(session_id=session_id)
     except FileNotFoundError:
         error_message = f"session not found: {session_id}"
-        _print_error(OuroError(error_message), json_mode=json_mode)
-        return 1
+        return report_error(OuroError(error_message), json_mode=json_mode)
     except (OuroError, ValueError, RuntimeError) as exc:
         ouro_exc = exc if isinstance(exc, OuroError) else OuroError(str(exc))
-        _print_error(ouro_exc, json_mode=json_mode)
-        return error_exit_code(ouro_exc)
+        return report_error(ouro_exc, json_mode=json_mode)
 
     return _print_compaction_result(result, json_mode=json_mode)
 
@@ -583,16 +563,3 @@ def _sessions(
     session_backend: SessionBackend | None,
 ) -> SessionService:
     return build_local_session_services(home, session_backend=session_backend).sessions
-
-
-def _print_error(exc: Exception, *, json_mode: bool) -> None:
-    message = str(exc)
-    if json_mode:
-        print(
-            json.dumps(
-                {"status": "failed", "error": message, "error_type": type(exc).__name__},
-                ensure_ascii=False,
-            )
-        )
-    else:
-        print(f"Error: {message}", file=sys.stderr)

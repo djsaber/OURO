@@ -397,7 +397,6 @@ class PromptSkillActivationMetadata:
     name: str
     source: Literal["user", "workspace", "plugin"]
     location: str
-    content_digest: str
 
 
 @dataclass(frozen=True)

@@ -13,7 +13,6 @@ from ouro.core.plugin_contracts import PluginImplementation
 from ouro.core.tools import ToolCallRequest, ToolResult
 
 DEFAULT_DRIVER_ID = "ouro.default"
-DEFAULT_DRIVER_CONTRACT = "ouro.default/1"
 MAX_DRIVER_CHECKPOINT_BYTES = 64 * 1024
 
 
@@ -21,7 +20,6 @@ class RunDriverBinding(OuroModel):
     model_config = ConfigDict(frozen=True)
 
     driver_id: str = DEFAULT_DRIVER_ID
-    contract_hash: str = DEFAULT_DRIVER_CONTRACT
     implementation: PluginImplementation | None = None
     dependencies: tuple[PluginImplementation, ...] = ()
 
@@ -32,14 +30,10 @@ class RunDriverBinding(OuroModel):
     @model_validator(mode="after")
     def validate_contract(self) -> Self:
         if self.is_default:
-            if self.contract_hash != DEFAULT_DRIVER_CONTRACT or any(
-                (self.implementation, self.dependencies)
-            ):
+            if self.implementation is not None or self.dependencies:
                 raise ValueError("unsupported default Run driver contract")
-        elif (
-            self.implementation is None
-            or not self.contract_hash
-            or not self.driver_id.startswith(f"{self.implementation.plugin_id}/run_drivers/")
+        elif self.implementation is None or not self.driver_id.startswith(
+            f"{self.implementation.plugin_id}/run_drivers/"
         ):
             raise ValueError("plugin Run driver requires an exact implementation contract")
         elif len({item.plugin_id for item in self.implementations}) != len(self.implementations):
@@ -135,8 +129,6 @@ class RunDriverRegistration:
     plugin_id: str = ""
     release_id: str = ""
     owner: str = ""
-    contract_hash: str = ""
-    execution_contract_hash: str = ""
     implementation: PluginImplementation | None = None
     dependencies: tuple[PluginImplementation, ...] = ()
 
@@ -148,7 +140,6 @@ class RunDriverRegistration:
     def binding(self) -> RunDriverBinding:
         return RunDriverBinding(
             driver_id=self.canonical_id,
-            contract_hash=self.contract_hash,
             implementation=self.implementation,
             dependencies=self.dependencies,
         )

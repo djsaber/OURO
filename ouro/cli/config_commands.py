@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from typing import Unpack
 
-from ouro.cli.errors import error_exit_code
+from ouro.cli.errors import report_error
 from ouro.config import QueuedInputConsumptionMode
 from ouro.config.compaction import CompactionRequestChanges
 from ouro.core.agents import ExecutionMode
@@ -40,8 +39,7 @@ def show_permissions_config(
         else:
             config = facade.permission_config()
     except OuroError as exc:
-        _print_config_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     if json_mode:
         print(
@@ -100,8 +98,7 @@ def show_skill_discovery_config(
             else facade.skill_policy()
         )
     except OuroError as exc:
-        _print_config_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     public = config.model_dump(exclude={"config_path", "change"})
     if json_mode:
@@ -164,8 +161,7 @@ def show_compaction_config(
                 **request,
             )
     except OuroError as exc:
-        _print_config_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     public = config.model_dump(exclude={"config_path", "change"}, exclude_none=True)
     if json_mode:
@@ -226,8 +222,7 @@ def show_tool_execution_config(
             else facade.tool_execution_config()
         )
     except OuroError as exc:
-        _print_config_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     public = config.model_dump(exclude={"config_path", "change"})
     if json_mode:
@@ -269,8 +264,7 @@ def show_queued_input_config(
             else facade.queued_input_config()
         )
     except OuroError as exc:
-        _print_config_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     public = config.model_dump(exclude={"config_path", "change"})
     if json_mode:
@@ -329,8 +323,7 @@ def show_run_budget_config(
             else facade.run_budget_config()
         )
     except OuroError as exc:
-        _print_config_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     public = policy.model_dump(exclude={"config_path", "change"}, exclude_none=True)
     if json_mode:
@@ -406,8 +399,7 @@ def show_agent_runtime_config(
             else facade.agent_runtime_config()
         )
     except OuroError as exc:
-        _print_config_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     public = config.model_dump(exclude={"config_path", "change"}, exclude_none=True)
     if json_mode:
@@ -440,19 +432,3 @@ def show_agent_runtime_config(
         )
     )
     return 0
-
-
-def _print_config_error(exc: OuroError, *, json_mode: bool) -> None:
-    if json_mode:
-        print(
-            json.dumps(
-                {
-                    "status": "failed",
-                    "error": str(exc),
-                    "error_type": type(exc).__name__,
-                },
-                ensure_ascii=False,
-            )
-        )
-    else:
-        print(f"Error: {exc}", file=sys.stderr)

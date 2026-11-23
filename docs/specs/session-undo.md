@@ -305,7 +305,7 @@ finalizer 即使迟于撤销返回，也不能自动调度新代次队列。
 Plan、Goal 必须使用同一 owner 状态适配与提交机制。不得在撤销入口出现按插件 id 分支、反向调用业务
 undo 钩子、清空整个 extension state，或异常时恢复整个插件私有目录。
 
-Plan：模式由原生 controls 持有，owner 状态保存计划路径；两者共同提交。审批内容、digest、选项和恢复身份
+Plan：模式由原生 controls 持有，owner 状态保存计划路径；两者共同提交。审批正文、选项和恢复身份
 由原生交互请求持有，不在 owner 状态保存 pending ID、独立 revision 或重复执行输出。恢复业务条件不能复用旧审批授权。
 计划文件内容不回滚，文件与业务数据可能不同，以明确的状态数据决定当前行为。
 Goal：稳定目标身份、内容、业务状态、报告和预算属于 Harness；Run/activation 绑定由原生运行快照提供。

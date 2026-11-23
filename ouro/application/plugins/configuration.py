@@ -26,7 +26,6 @@ from ouro.plugins.models import (
     PluginConfigurationRevision,
     PluginRecord,
     PluginStateDocument,
-    configuration_revision_id,
     create_configuration_revision,
 )
 
@@ -150,7 +149,7 @@ class PluginConfigurationService:
         )
         expected = self.store.read_state()
         target = self._target(expected, candidate.plugin_id, candidate.package_digest)
-        result = self._preview(target, candidate)
+        result, _ = self._preview(target, candidate)
         if target.revision.revision_id != candidate.expected_configuration_revision_id:
             result.issues = (
                 *result.issues,
@@ -176,7 +175,7 @@ class PluginConfigurationService:
         target = self._target(expected, candidate.plugin_id, candidate.package_digest)
         if target.revision.revision_id != candidate.expected_configuration_revision_id:
             raise PluginConfigurationConflictError(candidate, target.revision.revision_id)
-        preview = self._preview(target, candidate)
+        preview, revision = self._preview(target, candidate)
         if not preview.valid:
             raise PluginConfigurationValidationError(preview.issues)
         if not preview.changed:
@@ -185,11 +184,6 @@ class PluginConfigurationService:
             raise RuntimeError(
                 "Cannot apply configuration to an enabled selected plugin without its runtime."
             )
-        revision = create_configuration_revision(
-            values=cast(dict[str, object], preview.candidate.values),
-            credential_refs=preview.candidate.credential_refs,
-            schema_version=target.version,
-        )
         updated = expected.model_copy(deep=True)
         updated.plugins[candidate.plugin_id].activation.set_configuration(
             candidate.package_digest, revision
@@ -237,16 +231,16 @@ class PluginConfigurationService:
 
     def _preview(
         self, target: _ConfigurationTarget, candidate: PluginConfigurationCandidate
-    ) -> PluginConfigurationPreview:
+    ) -> tuple[PluginConfigurationPreview, PluginConfigurationRevision]:
         if target.schema is not None:
             candidate.values = cast(dict[str, JsonValue], target.schema.normalize(candidate.values))
         issues = target.issues(cast(dict[str, object], candidate.values), candidate.credential_refs)
-        revision_id = configuration_revision_id(
+        revision = create_configuration_revision(
             values=cast(dict[str, object], candidate.values),
             credential_refs=candidate.credential_refs,
             schema_version=target.version,
         )
-        changed = revision_id != target.revision.revision_id
+        changed = revision.revision_id != target.revision.revision_id
         return PluginConfigurationPreview(
             candidate=candidate,
             valid=not issues,
@@ -257,7 +251,7 @@ class PluginConfigurationService:
             else "current_host"
             if target.requires_runtime
             else "stored",
-        )
+        ), revision
 
     def _result(
         self,

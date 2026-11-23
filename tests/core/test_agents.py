@@ -29,15 +29,12 @@ def _definition(agent_id: str = "general") -> AgentDefinition:
     )
 
 
-def test_agent_definition_contract_is_stable_and_content_addressed() -> None:
-    first = _definition()
-    second = AgentDefinition.model_validate(first.model_dump())
-
-    assert first.contract_hash == second.contract_hash
-    with pytest.raises(ValidationError, match="contract hash"):
-        AgentDefinition.model_validate(
-            {**first.model_dump(), "description": "changed", "contract_hash": first.contract_hash}
-        )
+def test_agent_definition_accepts_manual_edits_to_legacy_configuration() -> None:
+    edited = AgentDefinition.model_validate(
+        {**_definition().model_dump(), "description": "Updated", "contract_hash": "old"}
+    )
+    assert edited.description == "Updated"
+    assert "contract_hash" not in edited.model_dump()
 
 
 def test_agent_catalog_snapshot_freezes_definition_and_tool_contract() -> None:
@@ -45,7 +42,6 @@ def test_agent_catalog_snapshot_freezes_definition_and_tool_contract() -> None:
     tool = EffectiveToolRef(
         public_name="Read",
         canonical_tool_id="builtin/Read",
-        execution_contract_hash="sha256:read",
     )
     snapshot = AgentCatalogSnapshot(
         revision=3,
@@ -54,7 +50,6 @@ def test_agent_catalog_snapshot_freezes_definition_and_tool_contract() -> None:
 
     assert snapshot.resolve("general").definition == definition
     assert snapshot.resolve("general").effective_tools == (tool,)
-    assert snapshot.contract_hash
     with pytest.raises(KeyError, match="unknown or unavailable"):
         snapshot.resolve("missing")
 
@@ -64,7 +59,6 @@ def test_agent_catalog_rejects_entries_that_exceed_frozen_spawn_policy() -> None
     write_tool = EffectiveToolRef(
         public_name="Write",
         canonical_tool_id="builtin/Write",
-        execution_contract_hash="sha256:write",
         effect="state_changing",
     )
 

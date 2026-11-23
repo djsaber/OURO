@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from contextlib import ExitStack
 from itertools import chain
 
@@ -8,7 +7,7 @@ from pydantic import ConfigDict, ValidationError
 
 from ouro.application.contracts.base import ApplicationDTO, Diagnostic
 from ouro.core.base import OuroModel
-from ouro.core.errors import SessionBusyError
+from ouro.core.errors import ResourceIntegrityError, SessionBusyError
 from ouro.core.input_content import InputAttachment, InputFileReference
 from ouro.core.resources import ResourceRecord
 from ouro.core.state import ACTIVE_RUN_STATUSES
@@ -120,14 +119,6 @@ class SessionTransferService:
             raise DataTransferError("invalid or unsupported Session archive data") from exc
         if archive.index is not None and archive.index != session_archive_index(archive.manifest):
             raise DataTransferError("archive index does not match its manifest")
-        resources = _resource_files(bundle)
-        if archive.files.keys() != resources.keys():
-            raise DataTransferError("Session archive resource files do not match its manifest")
-        contents: dict[str, dict[str, bytes]] = {}
-        for name, (session_id, record) in resources.items():
-            contents.setdefault(session_id, {})[record.filename] = _verified_content(
-                record, archive.files[name]
-            )
         if identities:
             roots_by_id = {
                 item.snapshot.session.session_id: item.snapshot.session.agent_root_session_id
@@ -139,10 +130,13 @@ class SessionTransferService:
                     f"sessions not found in archive: {', '.join(sorted(missing))}"
                 )
             bundle = _select_roots(bundle, {roots_by_id[identity] for identity in identities})
-        return self._publish_import(bundle, contents, replace=replace)
+        try:
+            return self._publish_import(bundle, archive.files, replace=replace)
+        except ResourceIntegrityError as exc:
+            raise DataTransferError("Session archive resource integrity check failed") from exc
 
     def _publish_import(
-        self, bundle: SessionBundle, contents: dict[str, dict[str, bytes]], *, replace: bool
+        self, bundle: SessionBundle, files: dict[str, bytes], *, replace: bool
     ) -> SessionImportResult:
         selected_count = len(bundle.sessions)
         if not replace:
@@ -203,12 +197,15 @@ class SessionTransferService:
                         f"stop the active Session before replacement: {identity}"
                     )
             if bundle.sessions:
+                contents: dict[str, dict[str, bytes]] = {}
+                for name, (session_id, resource) in _resource_files(bundle).items():
+                    if name not in files:
+                        raise DataTransferError(f"Session archive resource is missing: {name}")
+                    contents.setdefault(session_id, {})[resource.filename] = files[name]
                 self.sessions.import_bundle(
                     bundle,
                     replace_session_ids=tuple(sorted(replaced_ids)),
-                    resource_contents={
-                        key: contents[key] for key in incoming.keys() & contents.keys()
-                    },
+                    resource_contents=contents,
                 )
         return SessionImportResult(
             count=len(bundle.sessions),
@@ -323,10 +320,7 @@ def _external_reference_diagnostics(bundle: SessionBundle) -> tuple[Diagnostic, 
 
 
 def _verified_content(record: ResourceRecord, content: bytes) -> bytes:
-    if (
-        len(content) != record.size
-        or f"sha256:{hashlib.sha256(content).hexdigest()}" != record.digest
-    ):
+    if not record.matches_content(content):
         raise DataTransferError("Session archive resource integrity check failed")
     return content
 

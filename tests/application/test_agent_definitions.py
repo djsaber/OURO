@@ -299,7 +299,7 @@ async def test_runtime_persists_run_frozen_agent_catalog(tmp_path) -> None:
 @pytest.mark.parametrize(
     "change,allowed",
     [
-        ({"execution_contract_hash": "new", "owner_id": "dev.test@two#gen2"}, True),
+        ({"owner_id": "dev.test@two#gen2"}, True),
         ({"canonical_tool_id": "dev.other/tools/read"}, False),
         ({"effect": "state_changing"}, False),
         ({"effect": "unknown"}, False),
@@ -313,7 +313,6 @@ def test_delegated_tool_ceiling_permits_updates_but_not_authority_expansion(chan
         public_name="read",
         canonical_tool_id="dev.test/tools/read",
         owner_id="dev.test@one#gen1",
-        execution_contract_hash="old",
         effect="read_only",
     )
     assert granted.permits(granted.model_copy(update=change)) is allowed
@@ -335,7 +334,7 @@ def test_enabled_state_updates_live_catalog_and_preserves_frozen_contract(tmp_pa
     detail = service.get(agent_id, tools=tools)
     assert not detail.enabled
     assert detail.compatibility == "available"
-    assert detail.contract_hash == frozen.resolve(agent_id).definition.contract_hash
+    assert detail.system_prompt == frozen.resolve(agent_id).definition.system_prompt
     with pytest.raises(KeyError):
         service.catalog_snapshot(tools).resolve(agent_id)
     with pytest.raises(ConfigError, match="revision conflict"):

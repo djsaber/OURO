@@ -43,7 +43,6 @@ class PlanOption:
 class PlanConfirmationRequest:
     plan_path: str
     plan: str
-    plan_digest: str | None
     options: tuple[PlanOption, ...] = ()
     actions: tuple[PlanConfirmationAction, ...] = PLAN_CONFIRMATION_ACTIONS
     error: str | None = None
@@ -54,14 +53,11 @@ class PlanConfirmationRequest:
             raise ValueError("input request is not a plan confirmation")
         plan_path = raw.get("plan_path")
         plan = raw.get("plan")
-        plan_digest = raw.get("plan_digest")
         error = raw.get("error")
         if not isinstance(plan_path, str) or not plan_path:
             raise ValueError("plan confirmation plan_path must not be empty")
         if not isinstance(plan, str):
             raise ValueError("plan confirmation plan must be a string")
-        if plan_digest is not None and not isinstance(plan_digest, str):
-            raise ValueError("plan confirmation plan_digest must be a string")
         if error is not None and not isinstance(error, str):
             raise ValueError("plan confirmation error must be a string")
 
@@ -84,7 +80,6 @@ class PlanConfirmationRequest:
         return cls(
             plan_path=plan_path,
             plan=plan,
-            plan_digest=plan_digest,
             options=options,
             actions=tuple(actions),
             error=error,
@@ -95,7 +90,6 @@ class PlanConfirmationRequest:
             "type": PLAN_CONFIRMATION_TYPE,
             "plan_path": self.plan_path,
             "plan": self.plan,
-            "plan_digest": self.plan_digest,
             "options": [option.to_json() for option in self.options],
             "actions": list(self.actions),
             "error": self.error,

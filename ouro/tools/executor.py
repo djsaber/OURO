@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from collections.abc import Callable, Coroutine, Mapping
 from typing import Any, Literal
 
@@ -21,7 +23,6 @@ from ouro.core.tool_policies import ToolPolicyMode
 from ouro.core.tools import (
     PermissionMode,
     ToolDefinition,
-    tool_definition_contract_hash,
 )
 from ouro.tools.base import (
     ToolExecutionAborted,
@@ -228,6 +229,11 @@ class ToolExecutor:
                 error_type="ToolExecutionContractMismatch",
                 error_message=contract_error,
             )
+        argument_error = tool_argument_error(tool.definition, invocation.arguments)
+        if argument_error is not None:
+            return _error_outcome(
+                invocation, error_type="ToolArgumentValidationError", error_message=argument_error
+            )
         if not tool.definition.resumable or tool.resume_handler is None:
             return _error_outcome(
                 invocation,
@@ -408,17 +414,52 @@ def _tool_contract_error(
     invocation: ToolInvocation,
     definition: ToolDefinition,
 ) -> str | None:
-    if invocation.definition_contract_hash is not None and (
-        invocation.definition_contract_hash != tool_definition_contract_hash(definition)
-    ):
-        return "persisted tool definition does not match the current contract"
     if invocation.canonical_tool_id is not None and (
         invocation.canonical_tool_id != definition.identity
         or invocation.source != definition.source
     ):
         return "persisted tool identity does not match the current tool"
-    for field in ("contract_hash", "execution_contract_hash"):
-        if (expected := getattr(invocation, field)) is not None:
-            if expected != definition.metadata.get(field):
-                return f"persisted {field} does not match the active tool contract"
+    if invocation.execution_contract_hash is not None and (
+        invocation.execution_contract_hash != definition.metadata.get("execution_contract_hash")
+    ):
+        return "persisted plugin implementation does not match the active tool"
+    if invocation.execution_variant is not None:
+        if invocation.execution_variant != definition.execution_variant:
+            return "the current tool variant differs from the saved execution contract"
+    elif definition.execution_variant is not None:
+        legacy = invocation.definition_contract_hash or invocation.contract_hash
+        if legacy is not None and legacy != _legacy_tool_variant_hash(definition):
+            return "the current tool variant differs from the saved execution contract"
+        if legacy is None and invocation.resumable is not None:
+            return "the current tool variant differs from the saved execution contract"
+    if invocation.resumable is not None and (
+        (invocation.effect != definition.effect and definition.effect != "read_only")
+        or (invocation.batch_behavior == "compatible" and definition.batch_behavior == "exclusive")
+        or invocation.permission_control != definition.permission_control
+        or invocation.active_when_controller_id != definition.active_when_controller_id
+        or invocation.interaction_controller_id != definition.interaction_controller_id
+    ):
+        return "persisted tool authority does not match the current tool"
     return None
+
+
+def _legacy_tool_variant_hash(definition: ToolDefinition) -> str:
+    """Old pending calls recorded their Shell dialect or tool-group revision only in a digest."""
+    contract = definition.model_dump(
+        mode="json", exclude={"canonical_id", "description", "display_name", "metadata"}
+    )
+    contract["canonical_id"] = definition.identity
+    contribution = definition.metadata.get("contribution_id")
+    group_tool = isinstance(contribution, str) and "/" in contribution
+    if group_tool:
+        owner, _, tool_id = definition.identity.rsplit("/", 2)
+        contract["canonical_id"] = f"{owner}/{tool_id}"
+        contract.pop("execution_variant", None)
+    encoded = json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    if group_tool:
+        encoded = json.dumps(
+            [contribution, definition.execution_variant, digest], separators=(",", ":")
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    return "sha256:" + digest

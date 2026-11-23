@@ -298,12 +298,11 @@ def test_skill_only_queue_preserves_content(historical_home):
         location="skills/example/SKILL.md",
         base_directory="skills/example",
         instructions="Example instructions",
-        content_digest="sha256:" + "0" * 64,
     )
 
     def change(raw):
         if raw["role"] == "user":
-            raw["content"] = [skill.model_dump(mode="json")]
+            raw["content"] = [{**skill.model_dump(mode="json"), "content_digest": "obsolete"}]
             raw["metadata"]["queued_input_id"] = "queue_skill"
 
     edit(historical_home, "messages", change)

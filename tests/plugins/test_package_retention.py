@@ -36,7 +36,6 @@ async def test_uninstall_retains_recoverable_code_without_install_or_activation(
         status="paused",
         driver=RunDriverBinding(
             driver_id=f"{PLUGIN}/run_drivers/reader",
-            contract_hash="driver",
             implementation=PluginImplementation(
                 plugin_id=PLUGIN,
                 plugin_class="user",

@@ -331,43 +331,6 @@ def test_contribution_type_inventory_is_closed_complete_and_lifecycle_explicit()
         else:
             assert adapter.sdk is not None
             assert adapter.worker is not None
-            assert adapter.contract is not None
-
-
-def test_host_tool_effect_and_batch_behavior_participate_in_catalog_contract_hash() -> None:
-    def contract_hash(*, effect: str, batch_behavior: str) -> str:
-        tools = ToolRegistry()
-        tools.register(
-            Tool(
-                definition=ToolDefinition(
-                    name="WorkflowControl",
-                    description="Control a workflow.",
-                    effect=effect,
-                    batch_behavior=batch_behavior,
-                ),
-                handler=lambda _invocation, context: ToolResult(
-                    tool_call_id="unused",
-                    tool_name="WorkflowControl",
-                ),
-            )
-        )
-        base = ExtensionCatalogBase.capture(
-            tools=tools,
-            observers=ObserverRegistry(),
-            commands=PluginCommandRegistry(),
-            compaction=CompactionStrategyRegistry(),
-            continuations=RunContinuationRegistry(),
-            tool_policies=ToolPolicyRegistry(),
-        )
-        catalog = build_extension_catalog(base, ())
-        return catalog.owners["ouro.host/tools/WorkflowControl"].contract_hash
-
-    compatible_read = contract_hash(effect="read_only", batch_behavior="compatible")
-    compatible_write = contract_hash(effect="state_changing", batch_behavior="compatible")
-    exclusive_read = contract_hash(effect="read_only", batch_behavior="exclusive")
-
-    assert compatible_read != compatible_write
-    assert compatible_read != exclusive_read
 
 
 def test_development_schema_versions_remain_strict(
@@ -647,7 +610,9 @@ async def test_missing_request_provider_honors_manifest_optionality(tmp_path, ki
         with runtime.snapshot() as snapshot:
             if optional:
                 assert result.status == "degraded"
-                assert snapshot.generations[0].contract_hashes == {}
+                assert not any(
+                    owner.plugin_id == "dev.ouro.echo" for owner in snapshot.catalog.owners.values()
+                )
                 assert any(
                     item.code == "plugin_optional_contribution_unavailable"
                     and f"{kind}/absent" in item.message
@@ -692,7 +657,7 @@ async def test_optional_plugin_mcp_failure_degrades_without_fake_contract(tmp_pa
     assert (await service.enable("dev.ouro.echo")).status == "degraded"
     with runtime.snapshot() as snapshot:
         assert snapshot.tools.names() == []
-        assert "dev.ouro.echo/mcp_servers/calendar" not in (snapshot.generations[0].contract_hashes)
+        assert "dev.ouro.echo/mcp_servers/calendar" not in snapshot.catalog.owners
     assert any(
         item.code == "plugin_optional_contribution_unavailable"
         and "mcp_servers/calendar" in item.message
@@ -744,7 +709,7 @@ async def test_plugin_mcp_tools_are_frozen_in_catalog_and_resource_closes(
         assert isinstance(resource, PluginMCPResource)
         with runtime.snapshot() as snapshot:
             assert snapshot.tools.names() == ["echo_calendar__echo"]
-            assert "dev.ouro.echo/mcp_servers/calendar" in (snapshot.generations[0].contract_hashes)
+            assert "dev.ouro.echo/mcp_servers/calendar" in snapshot.catalog.owners
             definition = snapshot.tools.get("echo_calendar__echo").definition
             assert definition.permission_mode == "approval"
             assert definition.metadata["mcp_server_id"] == "echo_calendar"
@@ -760,7 +725,6 @@ async def test_plugin_mcp_tools_are_frozen_in_catalog_and_resource_closes(
                         tool_name="echo_calendar__echo",
                         canonical_tool_id=definition.identity,
                         source=definition.source,
-                        contract_hash=definition.metadata["contract_hash"],
                         execution_contract_hash=definition.metadata["execution_contract_hash"],
                         arguments={"value": "hello"},
                     ),
@@ -1012,7 +976,6 @@ def create_plugin(context):
         definition = current.tools.get("echo__run").definition
         assert definition.permission_mode == "auto"
         assert definition.permission_control == "host"
-        assert definition.metadata["contract_hash"]
         control_definition = current.tools.get("echo__control").definition
         assert control_definition.permission_mode == "auto"
         assert control_definition.permission_control == "tool"
@@ -1177,7 +1140,7 @@ async def test_declarative_skill_is_projected_into_immutable_catalog(tmp_path, m
     assert (await service.enable("dev.ouro.echo")).status == "active"
 
     snapshot = runtime.snapshot()
-    assert "dev.ouro.echo/skills/calendar" in snapshot.generations[0].contract_hashes
+    assert "dev.ouro.echo/skills/calendar" in snapshot.catalog.owners
     assert snapshot.observers.registered() == []
     assert [skill.name for skill in snapshot.skills] == ["calendar"]
     skill = snapshot.skills[0]
@@ -1193,7 +1156,6 @@ async def test_declarative_skill_is_projected_into_immutable_catalog(tmp_path, m
         "package_digest": snapshot.generations[0].package_digest,
         "generation_id": snapshot.generations[0].generation_id,
         "contribution_id": "calendar",
-        "execution_contract_hash": snapshot.generations[0].execution_contract_hash,
     }
     activation = SkillActivationService().resolve_user_activation(
         snapshot.skills, SkillInvocationRequest(name="calendar")
@@ -1454,8 +1416,7 @@ def create_plugin(context): return Plugin(context)
     assert command_view.usage == "[formal|casual]"
     assert [item.value for item in command_view.argument_options] == ["formal", "casual"]
     with runtime.snapshot() as snapshot:
-        contracts = snapshot.generations[0].contract_hashes
-        assert "dev.ouro.echo/background_services/watcher" in contracts
+        assert "dev.ouro.echo/background_services/watcher" in snapshot.catalog.owners
     result = await service.execute_command("dev.ouro.echo:hello", "world")
     assert result.output == "hello world"
     status = home / "plugins" / "data" / "dev.ouro.echo" / "watcher.txt"
@@ -1501,7 +1462,6 @@ def test_candidate_catalog_failure_does_not_mutate_host_registries(tmp_path) -> 
         release_id=installed.package_digest,
         runtime_kind="declarative",
         configuration_revision_id="1" * 64,
-        dependency_lock_fingerprint="2" * 64,
         plugin_api_version="2.0.0",
     )
     prepared = prepare_contributions(
@@ -1569,7 +1529,6 @@ def test_failed_candidate_catalog_leaves_previous_catalog_immutable() -> None:
         release_id="digest-1",
         runtime_kind="declarative",
         configuration_revision_id="1" * 64,
-        dependency_lock_fingerprint="2" * 64,
         plugin_api_version="2.0.0",
     )
     previous_catalog = build_extension_catalog(
@@ -1618,7 +1577,6 @@ def test_failed_candidate_catalog_leaves_previous_catalog_immutable() -> None:
         release_id="digest-2",
         runtime_kind="declarative",
         configuration_revision_id="3" * 64,
-        dependency_lock_fingerprint="4" * 64,
         plugin_api_version="2.0.0",
     )
     with pytest.raises(ValueError, match="tool already registered"):
@@ -3252,7 +3210,6 @@ def create_plugin(context): return Plugin()
                 tool_name=definition.name,
                 canonical_tool_id=definition.identity,
                 source=definition.source,
-                contract_hash=definition.metadata["contract_hash"],
                 execution_contract_hash=definition.metadata["execution_contract_hash"],
                 arguments={"value": "hello"},
             )
@@ -3276,7 +3233,7 @@ def create_plugin(context): return Plugin()
             current = snapshot.generations[0]
             assert current.generation_id != original.generation_id
             assert current.execution_contract_hash == original.execution_contract_hash
-            assert "dev.ouro.optional/tools/maybe" not in current.contract_hashes
+            assert "dev.ouro.optional/tools/maybe" not in snapshot.catalog.owners
             outcome = await ToolExecutor(snapshot.tools).execute(pending, approved=True)
             assert outcome.status == "completed"
             assert outcome.result is not None and outcome.result.content == "ok"
@@ -3289,7 +3246,7 @@ def create_plugin(context): return Plugin()
             )
             outcome = await ToolExecutor(snapshot.tools).execute(pending, approved=True)
             assert outcome.result is not None
-            assert outcome.result.structured["error_type"] == "ToolExecutionContractMismatch"
+            assert outcome.result.structured["error_type"] == "ToolArgumentValidationError"
     finally:
         await runtime.close()
 
@@ -3553,7 +3510,7 @@ def create_plugin(context): return Plugin()
 
 
 @pytest.mark.asyncio
-async def test_sdk_tool_description_must_match_manifest(tmp_path) -> None:
+async def test_sdk_tool_uses_the_description_published_in_its_manifest(tmp_path) -> None:
     source = tmp_path / "tool-description"
     source.mkdir()
     _write_native_plugin(
@@ -3589,11 +3546,11 @@ def create_plugin(context): return Plugin()
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
 
-    assert (await service.enable("dev.ouro.tool_description")).status == "failed"
-    assert any(
-        "tool description does not match manifest" in item.message
-        for item in service.diagnostics("dev.ouro.tool_description")
-    )
+    assert (await service.enable("dev.ouro.tool_description")).status == "active"
+    with runtime.snapshot() as catalog:
+        assert catalog.tools.get("description__inspect").definition.description == (
+            "Use this tool to inspect the selected resource."
+        )
     await runtime.close()
 
 
@@ -3882,10 +3839,6 @@ async def test_configuration_rebuilds_transitive_desired_dependants(tmp_path) ->
             generation.plugin_id: generation.execution_contract_hash
             for generation in before.generations
         }
-        old_dependency_locks = {
-            generation.plugin_id: generation.dependency_lock_fingerprint
-            for generation in before.generations
-        }
 
     assert (
         await service.configure(
@@ -3900,10 +3853,6 @@ async def test_configuration_rebuilds_transitive_desired_dependants(tmp_path) ->
             generation.plugin_id: generation.execution_contract_hash
             for generation in after.generations
         }
-        new_dependency_locks = {
-            generation.plugin_id: generation.dependency_lock_fingerprint
-            for generation in after.generations
-        }
     assert set(new_generations) == {
         "dev.ouro.root",
         "dev.ouro.middle",
@@ -3914,9 +3863,6 @@ async def test_configuration_rebuilds_transitive_desired_dependants(tmp_path) ->
         new_execution_contracts[item] != old_execution_contracts[item]
         for item in new_execution_contracts
     )
-    assert new_dependency_locks["dev.ouro.root"] == old_dependency_locks["dev.ouro.root"]
-    assert new_dependency_locks["dev.ouro.middle"] != old_dependency_locks["dev.ouro.middle"]
-    assert new_dependency_locks["dev.ouro.leaf"] != old_dependency_locks["dev.ouro.leaf"]
     await runtime.close()
 
 

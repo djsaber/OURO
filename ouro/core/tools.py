@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, Literal, Self
@@ -74,15 +72,6 @@ class ToolDefinition(OuroModel):
     def identity(self) -> str:
         return self.canonical_id or f"ouro.host/tools/{self.name}"
 
-    def execution_contract(self) -> dict[str, Any]:
-        """Invocation semantics, independent of presentation and runtime provenance."""
-        return {
-            **self.model_dump(
-                mode="json", exclude={"canonical_id", "description", "display_name", "metadata"}
-            ),
-            "canonical_id": self.identity,
-        }
-
     @model_validator(mode="after")
     def validate_tool_contract(self) -> Self:
         _validate_permission_control(self.permission_mode, self.permission_control)
@@ -137,7 +126,10 @@ class ToolInvocationBinding(OuroModel):
     permission_mode: PermissionMode = "auto"
     permission_control: ToolPermissionControl = "host"
     resumable: bool | None = None
-    definition_contract_hash: str | None = None
+    execution_variant: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    definition_contract_hash: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     approval_id: str | None = None
     plugin_id: str | None = None
     plugin_version: str | None = None
@@ -145,7 +137,7 @@ class ToolInvocationBinding(OuroModel):
     release_id: str | None = None
     package_digest: str | None = None
     generation_id: str | None = None
-    contract_hash: str | None = None
+    contract_hash: str | None = Field(default=None, exclude_if=lambda value: value is None)
     execution_contract_hash: str | None = None
     active_when_controller_id: str | None = None
     interaction_controller_id: str | None = None
@@ -292,16 +284,6 @@ class ToolExecutionOutcome(OuroModel):
         if self.control_request is not None and self.result is not None:
             raise ValueError("a control request is not an observed tool result")
         return self
-
-
-def tool_definition_contract_hash(definition: ToolDefinition) -> str:
-    encoded = json.dumps(
-        definition.execution_contract(),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def _validate_permission_control(

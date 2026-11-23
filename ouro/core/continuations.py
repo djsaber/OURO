@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Literal
 
 from pydantic import Field, model_validator
@@ -10,6 +10,7 @@ from ouro.core.base import OuroModel
 from ouro.core.callbacks import invoke_bounded_callback
 from ouro.core.harness_calls import HarnessStateChange
 from ouro.core.message_semantics import SemanticTag
+from ouro.core.policy_registry import PolicyRegistry
 from ouro.core.redaction import redact_text
 from ouro.core.session_controls import (
     SessionControlTransitionRequest,
@@ -63,7 +64,6 @@ class ContinuationPolicyRegistration:
     owner: str | None = None
     generation_id: str | None = None
     execution_contract_hash: str | None = None
-    contract_hash: str | None = None
     active_when_controller_id: str | None = None
 
 
@@ -81,7 +81,6 @@ class AttributedContinuationDecision(OuroModel):
     policy_id: str
     generation_id: str | None = None
     execution_contract_hash: str | None = None
-    contract_hash: str | None = None
     decision: ContinuationDecision
 
 
@@ -91,76 +90,17 @@ class ContinuationEvaluation:
     failures: list[ContinuationFailure] = field(default_factory=list)
 
 
-class RunContinuationRegistry:
+class RunContinuationRegistry(PolicyRegistry[ContinuationPolicyRegistration]):
     """Owner-aware registry for deterministic, post-Run continuation policies."""
 
-    def __init__(self) -> None:
-        self._registrations: list[ContinuationPolicyRegistration] = []
-        self._frozen = False
-        self._active_controller_ids: Callable[[], set[str]] | None = None
-
-    def freeze(self) -> None:
-        self._frozen = True
-
-    def _require_mutable(self) -> None:
-        if self._frozen:
-            raise RuntimeError("continuation registry structure is frozen")
-
-    def replace_owner(
-        self,
-        owner: str,
-        registrations: tuple[ContinuationPolicyRegistration, ...],
-    ) -> None:
-        self._require_mutable()
-        identities = [(item.plugin_id, item.policy_id) for item in registrations]
-        if len(identities) != len(set(identities)):
-            raise ValueError("replacement contains duplicate continuation policy identities")
-        if any(item.timeout_seconds <= 0 for item in registrations):
-            raise ValueError("continuation policy timeout must be positive")
-        retained = [item for item in self._registrations if item.owner != owner]
-        self._registrations = [
-            *retained,
-            *(replace(item, owner=owner) for item in registrations),
-        ]
-
-    def unregister_owner(self, owner: str) -> None:
-        self.replace_owner(owner, ())
-
-    def snapshot(self) -> list[ContinuationPolicyRegistration]:
-        return list(self._registrations)
-
-    def restore(self, snapshot: list[ContinuationPolicyRegistration]) -> None:
-        self._require_mutable()
-        self._registrations = list(snapshot)
-
-    def registered(self) -> list[ContinuationPolicyRegistration]:
-        active = self._active_controller_ids() if self._active_controller_ids is not None else None
-        return sorted(
-            (
-                item
-                for item in self._registrations
-                if active is None
-                or item.active_when_controller_id is None
-                or item.active_when_controller_id in active
-            ),
-            key=lambda item: (item.priority, item.plugin_id, item.policy_id, item.owner or ""),
-        )
-
-    def scoped(
-        self,
-        active_controller_ids: Callable[[], set[str]],
-    ) -> RunContinuationRegistry:
-        scoped = RunContinuationRegistry()
-        scoped.restore(self.snapshot())
-        scoped._active_controller_ids = active_controller_ids
-        scoped.freeze()
-        return scoped
+    _policy_name = "continuation policy"
+    _registry_name = "continuation"
 
     async def evaluate(
         self,
         outcome: RunOutcome,
         *,
-        controller_ids: set[tuple[str, str, str, str]] | None = None,
+        controller_ids: set[tuple[str, str, str]] | None = None,
     ) -> ContinuationEvaluation:
         evaluation = ContinuationEvaluation()
         registrations = self.registered()
@@ -169,14 +109,11 @@ class RunContinuationRegistry:
                 registration.plugin_id,
                 registration.policy_id,
                 registration.execution_contract_hash or "",
-                registration.contract_hash or "",
             )
             for registration in registrations
         }
         if controller_ids is not None:
-            for plugin_id, policy_id, execution_hash, contract_hash in sorted(
-                controller_ids - available_ids
-            ):
+            for plugin_id, policy_id, execution_hash in sorted(controller_ids - available_ids):
                 evaluation.failures.append(
                     ContinuationFailure(
                         plugin_id=plugin_id,
@@ -186,7 +123,7 @@ class RunContinuationRegistry:
                         error_type="ContinuationPolicyUnavailable",
                         message=(
                             "required continuation policy execution contract is unavailable: "
-                            f"{execution_hash}:{contract_hash}"
+                            f"{execution_hash}"
                         ),
                     )
                 )
@@ -195,7 +132,6 @@ class RunContinuationRegistry:
                 registration.plugin_id,
                 registration.policy_id,
                 registration.execution_contract_hash or "",
-                registration.contract_hash or "",
             )
             if controller_ids is not None and identity not in controller_ids:
                 continue
@@ -214,7 +150,6 @@ class RunContinuationRegistry:
                             policy_id=registration.policy_id,
                             generation_id=registration.generation_id,
                             execution_contract_hash=registration.execution_contract_hash,
-                            contract_hash=registration.contract_hash,
                             decision=raw,
                         )
                     )

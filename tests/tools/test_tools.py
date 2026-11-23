@@ -6,7 +6,6 @@ import pytest
 
 from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
-from ouro.core.tools import tool_definition_contract_hash
 from ouro.tools import (
     Tool,
     ToolBatchExecutor,
@@ -85,16 +84,30 @@ def test_terminal_tool_result_without_start_has_zero_duration() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("plugin", [False, True])
-@pytest.mark.parametrize("change", ["presentation", "identity", "parameters", "result"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "presentation",
+        "identity",
+        "optional",
+        "parameters",
+        "result",
+        "variant",
+        "effect",
+        "read_only",
+        "compatible",
+    ],
+)
 async def test_pending_tool_checks_execution_semantics_before_calling_handler(plugin, change):
     definition = ToolDefinition(
         name="pending",
         canonical_id="example/tools/pending" if plugin else None,
         source="official_plugin" if plugin else "builtin",
         description="Original description",
+        effect="state_changing" if change == "read_only" else "read_only",
+        batch_behavior="exclusive" if change == "compatible" else "compatible",
         parameters_schema={"type": "object"},
     )
-    contract_hash = tool_definition_contract_hash(definition)
     invocation = ToolInvocation(
         session_id="ses_1",
         run_id="run_1",
@@ -102,8 +115,9 @@ async def test_pending_tool_checks_execution_semantics_before_calling_handler(pl
         arguments={},
         source=definition.source,
         canonical_tool_id=definition.identity,
-        definition_contract_hash=None if plugin else contract_hash,
-        contract_hash=contract_hash if plugin else None,
+        resumable=definition.resumable,
+        effect=definition.effect,
+        batch_behavior=definition.batch_behavior,
         execution_contract_hash="execution" if plugin else None,
     )
     if change == "presentation":
@@ -111,6 +125,16 @@ async def test_pending_tool_checks_execution_semantics_before_calling_handler(pl
         definition.display_name = "A friendly label"
         definition.canonical_id = definition.identity
         definition.metadata = {"generation_id": "another-process"}
+    elif change == "optional":
+        definition.parameters_schema["properties"] = {"extra": {"type": "string"}}
+    elif change == "variant":
+        definition.execution_variant = "different"
+    elif change == "read_only":
+        definition.effect = "read_only"
+    elif change == "compatible":
+        definition.batch_behavior = "compatible"
+    elif change == "effect":
+        definition.effect = "state_changing"
     elif change == "identity":
         definition.canonical_id = "another/tools/pending"
     elif change == "result":
@@ -118,10 +142,7 @@ async def test_pending_tool_checks_execution_semantics_before_calling_handler(pl
     else:
         definition.parameters_schema = {"type": "object", "required": ["value"]}
     if plugin:
-        definition.metadata.update(
-            contract_hash=tool_definition_contract_hash(definition),
-            execution_contract_hash="execution",
-        )
+        definition.metadata["execution_contract_hash"] = "execution"
     calls = []
 
     def handler(invocation, context):
@@ -134,11 +155,15 @@ async def test_pending_tool_checks_execution_semantics_before_calling_handler(pl
     registry.register(Tool(definition=definition, handler=handler))
     outcome = await ToolExecutor(registry).execute(invocation)
     assert outcome.result is not None
-    if change == "presentation":
+    if change in {"presentation", "optional", "result", "read_only", "compatible"}:
         assert not outcome.result.is_error
         assert calls == [invocation.tool_call_id]
     else:
-        assert outcome.result.structured["error_type"] == "ToolExecutionContractMismatch"
+        assert outcome.result.structured["error_type"] == (
+            "ToolArgumentValidationError"
+            if change == "parameters"
+            else "ToolExecutionContractMismatch"
+        )
         assert calls == []
 
 

@@ -33,7 +33,7 @@ def test_agent_definition_config_crud_uses_expected_revision(tmp_path) -> None:
 
     renamed = AgentDefinition(
         **{
-            **_definition().model_dump(exclude={"contract_hash"}),
+            **_definition().model_dump(),
             "name": "Code reviewer",
         }
     )

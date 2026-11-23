@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -79,7 +77,6 @@ class ContributionOwnerRecord:
     release_id: str | None
     package_digest: str | None
     generation_id: str | None
-    contract_hash: str
 
 
 @dataclass(frozen=True)
@@ -320,10 +317,6 @@ class ExtensionCatalog:
             for plugin_id in self._ordered_plugins(plugin_ids)
         )
 
-    def contract_hash(self, canonical_identity: str) -> str | None:
-        owner = self.owners.get(canonical_identity)
-        return owner.contract_hash if owner is not None else None
-
     def continuation_controllers(
         self, controls: SessionControlState
     ) -> list[RunContinuationControllerRef]:
@@ -338,19 +331,6 @@ class ExtensionCatalog:
                 raise RuntimeError(
                     "continuation policy is not owned by the active extension generation: "
                     f"{registration.plugin_id}:{registration.policy_id}"
-                )
-            canonical_id = (
-                f"{registration.plugin_id}/continuation_policies/{registration.policy_id}"
-            )
-            contract_hash = self.contract_hash(canonical_id)
-            if contract_hash is None:
-                raise RuntimeError(f"continuation policy contract is missing: {canonical_id}")
-            if (
-                registration.execution_contract_hash != generation.execution_contract_hash
-                or registration.contract_hash != contract_hash
-            ):
-                raise RuntimeError(
-                    f"continuation policy execution contract is inconsistent: {canonical_id}"
                 )
             activation = (
                 activations.get(registration.active_when_controller_id)
@@ -369,7 +349,6 @@ class ExtensionCatalog:
                     release_id=generation.release_id,
                     package_digest=generation.package_digest,
                     generation_id=generation.generation_id,
-                    contract_hash=contract_hash,
                     execution_contract_hash=generation.execution_contract_hash,
                     active_when_controller_id=registration.active_when_controller_id,
                     activation_id=(activation.activation_id if activation is not None else None),
@@ -470,9 +449,6 @@ class ExtensionCatalogLease:
     def session_controllers(self) -> SessionControllerRegistry:
         return self.catalog.session_controllers
 
-    def contract_hash(self, canonical_identity: str) -> str | None:
-        return self.catalog.contract_hash(canonical_identity)
-
     def fork(self) -> ExtensionCatalogLease:
         if self._closed:
             raise RuntimeError("extension catalog lease is closed")
@@ -559,7 +535,7 @@ def build_extension_catalog(
             project_prepared_contributions(
                 targets, owner=owner, prepared=prepared, gate=source.gate
             )
-            for identity, contract_hash in prepared.contract_hashes.items():
+            for identity in prepared.identities():
                 if identity in owners:
                     conflict = owners[identity]
                     raise ValueError(
@@ -574,7 +550,6 @@ def build_extension_catalog(
                     release_id=source.record.release_id,
                     package_digest=source.record.package_digest,
                     generation_id=source.record.generation_id,
-                    contract_hash=contract_hash,
                 )
         except Exception as exc:
             raise CatalogContributionError(source.record.plugin_id, exc) from exc
@@ -615,146 +590,38 @@ def build_extension_catalog(
 def _base_owner_records(
     base: ExtensionCatalogBase,
 ) -> dict[str, ContributionOwnerRecord]:
-    records: dict[str, ContributionOwnerRecord] = {}
-    for tool in base.tools[0].values():
-        identity = tool.definition.identity
-        records[identity] = _host_owner(
-            identity,
-            _hash(tool.definition.execution_contract()),
-        )
-    for observer_registration in base.observers:
-        identity = (
-            "ouro.host/observers/"
-            f"{observer_registration.plugin_id}:{observer_registration.observer_id}"
-        )
-        records[identity] = _host_owner(
-            identity,
-            _hash(
-                {
-                    "event": observer_registration.event,
-                    "event_types": list(observer_registration.event_types),
-                    "source": observer_registration.source,
-                    "priority": observer_registration.priority,
-                    "enabled": observer_registration.enabled,
-                    "timeout_seconds": observer_registration.timeout_seconds,
-                }
-            ),
-        )
-    for kind, registrations in (
+    identities = [tool.definition.identity for tool in base.tools[0].values()]
+    identities.extend(
+        f"ouro.host/observers/{item.plugin_id}:{item.observer_id}" for item in base.observers
+    )
+    for kind, providers in (
         ("context_providers", base.context_providers),
         ("system_prompt_providers", base.system_prompt_providers),
     ):
-        for provider in registrations:
-            identity = f"ouro.host/{kind}/{provider.plugin_id}:{provider.provider_id}"
-            records[identity] = _host_owner(
-                identity,
-                _hash(
-                    {
-                        "priority": provider.priority,
-                        "timeout_seconds": provider.timeout_seconds,
-                        "failure_mode": provider.failure_mode,
-                    }
-                ),
-            )
-    for identity, command in base.commands.items():
-        canonical = f"ouro.host/commands/{identity}"
-        records[canonical] = _host_owner(
-            canonical,
-            _hash({"description": command.description}),
+        identities.extend(
+            f"ouro.host/{kind}/{item.plugin_id}:{item.provider_id}" for item in providers
         )
-    for strategy_id, strategy in base.compaction[0].items():
-        identity = f"ouro.host/compaction_strategies/{strategy_id}"
-        records[identity] = _host_owner(identity, _hash({"version": strategy.version}))
-    for continuation_registration in base.continuations:
-        identity = (
-            "ouro.host/continuation_policies/"
-            f"{continuation_registration.plugin_id}:{continuation_registration.policy_id}"
+    identities.extend(f"ouro.host/commands/{name}" for name in base.commands)
+    identities.extend(f"ouro.host/compaction_strategies/{name}" for name in base.compaction[0])
+    for kind, policies in (
+        ("continuation_policies", base.continuations),
+        ("tool_policies", base.tool_policies),
+        ("prompt_policies", base.prompt_policies),
+        ("turn_policies", base.turn_policies),
+    ):
+        identities.extend(
+            f"ouro.host/{kind}/{item.plugin_id}:{item.policy_id}" for item in policies
         )
-        records[identity] = _host_owner(
-            identity,
-            _hash(
-                {
-                    "priority": continuation_registration.priority,
-                    "timeout_seconds": continuation_registration.timeout_seconds,
-                }
-            ),
+    identities.extend(f"ouro.host/skills/{item.name}" for item in base.skills)
+    return {
+        identity: ContributionOwnerRecord(
+            canonical_identity=identity,
+            owner_id="ouro.host",
+            plugin_class="builtin",
+            plugin_id="ouro.host",
+            release_id=None,
+            package_digest=None,
+            generation_id=None,
         )
-    for tool_policy_registration in base.tool_policies:
-        identity = (
-            "ouro.host/tool_policies/"
-            f"{tool_policy_registration.plugin_id}:{tool_policy_registration.policy_id}"
-        )
-        records[identity] = _host_owner(
-            identity,
-            _hash(
-                {
-                    "priority": tool_policy_registration.priority,
-                    "timeout_seconds": tool_policy_registration.timeout_seconds,
-                }
-            ),
-        )
-    for prompt_policy_registration in base.prompt_policies:
-        identity = (
-            "ouro.host/prompt_policies/"
-            f"{prompt_policy_registration.plugin_id}:{prompt_policy_registration.policy_id}"
-        )
-        records[identity] = _host_owner(
-            identity,
-            _hash(
-                {
-                    "priority": prompt_policy_registration.priority,
-                    "timeout_seconds": prompt_policy_registration.timeout_seconds,
-                }
-            ),
-        )
-    for turn_policy_registration in base.turn_policies:
-        identity = (
-            "ouro.host/turn_policies/"
-            f"{turn_policy_registration.plugin_id}:{turn_policy_registration.policy_id}"
-        )
-        records[identity] = _host_owner(
-            identity,
-            _hash(
-                {
-                    "priority": turn_policy_registration.priority,
-                    "timeout_seconds": turn_policy_registration.timeout_seconds,
-                }
-            ),
-        )
-    for skill in base.skills:
-        identity = f"ouro.host/skills/{skill.name}"
-        records[identity] = _host_owner(
-            identity,
-            _hash(
-                {
-                    "name": skill.name,
-                    "description": skill.description,
-                    "source": skill.source,
-                    "location": skill.location,
-                }
-            ),
-        )
-    return records
-
-
-def _host_owner(identity: str, contract_hash: str) -> ContributionOwnerRecord:
-    return ContributionOwnerRecord(
-        canonical_identity=identity,
-        owner_id="ouro.host",
-        plugin_class="builtin",
-        plugin_id="ouro.host",
-        release_id=None,
-        package_digest=None,
-        generation_id=None,
-        contract_hash=contract_hash,
-    )
-
-
-def _hash(value: object) -> str:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+        for identity in identities
+    }

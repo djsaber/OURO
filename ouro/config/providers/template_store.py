@@ -123,13 +123,6 @@ class _LoadedTemplate:
         self.raw = raw
         self.meta = meta
         self.template = template
-        fingerprint = meta.baseline_fingerprint
-        self.modified = (
-            meta.origin == "inline"
-            and template is not None
-            and fingerprint is not None
-            and template_fingerprint(_business(raw)) != fingerprint
-        )
 
 
 def _normalize_meta(
@@ -198,7 +191,6 @@ def _apply_inline_template(item: _LoadedTemplate, inline_template: ProviderTempl
     item.raw["meta"] = meta.model_dump(mode="json")
     item.meta = meta
     item.template = inline_template
-    item.modified = False
 
 
 def _sync_meta(item: _LoadedTemplate) -> None:
@@ -426,7 +418,7 @@ class ProviderTemplateStore:
                 continue
             if baseline == inline_template.revision:
                 continue
-            if item.modified:
+            if template_fingerprint(_business(item.raw)) != item.meta.baseline_fingerprint:
                 item.meta.baseline_revision = inline_template.revision
                 _sync_meta(item)
                 changed = True

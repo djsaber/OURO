@@ -51,7 +51,6 @@ def prepared_run(store, child, relation):
                 "root_session_id": relation.root_session_id,
                 "delegation_id": relation.delegation_id,
                 "agent_id": relation.agent_id,
-                "agent_definition_contract_hash": relation.definition.contract_hash,
             },
         ),
     )
@@ -129,14 +128,14 @@ async def test_cold_child_binding_uses_frozen_prompt_budget_and_empty_tool_ceili
     assert cold.load_delegation(relation.root_session_id, relation.delegation_id) == relation
 
 
-@pytest.mark.parametrize("damage", ["contract", "child", "missing"])
+@pytest.mark.parametrize("damage", ["agent", "child", "missing"])
 async def test_invalid_delegation_fails_closed_before_exposing_host_tools(store, damage):
     child = SessionRecord()
     store.create_session(child)
     relation = seed_delegation(store, child)
     run = prepared_run(store, child, relation)
-    if damage == "contract":
-        run.metadata["agent_definition_contract_hash"] = "different-contract"
+    if damage == "agent":
+        run.metadata["agent_id"] = "different-agent"
     elif damage == "child":
         other = SessionRecord()
         store.create_session(other)

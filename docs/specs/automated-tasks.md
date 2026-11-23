@@ -295,7 +295,7 @@ TUI 与 `run` 入口接受任务后端选择。无效后端在组合边界报告
   records/<task_id>/
     task.json                      # 任务、历史头、完成/失败次数及审批投影
     executions/<execution_id>.json  # 单次执行及前一执行身份
-    occurrences/<UTC时刻的哈希>     # 发生点到执行身份的去重记录
+    scheduled/<UTC时刻>             # 发生点到执行身份的去重记录
 ```
 
 - `task.json` 和执行文件是规范数据，不存储会话正文；`index.json` 只保存任务元数据，丢失或损坏时从任务

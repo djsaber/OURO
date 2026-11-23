@@ -18,7 +18,6 @@ def _activation(*, instructions: str = "Inspect the target carefully.") -> Skill
         location="C:/workspace/.ouro/skills/reviewer/SKILL.md",
         base_directory="C:/workspace/.ouro/skills/reviewer",
         instructions=instructions,
-        content_digest=f"sha256:{'a' * 64}",
     )
 
 

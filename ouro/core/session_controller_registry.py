@@ -62,7 +62,6 @@ class SessionController:
     package_digest: str | None = None
     owner: str | None = None
     generation_id: str | None = None
-    contract_hash: str | None = None
     execution_contract_hash: str | None = None
 
     @property

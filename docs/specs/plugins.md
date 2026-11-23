@@ -118,7 +118,7 @@ ExtensionCatalog
 Plugin API 与 worker protocol。依赖指纹绑定实际装载的直接依赖及其 execution contract，并通过依赖自身的
 契约覆盖传递闭包。依赖锁只保存插件身份、版本、发布身份和直接依赖关系；来源归属由装配和加载边界管理。
 
-具体待完成调用独立绑定所用 contribution contract；同一发布、配置与依赖下，无关贡献的可用性变化不阻止
+待完成工具调用绑定工具身份、执行权限和变体。同一发布、配置与依赖下，无关贡献的可用性变化不阻止
 该调用恢复。外部工作区指令、Session 制品与动态输入由各自读取和持久化边界管理。
 
 安装记录从内嵌 Manifest 取得插件 ID 与版本，包摘要由安装记录拥有，provenance 保存来源。
@@ -492,7 +492,7 @@ Host 提交用例经 Runtime 结算已接受的取消意图，不重复发起取
 - 不兼容变更须明确提升相应版本，并检查公开调用方及持久化契约影响；
 - Host 不提供 deprecated API 周期或旧 protocol adapter；
 - 更新必须同步 Manifest schema、SDK、worker、测试、示例和文档；
-- durable record 依赖 contract hash，不依赖 Python 类型名。
+- 持久记录按贡献 ID 和所属插件执行身份恢复。
 
 ## 9. Contribution 与 Catalog
 
@@ -628,13 +628,12 @@ Host 为每种贡献在 `ContributionTypeAdapter` 清单中登记以下职责。
 - 校验 Manifest 声明。
 - 将 SDK 注册或 worker 响应转换为原生注册项。
 - 判定冲突和可选实现缺失。
-- 提供契约哈希所用的材料。
 - 将注册项投影到目录。
 - 按所有者清理资源并报告诊断。
 
-宿主用 Manifest 校验注册项，按贡献类型准备原生值，再用同一份 `PreparedContributionSet` 计算身份哈希和构造候选目录。Skill 和 MCP 的资源契约由资源准备过程提供。工具目录按显式注册、MCP 发现的顺序合并两组工具，并一次投影同一所有者的工具。各类型定义组合、缺失和失败规则。候选目录统一检查跨所有者的身份冲突。
+宿主用 Manifest 校验注册项，按贡献类型准备原生值，再从同一份 `PreparedContributionSet` 取得贡献 ID 并构造候选目录。工具目录按显式注册、MCP 发现的顺序合并两组工具，并一次投影同一所有者的工具。各类型定义组合、缺失和失败规则。候选目录统一检查跨所有者的身份冲突。
 
-系统提示词与会话观察共用请求提供方的原生适配器。它按各自种类生成贡献身份，把优先级、超时、失败模式与 controller 条件纳入哈希，并在投影时将处理器绑定到代次 gate。请求通过已发布的具名注册表调用处理器。动态工具同时受工具组与插件代次的 gate 约束。
+系统提示词与会话观察共用请求提供方的原生适配器。它按各自种类生成贡献身份，在投影时将处理器绑定到代次 gate。注册项的优先级、超时、失败模式与 controller 条件用于实际调度。请求通过已发布的具名注册表调用处理器。动态工具同时受工具组与插件代次的 gate 约束。
 
 清单由框架维护。Adapter 声明贡献的寿命。
 
@@ -683,7 +682,7 @@ immutable package path 读取，不能重新发现 current plugin state。Catalo
 失败保留原组，空组撤去该组全部工具。只读、已结束调用及非当前 generation 不能发布；生命周期变更占用期间立即
 拒绝发布，避免正在停止的回调等待自身退出。发布不增加持久化状态或后台刷新循环。
 
-组内工具规范身份为 `plugin_id/tools/group_id/tool_id`，契约散列包含稳定实现 revision 与工具定义。
+组内工具规范身份为 `plugin_id/tools/group_id/tool_id`，调用记录直接保存插件声明的组 revision。
 revision 由插件标识行为语义，行为变化必须更换，即使 schema 不变。组修订不改变 generation 的执行契约；
 Driver、依赖及 Session 控制绑定继续使用所属 generation 的稳定身份。
 
@@ -844,7 +843,7 @@ tool list 和执行 registry 中按轮次隐藏。插件回调可以读取业务
 
 每个工具显式声明 `effect = read_only | state_changing | unknown`、
 `batch_behavior = compatible | exclusive` 和 resumable 能力。builtin 与插件在定义处声明；MCP 依次采用用户 override、
-协议只读注解或 `unknown`，不做名称/描述启发式推断。归一化结果进入所有 contribution/execution contract hash。
+协议只读注解或 `unknown`，不做名称/描述启发式推断。准备与恢复工具调用时核对其执行权限。
 
 `batch_behavior` 控制批次是否允许组合；Host 的 `execution_mode` 控制合法批次的执行顺序。含 exclusive 工具的批次
 若还有兄弟调用，无论顺序还是并行都必须在任何 handler 执行前整批拒绝。Host 从结构化契约统一生成模型可见的调用说明，
@@ -1102,9 +1101,9 @@ Host shutdown 按已发布 Catalog 的依赖顺序关闭资源，不依赖持久
 每次模型决策取得当前 `ExtensionCatalogLease`。同一响应及其工具调用共享该绑定，下一轮决策可以采用新环境。
 审批、用户回答和 child join 的等待不持有整组插件实例。同一工具 Call 可以连续返回 `ToolInputRequest`。宿主按批次、Call 和提问修订将回答交给相应的 resume handler，每次修订只接受一次回答。历史消息与已完成结果不要求产生它们的工具仍然存在。
 
-待完成插件调用保存稳定工具身份、所用 contribution contract 与所属插件的 execution contract。
+待完成插件调用保存稳定工具身份、执行变体、权限和所属插件的 execution contract。
 插件层拥有 release、依赖、配置与协议的解释；通用工具执行器比较准备阶段提供的执行身份，不解释插件包或供应类别。
-Continuation 同样以贡献契约和插件执行契约绑定策略；发布来源字段用于记录归属，不作为独立的恢复条件。
+Continuation 按策略 ID 和插件执行契约恢复；发布来源字段用于记录归属，不作为独立的恢复条件。
 `generation_id` 是进程实例和审计身份，不是跨重启等价性的判据。当前同一契约的新实例可承接；
 执行契约不匹配时，调用产生明确错误，不转调同名新实现。工具说明、显示名称与审计 metadata 不参与工具执行契约。
 框架不重建历史 Catalog，也不为继续 Session 要求无关插件的旧代码或配置。

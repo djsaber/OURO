@@ -12,7 +12,7 @@ from ouro.application.contracts.configuration import (
     ProviderTemplateView,
     ProviderView,
 )
-from ouro.cli.errors import error_exit_code
+from ouro.cli.errors import report_error
 from ouro.config import EndpointReasoningConfig, ProviderProtocol, ProviderType
 from ouro.config.endpoints import EndpointChanges
 from ouro.config.provider_models import ProviderRuntimeOptions
@@ -41,8 +41,7 @@ async def check_provider_connection(
                 ),
             )
     except OuroError as exc:
-        _print_provider_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     if json_mode:
         print(
@@ -82,8 +81,7 @@ def list_provider_configs(
     try:
         catalog = build_local_configuration(home).provider_catalog()
     except OuroError as exc:
-        _print_provider_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     providers = [_provider_to_public(provider) for provider in catalog.providers]
     if json_mode:
@@ -130,8 +128,7 @@ def list_provider_templates(
             else catalog.templates
         )
     except OuroError as exc:
-        _print_provider_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     public = [_template_to_public(template) for template in templates]
     if json_mode:
@@ -178,8 +175,7 @@ def restore_provider_template(
         facade = build_local_configuration(home)
         template = facade.restore_provider_template(template_id)
     except OuroError as exc:
-        _print_provider_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     if json_mode:
         print(
@@ -207,8 +203,7 @@ def show_provider_config(
         facade = build_local_configuration(home)
         provider = facade.provider(provider_id)
     except OuroError as exc:
-        _print_provider_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     public = _provider_to_public(provider)
     if json_mode:
@@ -349,8 +344,7 @@ def mutate_provider_config(
             item for item in catalog.providers if item.provider_id == changed_provider_id
         )
     except OuroError as exc:
-        _print_provider_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     public = _provider_to_public(provider)
     if json_mode:
@@ -392,8 +386,7 @@ def use_provider_config(
         catalog = build_local_configuration(home).use_provider(provider_id)
         provider = next(item for item in catalog.providers if item.provider_id == provider_id)
     except OuroError as exc:
-        _print_provider_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     public = _provider_to_public(provider)
     if json_mode:
@@ -422,8 +415,7 @@ def remove_provider_config(
     try:
         catalog = build_local_configuration(home).remove_provider(provider_id)
     except OuroError as exc:
-        _print_provider_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     if json_mode:
         print(
@@ -451,8 +443,7 @@ def list_provider_endpoints(
     try:
         catalog = build_local_configuration(home).endpoint_catalog(provider_id)
     except OuroError as exc:
-        _print_provider_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     endpoints = [_endpoint_to_public(endpoint) for endpoint in catalog.endpoints]
     if json_mode:
@@ -494,8 +485,7 @@ def show_provider_endpoint(
     try:
         endpoint = build_local_configuration(home).endpoint(provider_id, endpoint_id)
     except OuroError as exc:
-        _print_provider_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     public = _endpoint_to_public(endpoint)
     if json_mode:
@@ -571,8 +561,7 @@ def create_provider_endpoint(
         assert endpoint_id is not None
         endpoint = next(item for item in catalog.endpoints if item.endpoint_id == endpoint_id)
     except OuroError as exc:
-        _print_provider_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     public = _endpoint_to_public(endpoint)
     if json_mode:
@@ -609,8 +598,7 @@ def update_provider_endpoint(
         )
         endpoint = next(item for item in catalog.endpoints if item.endpoint_id == endpoint_id)
     except OuroError as exc:
-        _print_provider_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
 
     public = _endpoint_to_public(endpoint)
     if json_mode:
@@ -643,8 +631,7 @@ def use_provider_endpoint(
         catalog = build_local_configuration(home).use_endpoint(provider_id, endpoint_id)
         endpoint = next(item for item in catalog.endpoints if item.endpoint_id == endpoint_id)
     except OuroError as exc:
-        _print_provider_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
     if json_mode:
         print(
             json.dumps(
@@ -673,8 +660,7 @@ def remove_provider_endpoint(
         catalog = facade.remove_endpoint(provider_id, endpoint_id)
         providers = facade.provider_catalog()
     except OuroError as exc:
-        _print_provider_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+        return report_error(exc, json_mode=json_mode)
     if json_mode:
         print(
             json.dumps(
@@ -761,19 +747,3 @@ def _template_update_summary(update: ProviderTemplateUpdateView) -> str:
         f"{len(update.conflicted_endpoints)} conflicts",
     )
     return f"Template {update.template_id} {mode}: " + ", ".join(counts)
-
-
-def _print_provider_error(exc: OuroError, *, json_mode: bool) -> None:
-    if json_mode:
-        print(
-            json.dumps(
-                {
-                    "status": "failed",
-                    "error": str(exc),
-                    "error_type": type(exc).__name__,
-                },
-                ensure_ascii=False,
-            )
-        )
-    else:
-        print(f"Error: {exc}", file=sys.stderr)

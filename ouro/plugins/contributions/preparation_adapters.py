@@ -34,7 +34,6 @@ from ouro.plugins.contributions.preparation_rules import (
     prepare_tools,
 )
 from ouro.plugins.contributions.projection_adapters import CatalogProjectionTargets
-from ouro.plugins.manifest import PluginManifest
 
 
 class ContributionPreparationAdapter(Protocol):
@@ -102,19 +101,6 @@ class RequestProviderContribution:
             getattr(context.manifest.contributes, self.kind),
             {item.provider_id for item in getattr(prepared, self.kind)},
         )
-
-    def contracts(
-        self, manifest: PluginManifest, prepared: PreparedContributionSet
-    ) -> dict[str, object]:
-        return {
-            f"{manifest.plugin_id}/{self.kind}/{provider.provider_id}": {
-                "priority": provider.priority,
-                "timeout_seconds": provider.timeout_seconds,
-                "failure_mode": provider.failure_mode,
-                "active_when_controller_id": provider.active_when_controller_id,
-            }
-            for provider in getattr(prepared, self.kind)
-        }
 
     def project(
         self,

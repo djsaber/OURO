@@ -14,7 +14,6 @@ def _interaction(*, plugin_class: Literal["builtin", "user"] = "builtin") -> Pen
     request = PlanConfirmationRequest(
         plan_path="C:/private/session/plan.md",
         plan="# Plan\n\n1. Inspect.\n2. Implement.\n3. Verify.",
-        plan_digest="digest",
     )
     return PendingInteraction(
         kind="question",

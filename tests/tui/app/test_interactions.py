@@ -414,7 +414,6 @@ async def test_plan_confirmation_arrows_page_document_without_moving_options(
     request = PlanConfirmationRequest(
         plan_path=str(tmp_path / "plan.md"),
         plan="# Long plan\n\n" + "\n".join(f"{index}. Verify step {index}." for index in range(30)),
-        plan_digest="digest",
     )
 
     async with run_ready_app(app, size=(60, 24)) as pilot:
@@ -488,7 +487,6 @@ async def test_plan_confirmation_renders_only_plan_and_collects_revision_feedbac
         assert ask_user.display is False
         assert plan_body == "# Release plan\n\n1. Inspect.\n2. Ship safely.\n3. Verify."
         assert "C:/private/session/plan.md" not in plan_body
-        assert "plan_digest" not in plan_body
         assert '"actions"' not in plan_body
         assert "Accept" in controls
         assert "Revise" in controls

@@ -253,7 +253,6 @@ def test_queue_persists_argumentless_user_skill_activation(tmp_path, mode) -> No
         location=str(tmp_path / "skills" / "reviewer" / "SKILL.md"),
         base_directory=str(tmp_path / "skills" / "reviewer"),
         instructions="Review carefully.",
-        content_digest=f"sha256:{'a' * 64}",
     )
 
     queued_session, queued, _, _ = queue.enqueue(

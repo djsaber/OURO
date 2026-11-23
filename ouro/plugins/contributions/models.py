@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
@@ -98,8 +99,38 @@ class PreparedContributionSet:
     turn_policies: tuple[TurnPolicyRegistration, ...] = ()
     tool_policies: tuple[ToolPolicyRegistration, ...] = ()
     session_controllers: tuple[SessionController, ...] = ()
-    contract_hashes: dict[str, str] = field(default_factory=dict)
+    mcp_server_ids: tuple[str, ...] = ()
     degraded_reasons: tuple[str, ...] = ()
+
+    def identities(self) -> Iterator[str]:
+        """Canonical names claimed by the contributions actually prepared for publication."""
+        plugin = self.owner.plugin_id
+        yield from (tool.definition.identity for tool in self.tools)
+        yield from (provider.canonical_id for provider in self.providers)
+        yield from (driver.canonical_id for driver in self.run_drivers)
+        yield from (controller.canonical_id for controller in self.session_controllers)
+        yield from (f"{plugin}/observers/{item.observer_id}" for item in self.observers)
+        yield from (f"{plugin}/commands/{item.name}" for item in self.commands)
+        yield from (f"{plugin}/skills/{item.name}" for item in self.skills)
+        yield from (f"{plugin}/mcp_servers/{name}" for name in self.mcp_server_ids)
+        yield from (
+            f"{plugin}/background_services/{item.service_id}" for item in self.background_services
+        )
+        for strategy in self.compaction_strategies:
+            local_id = strategy.strategy_id.removeprefix(plugin + ".")
+            yield f"{plugin}/compaction_strategies/{local_id}"
+        for kind, providers in (
+            ("context_providers", self.context_providers),
+            ("system_prompt_providers", self.system_prompt_providers),
+        ):
+            yield from (f"{plugin}/{kind}/{item.provider_id}" for item in providers)
+        for kind, policies in (
+            ("continuation_policies", self.continuation_policies),
+            ("prompt_policies", self.prompt_policies),
+            ("turn_policies", self.turn_policies),
+            ("tool_policies", self.tool_policies),
+        ):
+            yield from (f"{plugin}/{kind}/{item.policy_id}" for item in policies)
 
 
 class ContributionValidationError(ValueError):

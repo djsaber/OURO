@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import gc
-import hashlib
 import json
 import platform
 import sys
@@ -158,19 +157,11 @@ async def prepared_probe(root, backend):
             assert catalog.lease_count == 0
             if index:
                 samples.append(elapsed)
-        snapshot = app.store.load_session(session.session_id)
-        content = [
-            {key: message.model_dump(mode="json")[key] for key in ("role", "content")}
-            for message in snapshot.messages
-        ]
         return {
             "scenario": "prepared_run",
             "backend": backend,
             "run_ms": samples,
             "status": result.run.status,
-            "messages_digest": hashlib.sha256(
-                json.dumps(content, sort_keys=True).encode()
-            ).hexdigest(),
             "leases_after_run": catalog.lease_count,
         }
     finally:

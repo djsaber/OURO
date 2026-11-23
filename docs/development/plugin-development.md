@@ -193,7 +193,6 @@ async def confirm_plan(call):
         data=PlanConfirmationRequest(
             plan_path=call.arguments["plan_path"],
             plan=call.arguments["plan"],
-            plan_digest=call.arguments["plan_digest"],
         ).to_json()
     )
 ```

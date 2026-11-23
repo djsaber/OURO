@@ -350,9 +350,12 @@ def test_session_attachment_import_keeps_complete_named_files(tmp_path, monkeypa
     with monkeypatch.context() as patch:
         patch.setattr(hashlib, "sha256", count_hashes)
         transfer(target, "import", "sessions", archive, backend=backend)
-    # The archive checks all entries, including skipped Sessions. Publication
-    # checks supplied bytes once and does not reread the newly written files.
-    assert len(hashes) == 2 * len(expected)
+    assert len(hashes) == len(expected)
+    with monkeypatch.context() as patch:
+        patch.setattr(hashlib, "sha256", count_hashes)
+        skipped = transfer(target, "import", "sessions", archive, backend=backend)
+    assert skipped.skipped == 1
+    assert len(hashes) == len(expected)
     imported = build_local_session_services(target, session_backend=backend)
     records = imported._store.load_resource_references(session.session_id)
     assert len(records) == len(expected)
@@ -441,21 +444,51 @@ def test_busy_session_export_releases_acquired_locks(tmp_path):
     transfer(tmp_path, "export", "sessions", tmp_path / "idle.zip")
 
 
-def test_corrupt_resource_rejected_before_session_publication(tmp_path):
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+def test_only_selected_resources_are_verified_before_session_publication(tmp_path, backend):
     source = tmp_path / "source"
     services = build_local_session_services(source)
     session, _run = _create_session(services._store)
     attachment = tmp_path / "input.txt"
     attachment.write_bytes(b"data")
     services.resources.import_resource(session.session_id, attachment)
+    other = services.sessions.create().session
     path = tmp_path / "archive.zip"
     transfer(source, "export", "sessions", path)
     archive = read_archive(path, "sessions")
-    archive.files[next(iter(archive.files))] = b"corrupt"
+    archive.files[next(iter(archive.files))] = b"edit"
     write_archive(path, archive, replace=True)
     with pytest.raises(DataTransferError, match="integrity"):
-        transfer(tmp_path / "target", "import", "sessions", path)
-    assert not build_local_session_services(tmp_path / "target")._store.list_sessions()
+        transfer(tmp_path / "target", "import", "sessions", path, backend=backend)
+    assert not build_local_session_services(
+        tmp_path / "target", session_backend=backend
+    )._store.list_sessions()
+    result = transfer(
+        tmp_path / "target", "import", "sessions", path, ids=(other.session_id,), backend=backend
+    )
+    assert result.count == 1
+    archive.files.clear()
+    write_archive(path, archive, replace=True)
+    assert (
+        transfer(
+            tmp_path / "partial",
+            "import",
+            "sessions",
+            path,
+            ids=(other.session_id,),
+            backend=backend,
+        ).count
+        == 1
+    )
+    with pytest.raises(DataTransferError, match="resource is missing"):
+        transfer(
+            tmp_path / "partial",
+            "import",
+            "sessions",
+            path,
+            ids=(session.session_id,),
+            backend=backend,
+        )
 
 
 def test_export_refuses_same_size_resource_corruption_without_replacing_archive(tmp_path):

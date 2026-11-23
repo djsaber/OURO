@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -9,6 +9,7 @@ from pydantic import Field, field_validator, model_validator
 from ouro.core.base import OuroModel
 from ouro.core.callbacks import invoke_bounded_callback
 from ouro.core.harness_calls import HarnessCallSnapshot
+from ouro.core.policy_registry import PolicyRegistry
 from ouro.core.redaction import redact_text
 
 PromptInputSource = Literal["user", "host", "plugin", "delegation"]
@@ -28,7 +29,6 @@ class PromptSkillActivationMetadata(OuroModel):
     name: str = Field(min_length=1)
     source: Literal["user", "workspace", "plugin"]
     location: str = Field(min_length=1)
-    content_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
 class PromptPolicyCall(OuroModel):
@@ -116,20 +116,10 @@ class PromptPolicyEvaluation:
     failures: list[PromptPolicyFailure] = field(default_factory=list)
 
 
-class PromptPolicyRegistry:
+class PromptPolicyRegistry(PolicyRegistry[PromptPolicyRegistration]):
     """Deterministic fail-closed guards for prompts entering canonical state."""
 
-    def __init__(self) -> None:
-        self._registrations: list[PromptPolicyRegistration] = []
-        self._frozen = False
-        self._active_controller_ids: Callable[[], set[str]] | None = None
-
-    def freeze(self) -> None:
-        self._frozen = True
-
-    def _require_mutable(self) -> None:
-        if self._frozen:
-            raise RuntimeError("prompt policy registry structure is frozen")
+    _policy_name = "prompt policy"
 
     def register(self, registration: PromptPolicyRegistration) -> None:
         self.register_many((registration,))
@@ -139,56 +129,6 @@ class PromptPolicyRegistry:
         if any(item.timeout_seconds <= 0 for item in registrations):
             raise ValueError("prompt policy timeout must be positive")
         self._registrations.extend(registrations)
-
-    def replace_owner(
-        self,
-        owner: str,
-        registrations: tuple[PromptPolicyRegistration, ...],
-    ) -> None:
-        self._require_mutable()
-        identities = [(item.plugin_id, item.policy_id) for item in registrations]
-        if len(identities) != len(set(identities)):
-            raise ValueError("replacement contains duplicate prompt policy identities")
-        if any(item.timeout_seconds <= 0 for item in registrations):
-            raise ValueError("prompt policy timeout must be positive")
-        retained = [item for item in self._registrations if item.owner != owner]
-        self._registrations = [
-            *retained,
-            *(replace(item, owner=owner) for item in registrations),
-        ]
-
-    def unregister_owner(self, owner: str) -> None:
-        self.replace_owner(owner, ())
-
-    def snapshot(self) -> list[PromptPolicyRegistration]:
-        return list(self._registrations)
-
-    def restore(self, snapshot: list[PromptPolicyRegistration]) -> None:
-        self._require_mutable()
-        self._registrations = list(snapshot)
-
-    def registered(self) -> list[PromptPolicyRegistration]:
-        active = self._active_controller_ids() if self._active_controller_ids is not None else None
-        return sorted(
-            (
-                item
-                for item in self._registrations
-                if active is None
-                or item.active_when_controller_id is None
-                or item.active_when_controller_id in active
-            ),
-            key=lambda item: (item.priority, item.plugin_id, item.policy_id, item.owner or ""),
-        )
-
-    def scoped(
-        self,
-        active_controller_ids: Callable[[], set[str]],
-    ) -> PromptPolicyRegistry:
-        scoped = PromptPolicyRegistry()
-        scoped.restore(self.snapshot())
-        scoped._active_controller_ids = active_controller_ids
-        scoped.freeze()
-        return scoped
 
     async def evaluate(self, call: PromptPolicyCall) -> PromptPolicyEvaluation:
         evaluation = PromptPolicyEvaluation()

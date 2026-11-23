@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import json
-import sys
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import TypedDict, Unpack
 
 from ouro.application.usage import UsageService
-from ouro.cli.errors import error_exit_code
+from ouro.cli.errors import report_error
 from ouro.core.billing import BillingMode, UsageFilter, UsagePurpose
 from ouro.core.errors import OuroError
 from ouro.core.usage_queries import UsageEntryCursor, UsageGroupBy, UsageTotals
@@ -38,7 +37,7 @@ def summarize_usage(
     try:
         result = _usage(home).summarize(_usage_filter(**filters), group_by=group_by)
     except (OuroError, ValueError) as exc:
-        return _print_error(exc, json_mode=json_mode)
+        return report_error(exc, json_mode=json_mode)
     if json_mode:
         print(json.dumps({"status": "ok", **result.model_dump(mode="json")}, ensure_ascii=False))
         return 0
@@ -76,7 +75,7 @@ def list_usage(
             before=UsageEntryCursor.model_validate_json(before) if before else None,
         )
     except (OuroError, ValueError) as exc:
-        return _print_error(exc, json_mode=json_mode)
+        return report_error(exc, json_mode=json_mode)
     if json_mode:
         print(json.dumps({"status": "ok", **result.model_dump(mode="json")}, ensure_ascii=False))
         return 0
@@ -109,9 +108,9 @@ def show_usage_entry(
     try:
         entry = _usage(home).get_entry(entry_id)
     except KeyError:
-        return _print_error(ValueError(f"usage entry not found: {entry_id}"), json_mode=json_mode)
+        return report_error(ValueError(f"usage entry not found: {entry_id}"), json_mode=json_mode)
     except OuroError as exc:
-        return _print_error(exc, json_mode=json_mode)
+        return report_error(exc, json_mode=json_mode)
     payload = entry.model_dump(mode="json")
     if json_mode:
         print(json.dumps({"status": "ok", "entry": payload}, ensure_ascii=False))
@@ -145,9 +144,9 @@ def modify_usage_entry(
             note=note,
         )
     except KeyError:
-        return _print_error(ValueError(f"usage entry not found: {entry_id}"), json_mode=json_mode)
+        return report_error(ValueError(f"usage entry not found: {entry_id}"), json_mode=json_mode)
     except (OuroError, ValueError) as exc:
-        return _print_error(exc, json_mode=json_mode)
+        return report_error(exc, json_mode=json_mode)
     if json_mode:
         print(json.dumps({"status": "ok", **result.model_dump(mode="json")}, ensure_ascii=False))
     else:
@@ -175,7 +174,7 @@ def reset_usage(
                 return 0
         result = _usage(home).reset(usage_filter, note=note)
     except (OuroError, ValueError) as exc:
-        return _print_error(exc, json_mode=json_mode)
+        return report_error(exc, json_mode=json_mode)
     if json_mode:
         print(json.dumps({"status": "ok", **result.model_dump(mode="json")}, ensure_ascii=False))
     else:
@@ -196,7 +195,7 @@ def audit_usage(
     try:
         result = _usage(home).audit(limit=limit, before=before)
     except (OuroError, ValueError) as exc:
-        return _print_error(exc, json_mode=json_mode)
+        return report_error(exc, json_mode=json_mode)
     if json_mode:
         print(json.dumps({"status": "ok", **result.model_dump(mode="json")}, ensure_ascii=False))
         return 0
@@ -278,16 +277,3 @@ def _print_totals(totals: UsageTotals, *, prefix: str = "") -> None:
         print(f"{prefix}Estimated cost (USD): {totals.estimated_cost:.8f}{suffix}")
     else:
         print(f"{prefix}Estimated cost (USD): -")
-
-
-def _print_error(exc: Exception, *, json_mode: bool) -> int:
-    if json_mode:
-        print(
-            json.dumps(
-                {"status": "failed", "error": str(exc), "error_type": type(exc).__name__},
-                ensure_ascii=False,
-            )
-        )
-    else:
-        print(f"Error: {exc}", file=sys.stderr)
-    return error_exit_code(exc) if isinstance(exc, OuroError) else 1

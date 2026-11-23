@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
 from collections.abc import Iterator
 from typing import Any
 
@@ -162,7 +160,6 @@ def _run_v2_to_v5(value: dict[str, Any]) -> None:
         "driver",
         {
             "driver_id": "ouro.default",
-            "contract_hash": "ouro.default/1",
             "implementation": None,
             "dependencies": [],
         },
@@ -318,12 +315,6 @@ def _tool_call_authority(tools: list[dict[str, Any]]) -> None:
             tool.pop(field, None)
 
 
-def _catalog_hash(value: dict[str, Any]) -> str:
-    payload = {key: value[key] for key in ("schema_version", "revision", "entries", "spawn_policy")}
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
 def _agent_catalog_v1_to_v2(value: dict[str, Any]) -> None:
     for field in ("allow_network", "allow_external_paths"):
         value["spawn_policy"].pop(field, None)
@@ -412,8 +403,6 @@ def advance_record(kind: str, value: dict[str, Any]) -> None:
 
 
 def _convert_owned(kind: str, value: dict[str, Any]) -> None:
-    if kind == "agent_catalog" and value["contract_hash"] != _catalog_hash(value):
-        raise UpgradeDataError("agent catalog contract hash does not match its content")
     # The outer conversion owns this subtree. Its final model validation checks
     # the complete record graph, including required persisted facts, exactly once.
     advance(
@@ -426,8 +415,6 @@ def _convert_owned(kind: str, value: dict[str, Any]) -> None:
     for child, raw in _nested(kind, value):
         if _needs_upgrade(child, raw):
             _convert_owned(child, raw)
-    if kind == "agent_catalog":
-        value["contract_hash"] = _catalog_hash(value)
 
 
 def convert_task(kind: str, raw: dict[str, Any], version: int) -> dict[str, Any]:

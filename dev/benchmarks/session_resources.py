@@ -26,14 +26,20 @@ from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
 
 
-def metadata(name, content):
-    return SessionResourceReference(
-        filename=name,
-        digest=f"sha256:{hashlib.sha256(content).hexdigest()}",
-        media_type="application/octet-stream",
-        size=len(content),
-        source=ResourceSource(name=name),
-    )
+def resource_records(names: list[str], content: bytes) -> list[SessionResourceReference]:
+    if not names:
+        return []
+    digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
+    return [
+        SessionResourceReference(
+            filename=name,
+            digest=digest,
+            media_type="application/octet-stream",
+            size=len(content),
+            source=ResourceSource(name=name),
+        )
+        for name in names
+    ]
 
 
 def adapter(root, backend):
@@ -106,8 +112,8 @@ def experiment(root, backend, old_count, size, repeat):
     store.initialize()
     session = SessionRecord()
     content = b"x" * size
-    selected = metadata("selected.bin", content)
-    historical = [metadata(f"old-{index}.bin", b"history") for index in range(old_count)]
+    (selected,) = resource_records(["selected.bin"], content)
+    historical = resource_records([f"old-{index}.bin" for index in range(old_count)], b"history")
 
     def contents():
         yield selected, content

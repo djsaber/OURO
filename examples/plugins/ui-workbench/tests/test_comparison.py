@@ -230,7 +230,7 @@ def test_rejects_unsupported_candidate_bytes(
         build_comparison(workspace, _manifest(workspace, document))
 
 
-def test_rejects_repeat_paths_and_preview_copies(board: tuple[Path, dict]) -> None:
+def test_distinct_candidate_files_can_share_a_static_preview(board: tuple[Path, dict]) -> None:
     workspace, document = board
     document["candidates"][1]["path"] = "./layout.htm"
     with pytest.raises(WorkbenchError, match="repeats a candidate file"):
@@ -238,8 +238,11 @@ def test_rejects_repeat_paths_and_preview_copies(board: tuple[Path, dict]) -> No
 
     document["candidates"][1]["path"] = "../direction.HTML"
     (workspace / "direction.HTML").write_text("<!--Copy--><h1>First draft</h1>", encoding="utf-8")
-    with pytest.raises(WorkbenchError, match="repeats a static preview"):
-        build_comparison(workspace, _manifest(workspace, document))
+    markup = build_comparison(workspace, _manifest(workspace, document)).decode("utf-8")
+    frames = _Tags(markup).get("iframe")
+    assert len(frames) == 2
+    assert frames[0]["srcdoc"] == frames[1]["srcdoc"]
+    assert frames[0]["title"] != frames[1]["title"]
 
 
 def test_rejects_boundary_crossing_for_manifest_and_candidate(board: tuple[Path, dict]) -> None:

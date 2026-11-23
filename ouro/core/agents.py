@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from datetime import datetime
 from fnmatch import fnmatchcase
@@ -35,16 +33,6 @@ def delivery_policy_for_execution_mode(execution_mode: ExecutionMode) -> Deliver
     return "resume_waiter" if execution_mode == "sync" else "next_boundary"
 
 
-def _contract_hash(value: object) -> str:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(encoded).hexdigest()
-
-
 class ToolSelection(OuroModel):
     mode: ToolSelectionMode = "all"
     names: tuple[str, ...] = ()
@@ -75,7 +63,6 @@ class AgentDefinitionContent(OuroModel):
 class AgentDefinition(AgentDefinitionContent, VersionedOuroModel):
     agent_id: str
     default_budget: RunBudgetPolicy = Field(default_factory=RunBudgetPolicy)
-    contract_hash: str = ""
 
     @field_validator("agent_id")
     @classmethod
@@ -83,18 +70,6 @@ class AgentDefinition(AgentDefinitionContent, VersionedOuroModel):
         if not _AGENT_ID.fullmatch(value):
             raise ValueError("agent_id must be a lowercase stable identifier")
         return value
-
-    @model_validator(mode="after")
-    def validate_contract(self) -> Self:
-        expected = self.compute_contract_hash()
-        if self.contract_hash and self.contract_hash != expected:
-            raise ValueError("agent definition contract hash does not match its content")
-        self.contract_hash = expected
-        return self
-
-    def compute_contract_hash(self) -> str:
-        value = self.model_dump(mode="json", exclude={"contract_hash"})
-        return _contract_hash(value)
 
 
 class AgentSpawnPolicy(OuroModel):
@@ -142,7 +117,6 @@ class EffectiveToolRef(OuroModel):
     public_name: str = Field(min_length=1, max_length=128)
     canonical_tool_id: str = Field(min_length=1, max_length=256)
     owner_id: str | None = Field(default=None, max_length=256)
-    execution_contract_hash: str = Field(min_length=1, max_length=256)
     source: Literal[
         "builtin",
         "official_plugin",
@@ -197,7 +171,6 @@ class AgentCatalogSnapshot(VersionedOuroModel):
     entries: tuple[AgentCatalogEntry, ...] = ()
     spawn_policy: AgentSpawnPolicy = Field(default_factory=AgentSpawnPolicy)
     created_at: datetime = Field(default_factory=utc_now)
-    contract_hash: str = ""
 
     @model_validator(mode="after")
     def validate_catalog(self) -> Self:
@@ -213,21 +186,7 @@ class AgentCatalogSnapshot(VersionedOuroModel):
                 raise ValueError("agent catalog exceeds its model spawn policy")
             if any(not self.spawn_policy.allows_tool(tool) for tool in entry.effective_tools):
                 raise ValueError("agent catalog exceeds its tool spawn policy")
-        expected = self.compute_contract_hash()
-        if self.contract_hash and self.contract_hash != expected:
-            raise ValueError("agent catalog contract hash does not match its content")
-        self.contract_hash = expected
         return self
-
-    def compute_contract_hash(self) -> str:
-        return _contract_hash(
-            {
-                "schema_version": self.schema_version,
-                "revision": self.revision,
-                "entries": [entry.model_dump(mode="json") for entry in self.entries],
-                "spawn_policy": self.spawn_policy.model_dump(mode="json"),
-            }
-        )
 
     def resolve(self, agent_id: str) -> AgentCatalogEntry:
         for entry in self.entries:

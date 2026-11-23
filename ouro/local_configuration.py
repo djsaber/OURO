@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -211,7 +210,7 @@ class ConfiguredModelCatalog:
                 default.provider_id, default.endpoint_id or default.model_id
             )
             self._configured_adapters[model_route_key(default)] = (
-                _options_fingerprint(options),
+                _options_key(options),
                 default_adapter,
             )
         # A startup composition for a route outside the configured default
@@ -295,7 +294,7 @@ class ConfiguredModelCatalog:
 
     def adapter_for(self, selector: str) -> RuntimeAdapter:
         # Session request preparation can run on different worker threads. Publish
-        # a single owned adapter per fingerprint so no losing build leaks a client.
+        # a single owned adapter per configuration so no losing build leaks a client.
         with self._adapter_lock:
             if self._closed:
                 raise RuntimeError("model catalog is closed")
@@ -318,14 +317,14 @@ class ConfiguredModelCatalog:
         if endpoint is None:
             raise ConfigError(f"model endpoint is unavailable: {model.key}")
         options = self._options_for(model.provider_id, model.endpoint_id)
-        fingerprint = _options_fingerprint(options)
+        key = _options_key(options)
         cached = self._configured_adapters.get(model.key)
-        if cached is not None and cached[0] == fingerprint:
+        if cached is not None and cached[0] == key:
             return cached[1]
         adapter = self._adapter_builder(options)
         if cached is not None:
             self._retired_adapters.append(cached[1])
-        self._configured_adapters[model.key] = (fingerprint, adapter)
+        self._configured_adapters[model.key] = (key, adapter)
         return adapter
 
     def _options_for(self, provider_id: str, endpoint_id: str) -> ProviderRuntimeOptions:
@@ -354,8 +353,6 @@ class ConfiguredModelCatalog:
         await close_runtime_adapters(adapters)
 
 
-def _options_fingerprint(options: ProviderRuntimeOptions) -> str:
-    # repr intentionally hides inline credentials. Hash canonical data instead;
-    # neither the serialized material nor the fingerprint is exposed to Hosts.
-    payload = json.dumps(options.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+def _options_key(options: ProviderRuntimeOptions) -> str:
+    # Preserve JSON types in provider-specific options (e.g. true vs 1) and ignore key order.
+    return json.dumps(options.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))

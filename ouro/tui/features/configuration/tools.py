@@ -8,7 +8,7 @@ from typing import cast
 from ouro.application.contracts.configuration import ToolExecutionConfigView
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode
-from ouro.tui.features.configuration.values import _positive_int
+from ouro.tui.features.configuration.values import positive_int
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.editable import EditableChoiceScreen
 from ouro.tui.menus.labels import PERMISSION_LABELS, TOOL_APPROVAL_LABEL
@@ -130,12 +130,10 @@ class ToolConfigurationScreen(EditableChoiceScreen):
     def _draft(self) -> TuiToolExecutionConfiguration:
         return TuiToolExecutionConfiguration(
             mode=cast(ToolExecutionMode, self._values["tool-execution-mode"]),
-            max_concurrency=_positive_int(
+            max_concurrency=positive_int(
                 self._values["tool-max-concurrency"], "Parallel tool limit"
             ),
-            max_output_chars=_positive_int(
-                self._values["tool-max-output"], "Max output characters"
-            ),
+            max_output_chars=positive_int(self._values["tool-max-output"], "Max output characters"),
         )
 
     def _validation_error(self) -> str:

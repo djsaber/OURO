@@ -30,7 +30,6 @@ class AgentDefinitionView(ApplicationDTO):
     allowed_by_policy: bool = True
     compatibility: Literal["available", "unavailable"]
     missing_tool_names: tuple[str, ...] = ()
-    contract_hash: str
 
 
 class AgentDefinitionDetail(AgentDefinitionView):
@@ -49,7 +48,6 @@ class AgentToolOptionView(ApplicationDTO):
     description: str
     effect: Literal["read_only", "state_changing", "unknown"]
     owner_id: str
-    execution_contract_hash: str
 
 
 class SpawnAgentRequest(ApplicationDTO):

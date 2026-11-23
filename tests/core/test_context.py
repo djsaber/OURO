@@ -15,7 +15,7 @@ from ouro.core.messages import (
     TextContent,
     ToolResultReference,
 )
-from ouro.core.tools import ToolCallRequest, ToolDefinition, tool_definition_contract_hash
+from ouro.core.tools import ToolCallRequest, ToolDefinition
 
 
 def test_context_materializes_model_visible_messages_once(monkeypatch):
@@ -59,7 +59,6 @@ def test_context_projects_batch_contract_without_changing_registered_tools(descr
     )
     definitions = [exclusive, sequential]
     original = [tool.model_dump() for tool in definitions]
-    contract_hash = tool_definition_contract_hash(exclusive)
     builder = ContextBuilder(token_estimator=len)
     original_cost = builder.build(
         messages=[],
@@ -78,7 +77,6 @@ def test_context_projects_batch_contract_without_changing_registered_tools(descr
     assert projected[0]["description"] == "\n\n".join(filter(None, [description, constraint]))
     assert projected[1] == original[1]
     assert [tool.model_dump() for tool in definitions] == original
-    assert tool_definition_contract_hash(exclusive) == contract_hash
     assert context.metrics.estimated_fixed_tokens == sum(
         len(
             json.dumps(

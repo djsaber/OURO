@@ -282,7 +282,6 @@ async def test_driver_cannot_leave_a_native_operation_running_after_return(tmp_p
         session_id=session.session_id,
         driver=RunDriverBinding(
             driver_id=DRIVER,
-            contract_hash="entry",
             implementation=PluginImplementation(
                 plugin_id=PLUGIN,
                 plugin_class="user",

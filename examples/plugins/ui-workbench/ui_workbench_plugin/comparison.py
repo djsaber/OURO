@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-from hashlib import sha256
 from html import escape
 from html.parser import HTMLParser
 from pathlib import Path
@@ -89,8 +88,8 @@ def build_comparison(workspace: Path, manifest_path: str) -> bytes:
     optional ``brief``, and 2–6 ordered ``candidates``. Each candidate has a nonblank
     ``title`` and ``path`` and optional ``summary``. Paths are relative to the
     resolved manifest's directory and must resolve inside the workspace. Candidate
-    files are UTF-8 .html/.htm (up to 1 MiB each); duplicate paths or identical
-    static previews are rejected. Invalid input raises ``WorkbenchError``.
+    files are UTF-8 .html/.htm (up to 1 MiB each). Each candidate names a distinct file.
+    Invalid input raises ``WorkbenchError``.
 
     Candidate previews support static HTML, inline CSS, and embedded data images
     (raster base64 in img elements). Linked/local assets are not loaded or inlined.
@@ -113,7 +112,6 @@ def build_comparison(workspace: Path, manifest_path: str) -> bytes:
         raise WorkbenchError("The comparison manifest must contain 2–6 candidates.")
 
     seen_paths: set[Path] = set()
-    seen_previews: set[bytes] = set()
     jumps, cards = [], []
     for index, entry in enumerate(candidates, start=1):
         context = f"Candidate {index}"
@@ -128,10 +126,6 @@ def build_comparison(workspace: Path, manifest_path: str) -> bytes:
             raise WorkbenchError(f"{context} repeats a candidate file; use distinct HTML files.")
         seen_paths.add(path)
         preview = _preview(_read_utf8(path, _CANDIDATE_LIMIT, context), context)
-        digest = sha256(preview.encode("utf-8")).digest()
-        if digest in seen_previews:
-            raise WorkbenchError(f"{context} repeats a static preview; use distinct HTML files.")
-        seen_previews.add(digest)
         jumps.append(
             f'<li><a href="#direction-{index}"><span aria-hidden="true">{index:02}</span>'
             f"{name}</a></li>"

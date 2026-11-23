@@ -108,7 +108,6 @@ def restore_directory(source: Path, target: Path, mode: int | None) -> None:
     shutil.copytree(source, target)
     if mode is not None and os.name != "nt":
         target.chmod(mode)
-    digest(target, sync=True, directory=True)
     sync_directory(target.parent)
 
 
@@ -116,7 +115,7 @@ def restore_directory(source: Path, target: Path, mode: int | None) -> None:
 class Change:
     path: str
     before: str | None
-    after: str | None
+    has_replacement: bool
     mode: int | None
     directory: bool = False
 
@@ -191,12 +190,15 @@ class Workspace:
 
     def read_lines(self, relative: str) -> Iterator[bytes]:
         """Remember the source fingerprint only after the entire journal has been read."""
-        checksum = hashlib.sha256()
         with self.path(relative).open("rb") as stream:
+            if relative in self.observed:
+                yield from stream
+                return
+            checksum = hashlib.sha256()
             for line in stream:
                 checksum.update(line)
                 yield line
-        self.observed.setdefault(relative, checksum.hexdigest())
+        self.observed[relative] = checksum.hexdigest()
 
     def read_many(self, relatives: Iterable[str]) -> Iterator[tuple[str, bytes]]:
         """Prefetch independent files; observation and all mutations stay on the caller."""
@@ -209,8 +211,7 @@ class Workspace:
                     f"{relative}: cannot read record ({type(exc).__name__})"
                 ) from exc
 
-        for relative, data in self._reader.map(read, relatives, buffersize=4):
-            yield relative, self._observe(relative, data)
+        yield from self._reader.map(read, relatives, buffersize=4)
 
     def _observe(self, relative: str, data: bytes) -> bytes:
         if relative not in self.observed:
@@ -234,21 +235,40 @@ class Workspace:
         if any(name == relative or name.startswith(relative + "/") for name in self.changes):
             raise UpgradeError("directory removal overlaps staged replacements")
         self.changes[relative] = Change(
-            relative, before, None, stat.S_IMODE(path.stat().st_mode), directory=True
+            relative, before, False, stat.S_IMODE(path.stat().st_mode), directory=True
         )
 
-    def stage(self, relative: str, source: bytes | Path | None) -> None:
+    def stage(
+        self, relative: str, source: bytes | Path | None, *, original_bytes: bytes | None = None
+    ) -> None:
         """Stage bytes or take ownership of a closed scratch file; None deletes."""
+        if original_bytes is not None:
+            if source == original_bytes:
+                return
+            self._observe(relative, original_bytes)
         original = self.source(relative)
         before = self.observed[relative]
-        after = (
-            hashlib.sha256(source).hexdigest()
-            if isinstance(source, bytes)
-            else digest(source, sync=not self._check_only)
-            if source is not None
-            else None
-        )
-        if before == after:
+        if isinstance(source, Path):
+            with (
+                source.open("rb+")
+                if os.name == "nt" and not self._check_only
+                else source.open("rb") as stream
+            ):
+                unchanged = (
+                    before is not None
+                    and hashlib.file_digest(stream, "sha256").hexdigest() == before
+                )
+                if not self._check_only and not unchanged:
+                    os.fsync(stream.fileno())
+        elif source is None:
+            unchanged = before is None
+        else:
+            unchanged = (
+                original_bytes is None
+                and before is not None
+                and hashlib.sha256(source).hexdigest() == before
+            )
+        if unchanged:
             if isinstance(source, Path):
                 source.unlink()
             return
@@ -267,13 +287,13 @@ class Workspace:
         self.changes[relative] = Change(
             relative,
             before,
-            after,
+            source is not None,
             stat.S_IMODE(original.stat().st_mode) if before is not None else None,
         )
 
-    def json(self, relative: str, value: object) -> None:
+    def json(self, relative: str, value: object, *, original_bytes: bytes | None = None) -> None:
         data = json.dumps(value, ensure_ascii=False, indent=2, default=str) + "\n"
-        self.stage(relative, data.encode("utf-8"))
+        self.stage(relative, data.encode("utf-8"), original_bytes=original_bytes)
 
     def verify_source(self) -> None:
         total = len(self.changes)
@@ -293,7 +313,7 @@ class Workspace:
         write_json_atomic(
             self.run / "manifest.json",
             {
-                "schema_version": 3,
+                "schema_version": 4,
                 "changes": [asdict(change) for change in changes],
             },
         )
@@ -315,7 +335,7 @@ class Workspace:
                 # Persist the original's new name before installing its replacement.
                 sync_directory(backup.parent)
                 sync_directory(target.parent)
-            source = self.run / "new" / str(index) if change.after is not None else None
+            source = self.run / "new" / str(index) if change.has_replacement else None
             if not change.directory:
                 install(source, target, change.mode, consume=True)
             self.progress("publish", index + 1, len(changes))
@@ -353,8 +373,11 @@ class Workspace:
         manifest = loads((run / "manifest.json").read_text("utf-8"))
         try:
             version = manifest["schema_version"]
-            if version not in (1, 2, 3):
+            if version not in (1, 2, 3, 4):
                 raise UpgradeError("unsupported upgrade manifest")
+            if version < 4:
+                for item in manifest["changes"]:
+                    item["has_replacement"] = item.pop("after") is not None
             changes = [Change(**item) for item in manifest["changes"]]
         except (KeyError, TypeError) as exc:
             raise UpgradeError("invalid upgrade manifest") from exc
@@ -363,7 +386,7 @@ class Workspace:
         for index, change in enumerate(changes):
             target = safe_path(self.home, change.path, directory=change.directory)
             if change.directory and (
-                version != 3 or change.before is None or change.after is not None
+                version < 3 or change.before is None or change.has_replacement
             ):
                 raise UpgradeError("invalid directory removal in upgrade manifest")
             if change.path in seen:
@@ -390,12 +413,11 @@ class Workspace:
                     install(source, target, change.mode)
             self.progress("restore", index + 1, len(changes))
         self.progress("verify")
-        for change in changes:
+        for change, source in zip(changes, sources, strict=True):
+            target = safe_path(self.home, change.path, directory=change.directory)
             if (
-                digest(
-                    safe_path(self.home, change.path, directory=change.directory),
-                    directory=change.directory,
-                )
+                source != target
+                and digest(target, sync=change.directory, directory=change.directory)
                 != change.before
             ):
                 raise UpgradeError(f"restore verification failed: {change.path}")

@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from ouro.core.cancellation import AbortSignal
-from ouro.core.tools import tool_definition_contract_hash
 from ouro.tools import ProcessResult, ToolExecutionAborted, ToolExecutionContext, ToolInvocation
 from ouro.tools.builtin.search import builtin_search_tools
 from ouro.tools.builtin.search.glob import search_glob
@@ -45,7 +44,7 @@ def _write(root, relative, *, mtime=1000, content=b""):
 
 def test_glob_contract_is_independent_of_backend_and_executable_path():
     definitions = [_tool(executable).definition for executable in (None, "/bin/rg", "C:/rg.exe")]
-    assert len({tool_definition_contract_hash(item) for item in definitions}) == 1
+    assert all(item == definitions[0] for item in definitions)
     assert definitions[0].effect == "read_only"
     assert definitions[0].permission_mode == "auto"
 

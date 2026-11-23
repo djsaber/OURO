@@ -160,7 +160,7 @@ usage 仅使用实际供应商返回值。cached input 是 input 子集，reason
 
 请求归属、账本 metadata、来源分组及 CLI/TUI 呈现见[用量与计费规格](usage-and-billing.md)。汇总使用 `UsageTotals.estimated_cost`、`priced_request_count` 和 `unpriced_request_count`，以去重的 billing_modes 表达涉及的计费模式，不另建持久化计数或汇总状态。未知金额与已知零金额有明确区别；token/轮次预算继续有效，未知金额不能承诺严格美元预算。无需额度查询后台任务或订阅费用分摊系统。
 
-主模型、压缩模型、子智能体、连接检查与缓存/default adapter 都从同一 home 范围的认证服务取得材料。普通 Token 刷新不改变配置指纹；auth_driver、credential_ref 或服务连接参数变化时，沿现有请求边界重新绑定 adapter，默认路由也不能绕过配置指纹而永久使用旧绑定。无需引入全局缓存广播或重启 Runtime。
+主模型、压缩模型、子智能体、连接检查与缓存/default adapter 都从同一 home 范围的认证服务取得材料。普通 Token 刷新不改变配置缓存键；auth_driver、credential_ref 或服务连接参数变化时，沿现有请求边界重新绑定 adapter，默认路由也不能绕过配置缓存键而永久使用旧绑定。无需引入全局缓存广播或重启 Runtime。
 
 查询目录不刷新，不动态修改模型模板。登录成功不自动执行连接检查；显式 check 才发送可能消耗额度的最小请求。
 

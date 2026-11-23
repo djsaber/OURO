@@ -16,16 +16,33 @@ def _controls(prefix: str) -> tuple[str, ...]:
 
 
 PATHS = {
-    "agent_definition": ("can_spawn",),
-    "agent_catalog": ("spawn_policy.allowed_lifecycle_bindings",),
+    "agent_definition": ("can_spawn", "contract_hash"),
+    "agent_catalog": (
+        "spawn_policy.allowed_lifecycle_bindings",
+        "contract_hash",
+        "entries.*.effective_tools.*.execution_contract_hash",
+    ),
+    "input": ("item.skill_activations.*.content_digest", "item.driver.contract_hash"),
+    "message": ("content.*.content_digest",),
+    "context": ("provider_context.messages.*.content.*.content_digest",),
     "session": ("title_locked", *_controls("controls")),
     "harness": _controls("state.controls"),
     "run": (
+        "metadata.agent_definition_contract_hash",
+        "driver.contract_hash",
         "continuation.controllers.*.builtin_contract_hash",
+        "continuation.controllers.*.contract_hash",
+        "continuation.settlement_plan.contract_hash",
         *_controls("continuation.settlement_plan.harness.state.controls"),
         "continuation.settlement_plan.session_control_transitions.*.expected_activation_revision",
     ),
-    "delegation": ("agent_id", "delivery_policy", "depth", "lifecycle_binding"),
+    "delegation": (
+        "agent_id",
+        "delivery_policy",
+        "depth",
+        "lifecycle_binding",
+        "effective_tools.*.execution_contract_hash",
+    ),
     "tool_state": (
         "prepared_binding.builtin_contract_hash",
         "agent_wait.state",
@@ -58,17 +75,18 @@ def members(kind: str, value: dict[str, Any]) -> Iterator[tuple[dict[str, Any], 
 
 
 def sql_predicate(kind: str, *, column: str = "payload", prefix: str = "$") -> str:
-    conditions = []
-    for path in PATHS.get(kind, ()):
-        if ".*." in path:
-            parent, suffix = path.split(".*.")
-            conditions.append(
-                f"EXISTS (SELECT 1 FROM json_each({column}, '{prefix}.{parent}') AS retired "
-                f"WHERE json_type(retired.value, '$.{suffix}') IS NOT NULL)"
-            )
-        else:
-            conditions.append(f"json_type({column}, '{prefix}.{path}') IS NOT NULL")
-    return " OR ".join(conditions)
+    def exists(path: str, value: str, root: str, depth: int = 0) -> str:
+        parent, wildcard, rest = path.partition(".*.")
+        if not wildcard:
+            return f"json_type({value}, '{root}.{path}') IS NOT NULL"
+        alias = f"retired_{depth}"
+        nested = exists(rest, f"{alias}.value", "$", depth + 1)
+        return (
+            f"EXISTS (SELECT 1 FROM json_each({value}, '{root}.{parent}') AS {alias} "
+            f"WHERE {nested})"
+        )
+
+    return " OR ".join(exists(path, column, prefix) for path in PATHS.get(kind, ()))
 
 
 def retire(kind: str, value: dict[str, Any]) -> None:
@@ -77,6 +95,10 @@ def retire(kind: str, value: dict[str, Any]) -> None:
         return
     if kind == "agent_catalog":
         upgrade_spawn_policy(value["spawn_policy"])
+        value.pop("contract_hash", None)
+        for entry in value["entries"]:
+            for tool in entry["effective_tools"]:
+                tool.pop("execution_contract_hash", None)
         return
     if kind == "delegation":
         expected = {

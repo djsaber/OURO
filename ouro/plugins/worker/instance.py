@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from pathlib import Path
@@ -74,8 +73,7 @@ class WorkerPluginInstance:
         self.credentials = dict(credentials)
         self.environment = environment
         credential_environment = {
-            slot: _credential_environment_name(manifest.plugin_id, slot)
-            for slot in self.credentials
+            slot: f"OURO_PLUGIN_CREDENTIAL_{index}" for index, slot in enumerate(self.credentials)
         }
         self.client = JsonRpcWorkerClient(
             manifest.runtime.command,
@@ -562,7 +560,6 @@ class WorkerPluginInstance:
                                 "name": call.skill_activation.name,
                                 "source": call.skill_activation.source,
                                 "location": call.skill_activation.location,
-                                "content_digest": call.skill_activation.content_digest,
                             }
                             if call.skill_activation is not None
                             else None
@@ -644,8 +641,3 @@ def _validate_worker_declarations(
                 f"worker contributions do not match manifest for {kind}: "
                 f"extra={sorted(extra)}, missing={sorted(missing)}"
             )
-
-
-def _credential_environment_name(plugin_id: str, slot: str) -> str:
-    digest = hashlib.sha256(f"{plugin_id}\0{slot}".encode()).hexdigest()[:20].upper()
-    return f"OURO_PLUGIN_CREDENTIAL_{digest}"

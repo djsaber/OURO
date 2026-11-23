@@ -133,7 +133,6 @@ def _run(
             "delegation_id": relation.delegation_id,
             "root_session_id": relation.root_session_id,
             "agent_id": relation.agent_id,
-            "agent_definition_contract_hash": relation.definition.contract_hash,
         },
     )
 
@@ -187,7 +186,6 @@ def test_parent_catalog_changes_do_not_replace_a_delegation(
     changed_definition = _definition().model_copy(
         update={
             "description": "A different frozen contract.",
-            "contract_hash": "",
         }
     )
     relation = _relation(root).model_copy(
@@ -291,7 +289,7 @@ def test_child_policy_mismatch_is_distinct_from_identity_corruption(
     assert [item.code for item in diagnostics] == ["child_policy_invalid"]
 
 
-def test_child_run_contract_mismatch_fails_closed(
+def test_child_run_owned_by_another_agent_is_rejected(
     recovery_store: SessionStore,
 ) -> None:
     root = _create_root(recovery_store)
@@ -301,7 +299,7 @@ def test_child_run_contract_mismatch_fails_closed(
         update={
             "metadata": {
                 **_run(relation, child).metadata,
-                "agent_definition_contract_hash": "sha256:mismatch",
+                "agent_id": "different-agent",
             }
         }
     )
@@ -318,7 +316,7 @@ def test_child_run_contract_mismatch_fails_closed(
 
     diagnostics = AgentRecoveryService(recovery_store).reconcile()
 
-    assert [item.code for item in diagnostics] == ["child_contract_unavailable"]
+    assert [item.code for item in diagnostics] == ["child_delegation_mismatch"]
 
 
 @pytest.mark.asyncio
