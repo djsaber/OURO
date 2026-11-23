@@ -164,21 +164,6 @@ def _answer_entries(message: MessageRecord) -> Iterable[TranscriptEntry]:
         )
 
 
-def project_dialogue_entries(messages: Iterable[MessageRecord]) -> tuple[TranscriptEntry, ...]:
-    """Show only questions and public answers authored in the selected conversation."""
-    entries: list[TranscriptEntry] = []
-    for message in messages:
-        if "source_message_id" in message.metadata:
-            continue
-        if message.role == "assistant":
-            entries.extend(_answer_entries(message))
-        elif is_direct_user_input(message):
-            entry = _input_transcript_entry(message, show_harness_messages=False)
-            if entry is not None:
-                entries.append(entry)
-    return tuple(entries)
-
-
 def project_transcript_entries(
     messages: tuple[MessageRecord, ...],
     compactions: tuple[CompactionRecord, ...],
@@ -186,6 +171,7 @@ def project_transcript_entries(
     *,
     mutable_tool_call_keys: frozenset[tuple[str | None, str | None, str]],
     show_harness_messages: bool = False,
+    hide_inherited: bool = False,
 ) -> tuple[TranscriptEntry, ...]:
     """Build immutable history away from Textual's event loop.
 
@@ -195,13 +181,19 @@ def project_transcript_entries(
     """
 
     requests = {request.message_id: request for run in runs for request in run.requests}
-    tool_activities = _tool_activities_from_messages(messages)
+    visible_messages = (
+        tuple(message for message in messages if "source_message_id" not in message.metadata)
+        if hide_inherited
+        else messages
+    )
+    tool_activities = _tool_activities_from_messages(visible_messages)
     message_entries: list[list[TranscriptEntry]] = [[] for _ in messages]
-    message_positions: dict[str, int] = {}
+    # A local compaction can be anchored at the end of the inherited context.
+    message_positions = {message.message_id: index for index, message in enumerate(messages)}
     last_message_by_run: dict[str, int] = {}
 
-    for message_index, message in enumerate(messages):
-        message_positions[message.message_id] = message_index
+    for message in visible_messages:
+        message_index = message_positions[message.message_id]
         entries = message_entries[message_index]
         if message.role != "assistant":
             entry = _input_transcript_entry(message, show_harness_messages=show_harness_messages)
@@ -254,6 +246,8 @@ def project_transcript_entries(
         )
 
     for compaction in compactions:
+        if hide_inherited and "source_compaction_id" in compaction.metadata:
+            continue
         boundary_index = message_positions.get(compaction.history_boundary_message_id)
         if boundary_index is None:
             raise ValueError(

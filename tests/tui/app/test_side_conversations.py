@@ -20,6 +20,7 @@ from ouro.tools import builtin_tools
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.composer.input import Composer
 from ouro.tui.conversation.history import ConversationHistory
+from ouro.tui.conversation.tools import ToolActivityRow
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.multiple import MultiChoiceScreen
@@ -27,7 +28,7 @@ from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.session_navigation import SessionNavigationPanel
 from tests.application.test_responses_runtime import responses_runtime as responses_runtime
 from tests.application.test_runtime_authentication import login
-from tests.providers.responses_fixtures import call, message, terminal
+from tests.providers.responses_fixtures import call, message, reasoning, terminal
 from tests.tui.app.providers import BlockingStreamProvider, MultiChildStreamingProvider
 from tests.tui.app.support import (
     _blocking_application,
@@ -338,7 +339,7 @@ async def test_two_pending_approvals_follow_their_session_nodes(tmp_path: Path) 
         pending = app._interaction
         assert side and pending and pending.session_id == side
         assert [entry.text for entry in app.query_one(ConversationHistory).entries] == ["write"]
-        assert not app.query_one(ConversationView).query("ToolActivityRow")
+        assert app.query_one(ToolActivityRow).tool_call_id == "side_write"
         await pilot.press("alt+up")
         await wait_until(
             lambda: app._visible_session_id() == source, pilot, description="source input"
@@ -525,7 +526,8 @@ async def test_side_conversation_delivers_source_progress_at_user_consumption(
                 assert code is not None
                 return terminal([message(f"SIDE-ANSWER: {code.group()} queue wait.")])
 
-            replies.extend([terminal([call(702)]), explain_log])
+            side_reasoning = "Checking the pool log."
+            replies.extend([terminal([reasoning(side_reasoning), call(702)]), explain_log])
             tui.query_one(Composer).load_text("/btw SIDE-QUESTION: explain the log.")
             await pilot.press("enter")
             await wait_until(
@@ -545,17 +547,33 @@ async def test_side_conversation_delivers_source_progress_at_user_consumption(
             ] == [side.session_id]
             assert "ETIMEDOUT-701" in json.dumps(requests[-2][0]["input"])
             previous = requests[-1][0]
-            first_dialogue = [
-                "SIDE-QUESTION: explain the log.",
-                "SIDE-ANSWER: ETIMEDOUT-701 queue wait.",
+            first_turn = [
+                ("user", "SIDE-QUESTION: explain the log."),
+                ("assistant", side_reasoning),
+                ("tool", "call-702"),
+                ("assistant", "SIDE-ANSWER: ETIMEDOUT-701 queue wait."),
+                ("run", "completed"),
             ]
+
+            def transcript(history):
+                rows = []
+                for entry in history.entries:
+                    if entry.tool:
+                        content = entry.tool.tool_call_id
+                    elif entry.run:
+                        content = entry.run.status
+                    else:
+                        content = entry.reasoning or entry.text
+                    rows.append((entry.kind, content))
+                return rows
+
             history = tui.query_one(ConversationHistory)
             await wait_until(
-                lambda: any(entry.text == first_dialogue[-1] for entry in history.entries),
+                lambda: any(entry.kind == "run" for entry in history.entries),
                 pilot,
-                description="side answer committed to transcript after its tool ran",
+                description="side run summary committed after its answer",
             )
-            assert [entry.text for entry in history.entries] == first_dialogue
+            assert transcript(history) == first_turn
             await pilot.press("alt+up")
             await wait_until(
                 lambda: tui._visible_session_id() == source, pilot, description="source node"
@@ -587,7 +605,7 @@ async def test_side_conversation_delivers_source_progress_at_user_consumption(
             )
             assert tui._controller.pending_source_history == frozen
             assert len(requests) == request_count
-            assert [entry.text for entry in history.entries] == first_dialogue
+            assert transcript(history) == first_turn
         followup = UserInputRequest(
             prompt="Combine our term, the logs and the retest.",
             session_id=side.session_id,
@@ -657,12 +675,11 @@ async def test_side_conversation_delivers_source_progress_at_user_consumption(
         async with run_ready_app(resumed):
             await resumed._open_session(side.session_id)
             assert await resumed._set_harness_messages(True)
-            entries = resumed.query_one(ConversationHistory).entries
-            assert [(entry.kind, entry.text) for entry in entries] == [
-                ("user", first_dialogue[0]),
-                ("assistant", first_dialogue[1]),
+            assert transcript(resumed.query_one(ConversationHistory)) == [
+                *first_turn,
                 ("user", followup.prompt),
                 ("assistant", result.final_text),
+                ("run", "completed"),
             ]
         undone = app.sessions.undo(side.session_id)
         assert undone.text_content == followup.prompt

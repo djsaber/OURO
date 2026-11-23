@@ -24,7 +24,6 @@ from ouro.tui.conversation.reasoning import ReasoningLabel
 from ouro.tui.conversation.tools import ToolActivityRow, _tool_activity_text, is_terminal_tool
 from ouro.tui.conversation.transcript import (
     _compaction_presentation,
-    project_dialogue_entries,
     project_transcript_entries,
 )
 from ouro.tui.conversation.turn import AssistantTurn
@@ -83,7 +82,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         self._follow_tail = True
         self._reasoning_expanded = reasoning_expanded
         self.show_harness_messages = show_harness_messages
-        self.dialogue_only = False
+        self.hide_inherited = False
         self._welcome_state_changed = welcome_state_changed
         self._system_status_changed = system_status_changed
         self._history = ConversationHistory(
@@ -226,7 +225,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         self.anchor()
 
     async def show_welcome(self) -> None:
-        self.dialogue_only = False
+        self.hide_inherited = False
         await self._clear_live_transcript()
         self._history.replace(())
         self.set_welcome_mode(True)
@@ -363,12 +362,12 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         self,
         transcript: tuple[TranscriptEntry, ...],
         *,
-        dialogue_only: bool = False,
+        hide_inherited: bool = False,
         held_scroll_y: float | None = None,
         reusable_history: ConversationHistoryState | None = None,
     ) -> None:
         """Commit prepared content without waiting for history layout."""
-        self.dialogue_only = dialogue_only
+        self.hide_inherited = hide_inherited
         self.anchor()
         await self._clear_live_transcript()
         self._assistant = None
@@ -460,16 +459,13 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
 
     async def add_input_message(self, message: MessageRecord) -> None:
         """Append a committed input with the same role and layout as restored history."""
-        entries = (
-            project_dialogue_entries((message,))
-            if self.dialogue_only
-            else project_transcript_entries(
-                (message,),
-                (),
-                (),
-                mutable_tool_call_keys=frozenset(),
-                show_harness_messages=self.show_harness_messages,
-            )
+        entries = project_transcript_entries(
+            (message,),
+            (),
+            (),
+            mutable_tool_call_keys=frozenset(),
+            show_harness_messages=self.show_harness_messages,
+            hide_inherited=self.hide_inherited,
         )
         if entries:
             await self._dismiss_welcome()
@@ -490,8 +486,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         *,
         started_at: datetime | None = None,
     ) -> None:
-        if self.dialogue_only:
-            return
         await self._dismiss_welcome()
         if self._assistant is not None and self._assistant.has_text:
             # Reasoning after answer text starts a new model round; the previous
@@ -564,8 +558,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             return
         if self._assistant is not None and self._assistant.run_id == run.run_id:
             await self.finish_assistant()
-        if self.dialogue_only:
-            return
         if self._history.update_run(run):
             return
         await self._dismiss_welcome()
@@ -573,8 +565,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
 
     async def sync_tools(self, tools: tuple[RuntimeToolCallActivity, ...]) -> None:
         """Reconcile the complete current tool batch, including an empty snapshot."""
-        if self.dialogue_only:
-            return
         tools = tuple(tool for tool in tools if tool.tool_name)
         if not tools and not self._tools:
             return
@@ -741,8 +731,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         tokens_after: int | None,
         duration_seconds: float | None,
     ) -> None:
-        if self.dialogue_only:
-            return
         if compaction_id is not None:
             if compaction_id in self._presented_compaction_ids:
                 return

@@ -97,7 +97,7 @@ from ouro.tui.conversation.history_models import ConversationHistoryState, Trans
 from ouro.tui.conversation.markdown_stream import AssistantMarkdownStream
 from ouro.tui.conversation.messages import MessageSourceRequested, ToolNavigationRequested
 from ouro.tui.conversation.tools import is_terminal_tool
-from ouro.tui.conversation.transcript import project_dialogue_entries, project_transcript_entries
+from ouro.tui.conversation.transcript import project_transcript_entries
 from ouro.tui.conversation.view import ConversationView
 from ouro.tui.features.configuration.workflows import (
     SYSTEM_SETTING_ACTIONS,
@@ -1706,8 +1706,7 @@ class OuroTuiApp(App[int]):
             if update.run_finished:
                 await flush_stream()
                 await flush_tools()
-                if not conversation.dialogue_only:
-                    await self._sync_run_summary_from_event(event, model=projection.model)
+                await self._sync_run_summary_from_event(event, model=projection.model)
 
         await flush_stream()
         await flush_tools()
@@ -4412,7 +4411,7 @@ class OuroTuiApp(App[int]):
                         self._set_welcome_mode(not has_conversation)
                     await conversation.load_transcript(
                         transcript,
-                        dialogue_only=session.context_source_session_id is not None,
+                        hide_inherited=session.context_source_session_id is not None,
                         held_scroll_y=self._held_session_scroll_y.get(session.session_id),
                         reusable_history=reusable_history.state if reusable_history else None,
                     )
@@ -4429,7 +4428,7 @@ class OuroTuiApp(App[int]):
                         else _transcript_before_cursor(
                             snapshot.messages,
                             snapshot.history_before_cursor,
-                            dialogue_only=conversation.dialogue_only,
+                            hide_inherited=conversation.hide_inherited,
                         )
                     )
                     self._history_run_ids = {
@@ -4616,7 +4615,7 @@ class OuroTuiApp(App[int]):
         if projection is None or cursor is None:
             return False
         conversation = self.query_one(ConversationView)
-        dialogue_only = conversation.dialogue_only
+        hide_inherited = conversation.hide_inherited
         window = await self._controller.history_window(
             projection.session_id, before=cursor, history_epoch=projection.history_epoch
         )
@@ -4627,7 +4626,7 @@ class OuroTuiApp(App[int]):
             window,
             frozenset(self._history_run_ids) | conversation.presented_run_ids,
             self._models,
-            dialogue_only=dialogue_only,
+            hide_inherited=hide_inherited,
             show_harness_messages=self._preferences.show_harness_messages,
         )
         async with self._runtime_event_apply_lock:
@@ -4643,7 +4642,7 @@ class OuroTuiApp(App[int]):
                 _history_anchor(window.history_epoch, window.messages) or self._history_anchor
             )
             self._history_before_cursor = _transcript_before_cursor(
-                window.messages, window.before_cursor, dialogue_only=dialogue_only
+                window.messages, window.before_cursor, hide_inherited=hide_inherited
             )
             self._history_run_ids.update(run.run_id for run in window.runs)
             if self._history_anchor is not None and self._observation_subscription is not None:
@@ -4656,11 +4655,9 @@ class OuroTuiApp(App[int]):
         newer_run_ids: frozenset[str],
         models: tuple[AvailableModel, ...],
         *,
-        dialogue_only: bool = False,
+        hide_inherited: bool = False,
         show_harness_messages: bool = False,
     ) -> tuple[TranscriptEntry, ...]:
-        if dialogue_only:
-            return project_dialogue_entries(window.messages)
         presentations = project_run_presentations(
             (run for run in window.runs if run.kind == "agent"), window.messages, models=models
         )
@@ -4670,6 +4667,7 @@ class OuroTuiApp(App[int]):
             presentations,
             mutable_tool_call_keys=frozenset(),
             show_harness_messages=show_harness_messages,
+            hide_inherited=hide_inherited,
         )
         return tuple(
             entry for entry in entries if entry.kind != "run" or entry.run_id not in newer_run_ids
@@ -4877,32 +4875,25 @@ class OuroTuiApp(App[int]):
         """Build persisted projections without occupying Textual's event loop."""
 
         projection = restore_session_content(snapshot)
-        dialogue_only = snapshot.session.context_source_session_id is not None
-        tools = (
-            ()
-            if dialogue_only
-            else tuple(tool for tool in projection.activity.tool_calls if tool.tool_name)
-        )
+        tools = tuple(tool for tool in projection.activity.tool_calls if tool.tool_name)
         terminal_tools = all(is_terminal_tool(tool) for tool in tools)
-        if dialogue_only:
-            entries = project_dialogue_entries(snapshot.messages)
-        else:
-            presentations = project_run_presentations(
-                (run for run in snapshot.runs if run.kind == "agent"),
-                snapshot.messages,
-                models=models,
-            )
-            entries = project_transcript_entries(
-                snapshot.messages,
-                snapshot.compactions,
-                presentations,
-                mutable_tool_call_keys=frozenset(
-                    (projection.activity.run_id, tool.batch_id, tool.tool_call_id)
-                    for tool in tools
-                    if not terminal_tools
-                ),
-                show_harness_messages=show_harness_messages,
-            )
+        presentations = project_run_presentations(
+            (run for run in snapshot.runs if run.kind == "agent"),
+            snapshot.messages,
+            models=models,
+        )
+        entries = project_transcript_entries(
+            snapshot.messages,
+            snapshot.compactions,
+            presentations,
+            mutable_tool_call_keys=frozenset(
+                (projection.activity.run_id, tool.batch_id, tool.tool_call_id)
+                for tool in tools
+                if not terminal_tools
+            ),
+            show_harness_messages=show_harness_messages,
+            hide_inherited=snapshot.session.context_source_session_id is not None,
+        )
         prepared = list(entries)
         if tools and terminal_tools:
             historical_tools = {
@@ -4919,7 +4910,7 @@ class OuroTuiApp(App[int]):
 
         # A snapshot installs complete state; it does not replay streaming handoffs.
         # Prepare stable blocks together with history, leaving only the open tail live.
-        reasoning = "" if dialogue_only else projection.reasoning_text
+        reasoning = projection.reasoning_text
         answer = projection.assistant_text
         stream = AssistantMarkdownStream()
         blocks, _ = stream.append(answer)
@@ -6110,10 +6101,10 @@ class OuroTuiApp(App[int]):
 
 
 def _transcript_before_cursor(
-    messages: tuple[MessageRecord, ...], before_cursor: int | None, *, dialogue_only: bool
+    messages: tuple[MessageRecord, ...], before_cursor: int | None, *, hide_inherited: bool
 ) -> int | None:
     # The copied source history is a contiguous prefix of the side conversation.
-    if dialogue_only and messages and "source_message_id" in messages[0].metadata:
+    if hide_inherited and messages and "source_message_id" in messages[0].metadata:
         return None
     return before_cursor
 
