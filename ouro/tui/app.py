@@ -497,7 +497,6 @@ class OuroTuiApp(App[int]):
             show=self.push_screen,
             choose=self.push_screen_wait,
             notify=self.notify,
-            notice=self._workflow_notice,
             loading=lambda value: loading_menu(self, value),
             start=self._start_workflow,
         )
@@ -662,13 +661,11 @@ class OuroTuiApp(App[int]):
             await self._configuration._configure_compaction(menu=menu)
         else:
             available = "|".join(action.action_id for action in SYSTEM_SETTING_ACTIONS)
-            await self.query_one(ConversationView).add_notice(
+            self.notify(
                 f"Unknown system setting action: {action_id}. Available: {available}",
-                error=True,
+                severity="error",
+                markup=False,
             )
-
-    async def _workflow_notice(self, text: str, *, error: bool = False) -> None:
-        await self.query_one(ConversationView).add_notice(text, error=error)
 
     def _start_workflow(
         self,

@@ -63,7 +63,6 @@ class TranscriptEntry:
     agent: AgentTreeNode | None = None
     run: RunPresentation | None = None
     compaction: CompactionPresentation | None = None
-    error: bool = False
     # Source coordinates merge canonical windows; they do not change visual identity.
     source_sequence: int | None = field(default=None, compare=False)
     message_id: str | None = field(default=None, compare=False)

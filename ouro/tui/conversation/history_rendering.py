@@ -625,8 +625,6 @@ def _entry_renderables(
     if entry.kind == "notice":
         top = 1 if request.previous_kind == "tool" else 0
         summary = _summary_line(entry.text, marker_tone=theme.accent, details=(), theme=theme)
-        if entry.error:
-            summary.stylize(theme.failure)
         return [(Padding(summary, (top, 0, 1, 0)), "body")]
     if entry.kind == "compaction":
         assert entry.compaction is not None

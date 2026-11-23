@@ -28,7 +28,7 @@ async def test_stream_updates_follow_only_while_conversation_is_at_bottom(
         await pilot.pause()
         conversation = app.query_one(ConversationView)
         for index in range(40):
-            await conversation.add_notice(f"History {index}")
+            await conversation.add_command_output(f"History {index}")
         await pilot.pause()
 
         assert conversation.is_vertical_scroll_end is True
@@ -36,7 +36,7 @@ async def test_stream_updates_follow_only_while_conversation_is_at_bottom(
         conversation.scroll_to(y=0, animate=False, immediate=True)
         await pilot.pause()
         held_position = conversation.scroll_y
-        await conversation.add_notice("New streamed content while reviewing history")
+        await conversation.add_command_output("New streamed content while reviewing history")
         await pilot.pause()
 
         assert conversation.scroll_y == held_position
@@ -48,7 +48,7 @@ async def test_stream_updates_follow_only_while_conversation_is_at_bottom(
             immediate=True,
         )
         await pilot.pause()
-        await conversation.add_notice("New streamed content after returning to bottom")
+        await conversation.add_command_output("New streamed content after returning to bottom")
         await pilot.pause()
 
         assert conversation.is_vertical_scroll_end is True

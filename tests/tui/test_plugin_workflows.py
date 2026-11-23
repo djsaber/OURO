@@ -13,6 +13,8 @@ from ouro.application.contracts.plugins import (
 )
 from ouro.plugins.manifest import PluginAuthor
 from ouro.tui.app import OuroTuiApp
+from ouro.tui.conversation.history import ConversationHistory
+from ouro.tui.conversation.view import ConversationView
 from ouro.tui.features.plugins.workflows import (
     _plugin_action_choices,
 )
@@ -126,7 +128,10 @@ async def test_plugin_delete_animates_and_does_not_navigate_after_leaving(
             assert menu._spinner_timer is None
 
 
-async def test_plugin_description_updates_after_switching_version(tmp_path, monkeypatch):
+@pytest.mark.parametrize("compatible", (True, False))
+async def test_plugin_version_selection_reports_its_result_in_the_menu(
+    tmp_path, monkeypatch, compatible
+):
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
     detail = _detail()
     detail.description = "Example plugin."
@@ -146,13 +151,16 @@ async def test_plugin_description_updates_after_switching_version(tmp_path, monk
         return detail
 
     async def select_install(plugin_id, package_digest):
+        if not compatible:
+            raise ValueError("Incompatible plugin [v2]")
         detail.version = "2.0.0"
         detail.author = None
         return PluginActionResult(
             action="select", plugin_id=plugin_id, status="disabled", package_digest=package_digest
         )
 
-    async with run_ready_app(app) as pilot:
+    async with run_ready_app(app, notifications=True) as pilot:
+        conversation = app.query_one(ConversationView)
         monkeypatch.setattr(app._controller, "plugin", plugin)
         monkeypatch.setattr(app._controller, "select_plugin_install", select_install)
         menu = ChoiceScreen(title="PLUGINS", placeholder="Filter…", choices=())
@@ -166,6 +174,14 @@ async def test_plugin_description_updates_after_switching_version(tmp_path, monk
         await wait_for_workers(
             app, [worker for worker in app.workers if worker.group.startswith("choice-")]
         )
+        if not compatible:
+            await pilot.pause()
+            toast = menu.query_one("#textual-toastrack").query_one("Toast")
+            assert toast.has_class("-error")
+            assert "Incompatible plugin [v2]" in toast.render().plain
+            assert conversation.showing_welcome
+            assert not conversation.query_one(ConversationHistory).entries
+            return
         await pilot.press("escape")
         await pilot.pause()
         assert menu._title == "PLUGIN • Example"

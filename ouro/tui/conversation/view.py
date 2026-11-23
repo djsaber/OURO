@@ -706,21 +706,15 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             if agent is not None:
                 row.apply_agent(agent)
 
-    async def add_notice(self, message: str, *, error: bool = False) -> None:
-        await self._dismiss_welcome()
-        # Notices are immutable transcript boundaries as well. Freezing any
-        # partial answer keeps presentation order identical to event order.
-        await self.finish_assistant()
-        self._history.append(TranscriptEntry(kind="notice", text=message, error=error))
-
     async def add_command_output(self, output: str) -> None:
-        """Present short feedback as a notice and multiline content in a message frame."""
-        if len(output.splitlines()) <= 1:
-            await self.add_notice(output)
-            return
+        """Present a command result as a single line or a multiline message frame."""
         await self._dismiss_welcome()
         await self.finish_assistant()
-        self._history.append(TranscriptEntry(kind="command", text=output))
+        self._history.append(
+            TranscriptEntry(
+                kind="notice" if len(output.splitlines()) <= 1 else "command", text=output
+            )
+        )
 
     async def add_compaction(
         self,

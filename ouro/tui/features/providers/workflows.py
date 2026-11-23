@@ -35,7 +35,7 @@ class ProviderConfigurationWorkflows:
         try:
             catalog = await self._ui.controller().provider_catalog()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         choices = _provider_catalog_choices(catalog.providers, theme=self._ui.theme())
         if menu is not None:
@@ -44,7 +44,7 @@ class ProviderConfigurationWorkflows:
                 try:
                     refreshed = await self._ui.controller().provider_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    await self._ui.notice(str(exc), error=True)
+                    self._ui.notify_error(exc)
                     return None
                 return _provider_catalog_choices(
                     refreshed.providers,
@@ -85,7 +85,7 @@ class ProviderConfigurationWorkflows:
         try:
             templates = await self._ui.controller().provider_templates()
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         profiles = {
             f"preset:{template.template_id}": ProviderSetupProfile.from_template(template)
@@ -158,7 +158,7 @@ class ProviderConfigurationWorkflows:
         try:
             provider = await self._ui.controller().add_provider(provider_draft)
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         suffix = (
             f"{provider.endpoint_count} preset endpoint(s)"
@@ -185,7 +185,7 @@ class ProviderConfigurationWorkflows:
                 try:
                     catalog = await self._ui.controller().provider_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    await self._ui.notice(str(exc), error=True)
+                    self._ui.notify_error(exc)
                     return None
                 refreshed = next(
                     (
@@ -281,12 +281,12 @@ class ProviderConfigurationWorkflows:
         try:
             service = self._ui.controller().provider_auth()
         except Exception as exc:  # noqa: BLE001 - injected runtimes may omit authentication.
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         try:
             catalog = await self._ui.controller().provider_catalog()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         provider_names = {item.provider_id: item.display_name for item in catalog.providers}
         screen = ProviderAuthenticationScreen(
@@ -308,7 +308,7 @@ class ProviderConfigurationWorkflows:
             templates = await self._ui.controller().provider_templates()
             profile = profile_for_provider(provider, templates)
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         screen = ProviderConfigurationScreen(
             profile,
@@ -325,7 +325,7 @@ class ProviderConfigurationWorkflows:
                 provider_draft,
             )
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         self._ui.notify(f"Provider saved: {saved.display_name} (next request)")
 
@@ -336,17 +336,14 @@ class ProviderConfigurationWorkflows:
         try:
             catalog = await self._ui.controller().update_provider_template(provider.provider_id)
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return None
         updated = next(
             item for item in catalog.providers if item.provider_id == provider.provider_id
         )
         report = catalog.template_update
         if report is None:
-            await self._ui.notice(
-                f"Provider has no preset template: {provider.display_name}",
-                error=True,
-            )
+            self._ui.notify_error(f"Provider has no preset template: {provider.display_name}")
             return None
         self._ui.notify(_provider_template_update_notice(report, theme=self._ui.theme()))
         return updated
@@ -363,7 +360,7 @@ class ProviderConfigurationWorkflows:
                 enabled=enabled,
             )
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return None
         return saved
 
@@ -395,7 +392,7 @@ class ProviderConfigurationWorkflows:
                 return False
             await self._ui.controller().remove_provider(provider.provider_id)
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return False
         self._ui.notify(f"Provider deleted: {provider.display_name} (next request)")
         return True
@@ -407,15 +404,12 @@ class ProviderConfigurationWorkflows:
         menu: ChoiceScreen | None = None,
     ) -> None:
         if action not in {"list", "add", "use"}:
-            await self._ui.notice(
-                f"Unknown endpoint action: {action}",
-                error=True,
-            )
+            self._ui.notify_error(f"Unknown endpoint action: {action}")
             return
         try:
             catalog = await self._ui.controller().provider_catalog()
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         if action == "add":
             providers = _sorted_providers(catalog.providers)
@@ -428,7 +422,7 @@ class ProviderConfigurationWorkflows:
                     try:
                         refreshed = await self._ui.controller().provider_catalog()
                     except Exception as exc:  # noqa: BLE001
-                        await self._ui.notice(str(exc), error=True)
+                        self._ui.notify_error(exc)
                         return None
                     providers_by_id.clear()
                     providers_by_id.update(
@@ -492,7 +486,7 @@ class ProviderConfigurationWorkflows:
             try:
                 refreshed = await self._ui.controller().provider_catalog()
             except Exception as exc:  # noqa: BLE001
-                await self._ui.notice(str(exc), error=True)
+                self._ui.notify_error(exc)
                 return None
             routes.clear()
             routes.update(_endpoint_routes(refreshed.providers))
@@ -574,7 +568,7 @@ class ProviderConfigurationWorkflows:
         try:
             catalog = await self._ui.controller().provider_endpoints(provider.provider_id)
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         candidates = _sorted_endpoints(catalog.endpoints)
         choices = _provider_endpoint_choices(
@@ -592,7 +586,7 @@ class ProviderConfigurationWorkflows:
                 try:
                     refreshed = await self._ui.controller().provider_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    await self._ui.notice(str(exc), error=True)
+                    self._ui.notify_error(exc)
                     return None
                 current_provider = next(
                     (
@@ -668,7 +662,7 @@ class ProviderConfigurationWorkflows:
                 try:
                     catalog = await self._ui.controller().provider_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    await self._ui.notice(str(exc), error=True)
+                    self._ui.notify_error(exc)
                     return None
                 refreshed_provider = next(
                     (
@@ -766,7 +760,7 @@ class ProviderConfigurationWorkflows:
                 )
             )
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         action = "added" if existing is None else "saved"
         self._ui.notify(f"Endpoint {action}: {saved.display_name or saved.model_id} (next request)")
@@ -775,7 +769,7 @@ class ProviderConfigurationWorkflows:
         try:
             await self._ui.controller().use_endpoint(provider_id, endpoint_id)
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return False
         return True
 
@@ -809,7 +803,7 @@ class ProviderConfigurationWorkflows:
                 endpoint.endpoint_id,
             )
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return False
         self._ui.notify(f"Endpoint deleted: {endpoint_label} (next request)")
         return True

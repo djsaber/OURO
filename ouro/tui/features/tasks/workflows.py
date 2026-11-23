@@ -72,13 +72,13 @@ class TaskManagementWorkflows:
                     return None
                 return await choices()
             except Exception as exc:
-                self._ui.notify(str(exc), severity="error", markup=False)
+                self._ui.notify_error(exc)
                 return None
 
         try:
             rows = await choices()
         except Exception as exc:
-            self._ui.notify(str(exc), severity="error", markup=False)
+            self._ui.notify_error(exc)
             return
         if menu is not None:
             if not menu.is_attached or menu.page_revision != revision:
@@ -137,7 +137,7 @@ class TaskManagementWorkflows:
             await self._sync_task_status()
             self._ui.notify("Task saved")
         except Exception as exc:
-            self._ui.notify(str(exc), severity="error", markup=False)
+            self._ui.notify_error(exc)
 
     async def _delete_task(self, task: TaskRecord, *, menu: ChoiceScreen) -> bool:
         result = await menu.open_child(
@@ -210,7 +210,7 @@ class TaskManagementWorkflows:
                         return None
                 return await choices()
             except Exception as exc:
-                self._ui.notify(str(exc), severity="error", markup=False)
+                self._ui.notify_error(exc)
                 return None
 
         menu.push_page(
@@ -276,7 +276,7 @@ class TaskManagementWorkflows:
             try:
                 await self._open_session(execution.target.session_id)
             except Exception as exc:
-                self._ui.notify(str(exc), severity="error", markup=False)
+                self._ui.notify_error(exc)
             return None
 
         menu.push_page(

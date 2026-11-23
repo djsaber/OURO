@@ -237,7 +237,7 @@ async def test_session_frames_preserve_editor_and_menu_cursor_during_live_update
         conversation = app.query_one(ConversationView)
         await conversation.add_user("Existing conversation")
         for index in range(45):
-            await conversation.add_notice(f"History {index}")
+            await conversation.add_command_output(f"History {index}")
         await pilot.pause()
         conversation.scroll_home(animate=False, immediate=True)
         composer = app.query_one(Composer)

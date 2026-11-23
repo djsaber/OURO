@@ -49,7 +49,6 @@ class PluginConfigurationScreen(CredentialEditableChoiceScreen):
         self._apply = apply
         self._reload = reload
         self._issues = view.issues
-        self._failure = ""
         self._busy = False
         super().__init__(
             title=theme_for(self).inline_separator.join(("EDIT PLUGIN", view.name)),
@@ -93,9 +92,9 @@ class PluginConfigurationScreen(CredentialEditableChoiceScreen):
                     with self.loading_choice("reload"):
                         self._view = await self._reload()
                     self._draft = self._view.candidate()
-                    self._issues, self._failure = self._view.issues, ""
+                    self._issues = self._view.issues
                 except Exception as exc:
-                    self._failure = str(exc)
+                    self.notify(str(exc), severity="error", markup=False)
                 self._refresh(selected)
             return
         if selected in {"unset", "null"}:
@@ -193,14 +192,13 @@ class PluginConfigurationScreen(CredentialEditableChoiceScreen):
         return self._configuration_choices()
 
     async def _check(self) -> PluginConfigurationPreview | None:
-        self._failure = ""
         try:
             with self.loading_choice(self._selected_value()):
                 result = await self._preview(self._draft)
             self._issues = result.issues
             return result
         except Exception as exc:
-            self._failure = str(exc)
+            self.notify(str(exc), severity="error", markup=False)
             return None
 
     async def _submit(self) -> None:
@@ -213,7 +211,7 @@ class PluginConfigurationScreen(CredentialEditableChoiceScreen):
                 self.dismiss(applied)  # type: ignore[arg-type]
                 return
         except Exception as exc:
-            self._failure = str(exc)
+            self.notify(str(exc), severity="error", markup=False)
         finally:
             self._busy = False
         self._refresh("save")
@@ -313,16 +311,6 @@ class PluginConfigurationScreen(CredentialEditableChoiceScreen):
                     issue.path or "Configuration",
                     description=issue.message,
                     trailing=issue.code,
-                    group="VALIDATION",
-                    disabled=True,
-                )
-            )
-        if self._failure:
-            choices.append(
-                Choice(
-                    "failure",
-                    "Apply failed",
-                    trailing=" ".join(self._failure.splitlines()),
                     group="VALIDATION",
                     disabled=True,
                 )

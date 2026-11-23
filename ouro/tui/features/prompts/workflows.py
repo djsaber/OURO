@@ -20,7 +20,7 @@ class PromptWorkflows:
         try:
             current = await self._ui.controller().prompt_configuration()
         except Exception as exc:  # noqa: BLE001 - report configuration errors at the UI boundary.
-            self._ui.notify(str(exc), severity="error", markup=False)
+            self._ui.notify_error(exc)
             return
 
         async def refresh() -> tuple[Choice, ...]:
@@ -28,7 +28,7 @@ class PromptWorkflows:
             try:
                 current = await self._ui.controller().prompt_configuration()
             except Exception as exc:  # noqa: BLE001 - keep navigation usable after read failures.
-                self._ui.notify(str(exc), severity="error", markup=False)
+                self._ui.notify_error(exc)
             return prompt_choices(current.config)
 
         async def select(value: str) -> tuple[Choice, ...] | None:
@@ -48,7 +48,7 @@ class PromptWorkflows:
                 else:
                     await manage(cast(PromptKind, prefix), identity)
             except Exception as exc:  # noqa: BLE001 - retain the menu on a rejected edit.
-                self._ui.notify(str(exc), severity="error", markup=False)
+                self._ui.notify_error(exc)
                 return await refresh()
             return None
 
@@ -100,7 +100,7 @@ class PromptWorkflows:
                         "Prompt configuration saved (applies to the next model request)"
                     )
                 except Exception as exc:  # noqa: BLE001 - revision and I/O errors stay visible.
-                    self._ui.notify(str(exc), severity="error", markup=False)
+                    self._ui.notify_error(exc)
                 screen.pop_page(choices=await refresh(), initial_value=f"{kind}:{entry_id}")
                 return None
 

@@ -95,7 +95,7 @@ class ConfigurationWorkflows:
         try:
             config = await self._ui.controller().queued_input_configuration()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
 
         def choices(selected: QueuedInputConsumptionMode) -> tuple[Choice, ...]:
@@ -114,7 +114,7 @@ class ConfigurationWorkflows:
                 mode = cast(QueuedInputConsumptionMode, value)
                 saved = await self._ui.controller().update_queued_input_consumption(mode)
             except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-                await self._ui.notice(str(exc), error=True)
+                self._ui.notify_error(exc)
                 return None
             self._ui.notify(
                 f"Queued messages: {_QUEUED_INPUT_CONSUMPTION_LABELS[saved.consumption_mode]}"
@@ -149,7 +149,7 @@ class ConfigurationWorkflows:
             models = await self._ui.controller().models()
             strategies = self._ui.controller().compaction_strategies()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         screen = CompactionConfigurationScreen(
             config,
@@ -165,7 +165,7 @@ class ConfigurationWorkflows:
         try:
             saved = await self._ui.controller().save_compaction_configuration(compaction_draft)
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         route = (
             f"{saved.model.provider_id}/{saved.model.endpoint_id}"
@@ -189,7 +189,7 @@ class ConfigurationWorkflows:
             current = await controller.tool_execution_configuration()
             tools = await controller.tool_configurations()
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
 
         async def save_permission(
@@ -199,7 +199,7 @@ class ConfigurationWorkflows:
                 await controller.set_tool_permission(name, mode)
                 return await controller.tool_configurations()
             except Exception as exc:  # noqa: BLE001
-                await self._ui.notice(str(exc), error=True)
+                self._ui.notify_error(exc)
                 return None
 
         screen = ToolConfigurationScreen(current, tools=tools, on_permission=save_permission)
@@ -211,7 +211,7 @@ class ConfigurationWorkflows:
                 cast(TuiToolExecutionConfiguration, draft)
             )
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         self._ui.notify(f"Tool execution saved: {updated.mode} (next tool batch)")
 
@@ -222,7 +222,7 @@ class ConfigurationWorkflows:
             current = await self._ui.controller().agent_runtime_configuration()
             models = await self._ui.controller().models()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         screen = AgentDispatchPolicyScreen(
             current,
@@ -237,7 +237,7 @@ class ConfigurationWorkflows:
                 cast(TuiAgentRuntimeConfiguration, draft)
             )
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
 
     async def _choose_agent_definitions(
@@ -248,7 +248,7 @@ class ConfigurationWorkflows:
         try:
             catalog = await self._ui.controller().agent_definition_catalog()
         except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         screen: ChoiceScreen
 
@@ -256,7 +256,7 @@ class ConfigurationWorkflows:
             try:
                 refreshed = await self._ui.controller().agent_definition_catalog()
             except Exception as exc:  # noqa: BLE001
-                await self._ui.notice(str(exc), error=True)
+                self._ui.notify_error(exc)
                 return None
             return _agent_definition_choices(refreshed.definitions, theme=self._ui.theme())
 
@@ -264,7 +264,7 @@ class ConfigurationWorkflows:
             try:
                 current = await self._ui.controller().agent_definition_catalog()
             except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
-                await self._ui.notice(str(exc), error=True)
+                self._ui.notify_error(exc)
                 return None
             definition = next(
                 (item for item in current.definitions if item.agent_id == agent_id),
@@ -328,7 +328,7 @@ class ConfigurationWorkflows:
                         expected_revision=expected_revision,
                     )
                 except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-                    await self._ui.notice(str(exc), error=True)
+                    self._ui.notify_error(exc)
                     return None
             else:
                 return None
@@ -370,7 +370,7 @@ class ConfigurationWorkflows:
             tools = await self._ui.controller().agent_definition_tools()
             models = await self._ui.controller().models()
         except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         screen = AgentDefinitionConfigurationScreen(
             tools,
@@ -388,7 +388,7 @@ class ConfigurationWorkflows:
                 expected_revision=catalog.revision,
             )
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
 
     async def _edit_agent_definition(
@@ -405,7 +405,7 @@ class ConfigurationWorkflows:
             tools = await self._ui.controller().agent_definition_tools()
             models = await self._ui.controller().models()
         except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return None
         screen = AgentDefinitionConfigurationScreen(
             tools,
@@ -425,7 +425,7 @@ class ConfigurationWorkflows:
                 expected_revision=expected_revision,
             )
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return None
         return saved
 
@@ -452,7 +452,7 @@ class ConfigurationWorkflows:
                 expected_revision=expected_revision,
             )
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return None
         return saved
 
@@ -463,7 +463,7 @@ class ConfigurationWorkflows:
                 self._sync_mcp_status()
                 runtime = {item.server_id: item for item in self._ui.controller().mcp_servers()}
             except Exception as exc:  # noqa: BLE001
-                await self._ui.notice(str(exc), error=True)
+                self._ui.notify_error(exc)
                 return None
             return _mcp_choices(configs, runtime, theme=self._ui.theme())
 
@@ -513,7 +513,7 @@ class ConfigurationWorkflows:
                 None,
             )
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
 
         actions = _mcp_management_choices(config, status, theme=self._ui.theme())
@@ -535,7 +535,7 @@ class ConfigurationWorkflows:
                         None,
                     )
                 except Exception as exc:  # noqa: BLE001
-                    await self._ui.notice(str(exc), error=True)
+                    self._ui.notify_error(exc)
                     return None
                 return _mcp_management_choices(
                     config,
@@ -556,7 +556,7 @@ class ConfigurationWorkflows:
                     config = next(item for item in configs if item.server_id == server_id)
                     status = runtime.get(server_id)
                 except Exception as exc:  # noqa: BLE001
-                    await self._ui.notice(str(exc), error=True)
+                    self._ui.notify_error(exc)
                     return
                 if menu.update_choices(
                     _mcp_management_choices(config, status, theme=self._ui.theme()),
@@ -663,7 +663,7 @@ class ConfigurationWorkflows:
         try:
             saved = await self._ui.controller().save_mcp_configuration(mcp_draft)
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return None
         self._sync_mcp_status()
         self._ui.notify(
@@ -677,7 +677,7 @@ class ConfigurationWorkflows:
             with self._ui.loading("check"):
                 result = await self._ui.controller().check_mcp_server(server_id)
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         if result.ok:
             self._ui.notify(
@@ -685,10 +685,9 @@ class ConfigurationWorkflows:
                 f"{len(result.tool_names)} tool(s)"
             )
         else:
-            await self._ui.notice(
+            self._ui.notify_error(
                 f"MCP check failed: {result.server.name}{self._ui.theme().inline_separator}"
-                f"{result.error or result.status}",
-                error=True,
+                f"{result.error or result.status}"
             )
 
     async def _run_mcp_action(
@@ -705,15 +704,11 @@ class ConfigurationWorkflows:
         try:
             status = await operations[action](server_id)
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return None
         self._sync_mcp_status()
         if status.status == "failed":
-            self._ui.notify(
-                f"MCP {status.name}: {status.status}{self._ui.theme().inline_separator}"
-                f"{status.tool_count} tool(s)",
-                severity="error",
-            )
+            self._ui.notify_error(f"MCP {status.name}: {status.error or status.status}")
         return status
 
     async def _remove_mcp(
@@ -733,7 +728,7 @@ class ConfigurationWorkflows:
         try:
             await self._ui.controller().remove_mcp_configuration(config.server_id)
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return False
         self._sync_mcp_status()
         self._ui.notify(f"MCP deleted: {config.name} (next restart)")
@@ -743,7 +738,7 @@ class ConfigurationWorkflows:
         try:
             await self._ui.controller().set_mcp_enabled(server_id, enabled=enabled)
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return False
         self._sync_mcp_status()
         return True
@@ -756,7 +751,7 @@ class ConfigurationWorkflows:
         try:
             policy = await self._ui.controller().skill_policy()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
 
         async def refresh_sources() -> tuple[Choice, ...] | None:
@@ -764,7 +759,7 @@ class ConfigurationWorkflows:
             try:
                 policy = await self._ui.controller().skill_policy()
             except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-                await self._ui.notice(str(exc), error=True)
+                self._ui.notify_error(exc)
                 return None
             return _skill_source_choices(policy)
 
@@ -786,7 +781,7 @@ class ConfigurationWorkflows:
                         source_updates={source_id: not source.enabled}
                     )
             except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-                await self._ui.notice(str(exc), error=True)
+                self._ui.notify_error(exc)
                 return None
             return _skill_source_choices(policy)
 
@@ -832,7 +827,7 @@ class ConfigurationWorkflows:
             with self._ui.loading(None):
                 catalog = await self._ui.controller().skill_catalog()
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         if menu is not None and (not menu.is_attached or menu.page_revision != revision):
             return
@@ -846,7 +841,7 @@ class ConfigurationWorkflows:
                     with self._ui.loading(None):
                         refreshed = await self._ui.controller().skill_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    await self._ui.notice(str(exc), error=True)
+                    self._ui.notify_error(exc)
                     return None
                 skills.clear()
                 skills.update({skill.name: skill for skill in refreshed.skills})
@@ -881,10 +876,7 @@ class ConfigurationWorkflows:
             self._ui.show(skill_menu)
             return
         if not any(item.name == selector for item in catalog.skills):
-            await self._ui.notice(
-                f"Skill not found: {selector}",
-                error=True,
-            )
+            self._ui.notify_error(f"Skill not found: {selector}")
             return
         await self._manage_skill(selector)
 
@@ -895,16 +887,13 @@ class ConfigurationWorkflows:
         menu: ChoiceScreen | None = None,
     ) -> None:
         if action not in {"toggle", "update", "remove"}:
-            await self._ui.notice(
-                f"Unknown skill action: {action}",
-                error=True,
-            )
+            self._ui.notify_error(f"Unknown skill action: {action}")
             return
         try:
             with self._ui.loading(None):
                 catalog = await self._ui.controller().skill_catalog()
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         candidates = (
             tuple(skill for skill in catalog.skills if skill.managed)
@@ -930,10 +919,7 @@ class ConfigurationWorkflows:
                     with self._ui.loading(None):
                         refreshed = await self._ui.controller().skill_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    await self._ui.notice(
-                        str(exc),
-                        error=True,
-                    )
+                    self._ui.notify_error(exc)
                     return None
                 skills.clear()
                 skills.update({skill.name: skill for skill in refreshed.skills})
@@ -966,7 +952,7 @@ class ConfigurationWorkflows:
                     with self._ui.loading(None):
                         refreshed = await self._ui.controller().skill_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    await self._ui.notice(str(exc), error=True)
+                    self._ui.notify_error(exc)
                     return None
                 refreshed_candidates = (
                     tuple(skill for skill in refreshed.skills if skill.managed)
@@ -1024,13 +1010,10 @@ class ConfigurationWorkflows:
                 None,
             )
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         if skill is None:
-            await self._ui.notice(
-                f"Skill not found: {name}",
-                error=True,
-            )
+            self._ui.notify_error(f"Skill not found: {name}")
             return
         plugin_id = _plugin_skill_owner(skill)
         if plugin_id is not None:
@@ -1046,7 +1029,7 @@ class ConfigurationWorkflows:
                     with self._ui.loading(None):
                         catalog = await self._ui.controller().skill_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    await self._ui.notice(str(exc), error=True)
+                    self._ui.notify_error(exc)
                     return None
                 refreshed = next(
                     (item for item in catalog.skills if item.name == name),
@@ -1072,10 +1055,7 @@ class ConfigurationWorkflows:
                         None,
                     )
                     if refreshed is None:
-                        await self._ui.notice(
-                            f"Skill not found after state change: {name}",
-                            error=True,
-                        )
+                        self._ui.notify_error(f"Skill not found after state change: {name}")
                         return None
                     skill = refreshed
                     menu.update_parent_choices(
@@ -1125,7 +1105,7 @@ class ConfigurationWorkflows:
             with self._ui.loading(None):
                 result = await self._ui.controller().install_skills(skill_draft)
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         names = ", ".join(item.name for item in result.skills) or "none"
         self._ui.notify(f"Skills installed: {names}")
@@ -1134,7 +1114,7 @@ class ConfigurationWorkflows:
         try:
             await self._ui.controller().set_skill_enabled(name, enabled=enabled)
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return False
         return True
 
@@ -1143,7 +1123,7 @@ class ConfigurationWorkflows:
             with self._ui.loading("update"):
                 await self._ui.controller().update_skill(name)
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         self._ui.notify(f"Skill updated: {name} (next restart)")
 
@@ -1165,7 +1145,7 @@ class ConfigurationWorkflows:
             with self._ui.loading("remove"):
                 await self._ui.controller().remove_skill(name)
         except Exception as exc:  # noqa: BLE001
-            await self._ui.notice(str(exc), error=True)
+            self._ui.notify_error(exc)
             return
         self._ui.notify(f"Skill deleted: {name} (next restart)")
 

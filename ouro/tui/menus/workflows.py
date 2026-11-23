@@ -29,10 +29,6 @@ class Notify(Protocol):
     ) -> None: ...
 
 
-class Notice(Protocol):
-    async def __call__(self, text: str, *, error: bool = False) -> None: ...
-
-
 class StartWork(Protocol):
     def __call__(
         self,
@@ -51,6 +47,8 @@ class WorkflowNavigation:
     show: Callable[[Screen], object]
     choose: ChooseScreen
     notify: Notify
-    notice: Notice
     loading: Callable[[str | None], AbstractContextManager[None]]
     start: StartWork
+
+    def notify_error(self, error: Exception | str) -> None:
+        self.notify(str(error), severity="error", markup=False)
