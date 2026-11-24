@@ -196,7 +196,8 @@ async def test_mixed_references_survive_restart_and_form_one_complete_attachment
         assert len({item.path for item in body.input_attachments}) == 2
         await restarted._edit_message("#1")
         await pilot.pause()
-        assert composer.input_content == original and composer.text == display
+        assert composer.input_content == original.model_copy(update={"text": ""})
+        assert "Edit #1「inspect」" in composer.text
 
 
 @pytest.mark.parametrize("key", ("escape", "ctrl+a"))

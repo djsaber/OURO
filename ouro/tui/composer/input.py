@@ -12,17 +12,17 @@ from textual.binding import Binding
 from textual.color import Color
 from textual.content import Content
 from textual.message import Message
-from textual.reactive import reactive
 from textual.strip import Strip
 from textual.style import Style
 from textual.widgets import TextArea
 from textual.widgets.text_area import TextAreaTheme
 
-from ouro.core.input_content import InputContent
+from ouro.core.input_content import InputContent, InputFile, InputSkillReference
 from ouro.core.session_controls import SessionInputMode
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
-from ouro.tui.composer.attachment_editor import AttachmentTextArea
 from ouro.tui.composer.attachment_paths import PASTED_TEXT_ATTACHMENT_THRESHOLD
+from ouro.tui.composer.element_editor import ElementTextArea
+from ouro.tui.input_presentation import ContextElement
 from ouro.tui.theme import DEFAULT_TUI_THEME, theme_for
 
 # The composer grows with its wrapped document between these text bounds. The
@@ -49,8 +49,7 @@ _PlaceholderTone = Literal["text", "key"]
 _PlaceholderPart = tuple[str, _PlaceholderTone]
 
 
-class Composer(AttachmentTextArea):
-    editing_message = reactive(False, toggle_class="editing-message")
+class Composer(ElementTextArea):
     DEFAULT_PLACEHOLDER = "Ask anything..."
     ACTIVE_RUN_PLACEHOLDER = DEFAULT_TUI_THEME.inline_separator.join(
         ("Enter queues a follow-up", "Ctrl+G guides the active run…")
@@ -67,10 +66,16 @@ class Composer(AttachmentTextArea):
     ]
 
     class Submitted(Message):
-        def __init__(self, content: InputContent, mode: SessionInputMode) -> None:
+        def __init__(
+            self,
+            content: InputContent,
+            mode: SessionInputMode,
+            context_element: ContextElement | None = None,
+        ) -> None:
             super().__init__()
             self.content = content
             self.mode = mode
+            self.context_element = context_element
 
     class AttachmentRequested(Message):
         def __init__(self, paste: str | None = None) -> None:
@@ -119,14 +124,12 @@ class Composer(AttachmentTextArea):
             )
         )
         self.theme = "ouro-composer"
-        self.border_title = "Editing message · Enter replaces history from here · Esc cancels"
         self._history: list[InputContent] = []
         self._history_index = 0
         self._clipboard_reader = clipboard_reader
         self._observed_text = ""
         self._command_draft: str | None = None
         self._attachment_draft: InputContent | None = None
-        self._attachment_display = ""
         self.reference_command = "@"
         self._attachment_selection = self.selection
         self._suggestion_resolver: Callable[[], str] | None = None
@@ -286,7 +289,7 @@ class Composer(AttachmentTextArea):
     def observe_command_change(self) -> tuple[str, str] | None:
         """Return the active command fragment and the draft behind it."""
 
-        value = self.text
+        value = self.input_text
         previous = self._observed_text
         draft = self._command_draft
         if draft is None and previous:
@@ -298,19 +301,12 @@ class Composer(AttachmentTextArea):
         return self.command_context()
 
     def _prefix_before_draft(self, draft: str) -> str | None:
-        if not self.text.endswith(draft):
-            return None
-        prefix = self.text[: len(self.text) - len(draft)]
-        if self.attachment_spans and self.attachment_spans[0].start == len(prefix):
-            # A reference-only draft gains a visual newline when a command precedes it.
-            prefix = prefix.removesuffix("\n")
-        return prefix
+        body = self.input_text
+        return body[: len(body) - len(draft)] if body.endswith(draft) else None
 
     def command_context(self) -> tuple[str, str] | None:
         """Return command text separately from any pre-existing draft."""
 
-        if self.editing_message and not self.attachment_menu_open:
-            return None
         draft = self._command_draft
         if draft is not None:
             command_text = self._prefix_before_draft(draft)
@@ -339,13 +335,13 @@ class Composer(AttachmentTextArea):
         if self.attachment_menu_open:
             return
         self._attachment_draft = self.input_content
-        self._attachment_display = self.text
         self._attachment_selection = self.selection
         self.set_attachment_query("")
 
     def set_attachment_query(self, value: str) -> None:
         prefix = self.reference_command + (" " if self.reference_command != "@" else "")
-        self.load_command(prefix + value, draft=self._attachment_display)
+        if self._attachment_draft is not None:
+            self.load_command(prefix + value, draft=self._attachment_draft.text)
 
     def select_reference_command(self, command: str) -> None:
         self.reference_command = command
@@ -356,11 +352,8 @@ class Composer(AttachmentTextArea):
         if content is None:
             return
         self._attachment_draft = None
-        self._command_draft = None
-        self.load_input(content)
-        self._observed_text = self.text
+        self.load_input(content, context_element=self.context_element)
         self.selection = self._attachment_selection
-        self._attachment_display = ""
         self.reference_command = "@"
 
     @property
@@ -369,7 +362,9 @@ class Composer(AttachmentTextArea):
             return self._attachment_draft
         context = self.command_context()
         content = self.input_content
-        if context is None or not context[1]:
+        if context is None or (
+            not context[1] and (not self.element_spans or not self._matches_command())
+        ):
             return content
         prefix = len(context[0])
         return InputContent(
@@ -398,13 +393,21 @@ class Composer(AttachmentTextArea):
         if message.text_area is self and not self.command_cursor_at_end():
             self.suggestion = ""
 
+    def load_input(
+        self, content: InputContent, *, context_element: ContextElement | None = None
+    ) -> None:
+        self._command_draft = None
+        super().load_input(content, context_element=context_element)
+        self._observed_text = self.input_text
+
+    def _content_behind_command(self, draft: str) -> InputContent:
+        content = self.draft_content
+        return content if content.text == draft else InputContent(text=draft)
+
     def load_command(self, command_text: str, *, draft: str = "") -> None:
         """Edit a command while keeping an existing user draft intact."""
 
-        content = (
-            self.draft_content if draft and self.text.endswith(draft) else InputContent(text=draft)
-        )
-        self._command_draft = draft or None
+        content = self._content_behind_command(draft)
         self.load_input(
             InputContent(
                 text=command_text + content.text,
@@ -416,20 +419,17 @@ class Composer(AttachmentTextArea):
                     item.model_copy(update={"text_offset": item.text_offset + len(command_text)})
                     for item in content.skills
                 ),
-            )
+            ),
+            context_element=self.context_element,
         )
-        self._observed_text = self.text
+        self._command_draft = draft or None
         self.move_cursor((0, len(command_text)))
 
     def restore_command_draft(self, draft: str) -> None:
         """Finish a transient command and restore its original user draft."""
 
-        content = (
-            self.draft_content if draft and self.text.endswith(draft) else InputContent(text=draft)
-        )
-        self._command_draft = None
-        self.load_input(content)
-        self._observed_text = self.text
+        content = self._content_behind_command(draft)
+        self.load_input(content, context_element=self.context_element)
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
         if self.import_pending:
@@ -526,7 +526,7 @@ class Composer(AttachmentTextArea):
         position = self.plain_document.get_index_from_location(self.selection.end)
         if event.character == "/" and position == 0 and self.selection.is_empty and context is None:
             # Capture the draft before the edit, even immediately after restoring a surface.
-            self._command_draft = self.text or None
+            self._command_draft = self.input_text or None
         if (
             event.character == "@"
             and self.attachments_enabled
@@ -547,6 +547,17 @@ class Composer(AttachmentTextArea):
         if self.import_pending:
             return False
         return super().check_action(action, parameters)
+
+    def insert_attachments(self, attachments: tuple[InputFile, ...]) -> None:
+        if not attachments or self.read_only:
+            return
+        if len(self.input_content.attachments) + len(attachments) > 16:
+            raise ValueError("A message can contain at most 16 attachments")
+        self.insert_elements(attachments)
+
+    def insert_skills(self, skills: tuple[InputSkillReference, ...]) -> None:
+        existing = {item.name for item in self.input_content.skills}
+        self.insert_elements(tuple(item for item in skills if item.name not in existing))
 
     def action_submit(self) -> None:
         self._submit("follow_up")
@@ -579,8 +590,8 @@ class Composer(AttachmentTextArea):
         self._command_draft = None
         self._history.append(content)
         self._history_index = len(self._history)
+        self.post_message(self.Submitted(content, mode, self.context_element))
         self.clear()
-        self.post_message(self.Submitted(content, mode))
 
     def action_cursor_right(self, select: bool = False) -> None:
         if self.suggestion and not self.command_cursor_at_end():
@@ -596,7 +607,9 @@ class Composer(AttachmentTextArea):
             return
         if self._history_index > 0:
             self._history_index -= 1
-            self.load_input(self._history[self._history_index])
+            self.load_input(
+                self._history[self._history_index], context_element=self.context_element
+            )
 
     def action_history_next(self) -> None:
         if self.command_context() is not None:
@@ -607,7 +620,9 @@ class Composer(AttachmentTextArea):
             return
         if self._history_index < len(self._history) - 1:
             self._history_index += 1
-            self.load_input(self._history[self._history_index])
+            self.load_input(
+                self._history[self._history_index], context_element=self.context_element
+            )
         elif self._history_index < len(self._history):
             self._history_index = len(self._history)
             self.clear()
@@ -619,5 +634,5 @@ class Composer(AttachmentTextArea):
         )
 
     def action_dismiss_command(self) -> None:
-        if self.command_context() is not None or self.editing_message:
+        if self.command_context() is not None or self.context_element is not None:
             self.post_message(self.CommandDismissed())

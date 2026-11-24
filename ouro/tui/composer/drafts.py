@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import Field, ValidationError, field_validator
@@ -14,18 +15,37 @@ from ouro.core.base import VersionedOuroModel, new_id
 from ouro.core.errors import ConfigError
 from ouro.core.input_content import InputContent, InputFile, InputSkillReference
 from ouro.local_io import read_text_atomic, write_model_atomic
+from ouro.tui.input_presentation import ContextElement
 from ouro.tui.view_models import TuiDraftConfiguration
 
 MAX_SESSION_DRAFTS = 20
 
 
+class TuiEditTarget(UserMessageEdit):
+    number: int = Field(ge=1)
+    summary: str
+
+    def as_selection(self) -> UserMessageEdit:
+        return UserMessageEdit(
+            message_id=self.message_id,
+            history_epoch=self.history_epoch,
+            message_count=self.message_count,
+        )
+
+
 class TuiEditDraft(InputContent):
-    target: UserMessageEdit
+    target: TuiEditTarget
 
 
 class TuiSessionDraft(InputContent):
     session_id: str
     edit: TuiEditDraft | None = None
+
+    def with_edit(self, target: TuiEditTarget, content: InputContent) -> TuiSessionDraft:
+        edit = TuiEditDraft(
+            target=target, text=content.text, attachments=content.attachments, skills=content.skills
+        )
+        return self.model_copy(update={"edit": edit})
 
     @field_validator("session_id")
     @classmethod
@@ -35,13 +55,19 @@ class TuiSessionDraft(InputContent):
         return value
 
 
+@dataclass(frozen=True, kw_only=True)
+class MessageEditContext(ContextElement):
+    target: TuiEditTarget
+    previous_draft: TuiSessionDraft
+
+
 class TuiPendingInput(InputContent):
     """A submission retained until its durable acceptance can be established."""
 
     input_id: str = Field(min_length=1)
     session_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
     origin_session_id: str | None = None
-    edit: UserMessageEdit | None = None
+    edit: TuiEditTarget | None = None
 
 
 class TuiInputDrafts(VersionedOuroModel):
@@ -92,18 +118,38 @@ class TuiInputDrafts(VersionedOuroModel):
     def _session_draft(self, session_id: str | None) -> TuiSessionDraft | None:
         return next((draft for draft in self.sessions if draft.session_id == session_id), None)
 
-    def edit_for(self, session_id: str | None) -> UserMessageEdit | None:
+    def context_for(self, session_id: str | None) -> MessageEditContext | None:
         draft = self._session_draft(session_id)
-        return draft.edit.target if draft and draft.edit else None
+        if draft is None or draft.edit is None:
+            return None
+        target = draft.edit.target
+        return MessageEditContext(
+            label=f"Edit #{target.number}",
+            preview=target.summary,
+            target=target,
+            previous_draft=draft.model_copy(update={"edit": None}),
+        )
+
+    def remember_composer(
+        self, session_id: str, content: InputContent, context: ContextElement | None
+    ) -> TuiInputDrafts:
+        """Store the visible content and its destination as a single session draft."""
+        if isinstance(context, MessageEditContext):
+            draft = context.previous_draft.with_edit(context.target, content)
+        else:
+            draft = TuiSessionDraft(
+                session_id=session_id,
+                text=content.text,
+                attachments=content.attachments,
+                skills=content.skills,
+            )
+        return self._save_session(draft)
 
     def edit_message(
-        self, session_id: str, target: UserMessageEdit, content: InputContent
+        self, session_id: str, target: TuiEditTarget, content: InputContent
     ) -> TuiInputDrafts:
         draft = self._session_draft(session_id) or TuiSessionDraft(session_id=session_id)
-        edit = TuiEditDraft(
-            target=target, text=content.text, attachments=content.attachments, skills=content.skills
-        )
-        return self._save_session(draft.model_copy(update={"edit": edit}))
+        return self._save_session(draft.with_edit(target, content))
 
     def finish_edit(self, session_id: str) -> TuiInputDrafts:
         draft = self._session_draft(session_id)
@@ -129,16 +175,10 @@ class TuiInputDrafts(VersionedOuroModel):
         current = draft.edit or draft
         if current.text == text and current.attachments == attachments and current.skills == skills:
             return self
+        content = InputContent(text=text, attachments=attachments, skills=skills)
         if draft.edit is not None:
-            edit = TuiEditDraft(
-                target=draft.edit.target, text=text, attachments=attachments, skills=skills
-            )
-            return self._save_session(draft.model_copy(update={"edit": edit}))
-        return self._save_session(
-            TuiSessionDraft(
-                session_id=session_id, text=text, attachments=attachments, skills=skills
-            )
-        )
+            return self._save_session(draft.with_edit(draft.edit.target, content))
+        return self.remember_composer(session_id, content, None)
 
     def _save_session(self, draft: TuiSessionDraft) -> TuiInputDrafts:
         remaining = tuple(item for item in self.sessions if item.session_id != draft.session_id)
@@ -159,14 +199,19 @@ class TuiInputDrafts(VersionedOuroModel):
         return self.model_copy(update={"sessions": sessions})
 
     def begin_submission(
-        self, content: InputContent, *, session_id: str | None, workspace: str | None
+        self,
+        content: InputContent,
+        *,
+        session_id: str | None,
+        workspace: str | None,
+        context: MessageEditContext | None = None,
     ) -> tuple[TuiInputDrafts, TuiPendingInput]:
         identity = session_id or self.welcome_resource_id or new_id("ses")
         pending = TuiPendingInput(
             input_id=new_id("queued"),
             session_id=identity,
             origin_session_id=session_id,
-            edit=self.edit_for(session_id),
+            edit=context.target if context else None,
             text=content.text,
             attachments=content.attachments,
             skills=content.skills,
@@ -181,7 +226,11 @@ class TuiInputDrafts(VersionedOuroModel):
                 }
             )
         else:
-            drafts = self.finish_edit(session_id) if pending.edit else self.remember(session_id, "")
+            drafts = (
+                self._save_session(context.previous_draft)
+                if context is not None
+                else self.forget_sessions((session_id,))
+            )
             drafts = drafts.model_copy(update={"pending": (*self.pending, pending)})
         return drafts, pending
 
@@ -218,6 +267,7 @@ class TuiInputDraftStore:
 
 __all__ = [
     "MAX_SESSION_DRAFTS",
+    "TuiEditTarget",
     "TuiInputDrafts",
     "TuiInputDraftStore",
     "TuiPendingInput",

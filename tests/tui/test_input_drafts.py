@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from ouro.application.inputs.requests import UserMessageEdit
 from ouro.core.errors import ConfigError
 from ouro.core.input_content import (
     InputAttachment,
@@ -17,6 +16,7 @@ from ouro.core.input_content import (
 from ouro.core.reasoning import ReasoningRequest
 from ouro.tui.composer.drafts import (
     MAX_SESSION_DRAFTS,
+    TuiEditTarget,
     TuiInputDrafts,
     TuiInputDraftStore,
 )
@@ -66,11 +66,15 @@ def test_input_drafts_round_trip_and_keep_a_bounded_session_mru(tmp_path: Path) 
 @pytest.mark.parametrize("accepted", (False, True))
 async def test_interrupted_edit_recovers_its_target_until_accepted(tmp_path, accepted):
     session_id = "ses_edit"
-    target = UserMessageEdit(message_id="original", history_epoch=1, message_count=5)
+    target = TuiEditTarget(
+        message_id="original", history_epoch=1, message_count=5, number=2, summary="original"
+    )
     content = InputContent(text="edited text")
     drafts = TuiInputDrafts().remember(session_id, "next question")
     editing = drafts.edit_message(session_id, target, content)
-    submitted, pending = editing.begin_submission(content, session_id=session_id, workspace=None)
+    submitted, pending = editing.begin_submission(
+        content, session_id=session_id, workspace=None, context=editing.context_for(session_id)
+    )
     store = TuiInputDraftStore(tmp_path)
     store.save(submitted)
     controller = AsyncMock()
@@ -78,7 +82,9 @@ async def test_interrupted_edit_recovers_its_target_until_accepted(tmp_path, acc
     recovered, _ = await recover_input_drafts(controller, store.load())
     controller.input_accepted.assert_awaited_once_with(session_id, pending.input_id)
     assert recovered.pending == ()
-    assert recovered.edit_for(session_id) == (None if accepted else target)
+    assert recovered.context_for(session_id) == (
+        None if accepted else editing.context_for(session_id)
+    )
     assert recovered.draft_for(session_id) == ("next question" if accepted else pending.text)
     assert recovered.finish_edit(session_id).draft_for(session_id) == "next question"
 

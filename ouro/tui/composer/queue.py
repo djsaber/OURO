@@ -9,9 +9,8 @@ from textual.containers import VerticalScroll
 from textual.widgets import Static
 
 from ouro.application.contracts.sessions import QueuedUserInputView
-from ouro.tui.composer.attachment_editor import file_count_label
 from ouro.tui.composer.popup import _trailing_badge
-from ouro.tui.input_presentation import reference_labels
+from ouro.tui.input_presentation import file_count_label, reference_labels
 from ouro.tui.theme import theme_for
 
 

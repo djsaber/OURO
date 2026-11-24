@@ -1,24 +1,26 @@
 from __future__ import annotations
 
+from rich.cells import cell_len
 from textual.app import App, ComposeResult
 from textual.document._document import Selection
 
 from ouro.core.input_content import InputAttachment, InputContent, InputSkillReference
-from ouro.tui.composer.attachment_editor import AttachmentTextArea
+from ouro.tui.composer.element_editor import ElementTextArea
+from ouro.tui.input_presentation import ContextElement
 
 
 class EditorApp(App[None]):
     def compose(self) -> ComposeResult:
-        yield AttachmentTextArea()
+        yield ElementTextArea()
 
 
 async def test_attachment_is_one_edit_unit_and_undo_restores_identity() -> None:
     app = EditorApp()
     async with app.run_test() as pilot:
-        editor = app.query_one(AttachmentTextArea)
+        editor = app.query_one(ElementTextArea)
         editor.load_text("before after")
         editor.move_cursor((0, 7))
-        editor.insert_attachments((InputAttachment(resource_id="res_image", name="测试图片.jpg"),))
+        editor.insert_elements((InputAttachment(resource_id="res_image", name="测试图片.jpg"),))
         await pilot.pause()
         original = editor.input_content
         assert original.text == "before after"
@@ -35,7 +37,7 @@ async def test_attachment_is_one_edit_unit_and_undo_restores_identity() -> None:
 async def test_partial_replace_removes_whole_attachment_and_preserves_other_spans() -> None:
     app = EditorApp()
     async with app.run_test():
-        editor = app.query_one(AttachmentTextArea)
+        editor = app.query_one(ElementTextArea)
         editor.load_input(
             InputContent(
                 text="x y",
@@ -45,7 +47,7 @@ async def test_partial_replace_removes_whole_attachment_and_preserves_other_span
                 ),
             )
         )
-        span = editor.attachment_spans[0]
+        span = editor.element_spans[0]
         editor.replace(
             "replacement",
             editor.plain_document.get_location_from_index(span.start + 1),
@@ -61,7 +63,7 @@ async def test_partial_replace_removes_whole_attachment_and_preserves_other_span
 async def test_cursor_skips_filename_and_plain_text_does_not_gain_identity() -> None:
     app = EditorApp()
     async with app.run_test() as pilot:
-        editor = app.query_one(AttachmentTextArea)
+        editor = app.query_one(ElementTextArea)
         editor.load_input(
             InputContent(attachments=(InputAttachment(resource_id="r", name="a.txt"),))
         )
@@ -79,7 +81,7 @@ async def test_cursor_skips_filename_and_plain_text_does_not_gain_identity() -> 
 async def test_prose_edits_rebase_logical_anchors_and_undo_restores_complete_input() -> None:
     app = EditorApp()
     async with app.run_test():
-        editor = app.query_one(AttachmentTextArea)
+        editor = app.query_one(ElementTextArea)
         original = InputContent.from_elements(
             "abcdef",
             (
@@ -111,7 +113,7 @@ async def test_prose_edits_rebase_logical_anchors_and_undo_restores_complete_inp
 async def test_loading_windows_newlines_rebases_anchors_into_editor_coordinates() -> None:
     app = EditorApp()
     async with app.run_test():
-        editor = app.query_one(AttachmentTextArea)
+        editor = app.query_one(ElementTextArea)
         editor.load_input(
             InputContent(
                 text="a\r\nb\rc",
@@ -130,7 +132,7 @@ async def test_loading_windows_newlines_rebases_anchors_into_editor_coordinates(
 async def test_delayed_attachment_insertion_rebases_selection_and_retains_identity() -> None:
     app = EditorApp()
     async with app.run_test():
-        editor = app.query_one(AttachmentTextArea)
+        editor = app.query_one(ElementTextArea)
         editor.load_input(
             InputContent(
                 text="abcdef",
@@ -138,12 +140,39 @@ async def test_delayed_attachment_insertion_rebases_selection_and_retains_identi
             )
         )
         editor.selection = Selection((0, 2), (0, 5))
-        insert = editor.prepare_attachment_insertion()
+        insert = editor.prepare_element_insertion()
         editor.load_text("another session")
-        content = insert((InputAttachment(resource_id="new", name="new.txt"),))
+        content, context = insert((InputAttachment(resource_id="new", name="new.txt"),))
+        assert context is None
         assert content.text == "abf"
         assert [(item.resource_id, item.text_offset) for item in content.attachments] == [
             ("new", 2),
             ("old", 3),
         ]
         assert editor.input_content == InputContent(text="another session")
+
+
+async def test_resizing_context_preview_preserves_selection_content_and_undo() -> None:
+    app = EditorApp()
+    async with app.run_test(size=(90, 24)) as pilot:
+        editor = app.query_one(ElementTextArea)
+        original = InputContent(
+            text="draft", attachments=(InputAttachment(resource_id="r", name="notes.txt"),)
+        )
+        context = ContextElement(label="Review #3", preview="历史消息" * 12)
+        editor.load_input(original, context_element=context)
+        editor.move_cursor((1, 0))
+        await pilot.press("right", "backspace")
+        assert editor.context_element is None
+        await pilot.resize_terminal(24, 24)
+        editor.undo()
+        assert editor.context_element is context
+        assert editor.input_content == original
+        label = editor.text.splitlines()[-1].split("@")[0]
+        assert label.startswith("Review #3") and "…" in label
+        assert cell_len(label) <= editor.wrap_width
+        await pilot.resize_terminal(90, 24)
+        await pilot.pause()
+        editor.redo()
+        assert editor.context_element is None
+        assert editor.input_content == original

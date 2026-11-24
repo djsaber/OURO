@@ -494,7 +494,7 @@ class TuiController:
             attachments=pending.attachments,
             new_session_id=pending.session_id if pending.origin_session_id is None else None,
             input_id=pending.input_id,
-            edit=pending.edit,
+            edit=pending.edit.as_selection() if pending.edit else None,
             on_input_accepted=on_input_accepted,
         )
 

@@ -122,5 +122,6 @@ async def test_fork_and_edit_restore_complete_input_without_reupload(
             if attempt < 2:
                 await app._edit_message("#2")
                 await pilot.pause()
-                assert composer.input_content == original
+                assert composer.input_content == original.model_copy(update={"text": ""})
+                assert "Edit #2" in composer.text
                 assert len(runtime.store.load_session(branch_id).messages) == len(before)

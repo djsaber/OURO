@@ -42,7 +42,6 @@ from ouro.application.contracts.sessions import (
     SessionSummary,
     SessionView,
 )
-from ouro.application.inputs.requests import UserMessageEdit
 from ouro.application.observations.content import restore_session_content
 from ouro.application.observations.sessions import SessionObservation
 from ouro.core.approvals import SessionApprovalMode
@@ -77,7 +76,6 @@ from ouro.tui.commands import (
     matching_commands,
     resolve_command,
 )
-from ouro.tui.composer.attachment_editor import file_count_label
 from ouro.tui.composer.attachment_paths import (
     PASTED_TEXT_ATTACHMENT_THRESHOLD,
     pasted_files,
@@ -85,7 +83,13 @@ from ouro.tui.composer.attachment_paths import (
 )
 from ouro.tui.composer.attachment_picker import AttachmentPicker
 from ouro.tui.composer.draft_persistence import InputDraftPersistence
-from ouro.tui.composer.drafts import TuiInputDrafts, TuiInputDraftStore, TuiPendingInput
+from ouro.tui.composer.drafts import (
+    MessageEditContext,
+    TuiEditTarget,
+    TuiInputDrafts,
+    TuiInputDraftStore,
+    TuiPendingInput,
+)
 from ouro.tui.composer.input import COMPOSER_MAX_HEIGHT, COMPOSER_MIN_HEIGHT, Composer
 from ouro.tui.composer.popup import COMMAND_POPUP_MAX_HEIGHT, COMMAND_POPUP_MIN_HEIGHT, CommandPopup
 from ouro.tui.composer.queue import QueuedInputPanel
@@ -119,6 +123,7 @@ from ouro.tui.features.providers.workflows import ProviderConfigurationWorkflows
 from ouro.tui.features.tasks.workflows import TaskManagementWorkflows
 from ouro.tui.features.transfer.workflows import DataTransferWorkflow
 from ouro.tui.host_screen import _OuroHostScreen
+from ouro.tui.input_presentation import ContextElement, file_count_label
 from ouro.tui.interactions.approval import (
     INTERACTION_PANEL_MAX_HEIGHT,
     INTERACTION_PANEL_MIN_HEIGHT,
@@ -1633,7 +1638,12 @@ class OuroTuiApp(App[int]):
             if panel.display and panel.awaiting_freeform:
                 panel.accept_freeform(message.content.text)
             return
-        self._submit_run(message.content, message.mode)
+        context = message.context_element
+        self._submit_run(
+            message.content,
+            message.mode,
+            context=context if isinstance(context, MessageEditContext) else None,
+        )
 
     def on_composer_attachment_requested(self, message: Composer.AttachmentRequested) -> None:
         if self._visible_read_only or self._interaction is not None:
@@ -1820,7 +1830,7 @@ class OuroTuiApp(App[int]):
             composer.focus()
         revision = self._controller.selection_revision
         original_session = self._controller.session_id
-        insert_into_original = composer.prepare_attachment_insertion()
+        insert_into_original = composer.prepare_element_insertion()
         if original_session is None:
             self._set_input_drafts(
                 self._input_drafts.model_copy(
@@ -1831,22 +1841,13 @@ class OuroTuiApp(App[int]):
         try:
             items = await self._controller.reference_files(paths)
             if revision != self._controller.selection_revision:
-                content = insert_into_original(items)
-                self._remember_input_draft(
-                    original_session,
-                    content.text,
-                    attachments=content.attachments,
-                    skills=content.skills,
-                )
+                content, context = insert_into_original(items)
+                self._remember_composer(original_session, content, context)
                 await self._flush_input_drafts()
                 return
             composer.insert_attachments(items)
-            content = composer.input_content
-            self._remember_input_draft(
-                self._controller.session_id,
-                content.text,
-                attachments=content.attachments,
-                skills=content.skills,
+            self._remember_composer(
+                self._controller.session_id, composer.input_content, composer.context_element
             )
             await self._flush_input_drafts()
         except (OuroError, OSError, ValueError) as exc:
@@ -1873,7 +1874,7 @@ class OuroTuiApp(App[int]):
         original_session = self._controller.session_id
         original = composer.input_content
         selection = composer.selection
-        insert_into_original = composer.prepare_attachment_insertion()
+        insert_into_original = composer.prepare_element_insertion()
         composer.import_pending = True
         temporary: ExitStack | None = None
         try:
@@ -1912,24 +1913,15 @@ class OuroTuiApp(App[int]):
             )
             if revision != self._controller.selection_revision:
                 # The import belongs to its captured Session, never to a later navigation.
-                restored = insert_into_original(imported) if imported else original
-                self._remember_input_draft(
-                    original_session,
-                    restored.text,
-                    attachments=restored.attachments,
-                    skills=restored.skills,
-                )
+                content, context = insert_into_original(imported)
+                self._remember_composer(original_session, content, context)
                 await self._flush_input_drafts()
                 return
-            composer.load_input(original)
+            composer.load_input(original, context_element=composer.context_element)
             composer.selection = selection
             composer.insert_attachments(imported)
-            content = composer.input_content
-            self._remember_input_draft(
-                original_session,
-                content.text,
-                attachments=content.attachments,
-                skills=content.skills,
+            self._remember_composer(
+                original_session, composer.input_content, composer.context_element
             )
             await self._flush_input_drafts()
         except Exception as exc:  # noqa: BLE001 - keep the unsent draft on import failures.
@@ -1952,12 +1944,23 @@ class OuroTuiApp(App[int]):
         if models and not self._active_model:
             self.notify("Select a model with /model before sending your draft")
 
-    def _submit_run(self, content: InputContent, queue_mode: SessionInputMode) -> None:
+    def _submit_run(
+        self,
+        content: InputContent,
+        queue_mode: SessionInputMode,
+        *,
+        context: MessageEditContext | None = None,
+    ) -> None:
         if self._visible_read_only:
             return
         origin = self._controller.session_id
+        if context is not None and context.previous_draft.session_id != origin:
+            self.notify(
+                "Conversation history changed. Select the message again.", severity="warning"
+            )
+            return
         drafts, pending = self._input_drafts.begin_submission(
-            content, session_id=origin, workspace=self._controller.draft_workspace
+            content, session_id=origin, workspace=self._controller.draft_workspace, context=context
         )
         self._set_input_drafts(drafts)
         if pending.edit is not None:
@@ -2211,12 +2214,8 @@ class OuroTuiApp(App[int]):
         value = composer.text
         command_context = composer.observe_command_change()
         if not self._visible_read_only:
-            content = composer.draft_content
-            self._remember_input_draft(
-                self._controller.session_id,
-                content.text,
-                attachments=content.attachments,
-                skills=content.skills,
+            self._remember_composer(
+                self._controller.session_id, composer.draft_content, composer.context_element
             )
         popup = self.query_one(CommandPopup)
         ask_user = self.query_one(AskUserPanel)
@@ -2469,12 +2468,8 @@ class OuroTuiApp(App[int]):
                 value = selected_value
         value = selected.name if selected is not None else value
         composer.restore_command_draft(message.draft)
-        content = composer.input_content
-        self._remember_input_draft(
-            self._controller.session_id,
-            content.text,
-            attachments=content.attachments,
-            skills=content.skills,
+        self._remember_composer(
+            self._controller.session_id, composer.input_content, composer.context_element
         )
         popup.hide()
         self._dismissed_command_text = None
@@ -2530,12 +2525,12 @@ class OuroTuiApp(App[int]):
             return
         context = composer.command_context()
         session_id = self._controller.session_id
-        if context is None and session_id is not None and self._input_drafts.edit_for(session_id):
+        if context is None and session_id is not None and composer.context_element is not None:
             self._set_input_drafts(self._input_drafts.finish_edit(session_id))
             self._sync_input_state(self._interaction)
             self._edit_draft(self._input_drafts.content_for(session_id))
             return
-        if context is not None and context[1]:
+        if context is not None and (context[1] or composer.element_spans):
             composer.restore_command_draft(context[1])
             self._dismissed_command_text = None
             composer.suggestion = ""
@@ -2773,7 +2768,6 @@ class OuroTuiApp(App[int]):
         composer = self.query_one(Composer)
         session_id = self._controller.session_id
         editable = not self._visible_read_only and interaction is None
-        composer.editing_message = editable and self._input_drafts.edit_for(session_id) is not None
         selecting_edit = session_id is not None and self._loading_edit_session == session_id
         composer.submission_pending = selecting_edit or any(
             item.origin_session_id == session_id and (session_id is None or item.edit is not None)
@@ -2840,8 +2834,10 @@ class OuroTuiApp(App[int]):
     def _edit_draft(self, value: str | InputContent) -> None:
         self._close_attachment_menu()
         composer = self.query_one(Composer)
-        composer.load_input(value if isinstance(value, InputContent) else InputContent(text=value))
-        composer.move_cursor((composer.document.line_count - 1, len(composer.document.lines[-1])))
+        composer.load_input(
+            value if isinstance(value, InputContent) else InputContent(text=value),
+            context_element=self._input_drafts.context_for(self._controller.session_id),
+        )
         composer.focus()
 
     def _restore_input_draft(self, session_id: str | None, *, retain: bool = False) -> None:
@@ -2859,10 +2855,23 @@ class OuroTuiApp(App[int]):
                 self._remember_input_draft(None, "")
             else:
                 self._set_input_drafts(self._input_drafts.forget_sessions((session_id,)))
-        self.query_one(Composer).restore_command_draft("")
-        self.query_one(Composer).load_input(draft)
+        self.query_one(Composer).load_input(
+            draft, context_element=self._input_drafts.context_for(session_id)
+        )
         if command is not None:
             self.query_one(Composer).load_command(command, draft=draft.text)
+
+    def _remember_composer(
+        self, session_id: str | None, content: InputContent, context: ContextElement | None
+    ) -> None:
+        if session_id is None:
+            self._remember_input_draft(
+                None, content.text, attachments=content.attachments, skills=content.skills
+            )
+        else:
+            self._set_input_drafts(
+                self._input_drafts.remember_composer(session_id, content, context)
+            )
 
     def _remember_input_draft(
         self,
@@ -2977,7 +2986,7 @@ class OuroTuiApp(App[int]):
             ):
                 self.notify("There are no messages here that you can edit.", severity="warning")
             else:
-                self._edit_command("/edit ", draft=self.query_one(Composer).text)
+                self._edit_command("/edit ", draft=self.query_one(Composer).input_text)
         elif command.name == "/fork":
             if argument:
                 self._fork_session(argument.casefold())
@@ -4197,15 +4206,11 @@ class OuroTuiApp(App[int]):
                             and visible_session_id == session.agent_root_session_id
                         )
                     ):
-                        content = composer.draft_content
-                        self._remember_input_draft(
-                            visible_session_id,
-                            content.text,
-                            attachments=content.attachments,
-                            skills=content.skills,
+                        self._remember_composer(
+                            visible_session_id, composer.draft_content, composer.context_element
                         )
                     if read_only and not self._visible_read_only:
-                        composer.restore_command_draft("")
+                        composer.load_input(InputContent())
                     elif not read_only and self._visible_read_only:
                         returning_to_owner = (
                             self._visible_agent is not None
@@ -4579,7 +4584,7 @@ class OuroTuiApp(App[int]):
 
     async def _numbered_user_message(
         self, session_id: str, target: str, *, direct_only: bool = False
-    ) -> MessageRecord:
+    ) -> tuple[int, MessageRecord]:
         number = target.removeprefix("#")
         if number == target or not number.isdecimal() or int(number) < 1:
             raise ValueError("Choose a message by its number, such as #1.")
@@ -4597,7 +4602,7 @@ class OuroTuiApp(App[int]):
             raise ValueError(
                 f"Choose a message you sent. Message {target} is unavailable for this action."
             )
-        return await self._controller.message(session_id, entry.message_id)
+        return index + 1, await self._controller.message(session_id, entry.message_id)
 
     async def _message_draft(self, session_id: str, message: MessageRecord) -> InputContent:
         attachments = message.input_attachments or await self._controller.input_attachments(
@@ -4633,20 +4638,38 @@ class OuroTuiApp(App[int]):
             self.notify("There are no messages here that you can edit.", severity="warning")
             return
         session_id, history_epoch, message_count = history
+        composer = self.query_one(Composer)
+        previous_target = composer.context_element
         self._loading_edit_session = session_id
         self._sync_input_state(self._interaction)
         try:
-            selected = await self._numbered_user_message(session_id, target, direct_only=True)
+            number, selected = await self._numbered_user_message(
+                session_id, target, direct_only=True
+            )
             content = await self._message_draft(session_id, selected)
             if history != self._visible_history():
                 raise ValueError("Conversation history changed. Select the message again.")
-            edit = UserMessageEdit(
+            if composer.context_element is not previous_target:
+                return
+            edit = TuiEditTarget(
+                number=number,
+                summary=_summarize(
+                    content.text or " ".join(item.label for item in content.elements)
+                ),
                 message_id=selected.message_id,
                 history_epoch=history_epoch,
                 message_count=message_count,
             )
-            self._set_input_drafts(self._input_drafts.edit_message(session_id, edit, content))
-            self._edit_draft(content)
+            body = composer.draft_content.text if previous_target else ""
+            replacement = InputContent.from_elements(
+                body,
+                tuple(
+                    item.model_copy(update={"text_offset": min(item.text_offset, len(body))})
+                    for item in content.elements
+                ),
+            )
+            self._set_input_drafts(self._input_drafts.edit_message(session_id, edit, replacement))
+            self._edit_draft(replacement)
         except Exception as exc:  # noqa: BLE001 - report an unavailable history selection.
             self.notify(str(exc), severity="warning", markup=False)
         finally:
@@ -4672,7 +4695,7 @@ class OuroTuiApp(App[int]):
             if target == "full":
                 result = await self._controller.branch_session()
             else:
-                selected_message = await self._numbered_user_message(session_id, target)
+                _, selected_message = await self._numbered_user_message(session_id, target)
                 if not self._owns_session_surface(session_id):
                     raise ValueError("The conversation changed. Select the message again.")
                 result = await self._controller.branch_session(selected_message.message_id)

@@ -361,11 +361,6 @@ _OURO_TUI_CSS = """
         border-left: solid $ouro-theme;
     }
 
-    #composer.editing-message {
-        border-top: solid $ouro-theme;
-        padding-top: 0;
-    }
-
     #composer.read-only-session:disabled {
         opacity: 1;
     }

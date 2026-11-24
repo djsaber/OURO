@@ -395,7 +395,9 @@ async def test_composer_at_and_plain_paste_do_not_confuse_attachment_identity(
     monkeypatch.setattr(
         app,
         "_submit_run",
-        lambda content, mode: submitted.append((content.text, mode, content.attachments)),
+        lambda content, mode, *, context: submitted.append(
+            (content.text, mode, content.attachments)
+        ),
     )
     async with run_ready_app(app) as pilot:
         composer = app.query_one(Composer)
@@ -458,7 +460,7 @@ async def test_transient_commands_preserve_attachment_spans():
             attachments=(InputAttachment(resource_id="r", name="file.txt", text_offset=5),),
         )
         composer.load_input(content)
-        composer.load_command("/model ", draft=composer.text)
+        composer.load_command("/model ", draft=composer.input_text)
         assert composer.draft_content == content
         composer.restore_command_draft(composer.command_context()[1])
         assert composer.input_content == content
@@ -611,11 +613,12 @@ async def test_preparation_completion_preserves_focus_moved_to_conversation(
         assert composer.input_content.attachments[0].name == path.name
 
 
+@pytest.mark.parametrize("replace_target", (False, True))
 async def test_late_import_preserves_original_position_and_new_session_is_editable(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, replace_target
 ):
     application = application_at(tmp_path)
-    first = application.runtime.create_session(title="first")
+    first = (await application.runtime.run("original")).session
     second = application.runtime.create_session(title="second")
     app = OuroTuiApp(application=application, resume_session_id=first.session_id)
     path = tmp_path / "late.txt"
@@ -631,8 +634,14 @@ async def test_late_import_preserves_original_position_and_new_session_is_editab
 
         monkeypatch.setattr(app._controller, "import_attachments", delayed_import)
         composer = app.query_one(Composer)
-        composer.load_text("before after")
-        composer.move_cursor((0, 7))
+        if replace_target:
+            await app._edit_message("#1")
+            composer.insert_plain_paste("before after")
+            composer.move_cursor((1, 0))
+            composer.action_cursor_right(select=True)
+        else:
+            composer.load_text("before after")
+            composer.move_cursor((0, 7))
         pending = app._attach_files(str(path))
         await asyncio.wait_for(entered.wait(), timeout=2)
         try:
@@ -645,9 +654,10 @@ async def test_late_import_preserves_original_position_and_new_session_is_editab
         restored = app._input_drafts.content_for(first.session_id)
         assert restored.text == "before after"
         assert restored.attachments[0].name == path.name
-        assert restored.attachments[0].text_offset == 7
+        assert restored.attachments[0].text_offset == (len(restored.text) if replace_target else 7)
         await app._open_session(first.session_id)
         assert composer.input_content == restored
+        assert composer.context_element is None
 
 
 async def test_unsupported_draft_file_is_not_overwritten_by_new_input(tmp_path):
