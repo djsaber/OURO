@@ -128,7 +128,9 @@ async def eventually(predicate):
 async def choose(app, pilot, text, *, title=None):
     if isinstance(app.screen, ConfirmationScreen):
         options = app.screen.query_one(OptionList)
-        options.highlighted = 1 if text == "Confirm" else 0
+        options.highlighted = next(
+            i for i, row in enumerate(app.screen._choices) if row.label == text
+        )
         options.focus()
         await pilot.press("enter")
         await pilot.pause()
@@ -204,7 +206,7 @@ async def test_method_challenge_success_logout_and_no_challenge_in_terminal_ui(
         await wait_for_menu_action(pilot, menu)
         assert (await service.status(provider_id)).state == "ready"
         await choose(app, pilot, "Sign out", title="CONFIRM SIGN OUT")
-        await choose(app, pilot, "Confirm")
+        await choose(app, pilot, "Sign out")
         await eventually(lambda: choices(menu)["status"].trailing == "logged_out")
         assert (await service.status(provider_id)).state == "logged_out"
         # Authentication UI never creates conversation notices or model events.
@@ -302,7 +304,7 @@ async def test_local_credentials_list_allows_clearing_orphan_without_false_cance
         await wait_for_menu_action(pilot, screen)
         assert (await service.credentials())[0].credential.state == "active"
         await choose(app, pilot, credential_id, title="CONFIRM CLEAR LOCAL CREDENTIAL")
-        await choose(app, pilot, "Confirm")
+        await choose(app, pilot, "Remove credential")
         await eventually(lambda: choices(screen)[credential_id].trailing == "logged_out")
         assert (await service.credentials())[0].credential.state == "logged_out"
 
@@ -482,7 +484,9 @@ async def test_unavailable_store_status_and_failed_begin_stay_in_management_ui(
     async with app.run_test() as pilot:
         await eventually(lambda: "status" in choices(screen))
         assert choices(screen)["status"].trailing == "unavailable"
-        assert choices(screen)["status"].description == "credential_store_error"
+        assert (
+            choices(screen)["status"].description == "Credential storage is unavailable or invalid."
+        )
         await choose(
             app,
             pilot,

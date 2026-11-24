@@ -123,7 +123,11 @@ class MCPConfigurationScreen(EditableChoiceScreen):
         transport = cast(MCPTransportInput, self._values["mcp-transport"])
         target = self._values["mcp-target"] or None
         if (self._existing is None or transport != self._existing.transport) and not target:
-            raise ValueError("Command or URL is required for a new transport")
+            raise ValueError(
+                "Enter the command to start the server."
+                if transport == "stdio"
+                else "Enter the server URL."
+            )
         effects = _optional_json_mapping(self._values["mcp-tool-effects"], "Tool effect overrides")
         if effects is not None and any(
             value not in {"read_only", "state_changing", "unknown"} for value in effects.values()

@@ -95,7 +95,7 @@ class ConfigurationWorkflows:
         try:
             config = await self._ui.controller().queued_input_configuration()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Queued message settings")
             return
 
         def choices(selected: QueuedInputConsumptionMode) -> tuple[Choice, ...]:
@@ -114,11 +114,12 @@ class ConfigurationWorkflows:
                 mode = cast(QueuedInputConsumptionMode, value)
                 saved = await self._ui.controller().update_queued_input_consumption(mode)
             except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-                self._ui.notify_error(exc)
+                self._ui.notify_error(exc, title="Queued message settings")
                 return None
             self._ui.notify(
-                f"Queued messages: {_QUEUED_INPUT_CONSUMPTION_LABELS[saved.consumption_mode]}"
-                " (next input consumption)"
+                "Waiting messages will be processed "
+                f"{_QUEUED_INPUT_CONSUMPTION_LABELS[saved.consumption_mode].lower()}.",
+                markup=False,
             )
             return choices(saved.consumption_mode)
 
@@ -149,7 +150,7 @@ class ConfigurationWorkflows:
             models = await self._ui.controller().models()
             strategies = self._ui.controller().compaction_strategies()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Conversation compaction settings")
             return
         screen = CompactionConfigurationScreen(
             config,
@@ -165,7 +166,7 @@ class ConfigurationWorkflows:
         try:
             saved = await self._ui.controller().save_compaction_configuration(compaction_draft)
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Conversation compaction settings")
             return
         route = (
             f"{saved.model.provider_id}/{saved.model.endpoint_id}"
@@ -179,7 +180,9 @@ class ConfigurationWorkflows:
             if route
             else "conversation model"
         )
-        self._ui.notify(f"Context compaction saved: {label} (next request)")
+        self._ui.notify(
+            f"Compaction settings saved for the next request. Model: {label}.", markup=False
+        )
 
     async def _configure_tools(self, *, menu: ChoiceScreen | None = None) -> None:
         from ouro.tui.features.configuration.tools import ToolConfigurationScreen
@@ -189,7 +192,7 @@ class ConfigurationWorkflows:
             current = await controller.tool_execution_configuration()
             tools = await controller.tool_configurations()
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Tool settings")
             return
 
         async def save_permission(
@@ -199,7 +202,7 @@ class ConfigurationWorkflows:
                 await controller.set_tool_permission(name, mode)
                 return await controller.tool_configurations()
             except Exception as exc:  # noqa: BLE001
-                self._ui.notify_error(exc)
+                self._ui.notify_error(exc, title="Could not change tool permission")
                 return None
 
         screen = ToolConfigurationScreen(current, tools=tools, on_permission=save_permission)
@@ -211,9 +214,12 @@ class ConfigurationWorkflows:
                 cast(TuiToolExecutionConfiguration, draft)
             )
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Tool settings")
             return
-        self._ui.notify(f"Tool execution saved: {updated.mode} (next tool batch)")
+        self._ui.notify(
+            f"Tool settings saved. The next group of tools will use {updated.mode} mode.",
+            markup=False,
+        )
 
     async def _configure_agent_policy(self, *, menu: ChoiceScreen | None = None) -> None:
         from ouro.tui.features.configuration.agents import AgentDispatchPolicyScreen
@@ -222,7 +228,7 @@ class ConfigurationWorkflows:
             current = await self._ui.controller().agent_runtime_configuration()
             models = await self._ui.controller().models()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Subagent settings")
             return
         screen = AgentDispatchPolicyScreen(
             current,
@@ -237,7 +243,7 @@ class ConfigurationWorkflows:
                 cast(TuiAgentRuntimeConfiguration, draft)
             )
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Subagent settings")
             return
 
     async def _choose_agent_definitions(
@@ -248,7 +254,7 @@ class ConfigurationWorkflows:
         try:
             catalog = await self._ui.controller().agent_definition_catalog()
         except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not load subagents")
             return
         screen: ChoiceScreen
 
@@ -256,7 +262,7 @@ class ConfigurationWorkflows:
             try:
                 refreshed = await self._ui.controller().agent_definition_catalog()
             except Exception as exc:  # noqa: BLE001
-                self._ui.notify_error(exc)
+                self._ui.notify_error(exc, title="Could not load subagents")
                 return None
             return _agent_definition_choices(refreshed.definitions, theme=self._ui.theme())
 
@@ -264,7 +270,7 @@ class ConfigurationWorkflows:
             try:
                 current = await self._ui.controller().agent_definition_catalog()
             except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
-                self._ui.notify_error(exc)
+                self._ui.notify_error(exc, title="Could not load subagents")
                 return None
             definition = next(
                 (item for item in current.definitions if item.agent_id == agent_id),
@@ -328,7 +334,7 @@ class ConfigurationWorkflows:
                         expected_revision=expected_revision,
                     )
                 except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-                    self._ui.notify_error(exc)
+                    self._ui.notify_error(exc, title="Could not update the subagent")
                     return None
             else:
                 return None
@@ -370,7 +376,7 @@ class ConfigurationWorkflows:
             tools = await self._ui.controller().agent_definition_tools()
             models = await self._ui.controller().models()
         except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not load subagent settings")
             return
         screen = AgentDefinitionConfigurationScreen(
             tools,
@@ -388,7 +394,7 @@ class ConfigurationWorkflows:
                 expected_revision=catalog.revision,
             )
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not create the subagent")
             return
 
     async def _edit_agent_definition(
@@ -405,7 +411,7 @@ class ConfigurationWorkflows:
             tools = await self._ui.controller().agent_definition_tools()
             models = await self._ui.controller().models()
         except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not load subagent settings")
             return None
         screen = AgentDefinitionConfigurationScreen(
             tools,
@@ -425,7 +431,7 @@ class ConfigurationWorkflows:
                 expected_revision=expected_revision,
             )
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not save subagent settings")
             return None
         return saved
 
@@ -439,7 +445,7 @@ class ConfigurationWorkflows:
         screen = ConfirmationScreen(
             title="DELETE SUBAGENT",
             message=(
-                f"Delete {agent_id}? Current tasks can finish; new tasks cannot use this subagent."
+                f"Delete {agent_id}? Current tasks can finish. New tasks cannot use this subagent."
             ),
             confirm_label="Delete",
         )
@@ -452,7 +458,7 @@ class ConfigurationWorkflows:
                 expected_revision=expected_revision,
             )
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not delete the subagent")
             return None
         return saved
 
@@ -463,7 +469,7 @@ class ConfigurationWorkflows:
                 self._sync_mcp_status()
                 runtime = {item.server_id: item for item in self._ui.controller().mcp_servers()}
             except Exception as exc:  # noqa: BLE001
-                self._ui.notify_error(exc)
+                self._ui.notify_error(exc, title="Could not load MCP servers")
                 return None
             return _mcp_choices(configs, runtime, theme=self._ui.theme())
 
@@ -513,7 +519,7 @@ class ConfigurationWorkflows:
                 None,
             )
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not load MCP servers")
             return
 
         actions = _mcp_management_choices(config, status, theme=self._ui.theme())
@@ -535,7 +541,7 @@ class ConfigurationWorkflows:
                         None,
                     )
                 except Exception as exc:  # noqa: BLE001
-                    self._ui.notify_error(exc)
+                    self._ui.notify_error(exc, title="Could not load MCP servers")
                     return None
                 return _mcp_management_choices(
                     config,
@@ -556,7 +562,7 @@ class ConfigurationWorkflows:
                     config = next(item for item in configs if item.server_id == server_id)
                     status = runtime.get(server_id)
                 except Exception as exc:  # noqa: BLE001
-                    self._ui.notify_error(exc)
+                    self._ui.notify_error(exc, title="Could not load MCP servers")
                     return
                 if menu.update_choices(
                     _mcp_management_choices(config, status, theme=self._ui.theme()),
@@ -663,12 +669,13 @@ class ConfigurationWorkflows:
         try:
             saved = await self._ui.controller().save_mcp_configuration(mcp_draft)
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not save MCP settings")
             return None
         self._sync_mcp_status()
         self._ui.notify(
-            f"MCP configuration saved: {saved.name}{self._ui.theme().inline_separator}"
-            "tool policy active; restart for connection changes"
+            f"Saved settings for {saved.name}. Tool permissions apply now. "
+            "Restart OURO to apply connection changes.",
+            markup=False,
         )
         return saved
 
@@ -677,16 +684,16 @@ class ConfigurationWorkflows:
             with self._ui.loading("check"):
                 result = await self._ui.controller().check_mcp_server(server_id)
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not check the MCP connection")
             return
         if result.ok:
             self._ui.notify(
-                f"MCP check passed: {result.server.name}{self._ui.theme().inline_separator}"
-                f"{len(result.tool_names)} tool(s)"
+                f"Connected to {result.server.name}. Tools found: {len(result.tool_names)}.",
+                markup=False,
             )
         else:
             self._ui.notify_error(
-                f"MCP check failed: {result.server.name}{self._ui.theme().inline_separator}"
+                f"Could not verify the connection to {result.server.name}: "
                 f"{result.error or result.status}"
             )
 
@@ -704,7 +711,7 @@ class ConfigurationWorkflows:
         try:
             status = await operations[action](server_id)
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="MCP server action failed")
             return None
         self._sync_mcp_status()
         if status.status == "failed":
@@ -719,7 +726,7 @@ class ConfigurationWorkflows:
     ) -> bool:
         screen = ConfirmationScreen(
             title="DELETE MCP",
-            message=(f"Delete {config.name}? Takes effect after restarting the app."),
+            message=f"Remove {config.name} from your MCP servers after the next restart?",
             confirm_label="Delete",
         )
         selected = await (menu.open_child(screen) if menu is not None else self._ui.choose(screen))
@@ -728,17 +735,19 @@ class ConfigurationWorkflows:
         try:
             await self._ui.controller().remove_mcp_configuration(config.server_id)
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not remove the MCP server")
             return False
         self._sync_mcp_status()
-        self._ui.notify(f"MCP deleted: {config.name} (next restart)")
+        self._ui.notify(
+            f"Removed {config.name} from settings. Restart OURO to apply the change.", markup=False
+        )
         return True
 
     async def _set_mcp_enabled(self, server_id: str, *, enabled: bool) -> bool:
         try:
             await self._ui.controller().set_mcp_enabled(server_id, enabled=enabled)
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not change the MCP server status")
             return False
         self._sync_mcp_status()
         return True
@@ -751,7 +760,7 @@ class ConfigurationWorkflows:
         try:
             policy = await self._ui.controller().skill_policy()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not load skill sources")
             return
 
         async def refresh_sources() -> tuple[Choice, ...] | None:
@@ -759,7 +768,7 @@ class ConfigurationWorkflows:
             try:
                 policy = await self._ui.controller().skill_policy()
             except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-                self._ui.notify_error(exc)
+                self._ui.notify_error(exc, title="Could not load skill sources")
                 return None
             return _skill_source_choices(policy)
 
@@ -781,7 +790,7 @@ class ConfigurationWorkflows:
                         source_updates={source_id: not source.enabled}
                     )
             except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-                self._ui.notify_error(exc)
+                self._ui.notify_error(exc, title="Could not save skill sources")
                 return None
             return _skill_source_choices(policy)
 
@@ -827,7 +836,7 @@ class ConfigurationWorkflows:
             with self._ui.loading(None):
                 catalog = await self._ui.controller().skill_catalog()
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not load skills")
             return
         if menu is not None and (not menu.is_attached or menu.page_revision != revision):
             return
@@ -841,7 +850,7 @@ class ConfigurationWorkflows:
                     with self._ui.loading(None):
                         refreshed = await self._ui.controller().skill_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    self._ui.notify_error(exc)
+                    self._ui.notify_error(exc, title="Could not load skills")
                     return None
                 skills.clear()
                 skills.update({skill.name: skill for skill in refreshed.skills})
@@ -893,7 +902,7 @@ class ConfigurationWorkflows:
             with self._ui.loading(None):
                 catalog = await self._ui.controller().skill_catalog()
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not load skills")
             return
         candidates = (
             tuple(skill for skill in catalog.skills if skill.managed)
@@ -919,7 +928,7 @@ class ConfigurationWorkflows:
                     with self._ui.loading(None):
                         refreshed = await self._ui.controller().skill_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    self._ui.notify_error(exc)
+                    self._ui.notify_error(exc, title="Skill settings")
                     return None
                 skills.clear()
                 skills.update({skill.name: skill for skill in refreshed.skills})
@@ -952,7 +961,7 @@ class ConfigurationWorkflows:
                     with self._ui.loading(None):
                         refreshed = await self._ui.controller().skill_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    self._ui.notify_error(exc)
+                    self._ui.notify_error(exc, title="Could not load skills")
                     return None
                 refreshed_candidates = (
                     tuple(skill for skill in refreshed.skills if skill.managed)
@@ -1010,7 +1019,7 @@ class ConfigurationWorkflows:
                 None,
             )
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not load skills")
             return
         if skill is None:
             self._ui.notify_error(f"Skill not found: {name}")
@@ -1029,7 +1038,7 @@ class ConfigurationWorkflows:
                     with self._ui.loading(None):
                         catalog = await self._ui.controller().skill_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    self._ui.notify_error(exc)
+                    self._ui.notify_error(exc, title="Could not load skills")
                     return None
                 refreshed = next(
                     (item for item in catalog.skills if item.name == name),
@@ -1055,7 +1064,7 @@ class ConfigurationWorkflows:
                         None,
                     )
                     if refreshed is None:
-                        self._ui.notify_error(f"Skill not found after state change: {name}")
+                        self._ui.notify_error(f"The skill {name} is no longer listed.")
                         return None
                     skill = refreshed
                     menu.update_parent_choices(
@@ -1105,16 +1114,18 @@ class ConfigurationWorkflows:
             with self._ui.loading(None):
                 result = await self._ui.controller().install_skills(skill_draft)
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not install skills")
             return
-        names = ", ".join(item.name for item in result.skills) or "none"
-        self._ui.notify(f"Skills installed: {names}")
+        names = ", ".join(item.name for item in result.skills)
+        self._ui.notify(
+            f"Installed skills: {names}" if names else "No skills were installed.", markup=False
+        )
 
     async def _set_skill_enabled(self, name: str, *, enabled: bool) -> bool:
         try:
             await self._ui.controller().set_skill_enabled(name, enabled=enabled)
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not change the skill status")
             return False
         return True
 
@@ -1123,9 +1134,9 @@ class ConfigurationWorkflows:
             with self._ui.loading("update"):
                 await self._ui.controller().update_skill(name)
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not update the skill")
             return
-        self._ui.notify(f"Skill updated: {name} (next restart)")
+        self._ui.notify(f"Updated {name}. Restart OURO to use the updated skill.", markup=False)
 
     async def _remove_skill(
         self,
@@ -1135,7 +1146,7 @@ class ConfigurationWorkflows:
     ) -> None:
         screen = ConfirmationScreen(
             title="DELETE SKILL",
-            message=f"Delete {name}? Takes effect after restarting the app.",
+            message=f"Delete the skill {name}? The change takes effect when OURO restarts.",
             confirm_label="Delete",
         )
         selected = await (menu.open_child(screen) if menu is not None else self._ui.choose(screen))
@@ -1145,14 +1156,16 @@ class ConfigurationWorkflows:
             with self._ui.loading("remove"):
                 await self._ui.controller().remove_skill(name)
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not delete the skill")
             return
-        self._ui.notify(f"Skill deleted: {name} (next restart)")
+        self._ui.notify(
+            f"Deleted the skill {name}. Restart OURO to apply the change.", markup=False
+        )
 
 
 def _agent_catalog_notice(catalog: AgentDefinitionCatalogView) -> str:
     return (
-        "Saved dispatch policy changes require restarting OURO. Status shows the active policy."
+        "Restart OURO to apply the new subagent settings. Status shows the settings in use."
         if catalog.policy_restart_required
         else ""
     )

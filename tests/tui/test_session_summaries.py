@@ -76,7 +76,7 @@ async def test_summary_query_from_welcome_does_not_select_or_create_a_session(
         monkeypatch.setattr(app, "notify", lambda message, **kwargs: notices.append(str(message)))
         await app._dispatch_command("/summary")
         await wait_for_summary(app)
-        assert notices == ["Open a session to view summaries"]
+        assert notices == ["Open a conversation to see its summaries."]
         assert app._controller.session_id is None
         assert app._projection is None
         assert len(application.runtime.store.list_sessions()) == 1
@@ -96,7 +96,7 @@ async def test_summary_command_reports_empty_history_and_input_errors(tmp_path, 
         for argument in [other.session_id, "ses_one ses_two"]:
             await app._dispatch_command(f"/summary {argument}")
             await wait_for_summary(app)
-            assert notices.pop() == "Usage: /summary"
+            assert notices.pop() == "Type /summary on its own to view conversation summaries."
         assert not any(
             entry.kind in {"command", "notice"}
             for entry in app.query_one(ConversationHistory).entries
@@ -114,7 +114,7 @@ async def test_summary_command_reports_empty_history_and_input_errors(tmp_path, 
         monkeypatch.setattr(application.runtime.store, "load_compactions", unreadable)
         await app._dispatch_command("/summary")
         await wait_for_summary(app)
-        assert notices.pop() == "Could not load summaries for the current session"
+        assert notices.pop() == "Could not load the summaries for this conversation."
         assert app.query_one(ConversationHistory).entries[-1] == entry
 
 

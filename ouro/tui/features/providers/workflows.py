@@ -35,7 +35,7 @@ class ProviderConfigurationWorkflows:
         try:
             catalog = await self._ui.controller().provider_catalog()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not load providers")
             return
         choices = _provider_catalog_choices(catalog.providers, theme=self._ui.theme())
         if menu is not None:
@@ -44,7 +44,7 @@ class ProviderConfigurationWorkflows:
                 try:
                     refreshed = await self._ui.controller().provider_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    self._ui.notify_error(exc)
+                    self._ui.notify_error(exc, title="Could not load providers")
                     return None
                 return _provider_catalog_choices(
                     refreshed.providers,
@@ -85,7 +85,7 @@ class ProviderConfigurationWorkflows:
         try:
             templates = await self._ui.controller().provider_templates()
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not load providers")
             return
         profiles = {
             f"preset:{template.template_id}": ProviderSetupProfile.from_template(template)
@@ -158,17 +158,18 @@ class ProviderConfigurationWorkflows:
         try:
             provider = await self._ui.controller().add_provider(provider_draft)
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not add the provider")
             return
         suffix = (
-            f"{provider.endpoint_count} preset endpoint(s)"
+            f"Preset endpoints: {provider.endpoint_count}"
             if provider.endpoint_count
-            else "add an endpoint to make it usable"
+            else "add a model endpoint to start using this provider"
         )
         self._ui.notify(
             self._ui.theme().inline_separator.join(
                 (f"Provider added: {provider.display_name}", suffix)
-            )
+            ),
+            markup=False,
         )
 
     async def _manage_provider(
@@ -185,7 +186,7 @@ class ProviderConfigurationWorkflows:
                 try:
                     catalog = await self._ui.controller().provider_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    self._ui.notify_error(exc)
+                    self._ui.notify_error(exc, title="Could not load providers")
                     return None
                 refreshed = next(
                     (
@@ -281,12 +282,12 @@ class ProviderConfigurationWorkflows:
         try:
             service = self._ui.controller().provider_auth()
         except Exception as exc:  # noqa: BLE001 - injected runtimes may omit authentication.
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Sign-in settings unavailable")
             return
         try:
             catalog = await self._ui.controller().provider_catalog()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not load providers")
             return
         provider_names = {item.provider_id: item.display_name for item in catalog.providers}
         screen = ProviderAuthenticationScreen(
@@ -308,7 +309,7 @@ class ProviderConfigurationWorkflows:
             templates = await self._ui.controller().provider_templates()
             profile = profile_for_provider(provider, templates)
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Provider settings")
             return
         screen = ProviderConfigurationScreen(
             profile,
@@ -325,9 +326,12 @@ class ProviderConfigurationWorkflows:
                 provider_draft,
             )
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Provider settings")
             return
-        self._ui.notify(f"Provider saved: {saved.display_name} (next request)")
+        self._ui.notify(
+            f"Saved {saved.display_name}. The provider settings apply from the next request.",
+            markup=False,
+        )
 
     async def _update_provider_template(
         self,
@@ -336,16 +340,18 @@ class ProviderConfigurationWorkflows:
         try:
             catalog = await self._ui.controller().update_provider_template(provider.provider_id)
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not update the provider preset")
             return None
         updated = next(
             item for item in catalog.providers if item.provider_id == provider.provider_id
         )
         report = catalog.template_update
         if report is None:
-            self._ui.notify_error(f"Provider has no preset template: {provider.display_name}")
+            self._ui.notify_error(f"There is no preset to update for {provider.display_name}.")
             return None
-        self._ui.notify(_provider_template_update_notice(report, theme=self._ui.theme()))
+        self._ui.notify(
+            _provider_template_update_notice(report, theme=self._ui.theme()), markup=False
+        )
         return updated
 
     async def _set_provider_enabled(
@@ -360,7 +366,7 @@ class ProviderConfigurationWorkflows:
                 enabled=enabled,
             )
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not change the provider status")
             return None
         return saved
 
@@ -388,13 +394,19 @@ class ProviderConfigurationWorkflows:
                 item.provider_id == provider.provider_id and item.default
                 for item in catalog.providers
             ):
-                self._ui.notify("Default provider cannot be deleted", severity="warning")
+                self._ui.notify(
+                    "Select a default model from another provider before deleting this provider.",
+                    severity="warning",
+                )
                 return False
             await self._ui.controller().remove_provider(provider.provider_id)
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not delete the provider")
             return False
-        self._ui.notify(f"Provider deleted: {provider.display_name} (next request)")
+        self._ui.notify(
+            f"Removed {provider.display_name}. Future requests cannot use this provider.",
+            markup=False,
+        )
         return True
 
     async def _choose_endpoint_action(
@@ -409,7 +421,7 @@ class ProviderConfigurationWorkflows:
         try:
             catalog = await self._ui.controller().provider_catalog()
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not load providers")
             return
         if action == "add":
             providers = _sorted_providers(catalog.providers)
@@ -422,7 +434,7 @@ class ProviderConfigurationWorkflows:
                     try:
                         refreshed = await self._ui.controller().provider_catalog()
                     except Exception as exc:  # noqa: BLE001
-                        self._ui.notify_error(exc)
+                        self._ui.notify_error(exc, title="Could not load providers")
                         return None
                     providers_by_id.clear()
                     providers_by_id.update(
@@ -486,7 +498,7 @@ class ProviderConfigurationWorkflows:
             try:
                 refreshed = await self._ui.controller().provider_catalog()
             except Exception as exc:  # noqa: BLE001
-                self._ui.notify_error(exc)
+                self._ui.notify_error(exc, title="Could not load model endpoints")
                 return None
             routes.clear()
             routes.update(_endpoint_routes(refreshed.providers))
@@ -568,7 +580,7 @@ class ProviderConfigurationWorkflows:
         try:
             catalog = await self._ui.controller().provider_endpoints(provider.provider_id)
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not load model endpoints")
             return
         candidates = _sorted_endpoints(catalog.endpoints)
         choices = _provider_endpoint_choices(
@@ -586,7 +598,7 @@ class ProviderConfigurationWorkflows:
                 try:
                     refreshed = await self._ui.controller().provider_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    self._ui.notify_error(exc)
+                    self._ui.notify_error(exc, title="Could not load model endpoints")
                     return None
                 current_provider = next(
                     (
@@ -662,7 +674,7 @@ class ProviderConfigurationWorkflows:
                 try:
                     catalog = await self._ui.controller().provider_catalog()
                 except Exception as exc:  # noqa: BLE001
-                    self._ui.notify_error(exc)
+                    self._ui.notify_error(exc, title="Could not load model endpoints")
                     return None
                 refreshed_provider = next(
                     (
@@ -760,16 +772,20 @@ class ProviderConfigurationWorkflows:
                 )
             )
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not save the endpoint")
             return
         action = "added" if existing is None else "saved"
-        self._ui.notify(f"Endpoint {action}: {saved.display_name or saved.model_id} (next request)")
+        self._ui.notify(
+            f"Endpoint {action}: {saved.display_name or saved.model_id}. "
+            "The change applies from the next request.",
+            markup=False,
+        )
 
     async def _use_endpoint(self, provider_id: str, endpoint_id: str) -> bool:
         try:
             await self._ui.controller().use_endpoint(provider_id, endpoint_id)
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not select the endpoint")
             return False
         return True
 
@@ -796,16 +812,21 @@ class ProviderConfigurationWorkflows:
             if _global_default_endpoint(catalog.providers) == (
                 f"{provider.provider_id}/{endpoint.endpoint_id}"
             ):
-                self._ui.notify("Default endpoint cannot be deleted", severity="warning")
+                self._ui.notify(
+                    "Select another default model before deleting this endpoint.",
+                    severity="warning",
+                )
                 return False
             await self._ui.controller().remove_endpoint(
                 provider.provider_id,
                 endpoint.endpoint_id,
             )
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not delete the endpoint")
             return False
-        self._ui.notify(f"Endpoint deleted: {endpoint_label} (next request)")
+        self._ui.notify(
+            f"Removed {endpoint_label}. Future requests cannot use this endpoint.", markup=False
+        )
         return True
 
 
@@ -878,7 +899,6 @@ def _provider_template_update_notice(
     *,
     theme: TuiTheme = DEFAULT_TUI_THEME,
 ) -> str:
-    mode = f"updated to r{update.to_revision}"
     changes = (
         f"{len(update.added_endpoints)} added",
         f"{len(update.updated_endpoints)} updated",
@@ -886,7 +906,11 @@ def _provider_template_update_notice(
         f"{len(update.preserved_endpoints)} preserved",
         f"{len(update.conflicted_endpoints)} conflicts",
     )
-    return theme.inline_separator.join((f"Provider preset {mode}: {update.template_id}", *changes))
+    status = "Updated" if update.changed else "No changes to"
+    details = theme.inline_separator.join(changes)
+    return (
+        f"{status} preset {update.template_id} (version {update.to_revision}). Endpoints: {details}"
+    )
 
 
 def _endpoint_choice(

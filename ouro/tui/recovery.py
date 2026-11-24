@@ -38,7 +38,7 @@ _PHASE_LABELS: dict[UpgradePhase, str] = {
     "tasks": "Checking and upgrading tasks",
     "usage": "Checking and upgrading usage records",
     "verify_source": "Verifying source data",
-    "prepare": "Preparing publication",
+    "prepare": "Preparing upgraded files",
     "finalize": "Finalizing upgrade",
     "publish": "Writing upgraded files",
     "verify": "Verifying data",
@@ -90,7 +90,7 @@ class _DiscardScreen(ConfirmationScreen):
     def __init__(self, home: Path, units: tuple[UpgradeUnit, ...]) -> None:
         super().__init__(
             title="DELETE FAILED DATA",
-            message="Delete only the listed data that still fails the upgrade?",
+            message="Delete the listed items that could not be upgraded and try again?",
             confirm_label="Delete failed data and retry",
         )
         self._home = home
@@ -100,8 +100,8 @@ class _DiscardScreen(ConfirmationScreen):
         yield Static(Text(str(self._home)), id="recovery-home")
         yield Static(
             Text(
-                "Only the following failed units will be removed from active storage, "
-                "including their owned history and files. Successful data is kept.\n"
+                "The following items will be removed from OURO, "
+                "including their history and files. Upgraded data will be kept.\n"
                 + "\n".join(_unit_label(unit) for unit in self._units)
                 + "\nStop all other OURO processes first.",
                 style=theme_for(self).danger,
@@ -225,7 +225,7 @@ class DataRecoveryScreen(ChoiceScreen):
                     Choice(
                         "discard",
                         "Delete failed data and retry",
-                        "Review failed units before deletion. Successful data is kept.",
+                        "Review the items that could not be upgraded before deleting them.",
                         accent=theme_for(self).danger,
                         destructive=True,
                     )
@@ -287,8 +287,8 @@ class DataRecoveryScreen(ChoiceScreen):
             report = await asyncio.shield(self._operation)
         except (UpgradeError, OuroError) as exc:
             self._show_failure(str(exc))
-        except Exception as exc:  # noqa: BLE001 - contain worker failures without exposing payloads.
-            self._show_failure(f"Data maintenance failed ({type(exc).__name__}).")
+        except Exception:  # noqa: BLE001 - contain worker failures without exposing payloads.
+            self._show_failure("OURO could not finish updating your data.")
         else:
             self._failures = tuple(
                 UpgradeFailure(UpgradeUnit(**item["unit"]), item["error"], item["discardable"])

@@ -52,7 +52,7 @@ class PluginManagementWorkflows:
             with self._ui.loading(None):
                 plugins = await self._ui.controller().plugins()
         except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not load plugins")
             return
         if not plugins:
             return
@@ -66,7 +66,7 @@ class PluginManagementWorkflows:
                 with self._ui.loading(None):
                     return _plugin_choices(await self._ui.controller().plugins())
             except Exception as exc:  # noqa: BLE001
-                self._ui.notify_error(exc)
+                self._ui.notify_error(exc, title="Could not load plugins")
                 return None
 
         async def select_plugin(plugin_id: str) -> tuple[Choice, ...] | None:
@@ -104,7 +104,7 @@ class PluginManagementWorkflows:
         try:
             plugin = await self._ui.controller().plugin(plugin_id)
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not load plugins")
             return
 
         async def select_action(selected: str) -> tuple[Choice, ...] | None:
@@ -139,7 +139,7 @@ class PluginManagementWorkflows:
                     refreshed = await self._ui.controller().plugin(plugin_id)
                     return _plugin_action_choices(refreshed, theme=self._ui.theme())
                 except Exception as exc:  # noqa: BLE001
-                    self._ui.notify_error(exc)
+                    self._ui.notify_error(exc, title="Could not load plugins")
                     return None
 
             menu.push_page(
@@ -174,13 +174,14 @@ class PluginManagementWorkflows:
                     cast(TuiPluginInstallConfiguration, draft)
                 )
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not install the plugin")
             return
         suffix = "installed" if result.changed else "already installed"
         self._ui.notify(
             self._ui.theme().inline_separator.join(
-                (f"Plugin {suffix}: {result.plugin_id}", result.status)
-            )
+                (f"Plugin {suffix}: {result.plugin_id}", result.status.replace("_", " "))
+            ),
+            markup=False,
         )
 
     async def _configure_plugin(
@@ -194,7 +195,9 @@ class PluginManagementWorkflows:
                 view = await self._ui.controller().plugin_configuration(plugin_id)
             if not view.configuration_supported:
                 self._ui.notify(
-                    f"Plugin has no configurable fields: {plugin_id}", severity="warning"
+                    f"There are no settings to change for {plugin_id}.",
+                    severity="warning",
+                    markup=False,
                 )
                 return
 
@@ -214,14 +217,17 @@ class PluginManagementWorkflows:
                 menu.open_child(screen) if menu is not None else self._ui.choose(screen)
             )
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Plugin settings")
             return
         if result is None:
             return
         applied = cast(PluginConfigurationResult, result)
-        summary = self._ui.theme().inline_separator.join(
-            (f"Plugin configuration: {applied.outcome}", applied.status)
-        )
+        outcome = {
+            "unchanged": "Settings already up to date",
+            "saved": "Settings saved",
+            "published": "Settings applied",
+        }[applied.outcome]
+        summary = f"{outcome} for {plugin_id}. Plugin status: {applied.status.replace('_', ' ')}."
         if applied.status in {"degraded", "failed"}:
             self._ui.notify(
                 "\n".join((summary, *(item.message for item in applied.diagnostics))),
@@ -229,7 +235,7 @@ class PluginManagementWorkflows:
                 markup=False,
             )
         else:
-            self._ui.notify(summary)
+            self._ui.notify(summary, markup=False)
 
     async def _set_plugin_enabled(self, plugin_id: str, *, enabled: bool) -> bool:
         operation = (
@@ -238,7 +244,7 @@ class PluginManagementWorkflows:
         try:
             await operation(plugin_id)
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not change the plugin status")
             return False
         return True
 
@@ -247,7 +253,7 @@ class PluginManagementWorkflows:
             with self._ui.loading("restart"):
                 await self._ui.controller().restart_plugin(plugin_id)
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not restart the plugin")
             return
 
     async def _choose_plugin_install(
@@ -284,7 +290,7 @@ class PluginManagementWorkflows:
                             description=_plugin_description(refreshed, theme=self._ui.theme()),
                         )
             except Exception as exc:  # noqa: BLE001
-                self._ui.notify_error(exc)
+                self._ui.notify_error(exc, title="Plugin versions")
                 return None
             return tuple(
                 replace(
@@ -359,7 +365,7 @@ class PluginManagementWorkflows:
             with self._ui.loading("remove"):
                 await self._ui.controller().remove_plugin(plugin_id)
         except Exception as exc:  # noqa: BLE001
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not delete the plugin")
             return
         if menu is not None:
             with self._ui.loading(None):

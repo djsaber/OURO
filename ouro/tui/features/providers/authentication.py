@@ -64,7 +64,7 @@ class ProviderAuthenticationScreen(ChoiceScreen):
                 "status",
                 "Status",
                 trailing=status.state,
-                description=status.error_code or "",
+                description=str(AuthError(status.error_code)) if status.error_code else "",
                 disabled=True,
             ),
             Choice(
@@ -109,7 +109,8 @@ class ProviderAuthenticationScreen(ChoiceScreen):
                 confirmed = await self.open_child(
                     ConfirmationScreen(
                         title="SIGN OUT",
-                        message="Clear local authentication shared by: "
+                        confirm_label="Sign out",
+                        message="Sign out on this device for the following providers: "
                         + (
                             _bound_provider_labels(status.bound_provider_ids, self._provider_names)
                             or _provider_label(self._provider_id, self._provider_names)
@@ -120,7 +121,7 @@ class ProviderAuthenticationScreen(ChoiceScreen):
                     await self._service.logout(self._provider_id)
             return await self._authentication_choices()
         except AuthError as exc:
-            self.notify(str(exc), severity="error")
+            self.notify(str(exc), severity="error", markup=False)
             return await self._authentication_choices()
 
 
@@ -259,7 +260,7 @@ class ProviderLoginScreen(ChoiceScreen):
                     opened = False
                 if not opened:
                     self.notify(
-                        "Could not open a browser. Copy the authorization URL instead.",
+                        "Open the sign-in link in your browser to continue.",
                         severity="warning",
                     )
 
@@ -323,12 +324,13 @@ class ProviderCredentialsScreen(ChoiceScreen):
         confirmed = await self.open_child(
             ConfirmationScreen(
                 title="CLEAR LOCAL CREDENTIAL",
-                message=f"Clear {credential_id} for all bound providers?",
+                message=f"Remove {credential_id} from this device for every provider using it?",
+                confirm_label="Remove credential",
             )
         )
         if ConfirmationScreen.confirmed(confirmed):
             try:
                 await self._service.forget(credential_id)
             except AuthError as exc:
-                self.notify(str(exc), severity="error")
+                self.notify(str(exc), severity="error", markup=False)
         return await self._credential_choices()

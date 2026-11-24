@@ -20,7 +20,7 @@ class PromptWorkflows:
         try:
             current = await self._ui.controller().prompt_configuration()
         except Exception as exc:  # noqa: BLE001 - report configuration errors at the UI boundary.
-            self._ui.notify_error(exc)
+            self._ui.notify_error(exc, title="Could not load prompts")
             return
 
         async def refresh() -> tuple[Choice, ...]:
@@ -28,7 +28,7 @@ class PromptWorkflows:
             try:
                 current = await self._ui.controller().prompt_configuration()
             except Exception as exc:  # noqa: BLE001 - keep navigation usable after read failures.
-                self._ui.notify_error(exc)
+                self._ui.notify_error(exc, title="Could not load prompts")
             return prompt_choices(current.config)
 
         async def select(value: str) -> tuple[Choice, ...] | None:
@@ -43,12 +43,14 @@ class PromptWorkflows:
                             cast(PromptDraft, draft),
                             expected_revision=current.config.revision,
                         )
-                        self._ui.notify("Prompt saved (applies to the next model request)")
+                        self._ui.notify(
+                            "Prompt saved. The change applies from the next model request."
+                        )
                         return await refresh()
                 else:
                     await manage(cast(PromptKind, prefix), identity)
             except Exception as exc:  # noqa: BLE001 - retain the menu on a rejected edit.
-                self._ui.notify_error(exc)
+                self._ui.notify_error(exc, title="Prompt settings")
                 return await refresh()
             return None
 
@@ -96,11 +98,9 @@ class PromptWorkflows:
                         )
                     else:
                         return None
-                    self._ui.notify(
-                        "Prompt configuration saved (applies to the next model request)"
-                    )
+                    self._ui.notify("Prompt changes saved. They apply from the next model request.")
                 except Exception as exc:  # noqa: BLE001 - revision and I/O errors stay visible.
-                    self._ui.notify_error(exc)
+                    self._ui.notify_error(exc, title="Prompt settings")
                 screen.pop_page(choices=await refresh(), initial_value=f"{kind}:{entry_id}")
                 return None
 

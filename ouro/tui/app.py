@@ -435,9 +435,12 @@ class OuroTuiApp(App[int]):
         self._preferences_error: str | None = None
         try:
             preferences = self._preferences_store.load()
-        except OuroError as exc:
+        except OuroError:
             preferences = TuiPreferences()
-            self._preferences_error = str(exc)
+            self._preferences_error = (
+                f"Could not load preferences from {self._preferences_store.path}. "
+                "Using the default settings."
+            )
         self._preferences = preferences
         input_draft_store = TuiInputDraftStore(preference_home)
         self._input_drafts_error: str | None = None
@@ -447,9 +450,12 @@ class OuroTuiApp(App[int]):
                 if preferences.input_draft_memory_enabled
                 else TuiInputDrafts()
             )
-        except OuroError as exc:
+        except OuroError:
             input_drafts = TuiInputDrafts()
-            self._input_drafts_error = str(exc)
+            self._input_drafts_error = (
+                f"Could not load saved drafts from {input_draft_store.path}. "
+                "Draft changes will not be saved to disk."
+            )
         self._input_drafts = input_drafts
         theme_source = theme if theme is not None else TUI_THEMES[preferences.theme]
         self._tui_theme_saturation_level = (
@@ -652,9 +658,8 @@ class OuroTuiApp(App[int]):
         elif action_id == "compaction.policy":
             await self._configuration._configure_compaction(menu=menu)
         else:
-            available = "|".join(action.action_id for action in SYSTEM_SETTING_ACTIONS)
             self.notify(
-                f"Unknown system setting action: {action_id}. Available: {available}",
+                "This settings action is unavailable. Choose an action from the menu.",
                 severity="error",
                 markup=False,
             )
@@ -756,7 +761,9 @@ class OuroTuiApp(App[int]):
                         or self._interaction is not None
                         or composer.import_pending
                     ):
-                        self.notify("Input changed while checking files; drop the files again")
+                        self.notify(
+                            "The files were not attached. Drop them again in the current draft."
+                        )
                         return
                     self._close_attachment_menu()
                     composer.import_pending = True
@@ -775,7 +782,7 @@ class OuroTuiApp(App[int]):
         composer.disabled = True
         _worker: Worker[None] = self.run_worker(self._start, name="tui-start", exclusive=True)
         if self._preferences_error is not None:
-            self.notify(self._preferences_error, severity="warning")
+            self.notify(self._preferences_error, severity="warning", markup=False)
         if reason := self._welcome_style_unavailable_reason(self._preferences.welcome_style):
             selected = self._welcome_styles.get(self._preferences.welcome_style)
             label = selected.label if selected else self._preferences.welcome_style
@@ -889,6 +896,11 @@ class OuroTuiApp(App[int]):
                 self._controller = self._controller_factory()
                 self._resume_session_id = None
 
+    def _notify_error(
+        self, title: str, error: Exception, *, severity: Literal["error", "warning"] = "error"
+    ) -> None:
+        self.notify(str(error), title=title, severity=severity, markup=False)
+
     async def _start_application(self) -> None:
         session_load_error: tuple[str, Exception] | None = None
         try:
@@ -913,7 +925,7 @@ class OuroTuiApp(App[int]):
             if self._resume_session_id is None:
                 self._resume_session_id = recovered_session
         except (OuroError, OSError) as exc:
-            self.notify(str(exc), severity="warning", markup=False)
+            self._notify_error("Could not finish restoring drafts", exc, severity="warning")
         self._apply_bootstrap(bootstrap)
         self._apply_system_status(bootstrap)
         if bootstrap.system_status.workspace is not None:
@@ -1082,7 +1094,12 @@ class OuroTuiApp(App[int]):
                 if self._host_closing or self._observation_subscription is not subscription:
                     return
                 if batch.diagnostic is not None:
-                    self.notify(batch.diagnostic.message, severity="error", markup=False)
+                    self.notify(
+                        batch.diagnostic.message,
+                        title="Conversation updates interrupted",
+                        severity="error",
+                        markup=False,
+                    )
                     return
                 if batch.snapshot is not None:
                     revision = self._view_revision
@@ -1114,7 +1131,7 @@ class OuroTuiApp(App[int]):
                     subscription.retain_history_from(self._history_anchor)
         except Exception as exc:  # noqa: BLE001 - observation failure is local to this view.
             if self._observation_subscription is subscription and not self._host_closing:
-                self.notify(str(exc), severity="error", markup=False)
+                self._notify_error("Conversation updates interrupted", exc)
         finally:
             subscription.close()
 
@@ -1193,6 +1210,7 @@ class OuroTuiApp(App[int]):
                 if notification.kind == "diagnostic" and notification.diagnostic is not None:
                     self.notify(
                         notification.diagnostic.message,
+                        title="Subagent updates interrupted",
                         severity=(
                             "error" if notification.diagnostic.severity == "error" else "warning"
                         ),
@@ -1324,7 +1342,7 @@ class OuroTuiApp(App[int]):
                 self.query_one(BrandHeader).set_context(workspace=self._active_workspace)
                 self.query_one(ConversationView).set_system_status(self._system_status)
             except (OuroError, ValueError) as exc:
-                self.notify(str(exc), severity="warning", markup=False)
+                self._notify_error("Could not restore the workspace", exc, severity="warning")
         await self.query_one(ConversationView).show_welcome()
         if not self._surface_available():
             return
@@ -1575,7 +1593,7 @@ class OuroTuiApp(App[int]):
         if self._host_closing or not conversation.is_attached:
             return
         for diagnostic in diagnostics:
-            self.notify(diagnostic, severity="error", markup=False)
+            self.notify(diagnostic, title="Conversation update", severity="error", markup=False)
 
     async def _sync_run_summary_from_event(self, event: EventRecord, *, model: str | None) -> None:
         if event.run_id is None:
@@ -1583,7 +1601,7 @@ class OuroTuiApp(App[int]):
         try:
             run = await self._controller.run_record(event.session_id, event.run_id)
         except OuroError as exc:
-            self.notify(f"Cannot load run summary: {exc}", severity="error", markup=False)
+            self.notify(f"Could not load the task summary: {exc}", severity="error", markup=False)
             return
         if not self._surface_available() or run.kind != "agent":
             return
@@ -1597,7 +1615,10 @@ class OuroTuiApp(App[int]):
     def on_composer_submitted(self, message: Composer.Submitted) -> None:
         self._close_attachment_menu()
         if self._visible_read_only:
-            self.notify("Subagent sessions are read-only", severity="warning")
+            self.notify(
+                "To send a message, return to the conversation that started this subagent.",
+                severity="warning",
+            )
             return
         interaction = self._interaction
         if interaction is not None and interaction.kind == "approval":
@@ -1645,7 +1666,7 @@ class OuroTuiApp(App[int]):
             ):
                 picker.loading = False
                 self._show_attachment_menu()
-                self.notify(str(exc), severity="error", markup=False)
+                self._notify_error("Could not list files", exc)
             return
         if picker is self._attachment_picker and revision == self._controller.selection_revision:
             with self.batch_update():
@@ -1666,7 +1687,7 @@ class OuroTuiApp(App[int]):
         except Exception as exc:  # noqa: BLE001 - report discovery failures at the UI boundary.
             if picker is self._skill_picker and revision == self._controller.selection_revision:
                 self._close_attachment_menu()
-                self.notify(str(exc), severity="error", markup=False)
+                self._notify_error("Could not list skills", exc)
             return
         if picker is self._skill_picker and revision == self._controller.selection_revision:
             existing = {item.name for item in self.query_one(Composer).draft_content.skills}
@@ -1829,7 +1850,7 @@ class OuroTuiApp(App[int]):
             )
             await self._flush_input_drafts()
         except (OuroError, OSError, ValueError) as exc:
-            self.notify(str(exc), severity="error", markup=False)
+            self._notify_error("Could not finish adding file references", exc)
         finally:
             composer.import_pending = False
             if self._surface_available():
@@ -1912,13 +1933,13 @@ class OuroTuiApp(App[int]):
             )
             await self._flush_input_drafts()
         except Exception as exc:  # noqa: BLE001 - keep the unsent draft on import failures.
-            self.notify(str(exc), severity="error", markup=False)
+            self._notify_error("Could not finish attaching files", exc)
         finally:
             try:
                 if temporary is not None:
                     await run_blocking(temporary.close)
             except OSError as exc:
-                self.notify(str(exc), severity="error", markup=False)
+                self._notify_error("Could not remove the temporary file", exc)
             finally:
                 composer.import_pending = False
                 if self._surface_available():
@@ -1954,7 +1975,7 @@ class OuroTuiApp(App[int]):
                     self._set_input_drafts(self._input_drafts.finish_submission(pending.input_id))
                     self._restore_unsent_input(pending, revision, pending.origin_session_id)
                     self._sync_input_state(self._interaction)
-                    self.notify("Session changed while preparing input. The draft was restored.")
+                    self.notify("The conversation changed before sending. Your draft was restored.")
                     return
                 welcome_on_failure = self.query_one(ConversationView).showing_welcome
                 self._set_welcome_mode(False)
@@ -2013,7 +2034,9 @@ class OuroTuiApp(App[int]):
         try:
             await self._flush_input_drafts()
             if revision != self._controller.selection_revision:
-                raise ConfigError("Input target changed before submission; the draft was retained")
+                raise ConfigError(
+                    "The conversation changed before sending. Your message is still a draft."
+                )
             result = await self._controller.submit_pending(
                 pending, queue_mode=queue_mode, on_input_accepted=input_accepted
             )
@@ -2027,7 +2050,7 @@ class OuroTuiApp(App[int]):
                         input_accepted()
                 except OuroError as acceptance_error:
                     # Keep the pending input until recovery can establish its durable outcome.
-                    self.notify(str(acceptance_error), severity="error", markup=False)
+                    self._notify_error("Delivery status unknown", acceptance_error)
                     return
             if not accepted:
                 self._set_input_drafts(self._input_drafts.finish_submission(pending.input_id))
@@ -2038,7 +2061,7 @@ class OuroTuiApp(App[int]):
                 self.query_one(StatusLine).set_activity("failed")
                 if isinstance(exc, NoInputModels):
                     self._prompt_provider_setup()
-            self.notify(str(exc), severity="error", markup=False)
+            self._notify_error("Error after sending" if accepted else "Message not sent", exc)
         finally:
             if revision == self._controller.selection_revision:
                 if not self._host_closing and self.query(Composer):
@@ -2388,7 +2411,10 @@ class OuroTuiApp(App[int]):
         if self._side_command_interrupted(message.command_text, message.session_id):
             return
         if self._visible_read_only:
-            self.notify("Subagent sessions are read-only", severity="warning")
+            self.notify(
+                "To send a message, return to the conversation that started this subagent.",
+                severity="warning",
+            )
             return
         if self.query_one(Composer).attachment_menu_open:
             self._choose_attachment()
@@ -2463,7 +2489,8 @@ class OuroTuiApp(App[int]):
         if source_id is not None:
             self._interrupted_commands[source_id] = value
         self.notify(
-            "Conversation changed. Reopen the source to resume the question.", severity="warning"
+            "Reopen the conversation where you started this question to continue.",
+            severity="warning",
         )
         return True
 
@@ -2529,7 +2556,11 @@ class OuroTuiApp(App[int]):
         revision = self._controller.selection_revision
         approval_id = interaction.request_id
         if approval_id is None:
-            self.notify("Approval request has no identifier", severity="error", markup=False)
+            self.notify(
+                "This approval request is incomplete. Your decision could not be recorded.",
+                severity="error",
+                markup=False,
+            )
             self.query_one(InteractionBar).resume()
             return
         try:
@@ -2542,7 +2573,7 @@ class OuroTuiApp(App[int]):
             if revision == self._controller.selection_revision:
                 await self._refresh_interaction()
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            self.notify(str(exc), severity="error", markup=False)
+            self._notify_error("Could not record your approval decision", exc)
             if self._interaction == interaction:
                 self.query_one(InteractionBar).resume()
 
@@ -2559,7 +2590,7 @@ class OuroTuiApp(App[int]):
             if revision == self._controller.selection_revision:
                 await self._refresh_interaction()
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            self.notify(str(exc), severity="error", markup=False)
+            self._notify_error("Could not submit your response", exc)
             if self._interaction != interaction:
                 return
             plan_panel = self.query_one(PlanConfirmationPanel)
@@ -2885,7 +2916,7 @@ class OuroTuiApp(App[int]):
         _LOG.warning("Could not persist TUI input drafts: %s", exc)
         if not self._input_draft_error_notified and not self._host_closing:
             self._input_draft_error_notified = True
-            self.notify(str(exc), severity="warning", markup=False)
+            self.notify("Could not save your draft to disk.", severity="warning")
 
     async def _flush_input_drafts(self) -> None:
         if not self._preferences.input_draft_memory_enabled or self._input_drafts_error is not None:
@@ -2903,7 +2934,10 @@ class OuroTuiApp(App[int]):
             await self._new_session()
         elif command.name == "/btw":
             if not argument or self._controller.session_id is None or self._visible_read_only:
-                self.notify("Use /btw <question> in a writable conversation.", severity="warning")
+                self.notify(
+                    "In a conversation where you can send messages, type /btw <question>.",
+                    severity="warning",
+                )
                 return
             revision = self._view_revision
             try:
@@ -2918,7 +2952,7 @@ class OuroTuiApp(App[int]):
                         self.query_one(Composer).clear()
                         self._submit_run(InputContent(text=argument), "follow_up")
             except (OuroError, ValueError) as exc:
-                self.notify(str(exc), severity="error", markup=False)
+                self._notify_error("Side conversation unavailable", exc)
         elif command.name == "/workspace":
             if argument.casefold() == _CLEAR_WORKSPACE_HISTORY_ARGUMENT:
                 await self._clear_recent_workspaces()
@@ -2930,7 +2964,9 @@ class OuroTuiApp(App[int]):
             self.action_actions()
         elif command.name == "/continue":
             if argument:
-                self.notify(f"{command.name} does not accept arguments", severity="warning")
+                self.notify(
+                    "Type /continue on its own to continue this conversation.", severity="warning"
+                )
             else:
                 self._continue_session()
         elif command.name == "/edit":
@@ -2939,7 +2975,7 @@ class OuroTuiApp(App[int]):
             elif self._history_before_cursor is None and not self._user_message_arguments(
                 direct_only=True
             ):
-                self.notify("There is no user message to edit", severity="warning")
+                self.notify("There are no messages here that you can edit.", severity="warning")
             else:
                 self._edit_command("/edit ", draft=self.query_one(Composer).text)
         elif command.name == "/fork":
@@ -2966,12 +3002,16 @@ class OuroTuiApp(App[int]):
                 self._compact_session()
         elif command.name == "/summary":
             if argument:
-                self.notify("Usage: /summary", severity="warning")
+                self.notify(
+                    "Type /summary on its own to view conversation summaries.", severity="warning"
+                )
             else:
                 self._show_session_summaries()
         elif command.name == "/export":
             if argument:
-                self.notify("Usage: /export", severity="warning")
+                self.notify(
+                    "Type /export on its own to export this conversation.", severity="warning"
+                )
             else:
                 self._data_transfer.export_session(self._visible_session_id())
         elif command.name == "/unqueue":
@@ -3079,7 +3119,7 @@ class OuroTuiApp(App[int]):
         try:
             workspace = await self._controller.set_workspace(value)
         except Exception as exc:  # noqa: BLE001 - validation errors are user-visible.
-            self.notify(str(exc), severity="error", markup=False)
+            self._notify_error("Could not change workspace", exc)
             return
         self._active_workspace = workspace
         self._system_status = replace(self._system_status, workspace=workspace)
@@ -3114,7 +3154,7 @@ class OuroTuiApp(App[int]):
         try:
             cancelled = await self._controller.cancel_queued_user_input(queue_id)
         except Exception as exc:  # noqa: BLE001 - surface application boundary failures.
-            self.notify(str(exc), severity="error", markup=False)
+            self._notify_error("Could not remove the queued message", exc)
             return
         if cancelled is None:
             self.notify(
@@ -3132,9 +3172,13 @@ class OuroTuiApp(App[int]):
         try:
             await self._sync_queued_inputs()
         except Exception as exc:  # noqa: BLE001 - cancellation already committed.
-            self.notify(f"Could not refresh queued inputs: {exc}", severity="warning", markup=False)
+            self.notify(
+                f"Could not refresh the list of queued messages: {exc}",
+                severity="warning",
+                markup=False,
+            )
         if self._restore_unsent_input(content, revision, session_id):
-            self.notify("Restored queued input after the current draft")
+            self.notify("Added the queued message to the end of your draft.")
 
     def _navigate_options(self) -> tuple[TuiCommandArgument, ...]:
         """Build /navigate argument options from the live dialogue state."""
@@ -3269,7 +3313,7 @@ class OuroTuiApp(App[int]):
             for run_result in result.run_results:
                 await self._sync_queued_inputs(run_result.session.session_id)
         except Exception as exc:  # noqa: BLE001 - plugin failures are user-visible.
-            self.notify(str(exc), severity="error", markup=False)
+            self._notify_error("Plugin command failed", exc)
         finally:
             if creating_projection and revision == self._controller.selection_revision:
                 self._sync_input_state(self._interaction, focus=True)
@@ -3278,13 +3322,13 @@ class OuroTuiApp(App[int]):
     async def _show_session_summaries(self) -> None:
         session_id = self._visible_session_id()
         if session_id is None:
-            self.notify("Open a session to view summaries", severity="warning")
+            self.notify("Open a conversation to see its summaries.", severity="warning")
             return
         try:
             summaries = await self._controller.session_summaries(session_id)
         except Exception as exc:  # noqa: BLE001 - query errors are user-visible.
             _LOG.warning("Could not load session summaries: %s", exc)
-            self.notify("Could not load summaries for the current session", severity="error")
+            self.notify("Could not load the summaries for this conversation.", severity="error")
             return
         async with self._session_surface_lock:
             if not self._surface_available() or self._visible_session_id() != session_id:
@@ -3296,7 +3340,10 @@ class OuroTuiApp(App[int]):
     @work(exclusive=True, group="compaction")
     async def _compact_session(self) -> None:
         if self._has_active_run():
-            self.notify("Stop the current task before compacting context", severity="warning")
+            self.notify(
+                "Wait for the task to finish or stop it before summarizing the conversation.",
+                severity="warning",
+            )
             return
         if self._controller.session_id is None:
             return
@@ -3309,7 +3356,7 @@ class OuroTuiApp(App[int]):
             await self._refresh_welcome_status()
         except Exception as exc:  # noqa: BLE001 - compaction errors are user-visible.
             self.query_one(StatusLine).set_activity("failed")
-            self.notify(str(exc), severity="error", markup=False)
+            self._notify_error("Could not compact the conversation", exc)
         finally:
             self._sync_input_state(self._interaction, focus=True)
 
@@ -3323,7 +3370,7 @@ class OuroTuiApp(App[int]):
                 else None
             )
         except Exception as exc:  # noqa: BLE001 - keep the current view on failure.
-            self.notify(str(exc), severity="error", markup=False)
+            self._notify_error("Could not start a new conversation", exc)
             return
         if self._host_closing or revision != self._view_revision:
             return
@@ -3412,7 +3459,7 @@ class OuroTuiApp(App[int]):
             return
         agent = self._agent_nodes.get(delegation_id)
         if agent is None or agent.parent_session_id != self._visible_session_id():
-            self.notify("This subagent session is not available yet", severity="warning")
+            self.notify("This subagent conversation is unavailable.", severity="warning")
             return
         self._navigate_to_session_node(agent.session_id)
 
@@ -3512,7 +3559,7 @@ class OuroTuiApp(App[int]):
                     raise
                 except Exception as exc:  # noqa: BLE001 - navigation failures are visible.
                     if self._surface_available():
-                        self.notify(str(exc), severity="error", markup=False)
+                        self._notify_error("Could not open the conversation", exc)
                 finally:
                     if self._pending_session_switch is request:
                         self._pending_session_switch = None
@@ -3688,13 +3735,13 @@ class OuroTuiApp(App[int]):
             )
             if agent is None:
                 self.notify(
-                    "This subagent session is not available yet",
+                    "This subagent conversation is unavailable.",
                     severity="warning",
                 )
                 return
             self._navigate_to_session_node(agent.session_id)
         except Exception as exc:  # noqa: BLE001 - navigation failures are user-visible.
-            self.notify(str(exc), severity="error", markup=False)
+            self._notify_error("Could not open the subagent conversation", exc)
 
     def _navigate_to(self, target: str) -> None:
         """Scroll the conversation to the target identified by the /navigate argument."""
@@ -3827,7 +3874,7 @@ class OuroTuiApp(App[int]):
             try:
                 renamed = await self._controller.rename_session(session_id, new_title)
             except Exception as exc:  # noqa: BLE001
-                self.notify(str(exc), severity="error", markup=False)
+                self._notify_error("Could not rename the conversation", exc)
                 return None
             if session_id == self._controller.session_id:
                 self._active_title = renamed.title
@@ -3841,7 +3888,7 @@ class OuroTuiApp(App[int]):
                     for session_id in session_ids:
                         await self._controller.set_session_archived(session_id, archived=archived)
                 except Exception as exc:  # noqa: BLE001
-                    self.notify(str(exc), severity="error", markup=False)
+                    self._notify_error("Could not update all selected conversations", exc)
                 # Publish completed changes even if a later item failed.
                 return await refresh_choices()
 
@@ -3850,14 +3897,16 @@ class OuroTuiApp(App[int]):
                 return None
             archived_ids = {item.session_id for item in _sessions_in_domain(self._sessions, domain)}
             if not set(session_ids).issubset(archived_ids):
-                self.notify("Only archived sessions can be deleted", severity="warning")
+                self.notify(
+                    "Archive the selected conversations before deleting them.", severity="warning"
+                )
                 return choices()
             current_session_id = self._controller.session_id
             try:
                 with loading_menu(self, "__multi_confirm__"):
                     removed = await self._controller.delete_sessions(session_ids)
             except Exception as exc:  # noqa: BLE001
-                self.notify(str(exc), severity="error", markup=False)
+                self._notify_error("Could not delete the selected conversations", exc)
                 return None
             self._forget_input_drafts(removed)
             if current_session_id in removed or self._visible_session_id() in removed:
@@ -3938,7 +3987,7 @@ class OuroTuiApp(App[int]):
         try:
             self._sessions = await self._controller.sessions(include_subagents=True)
         except Exception as exc:  # noqa: BLE001
-            self.notify(str(exc), severity="error", markup=False)
+            self._notify_error("Could not refresh the conversation list", exc)
             return False
         owner = self._agent_root_session_id
         if owner is not None:
@@ -4385,11 +4434,11 @@ class OuroTuiApp(App[int]):
                 command_context = composer.command_context()
                 if command_context is not None:
                     self._show_command_arguments(command_context[0])
-        except Exception as exc:  # noqa: BLE001 - page failures leave the current view usable.
+        except Exception:  # noqa: BLE001 - page failures leave the current view usable.
             if self._history_request is request and revision == self._view_revision:
                 self._history_load_failed = True
                 self.notify(
-                    f"Cannot load earlier messages ({type(exc).__name__}).",
+                    "Could not load earlier messages. Reopen the conversation to try again.",
                     severity="error",
                     markup=False,
                 )
@@ -4474,7 +4523,7 @@ class OuroTuiApp(App[int]):
         error: str,
     ) -> ChoiceScreen:
         return ChoiceScreen(
-            title="SESSION LOAD FAILED",
+            title="COULD NOT OPEN CONVERSATION",
             placeholder=None,
             choices=(
                 Choice(
@@ -4494,10 +4543,13 @@ class OuroTuiApp(App[int]):
             or self._activity_override is not None
             or self._continuing_session
         ):
-            self.notify("This operation requires an idle main session", severity="warning")
+            self.notify(
+                "Continue from the main conversation once its current work has finished.",
+                severity="warning",
+            )
             return
         if self._controller.session_id is None:
-            self.notify("There is no session to continue", severity="warning")
+            self.notify("Open the conversation you want to continue.", severity="warning")
             return
         self._continuing_session = True
         session_id = self._controller.session_id
@@ -4512,10 +4564,13 @@ class OuroTuiApp(App[int]):
                 self.notify(describe_run_pause(result.run), severity="warning", markup=False)
             elif result.run.status == "failed":
                 self.notify(
-                    f"Continue failed: {result.run.error}", severity="warning", markup=False
+                    result.run.error or "The task failed.",
+                    title="Could not continue the conversation",
+                    severity="warning",
+                    markup=False,
                 )
         except Exception as exc:  # noqa: BLE001 - command failures are user-visible.
-            self.notify(str(exc), severity="warning", markup=False)
+            self._notify_error("Could not continue the conversation", exc, severity="warning")
         finally:
             self._continuing_session = False
             if revision == self._controller.selection_revision:
@@ -4527,7 +4582,7 @@ class OuroTuiApp(App[int]):
     ) -> MessageRecord:
         number = target.removeprefix("#")
         if number == target or not number.isdecimal() or int(number) < 1:
-            raise ValueError("Choose a user message by number, such as #1")
+            raise ValueError("Choose a message by its number, such as #1.")
         revision = self._view_revision
         if worker := self._request_earlier_history(all_pages=True):
             await worker.wait()
@@ -4536,10 +4591,12 @@ class OuroTuiApp(App[int]):
         entries = self.query_one(ConversationHistory).user_entries
         index = int(number) - 1
         if index >= len(entries):
-            raise ValueError(f"There is no user message {target}")
+            raise ValueError(f"There is no message numbered {target} in this list.")
         entry = entries[index]
         if entry.message_id is None or (direct_only and not entry.direct_user_input):
-            raise ValueError(f"Message {target} is not a directly submitted user input")
+            raise ValueError(
+                f"Choose a message you sent. Message {target} is unavailable for this action."
+            )
         return await self._controller.message(session_id, entry.message_id)
 
     async def _message_draft(self, session_id: str, message: MessageRecord) -> InputContent:
@@ -4566,11 +4623,14 @@ class OuroTuiApp(App[int]):
             or self._continuing_session
             or self.query_one(Composer).submission_pending
         ):
-            self.notify("Editing requires an idle main session", severity="warning")
+            self.notify(
+                "Edit messages in the main conversation once its current work has finished.",
+                severity="warning",
+            )
             return
         history = self._visible_history()
         if history is None:
-            self.notify("There is no user message to edit", severity="warning")
+            self.notify("There are no messages here that you can edit.", severity="warning")
             return
         session_id, history_epoch, message_count = history
         self._loading_edit_session = session_id
@@ -4614,7 +4674,7 @@ class OuroTuiApp(App[int]):
             else:
                 selected_message = await self._numbered_user_message(session_id, target)
                 if not self._owns_session_surface(session_id):
-                    raise ValueError("The selected session changed while choosing a message")
+                    raise ValueError("The conversation changed. Select the message again.")
                 result = await self._controller.branch_session(selected_message.message_id)
                 content = await self._message_draft(result.session.session_id, selected_message)
                 self._remember_input_draft(
@@ -4635,7 +4695,7 @@ class OuroTuiApp(App[int]):
         except Exception as exc:  # noqa: BLE001 - branch validation is user-visible.
             self._activity_override = None
             self._restore_projection_activity(previous_projection)
-            self.notify(str(exc), severity="error", markup=False)
+            self._notify_error("Could not finish copying the conversation", exc)
             return
         if content is not None and self._owns_session_surface(result.session.session_id):
             self._edit_draft(content)
@@ -4757,11 +4817,13 @@ class OuroTuiApp(App[int]):
         try:
             model = await self._controller.select_model(selector)
         except Exception as exc:  # noqa: BLE001
-            self.notify(str(exc), severity="error", markup=False)
+            self._notify_error("Could not select the model", exc)
             return
         self._remember_draft_configuration()
         if applies_to_next_request:
-            self.notify(f"Model: {_status_model_label(model)} (next request)")
+            self.notify(
+                f"The next model request will use {_status_model_label(model)}.", markup=False
+            )
 
     def action_approval_settings(self) -> None:
         if self._visible_read_only:
@@ -4774,7 +4836,7 @@ class OuroTuiApp(App[int]):
         try:
             current = await self._controller.session_approval_preset()
         except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
-            self.notify(str(exc), severity="error", markup=False)
+            self._notify_error("Could not load approval settings", exc)
             return
         await self._set_approval_mode(_next_cycle_value(TUI_APPROVAL_PRESETS, current))
 
@@ -4784,7 +4846,7 @@ class OuroTuiApp(App[int]):
             with self.query_one(ActivityIndicator).pending_operation():
                 current = await self._controller.session_approval_preset()
         except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
-            self.notify(str(exc), severity="error", markup=False)
+            self._notify_error("Could not load approval settings", exc)
             return
         choices = approval_choices(TUI_APPROVAL_PRESETS, selected=current, theme=self._tui_theme)
         selected = await self.push_screen_wait(
@@ -4805,11 +4867,11 @@ class OuroTuiApp(App[int]):
         try:
             mode = await self._controller.set_session_approval_preset(value)
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            self.notify(str(exc), severity="error", markup=False)
+            self._notify_error("Could not change approval settings", exc)
             return
         self._remember_draft_configuration()
         if applies_to_next_approval:
-            self.notify(f"Approval: {mode} (next approval)")
+            self.notify(f"The next approval decision will use {mode} mode.", markup=False)
 
     async def _refresh_approval_indicator(self) -> None:
         try:
@@ -4829,7 +4891,7 @@ class OuroTuiApp(App[int]):
         try:
             state = await self._controller.session_reasoning()
         except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
-            self.notify(str(exc), severity="error", markup=False)
+            self._notify_error("Could not load thinking settings", exc)
             return
         values = _available_reasoning_values(state)
         if len(values) < 2:
@@ -4845,7 +4907,7 @@ class OuroTuiApp(App[int]):
             with self.query_one(ActivityIndicator).pending_operation():
                 state = await self._controller.session_reasoning()
         except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
-            self.notify(str(exc), severity="error", markup=False)
+            self._notify_error("Could not load thinking settings", exc)
             return
         choices = reasoning_choices(
             state.capability,
@@ -4855,7 +4917,7 @@ class OuroTuiApp(App[int]):
         )
         if not choices:
             self.notify(
-                "This endpoint does not expose configurable thinking settings",
+                "Thinking settings cannot be changed for the selected model.",
                 markup=False,
             )
             return
@@ -4876,7 +4938,7 @@ class OuroTuiApp(App[int]):
             request = reasoning_request(value, current.requested)
             await self._controller.set_session_reasoning(request)
         except Exception as exc:  # noqa: BLE001 - Runtime owns capability validation.
-            self.notify(str(exc), severity="error", markup=False)
+            self._notify_error("Could not change thinking settings", exc)
             return
         self._remember_draft_configuration()
 
@@ -5172,7 +5234,7 @@ class OuroTuiApp(App[int]):
                 await asyncio.to_thread(self._preferences_store.save, preferences)
             except OuroError as exc:
                 _LOG.warning("Could not persist recent TUI workspaces: %s", exc)
-                self.notify(str(exc), severity="warning", markup=False)
+                self._notify_error("Could not save recent workspaces", exc, severity="warning")
                 return
             self._preferences = preferences
 
@@ -5181,17 +5243,17 @@ class OuroTuiApp(App[int]):
 
         async with self._preferences_save_lock:
             if not self._preferences.recent_workspaces:
-                self.notify("Recent workspaces are already clear", markup=False)
+                self.notify("Your recent workspace list is already empty.", markup=False)
                 return
             preferences = self._preferences.model_copy(update={"recent_workspaces": ()})
             try:
                 await asyncio.to_thread(self._preferences_store.save, preferences)
             except OuroError as exc:
                 _LOG.warning("Could not clear recent TUI workspaces: %s", exc)
-                self.notify(str(exc), severity="warning", markup=False)
+                self._notify_error("Could not clear recent workspaces", exc, severity="warning")
                 return
             self._preferences = preferences
-        self.notify("Recent workspaces cleared", markup=False)
+        self.notify("Cleared your recent workspace list.", markup=False)
 
     def _shortcut_for_action(self, action: str) -> str:
         for binding in Binding.make_bindings(self.BINDINGS):
@@ -5394,7 +5456,7 @@ class OuroTuiApp(App[int]):
             try:
                 await asyncio.to_thread(self._preferences_store.save, preferences)
             except OuroError as exc:
-                self.notify(str(exc), severity="error", markup=False)
+                self._notify_error("Could not save the welcome style", exc)
                 return False
             self._preferences = preferences
             await self.query_one(WelcomePanel).set_welcome_style(self._welcome_style)
@@ -5448,7 +5510,7 @@ class OuroTuiApp(App[int]):
             try:
                 await asyncio.to_thread(self._preferences_store.save, preferences)
             except OuroError as exc:
-                self.notify(str(exc), severity="error", markup=False)
+                self._notify_error("Could not save display preferences", exc)
                 return False
             self._preferences = preferences
         await self.query_one(ConversationView).set_collapse_traces(collapsed)
@@ -5462,7 +5524,7 @@ class OuroTuiApp(App[int]):
             try:
                 await asyncio.to_thread(self._preferences_store.save, preferences)
             except OuroError as exc:
-                self.notify(str(exc), severity="error", markup=False)
+                self._notify_error("Could not save display preferences", exc)
                 return False
             self._preferences = preferences
         self.query_one(ConversationView).show_harness_messages = enabled
@@ -5496,7 +5558,9 @@ class OuroTuiApp(App[int]):
                 try:
                     await asyncio.to_thread(self._preferences_store.save, preferences)
                 except OuroError as exc:
-                    self.notify(str(exc), severity="warning", markup=False)
+                    self._notify_error(
+                        "Could not save the conversation grouping", exc, severity="warning"
+                    )
                     return None
                 self._preferences = preferences
             return grouping_choices()
@@ -5601,7 +5665,11 @@ class OuroTuiApp(App[int]):
     ) -> None:
         theme = TUI_THEMES.get(theme_id)
         if theme is None:
-            self.notify(f"Unknown TUI theme: {theme_id}", severity="error", markup=False)
+            self.notify(
+                f"Theme {theme_id} is unavailable. Choose another theme.",
+                severity="error",
+                markup=False,
+            )
             return
         level = (
             self._preferences.theme_saturation_level
@@ -5611,7 +5679,9 @@ class OuroTuiApp(App[int]):
         try:
             theme.saturation_for_level(level)
         except ValueError:
-            self.notify("Invalid TUI theme saturation", severity="error", markup=False)
+            self.notify(
+                "Choose a saturation level offered for this theme.", severity="error", markup=False
+            )
             return
         if (
             theme_id == self._pending_tui_theme_id
@@ -5673,7 +5743,7 @@ class OuroTuiApp(App[int]):
                         continue
                     self._pending_tui_theme_id = None
                     self._pending_tui_theme_saturation_level = None
-                    self.notify(str(save_error), severity="error", markup=False)
+                    self._notify_error("Could not save the theme", save_error)
                     await self._refresh_theme_picker()
                     return
                 if revision != self._theme_switch_revision:
@@ -5724,7 +5794,7 @@ class OuroTuiApp(App[int]):
             try:
                 await asyncio.to_thread(self._preferences_store.save, preferences)
             except OuroError as exc:
-                self.notify(str(exc), severity="error", markup=False)
+                self._notify_error("Could not save display preferences", exc)
                 return False
             self._preferences = preferences
         await self.query_one(ConversationView).set_reasoning_expanded(expanded)
@@ -5744,7 +5814,7 @@ class OuroTuiApp(App[int]):
                 await asyncio.to_thread(self._preferences_store.save, preferences)
             except OuroError as exc:
                 _LOG.warning("Could not persist TUI input draft preference: %s", exc)
-                self.notify(str(exc), severity="warning", markup=False)
+                self._notify_error("Could not save draft preferences", exc, severity="warning")
                 return False
             self._preferences = preferences
         drafts = TuiInputDrafts(
@@ -5885,7 +5955,7 @@ class OuroTuiApp(App[int]):
         try:
             await self._controller.abort()
         except Exception as exc:  # noqa: BLE001
-            self.notify(str(exc), severity="error", markup=False)
+            self._notify_error("Could not stop the task", exc)
 
 
 def _transcript_before_cursor(

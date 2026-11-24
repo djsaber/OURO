@@ -247,7 +247,9 @@ async def test_controller_new_session_reuses_previous_session_workspace(tmp_path
         assert status.workspace == str(selected.resolve())
         assert status.model_names == ("default-model", "recent-model")
         assert result.session.workspace == str(selected.resolve())
-        with pytest.raises(ValueError, match="before creating a session"):
+        with pytest.raises(
+            ValueError, match="Start a new conversation to choose a different workspace"
+        ):
             await controller.set_workspace(str(tmp_path))
 
         await controller.new_session()
@@ -604,7 +606,7 @@ async def test_submission_preflight_does_not_follow_a_session_switch(tmp_path, m
         assert await asyncio.to_thread(entered.wait, 5)
         await controller.new_session()
         release.set()
-        with pytest.raises(ConfigError, match="session or model changed"):
+        with pytest.raises(ConfigError, match="conversation or model changed before sending"):
             await pending
         assert controller.session_id is None
         messages = application.runtime.store.load_session(result.session.session_id).messages
@@ -1078,7 +1080,9 @@ async def test_controller_rejects_overrides_for_contract_controlled_plugin_tools
     await controller.start()
 
     try:
-        with pytest.raises(ConfigError, match="controlled by its contract"):
+        with pytest.raises(
+            ConfigError, match="Permissions for controlled__run cannot be changed here"
+        ):
             await controller.set_tool_permission("controlled__run", None)
         assert configuration.permission_config().plugins == {}
     finally:

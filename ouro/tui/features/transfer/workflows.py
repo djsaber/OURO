@@ -19,7 +19,6 @@ from ouro.application.transfer.service import (
     TransferAction,
 )
 from ouro.core.errors import OuroError
-from ouro.data_commands import format_data_result
 from ouro.tui.features.transfer.paths import ArchivePathScreen
 from ouro.tui.menus.choice import ChoiceScreen
 from ouro.tui.menus.models import Choice
@@ -36,6 +35,28 @@ TRANSFER_KIND_LABELS = {
     "sessions": "Sessions and attachments",
     "skills": "Native skill files",
 }
+
+
+def _transfer_summary(result: DataTransferResult) -> str:
+    exporting = result.action == "export"
+    action = "exported to" if exporting else "imported from"
+    if result.kind in {"sessions", "skills"}:
+        unit = result.kind[:-1] if result.count == 1 else result.kind
+        what = f"{result.count} {unit}"
+    else:
+        what = TRANSFER_KIND_LABELS[result.kind]
+    lines = [f"{what} {action} {result.path}"]
+    if result.skipped or result.replaced:
+        lines.append(f"Sessions skipped: {result.skipped}. Sessions replaced: {result.replaced}.")
+    if result.restart_required:
+        lines.append("Restart OURO to use the imported data.")
+    if result.diagnostics:
+        lines.append(
+            f"Sessions with external references: {len(result.diagnostics)}. "
+            "You can read their history now. Continuing may require the original plugins, "
+            "tools, models or files."
+        )
+    return "\n".join(lines)
 
 
 @dataclass
@@ -166,7 +187,11 @@ class DataTransferScreen(ChoiceScreen):
             if self._kind != request.kind or self._path != request.path:
                 return
             if not items:
-                self.notify("No items available", severity="information")
+                self.notify(
+                    f"No {request.kind} available to {request.action}.",
+                    severity="information",
+                    markup=False,
+                )
                 return
 
             async def confirm(identities: tuple[str, ...]) -> None:
@@ -304,7 +329,7 @@ class DataTransferScreen(ChoiceScreen):
         if progress.result is not None:
             return tuple(
                 Choice(f"result:{index}", line, disabled=True, group="RESULT")
-                for index, line in enumerate(format_data_result(progress.result).splitlines())
+                for index, line in enumerate(_transfer_summary(progress.result).splitlines())
             )
         return ()
 
@@ -342,7 +367,7 @@ class DataTransferWorkflow:
 
     def export_session(self, session_id: str | None) -> None:
         if session_id is None:
-            self._notify("Open a session to export", severity="warning")
+            self._notify("Open the conversation you want to export.", severity="warning")
             return
         self.open("export", "sessions", current_session_id=session_id)
 
@@ -440,7 +465,7 @@ class DataTransferWorkflow:
             )
         elif progress.result is not None:
             self._notify(
-                format_data_result(progress.result),
+                _transfer_summary(progress.result),
                 title=f"{request.action.title()} completed",
                 timeout=6,
                 markup=False,

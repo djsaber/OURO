@@ -527,7 +527,9 @@ class TuiController:
             or revision != self._selection_revision
             or selection != (self._session_id, self._initial_model)
         ):
-            raise ConfigError("session or model changed while preparing input; submit again")
+            raise ConfigError(
+                "The conversation or model changed before sending. Review and resend your draft."
+            )
         if selected.provider_id == "faux" and any(
             model.provider_id != "faux" for model in available
         ):
@@ -627,11 +629,13 @@ class TuiController:
         reason: str = "User rejected",
     ) -> RunResult | None:
         if interaction.request_id is None:
-            raise ValueError("approval request is missing its canonical identity")
+            raise ValueError("This approval request is incomplete.")
         if interaction.delegation_id is not None:
             agents = self._agents()
             if interaction.session_id is None:
-                raise ValueError("subagent approval is missing its canonical identity")
+                raise ValueError(
+                    "This approval request is missing the subagent conversation it belongs to."
+                )
             await agents.resolve_agent_approval(
                 interaction.delegation_id,
                 child_session_id=interaction.session_id,
@@ -667,7 +671,9 @@ class TuiController:
         if interaction.delegation_id is not None:
             agents = self._agents()
             if interaction.session_id is None or interaction.request_id is None:
-                raise ValueError("subagent input request is missing its canonical identity")
+                raise ValueError(
+                    "This subagent request is incomplete. Your response could not be matched to it."
+                )
             await agents.resolve_agent_input(
                 interaction.delegation_id,
                 child_session_id=interaction.session_id,
@@ -695,7 +701,7 @@ class TuiController:
             if snapshot.status == "failed" and snapshot.diagnostics:
                 raise ValueError(snapshot.diagnostics[0].message)
             if snapshot.run_id is None:
-                raise PersistenceError("Supervised interaction failed before a Run was identified")
+                raise PersistenceError("Could not find the task associated with this response.")
             return await asyncio.to_thread(
                 self._services().sessions.run_result,
                 snapshot.session_id,
@@ -748,7 +754,9 @@ class TuiController:
                 draft = await asyncio.to_thread(services.models.resolve_model, initial_model)
             except ConfigError as exc:
                 if configuration is not None:
-                    warnings.append(f"Draft model unavailable; using the default model: {exc}")
+                    warnings.append(
+                        f"Using the default model because the draft's model is unavailable: {exc}"
+                    )
                 draft = None
         if draft is None:
             draft = await asyncio.to_thread(services.models.current_model)
@@ -758,7 +766,9 @@ class TuiController:
             try:
                 resolve_reasoning(draft.reasoning, reasoning)
             except ValueError as exc:
-                warnings.append(f"Draft reasoning unavailable; using endpoint defaults: {exc}")
+                warnings.append(
+                    f"Using default thinking settings. The saved settings are unavailable: {exc}"
+                )
                 reasoning = ReasoningRequest()
             configuration = configuration.model_copy(
                 update={"model": initial_model, "reasoning": reasoning}
@@ -791,7 +801,7 @@ class TuiController:
         """Stage one existing directory for the next Session only."""
 
         if self._session_id is not None or self._creating_session:
-            raise ValueError("Workspace can only be changed before creating a session")
+            raise ValueError("Start a new conversation to choose a different workspace.")
         normalized = value.strip()
         if not normalized:
             raise ValueError("Workspace path must not be empty")
@@ -1015,7 +1025,7 @@ class TuiController:
         """Borrow the application's authentication use cases without owning their lifetime."""
         service = self._services().provider_auth
         if service is None:
-            raise ConfigError("authentication management is unavailable for this Runtime")
+            raise ConfigError("Sign-in settings are unavailable here.")
         return service
 
     async def provider_templates(self) -> tuple[ProviderTemplateView, ...]:
@@ -1289,7 +1299,7 @@ class TuiController:
         if current is None:
             raise ConfigError(f"tool not found: {tool_name}")
         if current.permission_control == "tool":
-            raise ConfigError(f"tool permission is controlled by its contract: {tool_name}")
+            raise ConfigError(f"Permissions for {tool_name} cannot be changed here.")
         configuration = self._require_configuration()
         if mode is None:
             configuration.clear_tool_permission(tool_name)
@@ -1698,7 +1708,7 @@ class TuiController:
         if draft.model_key is not None and draft.model_key != DEFAULT_MODEL:
             provider_id, separator, endpoint_id = draft.model_key.partition("/")
             if not separator or not provider_id or not endpoint_id:
-                raise ConfigError(f"invalid compaction model route: {draft.model_key}")
+                raise ConfigError("Choose an available model for conversation compaction.")
         return await self._live_configuration().save_compaction(
             CompactionConfigInput(
                 strategy_id=draft.strategy_id,
@@ -1746,7 +1756,7 @@ class TuiController:
             subdirectory=draft.subdirectory,
         )
         if not isinstance(result, PluginActionResult):
-            raise RuntimeError("plugin install unexpectedly returned a validation result")
+            raise RuntimeError("The plugin was checked, but installation could not be confirmed.")
         return result
 
     async def plugin_configuration(
@@ -2130,7 +2140,7 @@ class TuiController:
                 )
             )
             if control.session_kind != "primary":
-                raise PersistenceError("Observed Session does not have a primary control Session")
+                raise PersistenceError("Could not find the main conversation for this subagent.")
             return TuiSessionObservation(loaded, subscription, control)
         except BaseException:
             subscription.close()
@@ -2224,7 +2234,7 @@ class TuiController:
     def _require_configuration(self) -> ConfigurationFacade:
         self._services()
         if self._configuration is None:
-            raise RuntimeError("configuration is unavailable for this Runtime")
+            raise RuntimeError("Settings are unavailable here.")
         return self._configuration
 
     @staticmethod

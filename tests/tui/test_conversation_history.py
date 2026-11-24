@@ -682,7 +682,7 @@ async def test_failed_history_renderer_stops_until_content_is_reopened(monkeypat
         monkeypatch.setattr(conversation_history, "_render_entry_requests", fail)
         with pytest.raises(RuntimeError, match="layout did not complete"):
             await app.history.load(entries)
-        assert len(failures) == 1 and "ValueError" in failures[0]
+        assert failures == ["Could not display this conversation. Reopen it to try again."]
         assert app.history.entries == entries
         app.history.append(TranscriptEntry(kind="assistant", text="later"))
         await resize_terminal(pilot, 80, 30)

@@ -411,7 +411,7 @@ async def test_transfer_progress_stays_in_menu_and_outlives_picker(
         assert len(notices) == (2 if fail_first else 1)
         assert notices[-1][1]["title"] == "Export completed"
         assert notices[-1][1]["markup"] is False
-        assert "Exported providers" in notices[-1][0]
+        assert "Provider configuration exported to" in notices[-1][0]
         assert [(entry.kind, entry.text) for entry in history.entries] == before
 
 

@@ -320,7 +320,7 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
         model = self._selected_model()
         if model is None:
             raise ValueError(
-                "System default endpoint is not configured"
+                "Choose an available model or set a default model first."
                 if config.target.model == DEFAULT_MODEL
                 else "Select an available model"
             )

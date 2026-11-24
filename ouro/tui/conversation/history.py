@@ -786,12 +786,12 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
                             or self.scrollable_content_region.width != width
                         ):
                             break
-                except Exception as exc:  # noqa: BLE001 - isolate this history renderer.
+                except Exception:  # noqa: BLE001 - isolate this history renderer.
                     if revision != (self._content_revision, self._render_revision):
                         continue
                     self._render_failed = True
                     self.notify(
-                        f"Cannot render session history ({type(exc).__name__}). Reopen to retry.",
+                        "Could not display this conversation. Reopen it to try again.",
                         severity="error",
                         markup=False,
                     )

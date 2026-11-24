@@ -50,5 +50,5 @@ class WorkflowNavigation:
     loading: Callable[[str | None], AbstractContextManager[None]]
     start: StartWork
 
-    def notify_error(self, error: Exception | str) -> None:
-        self.notify(str(error), severity="error", markup=False)
+    def notify_error(self, error: Exception | str, *, title: str = "") -> None:
+        self.notify(str(error), title=title, severity="error", markup=False)

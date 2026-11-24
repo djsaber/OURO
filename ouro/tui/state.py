@@ -101,23 +101,23 @@ def describe_run_pause(run: RunRecord) -> str:
     reason = pause.get("reason") if isinstance(pause, dict) else None
     descriptions = {
         "context_blocked": (
-            "context preparation is blocked; check its diagnostics, "
-            "compact the session or change the model"
+            "the conversation could not be prepared for the model. "
+            "Try /compact or choose another model with /model"
         ),
         "turn_policy_blocked": (
-            "the turn policy is blocked; resolve its reported failure before retrying"
+            "a rule prevented the next step. Check the reported reason before retrying"
         ),
-        "model_rounds": "the model-round budget has been reached",
-        "input_tokens": "the input-token budget has been reached",
-        "output_tokens": "the output-token budget has been reached",
-        "elapsed_time": "the elapsed-time budget has been reached",
+        "model_rounds": "the task reached its limit on model calls",
+        "input_tokens": "the task reached its input token limit",
+        "output_tokens": "the task reached its output token limit",
+        "elapsed_time": "the task reached its time limit",
     }
     detail = (
-        descriptions.get(reason, "execution conditions are still blocked")
+        descriptions.get(reason, "the task is not ready to continue")
         if isinstance(reason, str)
-        else "execution conditions are still blocked"
+        else "the task is not ready to continue"
     )
-    return f"Run remains paused: {detail}."
+    return f"Still paused: {detail}."
 
 
 def project_run_presentation(

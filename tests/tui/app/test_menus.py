@@ -384,7 +384,7 @@ async def test_startup_resume_failure_opens_choice_dialog_and_keeps_tui_running(
         await pilot.pause()
 
         assert isinstance(app.screen, ChoiceScreen)
-        assert app.screen._title == "SESSION LOAD FAILED"
+        assert app.screen._title == "COULD NOT OPEN CONVERSATION"
         error = app.screen._choices[0].description
         assert session.session_id in error
         assert "session payload is incompatible" in error

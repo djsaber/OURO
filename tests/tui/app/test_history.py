@@ -696,7 +696,7 @@ async def test_workspace_clear_argument_forgets_saved_history_without_changing_w
 
         assert preferences.load().recent_workspaces == ()
         assert app._active_workspace == active_workspace
-        assert "Recent workspaces cleared" in {
+        assert "Cleared your recent workspace list." in {
             toast.render().plain
             for toast in app.screen.query_one("#textual-toastrack").query("Toast")
         }

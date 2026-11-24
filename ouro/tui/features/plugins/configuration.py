@@ -84,7 +84,8 @@ class PluginConfigurationScreen(CredentialEditableChoiceScreen):
             confirmed = await self.open_child(
                 ConfirmationScreen(
                     title="RELOAD CONFIGURATION",
-                    message="Discard this draft and load the saved configuration?",
+                    message="Discard your unsaved changes and reload the saved settings?",
+                    confirm_label="Discard and reload",
                 )
             )
             if ConfirmationScreen.confirmed(confirmed):

@@ -192,13 +192,13 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
         fallback = self._values["compaction-fallback"]
         model = self._values["compaction-model"]
         if model == DEFAULT_MODEL and self._system_default_model is None:
-            raise ValueError("System default endpoint is not configured")
+            raise ValueError("Choose an available model or set a default model first.")
         trigger = _ratio(self._values["compaction-trigger"], "Start at usage (0–1)")
         target = _ratio(self._values["compaction-target"], "Reduce to usage (0–1)")
         if target >= trigger:
-            raise ValueError("Target ratio must be lower than trigger ratio")
+            raise ValueError("Set 'Reduce to usage' lower than 'Start at usage'.")
         if fallback == strategy:
-            raise ValueError("Fallback strategy must differ from the primary strategy")
+            raise ValueError("Choose a different fallback strategy or turn the fallback off.")
         max_output_tokens = _optional_positive_int(
             self._values["compaction-max-output"], "Max output tokens"
         )

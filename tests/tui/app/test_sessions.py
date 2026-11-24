@@ -510,7 +510,7 @@ async def test_session_picker_contains_load_failure_in_choice_dialog(
 
         assert isinstance(app.screen, ChoiceScreen)
         assert app.screen is not session_menu
-        assert app.screen._title == "SESSION LOAD FAILED"
+        assert app.screen._title == "COULD NOT OPEN CONVERSATION"
         error = app.screen._choices[0].description
         assert session.session_id in error
         assert "message journal is invalid" in error

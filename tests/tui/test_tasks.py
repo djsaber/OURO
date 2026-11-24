@@ -145,7 +145,7 @@ def test_new_task_uses_system_wall_time_and_edit_preserves_explicit_zone(
     edited = TaskConfigurationScreen(models=(model,), workspace=None, configuration=explicit)
     assert edited.draft().schedule.timezone == "UTC"
     screen._values["model"] = "default"
-    with pytest.raises(ValueError, match="System default endpoint is not configured"):
+    with pytest.raises(ValueError, match="set a default model first"):
         screen.draft()
     screen._system_default_model = model
     assert screen.draft().target.model == "default"

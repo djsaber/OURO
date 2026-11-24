@@ -213,7 +213,10 @@ async def test_mcp_catalog_can_create_edit_and_delete_its_last_entry(
         await pilot.press("enter")
         await _wait_for_screen(app, ConfirmationScreen, title="CONFIRM DELETE MCP")
         confirmation = next(choice for choice in app.screen._choices if choice.destructive)
-        assert "Delete Renamed?" in confirmation.description
+        assert (
+            "Remove Renamed from your MCP servers after the next restart?"
+            in confirmation.description
+        )
         assert server_id not in confirmation.description
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="MCP • Renamed")
@@ -226,8 +229,11 @@ async def test_mcp_catalog_can_create_edit_and_delete_its_last_entry(
         await wait_for_menu_action(pilot, menu)
         assert app.screen is menu
         assert [choice.value for choice in menu._choices] == ["+"]
-        assert any("MCP deleted: Renamed" in notice for notice in notices)
-        assert any("MCP configuration saved: Renamed" in notice for notice in notices)
+        assert any("Removed Renamed from settings. Restart OURO" in notice for notice in notices)
+        assert any(
+            "Saved settings for Renamed. Tool permissions apply now." in notice
+            for notice in notices
+        )
         assert all(server_id not in notice for notice in notices)
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")

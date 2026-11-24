@@ -380,7 +380,7 @@ async def test_edit_loads_global_numbers_and_preserves_direct_input_identity(tmp
         warnings = []
         monkeypatch.setattr(app, "notify", lambda message, **kwargs: warnings.append(str(message)))
         await command(app, pilot, "/edit #2")
-        assert "directly submitted" in warnings[-1]
+        assert "Choose a message you sent" in warnings[-1]
         assert app._input_drafts.edit_for(session.session_id) is None
         assert runtime.store.load_session_record(session.session_id).history_epoch == 0
 
@@ -555,7 +555,7 @@ async def test_continue_completed_and_empty_commands_show_warning_without_new_ru
         assert warnings[-1][1]["severity"] == "warning"
         assert len(application.runtime.store.load_runs(result.session.session_id)) == 1
         await command(app, pilot, "/edit #2")
-        assert "no user message" in warnings[-1][0]
+        assert "no message numbered #2" in warnings[-1][0]
         assert warnings[-1][1]["severity"] == "warning"
         assert not app.query_one(Composer).disabled
 
@@ -648,6 +648,6 @@ async def test_continue_respects_remaining_budget_and_explains_pause(tmp_path, m
         run = runtime.store.load_run(original.session.session_id, original.run.run_id)
         assert run.status == "paused"
         assert run.model_round_count == original.run.model_round_count
-        assert "model-round budget" in warnings[-1][0]
+        assert "limit on model calls" in warnings[-1][0]
         assert warnings[-1][1]["severity"] == "warning"
         assert len(runtime.store.load_runs(original.session.session_id)) == 1

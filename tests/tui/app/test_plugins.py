@@ -93,6 +93,7 @@ async def test_plugin_install_failure_uses_error_toast_without_changing_conversa
 
         toast = app.screen.query_one("#textual-toastrack").query_one("Toast")
         assert toast.has_class("-error")
+        assert "Could not install the plugin" in toast.render().plain
         assert "plugin source does not exist" in toast.render().plain
         assert history.entries == entries_before
         assert "plugin source does not exist" not in history.rendered_text

@@ -312,7 +312,7 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
             self._values["agent-definition-model"] == DEFAULT_MODEL
             and self._system_default_model is None
         ):
-            raise ValueError("System default endpoint is not configured")
+            raise ValueError("Choose an available model or set a default model first.")
         required = (
             ("agent-definition-name", "Name"),
             ("agent-definition-description", "Description"),
