@@ -297,9 +297,7 @@ class SessionService:
             if self._usage is not None and record.usage_entry_id is not None
             else None
         )
-        return SessionContextStatus.from_record(
-            record, reported_input_tokens=usage.input_tokens if usage is not None else None
-        )
+        return SessionContextStatus.from_record(record, usage=usage)
 
     def effective_context_metrics(self, session_id: str) -> ContextMetrics | None:
         """Return the newest effective context estimate, including manual compaction.

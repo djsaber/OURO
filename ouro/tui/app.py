@@ -2638,7 +2638,11 @@ class OuroTuiApp(App[int]):
                 model_attempt=activity.model_attempt,
                 model_max_attempts=activity.model_max_attempts,
             )
-        status_line.set_context_metrics(activity.effective_context_metrics)
+        status_line.set_context(
+            activity.context_status,
+            effective_metrics=activity.effective_context_metrics,
+            history_epoch=activity.history_epoch,
+        )
         if (
             activity.session_id == self._agent_root_session_id
             and activity.status != self._agent_root_status

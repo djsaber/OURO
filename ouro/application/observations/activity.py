@@ -255,14 +255,12 @@ def reduce_runtime_activity(
         usage = payload.get("usage")
         context_id = _string_or_none(payload.get("context_id"))
         if context_status is not None and context_status.context_id == context_id:
-            input_tokens = usage.get("input_tokens") if isinstance(usage, dict) else None
             updates["context_status"] = context_status.model_copy(
                 update={
                     "completed_at": event.created_at,
-                    "provider_reported_input_tokens": (
-                        input_tokens
-                        if isinstance(input_tokens, int) and input_tokens >= 0
-                        else None
+                    "provider_reported_input_tokens": _usage_tokens(usage, "input_tokens"),
+                    "provider_reported_cache_read_tokens": _usage_tokens(
+                        usage, "cache_read_tokens"
                     ),
                 }
             )
@@ -940,6 +938,11 @@ def _tool_call_status(value: object) -> ToolCallStatus | None:
 
 def _string_or_none(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _usage_tokens(usage: object, key: str) -> int | None:
+    count = usage.get(key) if isinstance(usage, dict) else None
+    return count if type(count) is int and count >= 0 else None
 
 
 def _context_status_from_request(event: EventRecord) -> SessionContextStatus | None:

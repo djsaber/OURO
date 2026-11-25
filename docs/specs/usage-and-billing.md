@@ -69,8 +69,8 @@ epoch 和执行 owner，只有原请求仍有效才写入中断状态及已确�
 SessionService 的上下文状态、完整输入与观察查询只投影已保存的头；有计量引用时按身份读取原始数值，不执行恢复。
 尚未结算但账本已有报告时，查询不会自行回填。没有计量端口或所用账本不包含该记录时，数值为未知，引用和已保存
 请求输入仍可查看；仅转存 Session 不会隐式复制全局账本。返回了不属于该请求的账本事实则明确拒绝。
-SessionContextStatus.completed_at 表示头中的 Provider done 时间，interrupted_at 表示本地中断；输入 token 数
-是账本的返回时投影，不是请求记录中的另一份权威。
+`SessionContextStatus.completed_at` 表示请求头中的 Provider done 时间，`interrupted_at` 表示本地中断。
+查询时从该请求的同一份原始用量记录投影输入 token 数和缓存读取 token 数，供会话页显示缓存命中率。
 
 ## 消耗预算
 

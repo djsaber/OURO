@@ -405,7 +405,7 @@ async def test_compaction_completion_updates_context_and_transcript_without_next
             f"{DEFAULT_TUI_THEME.section_separator}550 tokens"
             f"{DEFAULT_TUI_THEME.section_separator}1m 05.4s"
         ) in history.rendered_text
-        assert app.query_one("#context-detail", Static).render().plain.startswith("250 ")
+        assert app.query_one("#context-detail", Static).render().plain.startswith("+ 250 ")
 
 
 @pytest.mark.asyncio

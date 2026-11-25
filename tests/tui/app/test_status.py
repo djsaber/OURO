@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
 import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import OptionList, Static
@@ -35,6 +38,9 @@ from ouro.tui.view_models import TuiSystemStatus
 from ouro.tui.welcome.components import WelcomeSystem
 from ouro.tui.widgets.activity import ActivityIndicator
 from ouro.tui.widgets.status import StatusLine
+from tests.application.test_responses_runtime import responses_runtime as responses_runtime
+from tests.application.test_runtime_authentication import login
+from tests.providers.responses_fixtures import call, message, terminal
 from tests.tui.app.providers import RetryThenBlockProvider
 from tests.tui.app.support import (
     _application,
@@ -43,7 +49,7 @@ from tests.tui.app.support import (
     _thinking_application,
     _wait_for_active_session,
 )
-from tests.tui.helpers import choose_menu, command_popup_text, run_ready_app
+from tests.tui.helpers import choose_menu, command_popup_text, release_on_exit, run_ready_app
 from tests.tui.helpers import wait_for_screen as _wait_for_screen
 from tests.tui.helpers import wait_for_worker_group as _wait_for_worker_group
 from tests.tui.helpers import wait_until as _wait_until
@@ -114,9 +120,8 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
                 estimated_fixed_tokens=1000,
                 budget=ContextBudget(context_window=256000, max_output_tokens=16000),
             ),
-            # Provider usage can exclude cached input and therefore is not
-            # the current prepared context size shown by /context.
-            provider_reported_input_tokens=800,
+            provider_reported_input_tokens=1000,
+            provider_reported_cache_read_tokens=982,
         )
         status_line.set_context(context_status)
         # Display capacity belongs to the selected model, independently of the
@@ -125,7 +130,12 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
 
         context_detail = status_line.query_one("#context-detail", Static)
         context = context_detail.render()
-        assert context.plain == "48.0K █████▒▒▒▒▒▒ 40%"
+        assert context.plain == "+ 48.0K █████▒▒▒▒▒▒ 40%"
+        await pilot.pause()
+        assert await pilot.click(context_detail, offset=(5, 0))
+        assert context_detail.render().plain == "- 48.0K • 98.2% cached █████▒▒▒▒▒▒ 40%"
+        assert await pilot.click(context_detail, offset=(10, 0))
+        assert context_detail.render().plain == context.plain
 
         at_warning_boundary = ContextMetrics(
             estimated_input_tokens=96000,
@@ -134,7 +144,7 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
         )
         status_line.set_context(context_status.model_copy(update={"metrics": at_warning_boundary}))
         boundary = context_detail.render()
-        assert boundary.plain == "96.0K █████████▒▒ 80%"
+        assert boundary.plain == "+ 96.0K █████████▒▒ 80%"
 
         above_warning_boundary = ContextMetrics(
             estimated_input_tokens=97200,
@@ -145,7 +155,7 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
             context_status.model_copy(update={"metrics": above_warning_boundary})
         )
         warning = context_detail.render()
-        assert warning.plain == "97.2K █████████▒▒ 81%"
+        assert warning.plain == "+ 97.2K █████████▒▒ 81%"
 
         status_line.set_context(None)
         assert context_detail.render().plain == ""
@@ -322,7 +332,7 @@ async def test_context_detail_only_layouts_when_its_cell_width_changes(
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         status_line = app.query_one(StatusLine)
-        status_line.set_context_metrics(None)
+        status_line.set_context(None)
         detail = status_line.query_one("#context-detail", Static)
         layouts: list[bool] = []
 
@@ -336,11 +346,11 @@ async def test_context_detail_only_layouts_when_its_cell_width_changes(
             estimated_fixed_tokens=1000,
             budget=ContextBudget(context_window=128000, max_output_tokens=8000),
         )
-        status_line.set_context_metrics(metrics)
-        status_line.set_context_metrics(
-            metrics.model_copy(update={"estimated_input_tokens": 49_200})
+        status_line.set_context(None, effective_metrics=metrics)
+        status_line.set_context(
+            None, effective_metrics=metrics.model_copy(update={"estimated_input_tokens": 49_200})
         )
-        status_line.set_context_metrics(None)
+        status_line.set_context(None)
 
         assert layouts == [True, False, True]
 
@@ -466,9 +476,58 @@ async def test_configuration_refresh_projects_capacity_without_changing_usage(
         assert status_line.query_one("#context-detail", Static).render().plain == rendered
 
 
+@pytest.mark.parametrize("responses_runtime", [("files", True)], indirect=True)
+async def test_cache_rate_can_be_opened_during_the_next_model_request(responses_runtime):
+    build, replies, requests, _ = responses_runtime
+    release = asyncio.Event()
+
+    class WaitingResponse(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            await release.wait()
+            done = terminal([message("Finished")])
+            done["response"]["usage"]["input_tokens_details"]["cached_tokens"] = 0
+            yield f"data: {json.dumps(done)}\n\n".encode()
+
+    async with build() as application:
+        await login(application.provider_auth)
+        replies.extend([terminal([call()]), httpx.Response(200, stream=WaitingResponse())])
+        session_id = application.runtime.create_session().session_id
+        app = OuroTuiApp(
+            application=application, resume_session_id=session_id, close_application=False
+        )
+        async with run_ready_app(app) as pilot, release_on_exit(release):
+            await _wait_for_active_session(app, pilot, session_id)
+            app.query_one(Composer).load_text("Call echo")
+            await pilot.press("enter")
+            await _wait_until(
+                lambda: (
+                    len(requests) == 2
+                    and app._projection is not None
+                    and app._projection.activity.context_status is not None
+                    and app._projection.activity.context_status.model_round == 2
+                ),
+                pilot,
+                description="pending second model request",
+            )
+            detail = app.query_one("#context-detail", Static)
+            assert await pilot.click(detail)
+            await _wait_until(
+                lambda: "25.0% cached" in detail.render().plain,
+                pilot,
+                description="first request's measured cache rate",
+            )
+            release.set()
+            await _wait_until(
+                lambda: "0.0% cached" in detail.render().plain,
+                pilot,
+                description="second request's measured cache rate",
+            )
+
+
 @pytest.mark.asyncio
 async def test_live_host_event_updates_context_without_reloading(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
+    session_id = "ses_live_context"
     metrics = ContextMetrics(
         estimated_input_tokens=250,
         estimated_fixed_tokens=100,
@@ -477,31 +536,64 @@ async def test_live_host_event_updates_context_without_reloading(tmp_path: Path)
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
-        session_id = "ses_live_context"
         app._projection = TuiSessionProjection(session_id)
-        started = EventRecord(
-            session_id=session_id,
-            run_id="run_live_context",
-            turn_id="turn_live_context",
-            event_type="model_request_started",
-            sequence=1,
-            payload={
-                "context_id": "ctx_live",
-                "provider": "test",
-                "endpoint": "primary",
-                "model": "test-model",
-                "round": 1,
-                "turn_id": "turn_live_context",
-                "context_metrics": metrics.model_dump(mode="json"),
-            },
-        )
+        detail = app.query_one("#context-detail", Static)
 
-        await app._apply_runtime_event_batch(
-            (observation_event(project_runtime_event(started)),), input_messages={}
-        )
-        await pilot.pause()
+        async def apply(event_type, sequence, payload):
+            event = EventRecord(
+                session_id=session_id,
+                run_id="run_live_context",
+                turn_id="turn_live_context",
+                event_type=event_type,
+                sequence=sequence,
+                payload=payload,
+            )
+            await app._apply_runtime_event_batch(
+                (observation_event(project_runtime_event(event)),), input_messages={}
+            )
 
-        assert app.query_one("#context-detail", Static).render().plain.startswith("250 ")
+        rounds = [
+            ("—", {"input_tokens": 30, "cache_read_tokens": 10}, " • 33.3% cached"),
+            ("33.3%", {}, " • 33.3% cached"),
+            ("33.3%", {"input_tokens": 50, "cache_read_tokens": 0}, " • 0.0% cached"),
+            ("0.0%", {"input_tokens": 0, "cache_read_tokens": 0}, ""),
+            ("0.0%", {}, " • 0.0% cached"),
+        ]
+        for round_number, (last_rate, usage, cache_segment) in enumerate(rounds, start=1):
+            context_id = f"ctx_{round_number}"
+            await apply(
+                "model_request_started",
+                round_number * 2 - 1,
+                {
+                    "context_id": context_id,
+                    "provider": "test",
+                    "endpoint": "primary",
+                    "model": "test-model",
+                    "round": round_number,
+                    "turn_id": "turn_live_context",
+                    "context_metrics": {
+                        **metrics.model_dump(mode="json"),
+                        "estimated_input_tokens": 250 * round_number,
+                    },
+                },
+            )
+            if round_number == 1:
+                await pilot.pause()
+                assert await pilot.click(detail)
+            elif round_number == 2:
+                assert await pilot.click(detail)
+                assert detail.render().plain.startswith("+ 500 ")
+                assert await pilot.click(detail)
+            pending = detail.render().plain
+            pending_segment = f" • {last_rate} cached"
+            assert pending_segment in pending
+
+            await apply(
+                "model_message_completed",
+                round_number * 2,
+                {"context_id": context_id, "usage": usage},
+            )
+            assert detail.render().plain == pending.replace(pending_segment, cache_segment)
 
 
 @pytest.mark.parametrize(

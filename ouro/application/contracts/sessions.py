@@ -10,6 +10,7 @@ from ouro.application.contracts.events import RuntimeEventView
 from ouro.application.contracts.tool_activity import PendingInteraction as RuntimePendingInteraction
 from ouro.application.contracts.tool_activity import RuntimeToolCallActivity
 from ouro.core.approvals import SessionApprovalMode
+from ouro.core.billing import ProviderUsageEntry
 from ouro.core.compaction import CompactionRecord, CompactionTrigger
 from ouro.core.context import ContextMetrics, ProviderContext
 from ouro.core.context_snapshots import ModelRequestHeader
@@ -221,11 +222,12 @@ class SessionContextStatus(ApplicationDTO):
     usage_entry_id: str | None = None
     metrics: ContextMetrics
     provider_reported_input_tokens: int | None = None
+    provider_reported_cache_read_tokens: int | None = None
     active_compaction_id: str | None = None
 
     @classmethod
     def from_record(
-        cls, record: ModelRequestHeader, *, reported_input_tokens: int | None = None
+        cls, record: ModelRequestHeader, *, usage: ProviderUsageEntry | None = None
     ) -> SessionContextStatus:
         compaction_id = record.context_metadata.get("compaction_id")
         return cls(
@@ -242,7 +244,10 @@ class SessionContextStatus(ApplicationDTO):
             interrupted_at=record.interrupted_at,
             usage_entry_id=record.usage_entry_id,
             metrics=record.metrics,
-            provider_reported_input_tokens=reported_input_tokens,
+            provider_reported_input_tokens=usage.input_tokens if usage is not None else None,
+            provider_reported_cache_read_tokens=(
+                usage.cache_read_tokens if usage is not None else None
+            ),
             active_compaction_id=compaction_id if isinstance(compaction_id, str) else None,
         )
 

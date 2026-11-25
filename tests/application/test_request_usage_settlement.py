@@ -77,7 +77,7 @@ def report(usage, run, context):
             model_id=context.model_id,
             endpoint_id=context.endpoint_id,
         ),
-        usage=Usage(input_tokens=7, output_tokens=3),
+        usage=Usage(input_tokens=7, output_tokens=3, cache_read_tokens=5),
     )
 
 
@@ -121,6 +121,7 @@ def test_query_never_settles_and_recovery_only_references_original_usage(prepare
     forbid_input_reads(store, monkeypatch)
     status = service.context_status(run.session_id)
     assert status.usage_entry_id is None and status.provider_reported_input_tokens is None
+    assert status.provider_reported_cache_read_tokens is None
     assert store.load_latest_context_header(run.session_id) == context.header()
     recovery = SessionRecoveryService(store, usage_service=usage)
     recovery.settle_request(run.session_id)
@@ -131,6 +132,7 @@ def test_query_never_settles_and_recovery_only_references_original_usage(prepare
     assert store.load_run(run.session_id, run.run_id) == before
     status = service.context_status(run.session_id)
     assert status.provider_reported_input_tokens == 7 and status.completed_at is None
+    assert status.provider_reported_cache_read_tokens == 5
     assert status.interrupted_at == header.interrupted_at
     recovery.settle_request(run.session_id)
     assert store.load_latest_context_header(run.session_id) == header
