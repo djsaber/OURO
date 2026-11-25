@@ -14,7 +14,7 @@ from ouro.core.messages import (
     TextContent,
     ToolResultReference,
 )
-from ouro.core.provider import ModelMetadata, ProviderRetryPolicy
+from ouro.core.provider import ModelMetadata, ProviderRetryPolicy, Usage
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.tools import ToolCallRequest
 from ouro.providers import OpenAIChatCompletionsProvider
@@ -494,6 +494,243 @@ async def test_chat_completions_streams_text_chunks() -> None:
     assert events[-1].usage is not None
     assert events[-1].usage.input_tokens == 3
     assert transport.requests[0]["payload"]["stream"] is True
+
+
+@pytest.mark.parametrize(
+    ("cache_fields", "expected_cache_read"),
+    [
+        pytest.param({"prompt_cache_hit_tokens": 6, "prompt_cache_miss_tokens": 4}, 6, id="hits"),
+        pytest.param({"cached_tokens": 5}, 5, id="flat-cached-tokens"),
+        pytest.param(
+            {"prompt_tokens_details": {"cached_tokens": 0}, "prompt_cache_hit_tokens": 6},
+            0,
+            id="standard-zero-wins",
+        ),
+        pytest.param(
+            {"prompt_tokens_details": {"cached_tokens": None}, "cached_tokens": 5},
+            5,
+            id="standard-null",
+        ),
+        pytest.param(
+            {"prompt_tokens_details": {"cached_tokens": -1}, "prompt_cache_hit_tokens": 6},
+            6,
+            id="invalid-standard-count",
+        ),
+        pytest.param(
+            {"prompt_tokens_details": {"cached_tokens": 12}, "prompt_cache_hit_tokens": 6},
+            6,
+            id="standard-count-exceeds-input",
+        ),
+        pytest.param({"cached_tokens": 12}, 0, id="compatibility-count-exceeds-input"),
+        pytest.param({}, 0, id="cache-unreported"),
+    ],
+)
+async def test_chat_completions_reads_cache_usage_from_json(
+    cache_fields: dict[str, Any], expected_cache_read: int
+) -> None:
+    transport = FakeTransport(
+        {
+            "choices": [{"message": {"content": "hello"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2, **cache_fields},
+        }
+    )
+    provider = OpenAIChatCompletionsProvider(
+        base_url="https://example.test/v1", transport=transport
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(model_id="test", provider_id="test", supports_streaming=False),
+            messages=[],
+        )
+    ]
+
+    assert events[-1].type == "done"
+    assert events[-1].usage == Usage(
+        input_tokens=10, output_tokens=2, cache_read_tokens=expected_cache_read
+    )
+
+
+@pytest.mark.parametrize(
+    ("reports", "expected_cache_read"),
+    [
+        pytest.param(
+            [
+                {
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 2,
+                        "prompt_cache_hit_tokens": 6,
+                    }
+                }
+            ],
+            6,
+            id="finish-chunk-with-choices",
+        ),
+        pytest.param(
+            [
+                {
+                    "x_groq": {
+                        "usage": {
+                            "prompt_tokens": 10,
+                            "completion_tokens": 2,
+                            "prompt_tokens_details": {"cached_tokens": 6},
+                        }
+                    }
+                }
+            ],
+            6,
+            id="groq-usage-envelope",
+        ),
+        pytest.param(
+            [
+                {
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 2,
+                        "prompt_tokens_details": {"cached_tokens": 6},
+                    },
+                    "x_groq": {"usage": {"prompt_tokens": "unavailable"}},
+                }
+            ],
+            6,
+            id="valid-standard-usage-with-invalid-extension-total",
+        ),
+        pytest.param(
+            [
+                {
+                    "x_groq": {
+                        "usage": {
+                            "prompt_tokens": 10,
+                            "completion_tokens": 2,
+                            "prompt_cache_hit_tokens": 6,
+                        }
+                    }
+                }
+            ],
+            0,
+            id="extension-uses-only-its-own-cache-field",
+        ),
+        pytest.param(
+            [
+                {
+                    "usage": None,
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "delta": {},
+                            "usage": {
+                                "prompt_tokens": 10,
+                                "completion_tokens": 2,
+                                "cached_tokens": 6,
+                            },
+                        }
+                    ],
+                }
+            ],
+            6,
+            id="choice-usage-envelope",
+        ),
+        pytest.param(
+            [
+                {"usage": {"prompt_tokens": 10, "prompt_tokens_details": {"cached_tokens": 6}}},
+                {"choices": [], "usage": {"completion_tokens": 2}},
+            ],
+            6,
+            id="split-usage",
+        ),
+        pytest.param(
+            [
+                {
+                    "usage": {
+                        "prompt_tokens_details": {"cached_tokens": 12},
+                        "prompt_cache_hit_tokens": 6,
+                    }
+                },
+                {"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 2}},
+            ],
+            6,
+            id="validate-cache-candidates-after-input-arrives",
+        ),
+        pytest.param(
+            [
+                {
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 2,
+                        "prompt_tokens_details": {"cached_tokens": 0},
+                    }
+                },
+                {
+                    "choices": [],
+                    "x_groq": {
+                        "usage": {
+                            "prompt_tokens": 8,
+                            "completion_tokens": 1,
+                            "prompt_tokens_details": {"cached_tokens": 6},
+                        }
+                    },
+                },
+            ],
+            0,
+            id="standard-zero-survives-later-compatibility-report",
+        ),
+    ],
+)
+async def test_chat_completions_collects_cache_usage_across_stream_chunks(
+    reports: list[dict[str, Any]], expected_cache_read: int
+) -> None:
+    finish_report, *trailing_reports = reports
+    transport = FakeStreamingTransport(
+        [
+            {"choices": [{"delta": {"content": "hello"}}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}], **finish_report},
+            *trailing_reports,
+        ]
+    )
+    provider = OpenAIChatCompletionsProvider(
+        base_url="https://example.test/v1", transport=transport
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(model_id="test", provider_id="test"), messages=[]
+        )
+    ]
+
+    assert [event.type for event in events] == ["text_delta", "done"]
+    assert events[-1].usage == Usage(
+        input_tokens=10, output_tokens=2, cache_read_tokens=expected_cache_read
+    )
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["json", "sse"])
+async def test_chat_completions_leaves_unreported_usage_unknown(streaming: bool) -> None:
+    transport = (
+        FakeStreamingTransport(
+            [{"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": None}]
+        )
+        if streaming
+        else FakeTransport(
+            {"choices": [{"message": {"content": "hello"}, "finish_reason": "stop"}]}
+        )
+    )
+    provider = OpenAIChatCompletionsProvider(
+        base_url="https://example.test/v1", transport=transport
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(model_id="test", provider_id="test", supports_streaming=streaming),
+            messages=[],
+        )
+    ]
+
+    assert events[-1].type == "done"
+    assert events[-1].usage is None
 
 
 @pytest.mark.asyncio

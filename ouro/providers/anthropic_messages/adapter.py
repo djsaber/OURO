@@ -16,7 +16,6 @@ from ouro.core.provider import (
     ProviderRetryPolicy,
     ProviderStreamEvent,
     ToolCallDelta,
-    Usage,
 )
 from ouro.providers.anthropic_messages.codec import (
     content_blocks_from_response,
@@ -256,7 +255,7 @@ class AnthropicMessagesProvider(ChatMessageProvider):
         model: ModelMetadata,
         supports_tools: bool,
     ) -> AsyncGenerator[ProviderStreamEvent]:
-        usage = Usage()
+        usage: dict[str, Any] = {}
         saw_reasoning = False
         continuation_blocks: dict[int, dict[str, Any]] = {}
         content_fragments: dict[tuple[int, str], list[str]] = {}
@@ -273,7 +272,7 @@ class AnthropicMessagesProvider(ChatMessageProvider):
             if event_type == "message_start":
                 message = chunk.get("message")
                 if isinstance(message, Mapping):
-                    usage = merge_usage(usage, message.get("usage"))
+                    merge_usage(usage, message.get("usage"))
             elif event_type == "content_block_start":
                 block = chunk.get("content_block")
                 index = chunk.get("index")
@@ -362,7 +361,7 @@ class AnthropicMessagesProvider(ChatMessageProvider):
                             deepcopy(dict(delta["citation"]))
                         )
             elif event_type == "message_delta":
-                usage = merge_usage(usage, chunk.get("usage"))
+                merge_usage(usage, chunk.get("usage"))
                 delta = chunk.get("delta")
                 if isinstance(delta, Mapping):
                     stop_reason = delta.get("stop_reason")
@@ -406,7 +405,7 @@ class AnthropicMessagesProvider(ChatMessageProvider):
                         )
                 yield ProviderStreamEvent(
                     type="done",
-                    usage=usage,
+                    usage=usage_from_anthropic(usage),
                     completion=completion,
                 )
                 return

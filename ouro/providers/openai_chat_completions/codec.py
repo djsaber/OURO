@@ -342,24 +342,71 @@ def _tool_call_deltas(delta: Mapping[str, Any]) -> list[ToolCallDelta]:
     return deltas
 
 
-def _usage_from_response_or_none(response: Mapping[str, Any]) -> Usage | None:
-    if not isinstance(response.get("usage"), Mapping):
-        return None
-    return _usage_from_response(response)
+_CHAT_TOKEN_TOTALS = (
+    ("input_tokens", "prompt_tokens"),
+    ("output_tokens", "completion_tokens"),
+)
 
 
-def _usage_from_response(response: Mapping[str, Any]) -> Usage:
-    raw_usage = response.get("usage")
-    if not isinstance(raw_usage, Mapping):
-        return Usage()
-    prompt_details = raw_usage.get("prompt_tokens_details") or {}
-    cached_tokens = 0
-    if isinstance(prompt_details, Mapping):
-        cached_tokens = int(prompt_details.get("cached_tokens") or 0)
-    return Usage(
-        input_tokens=int(raw_usage.get("prompt_tokens") or raw_usage.get("input_tokens") or 0),
-        output_tokens=int(
-            raw_usage.get("completion_tokens") or raw_usage.get("output_tokens") or 0
-        ),
-        cache_read_tokens=cached_tokens,
-    )
+def _nested_cache_read(report: Mapping[str, Any]) -> object:
+    details = report.get("prompt_tokens_details")
+    return details.get("cached_tokens") if isinstance(details, Mapping) else None
+
+
+def _update_cache_read(counts: dict[str, int], *candidates: object) -> None:
+    for count in candidates:
+        if type(count) is int and count >= 0:
+            counts["cache_read_tokens"] = count
+            return
+
+
+class ChatCompletionUsage:
+    """Collect reported counters for one completion before producing canonical usage."""
+
+    def __init__(self) -> None:
+        self._standard: dict[str, int] = {}
+        self._compatible: dict[str, int] = {}
+
+    def update_chunk(self, chunk: Mapping[str, Any], choice: Mapping[str, Any] | None) -> None:
+        choice_usage = choice.get("usage") if choice is not None else None
+        if isinstance(choice_usage, Mapping):
+            self._update_compatible(
+                choice_usage, _nested_cache_read(choice_usage), choice_usage.get("cached_tokens")
+            )
+        groq = chunk.get("x_groq")
+        groq_usage = groq.get("usage") if isinstance(groq, Mapping) else None
+        if isinstance(groq_usage, Mapping):
+            self._update_compatible(groq_usage, _nested_cache_read(groq_usage))
+        self.update(chunk.get("usage"))
+
+    def update(self, report: object) -> None:
+        if not isinstance(report, Mapping):
+            return
+        for name, wire_name in _CHAT_TOKEN_TOTALS:
+            count = report.get(wire_name)
+            if count is None:
+                count = report.get(name)
+            if count is not None:
+                self._standard[name] = int(count)
+        _update_cache_read(self._standard, _nested_cache_read(report))
+        _update_cache_read(
+            self._compatible, report.get("prompt_cache_hit_tokens"), report.get("cached_tokens")
+        )
+
+    def _update_compatible(self, report: Mapping[str, Any], *cache_candidates: object) -> None:
+        for name, wire_name in _CHAT_TOKEN_TOTALS:
+            count = report.get(wire_name)
+            if type(count) is int and count >= 0:
+                self._compatible[name] = count
+        _update_cache_read(self._compatible, *cache_candidates)
+
+    def finish(self) -> Usage | None:
+        counts = self._compatible | self._standard
+        counts.pop("cache_read_tokens", None)
+        input_tokens = counts.get("input_tokens")
+        for source in (self._standard, self._compatible):
+            cache_read = source.get("cache_read_tokens")
+            if cache_read is not None and (input_tokens is None or cache_read <= input_tokens):
+                counts["cache_read_tokens"] = cache_read
+                break
+        return Usage(**counts) if counts else None

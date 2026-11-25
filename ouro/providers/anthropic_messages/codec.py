@@ -107,8 +107,17 @@ def continuation_blocks_from_response(
     return ({"content": deepcopy(raw_content)},) if raw_content else ()
 
 
-def usage_from_anthropic(value: object) -> Usage:
-    raw = value if isinstance(value, Mapping) else {}
+_USAGE_COUNTS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+)
+
+
+def usage_from_anthropic(raw: object) -> Usage | None:
+    if not isinstance(raw, Mapping) or all(raw.get(name) is None for name in _USAGE_COUNTS):
+        return None
     uncached_input_tokens = int(raw.get("input_tokens") or 0)
     cache_read_tokens = int(raw.get("cache_read_input_tokens") or 0)
     cache_write_tokens = int(raw.get("cache_creation_input_tokens") or 0)
@@ -120,14 +129,13 @@ def usage_from_anthropic(value: object) -> Usage:
     )
 
 
-def merge_usage(current: Usage, value: object) -> Usage:
-    incoming = usage_from_anthropic(value)
-    return Usage(
-        input_tokens=incoming.input_tokens or current.input_tokens,
-        output_tokens=incoming.output_tokens or current.output_tokens,
-        cache_read_tokens=incoming.cache_read_tokens or current.cache_read_tokens,
-        cache_write_tokens=incoming.cache_write_tokens or current.cache_write_tokens,
-    )
+def merge_usage(current: dict[str, Any], report: object) -> None:
+    if not isinstance(report, Mapping):
+        return
+    for name in _USAGE_COUNTS:
+        count = report.get(name)
+        if count is not None:
+            current[name] = count
 
 
 def error_from_anthropic(response: Mapping[str, Any]) -> str:

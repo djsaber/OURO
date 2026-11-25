@@ -103,7 +103,38 @@ Endpoint 通过三个 `supports_<modality>_input` 字段独立声明具体服务
 
 OpenAI 公共 Responses 预设开启对话内系统消息。Claude 公共 Messages 对系统消息的前后角色有额外约束，其预设采用默认值。[Responses 输入类型](https://developers.openai.com/api/reference/resources/responses/methods/create/) · [Claude 系统消息位置](https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages)
 
-Claude Messages 的服务端提示缓存可通过端点 `request_options.cache_control` 配置为 `{"type":"ephemeral"}`。会话前缀提供可复用的输入，实际读写量来自响应的 usage。[Claude 提示缓存](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+## 提示缓存用量
+
+适配器在协议完成边界将上游计数归一为 `Usage`。整份用量缺失时返回 `None`，仅缺少缓存计数时，
+`cache_read_tokens` 为零。入账与汇总见[用量与计费规格](usage-and-billing.md)。
+
+- **Responses（含 Codex）**从非流式响应的 `usage.input_tokens_details.cached_tokens`，或
+  `response.completed` 中同一响应字段读取。输入总量直接使用 `usage.input_tokens`。
+  [OpenAI SDK](https://github.com/openai/openai-python/blob/main/src/openai/types/responses/response_usage.py) ·
+  [Codex SSE 解码](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/sse/responses.rs#L123-L156)
+- **Chat Completions**从响应或流式分片的顶层 `usage` 读取总量和 `prompt_tokens_details.cached_tokens`。
+  OpenAI 支持用端点 `request_options.stream_options.include_usage` 请求末尾的用量分片，其 `choices` 为空。
+  兼容端点也可在含 `finish_reason` 的分片中报告用量。流内按字段保留最新报告值，优先采用标准计数，
+  兼容值补足缺失的总量及缺失或无效的标准缓存计数。缓存计数接受非负整数（含显式零），已知输入总量时须在该总量以内。
+  [OpenAI 流事件](https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events/) ·
+  [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/) ·
+  [vLLM 流式实现](https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/openai/chat_completion/serving.py)
+- **Anthropic Messages**从非流式响应的 `usage.cache_read_input_tokens` 读取。流式的 `message_start.message.usage`
+  和 `message_delta.usage` 按字段合并累计值，显式零更新旧值，缺失或 `null` 保留旧值。收到 `message_stop` 后将
+  `input_tokens`、`cache_read_input_tokens` 和 `cache_creation_input_tokens` 合为输入总量。
+  端点可通过 `request_options.cache_control` 配置 `{"type":"ephemeral"}` 以启用服务端提示缓存。
+  [Anthropic 用量类型](https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/types/usage.py) ·
+  [Anthropic 流式用量合并](https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/lib/streaming/_messages.py) ·
+  [Claude 提示缓存](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+
+**Chat Completions 兼容字段**（来源核对于 2026-11-25）
+
+| 缓存读取字段 | 来源 |
+| --- | --- |
+| `usage.prompt_cache_hit_tokens` | [DeepSeek 上下文缓存](https://api-docs.deepseek.com/guides/kv_cache/) · [LangChain 解码](https://github.com/langchain-ai/langchain/blob/master/libs/partners/deepseek/langchain_deepseek/chat_models.py#L53-L91) |
+| `usage.cached_tokens` | [nanobot 兼容解码](https://github.com/HKUDS/nanobot/blob/main/nanobot/providers/openai_compat_provider.py#L1295-L1334) |
+| 流式 `x_groq.usage.prompt_tokens_details.cached_tokens` | [Groq SDK 分片类型](https://github.com/groq/groq-python/blob/main/src/groq/types/chat/chat_completion_chunk.py#L378-L460) · [Vercel AI SDK 解码](https://github.com/vercel/ai/blob/main/packages/groq/src/groq-chat-language-model.ts) |
+| 流式 `choices[0].usage` 内的 `prompt_tokens_details.cached_tokens` 或 `cached_tokens` | [OWASP AppSec Agent 响应形态](https://github.com/OWASP/appsec-agent/blob/main/CHANGELOG.md#382---2026-08-18) |
 
 ## 命名约定
 

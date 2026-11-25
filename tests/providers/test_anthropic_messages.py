@@ -14,7 +14,7 @@ from ouro.core.messages import (
     TextContent,
     ToolResultReference,
 )
-from ouro.core.provider import ModelMetadata
+from ouro.core.provider import ModelMetadata, Usage
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.core.tools import ToolCallRequest
 from ouro.providers import AnthropicMessagesProvider
@@ -488,6 +488,94 @@ async def test_anthropic_provider_streams_text_tool_deltas_and_usage() -> None:
     assert events[-1].usage.cache_write_tokens == 2
     assert events[-1].completion is not None
     assert events[-1].completion.finish_reason == "length"
+
+
+@pytest.mark.parametrize(
+    ("delta_usage", "expected_usage"),
+    [
+        pytest.param(
+            {"cache_read_input_tokens": 4, "output_tokens": 3},
+            Usage(input_tokens=11, output_tokens=3, cache_read_tokens=4, cache_write_tokens=2),
+            id="late-cache-read",
+        ),
+        pytest.param(
+            {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0},
+            Usage(input_tokens=2, cache_write_tokens=2),
+            id="explicit-zero-updates-counts",
+        ),
+        pytest.param(
+            {"input_tokens": 8, "output_tokens": 3, "cache_read_input_tokens": None},
+            Usage(input_tokens=13, output_tokens=3, cache_read_tokens=3, cache_write_tokens=2),
+            id="null-leaves-cache-read-count-in-place",
+        ),
+    ],
+)
+async def test_anthropic_stream_merges_reported_counters_before_computing_total(
+    delta_usage: dict[str, Any], expected_usage: Usage
+) -> None:
+    transport = FakeStreamingTransport(
+        [
+            {
+                "type": "message_start",
+                "message": {
+                    "usage": {
+                        "input_tokens": 5,
+                        "output_tokens": 1,
+                        "cache_read_input_tokens": 3,
+                        "cache_creation_input_tokens": 2,
+                    }
+                },
+            },
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": delta_usage},
+            {"type": "message_stop"},
+        ]
+    )
+    provider = AnthropicMessagesProvider(base_url="https://example.test", transport=transport)
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(model_id="test", provider_id="test", max_output_tokens=32),
+            messages=[],
+        )
+    ]
+
+    assert [event.type for event in events] == ["done"]
+    assert events[-1].usage == expected_usage
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["json", "sse"])
+async def test_anthropic_leaves_unreported_usage_unknown(streaming: bool) -> None:
+    transport = (
+        FakeStreamingTransport(
+            [
+                {"type": "message_start", "message": {"content": []}},
+                {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": None},
+                {"type": "message_stop"},
+            ]
+        )
+        if streaming
+        else FakeTransport(
+            {"content": [{"type": "text", "text": "hello"}], "stop_reason": "end_turn"}
+        )
+    )
+    provider = AnthropicMessagesProvider(base_url="https://example.test", transport=transport)
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(
+                model_id="test",
+                provider_id="test",
+                max_output_tokens=32,
+                supports_streaming=streaming,
+            ),
+            messages=[],
+        )
+    ]
+
+    assert events[-1].type == "done"
+    assert events[-1].usage is None
 
 
 @pytest.mark.asyncio

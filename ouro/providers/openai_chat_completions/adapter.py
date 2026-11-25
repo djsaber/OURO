@@ -13,7 +13,6 @@ from ouro.core.provider import (
     ProviderFinishReason,
     ProviderRetryPolicy,
     ProviderStreamEvent,
-    Usage,
 )
 from ouro.providers.authentication import (
     ProviderRequestPolicy,
@@ -25,13 +24,12 @@ from ouro.providers.http_transport import (
     ProviderHTTPTransport,
 )
 from ouro.providers.openai_chat_completions.codec import (
+    ChatCompletionUsage,
     _content_to_text,
     _error_from_response,
     _first_choice,
     _tool_call_deltas,
     _tool_to_chat_completions,
-    _usage_from_response,
-    _usage_from_response_or_none,
     copy_reasoning_arrays,
     messages_to_chat_completions,
     reasoning_continuation,
@@ -206,7 +204,8 @@ class OpenAIChatCompletionsProvider(ChatMessageProvider):
             yield ProviderStreamEvent(type="error", error=response_error)
             return
 
-        usage = _usage_from_response(response)
+        usage = ChatCompletionUsage()
+        usage.update(response.get("usage"))
         choice = _first_choice(response)
         if choice is None:
             yield ProviderStreamEvent(type="error", error="provider response has no choices")
@@ -251,7 +250,7 @@ class OpenAIChatCompletionsProvider(ChatMessageProvider):
             )
         yield ProviderStreamEvent(
             type="done",
-            usage=usage,
+            usage=usage.finish(),
             completion=_chat_completions_completion(
                 choice.get("finish_reason"), has_reasoning=has_reasoning, refused=bool(refusal)
             ),
@@ -264,7 +263,7 @@ class OpenAIChatCompletionsProvider(ChatMessageProvider):
         model: ModelMetadata,
         supports_tools: bool,
     ) -> AsyncGenerator[ProviderStreamEvent]:
-        usage: Usage | None = None
+        usage = ChatCompletionUsage()
         saw_reasoning = False
         saw_refusal = False
         continuation_reasoning: dict[str, list[Any]] = {}
@@ -276,11 +275,8 @@ class OpenAIChatCompletionsProvider(ChatMessageProvider):
                 yield ProviderStreamEvent(type="error", error=response_error)
                 return
 
-            chunk_usage = _usage_from_response_or_none(chunk)
-            if chunk_usage is not None:
-                usage = chunk_usage
-
             choice = _first_choice(chunk)
+            usage.update_chunk(chunk, choice)
             if choice is None:
                 continue
             chunk_finish_reason = choice.get("finish_reason")
@@ -338,7 +334,7 @@ class OpenAIChatCompletionsProvider(ChatMessageProvider):
             )
         yield ProviderStreamEvent(
             type="done",
-            usage=usage,
+            usage=usage.finish(),
             completion=_chat_completions_completion(
                 provider_finish_reason,
                 has_reasoning=saw_reasoning or bool(continuation),
