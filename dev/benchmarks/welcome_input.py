@@ -1,9 +1,4 @@
-"""Measure full welcome pages with real composition/ANSI output and normal GC.
-
-The sink excludes OS terminal painting and IME. Run long samples serially in
-fresh processes. Timed runs repeat bounded typing/deletion bursts. No GC settings
-are changed; thirty-second windows expose recurring or growing latency.
-"""
+"""Measure full welcome pages with real composition/ANSI output and normal GC."""
 
 from __future__ import annotations
 

@@ -46,7 +46,6 @@ class HarnessStateChange(OuroModel):
     last_message_id: str | None = None
     owner_id: str
     state: SessionExtensionStateRecord | None
-    # Only application control settlement supplies this field; SDK views stage owner state.
     controls: SessionControlState | None = None
 
     @model_validator(mode="after")

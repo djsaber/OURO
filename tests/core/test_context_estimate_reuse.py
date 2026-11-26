@@ -68,7 +68,6 @@ def test_default_estimates_reuse_retained_units_and_release_removed_content(coun
     assert second.metrics.estimated_input_tokens == (
         first.metrics.estimated_input_tokens + added_cost
     )
-    # Only the retained current input survives; no history/body cache is held.
     third = build(builder, [added])
     assert len(measured) == count + 1
     assert third.metrics.estimated_input_tokens == added_cost
@@ -76,7 +75,6 @@ def test_default_estimates_reuse_retained_units_and_release_removed_content(coun
     del first, second, messages
     gc.collect()
     assert body() is None
-    # Re-selection after eviction measures the restored immutable unit again.
     old = MessageRecord.text(session_id="session", role="user", text="selected again")
     build(builder, [old, added])
     assert len(measured) == count + 2

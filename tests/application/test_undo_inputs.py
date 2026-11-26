@@ -317,7 +317,6 @@ async def test_consumed_queue_identity_never_cancels_or_selects_another_input(ru
     async def schedule(session_id, history_epoch):
         wakeups.append((session_id, history_epoch))
 
-    # Hold execution capacity while testing the identity-specific history operation.
     runtime.bind_session_scheduler(schedule)
     session = runtime.create_session(title="Consumed queue")
     consumed = enqueue(runtime, session.session_id, "consumed")

@@ -558,8 +558,6 @@ class ToolCallCoordinator:
                 )
             if outcome.result is not None and outcome.status == "completed":
                 observed_call = current_call(outcome.invocation.tool_call_id)
-                # The observation itself settles a started call unless a controller
-                # still has to decide the tool's proposed Session transitions.
                 settled = (
                     observed_call.with_outcome(outcome)
                     if observed_call.status == "running"
@@ -1067,7 +1065,6 @@ class ToolCallCoordinator:
                     structured={"policy_reason": prepared.invocation.tool_policy_reason},
                 )
             if prepared.status != "ready":
-                # No new attempt started. The rejection belongs to the original Call.
                 return prepared.model_copy(update={"invocation": invocation})
             tool = self.registry.get(invocation.tool_name)
             invocation = prepared.invocation
@@ -1161,9 +1158,6 @@ class ToolCallCoordinator:
             definition = self.registry.get(request.name).definition
             metadata = definition.metadata
         except KeyError:
-            # Preserve the executor's typed unknown-tool outcome.  Plugin
-            # identity is enrichment for known tools, not a new lookup failure
-            # path that bypasses model recovery.
             definition = None
             metadata = {}
         invocation = ToolInvocation(
@@ -1325,7 +1319,6 @@ class ToolCallCoordinator:
         approved: bool = False,
         harness: HarnessCallSnapshot | None = None,
     ) -> tuple[SessionRecord, ToolExecutionOutcome]:
-        # Current controls may activate a previously hidden policy at this boundary.
         has_policies = bool(self.tool_policies.snapshot())
         if harness is None:
             if has_policies:

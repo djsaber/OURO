@@ -348,7 +348,6 @@ async def test_stop_revokes_continuation_at_the_execution_commit(system, monkeyp
     start = system.runtime.run_lifecycle.start
 
     def delayed_start(**kwargs):
-        # The queue path already holds the mutation lock here; delay before that instead.
         if not queued:
             entered.set()
             assert release.wait(5)
@@ -469,7 +468,6 @@ async def test_command_inputs_keep_fifo_batch_boundaries_and_attribution(system,
             project_runtime_event(event).category == "interaction" for event in queued_events
         )
     if existing:
-        # Durable receipts can be consumed again without replaying the plugin or input.
         async for _result in consume_plugin_command(system.runtime, submitted):
             pass
         assert len(system.store.load_session(submitted.session_id).messages) == len(
@@ -592,7 +590,6 @@ async def test_command_catalog_and_harness_share_one_session_read(system, monkey
     )
     assert submitted.execution.output == "accepted"
     assert harness_reads == 1
-    # The combined Session/Harness read supplies Catalog selection too.
     assert record_reads == 0
 
 
@@ -649,7 +646,6 @@ async def test_command_does_not_recapture_withdrawn_history_after_catalog_acquis
 
     def history_changes():
         catalog = current_catalog()
-        # Another owner withdraws the captured epoch while Catalog is acquired.
         if len(system.bindings) == 2:
             system.store.commit_session(
                 SessionCommit(before=session, before_message_id=message.message_id)

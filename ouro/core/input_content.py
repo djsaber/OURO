@@ -12,7 +12,6 @@ from ouro.core.base import OuroModel
 
 class InputElement(OuroModel):
     text_offset: int = Field(default=0, ge=0)
-    # Preserve interleaved files and skills at the same plain-text offset.
     order: int = Field(default=0, ge=0)
 
 

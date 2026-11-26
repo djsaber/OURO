@@ -1,5 +1,3 @@
-"""TUI application scenarios: interactions."""
-
 from __future__ import annotations
 
 from dataclasses import replace
@@ -205,7 +203,6 @@ async def test_approval_panel_denies_selected_tool(tmp_path: Path) -> None:
         panel = await _wait_for_tool_approval(app, pilot, tool_call_id="call_write")
 
         await pilot.press("down", "enter")
-        # Projection state can change before asynchronous interaction rendering.
         await _wait_until(
             lambda: (
                 app._projection is not None
@@ -256,7 +253,6 @@ async def test_builtin_ask_user_renders_form_and_submits_structured_answer(
                 observed.question, input_revision=observed.question.input_revision + 1
             ),
         )
-        # Textual can deliver a completed panel message after the displayed question changed.
         panel.post_message(AskUserPanel.Completed(stale, {"choice": "wrong question"}))
         await pilot.pause()
         assert app._projection.pending_interaction == observed
@@ -378,7 +374,6 @@ async def test_plan_mode_write_approval_keeps_focus_on_approval_panel(tmp_path: 
             pilot,
             description="plan session ready for input",
         )
-        # Enter the business input once the command has established its Session.
         composer = app.query_one(Composer)
         composer.focus()
         composer.load_text("plan")
@@ -466,7 +461,6 @@ async def test_plan_confirmation_renders_only_plan_and_collects_revision_feedbac
             pilot,
             description="plan session ready for input",
         )
-        # Enter the business input once the command has established its Session.
         composer = app.query_one(Composer)
         composer.focus()
         composer.load_text("plan")
@@ -547,7 +541,6 @@ async def test_plan_confirmation_accepts_a_keyboard_selected_implementation_opti
             pilot,
             description="plan session ready for input",
         )
-        # Enter the business input once the command has established its Session.
         composer = app.query_one(Composer)
         composer.focus()
         composer.load_text("plan")

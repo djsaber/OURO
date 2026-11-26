@@ -177,7 +177,7 @@ def test_scope_totals_follow_effective_entries_across_writers_and_corrections(tm
     )
     ledger.record(first)
     ledger.record(first)
-    ledger.record(_entry(1))  # Entries without attribution remain unassociated.
+    ledger.record(_entry(1))
     assert ledger.session_scope_tokens("ses_a") == {"owner-a": {"goal": 3}, "owner-b": {"goal": 3}}
     assert ledger.session_scope_tokens("another-session") == {}
 
@@ -257,7 +257,6 @@ def test_query_pages_have_stable_cursors_at_equal_timestamps(tmp_path):
     first = ledger.list_entries(UsageFilter(), limit=2)
     assert [entry.entry_id for entry in first.entries] == ["use_4", "use_3"]
     assert first.total_matching == 5 and first.truncated
-    # A newly inserted earlier page does not shift the continuation boundary.
     ledger.record(_entry(8))
     second = ledger.list_entries(UsageFilter(), limit=2, before=first.next_cursor)
     third = ledger.list_entries(UsageFilter(), limit=2, before=second.next_cursor)
@@ -451,8 +450,6 @@ def test_combined_run_filter_does_not_scan_unrelated_requests(tmp_path, monkeypa
     @contextmanager
     def limited_work():
         with connect() as connection:
-            # An indexed point query needs far fewer VM instructions than examining
-            # every request with the same billing mode. This is independent of timing.
             connection.set_progress_handler(lambda: 1, 1000)
             yield connection
 

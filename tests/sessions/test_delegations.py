@@ -288,7 +288,6 @@ def test_delegation_lookups_ignore_other_parent_runs(delegation_store, monkeypat
     if isinstance(store, LocalSessionStore):
         assert len(reads) == 3
     else:
-        # Includes five queries and their Session guards, independent of old_count.
         assert instructions < 1000
 
 

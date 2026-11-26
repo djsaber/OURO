@@ -1,7 +1,5 @@
 # Provider 与配置规格
 
-> 文档类型：现行规格
-
 ## 目标与范围
 
 配置层负责读取、验证和持久化当前权威配置；Provider 层负责把已解析的运行参数适配到外部模型协议。
@@ -441,13 +439,12 @@ name 是创建用例通过 `new_id("cred")` 生成的标识，不是文件路径
 static 只能绑定 env/inline/none，其他 driver 必须绑定 managed；协议/认证组合同时受产品档案约束。
 读取配置不查找或创建秘密文件，不要求已经登录。普通 update 保留身份引用，replace 创建新引用；remove 只删配置。
 
-RuntimeOptions 携带 `auth_driver`、引用及由产品声明解析的 `service_policy` 标识；后者不能写入用户 Provider 配置或
+`ProviderRuntimeOptions` 携带 `auth_driver`、引用及由产品声明解析的 `service_policy` 标识；后者不能写入用户 Provider 配置或
 由本次参数覆盖。已配置 Provider 的认证驱动不能在单次请求中替换，managed 引用不能在单次请求中换绑，也不能与
 API Key/API Key 环境变量覆盖并用；无产品绑定的 ad-hoc managed 请求失败。静态 API Key 覆盖语义保持。
 
 公开 Provider/Template DTO 显示 auth_driver。配置视图中的 managed 凭据显示 `state="managed"`、
-`configured=true`、`available=null`，只说明已有引用，不能据此推断已经登录、已过期或可调用。实际认证状态由后续
-ProviderAuthService 提供，配置视图不读取 store 或触发刷新。
+`configured=true`、`available=null`，只说明已有引用，不能据此推断已经登录、已过期或可调用。实际认证状态由 `ProviderAuthService` 提供，配置视图不读取 store 或触发刷新。
 
 CredentialStatus 的 available 由 state 只读派生：managed 为 null，not_required/configured 为 true，
 missing 为 false。configured 独立表示是否配置凭据引用；missing 可以表示未配置或已配置但不可用。

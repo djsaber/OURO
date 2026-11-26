@@ -141,7 +141,6 @@ class _Response:
             self.error_code = failure.code
             if failure.code == "model_missing_tool_call":
                 self.tool_call_failure = ToolCallFailure(failure.code, failure.message)
-            # Rejected output must not become replayable provider continuation.
             self.continuation = None
             return
         try:

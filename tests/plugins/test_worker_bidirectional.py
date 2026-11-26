@@ -150,8 +150,6 @@ async def test_cancel_during_transport_drain_retains_the_written_request_result(
     )
     try:
         await asyncio.wait_for(entered.wait(), 30)
-        # The peer's response is the handshake; cancellation must not race its
-        # decision whether the request has executed.
         response = next(iter(client._pending.values()))
         assert await asyncio.wait_for(asyncio.shield(response), 30) == {"observed": True}
         request.cancel()

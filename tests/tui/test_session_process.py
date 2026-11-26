@@ -145,9 +145,6 @@ async def test_two_process_tuis_keep_execution_and_slow_observation_independent(
                     for index in range(129):
                         marker = f"piece {index}, "
                         provider.text("Alpha", marker)
-                        # Await each current Draft marker after adapter coalescing
-                        # before producing the next to cross the 128-event buffer
-                        # deterministically, regardless of timer granularity/load.
                         while True:
                             notification = await committed.get()
                             assert notification.diagnostic is None, notification.diagnostic

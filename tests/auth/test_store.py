@@ -186,8 +186,6 @@ def test_posix_modes_apply_to_directory_temporary_and_replaced_file(tmp_path, mo
 
 
 def _windows_acl(path: Path) -> str:
-    # Inspect the actual DACL without starting PowerShell for every file. These
-    # read APIs are independent of the production permission-writing helper.
     api = ctypes.WinDLL("advapi32", use_last_error=True)
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     api.GetFileSecurityW.argtypes = [
@@ -266,7 +264,7 @@ def test_windows_acl_on_directory_temporary_and_replaced_file(tmp_path, monkeypa
         ["whoami.exe", "/user", "/fo", "csv", "/nh"],
         capture_output=True,
         encoding="utf-8",
-        errors="replace",  # Only the ASCII SID is used; account names may use an OEM code page.
+        errors="replace",
         check=True,
         timeout=60,
     )

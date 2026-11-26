@@ -46,7 +46,6 @@ class OpenAICodexDriver:
         authorization_timeout: float = 900,
         originator: str = "ouro",
     ) -> None:
-        # Client selection is a trusted composition decision, never an inferred entitlement.
         if not math.isfinite(authorization_timeout) or authorization_timeout <= 0:
             raise ValueError("authorization timeout must be positive and finite")
         if not originator or any(not 32 < ord(c) < 127 for c in originator):

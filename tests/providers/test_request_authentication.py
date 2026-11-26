@@ -105,7 +105,7 @@ async def test_each_protocol_uses_each_driver_and_rechecks_logout(
                 assert requests[0].headers[name] == value
             await adapter.close()
             assert not client.is_closed
-            assert await service.status(record.credential_id)  # Borrowed auth is still open.
+            assert await service.status(record.credential_id)
             await service.logout(record.credential_id, record.driver_id)
             events = await collect(adapter, streaming)
             assert events[-1].error_code == "authentication_required"

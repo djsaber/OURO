@@ -103,12 +103,10 @@ def _reasoning_text_field(endpoint: dict[str, Any]) -> None:
     if field is not None:
         endpoint["reasoning_text_field"] = field
         if not profile.get("effort") and not profile.get("summary"):
-            # Validate before retiring the profile so malformed controls are not discarded.
             ReasoningProfileConfig.model_validate(profile)
             reasoning["profile"] = None
 
 
-# Unversioned formats use ordered, explicitly recognized structural transitions.
 ENDPOINT_STEPS: tuple[Callable[[dict[str, Any]], None], ...] = (
     _vision_capabilities,
     _reasoning_controls,
@@ -202,7 +200,6 @@ def convert_providers(raw: dict[str, Any]) -> dict[str, Any]:
         except UpgradeDataError:
             raise
         except ConfigError, TypeError, ValueError:
-            # Codec validation errors can include inline credentials or header values.
             raise UpgradeDataError(f"{_PATH}: invalid provider configuration") from None
         require(
             parsed.provider_id != BUILTIN_FAUX_PROVIDER_ID

@@ -30,7 +30,6 @@ def read_session(connection: sqlite3.Connection, session_id: str) -> SessionReco
 
 
 def write_session(connection: sqlite3.Connection, session: SessionRecord) -> None:
-    # The current controls projection is published with its Harness reference.
     connection.execute(
         "INSERT INTO sessions VALUES (?, ?) ON CONFLICT(session_id) "
         "DO UPDATE SET payload = excluded.payload",

@@ -1,8 +1,4 @@
-"""Measure message point, Run, input and tail reads with a fixed active window.
-
-Run: uv run --frozen python -m dev.benchmarks.session_messages --repeat 7
-Synthetic setup uses the public snapshot API and is excluded from query timing.
-"""
+"""Measure message point, Run, input and tail reads with a fixed active window."""
 
 from __future__ import annotations
 

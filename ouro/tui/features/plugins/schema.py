@@ -43,7 +43,6 @@ def configuration_fields(document: dict[str, JsonValue]) -> tuple[ConfigurationF
         schema = _resolve(definition, document)
         kind: Literal["string", "integer", "number", "select", "json"] = "json"
         options: tuple[JsonValue, ...] = ()
-        # A combined constraint can always be edited as JSON without guessing its branches.
         if not any(
             name in schema
             for name in ("$ref", "$dynamicRef", "allOf", "anyOf", "oneOf", "if", "not")

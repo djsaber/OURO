@@ -1,8 +1,4 @@
-"""Measure cold adapter recovery and one Runtime turn against unrelated history.
-
-Run: uv run --frozen python -m dev.benchmarks.runtime_history --repeat 3
-Synthetic isolated data; FauxProvider excludes network and provider encoding costs.
-"""
+"""Measure cold adapter recovery and one Runtime turn against unrelated history."""
 
 from __future__ import annotations
 

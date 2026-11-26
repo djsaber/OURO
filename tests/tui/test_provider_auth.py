@@ -209,7 +209,6 @@ async def test_method_challenge_success_logout_and_no_challenge_in_terminal_ui(
         await choose(app, pilot, "Sign out")
         await eventually(lambda: choices(menu)["status"].trailing == "logged_out")
         assert (await service.status(provider_id)).state == "logged_out"
-        # Authentication UI never creates conversation notices or model events.
         assert "fixture-access" not in repr(menu._choices)
 
 
@@ -434,7 +433,6 @@ async def test_full_tui_uses_runtime_auth_and_preserves_managed_provider_edit(
         saved = await controller.update_provider(provider_id, replace(draft, timeout=80))
         assert saved.credential == before.credential and saved.auth_driver == before.auth_driver
         assert saved.timeout == 80
-        # A managed setup default reaches the creation use case without a key field.
         managed_profile = replace(
             profile,
             auth_driver=before.auth_driver,
@@ -449,8 +447,6 @@ async def test_full_tui_uses_runtime_auth_and_preserves_managed_provider_edit(
         await pilot.press("ctrl+p")
         await wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         await choose(app, pilot, "Manage providers", title="PROVIDERS")
-        # The second provider sorts first. Do not filter the retained ACTIONS
-        # page while its asynchronous provider catalog is still loading.
         await choose(app, pilot, "Subscription", title="PROVIDER • Subscription")
         await choose(app, pilot, "Authentication", title="AUTHENTICATION • Subscription")
         assert isinstance(app.screen, ProviderAuthenticationScreen)

@@ -1,9 +1,8 @@
 # 受管理凭据核心规格
 
-> 文档类型：现行规格
-> 范围：凭据存储与生命周期，由 Application 通用登录、CLI/TUI 管理和三种模型协议共用；Runtime 装配同一 home 的共享认证服务。
+范围：凭据存储与生命周期，由 Application 通用登录、CLI/TUI 管理和三种模型协议共用；Runtime 装配同一 home 的共享认证服务。
 
-本规格定义 `ouro.auth` 的供应商中立核心。内建浏览器订阅产品的接入契约见[模型订阅认证规格](subscription-authentication.md)，实际支持与验证范围见[订阅指南](../guides/subscriptions.md#证据范围)。
+本规格定义 `ouro.auth` 的供应商中立核心。内建浏览器订阅产品的接入契约见[模型订阅认证规格](subscription-authentication.md)，实际支持与验证范围见[订阅指南](../guides/subscriptions.md#支持范围)。
 
 ## 所有权与端口
 
@@ -57,4 +56,4 @@ Service 跟踪完整 mutation 的生命周期。`close` 停止接收新操作，
 
 `tests/auth` 覆盖格式/损坏记录、脱敏、写入前权限、失败替换、条件提交、注销幂等、双进程刷新和提交竞争、异常退出释放锁、请求取消、关闭、绑定 guard、失效与临时错误以及轮换后的保存失败。两种测试驱动复用该核心的证据见认证驱动与授权规格；Application 实际配置事务的集成证据见 Provider 认证用例规格；协议请求认证见[请求认证规格](request-authentication.md)。
 
-本机已执行 Windows ACL 的目录、临时文件及替换后文件检查；POSIX mode 测试已提供，仍需在 POSIX CI 执行。所有测试使用构造材料，不读取真实客户端凭据或执行真实账户调用。
+文件权限测试在 Windows 检查 ACL，在 POSIX 检查 mode 位，覆盖凭据目录、临时文件与替换后的文件。

@@ -272,7 +272,6 @@ def test_selection_native_failure_preserves_backend_commit_semantics(store, monk
                 select_through(store, session, messages[1])
         cold = LocalSessionStore(store.root)
         cold.initialize()
-        # A selection-only decision is wholly native and rolls back atomically.
         assert (
             cold.load_session_record(session.session_id).context_selection
             == session.context_selection

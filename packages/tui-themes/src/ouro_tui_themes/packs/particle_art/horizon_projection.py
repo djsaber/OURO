@@ -13,9 +13,6 @@ class _RotationMap:
     def __init__(self, grid: ParticleGrid) -> None:
         self.width, self.height = grid.width, grid.height
         pitch = float(grid.x[1] - grid.x[0])
-        # Bound rotation to the disk/lens plus its full +/-2 degree sweep. The
-        # faint radial outer glow needs no rotation. A dot-pitch guard keeps
-        # interpolation inside the envelope even on coarse terminal grids.
         radius = np.hypot(grid.x, grid.y)
         disk_y = grid.x * sin(0.13) - grid.y * cos(0.13)
         guard = radius * 0.035 + pitch * 2
@@ -58,7 +55,6 @@ class _RotationMap:
                 np.less_equal(coordinates, maximum, out=self.mask)
                 self.valid &= self.mask
                 np.clip(coordinates, 0, maximum, out=coordinates)
-        # Reuse two tap buffers for integer x/y before forming flat indices.
         i00, i10, i01, i11 = self.indices
         for coordinates, indices, maximum in (
             (self.fx, i10, self.width - 2),
@@ -130,7 +126,6 @@ class HorizonProjection:
                 buffer(len(self.grid.x)),
             )
         assert self.output is not None
-        # Positive pointer x flattens the baseline disk's clockwise tilt.
         self.mapping.update(self.position * 0.035)
         self.mapping.apply(channels, self.output)
         return self.output

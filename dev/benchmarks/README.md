@@ -33,8 +33,7 @@ uv run --frozen python -m dev.benchmarks.active_context --repeat 3
 
 固定无关历史为空，独立增加活动文本条数和内联媒体体积。测量新的 ContextBuilder 准备，以及 Chat Completions、
 Responses、Anthropic Messages codec 加 JSON UTF-8 编码；输入构造、存储和网络不计入。
-计时与 tracemalloc 分开执行，后者不代表 RSS。两组实验的已执行范围见
-[会话整合记录](../../docs/plans/archive/2026-10-26-session-data-implementation.md#验证记录)。
+计时与 tracemalloc 分开执行，后者不代表 RSS。
 
 ## 会话资源定向读取
 
@@ -45,8 +44,7 @@ uv run --frozen python -m dev.benchmarks.session_resources --repeat 7
 使用两后端的隔离目标格式数据，独立增加旧资源数和选中文件体积，固定读取首部 16 与尾部 32 字节。
 记录每个样本、Python 文件打开与读取字节、分配峰值、实际文件数、逻辑字节及 SQLite 查询计划、页数、空闲页和测量结束时 WAL。
 Python IO 探针不计 SQLite 引擎读取；tracemalloc 不代表 RSS。暖适配器和新建适配器分别运行，不清空 OS 缓存。
-构造与清理不计入读取时间；结果不表示完整模型轮次、冷磁盘或掉电恢复成本。已执行范围见
-[资源读取实施记录](../../docs/plans/archive/2026-10-26-session-data-implementation.md#场景覆盖与资源边界)。
+构造与清理不计入读取时间；结果不表示完整模型轮次、冷磁盘或掉电恢复成本。
 
 ## 最近请求完成
 
@@ -57,7 +55,6 @@ uv run --frozen python -m dev.benchmarks.context_completion --repeat 7
 固定请求头，增加不可变输入大小，单独测量完成操作。每次样本准备一个新请求，准备、同步和 SQLite checkpoint
 不计入计时；连接保持打开，完成后立即采样 WAL 大小。输出 Python 读取字节、分配峰值、逐次时间与中位数、
 真实文件数、逻辑字节、SQLite 页数/空闲页及剩余请求数。没有清空 OS 缓存，不代表完整轮次、RSS 或掉电恢复。
-结果见[请求头实施记录](../../docs/plans/archive/2026-10-26-session-data-implementation.md#上下文观察与计量)。
 
 ## 活动摘要读取与投影
 
@@ -68,8 +65,7 @@ uv run --frozen python -m dev.benchmarks.compaction_boundaries --repeat 3
 固定摘要正文和两条保留尾部，分别增加已覆盖消息数和保留摘要数；测量活动摘要点查与预加载历史上的纯投影。
 输出逐次时间、Python 读取与分配峰值、摘要序列化大小、真实文件数和逻辑字节，以及 SQLite 页数、空闲页与 WAL。
 快照准备和历史内存不计入测量，适配器已初始化且不清空 OS 缓存；Python IO 不包含 SQLite 引擎读取，分配峰值不是 RSS。
-此实验不代表完整上下文准备、撤销或冷恢复。结果见
-[摘要覆盖边界记录](../../docs/plans/archive/2026-10-26-session-data-implementation.md#上下文观察与计量)。
+此实验不代表完整上下文准备、撤销或冷恢复。
 
 ## Runtime 入口与冷适配器恢复
 
@@ -82,7 +78,6 @@ uv run --frozen python -m dev.benchmarks.runtime_history --repeat 3
 Runtime 创建与完整一轮 FauxProvider 请求，记录耗时、Python 读取字节与打开次数、tracemalloc 峰值、
 真实文件数、逻辑字节及 SQLite WAL/页数/空闲页。准备数据不计时，未清 OS 缓存，不代表冷磁盘。
 FauxProvider 不含网络或真实 Provider 编码；内存不是 RSS，读取计数不含 SQLite 原生 I/O。
-当前执行头与待处理 Run 的读取边界见[提交与执行](../../docs/plans/archive/2026-10-26-session-data-implementation.md#提交与执行)。
 Catalog 文件计数、当前 Run 与 Draft 恢复等保留工作仍计入入口；不能用定向正文读取推断所有历史轴或整个冷恢复已收敛。
 
 ## 历史数据升级
@@ -149,7 +144,6 @@ uv run --frozen --extra themes python -m dev.benchmarks.welcome_input --style qu
 `--count-caches` 单独统计 FIFO 缓存构造量，不应与无插桩延迟数据混用。
 帧时间止于输出 sink，不等于终端完成绘制。测量不包含操作系统终端渲染、IME 及完整 Application
 的草稿持久化，因此须结合完整 TUI 回归和真实终端检查。
-帧生命周期设计与本次测量记录见[渲染分配优化](../../docs/plans/archive/2026-11-04-tui-frame-lifetimes.md)。
 
 ```powershell
 uv run --frozen python -m dev.benchmarks.file_menu C:\Windows\System32 --keys 60
@@ -362,4 +356,3 @@ uv run --frozen --extra themes python -B -X utf8 -m dev.benchmarks.tui_history -
 测冷／热历史、最大轨迹首次／再次展开、最长思考首次／再次展开及流式输出转历史；
 `--strips-output <path>` 可保存首轮各行的文字和 Rich 样式以对照布局。该输出包含会话内容，应留在本地。
 JSONL 保留每轮原始值；不清 OS 缓存。headless 刷新确认不等于真实终端 paint，三个样本不能证明 p95/p99。
-设计与测量结果见 [TUI 性能改进计划](../../docs/plans/archive/2026-10-29-tui-performance.md)。

@@ -145,7 +145,7 @@ async def test_discard_confirmation_defaults_to_cancel_and_preserves_successful_
         assert "DELETE FAILED" in app.screen.page_title
         assert app.screen._choices[1].destructive
         assert "ses_bad" in str(app.screen.query_one("#recovery-status", Static).render())
-        await pilot.press("enter")  # The confirmation defaults to Cancel.
+        await pilot.press("enter")
         await wait_until(lambda: app.screen is app.recovery)
         assert hashes(home) == successful
         await pilot.press("enter")

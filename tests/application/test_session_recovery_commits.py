@@ -104,8 +104,6 @@ def test_native_failure_keeps_recovered_response_state_and_event_together(
 
     if response_committed or isinstance(store, SQLiteSessionStore):
         after = cold.load_session(session.session_id)
-        # Request interruption/usage settlement precedes the response transaction.
-        # Its durable fact does not imply that partial output or Run recovery committed.
         assert len(after.request_headers) == 1
         header = after.request_headers[0]
         assert header.interrupted_at is not None

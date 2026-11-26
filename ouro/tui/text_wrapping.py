@@ -127,7 +127,6 @@ class ProseText(Text):
         lines = Lines()
         for line in self.split(allow_blank=True):
             line.expand_tabs(tab_size)
-            # Rich still handles span slicing, alignment, padding and clipping.
             for section in line.divide(wrap_offsets(line.plain, width)):
                 section.rstrip_end(width)
                 lines.extend(section.wrap(console, width, justify=justify, no_wrap=True))

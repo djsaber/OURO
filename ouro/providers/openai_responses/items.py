@@ -66,6 +66,4 @@ class OpenAIResponsesItemAccumulator:
             index not in self._completed for index in indices
         ):
             raise OpenAIResponsesError("unfinished_output_item")
-        # Preserve complete provider items (including reasoning ciphertext and
-        # item ids). Delta text is display data, not another replay item.
         return deepcopy([self._completed[index] for index in indices])

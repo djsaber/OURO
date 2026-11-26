@@ -89,8 +89,6 @@ class PhosphorRaster:
             if not monochrome:
                 np.greater_equal(lane, self._peak, out=self._visible)
                 self._above &= self._visible
-            # Fade by coverage as well as color. Dark foregrounds may be raised
-            # by terminals, but absent dots cannot be brightened.
             np.bitwise_or(self._masks, bit, out=self._masks, where=self._above)
         self._packed[:] = self._masks
         for mapped, base, shift in zip(mapped_channels, background, (24, 16, 8), strict=True):
@@ -100,8 +98,6 @@ class PhosphorRaster:
                 self._color += lane
             self._color *= 1.25 / 8
             np.clip(self._color, 0.0, 1.0, out=self._color)
-            # Screen-compose emitted light over the actual canvas. Zero light
-            # leaves the background unchanged, including in individual channels.
             self._color *= 255 - base
             self._color += base
             np.copyto(self._channel, self._color, casting="unsafe")
@@ -126,7 +122,6 @@ class PhosphorRaster:
             colors: list[RunStyle] = []
             run: list[str] = []
             previous: int | None = None
-            # Publish owned runs; keep RGB packed until the display boundary.
             for cell in self._packed[row].tolist():
                 key = cell >> 8 if cell else None
                 if run and key != previous:

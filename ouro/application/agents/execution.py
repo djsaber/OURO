@@ -97,8 +97,6 @@ class AgentExecutionTasks:
         if self._tasks.get(key) is task:
             self._tasks.pop(key)
         if not task.cancelled() and task.exception() is not None:
-            # Reporting itself can fail if storage is unavailable. Keep this
-            # visible without logging prompts, tool payloads, or raw exceptions.
             _LOGGER.error(
                 "Agent settlement reporting failed: %s (%s)", key, type(task.exception()).__name__
             )
@@ -128,8 +126,6 @@ class AgentExecutionTasks:
                 try:
                     await run_blocking(self._retain_error, relation, error)
                 except OSError, PersistenceError:
-                    # The failed dependency may be the same store used for
-                    # diagnostics. Still spend only the bounded retry budget.
                     if retryable and attempt < 3:
                         continue
                     raise

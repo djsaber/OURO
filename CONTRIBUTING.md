@@ -60,7 +60,7 @@ hosts such as `cli`. Do not make a Host depend directly on persistence files or 
 managers when an application boundary exists.
 
 Documentation follows the [documentation standard](docs/development/documentation.md). Keep user
-guides, formal specifications (`docs/specs/`), future plans, and completed reviews in their respective locations;
+guides, formal specifications (`docs/specs/`), and future plans in their respective locations;
 update relative links and command examples when moving or changing them.
 
 Changes should include focused success and failure tests. Concurrency, cancellation, recovery,

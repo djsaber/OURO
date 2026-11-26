@@ -160,7 +160,6 @@ async def test_native_glob_includes_empty_binary_and_large_files(tmp_path, nativ
 async def test_native_glob_exclusions_distinguish_files_and_directories(tmp_path, native_tool):
     for name in (".env", "src/.env.local", "src/.git/config", "src/.hg/history", ".svn/entries"):
         _write(tmp_path, name)
-    # .env is excluded as a filename, while VCS names are excluded as directories.
     for name in ("config/.env/visible.py", ".git", ".hg", "src/.svn"):
         _write(tmp_path, name)
     result = await native_tool.execute(

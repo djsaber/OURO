@@ -1,5 +1,3 @@
-"""TUI application scenarios: commands."""
-
 from __future__ import annotations
 
 import json
@@ -414,7 +412,6 @@ async def test_workspace_command_selects_paths_only_before_session_and_keeps_cle
         assert "Recent workspace" not in workspace_menu.plain
 
         await pilot.press("down", "enter")
-        # The header changes before the off-thread history save completes.
         await _wait_for_worker_group(app, pilot, group="composer-command", timeout=15)
         assert app._active_workspace == str(historical.resolve())
         assert preferences.load().recent_workspaces[:2] == (

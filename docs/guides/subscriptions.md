@@ -56,18 +56,9 @@ uv run --frozen ouro provider check $subscriptionProviderId --home "$subscriptio
 注销清空本地材料；此后 check 应返回 authentication_required，不发出模型请求。重新执行登录命令
 即可恢复使用。注销不会退出浏览器上的 ChatGPT，也不调用远端全账户登出。
 
-## 证据范围
+## 支持范围
 
-仓库中的真实验收记录使用 Windows、浏览器授权与当时的 gpt-5.5 默认参数组合，不代表当前默认模型或服务可用性。
-当前模板默认值见[预置供应商配置](../specs/provider-presets.md)。下表列出已验证的范围，完整验收要求见[订阅认证规格](../specs/subscription-authentication.md#s10-验收矩阵)。
+正式登录入口提供浏览器授权。设备码属于[独立协议探针](../../dev/probes/README.md)，用于验证具体账户和模型的服务行为。
+可选模型与输入能力见[预置供应商配置](../specs/provider-presets.md)，实际可用性取决于账户、区域和服务端。
 
-| 层次 | 覆盖范围 |
-|---|---|
-| 正式 adapter 联网验证 | 登录、刷新、两轮工具续接、跨刷新加密 reasoning 重放；方法见[协议探针](../../dev/probes/README.md#正式-adapter-验证) |
-| 正式 CLI 持久凭据验证 | 内建模板、浏览器登录保存、新进程 check/run、按 Session 续接、本地注销及注销后拒绝请求 |
-| 自动集成测试 | 合成 HTTP、真实本地回调与凭据文件、文件/SQLite 会话、401 刷新续接、工具执行、计费归属、发送目标保护和未登录管理 |
-
-真实 CLI 验证不强制凭据过期，自动 401 恢复由合成 HTTP 集成测试覆盖。非交互 Run 与自动任务在未登录时
-返回结构化错误；登录后使用现有 continue_run 恢复，不为后台任务打开浏览器。
-
-其他模型、设备码、实际上下文极限、其他账户/区域和 POSIX 文件保护需要各自的验证，不能由上述范围推断。
+非交互 Run 与自动任务缺少凭据时返回认证错误。完成登录后，可通过 `continue_run` 恢复已有 Run。

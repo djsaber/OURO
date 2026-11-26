@@ -73,38 +73,32 @@ class TuiTheme:
     label: str
     description: str
 
-    # Brand and interactive accents.
     accent: str
     accent_bright: str
 
-    # Surfaces, from the page background to active inputs.
     background: str = "#0c0c0c"
     panel: str = "#171717"
     highlight: str = "#242424"
     input_highlight: str = "#2a2a2a"
 
-    # Structural boundaries and control tracks.
     border_subtle: str = "#545454"
     border: str = "#585858"
     border_focus: str = "#464646"
     progress_track: str = "#373737"
     scrollbar_hover: str = "#737373"
 
-    # Component-independent text prominence, from lowest to highest.
     text_disabled: str = "#626262"
     text_lowlight: str = "#676767"
     text_primary: str = "#ababab"
     text_emphasis: str = "#d9d9d9"
     text_highlight: str = "#e7e7e7"
 
-    # Fixed semantic hues: progress, positive outcome, attention, risk, failure.
     running: str = "#6fa8a0"
     success: str = "#86ad7a"
     warning: str = "#b8a06a"
     danger: str = "#c18d6c"
     failure: str = "#c17b7b"
 
-    # Syntax roles keep their own palette, independent of the brand accent.
     syntax_comment: str = "#707070"
     syntax_keyword: str = "#b8b8b8"
     syntax_string: str = "#77b083"
@@ -153,8 +147,6 @@ class TuiTheme:
         "text_highlight",
     )
 
-    # Palette colors follow the user's saturation preference; semantic colors
-    # preserve the meaning and prominence of states and destructive actions.
     _PALETTE_COLOR_FIELDS: ClassVar[tuple[str, ...]] = (
         "accent",
         "accent_bright",
@@ -446,7 +438,6 @@ def _accent_saturation_scale(theme: TuiTheme) -> tuple[str, ...]:
     )
 
 
-# Keep deeper reds together before rose and coral, then continue around the hue wheel.
 _THEMES = (
     TuiTheme(
         theme_id="original",

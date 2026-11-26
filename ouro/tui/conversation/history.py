@@ -470,7 +470,6 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         self._line_cache.clear()
         self.display = bool(self._entries)
         self.virtual_size = Size(self._widest_line_width, len(self.lines))
-        # A layout in this frame may have measured the visible buffer before its rows returned.
         self._box_model_cache.clear()
         self.refresh(layout=True)
         return shared
@@ -558,8 +557,6 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
             piece.entry_index += offset
         self._rebuild_lines()
         for run_id in self._trace_summary_indexes.keys() - previous_traces:
-            # An older page may introduce the first trace for a cached reply.
-            # Its existing summary must gain the disclosure target immediately.
             self._rerender_entry(self._trace_summary_indexes[run_id])
         self.display = True
         self._schedule_buffer_render(rebuild=False)
@@ -767,9 +764,6 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
                 )
                 console = self.app.console
                 try:
-                    # A restored window is one snapshot, not a stream of old
-                    # messages. Prepare it in cancellable chunks, then publish
-                    # its complete geometry so the first frame can show its end.
                     rendered: list[_RenderedEntry] = []
                     for offset in range(0, len(requests), _LOAD_CHUNK_ENTRIES):
                         rendered.extend(

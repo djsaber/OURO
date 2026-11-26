@@ -66,8 +66,6 @@ async def test_estimation_record_send_and_query_share_prepared_provider_values(
 
     class CapturingProvider(FauxProvider):
         async def stream(self, **kwargs):
-            # Identity proves this is the estimated/prepared value, not a second
-            # equivalent projection performed at the Adapter boundary.
             value = prepared[-1].provider_context
             assert kwargs["messages"] is value.messages
             assert kwargs["tools"] is value.tools

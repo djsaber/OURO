@@ -49,8 +49,6 @@ def read_observation_page(
         if revision != after.revision or after.facts is not None:
             session = store.load_session_record(session_id)
             if session.history_epoch != history_epoch:
-                # Consumers rebuild the invalidated view from a snapshot. The shared
-                # follower resumes at that history's head without rereading its body.
                 message_after = session.message_count
                 draft_after = None
                 fact_cursor = None
@@ -87,7 +85,6 @@ def read_observation_page(
             for state in changed.calls:
                 run = runs[state.identity.run_id]
                 head = run.active_tool_batch
-                # Historical Calls remain in message history; only the selected batch is live.
                 if (
                     run.history_epoch != history_epoch
                     or head is None

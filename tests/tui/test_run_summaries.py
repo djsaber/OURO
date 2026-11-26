@@ -114,7 +114,6 @@ async def test_observer_keeps_each_run_summary_before_the_next_runs_content(tmp_
         async with run_ready_app(app, size=(100, 30)) as pilot:
             await app._open_session(session.session_id)
             run_ids = []
-            # Let execution finish twice while rendering catches up later.
             async with app._session_surface_lock:
                 for prompt in ("First answer", "Second answer"):
                     handle = await owner.supervisor.submit(prompt, session_id=session.session_id)
@@ -194,7 +193,6 @@ async def test_run_status_reconciles_existing_summary_without_reloading(
             assert [entry for entry in history.entries if entry.kind != "run"] == [
                 entry for entry in original_entries if entry.kind != "run"
             ]
-            # Duplicate delivery preserves the one summary at its original boundary.
             await app.query_one(ConversationView).sync_run_summary(summaries(app)[0])
             assert len(history.entries) == len(original_entries)
     finally:

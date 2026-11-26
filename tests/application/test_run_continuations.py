@@ -232,7 +232,6 @@ async def test_continuation_execution_facts_use_consumed_inputs_and_actual_calls
         bind_tool_messages(store, run, batch, [assistant, receipt])
     store.save_run(run)
     store.append_messages(messages)
-    # Calls from other executions must not affect this outcome.
     other = MessageRecord(
         session_id=session.session_id,
         run_id="other-run",
@@ -260,7 +259,6 @@ async def test_continuation_execution_facts_use_consumed_inputs_and_actual_calls
     assert len(outcomes) == 1
     assert outcomes[0].tool_call_count == call_count
     assert outcomes[0].automatic_continuation is automatic
-    # The framework reports facts; each plugin owns its decision even with zero tool calls.
     assert settlement.queued is True
     assert settlement.run.continuation.action == "continue"
 
@@ -1687,8 +1685,6 @@ async def test_continuation_state_queue_and_event_share_native_failure_boundary(
         )
     with pytest.raises(PersistenceError):
         await service.settle(session_id=session.session_id, run_id=run.run_id)
-    # Files may still own a cross-file input decision, but none of its native
-    # state or events can escape a failed transaction.
     with session_connection(store, session.session_id) as connection:
         stored_run = RunRecord.model_validate_json(
             connection.execute(

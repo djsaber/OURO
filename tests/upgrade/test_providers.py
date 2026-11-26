@@ -91,7 +91,6 @@ def test_reasoning_text_upgrade_preserves_controls_and_binding_ownership(text_fi
     upgraded = hashes(text_field_home)
     assert upgrade(text_field_home)["status"] == "current"
     assert hashes(text_field_home) == upgraded
-    # Template structure is owned by its loader, outside the offline transaction.
     assert templates_path.read_bytes() == original_templates
     assert ProviderTemplateStore(text_field_home).catalog().entries
     assert json.loads(templates_path.read_text("utf-8"))["schema_version"] == SCHEMA_VERSION
@@ -167,7 +166,6 @@ def test_provider_readers_reject_config_outside_current_schema(provider_home: Pa
     assert json.loads(templates_path.read_text("utf-8"))["schema_version"] == SCHEMA_VERSION
     backup = next(templates_path.parent.glob("provider-templates.backup-v4-*.json"))
     assert backup.read_bytes() == before
-    # Invalid entries in a current catalog are isolated by the template reader.
     templates["schema_version"] = SCHEMA_VERSION
     templates_path.write_text(json.dumps(templates), encoding="utf-8")
     catalog = ProviderTemplateStore(provider_home).catalog()

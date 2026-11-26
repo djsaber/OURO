@@ -165,7 +165,6 @@ async def test_failed_receipt_restores_diagnostic_usage_and_exit_code(open_input
             repeated.usage,
         ) == (first.run, first.final_text, first.had_tool_error, first.error_code, first.usage)
         assert _run_exit_code(repeated) == 6 and provider._stream_count == 2
-        # Current-format Runs without a recorded invocation decision retain native evidence.
         persisted = reopened.store.load_run(ids["session_id"], first.run.run_id)
         metadata = dict(persisted.metadata)
         metadata.pop("invocation_result")
@@ -177,11 +176,9 @@ async def test_failed_receipt_restores_diagnostic_usage_and_exit_code(open_input
             retained.error_code,
             retained.usage,
         ) == (first.final_text, first.had_tool_error, first.error_code, first.usage)
-        # A subsequent invocation can finish the same Run without a tool error.
         resumed = await reopened.continue_run(session_id=ids["session_id"])
         assert resumed.run.run_id == first.run.run_id and not resumed.had_tool_error
         assert resumed.run.status == "completed"
-        # A writer can preserve the preceding terminal metadata when it continues the Run.
         reopened.store.save_run(
             resumed.run.model_copy(
                 update={

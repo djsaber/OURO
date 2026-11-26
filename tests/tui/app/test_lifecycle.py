@@ -1,5 +1,3 @@
-"""TUI application scenarios: lifecycle."""
-
 from __future__ import annotations
 
 import asyncio
@@ -238,10 +236,8 @@ async def test_enabled_without_effort_shows_the_resolved_default_level(tmp_path:
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         indicator = app.query_one(ActivityIndicator)
-        # The endpoint default resolves to enabled + low, shown as "low".
         assert indicator._reasoning == "low"
 
-        # Enabled is canonicalized to the endpoint's configured default effort.
         await pilot.press("slash", *"thinking", "enter", *"enabled", "enter")
         await pilot.pause()
         assert indicator._reasoning == "low"

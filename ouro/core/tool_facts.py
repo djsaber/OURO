@@ -30,7 +30,6 @@ class ToolCallIdentity:
     tool_call_id: str = Field(min_length=1)
 
     def __deepcopy__(self, memo: dict[int, Any]) -> Self:
-        # Three immutable strings need no duplicate identity in copied fact graphs.
         return self
 
 
@@ -148,7 +147,6 @@ class ToolOutcomeRecord(VersionedOuroModel):
 
     session_id: str
     identity: ToolCallIdentity
-    # Zero is a certain preflight rejection; positive attempts require a durable start.
     attempt: int = Field(ge=0)
     value: ToolResultValue
     observed_at: datetime = Field(default_factory=utc_now)

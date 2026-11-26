@@ -1,7 +1,4 @@
-"""Measure equal output split into different Draft fragment counts in disposable sessions.
-
-Run: uv run --frozen python -m dev.benchmarks.response_drafts --repeat 3
-"""
+"""Measure equal output split into different Draft fragment counts in disposable sessions."""
 
 from __future__ import annotations
 

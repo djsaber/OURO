@@ -563,8 +563,6 @@ class RuntimeService:
                 active_controller_ids=lambda: self._active_controller_ids_for_run(run_id),
             )
         if self._extension_catalog is not None:
-            # Application events without a retained Run snapshot resolve against
-            # the current immutable Catalog at publication time.
             return True
         return self.observers.has_registration(
             "runtime_event",
@@ -1303,7 +1301,7 @@ class RuntimeService:
                         on_provider_stream_start=on_provider_stream_start,
                     )
                 except QueuedInputSelectionChanged:
-                    pass  # Re-select the committed input after a competing start.
+                    pass
             elif admitted.run_id is not None:
                 return await run_blocking(self.sessions.run_result, destination, admitted.run_id)
         finally:
@@ -2070,8 +2068,6 @@ class RuntimeService:
         if self._session_scheduler is not None:
             await self._session_scheduler(session_id, history_epoch)
             return
-        # Direct Runtime callers own their execution capacity. Reentrant completion
-        # wakeups join this loop; supervised callers hand each attempt to the FIFO.
         if session_id in self._advancing_sessions:
             return
         self._advancing_sessions.add(session_id)
@@ -2360,8 +2356,6 @@ class RuntimeService:
             skill_instructions=self._instructions_for_run(run),
             prompt_context=self.context_preparation.local_prompt_context(),
         )
-        # Plugins can add system instructions during request preparation. Reserve their
-        # last measured fixed cost without invoking a provider from an input transaction.
         previous = self.sessions.effective_context_metrics(session.session_id)
         extra_fixed = (
             max(0, previous.estimated_fixed_tokens - view.metrics.estimated_fixed_tokens)
@@ -2729,7 +2723,6 @@ class RuntimeService:
             self._release_run_resources(run.run_id)
 
     def _release_run_resources(self, run_id: str) -> None:
-        # Drop the Run owner before invoking a lease callback that may fail.
         snapshot = self._detach_extension_snapshot(run_id)
         if snapshot is not None:
             snapshot.close()
@@ -2773,8 +2766,6 @@ class RuntimeService:
         run: RunRecord,
         model_round: int,
     ) -> RunRecord:
-        # A completed model/tool turn no longer owns an executable environment.
-        # The next request and its resulting calls share one current binding.
         resources = self._run_resources[run.run_id]
         if self._extension_catalog is not None:
             current_snapshot = self._extension_catalog.snapshot()

@@ -107,7 +107,6 @@ async def test_custom_page_tracks_initial_palette_saturation_and_hidden_updates(
             assert not page.active
             assert_palette(theme_id, level)
 
-        # A newly loaded page receives the currently resolved palette behind the menu.
         await host.set_welcome_style(WELCOME_STYLES["basic"])
         await host.set_welcome_style(package)
         page = host.page
@@ -255,7 +254,6 @@ async def test_full_page_controls_viewport_input_layout_composition_and_style_sc
             assert surface.region.width == width
             assert surface.region.y == (0 if top else height - surface.region.height)
             assert composer.region in surface.region
-            # Sample the actual composited frame outside the shared input and child widgets.
             y = height - 1 if top else 0
             row = app.screen._compositor.render_strips()[y].text
             assert len(row) == width
@@ -394,7 +392,6 @@ async def open_welcome_picker(app, pilot):
 async def test_theme_menu_navigates_packages_and_keeps_color_settings_independent(
     tmp_path: Path, standalone: bool
 ):
-    # A theme ID may also be a color ID; selecting it must not change the palette.
     package = WelcomeStyle("coral", "Ember", "A custom component.", CustomPage)
     app = OuroTuiApp(
         application=two_route_application(tmp_path),
@@ -809,7 +806,6 @@ def test_normal_startup_keeps_saved_theme_worker_alive(tmp_path: Path, monkeypat
 
     async def yielding_mount(matrix):
         mount(matrix)
-        # Exercise the valid ordering where the worker starts before Mount completes.
         await worker_started.wait()
 
     async def early_frame_loop(matrix):

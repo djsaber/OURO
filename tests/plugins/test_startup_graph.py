@@ -103,7 +103,6 @@ async def test_start_builds_and_starts_each_required_generation_once(tmp_path, d
     try:
         with patch.object(runtime.store, "read_state", wraps=runtime.store.read_state) as reads:
             await runtime.start()
-            # One recovery snapshot and two optimistic commit checks, independent of graph size.
             assert reads.call_count == 3
         assert Counter(key for action, key in events if action == "create") == Counter(
             dependencies.keys()

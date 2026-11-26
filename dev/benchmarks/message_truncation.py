@@ -1,7 +1,4 @@
-"""Offline suffix-cut probe: uv run python -m dev.benchmarks.message_truncation.
-
-Fixture creation is excluded from timings. Results are diagnostic, not CI limits.
-"""
+"""Measure the cost of removing a message suffix from a disposable session."""
 
 from __future__ import annotations
 

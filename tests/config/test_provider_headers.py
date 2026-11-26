@@ -114,7 +114,6 @@ def test_configuration_round_trip_preserve_replace_clear_and_public_redaction(
     assert options.headers == provider.headers
     assert "private-value" not in repr(options)
 
-    # This includes the integrated provider's explicit template synchronization path.
     facade.update_provider(provider_id, timeout=23)
     assert configs.get_provider(provider_id).headers == provider.headers
     before = configs.config_path.read_bytes()

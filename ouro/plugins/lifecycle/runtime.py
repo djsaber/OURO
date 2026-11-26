@@ -203,8 +203,6 @@ class PluginRuntimeResource:
         try:
             yield
         finally:
-            # Spawned background tasks must synchronize future independent work,
-            # and must not retain this catalog after the admitting callback ends.
             admission.catalog = None
             self._lifecycle_admission.reset(token)
 
@@ -636,8 +634,6 @@ class PluginRuntimeResource:
         self._model_generation = service
 
     async def bind_task(self, target: PluginTaskTarget) -> PluginTaskBinding:
-        # Capture and acquire without yielding. Lifecycle callbacks may create
-        # schedules after publication while the mutation owner is still active.
         if self._closed:
             raise RuntimeError("plugin runtime is closed")
         generation = self._active.get(target.plugin_id)
@@ -758,8 +754,6 @@ class PluginRuntimeResource:
                     None,
                 )
                 if generation is None:
-                    # A retirement already admitted at zero leases cannot be
-                    # reversed by acquiring another reference to that instance.
                     stopping = [
                         item.cleanup
                         for item in self._retired.values()
@@ -815,8 +809,6 @@ class PluginRuntimeResource:
                     generation.data_store.activate()
                 generation.tasks.activate()
                 generation.gate.open()
-                # These implementations serve existing Runs. Their background
-                # services and global contributions remain unpublished.
                 self._schedule_retirement(generation, reason="restart")
             return ContributionBinding(driver, tuple(leases)), tuple(generations.values())
         except BaseException:
@@ -1360,9 +1352,6 @@ class PluginRuntimeResource:
     def _ensure_catalog(self) -> ExtensionCatalog:
         with self._catalog_pointer_lock:
             current = self._current_catalog
-            # Background MCP discovery mutates the Host registry after plugin
-            # startup. New leases follow that baseline; existing leases keep the
-            # previously published immutable Catalog.
             if (
                 current is not None
                 and self._catalog_base is not None
@@ -1467,8 +1456,6 @@ class PluginRuntimeResource:
             current = self._ensure_catalog()
             assert self._catalog_base is not None
             catalog = current.with_tool_groups(self._catalog_base, groups)
-            # Construction validates all names and schemas before either state
-            # changes. Snapshot readers see one complete catalog under this lock.
             with self._catalog_pointer_lock:
                 self._current_catalog = catalog
                 endpoint.commit(group_id, version)
@@ -1677,7 +1664,7 @@ class PluginRuntimeResource:
         try:
             with self._admit_lifecycle_callbacks():
                 await generation.start_services(scopes=scopes)
-        except Exception as exc:  # The published contribution catalog remains usable.
+        except Exception as exc:
             generation.record.status = "degraded"
             generation.diagnostics.append(
                 PluginDiagnostic(
@@ -1693,7 +1680,6 @@ class PluginRuntimeResource:
                 with self._admit_lifecycle_callbacks():
                     await generation.stop_services(scopes=scopes)
             except Exception:
-                # stop_services retains the failed owners and their cleanup error.
                 generation.record.status = "failed"
 
     async def _build_generation(
@@ -1879,9 +1865,6 @@ class PluginRuntimeResource:
                         )
                     )
                     if code == "worker_exit":
-                        # A failed worker cannot finish its old execution contract.
-                        # Revoke this exact owner, including a retiring generation
-                        # still referenced by a model response or approval view.
                         active.revoke(cancel=True)
                         revoke_dependent_generations(
                             (*self._active.values(), *self._retired.values()),
@@ -2015,7 +1998,6 @@ class PluginRuntimeResource:
             package_digest = previous.package_digest
         if release is None:
             return
-        # Claim all available owners before their revoked gates wake retirement tasks.
         owners = tuple(
             generation
             for generation in self._retired.values()
@@ -2057,7 +2039,6 @@ class PluginRuntimeResource:
             return
         if (error := task.exception()) is not None:
             if has_retiring_owner:
-                # Its retirement publishes the error with the generation credential redactor.
                 return
             self._diagnostics.append(
                 PluginDiagnostic(

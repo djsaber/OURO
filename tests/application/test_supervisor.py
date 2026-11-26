@@ -308,8 +308,6 @@ async def test_fifo_scheduler_respects_global_concurrency_limit(tmp_path) -> Non
     supervisor = RuntimeSupervisor(_runtime(tmp_path, provider), max_concurrency=2)
 
     try:
-        # Disk-backed admission has no one-second latency contract. The gates
-        # establish overlap; the deadline only protects against a deadlock.
         async with asyncio.timeout(60):
             handles = [await supervisor.submit(f"prompt-{index}") for index in range(4)]
             assert await provider.starts.get() == "prompt-0"
@@ -468,8 +466,6 @@ async def test_continuation_rejects_an_attempt_before_it_reopens_the_old_run(tmp
                 session_id=first.session_id, run_id=failed.run_id
             )
             await entered.wait()
-            # The previous terminal record is still durable, but this attempt owns
-            # the session already; another continue must not wait on or duplicate it.
             with pytest.raises(SessionBusyError, match="supervised run"):
                 await supervisor.continue_run(session_id=first.session_id, run_id=failed.run_id)
             release.set()
@@ -492,8 +488,6 @@ async def test_slow_subscription_reports_lag_without_blocking_run(tmp_path) -> N
     try:
         async with asyncio.timeout(60):
             handle = await supervisor.submit("hello", session_id=session.session_id)
-            # Never consume the one-slot buffer until the producer completes:
-            # completion proves independence from the subscriber, not speed.
             terminal = await supervisor.wait(handle)
             notification = await subscription.get()
 
@@ -845,7 +839,6 @@ async def test_wait_run_shares_stream_and_reloads_only_run_transitions(tmp_path,
     monkeypatch.setattr(supervisor, "subscribe", observe_attachment)
     waiter = asyncio.create_task(supervisor.wait_run(session.session_id, run.run_id))
     try:
-        # Registration precedes replay. Count reads only after attachment returns.
         await asyncio.wait_for(attached.wait(), 30)
         calls = []
         original = runtime.store.load_run
@@ -863,7 +856,7 @@ async def test_wait_run_shares_stream_and_reloads_only_run_transitions(tmp_path,
                 payload={"text": "token"},
             )
             await asyncio.sleep(0)
-        assert len(calls) <= 1  # A bounded-buffer gap may trigger one canonical recheck.
+        assert len(calls) <= 1
         assert len(supervisor._event_streams) == 1
         waiter.cancel()
         with pytest.raises(asyncio.CancelledError):

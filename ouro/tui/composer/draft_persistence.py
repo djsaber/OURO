@@ -49,7 +49,6 @@ class InputDraftPersistence:
         self._save_requested.set()
         if self._task is None:
             self._task = asyncio.create_task(self._persist())
-        # Closing the Host cancels workers, but its pending disk save must finish.
         await asyncio.shield(self._task)
         if self._saved_revision < self._revision:
             raise ConfigError("Could not save the input draft; retry before sending")

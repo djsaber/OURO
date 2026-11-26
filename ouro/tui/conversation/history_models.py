@@ -45,7 +45,6 @@ class CompactionPresentation:
 @dataclass(frozen=True)
 class MessageSource:
     label: str
-    # Results point to a delegated child. Tasks and follow-ups point to the parent.
     child_delegation_id: str | None = None
 
 
@@ -63,11 +62,9 @@ class TranscriptEntry:
     agent: AgentTreeNode | None = None
     run: RunPresentation | None = None
     compaction: CompactionPresentation | None = None
-    # Source coordinates merge canonical windows; they do not change visual identity.
     source_sequence: int | None = field(default=None, compare=False)
     message_id: str | None = field(default=None, compare=False)
     direct_user_input: bool = field(default=False, compare=False)
-    # Character offset of the semantic reference suffix in the complete copy text.
     reference_start: int | None = None
     message_source: MessageSource | None = None
 

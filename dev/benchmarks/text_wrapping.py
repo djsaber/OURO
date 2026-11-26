@@ -1,8 +1,4 @@
-"""Measure Unicode wrapping, synchronous editing, and streaming flush costs.
-
-Run separately from pytest. Timings exclude terminal paint and IME processing;
-allocation peaks are measured separately so tracing does not distort timings.
-"""
+"""Measure Unicode wrapping, synchronous editing, and streaming flush costs."""
 
 from __future__ import annotations
 

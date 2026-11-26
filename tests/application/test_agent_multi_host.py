@@ -121,7 +121,6 @@ async def test_late_owner_settlement_cannot_rewind_shared_session_activity(
                 approval_id=pending.request_id,
                 approved=False,
             )
-            # Deny both requested calls; no shell process is invoked.
             assert (await second.supervisor.wait(handle)).status == "waiting_approval"
             pending = await interaction(second, parent.session.session_id)
             handle = await second.agents.resolve_agent_approval(
@@ -230,8 +229,6 @@ async def test_sync_result_crosses_real_process_boundary(tmp_path, backend, scen
         )
         process.start()
         try:
-            # Process startup, durable child execution and shutdown are not a
-            # 15-second SLA. Keep a deadlock guard and report a live peer clearly.
             await asyncio.to_thread(process.join, 60)
             assert not process.is_alive(), "child Host did not finish its protocol"
             assert process.exitcode == 0
@@ -277,7 +274,6 @@ async def test_sync_parent_wakes_when_child_finishes_on_another_host(tmp_path, b
         root = await first.supervisor.submit("Delegate", session_id=session.session_id)
         waiting = await first.supervisor.wait(root)
         run = first.runtime.store.load_run(root.session_id, waiting.run_id)
-        # The parent and its parked waiter belong to A; only child execution moves to B.
         resumed = await first.supervisor.resolve_tool_approval(
             session_id=root.session_id,
             run_id=run.run_id,
@@ -285,8 +281,6 @@ async def test_sync_parent_wakes_when_child_finishes_on_another_host(tmp_path, b
             approved=True,
         )
         assert (await first.supervisor.wait(resumed)).status == "waiting_child"
-        # Opening the same root on B arms a second durable waiter. Both Hosts
-        # must converge on one original ToolCall and one parent continuation.
         await second.agents.reconcile_root(root.session_id)
         for index in range(1 if scenario == "provider_failure" else 2):
             pending = await interaction(second, root.session_id)
@@ -307,8 +301,6 @@ async def test_sync_parent_wakes_when_child_finishes_on_another_host(tmp_path, b
             assert terminal.status == expected_status, second.runtime.store.load_run(
                 pending.child_session_id, pending.child_run_id
             ).error
-        # A receipt ends at parking; durable Run observation spans continuation
-        # on either Host without synchronous polling that competes with writes.
         await wait_for_parent_delivery(first.supervisor, root.session_id, run.run_id)
         async with asyncio.timeout(60):
             completed = await first.supervisor.wait_run(root.session_id, run.run_id)
@@ -509,8 +501,6 @@ async def test_child_starts_with_current_host_capabilities_and_resumes_sync_pare
             approval_mode="approval", current_model=first.runtime.current_model().key
         ).session
         root = await first.supervisor.submit("Delegate", session_id=session.session_id)
-        # The accepted task keeps its authority ceiling; the child makes its
-        # first decision with the second Host's current implementation.
         waiting = await asyncio.wait_for(first.supervisor.wait(root), 60)
         run = first.runtime.store.load_run(root.session_id, waiting.run_id)
         assert run.status == "waiting_approval"

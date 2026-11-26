@@ -461,8 +461,6 @@ def prepare_session_commit(
                 and request_header.response_closed_at is not None
             )
         ),
-        # The latest context records the last prepared request. Appending its response
-        # and updating Harness state do not invalidate that fact. History withdrawal does.
         invalidate_context=truncation is not None,
         inputs=request.inputs,
         input_states=changed_inputs,

@@ -164,8 +164,6 @@ async def test_session_dispatches_input_while_stream_rendering_is_pending(
             assert composer.region == bounds
             assert app.focused is composer
             assert app.cursor_position == composer.cursor_screen_offset
-            # A visible-content handoff keeps frame order while the editor
-            # remains responsive; later deltas cannot overtake that transfer.
             draining = asyncio.create_task(app._flush_pending_runtime_events())
             await asyncio.sleep(0)
             assert not draining.done()
@@ -307,7 +305,6 @@ async def test_session_frames_preserve_editor_and_menu_cursor_during_live_update
                 assert app.cursor_position == composer.cursor_screen_offset
                 assert app.focused is composer
                 assert conversation.scroll_y == held_scroll
-            # Refreshing the transcript must not take focus back from an overlay.
             app.action_actions()
             async with asyncio.timeout(2):
                 while not isinstance(app.screen, ChoiceScreen):
@@ -333,7 +330,6 @@ async def test_session_frames_preserve_editor_and_menu_cursor_during_live_update
             last_sequence = await producing
         await app._flush_pending_runtime_events()
         assert app._projection is not None and app._projection.last_sequence == last_sequence
-        # Standalone pointer-shape controls do not move the text cursor.
         frames = [(data, cursor) for data, cursor in writes if re.search(r"\x1b\[\d+;\d+H", data)]
         assert len(frames) > 5
         assert all(data.endswith(cursor) for data, cursor in frames), [

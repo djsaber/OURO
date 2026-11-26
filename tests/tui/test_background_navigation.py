@@ -106,8 +106,6 @@ async def test_idle_submission_does_not_present_follow_up_queue(
             assert await provider.started.get() == "Previous input"
             provider.finish("Previous input")
 
-        # Prepare a completed turn through producer handshakes, not a startup
-        # latency budget. Own both tasks so failure or cancellation settles them.
         async with asyncio.timeout(60), asyncio.TaskGroup() as preparation:
             previous = preparation.create_task(application.runtime.run("Previous input"))
             preparation.create_task(complete_previous_stream())
@@ -179,7 +177,6 @@ async def test_idle_submission_does_not_present_follow_up_queue(
             assert True not in transitions
             accepted_snapshot = application.runtime.observation_snapshot(session_id)
 
-            # Explicit reentry also uses the accepted input, not only the empty body.
             await app._open_session(session_id)
             await pilot.pause()
             assert not welcome.welcome_active
@@ -196,7 +193,6 @@ async def test_idle_submission_does_not_present_follow_up_queue(
                 pilot,
                 description="new input and its own answer observed",
             )
-            # Loading an older boundary must not mix in a newly consumed queue.
             accepted_view = await app._controller.load_observation_snapshot(accepted_snapshot)
             assert [item.prompt for item in accepted_view.snapshot.queued_inputs] == ["First input"]
             assert accepted_view.snapshot.session.active_run_id is None
@@ -307,7 +303,6 @@ async def test_background_completion_preserves_destination_and_draft(
     app = OuroTuiApp(application=application)
     async with run_ready_app(app, size=(100, 32)) as pilot:
         session_id, worker = await submit(app, pilot, provider, "Alpha")
-        # Reopening first also exercises release of an actual live subscription.
         await app._open_session(session_id)
         subscription = app._observation_subscription
         app.query_one(Composer).load_text("Alpha draft")
@@ -438,8 +433,6 @@ async def test_usage_refresh_does_not_update_hidden_welcome_and_reentry_reads_cu
             assert calls == 1
             if reenter_before_read:
                 await app._new_session()
-                # Reentry schedules a full refresh after layout. Make sure it
-                # joins the in-flight read before releasing that stale result.
                 await wait_until(
                     lambda: app._welcome_refresh_requested == "system",
                     pilot,
@@ -453,8 +446,6 @@ async def test_usage_refresh_does_not_update_hidden_welcome_and_reentry_reads_cu
 
             await asyncio.wait_for(full_status_read.wait(), 5)
             assert calls == 2
-            # A completed usage query is not a published full snapshot. Neither
-            # the hidden view nor the reentered view may receive the stale read.
             assert app.query_one(WelcomePanel)._status.usage_request_count == (
                 status.usage_request_count
             )
@@ -512,8 +503,6 @@ async def test_two_owned_sessions_keep_streaming_across_welcome_and_reentry(
             provider.finish("Alpha")
             await asyncio.wait_for(alpha_worker.wait(), 60)
             await wait_for_events(entered, pilot=pilot, description="terminal summary application")
-            # Execution and the terminal projection precede the summary application
-            # and transcript freeze. Neither is the content-application receipt.
             assert app._projection.activity.status == "completed"
             observation = app._observation_subscription
             terminal = await asyncio.to_thread(
@@ -806,7 +795,6 @@ async def test_queue_refresh_serializes_reads_and_preserves_latest_inputs(
             await asyncio.wait_for(entered.wait(), 5)
             refreshes.append(asyncio.create_task(refresh_after_change()))
             await asyncio.wait_for(requested.wait(), 5)
-            # Snapshot freshness follows actual reads, not task creation order.
             assert reads == 1
         finally:
             release.set()

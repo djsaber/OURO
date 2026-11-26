@@ -43,8 +43,6 @@ def plugin_invocation(
     inherit_run_ports: bool = True,
 ) -> Generator[PluginInvocation]:
     parent = current_invocation.get()
-    # A Host-accepted Driver starts a new Run scope; a child may outlive the
-    # callback which accepted it. Ordinary nested calls inherit their caller.
     if parent is not None and native_run is None:
         parent.require_active()
         writable = writable and parent.writable

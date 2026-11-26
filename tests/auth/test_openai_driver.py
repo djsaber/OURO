@@ -75,7 +75,7 @@ async def test_browser_grant_commit_refresh_snapshot_and_logout(tmp_path, openai
                     )
                     assert response.status_code == 200
                 grant = await attempt.wait()
-                assert await service.list_credentials() == ()  # The driver cannot commit login.
+                assert await service.list_credentials() == ()
                 saved = await service.commit(
                     new_id("cred"), driver.descriptor.driver_id, grant, expected_revision=0
                 )
@@ -100,7 +100,7 @@ async def test_browser_grant_commit_refresh_snapshot_and_logout(tmp_path, openai
                 "rotated-refresh"
                 not in (await service.status(saved.credential_id)).model_dump_json()
             )
-            assert await auth.recover(first)  # Late 401 observes the newer revision.
+            assert await auth.recover(first)
             assert len(requests) == 2
 
             await service.logout(saved.credential_id, saved.driver_id)
@@ -322,9 +322,6 @@ async def test_pending_browser_exchange_is_stopped_without_closing_borrowed_http
             if cancel:
                 await attempt.cancel()
             else:
-                # Explicit close must cancel an in-flight exchange too. Expiry
-                # belongs to TaskAuthorizationAttempt's deadline tests; a 200ms
-                # browser round trip is not part of this driver's contract.
                 await attempt.close()
             with pytest.raises(AuthError) as failure:
                 await attempt.wait()

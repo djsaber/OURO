@@ -217,9 +217,7 @@ def prepare_batch_changes(
                 or proposed.child_run_id != wait.child_run_id
             ):
                 raise ToolFactConflict("a started Call cannot replace its Agent wait binding")
-            # The Agent service binds before child dispatch, while the executor
-            # still holds its pre-dispatch batch. Cancellation must retain that
-            # binding and cannot reopen a wait already resolved by settlement.
+            # Cancellation must preserve a child binding committed after this batch was read.
             if proposed is None or wait.resolution is not None:
                 item = item.model_copy(update={"agent_wait": wait})
         materialized.append(item)

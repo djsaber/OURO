@@ -666,7 +666,6 @@ async def test_result_commit_interruption_recovers_checkpoint_without_repeating_
         saved = store.load_run(failed.session.session_id, failed.run.run_id)
         assert saved.driver_checkpoint.state == ("ready" if after_commit else "pending")
         assert saved.active_tool_batch.phase == ("completed" if after_commit else "executing")
-        # The only durable result body belongs to Outcome; Run stores its batch head.
         assert "calls" not in saved.active_tool_batch.model_dump()
         saved_content = load_tool_batch(store, saved).calls[0].result.content
         assert saved_content[0] == content[0]

@@ -96,7 +96,6 @@ class ArchivePathScreen(EditableChoiceScreen):
                 self._filename = value if value.lower().endswith(".zip") else f"{value}.zip"
         except (OSError, RuntimeError, ValueError) as exc:
             self.notify(str(exc), severity="error", markup=False)
-            # A rejected edit stays open so the user can correct it or cancel.
             return None
         return await self._path_choices()
 

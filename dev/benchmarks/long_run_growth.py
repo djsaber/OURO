@@ -1,8 +1,4 @@
-"""Real Run/summary/observer growth with isolated data and no external network.
-
-uv run --frozen python -m dev.benchmarks.long_run_growth --rounds 8 64 --repeat 3
-RSS is sampled at Provider boundaries; this is not a process peak or cold-cache benchmark.
-"""
+"""Measure storage, active input, and observer growth during a synthetic Run."""
 
 from __future__ import annotations
 
@@ -95,7 +91,6 @@ class Provider:
         if self.count == self.abort_at:
             self.paused.set()
             await asyncio.Future()
-        # Constant output size, independent of stream slicing.
         for index in range(self.chunks):
             start, end = index * 4096 // self.chunks, (index + 1) * 4096 // self.chunks
             yield ProviderStreamEvent(type="text_delta", text="x" * (end - start))
@@ -125,7 +120,6 @@ async def sample(root, backend, rounds, chunks, slow_reader, abort_at):
     database = root / "sessions.db"
     store = LocalSessionStore(root) if backend == "files" else SQLiteSessionStore(database)
     store.initialize()
-    # An unrelated, intentionally retained read is the only slow-query injection.
     other = SessionRecord()
     store.create_session_snapshot(
         other, [MessageRecord.text(session_id=other.session_id, role="user", text="unrelated")]

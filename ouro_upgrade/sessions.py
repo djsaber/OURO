@@ -41,7 +41,6 @@ from ouro_upgrade.records import convert, validate
 from ouro_upgrade.units import UpgradeUnit, UpgradeUnits
 from ouro_upgrade.workspace import Workspace
 
-# Source container families select a reader, independently of the target writer.
 FILE_LAYOUTS = {9: "records", 41: "native", 42: "native", 43: "native", 44: "native", 45: "native"}
 
 
@@ -226,7 +225,6 @@ def file_session(work: Workspace, directory: Path) -> SessionIndexEntry:
             work.stage(path, None)
     for path, output_path in outputs.items():
         work.stage(path, output_path)
-    # Obsolete notifications and receipts remain in the maintenance backup only.
     old_events = f"{relative}/events.jsonl"
     if work.path(old_events).exists():
         work.stage(old_events, None)
@@ -303,7 +301,6 @@ def files(work: Workspace, units: UpgradeUnits) -> None:
                 )
             )
         work.progress("sessions", number, len(directories))
-    # Keep the home gated until every native container supports the current reader.
     if family == "native" and version != DATA_LAYOUT_VERSION and len(units.failures) > failures:
         return
     index = SessionIndex(sessions=sort_catalog_entries(entries)).model_dump(mode="json")
@@ -328,7 +325,6 @@ def sqlite(connection: sqlite3.Connection, units: UpgradeUnits) -> bool | Path:
     work = units.work
     target = work.temporary()
     store = SQLiteSessionStore(target)
-    # This unpublished database is exclusively owned by the upgrade workspace.
     store._initialize_schema()
     store._connections.close_idle()
     tables = {

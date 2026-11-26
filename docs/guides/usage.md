@@ -1,7 +1,5 @@
 # 查询 Token 与费用
 
-> 文档类型：使用指南
-
 全局账本按每次完成的供应商模型请求记录 usage，覆盖普通 Agent 回合和上下文压缩请求。这里的 token
 只来自 Provider 响应；`ContextBuilder` 对上下文长度的本地估算仅用于预算和触发压缩，绝不会作为账本
 缺失值的回退来源。`estimated_cost` 的框架契约固定为 USD；只有 adapter 能保证该语义时才可自动填入，

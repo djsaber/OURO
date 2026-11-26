@@ -125,8 +125,6 @@ async def test_cross_host_draft_snapshot_live_and_closed_cursor_converge(stores)
                 for event in batch.events:
                     projection.apply(observation_event(event))
                 observation.acknowledge(batch)
-        # Finish while another prefix is still unread. The cursor must converge
-        # through the immutable response, not depend on retaining old fragments.
         writer.append_response_draft(
             session.session_id,
             header.context_id,
@@ -224,7 +222,6 @@ def test_recovery_reads_only_current_draft_and_never_turns_parameters_into_calls
     store.create_session(session)
     store.save_run(run)
     header = persist_response_draft(store, run, turn_id="turn", text="partial", reasoning="thought")
-    # Provider done is an observation, not evidence of a committed response.
     store.settle_request_header(
         session.session_id,
         header.context_id,

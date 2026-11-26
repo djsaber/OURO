@@ -213,7 +213,6 @@ class PluginProvider:
                     raise TypeError("Provider output must be ProviderEvent")
                 event = ProviderStreamEvent.model_validate(value, from_attributes=True)
                 if event.continuation is not None:
-                    # Opaque protocol blocks may contain nested mutable provider data.
                     event.continuation = event.continuation.model_copy(deep=True)
                 if event.error is not None:
                     event.error = redactor.redact(event.error)

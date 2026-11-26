@@ -106,7 +106,6 @@ def test_message_queries_follow_other_writer_and_history_truncation(tmp_path, ba
     )
     replacement = message("run_three", "queue_three", "replacement" * 200)
     append_input_messages(writer, [replacement])
-    # The file is now larger than the cached size; size alone is not a revision.
     assert reader.find_queued_input_message(session.session_id, "queue_two") is None
     assert reader.load_run_messages(session.session_id, "run_two") == []
     assert reader.load_message(session.session_id, replacement.message_id) == replacement
@@ -167,7 +166,6 @@ def test_cold_and_repeated_local_queries_never_scan_unselected_history(tmp_path,
     with monkeypatch.context() as patch:
         patch.setattr(Path, "open", guarded)
         for _ in range(3):
-            # Fresh adapters have no warmed offset table to conceal a scan.
             reader = LocalSessionStore(tmp_path)
             assert reader.load_run_messages(session.session_id, "run_199") == history[-1:]
             assert reader.find_queued_input_message(session.session_id, "absent") is None

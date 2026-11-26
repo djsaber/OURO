@@ -23,7 +23,6 @@ class _RemoteRegistration:
     async def close(self) -> None:
         if self.closed:
             return
-        # Disable local entry before asking the provider to remove its reference.
         self.owner.handlers.pop(self.handler_id, None)
         await self.owner.peer.close_registration(self.identity)
         self.closed = True

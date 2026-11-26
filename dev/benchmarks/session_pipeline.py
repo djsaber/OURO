@@ -1,8 +1,4 @@
-"""Offline session/TUI responsiveness probe using only disposable synthetic data.
-
-Run: uv run python -m dev.benchmarks.session_pipeline --repeat 3
-Timing distributions are diagnostic, not machine-independent CI assertions.
-"""
+"""Offline session/TUI responsiveness probe using only disposable synthetic data."""
 
 from __future__ import annotations
 

@@ -194,8 +194,6 @@ class NativeRunDriverContext:
 
     async def consume_inputs(self) -> tuple[MessageRecord, ...]:
         async with self._operation():
-            # The algorithm may start a new decision without a model or tool
-            # operation, for example after waiting on a plugin service.
             self._inputs_checked = False
             return tuple(message.model_copy(deep=True) for message in await self._deliver_inputs())
 
@@ -327,8 +325,6 @@ class NativeRunDriverContext:
                     self.had_tool_error |= any(item.is_error for item in checkpoint_resume.results)
                     resume = checkpoint_resume
                 elif self.turn_id is not None:
-                    # The built-in algorithm can continue from native facts after
-                    # interruption; arbitrary plugin code requires an unused checkpoint.
                     resume = DriverResume("turn", ())
             task = asyncio.ensure_future(handler(self, resume))
             cancellation = asyncio.create_task(self.signal.wait())

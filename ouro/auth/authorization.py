@@ -28,8 +28,6 @@ class TaskAuthorizationAttempt:
         deadline = loop.time() + (challenge.expires_at - clock()).total_seconds()
         self._challenge = challenge
         self._exchange = asyncio.create_task(self._authorize(authorize, deadline))
-        # Keep cleanup outside the cancelled exchange. Even cancellation before
-        # its first instruction must release resources already opened by begin.
         self._completion = asyncio.create_task(self._finish(cleanup, cleanup_timeout))
         self._completion.add_done_callback(self._completed)
 
@@ -68,8 +66,6 @@ class TaskAuthorizationAttempt:
                 raise AuthError("authorization_expired")
             async with timer:
                 grant = await authorize()
-            # A driver's cancellation handler must not turn an expired or
-            # cancelled exchange into a grant that Application could commit.
             if timer.expired() or asyncio.get_running_loop().time() >= deadline:
                 raise AuthError("authorization_expired")
             task = asyncio.current_task()
@@ -83,7 +79,6 @@ class TaskAuthorizationAttempt:
         except AuthError:
             raise
         except Exception:
-            # Driver failures can contain callback URLs or raw token responses.
             raise AuthError("authorization_failed") from None
 
     async def _finish(self, cleanup: Callable[[], Awaitable[None]], cleanup_timeout: float) -> None:
@@ -102,5 +97,4 @@ class TaskAuthorizationAttempt:
     @staticmethod
     def _completed(task: asyncio.Task[None]) -> None:
         if not task.cancelled():
-            # Retrieve unattended failures; wait/close can still observe them.
             task.exception()

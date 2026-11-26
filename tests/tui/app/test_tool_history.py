@@ -1,5 +1,3 @@
-"""TUI application scenarios: tool history."""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -151,13 +149,6 @@ async def test_tool_batch_mounts_publishes_history_and_unmounts_once(
 
 @pytest.mark.asyncio
 async def test_history_load_renders_tool_calls_between_messages(tmp_path: Path) -> None:
-    """Loading a persisted session must render tool calls, not just text.
-
-    A tool call spans two messages: an assistant message carrying the request
-    (``tool_calls``) and a following ``tool_result`` message carrying the
-    outcome reference. ``load_messages`` must pair them and render a
-    ``ToolActivityRow`` in the right dialogue position.
-    """
     app = OuroTuiApp(application=_application(tmp_path))
     tool_call_id = "tool_history_read"
     tool_started_at = datetime(2026, 8, 26, 10, 0, tzinfo=UTC)
@@ -218,7 +209,6 @@ async def test_history_load_renders_tool_calls_between_messages(tmp_path: Path) 
         assert "config.json" in rendered
         assert "3.0s" in rendered
 
-        # Dialogue order: user text, tool row, assistant text — interleaved.
         kinds = [entry.kind for entry in history.entries]
         assert kinds == ["user", "tool", "assistant"]
 
@@ -386,7 +376,6 @@ async def test_history_load_projects_harness_visibility_from_message_record(
 
 @pytest.mark.asyncio
 async def test_history_load_marks_failed_tool_calls(tmp_path: Path) -> None:
-    """A tool_result with is_error must surface as a failed tool row."""
     app = OuroTuiApp(application=_application(tmp_path))
     tool_call_id = "tool_history_fail"
     messages = (

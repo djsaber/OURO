@@ -199,14 +199,11 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
 
         self._follow_tail = False
         self._restored_scroll_y = max(0.0, scroll_y)
-        # Cached rows can repaint before layout. Publish their saved offset now
-        # and let arrange() clamp it to the destination's actual geometry.
         self.set_scroll(None, self._restored_scroll_y)
         self.refresh(layout=True)
 
     def watch_scroll_y(self, old_value: float, new_value: float) -> None:
         super().watch_scroll_y(old_value, new_value)
-        # Layout rounds animated offsets to cells; detect the visible edge once.
         if (
             not self._follow_tail
             and self._restored_scroll_y is None
@@ -382,8 +379,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         )
 
         if not transcript:
-            # An empty body may belong to an accepted input awaiting execution.
-            # History replacement does not choose which page the user is visiting.
             self._history.replace(())
             self.anchor()
             return
@@ -446,8 +441,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
 
     async def add_user(self, text: str, *, created_at: datetime | None = None) -> None:
         await self._dismiss_welcome()
-        # A new user turn closes the preceding model round. Persist the live
-        # assistant before appending the next chronological history boundary.
         await self.finish_assistant()
         self._history.append(
             TranscriptEntry(
@@ -488,8 +481,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
     ) -> None:
         await self._dismiss_welcome()
         if self._assistant is not None and self._assistant.has_text:
-            # Reasoning after answer text starts a new model round; the previous
-            # round must freeze before the new one renders below it.
             await self.finish_assistant()
         turn = self._ensure_turn()
         await turn.append_reasoning(text, started_at=started_at)
@@ -591,8 +582,6 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
             for tool in tools
         )
         if has_new_tool:
-            # A tool call is a chronological boundary between model rounds.
-            # Freeze the preceding assistant segment before rendering the tool.
             await self.finish_assistant()
         new_rows: list[ToolActivityRow] = []
         for tool in tools:
@@ -608,9 +597,7 @@ class ConversationView(RangeSelectionOnly, VerticalScroll):
         if new_rows:
             await self._transcript.mount_all(new_rows, before=self._live_turn)
 
-        # Keep a tool batch live until every row is terminal. Archiving rows one
-        # by one would move a later-completing row ahead of an earlier active row
-        # because the immutable history always precedes the live widget region.
+        # Freeze the whole batch together to preserve call order across out-of-order completion.
         if self._tools and all(is_terminal_tool(row.tool) for row in self._tools.values()):
             await self._retire_tools(tuple(self._tools.values()))
 

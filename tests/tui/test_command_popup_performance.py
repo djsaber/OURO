@@ -47,7 +47,6 @@ async def test_large_menu_formats_only_viewport_rows(monkeypatch, operation, cou
             await resize_terminal(pilot, 44, 22)
         await pilot.pause()
         assert popup.selected_argument == arguments[operation == "navigate"]
-        # Several layout/paint passes are allowed; formatting the whole catalog is not.
         assert truncated < 100
 
 

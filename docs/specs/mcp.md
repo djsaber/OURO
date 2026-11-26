@@ -1,7 +1,5 @@
 # MCP 客户端规格
 
-> 文档类型：现行规格
-
 ## 边界与依赖
 
 `ouro.mcp` 是 MCP Python SDK 的唯一适配边界。SDK 的 session、capability、tool、content 和异常对象不得

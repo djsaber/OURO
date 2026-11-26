@@ -95,7 +95,6 @@ class PromptConfigManager:
         try:
             config = PromptConfig.model_validate(raw.get("prompts", {}))
         except ValidationError as exc:
-            # Diagnostics must identify the invalid field without copying prompt bodies.
             errors = exc.errors(include_input=False, include_url=False, include_context=False)
             raise ConfigError(f"invalid prompts config: {errors}") from exc
         return PromptConfigSnapshot(config=config, config_path=self.config_path)
@@ -111,7 +110,6 @@ class PromptConfigManager:
     ) -> PromptConfigSnapshot:
         current = self._require_revision(expected_revision)
         entries = list(current.entries(kind))
-        # Allocate identity only on creation, never while reading or rendering drafts.
         values = PromptDraft.model_validate(draft.model_dump())
         entry = PromptEntry(
             id=new_id("prompt") if entry_id is None else entry_id, **values.model_dump()
@@ -121,7 +119,6 @@ class PromptConfigManager:
         else:
             index = self._entry_index(entries, entry_id)
             entries[index] = entry
-        # Selecting a replacement is one atomic switch, never a transient double selection.
         if kind == "replacement" and entry.enabled:
             entries = [
                 item.model_copy(update={"enabled": False}) if item.id != entry.id else item

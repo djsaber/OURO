@@ -140,7 +140,6 @@ def _terminal_activity_fields(
     tools: tuple[RuntimeToolCallActivity, ...],
     ended_at: datetime | None,
 ) -> dict[str, Any]:
-    # Stream fragments are previews, not accepted calls with an execution outcome.
     tools = tuple(tool for tool in tools if tool.status != "streaming")
     if status in {"failed", "aborted", "recoverable"}:
         tools = _mark_unsettled_tool_calls(
@@ -271,8 +270,6 @@ def reduce_runtime_activity(
             run_phase="tool_preflight",
             batch_phase="planned",
             batch_id=_string_or_none(payload.get("batch_id")),
-            # Preserve stream identities until each canonical request promotes
-            # its matching entry instead of exposing a duplicate call.
             tool_calls=tuple(item for item in current.tool_calls if item.status == "streaming"),
         )
     elif event_type == "tool_call_requested":
@@ -401,11 +398,6 @@ def runtime_activity_changed(
     previous: RuntimeActivitySnapshot,
     current: RuntimeActivitySnapshot,
 ) -> bool:
-    # Stream content is already delivered by the ordered event channel. Retain
-    # its bounded tail for snapshot/resync consumers without publishing a
-    # second high-frequency activity notification for every provider delta.
-    # Reducers structurally share unchanged values. Compare those values
-    # directly so a clock/sequence update never serializes every tool result.
     if any(
         getattr(previous, name) != getattr(current, name) for name in _ACTIVITY_COMPARISON_FIELDS
     ):
@@ -772,9 +764,7 @@ def _append_streaming_tool_call(
         matched = True
     if not matched:
         turn_id = _string_or_none(payload.get("turn_id")) or "turn"
-        # A provider id may itself arrive in fragments. Turn plus canonical
-        # source index gives the activity a stable identity until the parsed
-        # request promotes it to the provider's final tool-call id.
+        # Use turn and source index until the streamed provider ID is complete.
         updated.append(
             RuntimeToolCallActivity(
                 tool_call_id=f"stream:{turn_id}:{index}",

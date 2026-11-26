@@ -186,8 +186,6 @@ async def test_httpx_transport_reports_http_errors() -> None:
 
 @pytest.mark.asyncio
 async def test_httpx_transport_streaming_connection_drop_reports_error_type() -> None:
-    # A dropped keep-alive connection surfaces as an httpx.RequestError whose
-    # message is empty; the boundary must still yield a diagnosable reason.
     def handler(request: httpx.Request) -> httpx.Response:
         del request
         raise httpx.ReadError("")
@@ -1337,7 +1335,6 @@ async def test_reasoning_response_and_replay_are_independent_of_request_controls
         content=[TextContent(text="4")],
         reasoning_content=response["reasoning_content"],
     )
-    # Generation controls do not select or rename historical reasoning.
     model = model.model_copy(
         update={
             "reasoning": EndpointReasoningConfig().capability,

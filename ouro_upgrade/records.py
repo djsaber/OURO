@@ -112,7 +112,6 @@ def _required_facts(parsed: object, raw: object) -> None:
     elif isinstance(parsed, (list, tuple)) and isinstance(raw, list):
         for item, source in zip(parsed, raw, strict=True):
             _required_facts(item, source)
-    # Open dictionaries are intentionally not traversed.
 
 
 def _add(value: dict[str, Any], key: str, default: object) -> None:
@@ -323,7 +322,7 @@ def _agent_catalog_v1_to_v2(value: dict[str, Any]) -> None:
 
 
 def _run_v10_to_v11(value: dict[str, Any]) -> None:
-    pass  # Nested records follow their own structural and schema transitions.
+    pass
 
 
 def _delegation_v2_to_v3(value: dict[str, Any]) -> None:
@@ -386,7 +385,6 @@ def _nested(kind: str, value: dict[str, Any]) -> Iterator[tuple[str, dict[str, A
 def _needs_upgrade(kind: str, value: dict[str, Any]) -> bool:
     version = value.get("schema_version")
     if type(version) is not int or version != MODELS[kind].model_fields["schema_version"].default:
-        # The transition executor rejects unsupported versions before transforming.
         return True
     if next(retired_fields.members(kind, value), None) is not None:
         return True
@@ -403,8 +401,6 @@ def advance_record(kind: str, value: dict[str, Any]) -> None:
 
 
 def _convert_owned(kind: str, value: dict[str, Any]) -> None:
-    # The outer conversion owns this subtree. Its final model validation checks
-    # the complete record graph, including required persisted facts, exactly once.
     advance(
         kind,
         value,

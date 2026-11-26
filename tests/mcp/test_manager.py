@@ -193,7 +193,6 @@ async def test_stop_during_default_factory_load_does_not_open_transport(monkeypa
         await manager.start_background("fs")
         assert await asyncio.to_thread(entered.wait, 5)
         stopping = asyncio.create_task(manager.stop("fs"))
-        # The stop flag is set before the owner resumes loading the transport.
         while manager.get("fs").status != "stopping":
             await asyncio.sleep(0)
         release.set()

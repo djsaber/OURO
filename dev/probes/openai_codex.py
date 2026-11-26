@@ -188,7 +188,6 @@ async def run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         report["stage"] = stage
         return report, 130
     except Exception:
-        # External exceptions and tracebacks may contain tokens or callback URLs.
         report["error_code"] = "probe_internal_error"
     report["stage"] = stage
     return report, 1

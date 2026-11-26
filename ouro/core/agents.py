@@ -132,7 +132,6 @@ class EffectiveToolRef(OuroModel):
         return (
             self.public_name == current.public_name
             and self.canonical_tool_id == current.canonical_tool_id
-            # Plugin canonical ids carry stable ownership; registry owners also encode generation.
             and (
                 not self.canonical_tool_id.startswith("ouro.host/tools/")
                 or self.owner_id == current.owner_id

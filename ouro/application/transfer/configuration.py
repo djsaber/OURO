@@ -44,7 +44,6 @@ def import_configuration(home: Path, archive: DataArchive, *, replace: bool) -> 
         if kind == "providers":
             _validate_compaction_reference(home, raw)
         if kind in {"agents", "prompts"}:
-            # A replacement is a new local revision, never an imported CAS token.
             revision = (
                 AgentDefinitionsConfigManager(home).snapshot().revision
                 if kind == "agents"
@@ -75,8 +74,6 @@ def validate_configuration(kind: DataKind, raw: dict[str, Any]) -> None:
             else:
                 raise DataTransferError(f"unsupported configuration kind: {kind}")
     except (ConfigError, ValidationError, TypeError, ValueError) as exc:
-        # Configuration validators may include input values. Keep foreign values
-        # out of host error output, including malformed secret-bearing fields.
         raise DataTransferError(f"invalid {kind} configuration in archive") from exc
 
 

@@ -60,8 +60,6 @@ def validate_plugin_package(
     file_count, total_bytes, digest = validate_package_tree(package_root, limits=limits)
     configuration_schema = validate_manifest_paths(package_root, manifest)
     if manifest.contributes.mcp_servers:
-        # Local import keeps package-path primitives below the MCP adapter while
-        # still making installation a complete, side-effect-free static audit.
         from ouro.plugins.mcp import validate_plugin_mcp_descriptors
 
         validate_plugin_mcp_descriptors(manifest, package_root)

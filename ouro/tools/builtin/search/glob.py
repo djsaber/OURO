@@ -123,7 +123,7 @@ def _directory_arg(raw: str | None, context: ToolExecutionContext) -> Path:
 
 @dataclass(frozen=True)
 class GlobResult:
-    matches: tuple[FileEntry, ...]  # most recently modified first, capped at limit
+    matches: tuple[FileEntry, ...]
     total: int
 
 

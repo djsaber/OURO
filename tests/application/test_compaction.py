@@ -348,7 +348,6 @@ async def test_prompt_snapshot_survives_config_update_during_compaction(tmp_path
         assert len(resolutions) == 1
         assert resolutions[0].system_prompt == "Before"
         sent = len(provider.calls)
-        # A fresh request budgets the new instructions instead of reusing the old snapshot.
         blocked = await runtime.run("next", session_id=session.session_id)
         assert blocked.run.status == "paused"
         assert len(provider.calls) == sent

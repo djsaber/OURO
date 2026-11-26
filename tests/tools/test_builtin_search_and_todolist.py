@@ -61,11 +61,6 @@ def glob_backend(request, monkeypatch, python_search_backend):
     monkeypatch.setattr(registration, "detect_ripgrep", lambda: executable)
 
 
-# ---------------------------------------------------------------------------
-# Definition and registry assembly
-# ---------------------------------------------------------------------------
-
-
 def test_grep_small_file_does_not_allocate_the_full_file_limit(workspace):
     import tracemalloc
 
@@ -96,11 +91,6 @@ def test_search_and_todolist_tools_are_assembled_as_host_builtins() -> None:
     assert all(
         "plugin_id" not in tools[name].definition.metadata for name in ("Glob", "Grep", "TodoList")
     )
-
-
-# ---------------------------------------------------------------------------
-# Glob
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("mode", ["files_with_matches", "count_matches"])
@@ -299,11 +289,6 @@ async def test_glob_reports_empty_result_and_rejects_file_root(
             _call("Glob", {"pattern": "*.txt", "path": str(target)}),
             context=context,
         )
-
-
-# ---------------------------------------------------------------------------
-# Grep
-# ---------------------------------------------------------------------------
 
 
 async def test_grep_content_mode_formats_path_line_and_text(
@@ -554,11 +539,6 @@ async def test_grep_reports_no_matches(
     output = tools["Grep"].handler(_call("Grep", {"pattern": "absent"}), context)
 
     assert output.content == "No matches found."
-
-
-# ---------------------------------------------------------------------------
-# TodoList
-# ---------------------------------------------------------------------------
 
 
 async def _todo(tool, arguments, *, session_id="s1"):

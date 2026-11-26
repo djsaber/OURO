@@ -319,8 +319,6 @@ class RuntimeSupervisor:
         """Recover one Session execution boundary without scanning the store."""
 
         await self.start()
-        # An existing execution owner excludes recovery. Checking that boundary
-        # needs no message history; interrupted Sessions still take the full path.
         if await run_blocking(self.runtime.run_ownership.is_locked, session_id):
             return
         await self.runtime.reconcile_execution_session(session_id)
@@ -380,14 +378,12 @@ class RuntimeSupervisor:
         receipt, session = await self.runtime.input_admission.accept(request)
         history_epoch = session.history_epoch
         result_run_id = receipt.run_id or (session.active_run_id if request.session_id else None)
-        # Notify before execution can publish events for a newly selected Session.
         try:
             if request.session_id is None and on_session_created is not None:
                 on_session_created(session)
             if on_input_accepted is not None:
                 on_input_accepted()
         finally:
-            # A Host callback cannot strand a durable accepted input.
             self._pending_sessions[receipt.session_id] = max(
                 history_epoch, self._pending_sessions.get(receipt.session_id, history_epoch)
             )
@@ -416,7 +412,7 @@ class RuntimeSupervisor:
                 if receipt.queue_id not in result.session.pending_input_ids:
                     if current is job and session.pending_input_ids == (receipt.queue_id,):
                         return result
-                    break  # Several inputs shared this job. Read this receipt's own Run.
+                    break
                 current = await self._dispatch_session(receipt.session_id)
                 if current is None:
                     current = self._jobs_by_session.get(receipt.session_id)
@@ -484,8 +480,7 @@ class RuntimeSupervisor:
             previous_run = await run_blocking(self.store.load_run, session_id, previous_id)
             if previous_run.status not in RESUMABLE_RUN_STATUSES:
                 raise SessionBusyError(f"session already has a supervised run: {session_id}")
-            # Durable interruption is observable before the attempt releases its
-            # local slot and reservation. Resume only after that ownership settles.
+            # A durable interruption can precede slot release. Resume after the prior owner exits.
             await previous_job.done.wait()
         snapshot = await run_blocking(self.runtime.session_recovery.recover_runtime, session_id)
         try:
@@ -534,8 +529,6 @@ class RuntimeSupervisor:
             previous_run = await run_blocking(self.store.load_run, session_id, previous_id)
             if previous_run.status in ACTIVE_RUN_STATUSES:
                 raise SessionBusyError(f"session already has a supervised run: {session_id}")
-            # A durable terminal result can be observed before its local job
-            # releases ownership. Admit the queued successor after that release.
             await previous_job.done.wait()
         _, active = await run_blocking(self._read_session_run, session_id)
         if active is None or active.run_id != run.run_id or active.status != "queued":
@@ -804,8 +797,6 @@ class RuntimeSupervisor:
                 or active.status != "queued"
             ):
                 raise SessionBusyError("prepared Run is no longer queued")
-            # Admission publishes only after the durable queued Run has a real
-            # execution owner. All Hosts' recovery paths observe the same lock.
             if self._closed:
                 raise OuroError("runtime supervisor is closed")
             if session_id in self._jobs_by_session:
@@ -819,8 +810,6 @@ class RuntimeSupervisor:
             if isinstance(job.operation, (_ContinueRun, _ConsumeInputs))
             else session.history_epoch
         )
-        # Queries yield to other submissions and shutdown. Commit process-local
-        # scheduling atomically only after checking the current ownership again.
         if not job.background:
             job.start_after = self._latest_job_start
             self._latest_job_start = job.provider_stream_started
@@ -893,7 +882,6 @@ class RuntimeSupervisor:
             include_activity=include_activity,
             initial_activity=None,
         )
-        # Register before reading state; missed local deliveries use the same fact reader.
         self._subscriptions.setdefault(session_id, set()).add(subscription)
         try:
             initial = await self._observe_session_state(session_id)
@@ -1090,8 +1078,6 @@ class RuntimeSupervisor:
             and isinstance(job.operation, _ContinueRun)
             and self._snapshots[job.handle.handle_id].run_id == run_id
         ):
-            # A scheduled continuation reuses a terminal Run. Observe its
-            # accepted attempt before interpreting the previous terminal state.
             await job.execution_started.wait()
         subscription = await self.subscribe(session_id)
         try:
@@ -1235,9 +1221,6 @@ class RuntimeSupervisor:
             "waiting_child",
         }:
             if snapshot.run_id is None:
-                # A worker is between its process-local running transition and
-                # the committed Run identity. Wait for that identity instead of
-                # guessing the active Run from a snapshot that may still be empty.
                 await job.run_identified.wait()
                 identified = self._snapshots.get(job.handle.handle_id)
                 if identified is None:
@@ -1269,7 +1252,6 @@ class RuntimeSupervisor:
         if self._closed:
             return
         policy = policy or ShutdownPolicy()
-        # Accepted submissions must reach scheduling before shutdown chooses its jobs.
         await asyncio.gather(*self._input_admissions, return_exceptions=True)
         self._closed = True
         for task in tuple(self._session_dispatch_tasks.values()):
@@ -1636,9 +1618,6 @@ class RuntimeSupervisor:
         job.execution_started.set()
         self._snapshots[job.handle.handle_id] = snapshot
         current_activity = self._activities.get(job.handle.session_id)
-        # A job is one process's execution attempt. Once a Run is identified,
-        # only observation may advance the shared Session projection:
-        # another Host may already have resumed or finished this same Run.
         if current_activity is None and snapshot.run_id is None:
             current_activity = RuntimeActivitySnapshot(
                 session_id=job.handle.session_id,
@@ -1663,8 +1642,6 @@ class RuntimeSupervisor:
             self._jobs_by_handle.pop(job.handle.handle_id, None)
         job.done.set()
         if job.detached:
-            # Host producers receive the durable input receipt, never this
-            # private execution handle; do not retain it for process lifetime.
             self.release_handle(job.handle)
         self._ensure_session_dispatch(job.handle.session_id)
 

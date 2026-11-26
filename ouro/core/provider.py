@@ -133,7 +133,6 @@ class ProviderCompletion(OuroModel):
 
     finish_reason: ProviderFinishReason = "unknown"
     provider_finish_reason: str | None = None
-    # Reasoning can be hidden by endpoint policy or carried only as opaque state.
     has_reasoning: bool = False
 
 

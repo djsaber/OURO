@@ -1,5 +1,3 @@
-"""TUI application scenarios: skills."""
-
 from __future__ import annotations
 
 import asyncio
@@ -254,7 +252,6 @@ async def test_skill_menu_opens_live_plugin_details(
             await choose_menu(pilot, "Manage skills")
             await wait_for_events(catalog_started, pilot=pilot, description="skill catalog read")
             await pilot.pause()
-            # UI idleness does not complete the catalog read owned by the selection worker.
             assert app.screen.query_one("#choice-title", Static).render().plain == "ACTIONS"
         finally:
             release_catalog.set()

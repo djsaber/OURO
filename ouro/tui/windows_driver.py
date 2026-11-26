@@ -37,15 +37,11 @@ class OuroWindowsDriver(WindowsDriver):
     ) -> None:
         super().__init__(app, debug=debug, mouse=mouse, size=size)
         assert self._file is not None
-        # Textual infers TextIOWrapper here, but its writer only needs the stream
-        # methods supplied by ConsoleOutput. Keep this adaptation at the boundary.
         self._file = ConsoleOutput(self._file)  # type: ignore[assignment]
         self._output: list[str] = []
 
     def write(self, data: str) -> None:
         if not self._output:
-            # Textual flushes every display update. Standalone controls such as
-            # the bell need to drain even when no display update follows them.
             self._loop.call_soon(self.flush)
         self._output.append(data)
 
@@ -61,7 +57,6 @@ class OuroWindowsDriver(WindowsDriver):
 
     def start_application_mode(self) -> None:
         super().start_application_mode()
-        # Negotiate visual synchronization separately from native write boundaries.
         self.write("\x1b[?2026$p")
         self.flush()
 

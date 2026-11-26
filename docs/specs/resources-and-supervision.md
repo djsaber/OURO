@@ -1,7 +1,5 @@
 # 资源与后台运行监督规格
 
-> 文档类型：现行规格
-
 ## 目标与范围
 
 ResourceService 为本地附件提供准备空间、会话范围的稳定身份、不可变文件和所有权校验；RuntimeSupervisor 为多个
@@ -107,8 +105,7 @@ durable 状态转换仍由 `RuntimeService`、`RunLifecycle` 和 `SessionStore` 
 订阅按 Session 接收永久 Runtime 事实及当前请求的 Draft/实时工具参数通知。每个订阅使用有界队列；慢订阅者溢出时收到 lag
 diagnostic，不反向阻塞 Run。关闭 subscription 只表示 Host detach，不终止 durable Run。
 
-Run 等待在 Session mutation 中读取精确 Run 与 event cursor，再接入同一共享事件流；状态转换或 lag 时才重读该
-Run，不因文本 token 读取 checkpoint 或历史。每个观察者独立取消，最后一个订阅退出才停止该 Session 的增量 reader。
+`wait_run` 先订阅 Session，再按 ID 读取 Run。事实页携带目标 Run 时直接采用该记录；相关状态事件或队列遗漏触发定向重读。流式文本不会触发 Run 查询。退出等待时关闭该订阅。
 
 explicit abort 对仍有执行 owner 的 Run 先持久化取消请求并通知协作式取消，待 owner 结清后发布 aborted；
 无执行 owner 的挂起/排队 Run 可直接终止。撤销必须等待取消结算。shutdown policy 有两种：
@@ -116,10 +113,7 @@ explicit abort 对仍有执行 owner 的 Run 先持久化取消请求并通知�
 - `wait`：在有限时间内等待；超时后释放进程任务，未完成 durable Run 在下次激活所属 Session 时恢复；
 - `abort`：显式 abort active Run，再在有限时间内等待资源释放。
 
-Agent root subscription 组合现有 per-Session Supervisor stream。初始值来自 canonical `AgentTreeSnapshot`；新
-child 动态加入，终态 child 退出 live stream 但保留历史节点，慢订阅者收到 lag diagnostic 后用 snapshot revision
-重连。树只投影 bounded status/activity/usage/interaction summary；完整 child text/reasoning/tool delta 仍从 child
-Session stream 按 event cursor 增量读取。关闭树或 child stream 只是 Host detach，不 abort child。
+根树订阅合并各会话的状态变化。消费者读取更新时取得最新 `AgentTreeSnapshot`，已结束的子会话仍可查询。子会话正文通过独立观察订阅读取，补齐依据是事实修订、消息位置和草稿偏移。关闭订阅只释放观察资源。详见[会话观察规格](session-observation.md)。
 
 ## CLI 与 Host 边界
 

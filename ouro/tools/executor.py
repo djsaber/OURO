@@ -296,11 +296,6 @@ async def _invoke_tool_handler(
             reason=reason,
         )
     except Exception as exc:  # noqa: BLE001
-        # Tool handlers may raise arbitrary exceptions when interacting with
-        # the filesystem, network, subprocesses, or third-party code. The
-        # executor is the framework boundary that isolates a single tool
-        # failure from the rest of the run so the model can observe the
-        # error and decide how to proceed.
         error_type = type(exc).__name__
         error_message = redact_text(str(exc))
         result = ToolResult(
@@ -417,7 +412,6 @@ def _validated_tool_result(
             error_type="ToolResultContractError",
             error_message="tool result identity does not match the current invocation",
         )
-    # Detach once from the callback before asynchronous settlement owns this value.
     value = ToolResult.model_validate(value.model_dump())
     content, truncated = limit_result_content(
         value.content,

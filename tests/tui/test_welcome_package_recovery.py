@@ -14,7 +14,6 @@ async def test_removed_package_keeps_preferences_and_restores_when_registered(
     style = replace(WELCOME_STYLES["basic"], style_id="external-scene")
     package = ThemePackage("external", "External", "External themes.", "Tests", (style,))
     store = TuiPreferencesStore(tmp_path)
-    # A valid saved identity can outlive the package that supplied it.
     store.path.parent.mkdir(parents=True)
     store.path.write_text(
         '{"welcome_style": "external-scene", "theme": "coral", "collapse_traces": true}',

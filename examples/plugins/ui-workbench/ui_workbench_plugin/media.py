@@ -65,7 +65,6 @@ def _image_url(value: object) -> str | None:
 def _text(value: object) -> str:
     if not isinstance(value, str):
         return ""
-    # Avoid control characters and lone surrogates in human-readable attribution.
     return " ".join("".join(char if char.isprintable() else " " for char in value[:500]).split())
 
 

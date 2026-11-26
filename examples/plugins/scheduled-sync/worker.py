@@ -92,7 +92,6 @@ class Worker:
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
-            # Settle the owned file write before acknowledging callback cancellation.
             while not task.done():
                 try:
                     await asyncio.shield(task)

@@ -3,8 +3,7 @@
 `openai_codex` 是独立、显式联网的协议验证工具。它不注册生产 Provider/driver，
 不启动 OURO Runtime，不读取其他客户端缓存，也不读写 OURO_HOME、配置或 Session。
 Token 和完整 Responses output 只保留在本进程内存中；退出后必须重新登录。
-浏览器授权和 Token 解码/交换/刷新复用 `ouro/auth/drivers` 的实现；公开上游 client id
-只由本实验显式注入。设备轮询和验证编排属于实验层；默认模式的完整 output item 收集复用正式 `ouro/providers/openai_responses/items.py`，`--adapter` 模式直接使用正式 Responses adapter。
+浏览器授权和 Token 解码/交换/刷新复用 `ouro/auth/drivers` 的实现；探针显式传入公开 OAuth 客户端 ID。设备轮询和验证编排属于实验层；默认模式的完整 output item 收集复用正式 `ouro/providers/openai_responses/items.py`，`--adapter` 模式直接使用正式 Responses adapter。
 
 ## 运行
 
@@ -62,7 +61,7 @@ Token、账户标识、授权码、回调 URL、模型文本、工具 arguments�
 
 ## 正式 adapter 验证
 
-在已有浏览器实验通过后，使用以下命令验证正式 `OpenAIResponsesProvider` 的真实请求：
+使用以下命令验证正式 `OpenAIResponsesProvider` 的真实请求：
 
 ```powershell
 uv run --frozen python -m dev.probes.openai_codex --live --method browser --model <model_id> --adapter --max-output-tokens 8192 --open-browser

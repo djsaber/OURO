@@ -50,8 +50,6 @@ class SessionEventStream:
         if event.commit_revision is not None and event.commit_revision <= self._position.revision:
             return
         if event.history_epoch > self._history_epoch:
-            # Deliver invalidation immediately; let the shared reader establish the
-            # new history's position before confirming further local commits.
             self._sequence += 1
             self._publish(event.model_copy(update={"sequence": self._sequence}))
             self._wake.set()

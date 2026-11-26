@@ -1,5 +1,3 @@
-"""Exercise product behavior after installing it under an ordinary user identity."""
-
 import json
 
 from ouro.application.runs.tool_batches import load_tool_batch

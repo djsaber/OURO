@@ -14,7 +14,6 @@ from ouro.core.request_context import REQUEST_CONTEXT_KEYS
 
 _HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
-# Wire framing and content negotiation belong to the transport/protocol.
 _RESERVED_HEADERS = frozenset(
     {
         "host",
@@ -103,8 +102,6 @@ def parse_provider_headers(raw: object) -> dict[str, ProviderHeaderValue]:
     try:
         return _HEADERS.validate_python(normalized)
     except ValidationError as exc:
-        # TypeAdapter errors can contain raw values, including unknown source
-        # tags and extra field names. Keep only a safe schema-level explanation.
         error = exc.errors(include_input=False, include_context=False, include_url=False)[0]
         field = str(error["loc"][-1])
         reason = {

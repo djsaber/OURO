@@ -110,7 +110,6 @@ async def test_input_owns_body_and_attachments_across_history_branch_and_export(
         assert all(
             instructions not in item.model_dump_json() for item in portable.snapshot.messages
         )
-        # The latest input owns the actual transformed skill envelope sent to the Provider.
         assert portable.snapshot.latest_manifest is not None
         assert portable.snapshot.latest_manifest.model_dump_json().count(instructions) == (
             1 if body else 0
@@ -124,8 +123,6 @@ async def test_input_owns_body_and_attachments_across_history_branch_and_export(
             == snapshot
         )
 
-        # Query, branch and undo restore accepted units and observed file data;
-        # they cannot execute the skill resolver or read the changed source.
         source.unlink()
         skill.unlink()
         assert [

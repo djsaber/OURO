@@ -44,7 +44,6 @@ def local_endpoint(name):
 
 async def test_live_proxy_selection_and_target_bypass(monkeypatch):
     with local_endpoint("origin") as origin, local_endpoint("proxy") as proxy:
-        # HTTPX would discover a proxy on its own even when OURO selected direct.
         monkeypatch.setenv("http_proxy", proxy)
         monkeypatch.setenv("no_proxy", "unused.test")
         settings = {"https": proxy}
@@ -61,7 +60,6 @@ async def test_live_proxy_selection_and_target_bypass(monkeypatch):
             assert await post() == "proxy"
             authority = httpx.URL(origin).netloc.decode()
             with monkeypatch.context() as system:
-                # OS bypass rules can exist separately from the proxy URL map.
                 system.setattr(http_transport, "proxy_bypass", lambda host: host == authority)
                 assert await post() == "origin"
             assert await post() == "proxy"

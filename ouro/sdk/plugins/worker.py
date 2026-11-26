@@ -92,7 +92,6 @@ class WorkerPeer:
     async def close_registration(
         self, identity: str, *, method: str = "registrations.close"
     ) -> Any:
-        # Cleanup is owner-bound and remains possible after its acquiring call ends.
         token = _REQUEST.set(None)
         try:
             return await self.request(method, {"registration_id": identity})
@@ -187,7 +186,7 @@ class WorkerPeer:
                     else:
                         future.set_result(message.get("result"))
             elif identity is not None:
-                continue  # A cancelled request may still receive its final response.
+                continue
             elif isinstance(method, str) and method in self.notifications:
                 params = message.get("params", {})
                 if not isinstance(params, dict):

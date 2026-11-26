@@ -189,7 +189,6 @@ class ContextPreparationService:
         )
         await self.events.publish_committed(events)
         if appended and appended[0].sequence != session.message_count + 1:
-            # A message was committed while providers evaluated. Include it before our receipts.
             session, active, messages = await run_blocking(self.load_history, session.session_id)
         else:
             messages.extend(appended)
@@ -494,7 +493,6 @@ class ContextPreparationService:
         complete_messages, excluded = project_tool_exchanges(
             project_compacted_messages(messages, active)
         )
-        # The durable compaction boundary fixes this prefix, including after recovery.
         fixed_messages = (
             compacted_skill_messages(
                 [
@@ -505,9 +503,6 @@ class ContextPreparationService:
             if active is not None
             else []
         )
-        # Artifact source identity bounds the budget candidate. Protocol and
-        # account compatibility belong to the codec. A retained response does
-        # not depend on its Run's execution authority, including on a branch.
         complete_messages = [
             message.model_copy(update={"provider_continuation": None})
             if (artifact := message.provider_continuation) is not None

@@ -221,8 +221,6 @@ class ToolCallState(VersionedOuroModel):
     identity: ToolCallIdentity
     status: ToolCallStatus = "planned"
     attempt: int = Field(default=0, ge=0)
-    # Preflight binding has no copied original arguments. After starting, the
-    # immutable start owns the actual parameters and execution provenance.
     prepared_binding: ToolInvocationBinding | None = None
     arguments_override: dict[str, object] | None = None
     approval: ApprovalRecord | None = None

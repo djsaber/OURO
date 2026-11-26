@@ -201,8 +201,6 @@ async def test_concurrent_submissions_respect_session_job_lifetime(
             ]
             first, release_first = await arrivals.get()
             second, release_second = await arrivals.get()
-            # Both submissions passed preflight before either registered a job.
-            # Admission must recheck ownership after its asynchronous reads.
             release_first.set()
             await provider.first_started.wait()
             assert supervisor.status(first).status == "running"

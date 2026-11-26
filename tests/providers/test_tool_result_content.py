@@ -70,7 +70,6 @@ def test_route_projection_preserves_canonical_results_and_degrades_without_image
         results = [item["content"] for item in wire if item["role"] == "tool"]
     assert results == [expected, expected]
     assert messages == before
-    # Switching routes or capabilities reuses the execution fact, not a previous fallback.
     assert URI in str(encode("responses", messages, image_input=True))
     assert messages == before
 

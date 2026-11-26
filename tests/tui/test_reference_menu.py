@@ -29,7 +29,6 @@ async def test_large_file_menu_drains_arrow_bursts_then_filters_and_selects(tmp_
         )
         await pilot.pause()
         popup = app.query_one(CommandPopup)
-        # Feed real key messages without Pilot's per-key idle waits.
         for key in ["down"] * 120 + ["up"] * 40:
             app.post_message(events.Key(key, None))
         await pilot.pause()

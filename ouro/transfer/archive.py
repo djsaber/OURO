@@ -111,9 +111,6 @@ def read_archive_index(path: Path) -> ArchiveIndex | ArchiveManifest:
     try:
         with ZipFile(path) as archive:
             entries = _checked_entries(archive)
-            # The index is an optional accelerator, like the local Session catalog.
-            # Without it, let the application project headers from the manifest.
-            # Attachments are never decompressed on this path.
             return _read_index(archive, entries) or _read_manifest(archive.read("manifest.json"))
     except (
         OSError,
@@ -202,8 +199,6 @@ def write_archive(path: Path, data: DataArchive, *, replace: bool) -> None:
         elif os.name == "nt":
             temporary.rename(path)
         else:
-            # Exclusive publication also protects against a destination created
-            # after validation, without exposing an incomplete archive.
             os.link(temporary, path)
     except FileExistsError as exc:
         raise DataTransferError("destination exists; use --replace to overwrite it") from exc

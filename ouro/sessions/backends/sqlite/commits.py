@@ -235,8 +235,6 @@ class SQLiteSessionCommits:
         result = decision.result
         revision = advance_revision(connection, session_id)
         if decision.clear_response_draft:
-            # The formal response can reuse its Draft pages within this same
-            # transaction. Readers keep the old snapshot until publication.
             connection.execute("DELETE FROM response_streams WHERE session_id = ?", (session_id,))
         for fact in decision.tool_facts.records:
             write_fact(connection, fact)

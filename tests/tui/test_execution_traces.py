@@ -353,7 +353,6 @@ async def test_trace_choices_survive_session_cache_resize_theme_and_prepend():
         await history.toggle_trace(15)
         assert "Investigating" not in history.rendered_text
         await app.conversation.set_collapse_traces(False)
-        # Explicit choices stay local; the default applies to untouched Runs.
         assert history.rendered_text.count("Investigating") == 1
 
 
@@ -459,8 +458,6 @@ async def test_real_tool_loop_stays_visible_until_completion_and_matches_reload(
         assert "Final paragraph" in history.rendered_text
         assert next(entry.tool for entry in history.entries if entry.tool).status == "completed"
 
-        # Live and durable thinking timers have different clock boundaries.
-        # Compare the transcript independently of that existing label.
         def visible_content():
             return [
                 line

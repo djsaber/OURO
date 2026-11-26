@@ -156,7 +156,6 @@ class WorkbenchPlugin:
         )
 
     async def start(self) -> None:
-        # Network clients belong to individual calls rather than running in the background.
         pass
 
     async def stop(self, reason: sdk.StopReason, deadline: datetime) -> None:
@@ -194,7 +193,6 @@ class WorkbenchPlugin:
         return sdk.CommandOutput(output=_json(result), data=result)
 
     async def _build_board(self, workspace: str | None, manifest: str) -> bytes:
-        # Bounded preparation performs only reads; a cancelled await cannot publish a board.
         return await asyncio.to_thread(build_comparison, _workspace(workspace), manifest)
 
     async def _compare_tool(
@@ -279,7 +277,7 @@ class WorkbenchPlugin:
             )
 
     def _publish(self, label: str, files: Mapping[str, bytes]) -> dict[str, object]:
-        assert self._root is not None  # Checked before the contributions become callable.
+        assert self._root is not None
         directory = publish_bundle(self._root, label, files)
         return {"files": [str(directory / name) for name in files]}
 

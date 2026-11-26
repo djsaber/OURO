@@ -138,7 +138,6 @@ def test_failure_blocks_entry_points_and_restores_all_bytes(
         resolve_local_home(home)
     with pytest.raises(UpgradeError, match="unfinished"):
         upgrade(home)
-    # Restoring is repeatable after another interruption and never consumes backups.
     calls = 0
     with pytest.raises(UpgradeError):
         upgrade(home, restore=True)

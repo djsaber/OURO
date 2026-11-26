@@ -22,8 +22,6 @@ from ouro.providers import FauxProvider
 def stream_clock(monkeypatch):
     clock = SimpleNamespace(now=100.0)
     loop = SimpleNamespace(time=lambda: clock.now)
-    # Only the adapter reads this clock; asyncio's scheduler and test watchdogs
-    # continue to use the real event loop.
     monkeypatch.setattr(
         adapter_module,
         "asyncio",

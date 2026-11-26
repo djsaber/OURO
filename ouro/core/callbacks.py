@@ -59,8 +59,6 @@ async def run_blocking[ResultT](
     except asyncio.CancelledError:
         await settle_owned_tasks(task)
         if not task.cancelled():
-            # Retrieve a possible exception so the task is never reported as an
-            # unobserved failure. Cancellation remains the caller-visible result.
             task.exception()
         raise
 
@@ -109,8 +107,6 @@ async def _await_owned(
         if cancel_task:
             task.cancel()
         await settle_owned_tasks(task)
-        # An actual cancellation has no returned value; a callback that suppressed
-        # it or finished in an owned thread retains only its observation.
         if task.cancelled():
             raise
         result = task.result()

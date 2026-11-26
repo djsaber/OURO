@@ -244,7 +244,6 @@ async def test_running_upgrade_finishes_old_contract_and_next_occurrence_uses_ne
     assert first.result["label"] == "one"
     assert old.lease_count == 0
     clock[0] += timedelta(hours=1)
-    # The future plan binds the currently selected service when it is claimed.
     current = await tasks.get(task.task_id)
     await tasks.update(task.task_id, configuration(), expected_revision=current.revision)
     await execution.tick()
@@ -363,8 +362,6 @@ async def test_worker_exit_settles_claim_without_replay_or_retained_lease(host):
     await started(generation.services)
     generation.instance.client.process.kill()
     receipt = await settle(tasks, execution, task.task_id)
-    # Transport failure or generation revocation may settle first; neither is
-    # evidence that the external effect did not happen.
     assert receipt.status in {"failed", "interrupted"} and receipt.error
     assert generation.lease_count == 0
     await execution.tick()

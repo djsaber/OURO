@@ -433,7 +433,6 @@ class RunContinuationService:
             if checkpoint is None or checkpoint.state == "resolved":
                 return RunContinuationSettlement(run=latest)
             draft = plan.harness
-            # A plan without a proven state boundary cannot authorize execution.
             if draft is None:
                 return self._resolve_locked(
                     latest, action="pause", reason="continuation_state_unavailable"

@@ -152,7 +152,6 @@ _CHILD_CONTROL_EVENT_TYPES = frozenset(
         "approval_resolved",
         "ask_user_requested",
         "ask_user_resolved",
-        # Preflight interaction events can precede the persisted batch checkpoint.
         "run_status_changed",
         "run_completed",
         "run_aborted",
@@ -172,7 +171,6 @@ def publishes_status[**P, R](
         try:
             return await operation(self, *args, **kwargs)
         finally:
-            # A failed command may still have committed part of its work.
             if self._publish_status_changed is not None:
                 self._publish_status_changed()
 
@@ -304,7 +302,6 @@ class TuiController:
         usage_task = asyncio.create_task(self.usage_summary())
         skills_task = asyncio.create_task(self._application.available_skills())
         tasks_task = asyncio.create_task(self.task_status())
-        # Settle all bootstrap readers before a failure can hand the home to maintenance.
         await asyncio.gather(
             models_task, model_task, usage_task, skills_task, tasks_task, return_exceptions=True
         )
@@ -421,7 +418,7 @@ class TuiController:
                     imported.append(
                         InputAttachment(resource_id=result.resource.resource_id, name=path.name)
                     )
-                except Exception as exc:  # Each file has an independent import result.
+                except Exception as exc:
                     on_error(f"{path.name}: {exc}")
 
         if session is not None:
@@ -716,7 +713,6 @@ class TuiController:
             return ()
         if self._application.agents is None:
             return ()
-        # Child views retain their primary Session as the control target.
         interactions = await asyncio.to_thread(
             self._application.agents.list_agent_interactions, session_id
         )
@@ -830,8 +826,6 @@ class TuiController:
             try:
                 session = services.sessions.view(session_id)
             except PersistenceError, SessionNotFoundError, FileNotFoundError:
-                # Inheriting defaults is optional. An unreadable previous
-                # Session must not prevent navigation to a fresh draft.
                 return None, None
             return session.current_model, session.workspace
 
@@ -1862,7 +1856,6 @@ class TuiController:
         )
         if submission is None:
             return None
-        # Presentation may refresh the committed state while input consumption runs.
         if on_submitted is not None:
             on_submitted()
         results = [result async for result in consume_plugin_command(runtime, submission)]
@@ -1894,8 +1887,6 @@ class TuiController:
             try:
                 plugin_names = {item.plugin_id: item.name for item in application.plugins.list()}
             except Exception:  # noqa: BLE001 - labels have a stable identity fallback.
-                # Session-control state remains present even when plugin catalog
-                # presentation metadata is temporarily unavailable.
                 pass
         statuses: list[TuiSessionControlStatus] = []
         seen_labels: set[str] = set()
@@ -2262,7 +2253,6 @@ class TuiController:
 
         controlled_session_id = self._session_id
         revision = self._selection_revision
-        # Selection can change while an accepted event is waiting in the mailbox.
         if not self._accepts_event(event):
             return
         root = await asyncio.to_thread(self._event_root_session_id, event.session_id)

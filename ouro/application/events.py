@@ -96,7 +96,6 @@ class RuntimeEventRecorder:
         if sink_timeout_seconds <= 0:
             raise ValueError("sink_timeout_seconds must be positive")
         self.store = store
-        # ID-only notifications share the Run's immutable history epoch.
         self._run_history_epoch = lru_cache(maxsize=128)(self._load_run_history_epoch)
         self.usage_service = usage_service
         self.observers = observers

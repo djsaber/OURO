@@ -473,7 +473,6 @@ def test_current_container_upgrades_frozen_agents_and_isolates_invalid_contracts
 
     monkeypatch.setattr(databases.sqlite3, "connect", traced_connect)
     assert upgrade(home, session_backend=backend)["status"] == "upgraded"
-    # The private copy selects changed rows once, without a separate existence scan.
     assert sum(sql.startswith("SELECT rowid, payload FROM runs WHERE") for sql in statements) == 1
     assert not any(sql.startswith("SELECT 1 FROM runs WHERE") for sql in statements)
     loaded = repository(home, backend).load_run(run["session_id"], run["run_id"])
@@ -523,7 +522,6 @@ def test_native_scan_rejects_unsupported_frozen_definition_versions(native_home,
             value["agent_catalog"] = catalog
             connection.execute("UPDATE runs SET payload=?", (json.dumps(value),))
         elif backend == "sqlite":
-            # Only the owned payload is needed by the offline version selector.
             connection.execute(
                 "INSERT INTO delegations(delegation_id, root_session_id, parent_session_id, "
                 "parent_run_id, idempotency_key, spawn_state, revision, created_at, payload) "
@@ -649,7 +647,6 @@ def test_retired_control_and_wait_fields_upgrade_in_current_containers(native_ho
         updated_at=activation["created_at"],
         error=None,
     )
-    # Same-named fields in opaque extension data are not schema-owned.
     activation["data"] = {"phase": "business", "revision": 9}
     controls = {"revision": 4, "activations": [activation]}
     path = database(home, backend)

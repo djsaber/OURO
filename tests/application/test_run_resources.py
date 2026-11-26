@@ -167,8 +167,6 @@ async def runtime(tmp_path):
         driver_scope=nullcontext,
     )
     yield app, catalog, source
-    # Explicit close tests own their shutdown result, including expected errors.
-    # Finish unstarted or pending shutdowns without replaying an observed failure.
     if app._close_task is None or not app._close_task.done():
         await app.close()
 
@@ -297,7 +295,6 @@ async def test_invalid_delegated_binding_does_not_publish_partial_tool_cap(runti
     run.metadata["agent_id"] = "different-agent"
     with pytest.raises(PersistenceError, match="child_delegation_mismatch"):
         await app._ensure_extension_snapshot(run)
-    # The original empty cap remains usable; no partially restored name is exposed.
     assert app._tools_for_run(run.run_id).definitions() == []
 
 

@@ -1,9 +1,8 @@
 # Responses 编解码
 
-> 文档类型：现行规格
-> 范围：Responses adapter、配置/工厂注册、请求认证、内容编码、SSE 事件投影与完整续接封装。浏览器订阅产品已内建注册；Windows/browser/gpt-5.5 真实持久凭据 CLI 闭环已验收。
+范围：Responses adapter、配置/工厂注册、请求认证、内容编码、SSE 事件投影与完整续接封装。
 
-订阅产品的协议要求见[Responses 与 continuation](subscription-authentication.md#s7-responses-与-continuation)，实际接入证据见[订阅指南](../guides/subscriptions.md#证据范围)。模块位于 `ouro/providers/openai_responses/` 下的 `codec.py`、`items.py`、`stream.py` 与 `errors.py`。它们只依赖 canonical 消息/事件和纯协议数据，不依赖 OAuth、配置、HTTP 客户端或实验目录。
+订阅产品的协议要求见[Responses 与 continuation](subscription-authentication.md#s7-responses-与-continuation)，支持范围见[订阅指南](../guides/subscriptions.md#支持范围)。模块位于 `ouro/providers/openai_responses/` 下的 `codec.py`、`items.py`、`stream.py` 与 `errors.py`。它们只依赖 canonical 消息/事件和纯协议数据，不依赖 OAuth、配置、HTTP 客户端或实验目录。
 
 ## 请求内容
 
@@ -28,9 +27,9 @@ Application 按[附件规格](attachments.md)先准备合法输入。协议依�
 
 adapter 借用 `RequestAuthenticator`，每次尝试重新 acquire；用同次快照的 headers 发送请求、scope 校验输入并封装输出。最终目标、刷新和账户身份仍由认证端口负责；额度分类与计费归属仍由注入的服务规则负责。adapter 不导入具体 OAuth driver，也不识别品牌、客户端 ID 或账户套餐。
 
-请求固定携带完整本地 input、store=false、include=[reasoning.encrypted_content]，不使用远程 conversation/previous_response_id 或 background。request_options 不能覆盖上述字段、model、tools、stream、instructions、temperature 或输出上限字段。truncation 不发送，沿用标准协议的 disabled 默认行为；该字段仍由协议拥有，禁止 request_options 启用自动截断。用户实测订阅后端拒绝显式 truncation，省略该冗余字段不需要厂商分支；后端实际超限行为仍须验收。
+请求固定携带完整本地 input、store=false、include=[reasoning.encrypted_content]，不使用远程 conversation/previous_response_id 或 background。request_options 不能覆盖上述字段、model、tools、stream、instructions、temperature 或输出上限字段。truncation 不发送，沿用标准协议的 disabled 默认行为；该字段仍由协议拥有，禁止 request_options 启用自动截断。
 
-max_output_tokens 是可空正整数，完整配置缺失和 null 均表示 OURO 不配置输出上限，本地输出预留为 0。有限值等额预留。adapter 仅在最终请求值非空且 ProviderRequestPolicy.supports_output_limit 为 true（默认值）时发送该字段。明确声明 false 的服务不发送该字段，实际输出可能超过本地预算，使用入口必须披露限制。该能力不由认证方式、计费类型、URL 或模型名推断；request_options 不能覆盖，HTTP 失败后不自动调整。Codex 探针基于实测参数拒绝声明 false，省略后的正式路径已在 Windows/browser/gpt-5.5 真实实验中通过文本、刷新及工具续接；标准 Responses 继续支持发送上限。
+max_output_tokens 是可空正整数，完整配置缺失和 null 均表示 OURO 不配置输出上限，本地输出预留为 0。有限值等额预留。adapter 仅在最终请求值非空且 ProviderRequestPolicy.supports_output_limit 为 true（默认值）时发送该字段。明确声明 false 的服务不发送该字段，实际输出可能超过本地预算，使用入口必须披露限制。该能力不由认证方式、计费类型、URL 或模型名推断；request_options 不能覆盖，HTTP 失败后不自动调整。订阅路由的服务策略将该能力设为 false。
 
 reasoning profile 只能声明原生 reasoning 对象，不能复用 Chat Completions 的 reasoning_effort。text.format 需要结构化输出能力；原生图片需 Endpoint 声明 `supports_image_input`。未声明工具能力时拒绝工具输入及工具输出。展示层可隐藏 reasoning_delta，但隐藏发生在共享重试边界之后，已收到思考输出仍禁止重放。完整 reasoning item 的保存不受展示开关影响。
 
@@ -91,7 +90,7 @@ Responses 复用既有工具循环、消息存储、恢复入口、分支和压�
 
 ## 流与完成边界
 
-ResponsesStreamDecoder 处理一个响应，responses_events 将已有 HTTP/SSE transport 的 JSON 迭代器接入该解码器。后者在完成、失败、取消和显式关闭时关闭拥有的流迭代器，不拥有认证或客户端生命周期。
+`OpenAIResponsesStreamDecoder` 处理一个响应，`responses_events` 将已有 HTTP/SSE transport 的 JSON 迭代器接入该解码器。后者在完成、失败、取消和显式关闭时关闭拥有的流迭代器，不拥有认证或客户端生命周期。
 
 | 输入 | canonical 行为 |
 |---|---|
@@ -131,7 +130,7 @@ usage 只采用供应商实际值，缺失时为 None；input_tokens 包含 cach
 - `tests/providers/test_request_authentication.py`：三种协议共用两种不同头编码的 driver，覆盖 JSON/SSE、注销、共享重试预算及安全错误。
 - `tests/application/test_responses_runtime.py`：完整 LocalApplication + 正式 HTTP adapter，覆盖文件/SQLite 和 JSON/SSE 四种组合下的两轮工具、reasoning、重启后 401 刷新续接、注销、不完整响应恢复、跨协议/模型切换后的无输入续跑及普通提交、分支与压缩；验证工具只执行一次、原历史保留、实际 token 入账、订阅计费归属及未知金额。
 
-自动测试使用合成认证驱动与服务响应。用户提供的 Windows/browser/gpt-5.5 正式 adapter 真实摘要已验证登录、刷新、两轮工具/结果续接及跨刷新加密 reasoning 重放，scope 保持稳定，见[实测证据](../../dev/probes/README.md#正式-adapter-验证)。此结果不包含原始 SSE fixture，也不替代持久凭据下的真实 Host 闭环、其他模型能力或设备码验收。生产组合已注册；持久凭据的真实 CLI 登录、check/run、跨进程续接及注销已单独通过，见[使用指南](../guides/subscriptions.md#证据范围)。tests/application/test_codex_subscription.py 使用正式驱动、回调、文件凭据与合成 HTTP 验证登录保存、重建、刷新、工具、续接和注销；CLI/TUI 验证正式产品入口与服务限制披露。
+`tests/application/test_codex_subscription.py` 使用正式驱动、回调、文件凭据与合成 HTTP 验证登录保存、重建、刷新、工具、续接和注销；CLI/TUI 验证正式产品入口与服务限制披露。
 
 协议依据：[官方 Responses 流事件](https://developers.openai.com/api/reference/resources/responses/streaming-events)、[请求格式](https://developers.openai.com/api/reference/typescript/resources/responses/methods/create)、[reasoning 续接](https://developers.openai.com/api/docs/guides/reasoning?api-mode=responses)。官方要求以完成 item 作为续接材料；OURO 的状态收敛与 scope 校验是本地契约。Codex 终态可省略完整 output 的实测边界见[探针说明](../../dev/probes/README.md#验证边界)。
 

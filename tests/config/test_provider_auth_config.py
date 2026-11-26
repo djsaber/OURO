@@ -59,7 +59,6 @@ def test_managed_reference_round_trip_is_not_a_path_or_resolvable_secret():
     credential_id = new_id("cred")
     ref = CredentialRef(type="managed", name=credential_id)
     assert CredentialRef.model_validate_json(ref.model_dump_json()) == ref
-    # The storage and configuration contracts accept the same generated identity.
     CredentialRecord(
         credential_id=credential_id, driver_id="fixture", revision=1, state="logged_out"
     )

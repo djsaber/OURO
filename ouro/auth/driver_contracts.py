@@ -91,7 +91,6 @@ class RequestAuthMaterial:
     def __post_init__(self) -> None:
         if not self.account_scope or any(not item for item in self.account_scope):
             raise ValueError("request material requires a stable account or authorization scope")
-        # Freeze a copy so a driver cannot mutate a previous attempt's headers.
         object.__setattr__(self, "headers", MappingProxyType(dict(self.headers)))
 
 

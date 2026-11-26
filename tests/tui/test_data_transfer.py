@@ -65,7 +65,6 @@ async def test_tui_data_form_and_command_use_application_service(tmp_path, capsy
         await screen._select_choice("submit")
         await wait_for_worker_group(app, pilot, group="data-transfer-operation")
         assert read_archive(archive, "providers").manifest.kind == "providers"
-        # The same archive goes through the CLI import boundary and TUI import service.
         assert (
             main(
                 [
@@ -158,9 +157,6 @@ async def test_imported_history_opens_with_missing_dependencies_in_live_sqlite_h
 
 
 async def _choose_menu_row(app, pilot, identity):
-    # A background scan may leave the old page visible, and push_screen makes
-    # the destination current before its children mount. Neither boundary
-    # means its controls are ready for input.
     async with asyncio.timeout(10):
         while True:
             menu = app.screen

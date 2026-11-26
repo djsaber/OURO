@@ -375,8 +375,6 @@ class AnthropicMessagesProvider(ChatMessageProvider):
                                 "".join(fragments)
                             )
                     except ValueError, RecursionError:
-                        # Core diagnoses the already emitted argument deltas. Still
-                        # deliver completion/usage, without replaying invalid input.
                         pass
                     else:
                         yield ProviderStreamEvent(

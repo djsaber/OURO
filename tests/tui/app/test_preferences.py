@@ -1,5 +1,3 @@
-"""TUI application scenarios: preferences."""
-
 from __future__ import annotations
 
 import asyncio
@@ -227,7 +225,6 @@ async def test_theme_switch_stays_interactive_coalesces_and_outlives_picker(
         event_loop_thread = threading.get_ident()
 
         def blocking_save(preferences: TuiPreferences) -> None:
-            # Fail instead of deadlocking if saving regresses to the UI thread.
             assert threading.get_ident() != event_loop_thread
             saved_themes.append(preferences.theme)
             if len(saved_themes) == 1:
@@ -236,8 +233,6 @@ async def test_theme_switch_stays_interactive_coalesces_and_outlives_picker(
             save_preferences(preferences)
 
         monkeypatch.setattr(app._preferences_store, "save", blocking_save)
-        # Keep I/O blocked until all pending-state assertions have run, regardless
-        # of machine speed; finally also releases the thread after an assertion fails.
         try:
             await pilot.press("enter")
             await _wait_until(entered.is_set, pilot, description="theme save blocked")

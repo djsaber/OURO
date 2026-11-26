@@ -311,7 +311,6 @@ def test_undo_cleanup_survives_a_partial_fact_removal(tmp_path, monkeypatch, bou
     with pytest.raises(SessionCommitConflict, match="already applied"):
         reader.commit_session(request)
     assert reader.load_run_messages(session.session_id, "run_selected") == messages[:2]
-    # One accepted Input can publish multiple messages; the lookup selects its retained tail.
     assert reader.find_queued_input_message(session.session_id, "queue_selected") == messages[1]
     assert reader.load_messages_page(session.session_id) == (messages[:2], None)
     for removed in messages[2:]:

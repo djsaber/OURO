@@ -184,7 +184,6 @@ def test_file_input_remains_protected_until_read_materialization(tmp_path, monke
             assert entered.wait(10)
             lock = FileMutationLock(store._mutation_lock_path(session.session_id))
             try:
-                # A nonblocking attempt tests ownership, not machine speed.
                 assert not lock.acquire(timeout=0)
             finally:
                 lock.release()
@@ -309,7 +308,7 @@ def test_file_replacement_recovers_only_its_local_decision(tmp_path, monkeypatch
     if failure == "decision":
         assert store.load_latest_context(session.session_id) == first
         assert not (directory / "commit.json").exists()
-        return  # The unpublished orphan is outside normal recovery's scan boundary.
+        return
     decision = (directory / "commit.json").read_bytes()
     for read in (store.load_latest_context, store.load_latest_context_header):
         with pytest.raises(SessionRecoveryRequiredError):

@@ -183,8 +183,6 @@ def _resolve_plugin_activation(
 
 
 def plugin_root_sort_key(plugin_id: str, state: PluginStateDocument) -> tuple[int, str]:
-    # User plugins are explicit additions and appear before unrelated ambient builtins.
-    # The depth-first resolver still places every dependency before its dependant.
     return (0 if plugin_id in state.plugins else 1, plugin_id)
 
 

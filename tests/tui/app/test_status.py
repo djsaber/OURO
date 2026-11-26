@@ -1,5 +1,3 @@
-"""TUI application scenarios: status."""
-
 from __future__ import annotations
 
 import asyncio
@@ -124,8 +122,6 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
             provider_reported_cache_read_tokens=982,
         )
         status_line.set_context(context_status)
-        # Display capacity belongs to the selected model, independently of the
-        # recorded request and provider-reported usage.
         status_line.set_context_budget(ContextBudget(context_window=128000, max_output_tokens=8000))
 
         context_detail = status_line.query_one("#context-detail", Static)
@@ -693,7 +689,6 @@ async def test_thinking_completion_and_modal_share_supported_choices(
         options = app.screen.query_one("#choice-list", OptionList)
         options.highlighted = options.get_option_index("summary:detailed")
         await pilot.press("enter")
-        # Dismissal returns the choice; the navigation worker still owns its save.
         await _wait_for_worker_group(app, pilot, group="navigation")
         assert (await app._controller.session_reasoning()).requested.summary == "detailed"
         await app._set_reasoning("high")
@@ -754,8 +749,6 @@ async def test_status_line_hides_thinking_level_when_reasoning_unsupported(tmp_p
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         indicator = app.query_one(ActivityIndicator)
-        # The default faux endpoint declares no reasoning capability, so no
-        # thinking level is projected onto the status line.
         assert indicator._reasoning is None
 
 

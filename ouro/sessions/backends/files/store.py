@@ -360,7 +360,6 @@ class LocalSessionStore:
         identity = (stat.st_dev, stat.st_ino)
         previous = self._session_directory_ids.get(session_id)
         if previous is not None and previous != identity:
-            # Another Host can replace a Session without changing journal sizes.
             self._invalidate_session_caches(session_id)
         self._session_directory_ids[session_id] = identity
 
@@ -575,8 +574,6 @@ class LocalSessionStore:
         )
         try:
             if prepared_resources:
-                # No Session owns this metadata until its native head is published. A retry
-                # replaces the unaccepted metadata snapshot.
                 for name in (
                     "harness",
                     "inputs",
@@ -598,8 +595,6 @@ class LocalSessionStore:
                 content_path = request_input_path(staging_dir, latest_manifest.context_id)
                 content_path.parent.mkdir(exist_ok=True)
                 write_model_atomic(content_path, latest_manifest)
-            # All native records publish together, including an in-place resource
-            # reservation. The journal remains private until this publication.
             with connect_data(staging_dir, mode="rwc") as connection:
                 initialize_index(connection)
                 self._messages.create(connection, staging_dir, messages)
@@ -686,7 +681,6 @@ class LocalSessionStore:
         session_ids: tuple[str, ...],
     ) -> str:
         for session_id in session_ids:
-            # Explicit trash also accepts an unreadable canonical Session.
             database = self._session_dir(session_id) / "session-data.sqlite3"
             if not database.is_file():
                 raise FileNotFoundError(database)
@@ -891,8 +885,6 @@ class LocalSessionStore:
         try:
             connection = connections.borrow()
             try:
-                # Live prefixes have no per-fragment power-loss guarantee. Request
-                # lifecycle commits still use the database's durable transaction.
                 connection.execute("PRAGMA synchronous = NORMAL")
                 with connection:
                     return append_draft_chunk(connection, session_id, context_id, chunk)
@@ -918,8 +910,6 @@ class LocalSessionStore:
             )
             if page is not None:
                 return page
-            # A prepared request has no append target until it starts, but its
-            # observation is already an empty page. Closed/replaced requests are absent.
             header = read_latest_header(reader.connection(), session_id)
             if (
                 header is None
@@ -1014,8 +1004,6 @@ class LocalSessionStore:
             history = self._load_session_history(session_id)
             session_dir = self._session_dir(session_id)
             latest_request = read_request(reader.connection(), session_dir)
-            # Records are decoded at their storage boundary; assembling a typed
-            # container must not validate the entire history a second time.
             snapshot = SessionSnapshot.model_construct(
                 session=history.session,
                 request_headers=read_headers(reader.connection(), session_id),
@@ -1052,7 +1040,6 @@ class LocalSessionStore:
                     try:
                         selected[identity] = read_run(connection, session_id, identity)
                     except FileNotFoundError:
-                        # Explicit recovery can clear an invalid Session pointer.
                         pass
             return RuntimeSessionSnapshot.model_construct(
                 session=session, runs=sorted(selected.values(), key=_run_sort_key)
@@ -1371,7 +1358,6 @@ class LocalSessionStore:
             try:
                 sessions.append(self.load_session_record(path.parent.name))
             except FileNotFoundError:
-                # A reserved resource directory can have unpublished snapshot data.
                 continue
         return sessions
 
@@ -1444,8 +1430,6 @@ class LocalSessionStore:
 
     @contextmanager
     def session_read(self, session_id: str) -> Generator[_SessionRead]:
-        # Nested consumers share the whole read boundary, including its lock and
-        # directory identity, rather than constructing another boundary per read.
         current = getattr(self._read_state, "scopes", {}).get(session_id)
         if current is not None:
             yield current
@@ -1565,9 +1549,7 @@ class LocalSessionStore:
         if not path.exists():
             return
         try:
-            # JSON Lines defines LF as the record delimiter. ``str.splitlines``
-            # also treats valid JSON string content such as U+2028/U+2029 as a
-            # boundary and would split one durable record in the middle.
+            # Split only on LF. U+2028 and U+2029 are valid inside JSON strings.
             with path.open("r", encoding="utf-8", newline="") as file:
                 for line in file:
                     if line.strip():

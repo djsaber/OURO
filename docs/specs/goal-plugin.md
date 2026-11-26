@@ -1,8 +1,7 @@
 # Goal 插件规格
 
-> 文档类型：现行规格
-> 范围：`ouro/builtin_plugins/goal/` 及其使用的公开 SDK、Application 契约。
-> 架构约束见[插件系统规格](plugins.md)和[核心运行时规格](runtime.md)。
+范围：`ouro/builtin_plugins/goal/` 及其使用的公开 SDK、Application 契约。
+架构约束见[插件系统规格](plugins.md)和[核心运行时规格](runtime.md)。
 
 ## 1. 目标与边界
 

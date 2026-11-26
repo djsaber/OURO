@@ -53,8 +53,6 @@ def history(store, *, count=4):
         role="tool_result",
         outcome_ref=ToolMessageReference(identity=call.identity, outcome_attempt=1),
     )
-    # The publication reference is resolved from the immutable Outcome, not
-    # copied from the caller's optional materialized message view.
     assert not result.resource_refs
     last = MessageRecord(
         session_id=session.session_id,
@@ -142,7 +140,6 @@ def test_result_membership_survives_transfer_and_tracks_withdrawal(store, tmp_pa
         assert found.initial_message_id == expected.initial_message_id
         assert found.result_message_id == messages[-3].message_id
         assert found.resource_refs == ("resource_shared",)
-        # The retained Outcome alone does not publish result resources.
         reference = messages[-2].outcome_ref
         assert target.load_tool_outcome(session.session_id, reference.identity, 1) is not None
 

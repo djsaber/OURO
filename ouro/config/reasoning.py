@@ -25,7 +25,6 @@ REASONING_EFFORT_PRESETS: tuple[str, ...] = (
     "anthropic-messages-adaptive-effort",
 )
 
-# Each summary preset lists supported modes in default preference order.
 REASONING_SUMMARY_PRESETS: dict[str, tuple[ReasoningSummary, ...]] = {
     "none": (),
     "openai-responses": ("auto", "concise", "detailed"),
@@ -217,9 +216,7 @@ def openai_chat_completions_effort_reasoning(
     default = default or ReasoningRequest(mode="enabled")
     default = default.model_copy(update={"effort": default.effort or "medium"})
     effort_variants: dict[ReasoningEffortVariant, Mapping[str, object]] = {
-        # "enabled" must be a concrete native instruction.  Leaving the
-        # payload empty would merely inherit the provider default, which can
-        # be "none" and therefore would not honor the canonical intent.
+        # An empty payload may inherit a disabled provider default.
         "enabled": {"reasoning_effort": default.effort},
         **{effort: {"reasoning_effort": effort} for effort in supported_efforts},
     }

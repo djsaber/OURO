@@ -73,7 +73,6 @@ async def test_cold_child_binding_uses_frozen_prompt_budget_and_empty_tool_ceili
     store.create_session(child)
     relation = seed_delegation(store, child, budget=RunBudgetPolicy(max_model_rounds=1))
     run = prepared_run(store, child, relation)
-    # The next Runtime/Store is a cold owner, with a broader Host configuration.
     cold = (
         LocalSessionStore(store.root)
         if isinstance(store, LocalSessionStore)
@@ -119,7 +118,6 @@ async def test_cold_child_binding_uses_frozen_prompt_budget_and_empty_tool_ceili
         "run_budget",
     }.intersection(cold.load_run(child.session_id, run.run_id).metadata)
 
-    # Even a current broader tool ceiling cannot replace the frozen source through CAS.
     reference = AgentDefinitionService.tool_reference(tools, tools.get("extra").definition)
     with pytest.raises(PersistenceError, match="frozen contract cannot change: effective_tools"):
         cold.save_delegation(

@@ -48,7 +48,6 @@ async def test_queries_embed_icons_for_selected_and_candidate_packages(tmp_path)
     second = service.installer.install(source).installed
     assert first.package_digest != second.package_digest
 
-    # Reload state through a new Host query service; no runtime or plugin import is needed.
     service = PluginService(PluginPackageStore(tmp_path / "home"))
     summary = service.list()[0]
     assert summary.icon == first_icon
@@ -154,7 +153,6 @@ def test_icon_presentation_is_left_to_the_client(tmp_path, monkeypatch, kind):
     elif kind == "dimensions":
         Image.new("RGBA", (1025, 1)).save(path)
     else:
-        # A PNG signature does not guarantee that the client can decode the image.
         path.write_bytes(b"\x89PNG\r\n\x1a\n")
 
     def unexpected_decode(*args, **kwargs):

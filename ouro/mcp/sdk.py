@@ -163,9 +163,7 @@ class SDKMCPClientFactory:
         read_timeout = None if config.transport == "sse" else config.timeout_seconds
         timeout = httpx.Timeout(config.timeout_seconds, read=read_timeout)
         try:
-            # MCP transport configuration is authoritative.  Implicit OS/env
-            # proxies can route even loopback servers through an unrelated
-            # process and may expose configured credential headers.
+            # Environment proxies can reroute even loopback traffic carrying credentials.
             async with httpx.AsyncClient(
                 headers=headers,
                 timeout=timeout,
@@ -185,7 +183,6 @@ class SDKMCPClientFactory:
                         ) as session:
                             yield SDKMCPClientSession(session)
                 else:
-                    # SSE is retained only for compatibility with legacy servers.
                     async with legacy_sse_transport(
                         config.url or "",
                         client=http_client,
@@ -273,7 +270,6 @@ def _remote_result(result: types.CallToolResult) -> MCPRemoteToolResult:
         else:
             dumped = block.model_dump(by_alias=True, mode="json", exclude_none=True)
             if isinstance(dumped, dict):
-                # Unsupported modalities remain explicit descriptions, never base64 text.
                 if "data" in dumped:
                     dumped["data"] = "<binary omitted>"
                 parts.append(

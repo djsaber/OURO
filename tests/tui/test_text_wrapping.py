@@ -46,7 +46,6 @@ def test_user_message_fills_space_after_number_before_wrapping_chinese() -> None
     lines = console.render_lines(_MessageContent("1. " + _CHINESE, DEFAULT_TUI_THEME))
     body = ["".join(segment.text for segment in line) for line in lines]
 
-    # Five cells belong to the frame; 3 + 8 * 2 cells fit in the first content row.
     assert body[1].strip() == "│  1. 资质审核结果中触"
 
 

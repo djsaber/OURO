@@ -1,5 +1,3 @@
-"""TUI application scenarios: queue."""
-
 from __future__ import annotations
 
 import asyncio
@@ -228,8 +226,6 @@ async def test_unqueue_command_selects_message_and_returns_it_to_composer(
                 description="active run",
             )
 
-            # This test exercises /unqueue. Establish its accepted-input precondition
-            # through the Runtime; composer delivery is covered by the follow-up test.
             assert app._projection is not None
             session_id = app._projection.session_id
             for prompt in ("keep queued", "return to composer"):
@@ -333,8 +329,6 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(
             await _wait_until(
                 checkpoint_waiting.is_set, pilot, description="child approval checkpoint"
             )
-            # The approval event and waiting state share the pending checkpoint.
-            # Neither is visible before that commit completes.
             await application.runtime.drain_events()
             await app._flush_pending_runtime_events()
             async with app._session_surface_lock:

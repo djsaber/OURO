@@ -145,7 +145,7 @@ def main() -> None:
         flush=True,
     )
     for repeat in range(args.repeat):
-        gc.collect()  # Retired Textual Apps must not contaminate the next independent sample.
+        gc.collect()
         result = asyncio.run(sample(prepared, dump=args.strips_output if repeat == 0 else None))
         print(json.dumps({"repeat": repeat, **result}), flush=True)
 

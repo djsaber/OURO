@@ -62,5 +62,5 @@ class TaskFileIndex(FileRecord):
 
 class TaskFileTransaction(FileRecord):
     task_id: str
-    record: StoredTask | None  # None deletes the task and its execution files.
+    record: StoredTask | None
     execution: StoredExecution | None = None

@@ -32,8 +32,6 @@ async def test_archive_listing_filters_entries_without_extra_type_queries(
         return original_is_file(self)
 
     async with App().run_test():
-        # Preparation runs before mounting, but inside the caller's app context.
-        # Count only the listing's queries, not Textual startup or teardown I/O.
         with monkeypatch.context() as listing_patch:
             listing_patch.setattr(Path, "is_dir", counted_is_dir)
             listing_patch.setattr(Path, "is_file", counted_is_file)
@@ -78,8 +76,6 @@ async def test_invalid_path_warns_and_preserves_editor_until_corrected(
         assert screen._edit_text == invalid
         assert screen._directory == tmp_path
         assert screen._filename == "original.zip"
-        # Keep directory publication pending to exercise the asynchronous save
-        # boundary without depending on the filesystem or machine's speed.
         listing_started = asyncio.Event()
         release_listing = asyncio.Event()
         path_choices = screen._path_choices

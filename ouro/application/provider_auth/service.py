@@ -71,7 +71,7 @@ class ProviderAuthService:
         driver = self._driver(binding)
         if method_id not in {method.method_id for method in driver.descriptor.methods}:
             raise AuthError("authorization_unsupported")
-        assert binding.credential_id is not None  # Validated managed configuration.
+        assert binding.credential_id is not None
         original = await self._credentials.status(binding.credential_id)
         if original is not None and original.driver_id != binding.driver_id:
             raise AuthError("credential_conflict")
@@ -96,8 +96,6 @@ class ProviderAuthService:
         except asyncio.CancelledError:
             outcome = await self.cancel(operation_id)
             if outcome.state == "succeeded":
-                # A fast login may already have crossed save admission before
-                # cancellation of the begin waiter reached its owned task.
                 return challenge.result()
             raise
 
@@ -157,7 +155,6 @@ class ProviderAuthService:
         error = AuthError("authorization_cancelled") if task.cancelled() else task.exception()
         if not challenge.done():
             challenge.set_exception(error or AuthError("authorization_failed"))
-        # A cancelled begin caller may no longer be waiting for this future.
         challenge.exception()
 
     def operation(self, operation_id: str) -> LoginOperation:
@@ -200,7 +197,7 @@ class ProviderAuthService:
         try:
             await asyncio.shield(task)
         except AuthError:
-            pass  # Public failure facts are projected from the terminal task below.
+            pass
         except asyncio.CancelledError:
             waiter = asyncio.current_task()
             if waiter is not None and waiter.cancelling():

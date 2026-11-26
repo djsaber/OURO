@@ -521,7 +521,6 @@ def test_native_frame_failure_never_exposes_partial_history_or_driver_ready(stor
     )
     events = [event for event in events if event.event_type == "tool_batch_completed"]
     if isinstance(store, LocalSessionStore):
-        # Recovery already committed the frame; retries do not replay notifications.
         assert events == []
     else:
         assert len(events) == 1

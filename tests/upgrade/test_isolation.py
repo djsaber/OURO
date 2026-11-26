@@ -320,7 +320,6 @@ def test_missing_or_unfinished_session_can_be_removed_after_confirmation(histori
     assert confirmed(report) == {UpgradeUnit("session", "ses_bad")}
     assert bad.exists()
     assert "sessions/ses_fixture/context.json" in report["files"]
-    # The home now has the current layout; the orphan must remain visible on retry.
     assert confirmed(upgrade(home, isolate_failures=True)) == confirmed(report)
     result = upgrade(home, isolate_failures=True, discard=confirmed(report))
     assert result["status"] == "upgraded"

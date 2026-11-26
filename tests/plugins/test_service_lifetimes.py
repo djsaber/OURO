@@ -113,13 +113,9 @@ async def test_accepted_service_keeps_exact_dependency_closure_until_settled(
                 if pending.done():
                     pending.result()
                 await asyncio.sleep(0.01)
-        # The shared leaf is leased once, even through a diamond. Neither a
-        # registration at rest nor an unrelated generation holds a call lease.
         assert [old[item].lease_count for item in (OWNER, BRANCH, LEAF, UNRELATED)] == [1, 1, 1, 0]
         assert await runtime.restart(LEAF) == "active"
         assert all(not old[item].stopped for item in (OWNER, BRANCH, LEAF))
-        # A failed candidate can leave the previous generation active. Include
-        # the activation diagnostics instead of reporting only two equal tokens.
         assert await runtime._active[LEAF].services.call(LEAF, "api", "identity") != token, (
             runtime.diagnostics()
         )

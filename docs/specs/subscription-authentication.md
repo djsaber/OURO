@@ -1,7 +1,6 @@
 # 模型订阅认证规格
 
-> 文档类型：订阅接入规格；浏览器登录为当前产品能力，设备码及其他未验证能力属于扩展范围
-> 范围：多厂商认证边界与 OpenAI / ChatGPT 订阅组合。
+范围：多厂商认证边界与 OpenAI / ChatGPT 订阅组合。
 
 设计理由见[认证设计](../architecture/authentication.md)。本文件定义通用认证契约与浏览器订阅接入，未验收的设备码及其他能力在对应章节明确标注。配置和运行行为遵循[Provider 配置](provider-configuration.md)、[类型与协议](provider-protocols.md)、[模板](provider-templates.md)及[核心运行时](runtime.md)规格。
 
@@ -16,7 +15,7 @@
 
 ## S2. 配置与注册
 
-配置、模板与 RuntimeOptions 共用通用认证结构；本地组合根注册浏览器订阅产品。支持和验证范围见[使用指南](../guides/subscriptions.md#证据范围)。
+配置、模板与 `ProviderRuntimeOptions` 共用通用认证结构；本地组合根注册浏览器订阅产品。支持范围见[使用指南](../guides/subscriptions.md#支持范围)。
 
 Provider 的 `auth_driver: str` 默认为 `"static"`；CredentialRef 的 `managed` 分支使用系统生成的 credential id 作为 `name`，不是路径。静态认证使用 env/inline/none 分支。
 
@@ -134,7 +133,7 @@ Codex 服务策略采用 SSE、store=false、完整本地上下文，不依赖 p
 探针通过启动提示及 output_limit_enforced=false 披露限制；Provider/Template DTO 携带只读服务 notice，
 CLI/TUI 创建、查看和管理入口展示该限制。模板启用图像输入，使用 Responses input_image 编码；结构化输出未声明支持。
 本地能力声明与真实后端验证分别记录：模板值见[预置供应商配置](provider-presets.md)，验证方法见
-[协议探针](../../dev/probes/README.md#正式-adapter-验证)，真实证据范围见[使用指南](../guides/subscriptions.md#证据范围)。
+[协议探针](../../dev/probes/README.md#正式-adapter-验证)，支持范围见[使用指南](../guides/subscriptions.md#支持范围)。
 
 | Responses 输入/事件 | canonical 行为 |
 |---|---|
@@ -188,4 +187,4 @@ CLI 入口为 `provider auth login/status/logout <provider_id>`，以及 `provid
 | S7 协议 | 两轮及多轮工具、交错工具、reasoning 续接、scope 改变、完整 items 不重复编码、分支/恢复/压缩、EOF、usage 去重 |
 | S8–S9 集成 | 主/压缩/child/default adapter、非交互错误、费用未知、关闭顺序、第二驱动、依赖规则 |
 
-领域测试覆盖对应契约。设备码与各平台的文件权限分别验收，真实账户验证须显式启用，fixture 只保留脱敏协议事实。已验证的账户、模型和平台范围见[订阅指南](../guides/subscriptions.md#证据范围)。
+领域测试覆盖对应契约。设备码与各平台的文件权限分别验收，真实账户验证须显式启用，fixture 只保留脱敏协议事实。产品支持范围见[订阅指南](../guides/subscriptions.md#支持范围)。

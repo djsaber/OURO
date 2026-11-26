@@ -27,7 +27,7 @@ def _target(url: str) -> SplitResult:
         or any(part in {".", ".."} for part in target.path.split("/"))
     ):
         raise ValueError("invalid authentication target")
-    _ = target.port  # Reject malformed ports before touching credentials.
+    _ = target.port
     return target
 
 

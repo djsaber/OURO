@@ -83,7 +83,6 @@ async def test_tui_restores_history_and_observation_without_the_old_model(
                 assert isinstance(menu, ChoiceScreen)
                 await pilot.press("enter")
                 await wait_for_menu_action(pilot, menu)
-            # Session activation commits content before its background layout completes.
             await wait_for_history_render(pilot)
             assert not isinstance(app.screen, ChoiceScreen)
             assert app._controller.session_id == session_id

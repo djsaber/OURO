@@ -1145,8 +1145,6 @@ class SQLiteSessionStore:
                 (session_id,),
                 RequestManifestRecord,
             )
-            # Records are decoded at their storage boundary; assembling a typed
-            # container must not validate the entire history a second time.
             snapshot = SessionSnapshot.model_construct(
                 session=session,
                 request_headers=self._load_models(
@@ -1637,8 +1635,6 @@ class SQLiteSessionStore:
 
     @contextmanager
     def session_read(self, session_id: str) -> Generator[sqlite3.Connection]:
-        # SQLite snapshots protect records, while the existing resource namespace
-        # lock keeps their external files alive until selected bytes are owned.
         previous_session = getattr(self._read_state, "session_id", None)
         # Removing or replacing published files requires the SQLite writer. A read
         # within that transaction already owns their lifetime and must not wait
@@ -1736,7 +1732,6 @@ class SQLiteSessionStore:
                         if fact.input_id is not None
                         else None
                     )
-                    # Catalog text has no use for Call parameters or Outcome bodies.
                     latest_message = MessageRecord.model_validate(
                         {**fact.model_dump(), **resolve_input_content(fact, record)}
                     )
@@ -1950,11 +1945,7 @@ class SQLiteSessionStore:
         connection: sqlite3.Connection | None = None
         try:
             connection = self._connect()
-            # A shared connection alone is not a snapshot boundary in SQLite:
-            # without an explicit transaction each SELECT may observe a newer
-            # commit. Observation snapshots issue several SELECTs and publish a
-            # fact position, so they must all read one database version or a
-            # concurrent change can be missed by both snapshot and catch-up.
+            # Use one read transaction so facts and the catch-up position see the same commit.
             connection.execute("BEGIN")
             try:
                 yield connection
@@ -1999,7 +1990,6 @@ class _TransactionState:
 
     def rollback(self) -> None:
         try:
-            # The next writer can read these files as soon as the database rolls back.
             for source, target in reversed(self.file_moves):
                 if source.exists():
                     source.rename(target.with_name(new_id("uncommitted")))
@@ -2033,8 +2023,6 @@ class _SQLiteMutation(AbstractContextManager[object, None]):
                 # mutation boundaries.
                 connection.execute("PRAGMA synchronous = FULL")
             else:
-                # Only the current response Draft uses weak persistence.
-                # Business commits always use FULL, including nested appends.
                 connection.execute("PRAGMA synchronous = NORMAL")
             connection.execute("BEGIN IMMEDIATE")
         except sqlite3.Error as exc:

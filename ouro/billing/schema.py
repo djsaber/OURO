@@ -40,7 +40,6 @@ USAGE_SCHEMA = (
         PRIMARY KEY(session_id, run_id)
     ) WITHOUT ROWID""",
     "CREATE INDEX entries_time ON entries(occurred_at DESC, entry_id DESC)",
-    # Full-ledger and daily aggregates read this narrow covering index without row lookups.
     "CREATE INDEX entries_totals ON entries(day, billing_mode, input_tokens, output_tokens, "
     "cache_read_tokens, cache_write_tokens, estimated_cost)",
     *(

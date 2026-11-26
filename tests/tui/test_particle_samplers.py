@@ -1,5 +1,3 @@
-"""Sampler contracts and bounded resources."""
-
 from math import sin
 
 import pytest
@@ -25,7 +23,6 @@ def test_sampler_reuses_buffers_and_handles_nonmonotonic_time_without_mutating_g
         assert all(a is b for a, b in zip(actual, outputs, strict=True))
         assert np.asarray(actual).shape == (3, grid.width * grid.height)
         assert np.isfinite(actual).all() and (np.asarray(actual) >= 0).all()
-        # Cached state must give the same result as a fresh sampler at that time.
         np.testing.assert_array_equal(actual, prepare(grid)(seconds))
     np.testing.assert_array_equal(grid.x, coordinates[0])
     np.testing.assert_array_equal(grid.y, coordinates[1])

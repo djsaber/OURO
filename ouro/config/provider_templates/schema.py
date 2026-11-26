@@ -87,6 +87,6 @@ class ProviderTemplate(OuroModel):
             (item for item in self.endpoints if item.endpoint_id == target),
             None,
         )
-        if endpoint is None:  # Protected by validation for the default lookup.
+        if endpoint is None:
             raise ConfigError(f"provider template endpoint not found: {self.template_id}/{target}")
         return endpoint

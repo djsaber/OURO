@@ -151,7 +151,6 @@ def test_model_projection_reads_file_once_and_revalidates_each_request(
         assert "attached text" in attachment.text_content
     assert message.text_content == "Read this"
     assert len(reads) == 1
-    # Ordinary reads reject missing or resized files without scanning a full digest.
     blob_path.write_bytes(b"corrupt")
     with pytest.raises(ResourceIntegrityError):
         resources.project_model_messages([message], input_modalities=frozenset())
@@ -326,8 +325,6 @@ def test_reference_publish_failure_retains_bytes_after_uncertain_acknowledgement
 
     files = list(resource_store.directory_for(session.session_id).iterdir())
     assert len(files) == 1 and files[0].read_bytes() == b"rollback"
-    # SQLite rolls back the enclosing transaction; Files may already have
-    # published metadata when the caller loses acknowledgement.
     assert len(resources.list_resources(session.session_id).resources) == (
         backend == "files" and after_publication
     )

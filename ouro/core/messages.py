@@ -301,7 +301,6 @@ class MessageRecord(VersionedOuroModel, MessageSemantics):
         if self.input_attachments:
             if self.role not in {"user", "harness"}:
                 raise ValueError("input attachments require a user or harness message")
-            # Offsets into a referenced body are checked when that body is materialized.
             if not (
                 self.input_ref is not None and self.input_ref.part == "body" and not self.content
             ):
@@ -474,7 +473,6 @@ def model_visible_message(
     ]
     if tag is None:
         return model_message.model_copy(update={"role": role, "content": content})
-    # Preserve unchanged blocks so the request manifest can reference the original body.
     for index, block in enumerate(content):
         if isinstance(block, TextContent):
             escaped = escape_semantic_envelope_delimiters(block.text, tag)
@@ -488,7 +486,6 @@ def model_visible_message(
                 *content,
                 TextContent(text=f"\n</{tag}>"),
             ],
-            # The projected envelope carries the label and its attributes exactly once.
             "semantic_tag": None,
             "semantic_attributes": {},
         }

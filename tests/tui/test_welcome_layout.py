@@ -67,8 +67,6 @@ async def test_animation_keeps_editor_layout_and_cursor_stable_during_cjk_edits(
         composer = app.query_one(Composer)
         before = composer.region, welcome.input_surface.region, matrix.region
         elapsed = matrix.elapsed
-        # Committed CJK input is available to the application; native IME preedit
-        # stays inside the terminal and is covered by the console boundary tests.
         expected = ""
         for _ in range(4):
             for key in ("你", "好", "世", "界", "backspace", "backspace", "backspace", "backspace"):

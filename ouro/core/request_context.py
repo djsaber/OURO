@@ -6,8 +6,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
-# Registration defines availability, not extraction. Each calling use case owns
-# the value's lifecycle and must supply it explicitly at the request boundary.
 REQUEST_CONTEXT_KEYS = frozenset(
     {
         "session.id",

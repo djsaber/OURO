@@ -193,7 +193,6 @@ def _apply_selection_style(
 ) -> Strip:
     """Apply a character-indexed selection style without losing Rich segments."""
 
-    # Match rendered_text's selection boundary, excluding trailing layout whitespace.
     text_length = len(strip.text.rstrip())
     start = min(max(0, start), text_length)
     end = text_length if end < 0 else min(max(0, end), text_length)
@@ -250,7 +249,6 @@ def _prepare_reasoning_layout(source: str, *, width: int, theme: TuiTheme) -> Re
     return ReasoningLayout(
         width,
         theme,
-        # Keep the live widget's right padding in each frozen row.
         tuple(
             _render_stream_line(line, width=width, theme=theme, plain=False, right_gutter=1)
             for line in wrapped
@@ -332,8 +330,6 @@ class ReasoningLines(RangeSelectionOnly, Widget):
         self._render_updates()
 
     def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
-        # Strips are counted, not measured: auto height stays O(1) while the
-        # block grows, so sizing the widget never renders its content.
         if not width:
             return 0
         return len(self._lines) + len(self._pending_lines)
@@ -379,8 +375,6 @@ class ReasoningLines(RangeSelectionOnly, Widget):
         """
         width = self.content_region.width
         if width <= 0:
-            # Not laid out yet (or collapsed): render once layout provides a
-            # width instead of depending on the resize event's timing.
             if not self._deferred_render and self._source_parts:
                 self._deferred_render = True
                 self.call_after_refresh(self._render_deferred_updates)
@@ -645,7 +639,6 @@ def _entry_renderables(
                 summary.append(theme.section_separator, style=theme.text_lowlight)
                 summary.append(f"{'show' if request.trace_collapsed else 'hide'} trace")
                 summary = theme.highlight_text(summary)
-            # Hover never changes the row height, even in a narrow terminal.
             summary.stylize(_ACTION_STYLE)
             summary.no_wrap = True
             summary.overflow = "ellipsis"

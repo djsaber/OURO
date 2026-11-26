@@ -21,7 +21,6 @@ def _discard_copy(value: dict[str, Any], key: str, expected: Any) -> None:
 
 
 def convert_state(raw: dict[str, Any]) -> dict[str, Any]:
-    # Plugin schemas are needed only for homes with installation metadata.
     from ouro.plugins.models import PluginStateDocument
 
     value = copy.deepcopy(raw)

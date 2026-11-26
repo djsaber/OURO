@@ -246,8 +246,6 @@ class SessionControlCoordinator:
                     harness=draft,
                 )
                 draft = self._accept_output(draft, output)
-                # The next lifecycle callback observes the accepted removal in the
-                # shared draft, while canonical readers still see the old aggregate.
                 remaining = [
                     item
                     for item in draft.state.controls.activations
@@ -430,8 +428,6 @@ class SessionControlCoordinator:
                     recovered = self.store.load_session_record(request.before.session_id)
                     if recovered.last_commit_id != request.operation_id:
                         raise
-                    # The shared fact follower discovers this committed revision even
-                    # when the caller did not receive the transient notification result.
                     committed_events = ()
         self.store.refresh_catalog(request.before.session_id)
         return SessionControlCommitOutcome(tuple(cancellations), stopped_run_id, committed_events)

@@ -1,7 +1,6 @@
 # 文件输入与模型内容
 
-> 文档类型：现行架构
-> 行为契约见[附件输入规格](../specs/attachments.md)，存储契约见[资源规格](../specs/resources-and-supervision.md)。
+行为契约见[附件输入规格](../specs/attachments.md)，存储契约见[资源规格](../specs/resources-and-supervision.md)。
 
 ## 输入材料与任务意图
 

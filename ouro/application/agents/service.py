@@ -1000,8 +1000,6 @@ class AgentService:
         if parent_session_id is not None:
             await run_blocking(self._require_parent, delegation_id, parent_session_id)
         if mode == "follow_up":
-            # Preserve an observed terminal result even if its watcher has not
-            # run yet; delivery must finish before entering the follow-up lock.
             await self._finalize_result(delegation_id)
         lock = self._result_locks.setdefault(delegation_id, asyncio.Lock())
         async with lock:
@@ -1092,9 +1090,6 @@ class AgentService:
         assert relation.child_session_id is not None
         child = self.store.load_session_record(relation.child_session_id)
         selected_model = self._selected_model(relation.definition.model, child.current_model)
-        # The root's short mutation serializes its relation with the child
-        # decision. Files recover an interrupted relation update from that
-        # decision; SQLite includes both native writes in this transaction.
         with self.store.session_mutation(relation.root_session_id):
             relation = self.store.load_delegation(relation.root_session_id, relation.delegation_id)
             return self._accept_agent_follow_up(
@@ -2143,16 +2138,10 @@ class AgentService:
                         identity=identity,
                         wait=wait,
                     )
-                    # Cleanup owns the execution attempt immediately. Delivery
-                    # can finish while this task still waits for parent output.
                     receipt = self._execution.own_receipt(handle)
                     scheduled = True
                     continue
 
-                # Sibling progress inside a resolved batch cannot publish our
-                # receipt. Coalesced activity still reveals commit/terminal
-                # boundaries; an unfinished local attempt can also fail without
-                # advancing durable Run state and must wake this observer.
                 while True:
                     change = asyncio.create_task(subscription.get())
                     try:
@@ -2170,7 +2159,6 @@ class AgentService:
                     if notification.diagnostic is not None:
                         raise OuroError(notification.diagnostic.message)
                     if notification.facts is not None:
-                        # A coalesced fact page may be the only notice of the result commit.
                         break
                     event = notification.event
                     if (
@@ -2216,8 +2204,6 @@ class AgentService:
                 resolution=resolution,
             )
         except ValueError as exc:
-            # A competing Host can change the join after the observation. Retry
-            # through the same receipt-first flow, rather than replaying it here.
             raise SessionBusyError("Parent join changed while scheduling its result") from exc
 
     def _record_wait_result(self, relation: DelegationRecord) -> None:
@@ -2245,8 +2231,6 @@ class AgentService:
             relation=relation,
             resource_refs=resource_refs,
         )
-        # Reading/copying child data does not hold a parent mutation lock. The
-        # short commit chooses one immutable observation across competing Hosts.
         with self.store.session_mutation(session_id):
             previous = self.store.load_tool_outcome(session_id, identity, state.attempt)
             if previous is not None:

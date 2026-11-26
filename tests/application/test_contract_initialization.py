@@ -1,5 +1,3 @@
-"""Cold contract use preserves validation, immutability and serialization."""
-
 import subprocess
 import sys
 

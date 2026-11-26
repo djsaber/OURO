@@ -1,7 +1,5 @@
 # 安装与使用插件
 
-> 文档类型：使用指南
-
 原生插件使用 `.ouro-plugin/plugin.json`。插件是系统级扩展，只分 builtin 与 user；安装、state、CLI 和 DTO
 均不定义 workspace/project scope。安装只做静态校验和不可变发布，不 import entrypoint、启动 worker 或 MCP。
 用户通过 `enable` 显式接受并运行当前 selected digest；`update` 只并排安装候选，只有显式 `select`、`reload` 或

@@ -1,7 +1,6 @@
 # OURO 用量与计费规格
 
-> 文档类型：现行规格
-> 主要实现：`core/billing.py`、`core/usage_queries.py`、`application/usage.py`、`billing/`、CLI/TUI 用量呈现
+主要实现：`core/billing.py`、`core/usage_queries.py`、`application/usage.py`、`billing/`、CLI/TUI 用量呈现
 
 ## 事实与责任边界
 

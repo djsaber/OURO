@@ -152,8 +152,6 @@ class ProbeTransport(HttpxProviderHTTPTransport):
         hooks = self._probe_client.event_hooks["response"]
         hooks.append(self._observe_rejection)
         try:
-            # The concrete transport returns an async generator; its public
-            # annotation exposes only the iteration contract.
             source = cast(
                 AsyncGenerator[Mapping[str, Any]],
                 super().stream_json(

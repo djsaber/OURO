@@ -100,8 +100,6 @@ async def test_default_rebind_preserves_explicit_overrides_and_uses_actual_start
     overrides = ProviderRuntimeOptions(temperature=0.25, api_key="override")
     options = configs.resolve_runtime_options(overrides)
     default = build_runtime_adapter(options)
-    # A configuration write between snapshot and catalog assembly must not mark
-    # an adapter built from the older snapshot as current.
     configs.update_endpoint(
         provider_id,
         endpoint_id,

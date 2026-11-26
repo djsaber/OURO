@@ -1,8 +1,4 @@
-"""Measure selected resource reads using disposable target-format sessions.
-
-Run: uv run --frozen python -m dev.benchmarks.session_resources --repeat 7
-No OS cache eviction; fresh adapters distinguish process-local indexing from warm reads.
-"""
+"""Measure selected resource reads using disposable target-format sessions."""
 
 from __future__ import annotations
 
@@ -187,7 +183,6 @@ def main():
     )
     backends = ("files", "sqlite") if args.backend == "all" else (args.backend,)
     for backend in backends:
-        # Vary old resources and file size independently, keeping the selected windows fixed.
         scenarios = {(count, args.sizes[0]) for count in args.old_counts}
         scenarios.update((args.old_counts[0], size) for size in args.sizes)
         for count, size in sorted(scenarios):

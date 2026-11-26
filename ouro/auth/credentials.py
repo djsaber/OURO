@@ -101,8 +101,7 @@ class CredentialService:
                         return await asyncio.shield(worker)
                     except asyncio.CancelledError:
                         admission.cancel()
-                        # A queued/running worker must finish before its credential
-                        # lock is released, even when cancellation wins admission.
+                        # Finish the worker before cancellation releases its credential lock.
                         if worker.done():
                             return worker.result()
             finally:
@@ -215,7 +214,6 @@ class CredentialService:
         except AuthError:
             raise
         except Exception:
-            # Driver exceptions can include a token response or request URL.
             raise AuthError("credential_refresh_failed") from None
 
     async def close(self) -> None:
@@ -241,13 +239,10 @@ class CredentialService:
         _, pending = await asyncio.wait(tasks, timeout=self._refresh_timeout)
         for task in pending:
             task.cancel()
-        # Threaded atomic writes cannot be cancelled. They must finish before
-        # any owning refresh releases its lock or the service reports closure.
+        # A threaded atomic write can outlive its cancelled waiter.
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _save(self, record: CredentialRecord) -> None:
-        # Once atomic replacement starts, cancellation cannot undo it. Finish the
-        # worker before releasing the lock and report the actual persistence result.
         task = asyncio.create_task(asyncio.to_thread(self._store.write, record))
         while True:
             try:
@@ -267,7 +262,7 @@ class CredentialService:
     def _operation_finished(self, task: asyncio.Task[object]) -> None:
         self._operations.discard(task)
         if not task.cancelled():
-            task.exception()  # Retrieve failures even when every caller cancelled its wait.
+            task.exception()
 
     def _require_open(self) -> None:
         if self._closed:

@@ -29,7 +29,6 @@ async def test_terminal_negotiates_atomic_frames_and_restores_cursor_before_publ
 
     writes = []
 
-    # Exercise the actual adapter and App output path without taking over a console.
     def start(driver):
         size = Size(*driver._size)
         driver.send_message(events.Resize(size, size))
@@ -46,15 +45,11 @@ async def test_terminal_negotiates_atomic_frames_and_restores_cursor_before_publ
         await pilot.pause()
         assert app._sync_available is bool(mode)
         app.cursor_position = Offset(9, 32)
-        # A full-color artwork frame crosses Windows' 8192-character write boundary.
         update = LayoutUpdate(
             [[Strip([Segment("\x1b[38;2;70;80;90m⣿" * 1200)])]], Region(0, 0, 120, 1)
         )
         writes.clear()
         app._display(app.screen, update)
-        # A frame must reach the writer as one unit, including cursor restoration.
-        # Merely wrapping fragmented writes in DEC 2026 does not stabilize the
-        # native cursor read by IME clients.
         assert len(writes) == 1
         sequence = "".join(writes)
         restore = Control.move_to(9, 32).segment.text
@@ -109,7 +104,6 @@ def test_failed_or_incomplete_native_frame_is_reported(monkeypatch, tmp_path, su
 
     def native_write(*_):
         ctypes.set_last_error(5)
-        # A successful call with zero characters written is still a failed frame.
         return succeeds
 
     monkeypatch.setattr(windows_console, "_WRITE_CONSOLE", native_write)
@@ -121,7 +115,6 @@ def test_failed_or_incomplete_native_frame_is_reported(monkeypatch, tmp_path, su
 
 
 def test_native_console_frame_keeps_input_cursor_and_unicode_intact():
-    # A separate hidden console isolates native API testing from the user's TUI.
     result = subprocess.run(
         [sys.executable, "-m", "tests.tui.windows_console_probe"],
         cwd=Path(__file__).resolve().parents[2],

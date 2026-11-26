@@ -144,7 +144,6 @@ async def request(
     terminal: dict[str, Any] | None = None
     items = OpenAIResponsesItemAccumulator()
     try:
-        # Total deadline also bounds a stream that sends keepalives forever.
         async with asyncio.timeout(120):
             async for event in transport.stream_json(
                 url=RESPONSES_URL, headers=headers, payload=payload, timeout=60
@@ -177,7 +176,6 @@ async def request(
     except OpenAIResponsesError as error:
         raise ProbeError(error.code) from None
     except ProviderTransportError as error:
-        # Shared transport diagnostics may include bodies; never expose them here.
         raise ProbeError("model_http_error", status=error.status_code) from None
     except TimeoutError:
         raise ProbeError("model_timeout") from None
@@ -265,8 +263,6 @@ async def verify_responses(
         ):
             raise ProbeError("unexpected_tool_arguments")
         seen_calls.add(call_id)
-        # Full output items, including encrypted reasoning, are replayed exactly once.
-        # This local echo cannot execute arbitrary code or access user data.
         history.extend(observation.output)
         history.append(
             {
@@ -294,5 +290,4 @@ async def verify_responses(
 
 
 def _contains_marker(output: list[dict[str, Any]], marker: str) -> bool:
-    # Check the requested acknowledgement, not the model's punctuation/Markdown.
     return re.search(r"(?<!\w)" + re.escape(marker) + r"(?!\w)", _text(output)) is not None

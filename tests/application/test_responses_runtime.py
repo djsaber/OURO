@@ -96,7 +96,6 @@ async def responses_runtime(tmp_path, monkeypatch, request):
         assert "max_output_tokens" not in payload
         if not payload["stream"]:
             return httpx.Response(200, json=reply["response"])
-        # Exercise the observed SSE form where the terminal has no output snapshot.
         items = reply["response"].pop("output")
         events = [item_event(index, item) for index, item in enumerate(items)] + [reply]
         return httpx.Response(

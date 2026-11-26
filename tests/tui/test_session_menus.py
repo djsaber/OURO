@@ -202,7 +202,6 @@ async def test_delete_menu_is_archived_only_and_rechecks_before_confirmation(
     archived = application.runtime.sessions.create(title="Archived", namespace="task").session
     if not empty:
         application.runtime.sessions.set_archived(archived.session_id, True)
-    # Unreadable, unarchived sessions must not become a deletion exception.
     (tmp_path / "sessions" / active.session_id / "session-data.sqlite3").write_text(
         "broken", encoding="utf-8"
     )

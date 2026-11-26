@@ -50,7 +50,6 @@ async def test_provider_credentials_preserve_replace_and_mask_both_sources(tmp_p
             assert prompt.plain.endswith("[KEY]" if target == "inline" else "[ENV]")
             assert "private-original" not in prompt.plain
 
-        # Explicitly submitting a blank provider credential keeps the saved binding.
         await edit_source(source)
         await pilot.press("ctrl+u", "enter")
         await pilot.pause()

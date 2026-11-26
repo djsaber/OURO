@@ -65,7 +65,6 @@ class _ChoicePage:
 class ChoiceScreen(ModalScreen[str | None]):
     MIN_LIST_HEIGHT = 5
     MAX_LIST_HEIGHT = 20
-    # Title, optional filter, and hint rows surrounding the scrollable list.
     MENU_CHROME_HEIGHT = 7
     DEFAULT_HINT = DEFAULT_TUI_THEME.inline_separator.join(
         ("↑/↓ move", "←/→ group", "Enter select", "Esc close")
@@ -609,7 +608,6 @@ class ChoiceScreen(ModalScreen[str | None]):
 
         async def wait_for_child() -> ScreenResult | None:
             if await self._prepare_child(screen):
-                # Publish both visibility changes before yielding to queued callbacks.
                 self._hide_for_child()
                 return await asyncio.shield(self.app.push_screen(screen, wait_for_dismiss=True))
             return None
@@ -622,8 +620,6 @@ class ChoiceScreen(ModalScreen[str | None]):
         try:
             return await worker.wait()
         except WorkerCancelled as exc:
-            # Shutdown or a superseding request is not a user's empty selection.
-            # Callers must not resume editing a parent that no longer owns the request.
             raise asyncio.CancelledError from exc
 
     def show_child(self, screen: ModalScreen[ScreenResult]) -> None:
@@ -652,9 +648,7 @@ class ChoiceScreen(ModalScreen[str | None]):
 
     def _on_current_screen_changed(self, screen: Screen) -> None:
         if screen is self:
-            # The stack changes synchronously, but ScreenResume is queued. A
-            # pending repaint can run first, so restore visibility at the stack
-            # boundary rather than allowing that repaint to draw a hidden menu.
+            # Restore visibility before a pending repaint can overtake ScreenResume.
             self._restore_after_child()
 
     def _restore_after_child(self) -> None:
@@ -664,11 +658,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._child_background = None
         self.styles.background = background
         self.query_one("#choice-panel", Vertical).display = True
-        # Widget display changes queue a layout message. Invalidate the screen
-        # now so its next repaint cannot reuse the hidden parent's compositor.
         self.refresh(layout=True)
-        # Returning to the parent owns this focus change; the child result may select another
-        # control before the next frame, so do not defer it past that result.
         self._focus_menu()
 
     def _page(self) -> _ChoicePage:
@@ -835,8 +825,6 @@ class ChoiceScreen(ModalScreen[str | None]):
 
         request = object()
         self._loading_requests[request] = (self._page_revision, value)
-        # Immediate callbacks finish before this message; only work that yields
-        # can publish an activity frame. No artificial delay extends the operation.
         self.call_later(self._refresh_loading)
         try:
             yield
@@ -909,9 +897,6 @@ class ChoiceScreen(ModalScreen[str | None]):
         selected = str(event.option.id)
         if (self._page_revision, selected) in self._pending_selections:
             return
-        # Navigation may dismiss this Screen before its destination finishes
-        # loading. Keep that work application-owned and the message pump free
-        # for close/prune while a selection waits for a child dialog.
         _worker: Worker[None] = self.app.run_worker(
             partial(self._run_choice, selected),
             group=f"choice-selection-{id(self)}",
@@ -940,8 +925,6 @@ class ChoiceScreen(ModalScreen[str | None]):
             choices is None
             and self._page_revision == page_revision
             and self._accepts_choice_updates()
-            # Navigation roots dispatch the destination asynchronously. Redrawing
-            # them here would briefly render the old page before that page arrives.
             and self._navigation_id is None
             and self._on_refresh is not None
         ):
@@ -1086,9 +1069,6 @@ class ChoiceScreen(ModalScreen[str | None]):
             or not cls._is_group_header(options.get_option_at_index(highlighted - 1))
         ):
             return
-        # OptionList has already made the selected row visible. Moving upward
-        # can leave its one-line group header just above the viewport; reveal
-        # that context without changing downward navigation's valid scroll.
         options.scroll_relative(
             y=-1,
             animate=False,

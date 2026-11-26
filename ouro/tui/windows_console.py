@@ -41,10 +41,7 @@ class ConsoleOutput:
             return self._stream.write(text)
         if not text:
             return 0
-        # Python's _WindowsConsoleIO splits large writes internally. Native IME
-        # clients can observe the drawing cursor between those calls. Send the
-        # whole frame, including its final cursor restoration, in one Win32 call.
-        # WriteConsoleW counts UTF-16 units, not Python Unicode code points.
+        # Keep frame and cursor restore atomic for IME clients. WriteConsoleW counts UTF-16 units.
         encoded = text.encode("utf-16-le")
         units = len(encoded) // 2
         written = wintypes.DWORD()

@@ -97,7 +97,6 @@ async def test_rich_results_survive_execution_storage_replay_and_route_projectio
     replay_provider = RecordingProvider("responses", request_tools=False)
     reopened = application_at(tmp_path, replay_provider, backend=backend)
     try:
-        # Persisted content remains independent of the route that consumed it.
         reopened.runtime.adapter.model.supports_image_input = True
         lifecycle = reopened.runtime._tool_calls_for_run(result.run.run_id).runs
         _, _, _, replay, _ = lifecycle.publish_tool_batch(

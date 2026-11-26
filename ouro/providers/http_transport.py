@@ -108,7 +108,6 @@ class HttpxProviderHTTPTransport:
                 proxy = preference.proxy
             client = self._clients.get(proxy)
             if client is None:
-                # The transport loads trusted CAs. The client uses the route we already resolved.
                 client = httpx.AsyncClient(
                     transport=httpx.AsyncHTTPTransport(proxy=proxy), trust_env=False
                 )
@@ -186,7 +185,6 @@ class HttpxProviderHTTPTransport:
             items = _stream_request(client, url, request_headers, payload, timeout)
             async with aclosing(items):
                 while True:
-                    # Consumer processing time is outside the next event's wait budget.
                     try:
                         async with asyncio.timeout(timeout):
                             item = await anext(items)
@@ -308,5 +306,4 @@ def _service_error_code(response: httpx.Response) -> str | None:
     if not isinstance(error, dict):
         return None
     code = error.get("code") or error.get("type")
-    # Internal comparison only: never copy a supplier's arbitrary code into a DTO.
     return code if isinstance(code, str) and len(code) <= 128 else None

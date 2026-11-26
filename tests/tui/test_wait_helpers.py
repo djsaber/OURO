@@ -23,7 +23,6 @@ async def test_worker_group_completion_does_not_wait_for_application_lifetime():
         worker = app.run_worker(operation(), group="operation")
         try:
             await asyncio.wait_for(entered.wait(), 5)
-            # Empty explicit lists and groups must never expand to all workers.
             await wait_for_workers(app, [], timeout=1)
             await wait_for_worker_group(app, pilot, group="absent", timeout=1)
             waiting = asyncio.create_task(wait_for_worker_group(app, pilot, group="operation"))
@@ -33,7 +32,6 @@ async def test_worker_group_completion_does_not_wait_for_application_lifetime():
             await waiting
             assert worker.is_finished
             assert observer.is_running
-            # Once the completed worker has left the manager the same wait is empty.
             await wait_for_worker_group(app, pilot, group="operation", timeout=1)
             assert observer.is_running
         finally:

@@ -6,7 +6,6 @@ from collections.abc import Iterable
 
 from ouro.core.plugin_contracts import PluginImplementation
 
-# Persisted execution IDs include the canonical dependency lock, including for plugins with none.
 _EMPTY_LOCK = "81059fe6210ccee4e3349c0f34c12d180f995150128a913d63b65b7937c6b152"
 
 

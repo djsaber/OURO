@@ -25,9 +25,6 @@ from ouro.tui.composer.element_editor import ElementTextArea
 from ouro.tui.input_presentation import ContextElement
 from ouro.tui.theme import DEFAULT_TUI_THEME, theme_for
 
-# The composer grows with its wrapped document between these text bounds. The
-# blank row above and below the text is the composer's frame, so the widget's
-# outer height is always the visible text rows plus that frame.
 COMPOSER_TEXT_MIN_HEIGHT = 1
 
 
@@ -119,7 +116,6 @@ class Composer(ElementTextArea):
             TextAreaTheme(
                 "ouro-composer",
                 selection_style=RichStyle(reverse=True),
-                # Cursor-line foreground must not override semantic reference colors.
                 cursor_line_style=RichStyle(),
             )
         )
@@ -261,8 +257,6 @@ class Composer(ElementTextArea):
             lines = self.placeholder.wrap(self.content_size.width)
             if y < len(lines):
                 content = lines[y]
-                # Preserve TextArea's native cursor lifecycle while retaining
-                # per-span placeholder colors that its uniform style would erase.
                 if self._draw_cursor and y == 0:
                     theme = self._theme
                     cursor_style = theme.cursor_style if theme is not None else None
@@ -525,7 +519,6 @@ class Composer(ElementTextArea):
             return
         position = self.plain_document.get_index_from_location(self.selection.end)
         if event.character == "/" and position == 0 and self.selection.is_empty and context is None:
-            # Capture the draft before the edit, even immediately after restoring a surface.
             self._command_draft = self.input_text or None
         if (
             event.character == "@"
@@ -543,7 +536,6 @@ class Composer(ElementTextArea):
         await super()._on_key(event)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        # Preparation pauses editing without disabling or blurring the input widget.
         if self.import_pending:
             return False
         return super().check_action(action, parameters)

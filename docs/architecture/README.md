@@ -1,8 +1,5 @@
 # OURO 架构
 
-> 文档类型：现行架构
-> 事实来源：组合根、公开端口、资源所有者与架构依赖测试。
-
 本文定义职责、依赖方向与跨领域不变量。数据字段、状态转换、命令参数及失败矩阵由[领域规格](../specs/README.md)负责。
 
 ## 会话事实与动态环境
@@ -154,6 +151,6 @@ Provider 实例、产品类型与线协议独立；工厂按协议选择 adapter
 
 新增 Host 复用现有服务 / DTO；新的存储、协议或扩展点需要独立业务变化方向。先减少重复扫描、序列化与调用，再考虑缓存；新增缓存须说明 key、失效、容量与所有者。未来条件见[路线图](../plans/roadmap.md)，当前性能边界见[性能规格](../specs/performance.md)。
 
-会话事实存储与增量观察的方案和验证证据见[设计与验收](../plans/archive/2026-10-30-session-observation-without-event-log.md)。
+会话修订号、观察位置与补齐流程见[会话观察规格](../specs/session-observation.md)。
 
 实现与评审遵循[编码准则](../development/coding-guidelines.zh-CN.md)，验证命令统一见[贡献指南](../../CONTRIBUTING.md)。架构改动需覆盖实际依赖、失败、并发、取消和资源释放；通过测试不替代职责与维护成本审查。

@@ -117,8 +117,6 @@ async def test_late_worker_state_cannot_escape_closed_call_or_enter_another_sess
         with pytest.raises(RuntimeError, match="closed"):
             views[0].read()
 
-        # Worker replies to the cancelled request before answering this one.
-        # Receiving this result proves the late reply crossed the reader boundary.
         output, change = await invocation(handler, owner, "other-session")
         assert output.content == "other-session"
         assert change.session_id == "other-session"

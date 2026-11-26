@@ -43,8 +43,6 @@ async def check_connection_events(
                 has_tool_calls=has_tool_calls,
                 has_reasoning=has_reasoning,
             )
-            # A small probe budget may end during reasoning. It still demonstrates
-            # connectivity; the agent loop independently requires a usable answer.
             if failure is not None and failure.code not in {
                 "model_output_limit",
                 "model_reasoning_only",

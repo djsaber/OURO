@@ -1,5 +1,3 @@
-"""Check explicit runtime dependencies, including imports inside functions."""
-
 from __future__ import annotations
 
 import ast
@@ -50,7 +48,6 @@ def test_explicit_runtime_imports_do_not_form_cycles() -> None:
             parent = node.module or ""
             if node.level:
                 parent = resolve_name("." * node.level + parent, package)
-            # Importing a named submodule uses that module, not a package export.
             for alias in node.names:
                 child = f"{parent}.{alias.name}"
                 dependencies.add(child if child in modules else parent)

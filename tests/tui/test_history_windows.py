@@ -145,8 +145,6 @@ async def test_opening_a_live_session_does_not_read_full_execution_history(
                 subscription = await application.supervisor.subscribe(session.session_id)
                 try:
                     release_prefix.set()
-                    # Provider entry precedes publication. Wait for the durable
-                    # delta so this case exercises the observation snapshot.
                     async with asyncio.timeout(15):
                         while True:
                             notification = await subscription.get()
@@ -170,8 +168,6 @@ async def test_opening_a_live_session_does_not_read_full_execution_history(
                 if not prefix_before_open:
                     assert app._projection.assistant_text == ""
                     release_prefix.set()
-                    # The same bounded observation must also receive deltas
-                    # published after opening, without a full-history reload.
                     await wait_until(
                         lambda: app._projection.assistant_text == "live prefix. ",
                         pilot,
@@ -252,7 +248,7 @@ async def test_recent_window_pages_and_cached_reentry_keep_the_same_history_star
             *(message.text_content for message in extra),
         ]
         assert len(projected) == (200 if new_messages == 1 else 600)
-        assert min(projected) > 206  # The stable retained prefix was not read/projected again.
+        assert min(projected) > 206
         assert all(sequence is not None and sequence > 605 for sequence in rendered)
         assert conversation.held_scroll_y() == held
         assert app.query_one(Composer).text == "x"

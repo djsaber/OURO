@@ -151,8 +151,6 @@ class PluginToolGroups:
         return ToolGroupRegistration(self, version)
 
     async def withdraw(self, group_id: str, registration_id: str) -> None:
-        # Revocation already removes this owner from executable catalogs. Stop
-        # callbacks may still close their handles while Host cleanup drains it.
         version = self.get(group_id)
         if not self.gate.is_open or version is None or version.registration_id != registration_id:
             return

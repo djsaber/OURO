@@ -139,7 +139,6 @@ async def test_worker_home_service_handover_between_real_hosts_and_disable(tmp_p
                 return await read_child()
 
             assert await read_child() == {"ready": True}
-            # Host readiness includes a real singleton election attempt.
             assert await child_status() == {"status": "active", "diagnostics": []}
             assert events() == [first]
             assert (data / "owner").read_text(encoding="utf-8") == str(first["pid"])
@@ -149,7 +148,6 @@ async def test_worker_home_service_handover_between_real_hosts_and_disable(tmp_p
         assert transferred[1]["pid"] == first["pid"]
         assert transferred[2]["pid"] != first["pid"]
         assert await child_status() == {"status": "active", "diagnostics": []}
-        # Save disable intent from another runtime; the owner refreshes it normally.
         controller, *_ = _runtime(home)
         try:
             assert await controller.disable(PLUGIN_ID) == "disabled"

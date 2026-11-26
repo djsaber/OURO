@@ -511,7 +511,6 @@ def test_management_uses_active_whitelist_and_preserves_new_agent_enablement(
     assert agent.allowed_by_policy is (allowed_agents == ("*",))
     assert not created.policy_restart_required
     assert config.snapshot().runtime.spawn_policy.allowed_agent_id_patterns == allowed_agents
-    # Saving a new whitelist cannot change the running Host's permissions.
     replacement = AgentSpawnPolicy(allowed_agent_id_patterns=("reader_*",))
     config.update_runtime(
         config.snapshot().runtime.model_copy(update={"spawn_policy": replacement}),

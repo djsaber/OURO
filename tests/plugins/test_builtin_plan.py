@@ -139,7 +139,6 @@ class PlanBuildProvider:
 
 
 class FinalProvider:
-    # Durable Sessions retain their provider/model route across process restart.
     provider_id = "plan-build"
 
     def __init__(self) -> None:

@@ -107,7 +107,6 @@ async def test_cold_recovery_and_runtime_never_read_covered_message_bodies(
 
         monkeypatch.setattr(sqlite_store, "decode_message_content", read_message)
 
-    # A fresh adapter must not populate a historical body cache before executing.
     cold = open_store()
     cold.initialize()
     recovered = SessionRecoveryService(cold).recover_runtime(session.session_id)

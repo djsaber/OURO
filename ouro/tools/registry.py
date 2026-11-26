@@ -114,8 +114,6 @@ class ToolRegistry:
         return sorted(tool.definition.name for tool in self._visible_tools())
 
     def _visible_tools(self) -> Iterable[Tool]:
-        # One listing uses one current controller snapshot, including when the
-        # callback reads durable Harness state. No state survives this query.
         active = None
         for tool in self._tools.values():
             controller_id = tool.definition.active_when_controller_id

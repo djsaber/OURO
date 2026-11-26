@@ -141,8 +141,6 @@ def test_terminal_output_loses_to_an_earlier_cancel_or_withdrawal(store, operati
         return finish(store, session, run, operation)
 
     with ThreadPoolExecutor(max_workers=1) as executor:
-        # The completing worker can start but cannot enter its mutation until
-        # the owning thread commits the cancellation or history withdrawal.
         with store.session_mutation(session.session_id):
             future = executor.submit(completing)
             assert entered.wait(5), "completion worker did not start"
@@ -228,7 +226,6 @@ def test_native_failure_never_exposes_half_a_run_transition(store, monkeypatch, 
         "failed" if operation == "fail" else "running" if operation == "request_abort" else "idle"
     )
     assert saved.message_count == (2 if operation in {"complete", "fail"} else 1)
-    # Retrying an already settled operation cannot publish its output again.
     finish(cold, saved, saved_run, operation)
     assert cold.load_session_record(session.session_id).message_count == saved.message_count
 

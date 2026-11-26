@@ -108,7 +108,6 @@ def test_export_owns_resource_closure_without_blocking_other_sessions(services, 
         finally:
             release.set()
         archive = export.result(timeout=10)
-    # The archive owns actual bytes after releasing its synchronous read boundary.
     assert resources.remove_resource(session.session_id, resource.resource_id).content_collected
     assert list(archive.files.values()) == [b"complete exported content"]
     assert not store.is_session_locked(session.session_id)

@@ -336,8 +336,6 @@ def test_response_publication_reclaims_or_reuses_the_draft_allocation(drafting):
             assert connection.execute("PRAGMA freelist_count").fetchone()[0] == 0
             assert completed_pages < active_pages // 2
         else:
-            # One MiB of final text reuses the retired allocation; only bounded
-            # message/header/index metadata may grow beyond that high-water mark.
             assert completed_pages <= active_pages + 16
         assert connection.execute("SELECT COUNT(*) FROM response_drafts").fetchone()[0] == 0
     assert store.load_message(run.session_id, message.message_id).text_content == chunk.content * 64

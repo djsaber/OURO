@@ -295,7 +295,6 @@ def test_local_cut_reads_only_suffix_and_never_rewrites_prefix(tmp_path, monkeyp
         before_message_id=messages[2].message_id,
         expected_last_message_id=messages[-1].message_id,
     )
-    # Only the first removed and last retained boundary facts are decoded.
     assert len(reads) == 2
     assert sum(reads) < 10000
     assert path.read_bytes().startswith(prefix_bytes)

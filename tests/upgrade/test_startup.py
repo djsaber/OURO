@@ -18,7 +18,6 @@ async def test_tui_opens_upgraded_history_without_executing_tasks(
 ) -> None:
     upgrade(historical_home)
     application = two_route_application(historical_home)
-    # The historical fixture's task is disabled; the model catalog is entirely faux.
     app = OuroTuiApp(application=application, resume_session_id="ses_fixture")
 
     async def redundant_status_read():

@@ -152,8 +152,6 @@ async def test_two_tuis_follow_tools_and_consecutive_runs_without_duplicate_summ
     session = owner.runtime.sessions.create(title="Two TUI observers").session
     first, second = OuroTuiApp(application=owner), OuroTuiApp(application=viewer)
     async with owner, release_on_exit(provider.release):
-        # Prepare the executing tool before mounting its two observers. This test
-        # exercises attachment and live updates, not startup under UI render load.
         handle = await owner.supervisor.submit("Inspect", session_id=session.session_id)
         await asyncio.wait_for(provider.started.wait(), 60)
         async with (
@@ -240,7 +238,6 @@ async def test_task_owned_by_another_runtime_streams_through_tools_and_session_s
         )
     )
     app = OuroTuiApp(application=viewer)
-    # Creation and dispatch share a logical instant, independent of validation I/O.
     due = datetime.now(UTC)
     monkeypatch.setattr(owner.tasks, "clock", lambda: due)
     await owner.start()
@@ -258,9 +255,6 @@ async def test_task_owned_by_another_runtime_streams_through_tools_and_session_s
                 ),
             )
         )
-        # start() launches the scheduler; it does not establish lock ownership.
-        # The producer handshake establishes the executing owner before another
-        # runtime can compete for the shared home's scheduler lock.
         await asyncio.wait_for(provider.started.wait(), 60)
         async with (
             run_ready_app(app, size=(120, 40)) as pilot,
@@ -289,7 +283,6 @@ async def test_task_owned_by_another_runtime_streams_through_tools_and_session_s
             assert app._projection.session_id == task.session_id
             assert app._projection.activity.activity == "executing_tools"
 
-            # A completed tool must transition into live text before the Run ends.
             provider.release.set()
             provider.text("Live delta. ")
             await visible(pilot, app, "Live")
@@ -364,7 +357,6 @@ async def test_withdrawn_run_fact_does_not_append_a_summary_to_current_history(t
         await app._open_session(session.session_id)
         assert app._projection.activity.status == "idle"
         before = tuple(app.query_one(ConversationHistory).entries)
-        # A late result/usage update may still settle an old Run as an audit fact.
         store.save_run(old.model_copy(update={"error": "late settlement"}))
         revision = store.observation_revision(session.session_id)
         await wait_until(

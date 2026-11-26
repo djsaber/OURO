@@ -13,7 +13,6 @@ DiagnosticSeverity = Literal["info", "warning", "error"]
 class ApplicationDTO(OuroModel):
     """Base class for immutable values exposed to OURO hosts."""
 
-    # Hosts import the full contract vocabulary; build only the validators they use.
     model_config = ConfigDict(frozen=True, defer_build=True)
 
 

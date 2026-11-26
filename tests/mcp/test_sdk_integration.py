@@ -126,8 +126,6 @@ async def test_legacy_sse_server_remains_usable_while_interactive_host_is_idle()
         connected = await manager.start("sse")
         assert connected.status == "connected", connected.error
 
-        # Request timeouts must not become passive read deadlines for the
-        # long-lived SSE stream while the interactive host is awaiting input.
         await asyncio.sleep(0.4)
 
         result = await registry.get("sse__echo").execute(

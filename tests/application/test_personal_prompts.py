@@ -76,7 +76,6 @@ async def test_personal_prompts_reach_prepared_requests_in_order(tmp_path, overr
         assert [m.text_content for m in snapshot.provider_context.messages] == ["hello"]
         assert "DISPLAY-ONLY-ANNOTATION" not in prompt
         assert "DISABLED-CONTENT" not in prompt
-        # A separate configuration client updates the already running session.
         facade.set_prompt_enabled(
             "replacement",
             facade.system_prompt().config.replacements[0].id,

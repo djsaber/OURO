@@ -443,7 +443,6 @@ class DataTransferWorkflow:
         progress.running = True
         progress.result = None
         progress.error = None
-        # The App owns execution so closing a menu cannot cancel a file commit.
         self._start(partial(self._run, request))
 
     async def _run(self, request: DataTransferRequest) -> None:

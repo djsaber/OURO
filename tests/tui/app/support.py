@@ -99,8 +99,6 @@ async def _wait_for_tool_approval(
         )
 
     await _wait_until(ready, pilot, description=f"interactive approval for {tool_call_id}")
-    # The projection can advance before the panel binds the new request, and
-    # binding can precede layout. The controller owns checkpoint admission.
     await app.screen.wait_for_refresh()
     return panel
 

@@ -108,8 +108,6 @@ class PluginManagementWorkflows:
             return
 
         async def select_action(selected: str) -> tuple[Choice, ...] | None:
-            # Enabling/disabling finishes when the refreshed menu is ready, not
-            # when the lifecycle call returns; status projection may also wait.
             with self._ui.loading(selected) if selected in {"enable", "disable"} else nullcontext():
                 if selected in {"enable", "disable"}:
                     await self._set_plugin_enabled(plugin_id, enabled=selected == "enable")

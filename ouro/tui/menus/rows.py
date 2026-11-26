@@ -30,8 +30,6 @@ class _ChoiceRowVisual(RichVisual):
         self._height = table.content_height
 
     def get_height(self, rules: RulesMap, width: int) -> int:
-        # Layout needs only the explicit line count, not a Rich render of every
-        # off-screen table. Rich still renders visible cells at their actual width.
         return self._height
 
 
@@ -123,10 +121,7 @@ def _choice_option(
     label.append(label_text(choice.label, theme=theme, style=state_style or choice.accent or ""))
     if choice.trailing or choice.trailing_badge:
         row = cast(_ChoiceRowTable, _ChoiceRowTable.grid(expand=True, padding=0))
-        # Let Rich shrink the wider content column first; the Text cells keep
-        # both columns on one line. Only the gap expands into unused space.
         row.add_column(overflow="ellipsis")
-        # Preserve the flex gap's allocated minimum when Rich remeasures after shrinking.
         row.add_column(ratio=1, min_width=1)
         row.add_column(width=2)
         row.add_column(justify="right", overflow="ellipsis")

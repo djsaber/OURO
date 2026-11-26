@@ -221,12 +221,11 @@ def copy_branch_context(
             break
         validate_compaction_sources(compaction, source_id, len(source_messages), sources)
         endpoint = copied_through(compaction.covered_message_count)
-        # Every later summary incorporates this prefix, including any reset projection.
         if endpoint is None or endpoint.sequence != compaction.covered_message_count:
             break
         placement = sources[compaction.history_boundary_message_id]
         boundary = copied_through(placement.sequence)
-        assert boundary is not None  # The validated placement is at or after coverage.
+        assert boundary is not None
         metadata = dict(compaction.metadata)
         metadata["source_compaction_id"] = compaction.compaction_id
         copied.append(
@@ -369,8 +368,6 @@ def apply_extension_branch_policies(
                 ),
                 controls=SessionControlState(
                     activations=[
-                        # Activation identity is Session-scoped and may be referenced
-                        # by opaque owner data; copy it together with that state.
                         activation.model_copy(deep=True)
                         for activation in version.state.controls.activations
                         if activation.plugin_id in copying

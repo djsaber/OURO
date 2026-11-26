@@ -71,7 +71,6 @@ def test_skip_and_replace_operate_on_complete_trees(tmp_path, backend):
     existing.create_session(SessionRecord(session_id="ses_unrelated"))
     original = existing.load_session("ses_root")
     unrelated = existing.load_session("ses_unrelated")
-    # Prime a separate reader's cursors before replacing its on-disk history.
     existing.observation_revision("ses_root")
     existing.load_run("ses_root", "run_root")
     archive = tmp_path / "sessions.zip"

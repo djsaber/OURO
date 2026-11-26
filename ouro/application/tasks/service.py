@@ -96,7 +96,6 @@ class TaskService:
         self.plugin_tasks.require_task_owner(owner_id, configuration.target)
 
     async def validate(self, configuration: TaskConfiguration) -> TaskConfiguration:
-        # Validate at both save and dispatch: workspace/model availability may change.
         configuration = TaskConfiguration.model_validate(configuration.model_dump())
         if isinstance(configuration.target, PluginTaskTarget):
             binding = await self.bind_plugin_task(configuration.target)
@@ -286,7 +285,6 @@ class TaskService:
                 "last_execution_id": execution.execution_id,
                 "status": "waiting",
                 "error": None,
-                # Coalesce missed occurrences; never build an unbounded catch-up queue.
                 "next_run_at": next_occurrence(task.configuration.schedule, now),
             }
         )
@@ -300,8 +298,6 @@ class TaskService:
         return execution
 
     async def record_execution(self, execution: TaskExecution) -> None:
-        # Concurrent UI edits keep their configuration; only the matching active
-        # occurrence may change the task's execution projection.
         for _ in range(3):
             task = await self.get(execution.task_id)
             if task.active_execution_id != execution.execution_id:
@@ -314,8 +310,6 @@ class TaskService:
                 end = task.configuration.schedule.ends_at
                 if end is not None and now > end:
                     due = None
-                # The occurrence keeps its outcome; the task describes the
-                # remaining schedule once its active execution is released.
                 if not task.enabled:
                     status = "paused"
                 elif due is not None:

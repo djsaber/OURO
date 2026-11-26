@@ -1,5 +1,3 @@
-"""Interaction and layout of the session navigation row."""
-
 from __future__ import annotations
 
 import pytest

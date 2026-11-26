@@ -25,7 +25,6 @@ from textual.widget import Widget
 
 type RunStyle = Style | int | None
 
-# Fixed byte values, not a cache of the millions of transient RGB combinations.
 _DECIMAL = tuple(str(value) for value in range(256))
 
 _CACHE_SIZES = {
@@ -134,7 +133,6 @@ class FrameStrip(Strip):
         self._styled_segments = segments
 
     def __getattr__(self, name: str) -> FIFOCache:
-        # Less common inherited operations keep Textual's normal cache policy.
         if name not in _CACHE_SIZES:
             raise AttributeError(name)
         cache: FIFOCache = FIFOCache(_CACHE_SIZES[name])
@@ -173,8 +171,6 @@ class FrameStrip(Strip):
                 parts.append(FrameStrip(segments, end - start))
                 start = end
             return parts
-        # Published animation glyphs are all one cell wide. Split the run lists
-        # in one pass, without converting runs to Segment/Style/Color objects.
         parts = []
         index = offset = start = 0
         for end in cuts:
@@ -205,9 +201,6 @@ class FrameStrip(Strip):
         if end <= start:
             return FrameStrip((), 0)
         if self._single_cell:
-            # Damage often trims only a few cells off a wide row. Walk the
-            # discarded edges, then copy retained run references in native code.
-            # Only the two boundary strings can need splitting.
             first, last = 0, len(self._texts)
             left, right = start, self.cell_length - end
             while first < last and left >= len(self._texts[first]):
@@ -236,9 +229,6 @@ class FrameStrip(Strip):
             rgb_run = False
             for i, (text, style) in enumerate(zip(self._texts, self._run_styles, strict=True)):
                 if isinstance(style, int) and rgb_output:
-                    # Consecutive RGB runs share canvas attributes/background.
-                    # Change only foreground until a style boundary or row end;
-                    # each fragment still restores the terminal's default state.
                     rendered.append(
                         f"{'\x1b[' if rgb_run else prefix}"
                         f"38;2;{_DECIMAL[style >> 16]};"
@@ -253,8 +243,6 @@ class FrameStrip(Strip):
                 effective = _rich_style(style)
                 if base:
                     effective = None if self._controls and self._controls[i] else base + effective
-                # The style's own ANSI cache suffices. A global 16K cache would
-                # retain transient blended colors beyond their frame lifetime.
                 rendered.append(
                     text
                     if effective is None

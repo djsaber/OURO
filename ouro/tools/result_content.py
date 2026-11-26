@@ -22,8 +22,6 @@ def limit_result_content(
     truncated = False
     for part in content:
         if isinstance(part, MediaContent):
-            # URLs and data URLs are retained intact. Counting their serialized
-            # characters avoids decoding/copying media bytes on the execution path.
             if len(part.uri) > media_left:
                 parts.append(TextContent(text="[media output limit exceeded; content omitted]"))
                 truncated = True

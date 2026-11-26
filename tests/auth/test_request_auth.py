@@ -49,7 +49,7 @@ async def test_snapshot_is_immutable_and_fresh_acquisition_observes_logout(tmp_p
         with pytest.raises(TypeError):
             snapshot.headers["x-changed"] = "bad"
         await service.logout(record.credential_id, record.driver_id)
-        assert snapshot.headers  # Already authorized attempts retain their own material.
+        assert snapshot.headers
         with pytest.raises(AuthError) as failure:
             await auth.acquire(URL)
         assert failure.value.code == "authentication_required"
@@ -110,7 +110,7 @@ async def test_expiry_and_concurrent_401_share_one_rotation_and_keep_scope(tmp_p
         assert renewed.revision == original.revision + 1
         assert renewed.scope == original.scope
         assert renewed.headers != original.headers
-        assert await auth.recover(original)  # A late failure cannot invalidate newer material.
+        assert await auth.recover(original)
         assert driver.refreshes == 1
         assert (await service.read(record.credential_id)).state == "active"
     finally:

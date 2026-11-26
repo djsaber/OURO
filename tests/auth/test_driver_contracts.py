@@ -163,7 +163,6 @@ class DeviceFixtureDriver:
 
 
 def drivers() -> tuple[AuthDriver, ...]:
-    # The explicit return type also statically checks both implementations against the port.
     return BrowserFixtureDriver(), DeviceFixtureDriver()
 
 
@@ -182,7 +181,6 @@ async def test_distinct_drivers_authorize_commit_encode_and_logout_through_the_s
     try:
         assert attempt.challenge.kind == method.kind
         grant = await attempt.wait()
-        # Network authorization owns no persistence; only an explicit conditional commit writes.
         assert not store.directory.exists()
         record = await service.commit(
             credential_id, driver.descriptor.driver_id, grant, expected_revision=0

@@ -119,14 +119,12 @@ class InputAdmissionService:
         try:
             committed, item = await self._accept_existing(snapshot, active, request)
         except PersistenceError, OSError, SessionBusyError:
-            # Resolve a lost response or competing retry from the same durable input identity.
             accepted = await run_blocking(self._accepted_submission, session_id, request)
             if accepted is None:
                 raise
             return accepted
         if item.queue_id in committed.pending_input_ids:
             return _pending_submission(committed, item)
-        # A competing consumer already bound the input to a Run.
         accepted = await run_blocking(self._accepted_submission, session_id, request)
         assert accepted is not None
         return accepted
@@ -429,8 +427,6 @@ class InputAdmissionService:
             return receipt if receipt is not None else self.store.load_session_record(session_id)
 
     def _item_receipt(self, session_id: str, item: QueuedInput) -> HostInputReceipt:
-        # Consumption removes the queue item and writes its message atomically.
-        # A still-pending input cannot have a canonical message to search for.
         state = self.store.load_input_state(session_id, item.queue_id)
         if state is None:
             raise PersistenceError("accepted input has no lifecycle state")
@@ -539,7 +535,6 @@ class InputAdmissionService:
                 for file in item.attachments
                 if isinstance(file, InputFileReference)
             )
-            # Preserve the single-skill policy contract while accepting the input atomically.
             for activation in item.skill_activations or (None,):
                 evaluation = await registry.evaluate(
                     PromptPolicyCall(

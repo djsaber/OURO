@@ -184,7 +184,6 @@ async def test_cached_adapters_observe_new_material_and_binding_changes(tmp_path
         assert runtime.models.adapter_for(_model_key(configs, "chat")) is main
         assert (await main.provider.check_connection(main.model)).ok
         assert requests[-1]["headers"]["authorization"] == "Bearer updated"
-        # Replace keeps the provider identity but regenerates its endpoint identities.
         configs.set_default_provider("faux")
         configs.replace_provider(
             provider_id,

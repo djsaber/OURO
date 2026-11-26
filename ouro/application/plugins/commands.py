@@ -99,7 +99,6 @@ async def submit_plugin_command(
         try:
             await run_blocking(persist)
         finally:
-            # A cancelled caller still learns the identity of its completed owned write.
             if created is not None:
                 session_id = created.session_id
                 if on_session_created is not None:
@@ -183,8 +182,6 @@ async def execute_plugin_command(
         raise ValueError("plugin command Session control transitions require a target Session")
     if before is not None:
         assert draft is not None and store is not None
-        # Resolve every requested algorithm before starting nested controller callbacks.
-        # Independent inputs remain separate FIFO units; explicit batches are indivisible.
         batches = result.session_input_batches
         selected_batches = []
         for batch in batches:

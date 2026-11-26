@@ -169,8 +169,6 @@ class JsonRpcWorkerClient:
             if not sent:
                 future.cancel()
                 raise
-            # The response may still describe an actual external effect, but the
-            # request can no longer authorize reverse calls or staged state.
             self._pending_contexts.pop(request_id, None)
             cancellation = asyncio.create_task(self.notify("cancel", {"id": request_id}))
             await self._cancel_children(request_id)
@@ -183,7 +181,6 @@ class JsonRpcWorkerClient:
                     try:
                         result = future.result()
                     except Exception:
-                        # A transport error is not a returned tool observation.
                         pass
                     else:
                         raise CallbackCancelled(result) from None
@@ -238,9 +235,7 @@ class JsonRpcWorkerClient:
             with suppress(BrokenPipeError, ConnectionError):
                 await process.stdin.wait_closed()
 
-        # A subprocess transport is not closed until the process and every pipe
-        # have finished. Protocol readers can stop before EOF after invalid
-        # output; drain any remaining bytes to resume paused pipe transports.
+        # Drain remaining bytes after protocol errors so paused pipes can close.
         await asyncio.gather(
             *(task for task in (self._reader_task, self._stderr_task) if task is not None),
             return_exceptions=True,
@@ -452,7 +447,6 @@ class JsonRpcWorkerClient:
                 }
             )
         except BrokenPipeError, ConnectionError:
-            # The peer may exit while its accepted requests are being settled.
             return
 
     async def _read_stderr(self) -> None:

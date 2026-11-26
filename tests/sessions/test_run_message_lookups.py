@@ -124,10 +124,7 @@ def test_run_lookup_work_does_not_expand_unrelated_message_bodies(store, monkeyp
                 assistant = store.find_assistant_message(session.session_id, "run_a", "turn_0")
             finally:
                 connection.set_progress_handler(None, 0)
-        # Count actual VM work, independent of machine speed. A missing composite
-        # index scans thousands of JSON payloads in the larger case.
-        # Session/connection checks are included (536 instructions before the
-        # assistant predicate was simplified); retain room for bounded overhead.
+        # The VM instruction allowance includes Session checks and the indexed lookup.
         assert instructions < 1000
     assert found is not None and found.message_id == target.message_id
     assert assistant is not None and assistant.message_id == history[0].message_id
@@ -185,5 +182,4 @@ def test_result_and_input_membership_read_only_selected_metadata(
                 query()
             finally:
                 connection.set_progress_handler(None, 0)
-        # Fixed native work allowance includes Session checks and one response read.
         assert instructions < 1000

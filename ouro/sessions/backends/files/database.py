@@ -180,12 +180,8 @@ def connect_data(
 
 def initialize_index(connection: sqlite3.Connection) -> None:
     """Replace an unpublished snapshot index in one transaction."""
-    # Completed output lives in JSONL; reclaim the database pages owned by its
-    # temporary Draft in the lifecycle transaction instead of keeping its peak.
     connection.execute("PRAGMA auto_vacuum = FULL")
     connection.execute("PRAGMA journal_mode = WAL")
-    # Schema creation is independent of publishing a Session. Keep the empty
-    # schema if building a reserved snapshot fails, so the same input can retry.
     connection.executescript(
         "BEGIN;\n"
         + _SCHEMA

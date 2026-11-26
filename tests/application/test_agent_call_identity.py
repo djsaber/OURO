@@ -261,7 +261,6 @@ async def test_reused_provider_call_id_has_distinct_delegations_and_delivery_rec
                 )
                 for item in relations
             ]
-            # A child can start its model request before the parent commits its wait.
             await app.supervisor.wait_run(
                 handle.session_id, identities[1].run_id, until=frozenset({"waiting_child"})
             )
@@ -460,8 +459,6 @@ async def test_child_outcome_precedes_parent_callback_and_survives_interruption(
             ensure = app.runtime._ensure_extension_snapshot
 
             def read_observation():
-                # An independent worker can acquire the native mutation lock:
-                # extension code runs only after the observation commit closes.
                 with store.session_mutation(parent.session_id):
                     state = store.load_tool_call_state(parent.session_id, identity)
                     assert state.agent_wait.resolution is not None
@@ -672,8 +669,6 @@ async def test_child_result_is_retained_after_parent_history_is_closed(
                 ),
                 60,
             )
-            # Closing changes the mutable handle's revision/control state. A
-            # repeated settlement must retain the observation already recorded.
             closed = await app.agents.close_agent(relation.delegation_id)
             assert closed.control_state == "closed"
             await app.agents._finalize_result(relation.delegation_id)

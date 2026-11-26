@@ -76,7 +76,6 @@ class ConfigurationSchema:
                         known.add(id(child))
                         nodes.append((child, child_scope))
         for node, resolver in nodes:
-            # Optional containers must be checked even when absent from the initial values.
             self._normalize({}, node, resolver, frozenset())
             default = self._default(node, resolver)
             if default is not _MISSING:

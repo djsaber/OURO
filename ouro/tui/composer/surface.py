@@ -21,9 +21,6 @@ from ouro.tui.welcome import DEFAULT_WELCOME_STYLE, WELCOME_STYLES, WelcomeStyle
 from ouro.tui.welcome.host import WelcomeHost
 from ouro.tui.widgets.status import StatusLine
 
-# The regular surface always retains the Host header, one conversation row, the
-# fixed input separator/navigation row, and the status line around the composer.
-# The composer contributes its own current height.
 _REGULAR_SURFACE_CHROME_HEIGHT = 4
 
 

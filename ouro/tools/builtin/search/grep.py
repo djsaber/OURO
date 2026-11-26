@@ -32,11 +32,9 @@ _DEFAULT_HEAD_LIMIT = 250
 _BINARY_SNIFF_BYTES = 8 * 1_024
 
 
-# Bound content-mode result memory; counting continues for an exact match total.
 _MAX_COLLECTED_MATCHES = 20_000
 
 
-# Small ripgrep-style file type table for the Grep `type` filter.
 _FILE_TYPES: dict[str, tuple[str, ...]] = {
     "c": ("*.c", "*.h"),
     "cpp": ("*.cpp", "*.cc", "*.cxx", "*.hpp", "*.hh", "*.hxx"),
@@ -371,9 +369,6 @@ def _render_file_block(
     show_numbers: bool,
 ) -> list[str]:
     entry, matches = group
-    # Merge matches and their context lines into per-line records so
-    # overlapping context is emitted exactly once; a matched line wins over
-    # context at the same line number.
     records: dict[int, tuple[str, str]] = {}
     for match in matches:
         for number, text in match.before:
@@ -404,7 +399,7 @@ def _page(items, *, head_limit: int, offset: int):
 @dataclass(frozen=True)
 class MatchedLine:
     entry: FileEntry
-    number: int  # 1-based line number
+    number: int
     text: str
     before: tuple[tuple[int, str], ...] = ()
     after: tuple[tuple[int, str], ...] = ()
@@ -418,10 +413,10 @@ class FileMatchCount:
 
 @dataclass(frozen=True)
 class GrepResult:
-    matches: tuple[MatchedLine, ...]  # deterministic walk order, bounded by the safety valve
-    total: int  # matched lines, or matching files for existence-only searches
+    matches: tuple[MatchedLine, ...]
+    total: int
     collection_capped: bool
-    file_counts: tuple[FileMatchCount, ...]  # only files with at least one match
+    file_counts: tuple[FileMatchCount, ...]
 
 
 @dataclass(frozen=True)
@@ -646,8 +641,6 @@ def _matched_line_numbers(
     for hit in regex.finditer(text):
         first = bisect_right(offsets, hit.start())
         last = bisect_right(offsets, max(hit.start(), hit.end() - 1))
-        # finditer visits non-overlapping spans in order. Emit their line union
-        # incrementally, without a potentially file-sized set and final sort.
         yield from range(max(first, emitted + 1), last + 1)
         emitted = max(emitted, last)
 

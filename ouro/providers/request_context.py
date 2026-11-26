@@ -13,8 +13,6 @@ def model_request_context(
     purpose: str | None = None,
 ) -> ProviderRequestContext:
     values = dict(supplied.values) if supplied is not None else {}
-    # Route facts belong to the selected model, including route changes during
-    # a run. A caller cannot accidentally send an earlier model's identity.
     values.update({"provider.id": model.provider_id, "model.id": model.model_id})
     values.pop("endpoint.id", None)
     if model.endpoint_id is not None:

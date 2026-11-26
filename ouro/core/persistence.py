@@ -19,8 +19,6 @@ def decode_versioned_record_json[RecordT: VersionedOuroModel](
     try:
         record = model_type.model_validate_json(payload)
     except ValidationError as exc:
-        # Parse invalid input only to preserve the persisted-version diagnostic
-        # boundary. Valid records are decoded and validated in one pass.
         try:
             raw = json.loads(payload)
         except (json.JSONDecodeError, TypeError, UnicodeDecodeError) as error:

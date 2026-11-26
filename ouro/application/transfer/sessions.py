@@ -55,8 +55,6 @@ class SessionTransferService:
             else {record.agent_root_session_id for record in records}
         )
         with ExitStack() as locks:
-            # Root execution ownership prevents new child dispatch while finding
-            # and freezing the full tree. No runtime recovery is run during export.
             for identity in sorted(roots):
                 lock = self.sessions.acquire_session_lock(identity, "data-export")
                 if lock is None:
@@ -181,8 +179,6 @@ class SessionTransferService:
                             f"stop the running child Session before import: {identity}"
                         )
                     locks.callback(lock.release)
-            # Execution ownership stabilizes active Runs. The adapter owns the
-            # publication transaction and acquires resource lifetimes before it.
             for identity in sorted(replaced_ids):
                 record = self.sessions.load_session_record(identity)
                 if (

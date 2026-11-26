@@ -24,7 +24,6 @@ from ouro.core.base import utc_now
 
 CODEX_REVISION = "04581f96044a9fe6062593c4d557036477aee961"
 OPENCODE_REVISION = "e03db9bc6908f75c9334d8aa997deeaac81c0298"
-# Public upstream client, for an opt-in compatibility experiment only.
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 
 
@@ -147,7 +146,7 @@ class CodexOAuthProbe:
                 return await self._tokens.exchange(code, verifier, ISSUER + "/deviceauth/callback")
 
         async def cleanup() -> None:
-            pass  # HTTP requests are scoped by the borrowed client's operations.
+            pass
 
         return TaskAuthorizationAttempt(
             DeviceAuthorizationChallenge(

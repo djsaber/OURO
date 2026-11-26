@@ -861,7 +861,6 @@ def test_create_provider_with_base_url_but_no_model_keeps_empty_endpoints(
     assert provider.api_path == "/responses/chat"
     assert manager.snapshot().default_provider_id == "faux"
 
-    # An endpoint can be added later and inherits the provider-level defaults.
     endpoint = manager.create_endpoint(
         provider.provider_id,
         model_id="glm-chat",
@@ -963,8 +962,6 @@ def test_provider_retry_policy_round_trips_into_runtime_options(tmp_path) -> Non
 
 
 def test_provider_retry_opt_out_survives_round_trip(tmp_path) -> None:
-    # max_attempts=1 disables retries; it diverges from the default policy and
-    # must be persisted, otherwise a reload would silently re-enable retries.
     manager = ProviderConfigManager(tmp_path)
     provider = manager.create_provider(
         display_name="GLM",

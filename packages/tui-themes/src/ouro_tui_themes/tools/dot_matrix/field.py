@@ -74,7 +74,6 @@ class PhosphorField:
         np.maximum(light, emission, out=emission)
         shape = (self.grid.height, self.grid.width)
         source, target = emission.reshape(shape), mapped.reshape(shape)
-        # A four-neighbour stencil on views: no padding copies or row wraparound.
         target.fill(0.0)
         target[1:] += source[:-1]
         target[:-1] += source[1:]
@@ -93,8 +92,6 @@ class PhosphorField:
 
     def frame(self, seconds: float, elapsed: float) -> Radiance:
         decay = exp(-max(0, elapsed) / 0.085)
-        # Numerical faults still reach the owning worker. Underflow is normal in
-        # Gaussian tails; do not alter the application's global NumPy policy.
         with np.errstate(over="raise", invalid="raise", divide="raise", under="ignore"):
             for light, emission, mapped in zip(
                 self._sample(seconds), self._emission, self._mapped, strict=True

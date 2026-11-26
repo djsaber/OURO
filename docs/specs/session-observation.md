@@ -1,7 +1,5 @@
 # Host 会话观察与节点导航规格
 
-> 文档类型：现行规格
-
 本规格定义 Host 观察任意 OURO Session、从父工具调用发现子智能体 Session，以及可靠衔接 snapshot 与 live 事件的
 通用契约。TUI 的具体交互是该契约的一个 adapter；Desktop/Web Host 可以采用不同策略。
 
@@ -174,13 +172,13 @@ Session、消息页和活动投影携带 `history_epoch`；Run 通知保留其�
 TUI 必须实现：
 
 1. 切换到普通会话或旁问时，该会话同时成为 controlled 和 visible。观察子智能体时，visible 是该子会话，controlled 是它的可写主会话。
-2. 历史和实时 SpawnAgent 工具展示均携带 `(parent_session_id, parent_run_id, parent_tool_call_id)` 点击身份。
+2. 历史和实时 SpawnAgent 工具展示均携带 `(parent_session_id, parent_run_id, parent_batch_id, parent_tool_call_id)` 点击身份。
 3. 点击只能通过 Application relation 投影打开 child；不存在/尚未绑定时不猜测。
 4. child 视图明确显示只读状态，禁用 composer、提交、abort、交互应答和会话写配置。
-5. 从 root Agent tree 投影同一主会话下全部已知 child（包括嵌套派发），按 `parent_run_id` 保留 Run 分组，并提供
+5. 从 root Agent tree 投影同一主会话下全部已知 child，按 `parent_run_id` 保留 Run 分组，并提供
    root/child 与 child/child 直接切换路径。
 6. 各会话使用独立的 projection/cursor，交错事件按所属会话应用。
-7. 切换期间新到事件必须被缓存、投影或在 事实补齐中恢复，不能因 widget 重建而丢失。
+7. 切换期间新到事件必须被缓存、投影或在事实补齐中恢复，不能因 widget 重建而丢失。
 8. active root 或 active child 不得成为只读视图切换的阻止条件。
 9. 视图切换不应阻塞 Textual event loop 的持续刷新；大历史装载必须分块/yield。
 10. 关闭 TUI 必须释放所有观察任务/订阅；复用共享 Application 时不得终止后台 Session。若 TUI 是 Application 的
@@ -249,7 +247,7 @@ Run 的 `model_endpoint_id` 记录最近一次已提交模型请求的端点身�
   `tests/tui/test_live_session_attachment.py`；未订阅缓存失效、精确 Run 查询和快照位置一致性：
   `tests/application/test_session_event_following.py`。
 - 当前事实索引分页、同次提交多记录与并发修改：`tests/sessions/test_observation_positions.py`。
-- 独立进程持续追加大正文、双后端后缀读取：`tests/sessions/test_event_tail_process.py`。
+- 独立进程持续追加大正文、双后端后缀读取：`tests/sessions/test_observation_process.py`。
 - 慢消费者独立确认、遗漏前缀与本地输出衔接：`tests/application/test_session_observation.py`。
 
 TUI 呈现、导航和只读交互见 [TUI 规格](tui.md)。

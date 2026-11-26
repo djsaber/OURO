@@ -105,7 +105,6 @@ def _brand_header_content(
         content.append(workspace, style=theme.text_lowlight)
         return content
 
-    # When both fields cannot fit, omit the title before shortening the workspace.
     workspace_gap = min(_HEADER_MIN_GAP, max(1, remaining - workspace_width))
     workspace_text = Text(workspace, style=theme.text_lowlight)
     workspace_text.truncate(max(0, remaining - workspace_gap), overflow="ellipsis")

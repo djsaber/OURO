@@ -94,8 +94,6 @@ async def _compact_until_aborted(
     try:
         return execution.result()
     except CompactionAbortedError as exc:
-        # Only the Host signal may classify a Run as aborted. A strategy cannot
-        # manufacture cancellation while the owning Run remains active.
         raise CompactionStrategyError(
             str(exc),
             model_outputs=exc.model_outputs,
@@ -210,10 +208,8 @@ class ContextCompactionService:
                 == (active.covered_message_count if active else 0) + len(messages)
                 and current.context_selection == expected_selection
             ):
-                # The accepted summary already has its exact next request view.
                 session, view = current, execution.view
             else:
-                # A strategy may span a concurrent append or explicit selection change.
                 session, active, messages = await run_blocking(
                     self.preparation.load_history, session.session_id
                 )
@@ -278,7 +274,6 @@ class ContextCompactionService:
             prompt_context = prepared.prompt_context
             initial_view = prepared.view
         budget = active_adapter.model.context_budget.input_tokens
-        # Activation/withdrawal establish validity. Project only the uncovered suffix.
         covered_count = active.covered_message_count if active else 0
         materialized_messages = await run_blocking(
             self.preparation.materialize_history,

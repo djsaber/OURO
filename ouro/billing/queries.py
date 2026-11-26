@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 from ouro.core.billing import UsageFilter
 from ouro.core.usage_queries import UsageGroupBy, UsageSummary, UsageSummaryGroup, UsageTotals
 
-# SQL identifiers are owned here; caller-supplied values use bound parameters.
 DIMENSIONS: dict[UsageGroupBy, str] = {
     "date": "day",
     "provider": "provider_id",
@@ -99,7 +98,6 @@ def summarize(
         UsageSummaryGroup(key=tuple(row[DIMENSIONS[item]] for item in group_by), totals=totals(row))
         for row in rows
     )
-    # Overall totals share the grouped snapshot and need no second facts scan.
     combined = {
         name: sum(getattr(group.totals, name) for group in groups)
         for name in UsageTotals.model_fields

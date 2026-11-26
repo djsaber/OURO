@@ -16,15 +16,12 @@ from ouro.tools.base import ToolExecutionContext
 _MAX_SEARCHABLE_FILE_BYTES = 32 * 1_024 * 1_024
 
 
-# CASE pins case-sensitive matching on every platform; DOTGLOB includes dotfiles.
 _GLOB_FLAGS = wcglob.GLOBSTAR | wcglob.BRACE | wcglob.DOTGLOB | wcglob.CASE
 
 
-# File kind takes precedence over directory depth (ripgrep semantics).
 _IGNORE_FILENAMES = (".gitignore", ".ignore", ".rgignore")
 
 
-# VCS metadata is never searched, even when ignore rules are disabled.
 _VCS_DIRECTORY_NAMES = frozenset({".git", ".hg", ".svn"})
 
 
@@ -42,7 +39,7 @@ class FileEntry:
     """One searchable file discovered under the search root."""
 
     path: Path
-    relative: str  # POSIX separators, relative to the search root
+    relative: str
     mtime: float
 
 
@@ -90,8 +87,6 @@ def iter_files(
         if check_cancelled is not None:
             check_cancelled()
         try:
-            # Keep DirEntry's cached type/stat information, and close the directory
-            # before yielding so cancellation or a partial consumer cannot leak it.
             with os.scandir(base) as directory:
                 entries = sorted(directory, key=lambda entry: entry.name)
         except OSError:
@@ -130,7 +125,6 @@ def iter_files(
                 relative=relative,
                 mtime=stat.st_mtime,
             )
-        # Match os.walk's files-first, lexicographic depth-first ordering.
         pending.extend(reversed(directories))
 
 

@@ -80,8 +80,6 @@ class GenerationGate:
             self._drained.clear()
         try:
             try:
-                # The timeout scope restores its own cancellation request. A
-                # plugin revocation must not cancel the surrounding Host task.
                 async with cancellation:
                     yield
             except TimeoutError:

@@ -34,7 +34,6 @@ def pending_operation(home: Path) -> Literal["upgrade", "reset"] | None:
             "reset" if loads(marker.read_text("utf-8")).get("operation") == "reset" else "upgrade"
         )
     except OSError, UnicodeError, UpgradeError:
-        # Restore owns full validation of the marker and its referenced backup.
         return "upgrade"
 
 
@@ -166,7 +165,6 @@ def upgrade(
     except UpgradeError:
         raise
     except ValidationError:
-        # Catalog projections also parse current records; never expose their inputs.
         raise UpgradeError("invalid record used for catalog projection") from None
     except (OSError, UnicodeError, sqlite3.Error) as exc:
         raise UpgradeError(

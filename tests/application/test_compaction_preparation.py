@@ -65,8 +65,6 @@ async def test_context_building_and_recording_do_not_require_a_summary(tmp_path,
             )
         assert store.load_latest_context(session.session_id) is None
 
-        # An application policy may prepare ordinary context without producing a
-        # CompactionArtifact or entering the built-in summary lifecycle.
         context_note = ModelMessage.text(
             role="user",
             text='{"checkpoint": "evidence checked", "next": "finish remaining work"}',
@@ -248,8 +246,6 @@ async def test_auto_compaction_reuses_views_and_reloads_only_changed_history(
         release.set()
         view = await asyncio.wait_for(task, 10)
         assert tails == ([11, 3] if change == "append" else [11])
-        # Initial Agent projection, canonical summary material, then accepted tail.
-        # An actual append needs one further projection; a title change does not.
         assert len(reads) == (4 if change == "append" else 3)
         assert len(views) == (3 if change == "append" else 2)
         assert views[-1]() is view.provider_context
@@ -273,7 +269,6 @@ async def test_auto_compaction_reuses_views_and_reloads_only_changed_history(
         assert (
             store.load_active_compaction(session.session_id).covered_message_count == covered + 10
         )
-        # Reuse is local to this preparation; the service retains no prior payload view.
         gc.collect()
         assert all(reference() is None for reference in views[:-1])
     finally:

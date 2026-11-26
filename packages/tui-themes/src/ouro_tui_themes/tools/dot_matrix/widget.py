@@ -85,7 +85,6 @@ class DotMatrix(Widget):
         self._paint(delta)
 
     def on_resize(self, event: events.Resize) -> None:
-        # A new size needs a frame even when animation playback is paused.
         self._paint(0)
 
     def refresh_theme(self) -> None:
@@ -118,8 +117,6 @@ class DotMatrix(Widget):
         """
         deadline = 0.0
         try:
-            # A worker can start before the Mount handler has completed.
-            # Textual cancels this owned worker when the widget is removed.
             while True:
                 if self._pending_frame is None:
                     if self.active and self.size.area:
@@ -143,7 +140,6 @@ class DotMatrix(Widget):
                 self._pending_frame = None
                 self._rendering = True
                 started = monotonic()
-                # Keep cadence through timer jitter, but do not queue missed frames.
                 deadline = (deadline if 0 <= started - deadline < 1 / 30 else started) + 1 / 30
                 raster, lines, damage = await asyncio.to_thread(
                     _render_frame,
@@ -163,8 +159,6 @@ class DotMatrix(Widget):
                     continue
                 self._raster = raster
                 if revision != self._render_revision:
-                    # Numerical state belongs to this size; the terminal baseline
-                    # is valid only for frames that were actually published.
                     raster.invalidate_frame()
                     continue
                 self._lines = lines

@@ -95,7 +95,6 @@ def test_runtime_snapshot_does_not_read_message_or_summary_storage(
     assert snapshot.session.message_count == history_size
     assert snapshot.session.context_selection.compaction_id == summary.compaction_id
     assert snapshot.runs == [run]
-    # Full history is an explicit, separate read contract for inspection/transfer.
     full = store.load_session(session.session_id)
     observed = store.load_session_observation(session.session_id)
     assert len(full.messages) == len(observed.messages) == history_size

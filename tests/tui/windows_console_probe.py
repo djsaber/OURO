@@ -62,12 +62,9 @@ def main() -> None:
 
     handle = create(0xC0000000, 3, None, 1, None)
     assert handle != ctypes.c_void_p(-1).value, ctypes.get_last_error()
-    # fdopen owns the new, inactive buffer. It never becomes the user's display.
     fd = msvcrt.open_osfhandle(handle, os.O_WRONLY)
     with open(fd, "w", encoding="utf-8") as stream:
         assert set_mode(handle, 7), ctypes.get_last_error()
-        # Exercise the allocated console, whose dimensions depend on the host.
-        # Resizing also depends on desktop font/DPI limits unrelated to output.
         info = BufferInfo()
         assert get_info(handle, ctypes.byref(info)), ctypes.get_last_error()
         columns, rows = min(114, info.size.x - 1), min(20, info.size.y - 3)
@@ -89,7 +86,6 @@ def main() -> None:
             + restore
         )
         assert len(frame) > 8192
-        # Negative control: the original transport exposes drawing positions.
         fragmented = set()
         for start in range(0, len(frame), 8192):
             output.write(frame[start : start + 8192])

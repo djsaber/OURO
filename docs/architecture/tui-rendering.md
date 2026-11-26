@@ -1,7 +1,6 @@
 # OURO TUI 视觉样式与 Markdown 渲染设计
 
-> 文档类型：架构设计
-> 适用实现：`ouro/tui/`
+适用实现：`ouro/tui/`
 
 ## 设计目标
 

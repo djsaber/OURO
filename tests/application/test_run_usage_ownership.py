@@ -271,7 +271,6 @@ async def test_missing_report_does_not_become_known_zero_after_prior_usage(tmp_p
                 model_round=index + 2,
                 turn_id=f"request-{index + 2}",
             )
-        # Summary reports count toward tokens, but cannot stand in for a missing agent report.
         runtime.usage.record_provider_usage(
             run=request.run,
             usage=Usage(input_tokens=2),

@@ -31,7 +31,7 @@ RENDERERS = {
 def test_bundled_packages_integrate_with_the_existing_host_catalog():
     loaded, error = load_theme_packages()
     assert error is None
-    catalog = welcome_catalog(loaded)  # Also rejects duplicate theme IDs across packages.
+    catalog = welcome_catalog(loaded)
     assert {"basic", *RENDERERS} <= catalog.keys()
     assert len(catalog) == 1 + sum(len(package.themes) for package in PACKAGES)
     for package in PACKAGES:

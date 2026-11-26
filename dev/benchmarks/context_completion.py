@@ -1,8 +1,4 @@
-"""Measure request completion separately from preparing its immutable input.
-
-Run: uv run --frozen python -m dev.benchmarks.context_completion --repeat 7
-Only disposable synthetic sessions are used; OS caches are not cleared.
-"""
+"""Measure request completion separately from preparing its immutable input."""
 
 from __future__ import annotations
 

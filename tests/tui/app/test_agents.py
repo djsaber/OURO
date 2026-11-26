@@ -1,5 +1,3 @@
-"""TUI application scenarios: agents."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -243,8 +241,6 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             description="first child stream completion",
         )
         child_history = app.query_one(ConversationHistory)
-        # Cache reuse and held scroll offsets require the terminal transcript,
-        # not only the completion status supplied by live activity updates.
         await _wait_until(
             lambda: bool(child_history.entries) and child_history.entries[-1].kind == "run",
             pilot,
@@ -275,8 +271,6 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         await root_history.wait_until_rendered()
         await app.screen.wait_for_refresh()
         assert app._visible_session_id() == root_session_id
-        # Restore within the new content bounds. Folding does not guarantee a
-        # shorter document: the final answer also arrived while this view was hidden.
         restored_root_scroll_y = min(held_root_scroll_y, root_conversation.max_scroll_y)
         assert root_conversation.scroll_y == restored_root_scroll_y
         assert app._visible_read_only is False
@@ -294,9 +288,6 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             if entry.kind == "assistant"
         )
         root_history = app.query_one(ConversationHistory)
-        # The persisted outcome and live activity arrive independently. Verify
-        # that the parent observes completion, without coupling navigation to
-        # the activity label or its rendering schedule.
         await _wait_until(
             lambda: (
                 (entry := child_entry("spawn_child_1")) is not None
@@ -316,8 +307,6 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
             entry_index: int,
             **kwargs,
         ) -> None:
-            # Root previews remain live while the child snapshot is loading.
-            # This assertion measures reuse of the destination child history.
             if history.entries and history.entries[0].text == "first child task":
                 rendered_during_cached_switch.append(entry_index)
             write_entry(history, *args, entry_index=entry_index, **kwargs)
@@ -341,8 +330,6 @@ async def test_tui_switches_between_root_and_multiple_read_only_child_streams(
         )
         await _wait_for_worker_group(app, pilot, group="navigation")
         assert app.query_one(ConversationView).scroll_y == held_child_scroll_y
-        # Live observation already rendered and cached the completed child's
-        # summary, so reopening needs no additional history rendering.
         assert app.query_one(ConversationHistory).entries[-1].kind == "run"
         assert rendered_during_cached_switch == []
         rendered_during_cached_switch.clear()

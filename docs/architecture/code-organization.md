@@ -1,7 +1,6 @@
 # 代码组织与扩展边界
 
-> 文档类型：现行架构
-> 配套约束：[架构总览](README.md)、[编码准则](../development/coding-guidelines.zh-CN.md)、[依赖测试](../../tests/architecture/test_boundaries.py)。
+配套约束：[架构总览](README.md)、[编码准则](../development/coding-guidelines.zh-CN.md)、[依赖测试](../../tests/architecture/test_boundaries.py)。
 
 OURO 的主包与升级包位于仓库根目录下的 `ouro/` 与 `ouro_upgrade/`；主题扩展具有独立的
 `packages/tui-themes/` 发行边界。主包按领域分层，各领域内部按实际能力和状态所有权组织。

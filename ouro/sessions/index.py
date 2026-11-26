@@ -35,7 +35,7 @@ def invalid_session_index_entry(
         try:
             return SessionIndexEntry.model_validate(candidate)
         except ValidationError:
-            pass  # Keep independently readable identities when another field is invalid.
+            pass
     else:
         payload = {}
         session_kind = None

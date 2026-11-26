@@ -29,7 +29,7 @@ def test_token_rotation_retention_and_stable_routing():
         == "rotated"
     )
     assert first.expires_at is not None and first.expires_at.timestamp() == NOW.timestamp() + 3600
-    assert retained.expires_at is None  # Do not invent a lifetime from upstream defaults.
+    assert retained.expires_at is None
     assert "access-secret" not in repr(first)
     assert "refresh-secret" not in repr(first)
 
@@ -150,7 +150,6 @@ async def test_browser_pkce_exchange_and_port_cleanup(openai_callback):
             ]
         finally:
             await attempt.close()
-        # A second pending login can bind immediately and cancellation frees it too.
         second = await oauth.begin_authorization("browser")
         await second.cancel()
         third = await oauth.begin_authorization("browser")

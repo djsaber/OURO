@@ -108,7 +108,6 @@ class ParkedRunExecution:
                     RunResult(session=session, run=run)
                 )
             except BaseException:
-                # A failed answer or commit can leave a newly bound catalog on a parked Run.
                 self.release_resources(run.run_id)
                 raise
         return await self.finish(result)

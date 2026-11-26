@@ -213,7 +213,6 @@ class PluginPackageStore:
                     stream.flush()
                     os.fsync(stream.fileno())
         except OSError:
-            # Audit must not invalidate an already committed package/state transaction.
             return
 
     def audit_events(self, *, limit: int = 100) -> list[PluginAuditEvent]:
@@ -241,8 +240,6 @@ class PluginPackageStore:
                 if not access.acquire():
                     continue
                 try:
-                    # Publication and install commit share this plugin lock. Refresh
-                    # only when state changed while waiting for another installer.
                     current_stamp = self.state_stamp()
                     if current_stamp != stamp:
                         state = self.read_state()
@@ -293,8 +290,6 @@ class PluginPackageStore:
     def _commit_state_unlocked(
         self, current: PluginStateDocument, updated: PluginStateDocument
     ) -> None:
-        # Persisting enablement and reserving maintenance must be mutually exclusive.
-        # Generation locks then retain normal access until all resources have stopped.
         with ExitStack() as access:
             for plugin_id in sorted(_enabled_ids(updated) - _enabled_ids(current)):
                 access.enter_context(self.data_lock(plugin_id))
@@ -351,10 +346,7 @@ def _enabled_ids(state: PluginStateDocument) -> set[str]:
 def _fsync_tree(root: Path) -> None:
     for path in root.rglob("*"):
         if path.is_file():
-            # Windows' ``_commit`` (used by ``os.fsync``) rejects a descriptor
-            # opened read-only with ``EBADF``.  Opening the staged copy for
-            # update does not alter its bytes and keeps the durability barrier
-            # meaningful on every supported platform.
+            # Windows fsync requires a writable descriptor.
             with path.open("r+b") as stream:
                 os.fsync(stream.fileno())
     for path in sorted((item for item in root.rglob("*") if item.is_dir()), reverse=True):

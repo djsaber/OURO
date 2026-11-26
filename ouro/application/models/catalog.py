@@ -232,8 +232,6 @@ class SessionModels:
         request: ReasoningRequest,
         model_key: str,
     ) -> RuntimeAdapter:
-        # A default Session intent preserves an explicit request already bound by
-        # a one-shot runtime composition; non-default Session intent takes precedence.
         selected = adapter.model.reasoning_request if request == ReasoningRequest() else request
         try:
             return adapter.with_reasoning(selected)

@@ -71,7 +71,6 @@ def test_unmapped_reasoning_stays_out_of_answers_without_losing_tool_history(
     result = ModelMessage.text(role="tool_result", text="Configuration is valid.").model_copy(
         update={"tool_result": ToolResultReference(tool_call_id="call_1", tool_name="Read")}
     )
-    # The same persisted facts feed every target; projection must not mutate them.
     history = [ModelMessage.model_validate_json(m.model_dump_json()) for m in (assistant, result)]
     before = [m.model_dump_json() for m in history]
     options = dict(system_prompt="", provider_id="target", model_id="new-model")

@@ -24,7 +24,6 @@ def test_batch_usage_preserves_run_identity_missing_reports_and_raw_totals(tmp_p
         runs.append(
             RunRequestCounts(run_id=f"run_{index}", model_round_count=1, summary_request_count=0)
         )
-    # Extra reports in one Run cannot compensate for a missing report in another.
     ledger.record(_entry(405).model_copy(update={"run_id": "run_0"}))
     service.reset(note="invoice reset must preserve consumption")
     transaction = ledger._transaction
@@ -331,7 +330,6 @@ def test_process_exit_inside_native_record_leaves_no_partial_raw_or_effective_st
     process.start()
     try:
         assert entered.wait(20)
-        # A live reader sees the last committed state while the child holds its write transaction.
         assert ledger.get_raw("use_1") is None
         assert ledger.run_usage("ses_a", "run_1") is None
         process.terminate()

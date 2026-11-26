@@ -1,5 +1,3 @@
-"""TUI application scenarios: composer."""
-
 from __future__ import annotations
 
 import asyncio
@@ -133,8 +131,6 @@ async def test_composer_uses_ctrl_enter_for_newline(tmp_path: Path) -> None:
 async def test_composer_grows_with_its_document_between_one_and_three_text_rows(
     tmp_path: Path,
 ) -> None:
-    """The composer is a textarea bounded to three text rows, then scrolls."""
-
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
@@ -143,7 +139,6 @@ async def test_composer_grows_with_its_document_between_one_and_three_text_rows(
         composer = app.query_one(Composer)
         status = app.query_one(StatusLine)
 
-        # Empty and single-line documents both keep the minimum single text row.
         assert composer.outer_size.height == COMPOSER_MIN_HEIGHT
         assert composer.size.height == 1
         await pilot.press("a")
@@ -156,7 +151,6 @@ async def test_composer_grows_with_its_document_between_one_and_three_text_rows(
             assert composer.size.height == text_rows
             assert composer.region.bottom <= status.region.y
 
-        # Past the cap the document scrolls inside a stable widget height.
         await pilot.press("ctrl+enter", "a")
         await pilot.pause()
         assert composer.text.count("\n") == 3
@@ -165,7 +159,6 @@ async def test_composer_grows_with_its_document_between_one_and_three_text_rows(
         assert composer.virtual_size.height == 4
         assert composer.cursor_screen_offset.y == composer.content_region.bottom - 1
 
-        # Removing rows releases the height again, back to the single-row floor.
         composer.load_text("")
         await pilot.pause()
         assert composer.outer_size.height == COMPOSER_MIN_HEIGHT
@@ -174,8 +167,6 @@ async def test_composer_grows_with_its_document_between_one_and_three_text_rows(
 
 @pytest.mark.asyncio
 async def test_composer_growth_is_driven_by_soft_wrapped_width(tmp_path: Path) -> None:
-    """Wrapping is the library's measurement, so narrowing alone grows the box."""
-
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with run_ready_app(app, size=(100, 32)) as pilot:
@@ -196,15 +187,10 @@ async def test_composer_growth_is_driven_by_soft_wrapped_width(tmp_path: Path) -
 async def test_growing_composer_rebounds_adjacent_panels_and_conversation(
     tmp_path: Path,
 ) -> None:
-    """Sibling chrome keeps its bounds relative to the composer's live height."""
-
     app = OuroTuiApp(application=_application(tmp_path))
 
-    # A short viewport keeps both panels bound by the available height rather
-    # than by their own caps, so the composer's growth is the only variable.
     async with run_ready_app(app, size=(100, 15)) as pilot:
         await pilot.pause()
-        # Leave the centered welcome page for the regular conversation surface.
         app._set_welcome_mode(False)
         await pilot.pause()
         composer = app.query_one(Composer)
@@ -231,9 +217,7 @@ async def test_growing_composer_rebounds_adjacent_panels_and_conversation(
         grown = COMPOSER_MAX_HEIGHT - COMPOSER_MIN_HEIGHT
         assert popup_after == popup_before - grown
         assert interaction_after == interaction_before - grown
-        # The conversation absorbs the growth, so the surface never overflows.
         assert conversation_after == conversation_before - grown
-        # The fixed navigation row still separates conversation from composer.
         navigation = app.query_one(SessionNavigationPanel)
         assert navigation.region.y == conversation.region.bottom
         assert composer.region.y == navigation.region.bottom
@@ -383,7 +367,6 @@ async def test_input_draft_persistence_debounces_to_the_latest_revision(
 
         try:
             with monkeypatch.context() as patch:
-                # Drive debounce expiry explicitly; editing must reset the window.
                 patch.setattr(draft_persistence, "_INPUT_DRAFT_SAVE_DEBOUNCE_SECONDS", None)
                 patch.setattr(app._draft_persistence._save_requested, "wait", expire_debounce)
                 app._remember_input_draft(None, "a")

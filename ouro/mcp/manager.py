@@ -632,8 +632,6 @@ async def _wait_for_runtime_event(
 
 
 def _default_client_factory() -> MCPClientFactory:
-    # Loading the SDK belongs to connection startup, not configuration imports
-    # or Hosts with no MCP servers. The owner calls this outside the event loop.
     from ouro.mcp.sdk import SDKMCPClientFactory
 
     return SDKMCPClientFactory()

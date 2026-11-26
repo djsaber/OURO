@@ -315,7 +315,6 @@ async def test_config_lock_wait_is_bounded_and_never_commits_late(auth_home, mon
     assert provider is not None
     credential_id = provider.credential_ref.name
     if action == "timeout":
-        # Spend the short budget on the contended configuration lock, not worker scheduling.
         monkeypatch.setattr("ouro.auth.credentials.monotonic", lambda: 100.0)
         monkeypatch.setattr("ouro.auth.commit.monotonic", lambda: 100.0)
     started = await begin(service, driver)
@@ -342,7 +341,6 @@ async def test_config_lock_wait_is_bounded_and_never_commits_late(auth_home, mon
             result = await asyncio.wait_for(service.wait(started.operation_id), 2)
             assert result.state == "failed" and result.error_code == "credential_lock_timeout"
         assert store.read(credential_id) is None
-    # Lock release cannot wake an abandoned transaction after cancellation returned.
     async with store.lock(credential_id, timeout=0.1):
         assert store.read(credential_id) is None
 

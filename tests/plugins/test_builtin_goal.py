@@ -472,7 +472,6 @@ async def test_goal_runs_end_to_end_and_retains_final_usage(tmp_path) -> None:
         assert runtime.usage.session_scope_tokens(session.session_id) == {
             PLUGIN_ID: {goal.goal_id: 10}
         }
-        # The first work request is scoped; the acknowledgement follows release.
         assert runtime.usage.summarize().totals.total_tokens == 15
         status = await application.plugins.execute_command(
             f"{PLUGIN_ID}:goal", "status", session_id=session.session_id
@@ -634,7 +633,7 @@ async def test_lifecycle_uses_native_controls_and_keeps_one_business_identity(go
     ]:
         result = await g.command(command)
         assert not result.data.get("error")
-        assert "goal" not in result.data  # Lifecycle intent is not a final state read.
+        assert "goal" not in result.data
         goal = g.goal()
         assert goal.status == status
         assert goal.goal_id == first.goal_id

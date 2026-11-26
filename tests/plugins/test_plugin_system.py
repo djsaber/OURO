@@ -234,7 +234,6 @@ def _process_is_running(process_id: int) -> bool:
             timeout=2,
             check=False,
         )
-        # PID matching is ASCII; localized tasklist diagnostics need no decoding.
         return f'"{process_id}"'.encode("ascii") in result.stdout
     try:
         os.kill(process_id, 0)
@@ -401,7 +400,6 @@ def test_boot_recovery_quarantines_unreadable_state_instead_of_raising(tmp_path)
     assert recovery.error is not None
     assert recovery.quarantine_path is not None
     assert recovery.quarantine_path.read_text(encoding="utf-8") == original
-    # Recovery heals the document: strict reads see an empty registry again.
     assert not store.state_path.exists()
     assert store.read_state() == PluginStateDocument()
 
@@ -675,7 +673,6 @@ async def test_optional_plugin_mcp_failure_degrades_without_fake_contract(tmp_pa
 async def test_plugin_mcp_tools_are_frozen_in_catalog_and_resource_closes(
     tmp_path, monkeypatch
 ) -> None:
-    # Resource discovery and native tool registration may appear in either inventory order.
     monkeypatch.setattr(
         "ouro.plugins.contributions.inventory._CONTRIBUTION_TYPE_ADAPTERS",
         tuple(reversed(contribution_type_adapters())),
@@ -3791,7 +3788,6 @@ async def test_catalog_leases_replace_lifecycle_blocks_and_enable_is_idempotent(
     with runtime.snapshot() as snapshot:
         generation = snapshot.generations[0]
 
-    # Repeating enable is a state assertion, not an implicit restart.
     assert (await service.enable("dev.ouro.echo")).status == "active"
     with runtime.snapshot() as snapshot:
         assert snapshot.generations[0].generation_id == generation.generation_id
@@ -4117,8 +4113,6 @@ async def test_remove_scans_runs_without_loading_session_journals(tmp_path) -> N
 
     session = SessionRecord(title="Broken journal")
     sessions.create_session(session)
-    # Durable-reference checks read Run records only; a broken message journal
-    # in an unrelated Session must not block plugin lifecycle operations.
     journal = sessions.sessions_dir / session.session_id / "messages.jsonl"
     journal.write_text("{not json\n", encoding="utf-8")
 

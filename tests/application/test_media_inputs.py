@@ -18,7 +18,6 @@ from tests.application.test_resources import _services
 from tests.application.test_tool_result_content import RecordingProvider
 from tests.tui.test_history_commands import application_at
 
-# Container signatures exercise ingestion and transport; OURO does not decode tracks.
 MEDIA = [
     ("audio", "recording.wav", b"RIFF\x24\x00\x00\x00WAVEfmt " + b"\0" * 32),
     ("audio", "recording.mp3", b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\0" * 32),
@@ -179,7 +178,6 @@ async def test_media_observation_survives_source_removal_model_switch_and_reopen
         branch = reopened.runtime.sessions.branch(session.session_id, observed.message_id)
         branched = reopened.runtime.store.load_session(branch.session.session_id)
         if source_kind == "upload":
-            # Observed media and metadata stay frozen; only the generated path table moves.
             assert branched.messages[0].content[:-1] == observed.content[:-1]
             branch_path = reopened.runtime.resources.resource_path(
                 branch.session.session_id, resource.resource_id

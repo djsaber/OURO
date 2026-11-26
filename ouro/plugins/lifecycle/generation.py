@@ -94,8 +94,6 @@ class PluginGeneration:
         if cancel:
             self.gate.cancel_inflight()
         self.record.status = "stopping"
-        # A revoked directory cannot start callbacks. Only executing callbacks,
-        # not dormant catalog references, need to settle before resource cleanup.
         self.retirement_ready.set()
 
     def describe_error(self, error: Exception) -> str:
@@ -115,7 +113,6 @@ class PluginGeneration:
             for service in self.contributions.background_services:
                 if service.scope not in scopes or service in self.started_services:
                     continue
-                # start() may acquire a resource before failing.
                 self.started_services.append(service)
                 await service.start()
 
@@ -129,7 +126,7 @@ class PluginGeneration:
                     continue
                 try:
                     await service.stop()
-                except Exception as exc:  # Keep failed owners available for explicit cleanup.
+                except Exception as exc:
                     errors.append(exc)
                 else:
                     self.started_services.remove(service)

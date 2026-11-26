@@ -214,7 +214,6 @@ async def test_cancel_skill_menu_preserves_existing_elements(tmp_path, key):
         if key == "escape":
             await pilot.press(key)
         else:
-            # Removing the command closes the menu and restores the captured draft.
             composer.load_text("")
         await pilot.pause()
         assert composer.input_content == original

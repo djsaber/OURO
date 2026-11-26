@@ -1,5 +1,3 @@
-"""TUI application scenarios: welcome."""
-
 from __future__ import annotations
 
 import asyncio

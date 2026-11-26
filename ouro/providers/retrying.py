@@ -49,7 +49,6 @@ async def stream_with_retries(
                     retry = exc.retryable
                     delay = retry_policy.delay_before_attempt(next_attempt)
                     if exc.retry_after is not None:
-                        # Do not retry earlier than requested or wait without bound.
                         retry = retry and exc.retry_after <= retry_policy.max_backoff_seconds
                         delay = max(delay, exc.retry_after)
             if not retry:

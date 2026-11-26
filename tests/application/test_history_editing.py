@@ -246,7 +246,6 @@ async def test_undo_incomplete_exchange_then_edit_and_continue_in_original_sessi
         assert continued.run.history_epoch == 1
         revised = await runtime.run("revised input", session_id=first.session.session_id)
         assert revised.run.status == "failed"
-        # The next incomplete frame may be cut even though an older attempt also failed.
         recovered = await runtime.continue_run(session_id=first.session.session_id)
         assert recovered.run.run_id == revised.run.run_id
         assert recovered.run.run_id != second.run.run_id
@@ -458,8 +457,6 @@ async def test_continue_does_not_cut_incomplete_output_from_an_older_run(store):
         old_partial = tail.model_copy(update={"metadata": {"incomplete": True}, "sequence": 2})
         store.append_messages([old_input, old_partial])
         current = await runtime.run("current question", session_id=old.session.session_id)
-        # A crash after committing the current input/output must not turn an
-        # older retained recovery frame into the new truncation boundary.
         store.save_run(current.run.model_copy(update={"status": "failed"}))
         before = store.load_session(old.session.session_id).messages
         result = await runtime.continue_run(session_id=old.session.session_id)

@@ -109,7 +109,6 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
     assert endpoint.supports_image_input
     assert not model_requests and not token_requests
 
-    # Unattended consumers fail without opening an authorization flow or sending HTTP.
     async with LocalApplication.build(tmp_path, session_backend=backend) as app:
         unattended = await app.runtime.run("Reply OK.", interaction_mode="unattended")
         assert unattended.run.status == "failed"
@@ -145,7 +144,6 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
         )
         assert not model_requests and not token_requests
 
-    # Exercise the real lightweight composition, loopback callback and file commit.
     async with open_local_provider_auth(tmp_path) as auth:
         assert (await auth.status(provider_id)).state == "missing"
         assert [method.method_id for method in await auth.methods(provider_id)] == ["browser"]
@@ -213,7 +211,6 @@ async def test_builtin_subscription_login_persist_restart_refresh_tools_and_logo
         for entry in entries:
             assert entry.billing_mode == "subscription" and entry.estimated_cost is None
 
-    # Reconstruct with built-in registration only: persisted credentials/history are sufficient.
     async with LocalApplication.build(tmp_path, session_backend=backend) as app:
         assert app.runtime.store.load_session(session_id).messages == saved
         replies.extend([401, terminal([message("continued", item_id="next")])])

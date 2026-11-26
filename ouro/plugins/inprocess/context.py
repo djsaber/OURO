@@ -34,7 +34,6 @@ class BoundCredentialResolver:
         try:
             value = resolve_credential_binding(reference, self._resolve_reference)
         except Exception:
-            # Resolver failures may contain transport payloads or secret material.
             raise RuntimeError(f"credential slot cannot be resolved: {slot}") from None
         if not value:
             raise RuntimeError(f"credential slot cannot be resolved: {slot}")

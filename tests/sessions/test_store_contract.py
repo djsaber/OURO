@@ -376,7 +376,6 @@ def test_session_store_loads_runs_without_reading_journals(session_store: Sessio
     run = RunRecord(session_id=session.session_id, status="completed")
     session_store.save_run(run)
 
-    # Run queries read run records only; a broken message journal must not matter.
     if isinstance(session_store, LocalSessionStore):
         journal = session_store.sessions_dir / session.session_id / "messages.jsonl"
         journal.write_text("{not json\n", encoding="utf-8")
@@ -679,7 +678,6 @@ def test_nested_file_reads_share_the_boundary_and_preserve_outer_lifetime(tmp_pa
             raise ValueError("outer read failed")
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
         connection.execute("SELECT 1")
-    # A new reader observes directory replacement again; no scope or lock leaked.
     with ThreadPoolExecutor(max_workers=1) as executor:
         assert executor.submit(store.load_session_record, session.session_id).result() == session
     assert observed == [session.session_id, session.session_id]

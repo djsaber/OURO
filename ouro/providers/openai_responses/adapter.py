@@ -113,7 +113,6 @@ class OpenAIResponsesProvider:
         tools: list[dict[str, Any]] | None,
         headers: Mapping[str, str],
     ) -> AsyncGenerator[ProviderStreamEvent]:
-        # Validate explicit controls before acquiring credentials or refreshing.
         payload = self._payload(model, tools)
         url = self.base_url + self.api_path
         async with request_authentication(
@@ -148,8 +147,6 @@ class OpenAIResponsesProvider:
                             raise OpenAIResponsesError("unsupported_output_item")
                         yield event
             except OpenAIResponsesError as error:
-                # Codec errors are already fixed local facts, including actionable
-                # continuation mismatches; never replace them with raw service text.
                 yield ProviderStreamEvent(type="error", error=str(error), error_code=error.code)
 
     async def _chunks(
@@ -205,8 +202,7 @@ class OpenAIResponsesProvider:
         )
         if self.request_policy.supports_output_limit and model.max_output_tokens is not None:
             payload["max_output_tokens"] = model.max_output_tokens
-        # Omit truncation: Responses defaults to disabled. Sending that redundant
-        # field is rejected by some compatible services; overrides remain forbidden.
+        # Some Responses services reject explicit truncation even at its default value.
         if model.temperature is not None:
             payload["temperature"] = model.temperature
         if tools:
@@ -217,8 +213,6 @@ class OpenAIResponsesProvider:
         self, model: ModelMetadata, *, request_context: ProviderRequestContext | None = None
     ) -> ProviderCheckResult:
         request_context = model_request_context(model, request_context, purpose="connection_check")
-        # Keep the endpoint's streaming contract and output budget; some models
-        # consume reasoning tokens before any visible response.
         return await check_connection_events(
             self.stream(
                 model=model,

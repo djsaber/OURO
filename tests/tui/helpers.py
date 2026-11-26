@@ -254,7 +254,6 @@ async def resize_terminal(pilot, width: int, height: int, *, timeout: float = 15
             screen = pilot.app.screen
             while screen.region.size != size:
                 await screen.wait_for_refresh()
-            # Resize handlers may invalidate child layout after screen reflow.
             await screen.wait_for_refresh()
     except TimeoutError:
         raise AssertionError(

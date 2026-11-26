@@ -1,45 +1,10 @@
 # OURO 开发路线图
 
-> 文档类型：未来规划
-> 当前能力不在本文重复列举，以项目概述和现行规格为准。
-
-本文描述未完成的能力、验收工作、实施顺序和进入实现阶段的条件。
-具体任务、依赖和退出条件见 [执行计划索引](README.md)。
-
-## 推进原则
-
-- 每项能力先明确业务所有者、领域记录、公开端口和失败语义，再实现插件、原生用例或 Host。
-- canonical 数据与可重建投影分离；任何新索引都不能成为核心写事务的单点故障。
-- 新外部依赖必须停留在适配层，并具备超时、取消、资源释放和可诊断错误。
-- 不以“未来可能需要”为理由引入空接口、通用 manager 或深层依赖注入。
-- 每一项交付必须包含正常、错误、恢复和并发边界测试，并同步更新权威文档。
-
-## 前置架构基线
-
-后端中立 SessionRepository、File/SQLite adapter、ResourceService、RuntimeSupervisor、ConfigurationFacade、
-类型化 Host 事件、LocalApplication 生命周期、TUI、子智能体、builtin Goal/Plan 以及插件管理和运行闭环构成
-后续工作的前置基线。边界、不变量和验证证据由[开发架构](../architecture/README.md)与
-[现行规格](../specs/README.md)定义。
-
-多附件输入与资源输出的当前契约见[附件规格](../specs/attachments.md)，职责与设计依据见
-[文件输入架构](../architecture/file-input.md)。已完成范围及验证边界见
-[附件输入验收记录](archive/2026-10-16-attachment-validation.md)。
-
-Marketplace、签名/publisher trust root、worker OS sandbox、每插件依赖环境和通用 session-scoped KV/CAS 不属于
-当前路线图；只有真实插件提出无法由当前边界表达的共同需求时才重新评估。
-
-## 会话数据与长程执行
-
-单份事实正文、两后端有限提交、活动上下文、最近请求、当前输出恢复和原始计量已实施；范围、
-故障与增长验证见[实施记录](archive/2026-10-26-session-data-implementation.md#实施与验收)，设计取舍见[设计归档](archive/2026-10-26-session-data-implementation.md#设计方案)。
-当前契约由领域规格维护；最终代码未再次全量验证。升级模块保持原样，由用户后续单独适配，
-新用户目录初始化测试尚待用户反馈，不将这些后续工作计为已验收能力。
-
 ## 近期：Host 产品面
 
 ### TUI 产品化增强
 
-TUI 的待办集中在真实终端验收、持续负载下的响应性和发布级交互体验。响应门槛见[性能规格](../specs/performance.md#io-所有权与响应性验证)，Windows 与 WSL 的长历史实测见[核心架构验收](archive/2026-11-23-core-architecture-refactoring.md#实际终端与放行范围)。
+TUI 的待办集中在真实终端验收、持续负载下的响应性和发布级交互体验。响应门槛见[性能规格](../specs/performance.md#io-所有权与响应性验证)。
 
 范围：
 
@@ -91,7 +56,7 @@ TUI 的待办集中在真实终端验收、持续负载下的响应性和发布�
 
 - 提供 Desktop 后端选择，以及 CLI/Desktop 迁移预检、进度和备份体验；
 - 在真实长会话数据上建立查询、写入、WAL 维护和恢复基准；
-- 定义版本升级、备份恢复和损坏诊断流程；
+- 完善损坏诊断，复用[数据升级与备份恢复流程](../guides/data-upgrade.md)；
 - 保留文件后端作为可读实现和显式导出来源。
 
 不得为两种实现再增加通用 ORM、UoW 或第二套领域恢复规则。

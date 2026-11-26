@@ -275,7 +275,6 @@ def test_request_query_without_original_ledger_keeps_input_and_reports_unknown(p
         provider_done=True,
         usage_entry_id=original.entry_id,
     )
-    # A Session-only transfer does not also transfer the global billing database.
     query = SessionService(
         store, usage_service=UsageService(LocalUsageLedger(tmp_path / "other-ledger"))
     )

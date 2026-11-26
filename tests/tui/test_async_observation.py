@@ -82,7 +82,6 @@ async def test_session_observation_does_not_reserve_sqlite_writer(tmp_path, monk
 
     def read_with_concurrent_write(session_id, **bounds):
         snapshot = original(session_id, **bounds)
-        # A second connection must be able to commit while the Host's read is open.
         with closing(sqlite3.connect(store.database, timeout=0)) as connection:
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -273,7 +272,6 @@ async def test_history_render_does_not_hold_the_content_cursor(
     async with run_ready_app(app) as pilot:
         monkeypatch.setattr(history_module, "_render_entry_requests", held_render)
         try:
-            # Observation itself does not recover this synthetic running Run.
             opening = asyncio.create_task(app._show_observed_session(session.session_id))
             assert await asyncio.to_thread(entered.wait, 5)
             await asyncio.wait_for(asyncio.shield(opening), 3)

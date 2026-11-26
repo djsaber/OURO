@@ -45,7 +45,6 @@ class CorrectingProvider(FauxProvider):
                     arguments_delta='{"value":"line\nbreak"}',
                 ),
             )
-            # A valid sibling must not execute when the batch is rejected.
             yield ProviderStreamEvent(
                 type="tool_call_delta",
                 tool_call_delta=ToolCallDelta(
@@ -192,7 +191,6 @@ async def test_correction_survives_budget_pause_and_continue(store, tmp_path):
         assert result.run.status == "paused"
         assert len(provider.requests) == 1
         assert calls == []
-    # Budgets belong to the persisted Run; changing the host default cannot lift it.
     store.save_run(
         result.run.model_copy(
             update={
@@ -239,7 +237,6 @@ async def test_cancel_after_correction_does_not_dispatch_retry(store, tmp_path, 
         monkeypatch.setattr(runtime.run_lifecycle, "record_unexecuted_model_tools", correct)
         task = asyncio.create_task(runtime.run("act"))
         await asyncio.wait_for(committed.wait(), timeout=10)
-        # The accepted abort is shared by the normal model request boundary.
         session = store.list_sessions()[0]
         signal = runtime.run_ownership.signal_for(session.active_run_id)
         abort = asyncio.create_task(runtime.abort_run(session_id=session.session_id))

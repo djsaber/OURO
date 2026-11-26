@@ -55,8 +55,6 @@ class ProviderAuthBinding:
 def binding_guard(config: ProviderConfigManager, expected: ProviderAuthBinding) -> CommitGuard:
     @contextmanager
     def guard(*, timeout: float, cancel_event: Event) -> Generator[None]:
-        # Config owns its lock/schema; Application owns the comparison. Auth
-        # executes this entire boundary in the same worker as credential save.
         try:
             with config.mutation(timeout=timeout, cancel_event=cancel_event):
                 current = config.get_provider(expected.provider_id)
@@ -66,8 +64,6 @@ def binding_guard(config: ProviderConfigManager, expected: ProviderAuthBinding) 
         except ConfigMutationTimeout:
             raise AuthError("credential_lock_timeout") from None
         except ConfigError:
-            # Config errors can contain raw invalid input. Do not propagate it
-            # into an authentication operation's public diagnostic.
             raise AuthError("authorization_configuration_error") from None
 
     return guard

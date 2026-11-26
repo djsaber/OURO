@@ -51,7 +51,6 @@ async def test_received_done_is_settled_before_buffered_output_is_discarded(endi
                 await observed.wait()
                 yield ProviderStreamEvent(type="text_delta", text="discarded suffix")
                 yield ProviderStreamEvent(type="done", usage=Usage(input_tokens=7))
-                # A terminal response ends the request, including its accounting.
                 yield ProviderStreamEvent(type="done", usage=Usage(input_tokens=999))
             finally:
                 closed.set()
@@ -82,7 +81,7 @@ async def test_received_done_is_settled_before_buffered_output_is_discarded(endi
             release.set()
             result = await asyncio.wait_for(task, 5)
             assert result.text == "visible prefix"
-            assert result.usage is None  # No done event was consumed as response output.
+            assert result.usage is None
             assert result.aborted == (ending == "abort")
             assert result.error == ("presentation failed" if ending == "observer_failure" else None)
         assert receipts == [Usage(input_tokens=7)]

@@ -311,8 +311,6 @@ class FileInputProjector:
                         ),
                         0,
                     )
-                # Publication follows a stable observation, outside the unavailable-file
-                # fallback: persistence failures must not silently discard observed media.
                 blocks = [
                     _inline_media(self.capture(message.session_id, item.name, part.load()), None)
                     if isinstance(part, _PreparedMedia) and part.omission is None
@@ -400,7 +398,6 @@ class FileInputProjector:
                     media_used + _media_size(blocks),
                     DEFAULT_REQUEST_MEDIA_CHARS,
                 )
-                # References must be observed while this checked file handle is open.
                 result = (
                     [
                         _inline_media(part.load(), None)

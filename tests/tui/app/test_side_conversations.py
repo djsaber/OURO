@@ -1,5 +1,3 @@
-"""Writable side conversations on the existing TUI navigation surface."""
-
 import asyncio
 import json
 import re
@@ -611,7 +609,6 @@ async def test_side_conversation_delivers_source_progress_at_user_consumption(
             session_id=side.session_id,
             source_history=frozen,
         )
-        # Concurrent acceptance and lost-reply retries retain one immutable intent.
         receipts = await asyncio.gather(
             *(app.runtime.accept_user_input(followup) for _ in range(2))
         )
@@ -652,7 +649,7 @@ async def test_side_conversation_delivers_source_progress_at_user_consumption(
         )
         assert (await app.runtime.accept_user_input(followup)).run_id == result.run.run_id
         usage = app.runtime.usage.list_entries(UsageFilter(run_ids={result.run.run_id})).entries
-        assert [entry.cache_read_tokens for entry in usage] == [5]  # Reported by the HTTP fixture.
+        assert [entry.cache_read_tokens for entry in usage] == [5]
         await ask(app, "Keep investigating", "Working.", session_id=source)
         parent = json.dumps(requests[-1][0])
         assert all(

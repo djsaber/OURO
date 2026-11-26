@@ -132,7 +132,6 @@ async def test_tool_batches_pick_up_execution_settings_and_permissions(tmp_path)
         if len(observed) == 1:
             execution.update(max_output_chars=2048, mode="parallel", max_concurrency=2)
             await runtime.refresh_configuration()
-            # The active tool retains the context with which it was invoked.
             assert context.max_output_chars == 100_000
         else:
             permissions.set_tool_mode("ReadChunk", "deny")
@@ -314,7 +313,6 @@ async def test_empty_queue_does_not_add_configuration_refreshes(tmp_path, monkey
     async with runtime:
         result = await runtime.run("Read three times")
         assert result.run.status == "completed", result.run.error
-        # One initial binding, then the model requests and tool batches that consume settings.
         assert len(refreshes) <= 1 + len(provider.calls) + 3
         assert len(reads) == 1
 

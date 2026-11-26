@@ -1,7 +1,4 @@
-"""Measure full active input preparation and codec JSON encoding, without network or IO.
-
-uv run --frozen python -m dev.benchmarks.active_context --repeat 3
-"""
+"""Measure full active input preparation and codec JSON encoding, without network or IO."""
 
 from __future__ import annotations
 
@@ -69,7 +66,6 @@ def experiment(count, media_bytes, repeat):
             times[codec] = perf_counter() - start
             sizes[codec] = len(payload)
             del payload
-        # Allocation measurements are separate from the uninstrumented timings.
         del view
         gc.collect()
         tracemalloc.start()

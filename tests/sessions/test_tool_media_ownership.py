@@ -71,8 +71,6 @@ def test_tool_media_is_one_owned_resource_for_both_outcome_commit_paths(
             )
         }
     )
-    # Independent observation first; a repeated ordinary batch commit must reuse
-    # the original identity rather than publish another media file.
     saved = store.commit_tool_outcome(outcome)
     commit(store, session, outcomes=(outcome,))
     commit(store, session, outcomes=(saved,))
@@ -316,7 +314,6 @@ def test_tool_media_native_failure_preserves_published_bytes(store):
         assert not (store.sessions_dir / session.session_id / "commit.json").exists()
     with session_connection(store, session.session_id) as connection:
         connection.execute("DROP TRIGGER fail_media")
-    # Recommit the already observed value; the external operation is not rerun.
     saved = store.commit_tool_outcome(outcome)
     assert saved.value.same_observation(outcome.value)
     assert store.load_session_record(session.session_id) == before.model_copy(

@@ -147,8 +147,6 @@ class CredentialStore(Protocol):
     def lock(self, credential_id: str, *, timeout: float) -> AbstractAsyncContextManager[None]: ...
 
 
-# Drivers provide their bound refresh method. Token shape and rotation rules stay
-# outside the service; the grant must include any refresh token retained by a driver.
 RefreshCredential = Callable[[CredentialRecord], Awaitable[CredentialGrant]]
 
 

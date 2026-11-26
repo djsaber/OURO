@@ -1,7 +1,6 @@
 # 工具执行结果与模型呈现
 
-> 文档类型：现行架构
-> 执行与恢复契约见[工具规格](../specs/tools-and-interactions.md)。
+执行与恢复契约见[工具规格](../specs/tools-and-interactions.md)。
 
 ## 事实、内容与呈现
 

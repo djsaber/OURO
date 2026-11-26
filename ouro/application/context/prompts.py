@@ -27,6 +27,4 @@ class PromptContext:
         }
 
 
-# A resolver reads current configuration or raises ConfigError; it must not cache
-# request state. Context preparation owns the lifetime of its returned snapshot.
 PromptContextResolver = Callable[[], PromptContext]

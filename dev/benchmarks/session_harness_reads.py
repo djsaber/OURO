@@ -1,9 +1,4 @@
-"""Measure Session/Harness reads across control sizes using synthetic, offline data.
-
-Run this same script against both revisions with --source. Each query is warmed up
-five times, then sampled without concurrent tests or other benchmarks. Raw timings
-are diagnostic evidence, not machine-independent CI assertions.
-"""
+"""Measure Session/Harness reads across control sizes using synthetic, offline data."""
 
 from __future__ import annotations
 
@@ -23,7 +18,6 @@ def main():
     parser.add_argument("--source", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--label", required=True)
     args = parser.parse_args()
-    # Select the implementation before importing OURO, as in harness_lifecycle.py.
     sys.path.insert(0, str(args.source.resolve()))
     from ouro.application.harness import capture_session_harness
     from ouro.core.harness import HarnessState

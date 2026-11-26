@@ -68,7 +68,6 @@ class ElementTextArea(TuiTextArea):
 
     @property
     def input_text(self) -> str:
-        # The newline before the reference row belongs to the projection, not the prompt.
         text = self.text
         return text[: max(0, self.element_spans[0].start - 1)] if self.element_spans else text
 
@@ -149,7 +148,6 @@ class ElementTextArea(TuiTextArea):
         label = _element_label(target, width)
         if self.text[span.start : span.end] == label:
             return
-        # Preserve both ends of a selection across the resized reference row.
         delta = len(label) - (span.end - span.start)
         offsets = [self.plain_document.get_index_from_location(pos) for pos in self.selection]
         document = self.plain_document
@@ -213,7 +211,6 @@ class ElementTextArea(TuiTextArea):
         element_edit = edit if isinstance(edit, ElementEdit) else self._element_edit(edit)
         element_edit.preview_width = self.wrap_width
         result = super().edit(element_edit)
-        # Native rewrap/undo use the real changed range; callers see only their selection.
         return EditResult(
             self.plain_document.get_location_from_index(element_edit.cursor_offset)
             if element_edit.cursor_offset is not None
@@ -245,7 +242,6 @@ class ElementTextArea(TuiTextArea):
             and body_length > 0
             and body_length + delta > 0
         ):
-            # Ordinary typing stays a native range edit: only reference offsets move.
             result = ElementEdit(
                 edit.text,
                 self.plain_document.get_location_from_index(body_start),
@@ -263,7 +259,6 @@ class ElementTextArea(TuiTextArea):
             )
             return result
 
-        # Rebuild the suffix only when references or their separating newline change.
         body = self.text[:body_start] + edit.text + self.text[body_end:body_length]
         content = _input_with_elements(
             body,

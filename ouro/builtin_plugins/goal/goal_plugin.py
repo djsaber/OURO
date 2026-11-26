@@ -393,7 +393,6 @@ class GoalPlugin:
         goal = repository.load().goal
         if goal is None:
             return SessionControllerOutput(output="No Goal remains.")
-        # The successor callback uses the same unpublished draft for lifecycle changes.
         if call.replacement_controller_id == call.controller_id:
             return SessionControllerOutput()
         payload = (
@@ -449,7 +448,6 @@ class GoalPlugin:
                 and (run_id, model_round) != (call.run_id, call.model_round)
             ):
                 return ContextOutput()
-        # Retry the same preparation boundary: only the Host can confirm persistence.
         self._context_snapshots[call.session_id] = snapshot
         return ContextOutput(
             fragments=(

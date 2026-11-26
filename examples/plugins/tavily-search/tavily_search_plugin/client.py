@@ -895,7 +895,6 @@ def _error_detail(response: httpx.Response) -> str:
 
 
 def _compact(value: str) -> str:
-    # Bound tokenization work before the server controls the response size.
     sample = value[: _MAX_ERROR_DETAIL_CHARS * 8]
     return " ".join(sample.split())[:_MAX_ERROR_DETAIL_CHARS]
 

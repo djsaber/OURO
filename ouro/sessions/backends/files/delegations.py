@@ -30,7 +30,6 @@ def record_path(directory: Path, delegation_id: str) -> Path:
 
 
 def lookup_path(directory: Path, kind: LookupKind, key: str) -> Path:
-    # Host request keys are opaque values, never filesystem paths or body hashes.
     name = hashlib.sha256(key.encode("utf-8")).hexdigest() if kind == "requests" else _identity(key)
     return directory / "delegation-index" / kind / name
 

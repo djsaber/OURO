@@ -152,7 +152,6 @@ async def test_long_run_compacts_between_tool_rounds_and_continues(tmp_path, ski
             assert strategy.requests
             run_id = result.run.run_id
             await runtime.close()
-            # The soft budget only establishes the persisted interruption boundary.
             store.save_run(
                 result.run.model_copy(
                     update={"metadata": {**result.run.metadata, "run_budget": {}}}
@@ -230,7 +229,6 @@ async def test_long_run_compacts_between_tool_rounds_and_continues(tmp_path, ski
         assert context is not None
         assert context.provider_context.messages == calls[-1]
 
-        # A fresh runtime and a new Run must reconstruct the same compacted prefix.
         await runtime.close()
         runtime = create_runtime()
         continued = await runtime.continue_run(

@@ -1,8 +1,5 @@
 # OURO 项目概述
 
-> 文档类型：产品与能力说明
-> 事实来源：当前源代码、CLI 解析器与行为测试；精确契约见领域规格。
-
 ## 定位与原则
 
 OURO 是本地优先的个人智能体运行时。会话历史、运行状态、工具副作用、人工决策和上下文维护均有可检查的持久记录。CLI 与 TUI 复用同一应用层，模型和扩展通过明确协议接入。
@@ -30,7 +27,7 @@ OURO 是本地优先的个人智能体运行时。会话历史、运行状态、
 | 数据升级 | 按数据契约版本在原 home 升级有限历史核心格式、备份与中断恢复；TUI 自动升级和需危险确认的初始化兜底 | [数据升级](specs/data-upgrade.md) |
 | Host | Textual 全屏 TUI、可选欢迎页主题拓展、CLI 单次文本 / JSON 输出、配置与维护命令、类型化事件观察 | [CLI](specs/cli-and-hosts.md)、[TUI](specs/tui.md)、[会话观察](specs/session-observation.md) |
 
-模型目录声明、OURO adapter 能力和真实服务验收是不同事实。浏览器订阅与预制模型的验证范围见[订阅指南](guides/subscriptions.md#证据范围)和[预制配置](specs/provider-presets.md)，不能从模板存在推断账户可用性或全部参数已验收。
+浏览器授权方式和预置模型配置见[订阅指南](guides/subscriptions.md#支持范围)和[预制配置](specs/provider-presets.md)，不能从模板存在推断账户可用性或全部参数已验收。
 
 ## 核心概念
 

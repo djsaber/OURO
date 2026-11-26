@@ -46,7 +46,6 @@ async def measure(home, example, *, count, memory):
     plugin_id = manifest["plugin_id"]
     async with open_local_plugins(home) as plugins:
         plugins.install(EXAMPLES / example)
-        # Imports, worker launch machinery and thread pools are warmed separately.
         assert (await plugins.enable(plugin_id)).status == "active"
         assert (await plugins.disable(plugin_id)).status == "disabled"
         gc.collect()

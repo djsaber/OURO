@@ -31,8 +31,6 @@ async def test_resize_waits_for_deferred_layout_before_using_widget_coordinates(
         resize_returned = asyncio.Event()
         raw_resize = pilot.resize_terminal
 
-        # Textual updates App.size before its timer dispatches Resize to the
-        # screen. Hold that dispatch, without changing the layout or coordinates.
         monkeypatch.setattr(app, "_check_resize", lambda: None)
 
         async def record_resize(width, height):

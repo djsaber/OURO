@@ -170,8 +170,6 @@ async def _read_provider_stream(
             on_stream_start()
         async for event in events:
             if event.type == "done" and on_provider_done is not None:
-                # Accounting owns an already received report even if buffered output
-                # is discarded by cancellation or a failed presentation callback.
                 await on_provider_done(event)
             await buffer.put(event)
             if event.type in {"done", "error"}:

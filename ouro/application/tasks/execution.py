@@ -126,11 +126,10 @@ class TaskExecutionCoordinator:
         for execution in executions:
             if not isinstance(execution.target, AgentTaskRun):
                 continue
-            # Canonical recovery checks Run ownership and preserves pending approvals.
             try:
                 await self.supervisor.recover_session(execution.target.session_id)
             except FileNotFoundError:
-                pass  # The exact occurrence is marked interrupted by reconciliation.
+                pass
         await self.reconcile()
 
     async def tick(self) -> None:
@@ -160,7 +159,6 @@ class TaskExecutionCoordinator:
             try:
                 await self._dispatch(task)
             except TaskConflictError:
-                # A configuration edit won the atomic claim. Re-read the due index.
                 self.tasks.changed.set()
 
     async def _dispatch(self, task: TaskRecord) -> None:
@@ -185,7 +183,6 @@ class TaskExecutionCoordinator:
             except FileNotFoundError:
                 session_id = None
             else:
-                # A user may be running or approving work in the reusable Session.
                 if session.active_run_id is not None or await run_blocking(
                     self.state.is_session_locked, session_id
                 ):
@@ -252,7 +249,7 @@ class TaskExecutionCoordinator:
                 ),
                 background=True,
             )
-        except Exception as exc:  # task launch is an isolation boundary
+        except Exception as exc:
             await self._fail_launch(execution, exc)
             return
         self._handles[execution.execution_id] = handle
@@ -262,8 +259,6 @@ class TaskExecutionCoordinator:
         )
 
     async def _fail_launch(self, execution: TaskExecution, error: Exception) -> None:
-        # A reserved Run must be settled when dispatch fails, so it cannot hold
-        # the Session busy forever. No execution is automatically replayed.
         assert isinstance(execution.target, AgentTaskRun)
         with suppress(FileNotFoundError):
             run = await run_blocking(
@@ -377,8 +372,6 @@ class TaskExecutionCoordinator:
         try:
             binding = await self.tasks.bind_plugin_task(target)
         except Exception as exc:
-            # An unavailable declaration pauses its plan; it does not consume
-            # occurrences repeatedly or activate a disabled plugin.
             await self.tasks.set_enabled(
                 task.task_id,
                 False,
@@ -399,7 +392,6 @@ class TaskExecutionCoordinator:
             self._plugin_jobs[execution.execution_id] = job
 
             def finished(_: asyncio.Task[TaskExecution]) -> None:
-                # Also releases a job cancelled before its coroutine starts.
                 binding.close()
                 self.tasks.changed.set()
 
@@ -512,8 +504,6 @@ class TaskExecutionCoordinator:
     async def close(self, *, reconcile: bool = True) -> None:
         await self._registration.close()
         await self.stop_plugin_tasks(reconcile=reconcile)
-        # Supervisor settles execution first. Receipt watchers then persist the
-        # final result and release process-local data, including for parked Runs.
         await asyncio.gather(*self._waiters.values())
         if reconcile:
             await self.reconcile()

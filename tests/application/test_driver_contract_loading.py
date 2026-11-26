@@ -91,7 +91,6 @@ async def install_original(service, packages, *, wait=False):
 
 async def upgrade(service, packages):
     driver, dependency = packages
-    # The new Driver no longer depends on the service. Its old accepted work does.
     manifest_path = driver / ".ouro-plugin/plugin.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["version"] = "0.1.1"

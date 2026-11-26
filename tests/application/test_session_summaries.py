@@ -21,7 +21,6 @@ def test_summaries_return_all_retained_results_and_the_actual_active_pointer(ser
     store, sessions = services._store, services.sessions
     session = sessions.create(current_model="deleted/model").session
     records = add_session_summaries(store, session.session_id)
-    # The newest retained result is not necessarily the active one after history edits.
     select_summary(store, session.session_id, records[0].compaction_id)
     before = store.load_session(session.session_id)
 

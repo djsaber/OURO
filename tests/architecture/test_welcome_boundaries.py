@@ -1,5 +1,3 @@
-"""Optional welcome packages must not become dependencies of the core framework."""
-
 import ast
 import tomllib
 from pathlib import Path

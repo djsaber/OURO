@@ -92,7 +92,6 @@ async def test_prose_edits_rebase_logical_anchors_and_undo_restores_complete_inp
         )
         editor.load_input(original)
         assert editor.input_content == original
-        # Replacing prose does not delete references whose logical anchors it crosses.
         editor.replace("X", (0, 2), (0, 5))
         edited = editor.input_content
         assert edited.text == "abXf"

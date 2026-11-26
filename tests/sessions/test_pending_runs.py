@@ -199,7 +199,6 @@ def test_pending_membership_follows_tool_settlement_continuation_and_epoch(store
     assert store.load_pending_runs(session.session_id) == []
     assert store.load_runtime_session(session.session_id).runs == []
     assert store.load_run(session.session_id, run.run_id) == run
-    # Updating old audit metadata cannot recreate current pending membership.
     store.save_run(run)
     assert store.load_pending_runs(session.session_id) == []
     if isinstance(store, LocalSessionStore):

@@ -1,9 +1,4 @@
-"""Offline Harness probe; compare revisions with the same script using --source.
-
-Fixture creation, index warmup and checkpoint counts are outside measured sections.
-Process I/O includes SQLite's native calls. Its VFS sync calls are counted separately
-from Python fsync. This is diagnostic evidence, not a machine-independent CI limit.
-"""
+"""Measure Harness reads and commits with file and SQLite storage."""
 
 from __future__ import annotations
 
@@ -153,7 +148,6 @@ def probe(store, backend, prefix, owners, owner_bytes):
     assert checkpoint_count(store, session.session_id, backend) == count
     assert store.load_harness(session.session_id).state == state
 
-    # One phase captures one state; all owner views are served from that snapshot.
     snapshot, read = measure(
         lambda: capture_harness(store, session.session_id), sqlite=backend == "sqlite"
     )
@@ -202,7 +196,6 @@ def main():
     parser.add_argument("--label", required=True)
     args = parser.parse_args()
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    # The probe helpers always come from this script's checkout.
     from dev.benchmarks.sqlite_sync import sqlite_sync_calls  # noqa: F401
 
     sys.path.insert(0, str(args.source.resolve()))

@@ -79,8 +79,6 @@ class OpenAIResponsesStreamDecoder:
             self._require_open(kind)
         if kind == "response.incomplete":
             self._require_open(kind)
-            # No successful done means Core cannot execute even syntactically complete
-            # tool fragments from an unsuccessful response.
             raise OpenAIResponsesError("response_incomplete")
         if kind in {"response.failed", "error"}:
             self._require_open(kind)
@@ -150,12 +148,7 @@ class OpenAIResponsesStreamDecoder:
             "response.reasoning_summary_part.done",
             "response.output_text.annotation.added",
         }:
-            # These notices carry no independent replay items, but still belong
-            # to the response lifecycle and must precede its terminal event.
             self._require_open(kind)
-        # Unknown event types are extensions, including after response.completed.
-        # Ignore them without treating them as output or a completion boundary.
-        # Unknown item types inside known output events remain errors above.
         return []
 
     def _require_open(self, kind: str) -> None:
@@ -268,8 +261,6 @@ class OpenAIResponsesStreamDecoder:
                 events.extend(
                     _display(lane, progress.finish(text) if progress is not None else text)
                 )
-        # Visible reasoning may be streamed without being repeated in the
-        # replay item. Preserve the native item rather than synthesizing text.
         if item["type"] == "message" and pending:
             raise OpenAIResponsesError(
                 "conflicting_output_item", detail=f"message_content, output_index={index}"

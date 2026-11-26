@@ -33,7 +33,6 @@ from .client import (
     Topic,
 )
 
-# The Host requires these descriptions and tool policies to match the manifest exactly.
 SEARCH_TOOL_DESCRIPTION = (
     "Search the web with Tavily and return ranked results with titles, URLs, relevance "
     "scores, publication dates, and content snippets. Supports search depth, topic, time "

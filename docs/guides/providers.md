@@ -1,7 +1,5 @@
 # 配置 Provider 与 Endpoint
 
-> 文档类型：使用指南
-
 Provider 用展示名、`provider_type` 和 `protocol` 表达用户配置；`provider_id` 与 `endpoint_id` 由 OURO
 生成，仅作为内部身份与路由键。Provider 展示名必填，Endpoint 展示名选填。Endpoint 保存具体模型及其能力。
 可先查看内置模板，再用一条命令

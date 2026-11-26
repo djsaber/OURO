@@ -75,8 +75,6 @@ def install(source: Path | None, target: Path, mode: int | None, *, consume: boo
     if source is None:
         target.unlink(missing_ok=True)
     elif consume:
-        # Staged files are already durable and share the home's filesystem. Only
-        # rollback copies must survive installation for a repeatable restore.
         target.parent.mkdir(parents=True, exist_ok=True)
         restrict_to_user(source)
         if mode is not None and os.name != "nt":
@@ -101,8 +99,6 @@ def install(source: Path | None, target: Path, mode: int | None, *, consume: boo
 
 
 def restore_directory(source: Path, target: Path, mode: int | None) -> None:
-    # Both roots have been validated, and the complete backup was checked before
-    # restore began. Keep the backup so an interrupted copy can be repeated.
     if target.exists():
         shutil.rmtree(target)
     shutil.copytree(source, target)
@@ -299,7 +295,6 @@ class Workspace:
         total = len(self.changes)
         self.progress("verify_source", 0, total)
         for completed, change in enumerate(self.changes.values(), 1):
-            # The existing file becomes the backup; sync its data while verifying it.
             path = safe_path(self.home, change.path, directory=change.directory)
             if digest(path, sync=True, directory=change.directory) != change.before:
                 raise UpgradeError(f"source changed during upgrade: {change.path}")
@@ -339,7 +334,6 @@ class Workspace:
             if not change.directory:
                 install(source, target, change.mode, consume=True)
             self.progress("publish", index + 1, len(changes))
-        # Persist removal of the staged names as well as each destination rename.
         sync_directory(self.run / "new")
         self.progress("finalize")
         receipts = self.root / "receipts"

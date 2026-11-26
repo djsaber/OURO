@@ -74,13 +74,13 @@ class CallbackReceiver:
             asyncio.IncompleteReadError,
             asyncio.LimitOverrunError,
         ):
-            pass  # Malformed/disconnected local clients cannot finish the login.
+            pass
         finally:
             writer.close()
             try:
                 await writer.wait_closed()
             except ConnectionError:
-                pass  # A peer reset is already closed; it cannot affect authorization.
+                pass
 
     async def close(self) -> None:
         if self._server is not None:

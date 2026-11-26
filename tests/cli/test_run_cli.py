@@ -1197,7 +1197,6 @@ def test_provider_add_api_path_defaults_and_endpoint_inherits(
         == 0
     )
 
-    # Create an endpoint without --api-path; it should inherit the provider default.
     assert (
         main(
             [

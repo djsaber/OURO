@@ -59,9 +59,6 @@ class RequestMessage(MessageSemantics):
 
     @classmethod
     def prepared(cls, value: ModelMessage, source: MessageRecord | None = None) -> RequestMessage:
-        # Only unchanged objects from this preparation's canonical source may be
-        # referenced. Transformations own their actual final values; no hash,
-        # value matching, second projection or retained history cache is needed.
         blocks = (
             {id(block): index for index, block in enumerate(source.content)}
             if source is not None

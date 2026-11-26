@@ -275,8 +275,6 @@ def _reconcile_session_projection(
         )
 
     active_run = active_runs[0] if active_runs else None
-    # Creation order is not execution order after resuming a Run following
-    # manual compaction. Project the live owner or the most recent settlement.
     latest_run = active_run or max(
         runs, key=lambda run: run.ended_at or run.started_at, default=None
     )

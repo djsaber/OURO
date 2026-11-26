@@ -85,7 +85,6 @@ async def test_inflight_request_keeps_old_service_attribution_after_rebinding(
     monkeypatch,
 ):
     configs, drivers, policies, _ = managed_runtime
-    # Both connections use managed auth, but their service billing declarations differ.
     monkeypatch.setitem(
         provider_models._PROVIDER_TYPE_SPECS,
         "custom",
@@ -157,7 +156,6 @@ async def test_inflight_request_keeps_old_service_attribution_after_rebinding(
         assert first.usage["input_tokens"] == 10
         assert "billing_mode" not in first.usage
         await login(application.provider_auth)
-        # Capture the new request on its newly constructed transport too.
         monkeypatch.setattr(new_adapter.provider.transport, "post_json", delayed_response)
         second = await application.runtime.run("second")
         assert second.run.status == "completed"

@@ -8,15 +8,13 @@
 
 OURO 让你在终端中与模型协作，处理文件、调用工具、管理会话和执行持续任务。它提供全屏交互界面，也可以通过命令行完成单次任务或输出 JSON。会话与配置保存在本地，模型服务由你选择。
 
-插件是 OURO 的核心拓展机制：除了工具、Skills 和 MCP，还可以拓展模型接入、智能体运行方式、后台任务及插件间协作，按需安装、启用和停用。
-
 ![OURO v0.2.0 的终端交互界面](https://raw.githubusercontent.com/djsaber/OURO/v0.2.0/docs/assets/tui-welcome.png)
 
 *OURO TUI · 可选欢迎页主题 · 尚未配置模型的状态*
 
 [使用文档](https://github.com/djsaber/OURO/blob/main/docs/README.md) · [版本记录](https://github.com/djsaber/OURO/blob/main/CHANGELOG.md) · [源码](https://github.com/djsaber/OURO) · [问题反馈](https://github.com/djsaber/OURO/issues)
 
-## 为你的工作方式而拓展
+## 主要能力
 
 | 能力 | 你可以做什么 |
 | --- | --- |
@@ -111,13 +109,10 @@ ouro
 ### 3. 尝试命令行任务
 
 ```bash
-# 文本输出
 ouro run --print "说明当前目录的用途，并给出整理建议"
 
-# JSON 输出，便于脚本集成
 ouro run --json "总结本次任务"
 
-# 查看帮助
 ouro --help
 ```
 
@@ -128,8 +123,6 @@ ouro run --print --home ./.ouro-demo "hello"
 ```
 
 ## 按需增加能力
-
-OURO 提供稳定的运行框架，插件作为独立拓展包接入。你可以从工具和 Skills 开始，也可以通过插件定制智能体的执行方式、模型接入、服务协作和后台任务。
 
 插件管理入口可通过 `ouro plugin --help` 查看。请只安装并启用你信任的插件；插件和工具可能读写文件、执行程序或连接外部服务。
 
@@ -162,16 +155,9 @@ python -m pip install --upgrade ouro-agent
 
 使用 pip 且需要主题拓展时，升级命令中的包名使用 `"ouro-agent[themes]"`。
 
-## 文档与源码
+## 从源码运行
 
-完整源码位于 [GitHub](https://github.com/djsaber/OURO)，安装包和源码包发布在 [PyPI](https://pypi.org/project/ouro-agent/)。
-
-- [文档入口](https://github.com/djsaber/OURO/blob/main/docs/README.md)：使用指南、插件开发、配置说明与运行契约。
-- [更新记录](https://github.com/djsaber/OURO/blob/main/CHANGELOG.md)：各版本的主要改进与兼容性说明。
-- [贡献指南](https://github.com/djsaber/OURO/blob/main/CONTRIBUTING.md)：开发流程与验证要求。
-- [问题反馈](https://github.com/djsaber/OURO/issues)：报告问题或提出改进建议。
-
-参与开发：
+开发环境与验证命令见[贡献指南](https://github.com/djsaber/OURO/blob/main/CONTRIBUTING.md)。从源码启动：
 
 ```bash
 git clone https://github.com/djsaber/OURO.git
@@ -182,4 +168,4 @@ uv run --frozen ouro
 
 ## 开源协议
 
-OURO 是完全开源的项目，采用 [MIT License](https://github.com/djsaber/OURO/blob/main/LICENSE)，允许使用、修改与分发。欢迎参与改进，也欢迎构建适合自己的插件。
+OURO 采用 [MIT License](https://github.com/djsaber/OURO/blob/main/LICENSE)。

@@ -327,7 +327,6 @@ def test_outcome_after_withdrawal_does_not_restore_run_or_publish_history(store)
     commit(store, session, calls=(call,), starts=(start,))
     before = store.load_session_record(session.session_id)
     run.status = "aborted"
-    # The storage boundary accepts a late observation without a current Run proposal.
     store.save_run(run)
     store.commit_session(SessionCommit(before=before, before_message_id=message.message_id))
     store.commit_tool_outcome(outcome)

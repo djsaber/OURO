@@ -460,7 +460,6 @@ def test_file_recovery_finishes_a_partially_applied_decision(tmp_path, monkeypat
         with pytest.raises(PersistenceError, match="injected"):
             store.commit_session(request)
 
-    # Queries expose neither part; the explicit mutation boundary finishes storage recovery.
     with pytest.raises(SessionRecoveryRequiredError):
         reader.load_session_harness(session.session_id)
     with reader.session_mutation(session.session_id):
@@ -468,7 +467,6 @@ def test_file_recovery_finishes_a_partially_applied_decision(tmp_path, monkeypat
     current, harness = reader.load_session_harness(session.session_id)
     assert current.harness_version == harness.version_id
     assert harness.state.states[0].payload == 1
-    # Other canonical entry points observe the same recovered state.
     assert reader.load_resource_references(session.session_id) == []
     assert not (store.sessions_dir / session.session_id / "commit.json").exists()
     snapshot = reader.load_session(session.session_id)

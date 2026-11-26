@@ -120,7 +120,6 @@ class WorkerToolGroupBridge:
         self._owned.pop(identity, None)
 
     async def close(self) -> None:
-        # The process must already be stopped; all remote handlers are gone.
         self._closed = True
         tasks = tuple(self._cleanup)
         for task in tasks:

@@ -124,7 +124,7 @@ async def sample(
         )
         try:
             await asyncio.wait_for(provider.ready.wait(), 60)
-            await asyncio.sleep(0.15)  # Let the existing draft publication interval elapse.
+            await asyncio.sleep(0.15)
             history = app.query_one(ConversationHistory)
             turn = app.query_one(AssistantTurn)
             prepend = history.prepend
@@ -240,7 +240,7 @@ def main() -> None:
     print(json.dumps({"python": platform.python_version(), "platform": platform.platform()}))
     for count in args.messages:
         for repeat in range(args.repeat):
-            gc.collect()  # Each sample starts after the previous Textual App has been collected.
+            gc.collect()
             with TemporaryDirectory(prefix="tui-", dir=args.workdir) as directory:
                 measured = asyncio.run(
                     sample(

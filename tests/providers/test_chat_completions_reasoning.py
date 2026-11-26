@@ -110,7 +110,6 @@ async def test_structured_reasoning_roundtrip_preserves_blocks_and_displays_text
     assert events[-1].type == "done" and events[-1].completion.has_reasoning
     artifact = next(event.continuation for event in events if event.type == "continuation")
     assert artifact.blocks[0]["reasoning_details"] == details
-    # Persistence must not flatten signatures, ciphertext or repeated native coordinates.
     artifact = ProviderContinuationArtifact.model_validate_json(artifact.model_dump_json())
     assistant = ModelMessage.text(role="assistant", text="answer").model_copy(
         update={"reasoning_content": "checked facts", "provider_continuation": artifact}

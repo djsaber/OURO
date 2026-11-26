@@ -245,7 +245,7 @@ async def test_real_large_files_and_directory_symlinks_are_skipped(
     try:
         (root / "link").symlink_to(tmp_path, target_is_directory=True)
     except OSError:
-        pass  # Windows without symlink privilege still exercises the size limit.
+        pass
     _write(root, "large.txt", "needle\n" * 10)
     result = await native_tool.execute(
         _call(pattern="needle"), context=ToolExecutionContext(workspace=root)

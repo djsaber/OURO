@@ -164,8 +164,6 @@ class ProviderLoginScreen(ChoiceScreen):
             self._show_login_choices(self._challenge_choices())
             self.result = await self._service.wait(self._login.operation_id)
         except asyncio.CancelledError:
-            # begin() already settles cancellation before it exposes an operation.
-            # Once exposed, cancel explicitly and preserve a save that won the race.
             if self._login is not None:
                 self.result = await self._service.cancel(self._login.operation_id)
         except AuthError as exc:
@@ -177,7 +175,6 @@ class ProviderLoginScreen(ChoiceScreen):
             )
             return
         finally:
-            # URLs and device codes belong only to the live challenge surface.
             self._login = None
         result = self.result
         self._show_login_choices(
@@ -194,7 +191,6 @@ class ProviderLoginScreen(ChoiceScreen):
 
     def _show_login_choices(self, choices: tuple[Choice, ...]) -> None:
         if self._accepts_choice_updates():
-            # A filter for an earlier action must not hide the new challenge or result.
             self.replace_page(
                 title=self._title,
                 placeholder=None,

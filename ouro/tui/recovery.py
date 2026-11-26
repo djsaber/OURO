@@ -188,8 +188,6 @@ class DataRecoveryScreen(ChoiceScreen):
 
     @on(events.Unmount)
     async def _wait_for_operation(self) -> None:
-        # Thread work cannot be cancelled safely. Even external App shutdown must
-        # finish it before another Host may start using this home.
         if self._operation is not None:
             await asyncio.gather(self._operation, return_exceptions=True)
 
@@ -304,7 +302,6 @@ class DataRecoveryScreen(ChoiceScreen):
             self._busy = False
 
     def _receive_progress(self, progress: UpgradeProgress) -> None:
-        # Coalesce worker updates so large homes cannot flood the UI message queue.
         with self._progress_lock:
             self._latest_progress = progress
             if self._progress_pending:

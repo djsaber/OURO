@@ -84,7 +84,6 @@ class PluginConfigurationRevision(OuroModel):
         return self
 
     def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
-        # This immutable value can be shared; updates must still verify its digest.
         if not update:
             return self
         return type(self).model_validate({**self.model_dump(), **update})
@@ -126,8 +125,6 @@ class PluginActivationState(OuroModel):
         self.configuration_revision_by_digest[package_digest] = revision.revision_id
 
     def remove_configuration_for(self, package_digest: str) -> None:
-        # Revisions belong to the plugin, not a selected package. A Run may
-        # still reference a revision after that package's configuration changes.
         self.configuration_revision_by_digest.pop(package_digest, None)
 
 

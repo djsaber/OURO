@@ -104,7 +104,6 @@ async def test_background_models_initialize_after_enable_configure_and_cold_star
             "started",
         ]
         assert events(log)[-1][1] != first
-    # The lightweight management Host uses the same admission rule at startup.
     async with open_local_plugins(home) as plugins:
         if scope == "home":
             await plugins.runtime.start_home_services()
@@ -187,7 +186,6 @@ async def test_published_callback_finishes_before_observing_external_disable(tmp
             async with asyncio.timeout(10):
                 while not log.exists():
                     await asyncio.sleep(0.01)
-            # Another Host changes shared intent after this callback was admitted.
             disable_externally(app.plugin_runtime.store)
             release.touch()
             await enabling

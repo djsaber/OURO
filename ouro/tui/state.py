@@ -34,7 +34,6 @@ def format_duration(seconds: float) -> str:
         if milliseconds < 1000:
             return f"{milliseconds}ms"
 
-    # Round before splitting units so the displayed remainder cannot reach 60s.
     minutes, tenths = divmod(round(seconds * 10), 600)
     if minutes == 0:
         return f"{tenths / 10:.1f}s"

@@ -1,8 +1,4 @@
-"""Offline plugin-command acceptance and TUI responsiveness measurement.
-
-Only disposable SDK plugins,
-local stores and a synthetic streaming provider are used.
-"""
+"""Offline plugin-command acceptance and TUI responsiveness measurement."""
 
 from __future__ import annotations
 

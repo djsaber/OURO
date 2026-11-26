@@ -1,11 +1,10 @@
 # 模型订阅认证扩展设计
 
-> 文档类型：现行订阅接入设计；未验证扩展单独列出
-> 当前产品：OpenAI / ChatGPT 订阅接入；架构面向后续多厂商接入。
+当前产品：OpenAI / ChatGPT 订阅接入；架构面向后续多厂商接入。
 
 本文解释认证组合的职责、依赖和资源所有权。精确行为由[模型订阅认证规格](../specs/subscription-authentication.md)统一定义，配置契约见[Provider 配置规格](../specs/provider-configuration.md)。
 
-凭据生命周期见[凭据核心规格](../specs/credentials.md)，单次授权见[驱动规格](../specs/authorization.md)，登录及条件提交见[认证用例](../specs/provider-authentication.md)。三种模型协议共享[请求认证端口](../specs/request-authentication.md)，Responses 的内容与续接由[编解码规格](../specs/responses-codec.md)定义。CLI/TUI 使用同一 Application 服务；浏览器产品的验证范围见[使用指南](../guides/subscriptions.md#证据范围)。
+凭据生命周期见[凭据核心规格](../specs/credentials.md)，单次授权见[驱动规格](../specs/authorization.md)，登录及条件提交见[认证用例](../specs/provider-authentication.md)。三种模型协议共享[请求认证端口](../specs/request-authentication.md)，Responses 的内容与续接由[编解码规格](../specs/responses-codec.md)定义。CLI/TUI 使用同一 Application 服务；浏览器产品的验证范围见[使用指南](../guides/subscriptions.md#支持范围)。
 
 ## 认证组合
 
@@ -173,4 +172,4 @@ token 用量复用现有账本，金额未知保持 `None`。计费来源随请�
 - 用实际账户验证最小 Responses、工具两轮、刷新、错误码、模型能力及必要的账户/区域约束。
 - 验证当前文件 store 的 Windows ACL、POSIX 权限、临时文件与原子替换行为。
 
-实际账户和平台的验证范围见[订阅指南](../guides/subscriptions.md#证据范围)。各项接入能力所需的证据见[订阅认证验收矩阵](../specs/subscription-authentication.md#s10-验收矩阵)。
+产品支持范围见[订阅指南](../guides/subscriptions.md#支持范围)。各项接入能力所需的证据见[订阅认证验收矩阵](../specs/subscription-authentication.md#s10-验收矩阵)。

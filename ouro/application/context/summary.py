@@ -457,7 +457,6 @@ class LLMSummaryCompactionStrategy:
             nonlocal classified_provider_error
             event = progress.event
             if event.type == "error":
-                # Classified access failures cannot silently switch billing sources.
                 classified_provider_error = event.error_code is not None
             if event.type == "tool_call_delta":
                 raise CompactionError("summary provider attempted to call a tool")

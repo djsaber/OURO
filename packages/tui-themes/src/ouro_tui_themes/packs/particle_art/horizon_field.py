@@ -116,7 +116,6 @@ def _prepare(grid: ParticleGrid, scene: HorizonScene) -> Sampler:
     disk *= (1.55 - 0.27 * x) * _smooth(0.515, 0.58, radius) * shadow
     lens = _band(lr - 0.75, 0.14) * _smooth(-0.025, 0.13, y)
     lens *= np.maximum(0, 2.6 - 0.65 * x) * shadow
-    # Resolve the narrow photon ring even when its width is below one sample.
     photon_width = max(0.012, pitch * 0.55)
     photon = _band(radius - 0.559, photon_width) * (0.012 / photon_width)
     photon *= 1.8 + 0.6 * np.sin(angle - 0.8)
@@ -128,7 +127,6 @@ def _prepare(grid: ParticleGrid, scene: HorizonScene) -> Sampler:
     for channel, tint in zip(channels, (0.11, 0.15, 0.19), strict=True):
         channel += tint * edge
 
-    # Sparse selection bounds animation work to the artwork, not the full canvas.
     animated = (disk > 0) | (lens > 1e-5)
     indices = np.flatnonzero(animated)
     disk, lens, steady, edge = (v[indices] for v in (disk, lens, steady, edge))
@@ -145,8 +143,6 @@ def _prepare(grid: ParticleGrid, scene: HorizonScene) -> Sampler:
         scale, offset = scale * 2.03, offset * 2.03 + 17.1
     turbulence, wave, light, work, warm, white = (buffer(len(indices)) for _ in range(6))
 
-    # Hash fixed anchors once. Stars occupy the artwork's negative space; they
-    # do not fill the black-hole shadow or repaint an idle background lattice.
     anchors = np.arange(len(x), dtype=np.float64)
     random = np.remainder(np.sin(anchors * 127.1 + 311.7) * 43758.5453, 1.0)
     stars = np.flatnonzero((random > 0.997) & (radius > 1.0) & ~animated)
@@ -193,8 +189,6 @@ def _prepare(grid: ParticleGrid, scene: HorizonScene) -> Sampler:
         light += steady
         light *= 1.45
 
-        # Heat interpolation stays in reusable buffers, with no per-frame RGB
-        # tuples per dot or full-grid interpolation arrays.
         for target, low, high in ((warm, 0.05, 1.8), (white, 1.4, 3.8)):
             np.subtract(light, low, out=target)
             target /= high - low
@@ -235,7 +229,6 @@ def _prepare(grid: ParticleGrid, scene: HorizonScene) -> Sampler:
             if output is channels:
                 channel[stars] = star_background + tint * star_light
             else:
-                # Stars stay in screen coordinates, not on the disk.
                 channel[stars] += tint * star_light
         return output
 

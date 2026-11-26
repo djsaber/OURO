@@ -104,7 +104,6 @@ async def test_image_loop_releases_headroom_then_preserves_protocol_prefixes(
             branch_record.context_selection.media_elided_through.sequence
             == state.media_elided_through.sequence
         )
-        # A policy can deliberately restore media, independently of the last request.
         app.runtime.sessions.set_context_selection(
             branch.session.session_id,
             branch_record.context_selection.model_copy(update={"media_elided_through": None}),
@@ -115,7 +114,6 @@ async def test_image_loop_releases_headroom_then_preserves_protocol_prefixes(
         assert sum(isinstance(p, ImageContent) for m in replay.requests[-1] for p in m.content) == 6
         monkeypatch.setattr(file_inputs, "DEFAULT_REQUEST_MEDIA_CHARS", size * 3)
 
-        # Each forced summary covers one oldest frame. The third covers the media boundary.
         for _ in range(3):
             before = app.runtime.store.load_latest_context(result.session.session_id)
             compacted = await app.runtime.compact(session_id=result.session.session_id)

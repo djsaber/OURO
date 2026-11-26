@@ -1313,7 +1313,6 @@ def test_branch_inherits_only_compaction_lineage_available_at_boundary(
         summary="later summary",
         covered_message_count=4,
         covered_end_message_id=messages[3].message_id,
-        # A later display anchor does not make valid coverage unavailable to a branch.
         history_boundary_message_id=messages[5].message_id,
     )
     commit_summary(store, first)

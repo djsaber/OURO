@@ -225,7 +225,6 @@ def _edit(invocation: ToolInvocation, context: ToolExecutionContext) -> ToolResu
     updated = text.replace(old, new, -1 if replace_all else 1)
     if updated != text:
         if _is_pure_crlf(raw):
-            # Keep the file's original CRLF line endings on write back.
             updated = updated.replace("\n", "\r\n")
         with path.open("w", encoding="utf-8", newline="") as file:
             file.write(updated)

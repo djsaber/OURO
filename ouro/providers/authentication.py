@@ -37,7 +37,6 @@ class ProviderRequestPolicy:
 
     quota_error_codes: frozenset[str] = frozenset()
     billing_mode: BillingMode = "unknown"
-    # False means max_output_tokens remains a local planning budget only.
     supports_output_limit: bool = True
 
 
@@ -102,7 +101,6 @@ def _safe_transport_failure(error: ProviderTransportError) -> tuple[str, str] | 
         return "provider_response_timeout", (
             f"Model response timed out after {error.timeout_seconds:g} seconds of inactivity."
         )
-    # Expose the HTTPX exception type for this attempt. Its text may contain private URLs.
     if error.status_code is None:
         for exception_type, code, message in _SAFE_NETWORK_ERRORS:
             if isinstance(error.__cause__, exception_type):
@@ -124,8 +122,6 @@ async def request_authentication(
     auth_headers = {name.lower(): value for name, value in snapshot.headers.items()}
     if normalized.keys() & auth_headers.keys():
         raise ConfigError("default headers must not override request authentication")
-    # Host routing and common alternative credentials must not bypass the managed
-    # target or introduce a second identity alongside the driver's own headers.
     if snapshot.revision is not None and normalized.keys() & {
         "host",
         "authorization",
@@ -164,9 +160,6 @@ def safe_response_event(
     event: ProviderStreamEvent, snapshot: RequestAuthSnapshot, *, redact_errors: bool = False
 ) -> ProviderStreamEvent:
     if (snapshot.revision is not None or redact_errors) and event.type == "error":
-        # Wire error strings may echo credentials. Only classified safe facts may
-        # leave a request carrying private headers; successful content remains
-        # the codec's output.
         return event.model_copy(
             update={
                 "error": "Model service returned an invalid or failed response.",

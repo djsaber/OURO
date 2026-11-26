@@ -70,7 +70,6 @@ async def system(tmp_path):
         adapter=RuntimeAdapter(FauxProvider(), ModelMetadata(provider_id="faux", model_id="faux")),
         tools=ToolRegistry(),
     )
-    # The product composition supplies the ledger and independent model port.
     app = LocalApplication.from_runtime(runtime, home=tmp_path / "home")
     try:
         yield runtime, app.plugin_runtime, app.plugins, app

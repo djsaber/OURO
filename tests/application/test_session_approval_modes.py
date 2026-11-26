@@ -242,8 +242,6 @@ async def test_active_session_approval_change_applies_to_the_next_tool_preflight
     running = asyncio.create_task(runtime.run("write"))
     phase = "first model request"
     try:
-        # Events define the policy-change boundary; this deadline only guards
-        # against a deadlock, not the latency of durable Session/Run writes.
         async with asyncio.timeout(30):
             await provider.request_started.wait()
             session_id = next(entry.session_id for entry in runtime.sessions.catalog().entries)

@@ -31,7 +31,6 @@ class Choice:
     trailing_accent: str | None = None
     trailing_swatch: str | None = None
     trailing_badge: str = ""
-    # Configured on/off state, independent of whether the row can be selected.
     enabled_state: bool | None = None
     wrap: bool = False
 

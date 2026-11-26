@@ -93,7 +93,6 @@ def test_returned_connection_does_not_retain_an_uncommitted_transaction(tmp_path
     assert not reused.in_transaction
     assert reused.execute("SELECT * FROM facts").fetchall() == []
     connections.release()
-    # A still-borrowed handle is closed on return, not beneath its reader.
     assert reused.execute("SELECT 1").fetchone() == (1,)
     connections.return_connection(reused)
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):

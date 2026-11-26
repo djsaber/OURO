@@ -231,6 +231,4 @@ class ActivityIndicator(Static):
                 style=theme.text_lowlight,
             )
             content.append(self._reasoning, style=style)
-        # This row is constrained to the single-line remainder of StatusLine;
-        # spinner and status changes can only alter its paint, not its geometry.
         self.update(content, layout=False)

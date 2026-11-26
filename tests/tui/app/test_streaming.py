@@ -1,5 +1,3 @@
-"""TUI application scenarios: streaming."""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -200,14 +198,10 @@ async def test_reasoning_stream_renders_markup_syntax_as_plain_text(tmp_path: Pa
         turn = app.query_one(AssistantTurn)
         reasoning = turn.reasoning
         assert reasoning.text == expected
-        # Strip rendering lands a frame after the mount, so wait for it
-        # rather than asserting against an empty buffer.
         for _ in range(10):
             if reasoning._content.rendered_text:
                 break
             await pilot.pause(0.05)
-        # The live body renders through the same │-prefixed definition the
-        # immutable history freezes with, so markup stays literal text.
         assert reasoning._content.rendered_text == f"│ {expected}"
         assert reasoning.label.render().plain.startswith(
             f"{DEFAULT_TUI_THEME.expanded_disclosure_marker} Thinking"
@@ -268,8 +262,6 @@ async def test_reasoning_stream_renders_each_completed_line_once(
             return original_render(line, **kwargs)
 
         monkeypatch.setattr(history_rendering, "_render_stream_line", counting_render)
-        # One batch per fragment exercises the append path fragment by
-        # fragment, the way runtime event batches arrive while thinking.
         for event in events:
             await app._apply_runtime_event_batch((event,), input_messages={})
         await pilot.pause()
@@ -280,8 +272,6 @@ async def test_reasoning_stream_renders_each_completed_line_once(
             if body.rendered_text:
                 break
             await pilot.pause(0.05)
-        # A completed line renders exactly once no matter how much more
-        # thinking follows; quadratic re-rendering would total N*(N+1)/2.
         assert rendered == expected_lines
         assert body.text == "".join(f"{line}\n" for line in expected_lines)
         assert body.rendered_text.splitlines() == [f"│ {line}" for line in expected_lines]
@@ -298,8 +288,6 @@ async def test_reasoning_stream_lines_match_whole_block_rendering(tmp_path: Path
         app._projection = TuiSessionProjection(session_id)
         long_line = " ".join(f"word{number}" for number in range(40))
         text = f'first thought\n\n{long_line}\nmarkup [data-theme=" stays literal\ntrailing partial'
-        # Fragments split mid-word and mid-line so line completion and tail
-        # growth are exercised separately from the source structure.
         fragments = tuple(text[index : index + 7] for index in range(0, len(text), 7))
         events = _reasoning_delta_events(session_id, "run_reasoning_parity", fragments)
 
@@ -313,8 +301,6 @@ async def test_reasoning_stream_lines_match_whole_block_rendering(tmp_path: Path
             if body.rendered_text:
                 break
             await pilot.pause(0.05)
-        # Incremental per-line rendering must equal one whole-block render at
-        # the same width: that equality is what freezing later preserves.
         console = app.console
         options = console.options.update_width(body._render_width)
         from ouro.tui.text_wrapping import ProseText

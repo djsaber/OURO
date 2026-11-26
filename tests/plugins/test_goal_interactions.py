@@ -1,5 +1,3 @@
-"""Goal commands and policies exercised through real application boundaries."""
-
 from __future__ import annotations
 
 import asyncio
@@ -142,7 +140,6 @@ class GoalSummary:
     version = "1"
 
     async def compact(self, request, *, signal=None):
-        # Intentionally omit Goal state: the current state must come from its owner.
         return CompactionArtifact(summary="The user supplied background information.")
 
 

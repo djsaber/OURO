@@ -1,7 +1,6 @@
 # 预置供应商配置
 
-> 文档类型：配置参考
-> 配置事实来源：[模板目录](../../ouro/config/provider_templates/)、[OpenCode Go 端点](../../ouro/config/provider_templates/opencode_go.py)；各模板通过 `verified_on` 记录核对日期。
+配置事实来源：[模板目录](../../ouro/config/provider_templates/)、[OpenCode Go 端点](../../ouro/config/provider_templates/opencode_go.py)；各模板通过 `verified_on` 记录核对日期。
 
 预置目录覆盖通用、编程、多模态及成本敏感场景。CLI 的 `ouro provider templates` 显示当前目录。
 端点声明模型 ID、上下文预算、输出预算、工具调用、图像/音频/视频输入、流式输出、结构化输出与思考配置。

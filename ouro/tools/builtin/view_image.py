@@ -77,7 +77,6 @@ def _view_image(invocation: ToolInvocation, context: ToolExecutionContext) -> To
     path = context.resolve_path(arguments.path)
     raw = _read_image(path)
     context.raise_if_aborted()
-    # Load the decoder only when needed; registration and file checks stay lightweight.
     from PIL import Image, ImageOps, UnidentifiedImageError
 
     try:
@@ -90,8 +89,6 @@ def _view_image(invocation: ToolInvocation, context: ToolExecutionContext) -> To
             media_type = _NATIVE_MEDIA_TYPES.get(source.format or "")
             resized = arguments.detail == "high" and max(source.size) > _HIGH_MAX_DIMENSION
             if media_type is not None and not first_frame and orientation == 1 and not resized:
-                # Opening identifies headers only. Validate unchanged bytes by
-                # decoding the selected frame before exposing it as image content.
                 source.load()
                 encoded, size = raw, source.size
             else:
@@ -104,8 +101,6 @@ def _view_image(invocation: ToolInvocation, context: ToolExecutionContext) -> To
                     )
                 ImageOps.exif_transpose(source, in_place=True)
                 size = source.size
-                # A static PNG carries transparency and normalizes raster formats
-                # that model endpoints do not accept directly. Never write to disk.
                 with (
                     source.convert("RGBA") as normalized,
                     _ImageOutput(context.max_output_media_chars) as output,

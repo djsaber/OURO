@@ -22,7 +22,6 @@ from .client import (
     Settings,
 )
 
-# The Host requires these descriptions and tool policies to match the manifest exactly.
 SEARCH_TOOL_DESCRIPTION = (
     "Search the web with DeepSeek Search and return ranked results with titles, URLs, "
     "publication dates, summaries, and optional page content. Queries support site:, "

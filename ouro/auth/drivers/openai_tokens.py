@@ -46,7 +46,6 @@ class OpenAITokenPayload(AuthModel):
 
 def read_payload(grant: CredentialGrant) -> OpenAITokenPayload:
     try:
-        # Missing versions are invalid too: do not silently migrate credentials.
         if "format_version" not in grant.secret_payload:
             raise ValueError
         payload = OpenAITokenPayload.model_validate(grant.secret_payload)
@@ -65,7 +64,6 @@ def _required_text(data: dict[str, Any], key: str) -> str:
 
 
 def _claims(token: str) -> dict[str, Any]:
-    # Routing metadata from the TLS-protected token response, never proof of entitlement.
     try:
         parts = token.split(".")
         if len(parts) != 3:
@@ -102,7 +100,6 @@ def decode_tokens(
             if "chatgpt_account_id" in metadata:
                 account_ids.add(_required_text(metadata, "chatgpt_account_id"))
     if len(account_ids) != 1:
-        # No organization guessing or account switching during refresh.
         raise OpenAIOAuthError("ambiguous_account_route")
     expires_at = None
     lifetime = data.get("expires_in")

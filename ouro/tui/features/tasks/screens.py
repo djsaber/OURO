@@ -261,8 +261,6 @@ class TaskConfigurationScreen(MultilineEditableChoiceScreen):
             try:
                 return resolve_reasoning(model.reasoning, self._reasoning).effort_variant
             except ValueError:
-                # Keep invalid saved settings editable after model capabilities
-                # change. Draft validation still prevents saving or execution.
                 pass
         return self._reasoning.effort or self._reasoning.mode
 

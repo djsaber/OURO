@@ -123,8 +123,6 @@ class LocalTaskRepository:
                 self._index = _read(TaskFileIndex, self._index_path)
                 self._index_stamp = stamp
             except PersistenceError:
-                # Only the catalog is disposable. Invalid canonical files still
-                # fail with a diagnostic instead of silently omitting tasks.
                 self._rebuild_catalog()
         assert self._index is not None
         return self._index
@@ -316,7 +314,6 @@ class LocalTaskRepository:
         return self._directory(execution.task_id) / "scheduled" / instant.replace(":", "")
 
     def _publish(self, transaction: TaskFileTransaction) -> None:
-        # Resolve or rebuild the catalog before accepting a durable intent.
         self._catalog()
         write_model_atomic(self._intent_path, transaction)
         self._apply(transaction)

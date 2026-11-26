@@ -100,7 +100,6 @@ class ModelRequestPorts:
     record_retry: Callable[[str, str, ProviderRetryNotice], None]
     resolve_adapter: Callable[[str], tuple[SessionRecord, RuntimeAdapter]] | None = None
     begin_model_round: ModelRoundStarter | None = None
-    # Prepare request settings before preflight and return the effective Run budget.
     prepare_configuration: Callable[[RunRecord], Awaitable[RunBudgetPolicy]] | None = None
     shared_budget_reason: Callable[[RunRecord, int], RunPauseReason | None] | None = None
     run_usage: Callable[[str, str], RunUsageTotals | None] | None = None

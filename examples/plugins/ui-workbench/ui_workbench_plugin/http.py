@@ -28,7 +28,6 @@ async def fetch_bytes(
     content_types: frozenset[str],
     deadline: float,
 ) -> bytes:
-    # A wall-clock deadline also bounds servers that slowly drip feed a response.
     try:
         async with asyncio.timeout(deadline):
             response = await client.send(request, stream=True, follow_redirects=False)
@@ -60,7 +59,6 @@ async def fetch_bytes(
                 await response.aclose()
     except httpx.HTTPError, TimeoutError:
         pass
-    # Don't propagate provider URLs, bodies, or request objects in error messages or causes.
     raise WorkbenchError(f"{service} request failed or timed out.")
 
 

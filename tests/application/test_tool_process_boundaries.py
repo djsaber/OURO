@@ -104,8 +104,6 @@ async def test_cold_process_recovery_distinguishes_unstarted_unknown_and_observe
     cold = _store(root, backend)
     cold.initialize()
     app = runtime(cold, _tool(effects), {})
-    # A fresh model can finish after recovering the existing Call; it does not
-    # propose another external action that could be confused with a replay.
     app.adapter.provider = FauxProvider()
     try:
         for _ in range(2):

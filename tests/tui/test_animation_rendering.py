@@ -1,5 +1,3 @@
-"""Compare the animation adapter against Textual's CSS and cell semantics."""
-
 from __future__ import annotations
 
 import weakref
@@ -158,7 +156,6 @@ def test_deferred_style_encoding_and_filters_match_native_strip(source):
         frame = FrameStrip(segments, 6).apply_style(base).apply_style(overlay)
         original = original.apply_filter(filter, background)
         frame = frame.apply_filter(filter, background)
-        # Encode before inspecting _segments, to exercise deferred output.
         assert [part.render(console) for part in frame.divide(cuts)] == [
             part.render(console) for part in original.divide(cuts)
         ]
@@ -181,7 +178,6 @@ def test_truecolor_output_does_not_materialize_styled_segment_copies(monkeypatch
     console = Console(color_system="truecolor")
     assert "abc" in filtered.divide([3])[0].render(console)
     assert allocations == 0
-    # A consumer asking for segments still gets the conventional styled values.
     assert list(filtered)[0].style.bgcolor.get_truecolor() == (16, 32, 48)
 
 
@@ -215,8 +211,6 @@ def test_packed_runs_match_rich_encoding_filters_and_cell_cuts(color_system, fil
         expected = [*native.divide(cuts), *(native.crop(start, end) for start, end in bounds)]
         for row, reference in zip(actual, expected, strict=True):
             actual_decoder, expected_decoder = AnsiDecoder(), AnsiDecoder()
-            # Compact SGR retains state between RGB runs; compare decoded
-            # characters/styles and the final terminal state, not redundant bytes.
             assert actual_decoder.decode_line(row.render(console)) == expected_decoder.decode_line(
                 reference.render(console)
             )
@@ -227,7 +221,6 @@ def test_packed_runs_match_rich_encoding_filters_and_cell_cuts(color_system, fil
 def test_packed_frame_pipeline_allocates_no_per_run_rich_objects(monkeypatch):
     base = Style(bgcolor="#102030")
     console = Console(color_system="truecolor")
-    # Warm only the stable canvas style, then use unrelated colors in every run.
     FrameStrip.from_runs(["x"], [0x123456], 1).apply_style(base).render(console)
 
     def forbidden(*args, **kwargs):
@@ -268,7 +261,6 @@ async def test_theme_frames_match_native_compositor_after_resize(style, monochro
         for width, height in ((100, 40), (45, 20), (160, 50)):
             await pilot.resize_terminal(width, height)
             await pilot.pause()
-            # Both renders use the same frozen simulation, foreground and layout.
             animation.render_lines = lambda crop: Widget.render_lines(animation, crop)
             reference = app.screen._compositor.render_strips()
             animation.render_lines = optimized_render

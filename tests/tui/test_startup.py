@@ -1,5 +1,3 @@
-"""Startup terminal ownership, animation lifetime and offline recovery handoff."""
-
 import asyncio
 import os
 from io import StringIO
@@ -122,7 +120,6 @@ async def test_startup_exit_keeps_feedback_visible_until_owned_construction_sett
     async with app.run_test(size=(80, 24)):
         try:
             assert await asyncio.to_thread(entered.wait, 5)
-            # A suspended terminal may never paint another frame during teardown.
             with app.batch_update():
                 app.post_message(events.Key(key, None))
                 async with asyncio.timeout(5):

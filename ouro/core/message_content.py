@@ -129,9 +129,6 @@ def materialize_owned_message(
         **resolve_input_content(fact, record),
         **resolve_tool_content(fact, calls, outcome),
     }
-    # Call/Outcome binding preserves the already checked message shape. An Input
-    # can supply a new body for message-owned attachment offsets, so validate that
-    # materialized view before returning it.
     vars(fact).update(values)
     fact.model_fields_set.update(values)
     return fact.validate_tool_fields() if fact.input_ref is not None else fact

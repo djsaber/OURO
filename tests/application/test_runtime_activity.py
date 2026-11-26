@@ -739,8 +739,6 @@ def test_queued_activity_can_share_the_latest_durable_event_boundary() -> None:
 @pytest.mark.parametrize("field", RuntimeActivitySnapshot.model_fields)
 def test_activity_comparison_retains_every_semantic_field(field: str) -> None:
     previous = queued_runtime_activity("ses_1")
-    # model_copy deliberately bypasses validation: the comparison must notice
-    # any distinct value even when a new model field is added in the future.
     current = previous.model_copy(update={field: () if field == "tool_calls" else object()})
     assert runtime_activity_changed(previous, current) == (
         field not in {"sequence", "updated_at", "tool_calls"}

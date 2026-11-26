@@ -138,7 +138,6 @@ async def test_tool_results_update_one_call_and_preserve_the_live_batch(tmp_path
         assert not conversation.query(".tool-row")
         assert [entry.tool.tool_call_id for entry in history.entries] == ["call_0", "call_1"]
 
-        # A result for an archived call does not replace the current batch.
         conversation.begin_model_request(run_id="next_run")
         await conversation.sync_tools((calls[0],))
         row = conversation.query_one(".tool-row")

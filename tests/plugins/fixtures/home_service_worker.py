@@ -40,7 +40,6 @@ class ServiceWorker:
     async def start(self, params):
         assert params["contribution_id"] == "singleton"
         if self.task is None:
-            # An exclusive file represents a resource with exactly one live owner.
             with (self.data / "owner").open("x", encoding="utf-8") as stream:
                 stream.write(str(os.getpid()))
             self.task = asyncio.create_task(asyncio.Event().wait())

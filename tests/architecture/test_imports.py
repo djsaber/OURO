@@ -1,5 +1,3 @@
-"""Startup boundaries tested in fresh interpreters, independent of test collection."""
-
 import subprocess
 import sys
 

@@ -103,7 +103,6 @@ async def test_native_usage_survives_undo_and_keeps_request_attribution(store, t
         ),
         (),
     )
-    # This test owns one fixed catalog; execution still verifies the real controller contract.
     resource = Mock(spec=PluginRuntimeResource)
     resource.snapshot.side_effect = catalog.acquire
     resource.catalog.return_value = catalog
@@ -129,7 +128,6 @@ async def test_native_usage_survives_undo_and_keeps_request_attribution(store, t
         assert usage.session_scope_tokens(session.session_id) == {OWNER: {"goal-a": 5}}
         assert ledger.list_entries(UsageFilter()).entries == (recorded,)
 
-        # A new goal has a different scope. A late result still belongs to its captured request.
         store.commit_session(
             SessionCommit(
                 before=store.load_session_record(session.session_id),

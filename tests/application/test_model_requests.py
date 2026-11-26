@@ -153,7 +153,6 @@ async def test_model_port_records_requests_and_usage_without_driving_or_finishin
         second = await requests.execute(
             replace(request, run=first.run, model_round=2, turn_id="second")
         )
-        # A caller cannot bypass the durable request budget by reusing a round number.
         blocked = await requests.execute(replace(request, run=second.run, turn_id="third"))
 
         assert isinstance(first.outcome, ModelExecutionResult)

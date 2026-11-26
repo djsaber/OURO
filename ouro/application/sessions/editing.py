@@ -146,7 +146,6 @@ def undo_user_input(
         if message_id is not None:
             selected = store.load_message(session_id, message_id)
         else:
-            # The store iterator starts at the head and stops at the first direct input.
             with closing(store.iter_messages_before(session_id)) as messages:
                 latest = next((m for _, m in messages if is_direct_user_input(m)), None)
             if latest is None:
@@ -216,7 +215,6 @@ def accept_message_edit(
     settings: InputSessionSettings,
 ) -> SessionCommitResult:
     with _idle_history(store, before) as current:
-        # The original head and Harness remain commit preconditions across policy evaluation.
         event, cancelled = _withdrawal_event(store, current, boundary_id)
         queued = queued_input_event(
             current, replacement.item, len(current.pending_input_ids) - len(cancelled) + 1

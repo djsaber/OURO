@@ -1936,7 +1936,6 @@ async def test_request_snapshot_with_a_concurrent_message(tmp_path, backend, app
     )
 
     def observe(call):
-        # The request has already read the active window when the provider starts.
         store.append_message(
             MessageRecord.text(session_id=call.session_id, role="harness", text="another writer")
         )
@@ -2213,8 +2212,6 @@ async def test_turn_policy_continues_inside_same_run_before_completion(
     ]
     assert snapshot.messages[1].text_content == "candidate"
     assert snapshot.messages[2].metadata["session_input_source"] == "turn_policy"
-    # Notifications were deliberately dropped; continuation is proven by the
-    # persisted feedback and the two responses in this same Run above.
 
 
 @pytest.mark.asyncio
@@ -3120,8 +3117,6 @@ async def test_runtime_aborts_plugin_tool_through_execution_context(tmp_path) ->
     run_task = asyncio.create_task(runtime.run("Run plugin tool"))
     try:
         async with asyncio.timeout(30):
-            # Tool entry proves the Session exists; abort ends the wait rather
-            # than racing a finite sleep or imposing a one-second I/O budget.
             await started.wait()
             session = store.list_sessions()[0]
             await runtime.abort_run(
@@ -3209,7 +3204,6 @@ async def test_runtime_abort_owns_tool_cancellation_across_runtime_instances(tmp
     phase = "tool entry"
     try:
         async with asyncio.timeout(30):
-            # The tool itself establishes readiness; disk I/O is not a latency contract.
             await started.wait()
             session = store.list_sessions()[0]
             phase = "cross-runtime abort"

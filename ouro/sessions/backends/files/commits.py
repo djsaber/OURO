@@ -367,8 +367,6 @@ class FileSessionCommits:
             and self.load_session_record(session_id).last_commit_id
             == decision.result.session.last_commit_id
         ):
-            # The head and facts committed together. Only cross-file retirement
-            # can remain after that transaction.
             if decision.obsolete_context_id is not None:
                 input_path(directory, decision.obsolete_context_id).unlink(missing_ok=True)
             path.unlink()

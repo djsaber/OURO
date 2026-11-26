@@ -28,8 +28,6 @@ class AttachmentPicker:
     @staticmethod
     def read_directory(directory: Path) -> tuple[AttachmentEntry, ...]:
         entries = []
-        # Directory enumeration already supplies type metadata on Windows and
-        # most local filesystems; keep it instead of stat-ing each Path again.
         with os.scandir(directory) as children:
             for child in children:
                 is_directory = child.is_dir(follow_symlinks=False)

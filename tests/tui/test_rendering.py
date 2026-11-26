@@ -1,5 +1,3 @@
-"""Guard the Textual 8 compositor and editor cache lifetime adapters."""
-
 import weakref
 
 import pytest

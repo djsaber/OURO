@@ -18,9 +18,6 @@ _CSP = (
     "base-uri 'none'; form-action 'none'"
 )
 
-# Rebuild a small static HTML vocabulary, rather than trying to remove dangerous
-# syntax from arbitrary browser input. The iframe sandbox and CSP are independent
-# layers: even CSS resource URLs must pass CSP before any fetch.
 _ELEMENTS = frozenset(
     """
     a abbr address article aside b bdi bdo blockquote br button caption cite code col

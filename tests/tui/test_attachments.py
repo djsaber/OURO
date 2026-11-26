@@ -798,7 +798,6 @@ async def test_terminal_file_paste_uploads_and_submits_on_both_pages(
             app.post_message(event)
         await pilot.pause()
         assert not app.app_focus and app.focused is None
-        # Windows Terminal sends the copied file's unquoted path as a paste.
         for event in parser.feed(f"\x1b[200~{path}\x1b[201~"):
             app.post_message(event)
         await pilot.pause()

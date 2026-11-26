@@ -1,8 +1,4 @@
-"""Measure a Run completion commit against unrelated canonical history.
-
-Run: uv run --frozen python -m dev.benchmarks.run_completion --repeat 5
-This measures the synchronous commit and catalog refresh, not a full model turn.
-"""
+"""Measure a Run completion commit against unrelated canonical history."""
 
 from __future__ import annotations
 

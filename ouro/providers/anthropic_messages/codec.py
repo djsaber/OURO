@@ -196,7 +196,6 @@ def _message_to_anthropic(
             calls = []
             for block in continuation.blocks[0]["content"]:
                 if isinstance(block, Mapping) and block.get("type") == "tool_use":
-                    # Older sessions committed only identified calls, with {} for non-objects.
                     call_id, name = block.get("id"), block.get("name")
                     if not isinstance(call_id, str) or not call_id:
                         continue

@@ -1,7 +1,5 @@
 # 桌面 Host 计划
 
-> 文档类型：未来规划
-
 ## 目标
 
 实现一个本地桌面 Host，复用 `LocalApplication` 暴露的 application services/DTO、RuntimeSupervisor 和

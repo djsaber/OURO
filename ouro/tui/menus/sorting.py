@@ -17,7 +17,6 @@ def model_name_sort_key(
     display_name: str | None, *, model_id: str
 ) -> tuple[tuple[tuple[int, int | str], ...], str]:
     display_name = unicodedata.normalize("NFKC", (display_name or "").strip())
-    # Localized labels remain visible; the model ID supplies a comparable version.
     name = display_name if display_name and display_name.isascii() else model_id
     normalized = unicodedata.normalize("NFKC", name).casefold()
     parts = tuple(

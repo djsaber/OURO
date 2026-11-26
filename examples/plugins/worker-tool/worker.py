@@ -35,8 +35,6 @@ for line in sys.stdin:
         call = params.get("call", {}) if isinstance(params, dict) else {}
         arguments = call.get("arguments", {}) if isinstance(call, dict) else {}
         value = arguments.get("value", "") if isinstance(arguments, dict) else ""
-        # The host binds this proposal to the calling Session and owner, and
-        # commits it with the tool result. The worker never writes Session files.
         state = params["session_state"]["value"]
         count = state["payload"]["calls"] if state is not None else 0
         result = {

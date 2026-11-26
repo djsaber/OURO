@@ -55,7 +55,6 @@ class LocalResourceStore:
     def discard_prepared(self, identity: str) -> None:
         path = prepared_manifest(self.root, identity)
         if path.exists():
-            # The service holds the Session mutation lock and has checked non-adoption.
             shutil.rmtree(path.parent.parent)
 
     @staticmethod

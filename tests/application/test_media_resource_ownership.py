@@ -119,8 +119,6 @@ def test_media_has_one_resource_owner_and_bounded_message_and_request_facts(
     monkeypatch.setattr(store, "load_resource_references", forbidden)
     monkeypatch.setattr(files, "verify", forbidden)
     assert store.load_message(session.session_id, message.message_id).content == message.content
-    # A transformed/literal request and an unchanged source reference have the same
-    # exact bytes; neither stores an encoded copy in its immutable manifest.
     for canonical in (False, True):
         view = publish(store, session, message, canonical=canonical)
         _, body = store.load_latest_request(session.session_id)
@@ -378,8 +376,6 @@ def test_media_read_owns_bytes_across_concurrent_removal(
                 before_message_id=message.message_id,
                 expected_last_message_id=message.message_id,
             )
-            # A literal request does not depend on the withdrawn message. Replace
-            # it explicitly before deleting its last resource reference.
             publish(
                 store,
                 session,

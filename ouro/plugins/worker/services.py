@@ -124,7 +124,6 @@ class WorkerServiceBridge:
                     )
                 self._handlers.pop(handler_id, None)
 
-            # Identity and cleanup exist before the peer can install the handler.
             call.on_close(close)
             params.update(handler_id=handler_id, registration_id=registration_id)
             result = await self.client.request("services.register", params)

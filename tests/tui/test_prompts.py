@@ -149,7 +149,6 @@ async def test_prompt_creation_and_stale_editor_do_not_overwrite_other_changes(t
         assert config.additions[0].text == "hi"
         await choose("hi", title="PROMPT · hi")
         await choose("Edit", title="EDIT ADDITIONAL GUIDANCE")
-        # Another Host saves after the edit form was opened.
         facade.save_prompt(
             "addition",
             PromptDraft(text="External edit", enabled=True),
@@ -162,7 +161,6 @@ async def test_prompt_creation_and_stale_editor_do_not_overwrite_other_changes(t
         await wait_for_menu_action(pilot, menu)
         assert facade.system_prompt().config.additions[0].text == "External edit"
         assert any("revision conflict" in str(item.message) for item in app._notifications)
-        # Refresh and edit again against the current revision.
         await choose("External edit", title="PROMPT · External edit")
         await choose("Disable", title="PROMPTS")
         assert facade.system_prompt().config.additional_system_prompt == ""

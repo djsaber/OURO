@@ -283,7 +283,6 @@ class ResourceService:
                     )
 
     def _projector(self) -> FileInputProjector:
-        # Only selected identities are retained for this preparation.
         selected: dict[tuple[str, str], SessionResourceReference] = {}
 
         def record(session_id: str, resource_id: str) -> SessionResourceReference:

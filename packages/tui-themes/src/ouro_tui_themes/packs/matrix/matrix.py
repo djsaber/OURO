@@ -34,19 +34,11 @@ from ouro_tui_themes.tools.rendering import FrameStrip, RunStyle, render_frame_l
 _FRAME_INTERVAL = 1 / 20
 _MAX_TICK_SECONDS = 0.25
 _CURSOR_HALF_PERIOD = 0.6
-# Lower visual contrast independently of trail lifetime and brightness buckets.
-# Rain remains continuous while foreground information owns the visual emphasis.
 _RAIN_OPACITY = 0.35
-# A clear cell between strands preserves their silhouette as trails lengthen,
-# and bounds the amount of animated text sent through terminal composition.
 _COLUMN_SPACING = 2
-# Visible brightness steps; level 0 is the bare background and never renders.
 _LEVELS = 32
 _MAX_LEVEL = _LEVELS - 1
-# Heads materialize over their first two rows instead of popping in.
 _ENTRY_RAMP = (0.55, 0.85, 1.0)
-# A full-brightness trail falls below the first visible bucket after this many
-# glow seconds. Keep the column occupied until even its faintest tail has cooled.
 _TRAIL_REACH = log(_LEVELS)
 
 
@@ -69,10 +61,7 @@ def _glyph_pool() -> tuple[str, ...]:
 _GLYPHS = _glyph_pool()
 _GLYPH_COUNT = len(_GLYPHS)
 
-# Depth layers, far to near: entry brightness, fall speed (cells/s), trail decay
-# length (cells per e-fold), idle time before respawn (seconds) and spawn weight.
-# Choose spatial length independently of speed: slow distant streams must still
-# read as continuous strands, rather than cooling away after one or two cells.
+# Per layer: brightness, speed range (cells/s), decay range (cells/e-fold), idle range (s), weight.
 _LAYERS: tuple[tuple[float, float, float, float, float, float, float, int], ...] = (
     (0.34, 3.5, 6.0, 9.0, 13.0, 0.9, 3.4, 30),
     (0.55, 5.5, 9.0, 12.0, 18.0, 1.1, 3.7, 28),
@@ -82,8 +71,6 @@ _LAYERS: tuple[tuple[float, float, float, float, float, float, float, int], ...]
 _LAYER_WEIGHTS = tuple(layer[7] for layer in _LAYERS)
 _SPAWN_TOTAL = sum(_LAYER_WEIGHTS)
 
-# The shared green spectrum. Faint levels sink toward the background, mids carry
-# the phosphor hue, and only the hottest tip approaches a soft mint white.
 _RAMP = (
     (0.00, (5, 24, 11)),
     (0.16, (10, 50, 24)),
@@ -193,8 +180,6 @@ class _Rainfield:
         self.glyph = bytearray(size)
         self.changed = bytearray(height)
         self._radiance = array("f", bytes(4 * size))
-        # A column owns one stream until its entire trail has cooled. All of its
-        # cells therefore share a decay rate, including the off-screen head phase.
         self._glow = array("f", bytes(4 * width))
         self._slot: list[_Stream | None] = [None] * width
         self._cooldown = array("f", bytes(4 * width))
@@ -215,7 +200,6 @@ class _Rainfield:
         lit = self._lit
         radiance, glow, level, live = self._radiance, self._glow, self.level, self._live
         glyph, random = self.glyph, self._random
-        # 1) Burning trails cool toward the background in one compaction pass.
         decay = [exp(-dt / value) if value else 0.0 for value in glow]
         write = 0
         for read in range(len(lit)):
@@ -237,7 +221,6 @@ class _Rainfield:
                 lit[write] = index
             write += 1
         del lit[write:]
-        # 2) Columns whose slot freed up may spawn again after their idle time.
         slot, cooldown = self._slot, self._cooldown
         for column in range(0, width, _COLUMN_SPACING):
             remaining = cooldown[column] - dt
@@ -245,15 +228,12 @@ class _Rainfield:
                 cooldown[column] = remaining
             elif slot[column] is None:
                 self._spawn(column)
-        # 3) Heads advance, lighting the cells they cross.
         falling = []
         for stream in self.streams:
             head = stream.head + stream.speed * dt
             row = floor(head)
             if row > stream.previous:
                 for cell_row in range(max(stream.previous + 1, 0), min(row, self.height - 1) + 1):
-                    # Use the crossing time within this frame, so adjacent cells
-                    # follow one continuous decay even when a head skips rows.
                     age = (head - cell_row) / stream.speed
                     self._light(
                         stream.column,
@@ -271,7 +251,6 @@ class _Rainfield:
                 layer = _LAYERS[stream.layer]
                 cooldown[stream.column] = self._random.uniform(layer[5], layer[6])
         self.streams = falling
-        # 4) A few burning glyphs mutate so the rain keeps flickering.
         if lit:
             for _ in range(min(len(lit), 2 + len(lit) // 48)):
                 index = lit[random.randrange(len(lit))]
@@ -345,7 +324,6 @@ class _MatrixLayout(Layout):
         tips_height = tips.get_content_height(size, viewport, tips_width)
         lower_height = max(usage_height, tips_height)
         system_height = system.get_content_height(size, viewport, width)
-        # Share available breathing room between sections, without spacer widgets.
         available = max(0, size.height - (y + height) - 1)
         gap = max(0, (available - lower_height - system_height) // 2)
         lower_y = y + height + min(2, gap)
@@ -469,7 +447,6 @@ class MatrixPage(WelcomePage):
         caption = Text("wake up, operator.\n", style=theme.accent, justify="center")
         caption.append("follow the white rabbit", style=theme.text_lowlight)
         caption.append("_" if self._cursor_visible else " ", style=theme.accent)
-        # Preserve the cursor's cell while hidden; blinking never changes layout.
         self._caption.update(caption, layout=False)
 
     def render_line(self, y: int) -> Strip:
@@ -483,9 +460,6 @@ class MatrixPage(WelcomePage):
         return Strip.blank(self.size.width, style)
 
     def render_lines(self, crop: Region) -> list[Strip]:
-        # Preserve Textual CSS, filters and cropping before transferring
-        # disposable frame rows to the compositor. Resolve inherited style and
-        # size once per paint, not once per row; don't cache them across paints.
         self._ensure()
         self._render_style = self.rich_style
         try:
@@ -568,9 +542,6 @@ class MatrixPage(WelcomePage):
         current = level[start]
         for index in range(start, end):
             bucket = level[index]
-            # Blank cells have no foreground ink. Keep them in the preceding
-            # color run instead of emitting a reset and a new run for every gap.
-            # CSS and terminal filters still apply normally to the resulting row.
             if bucket and bucket != current:
                 texts.append("".join(cells))
                 colors.append(styles[current])

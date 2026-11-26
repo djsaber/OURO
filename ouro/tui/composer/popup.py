@@ -247,7 +247,6 @@ class CommandPopup(VerticalScroll):
         self._heading_widget.display = bool(self._heading)
         self._render_heading()
         self._content.refresh(layout=resized)
-        # Data changes and terminal resizing need the new layout before scrolling.
         self.call_after_refresh(self._scroll_selected_into_view)
 
     def _render_heading(self) -> None:
@@ -319,8 +318,6 @@ class CommandPopup(VerticalScroll):
         count = len(self._arguments) if self._argument_command is not None else len(self._commands)
         if not self.display or self._selected is None or self._selected >= count:
             return
-        # Every item is truncated to one terminal row. Its position is its index,
-        # independent of directory size, label length, and display-cell width.
         spacing = self._content.dock_gutter
         self.scroll_to_region(
             Region(0, spacing.top + self._selected, self.scrollable_content_region.width, 1),

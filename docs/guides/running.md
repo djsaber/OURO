@@ -1,7 +1,5 @@
 # 运行与存储选择
 
-> 文档类型：使用指南
-
 ```bash
 # 默认全屏 TUI
 uv run --frozen ouro --home ./.ouro-dev
@@ -29,7 +27,7 @@ uv run --frozen ouro config agents --home ./.ouro-dev
 # 以下 revision=0 只适用于初始配置；已有配置使用上一条查询返回的当前 revision
 uv run --frozen ouro config agents --home ./.ouro-dev --expected-revision 0 \
   --allow-agent general --allow-model '<provider_id>/*' \
-  --execution-mode sync --execution-mode async --no-network
+  --execution-mode sync --execution-mode async
 
 # 基于上面一次 completed Run 返回的 session_id/run_id 派遣无人值守 child
 uv run --frozen ouro agent spawn <session_id> <run_id> general "inspect one bounded task" \

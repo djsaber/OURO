@@ -1,9 +1,8 @@
 # 认证驱动与单次授权规格
 
-> 文档类型：现行规格
-> 范围：受管理认证契约、单次授权资源生命周期与 OpenAI 浏览器驱动实现；CLI/TUI 使用统一认证用例，OpenAI 浏览器驱动由本地组合注册为订阅产品。
+范围：受管理认证契约、单次授权资源生命周期与 OpenAI 浏览器驱动实现；CLI/TUI 使用统一认证用例，OpenAI 浏览器驱动由本地组合注册为订阅产品。
 
-凭据的持久化、刷新协调和条件提交以[凭据核心规格](credentials.md)为准。Application 操作状态见[Provider 认证用例规格](provider-authentication.md)，产品接入契约见[订阅认证规格](subscription-authentication.md)，实际验证范围见[订阅指南](../guides/subscriptions.md#证据范围)。
+凭据的持久化、刷新协调和条件提交以[凭据核心规格](credentials.md)为准。Application 操作状态见[Provider 认证用例规格](provider-authentication.md)，产品接入契约见[订阅认证规格](subscription-authentication.md)，支持范围见[订阅指南](../guides/subscriptions.md#支持范围)。
 
 ## 驱动契约与边界
 
@@ -57,11 +56,11 @@ challenge 是只交付发起登录 Host 的交互材料，允许该 Host 显示 
 
 `tests/auth/test_authorization.py` 覆盖封闭类型、脱敏 repr、重复等待、即时/并发取消、截止时间、迟到结果、清理失败和安全错误；成功、拒绝、过期、取消均通过真实本地 TCP listener 验证端口释放。
 
-`tests/auth/test_driver_contracts.py` 提供两种仅供测试的 AuthDriver：浏览器/Bearer 与设备码/独立 Session header，使用不同材料形状和方法 id。两者通过相同 CredentialService/Store 完成授权、条件保存、编码与注销，刷新驱动保留稳定 account_scope；接口符合性另经类型检查验证。相同驱动的 Application 集成证据见 Provider 认证用例规格；现有两种协议的请求认证验收见请求认证规格；真实 OAuth 与 Responses 验收仍保留在实施计划中。
+`tests/auth/test_driver_contracts.py` 提供两种仅供测试的 AuthDriver：浏览器/Bearer 与设备码/独立 Session header，使用不同材料形状和方法 id。两者通过相同 CredentialService/Store 完成授权、条件保存、编码与注销，刷新驱动保留稳定 account_scope；接口符合性另经类型检查验证。登录与条件保存见[认证用例](provider-authentication.md)。三个模型协议共用[请求认证契约](request-authentication.md)。
 
 ## OpenAI 浏览器驱动
 
-`ouro/auth/drivers/openai_codex.py` 实现 `OpenAICodexDriver`，driver id 为 `openai-codex`，当前只描述 `browser` 方法。设备码仍在隔离实验中，未验证前不作为该驱动的方法发布。该实现不等于产品注册或 Responses adapter 接线；来源与真实账户证据见[探针说明](../../dev/probes/README.md)。
+`ouro/auth/drivers/openai_codex.py` 实现 `OpenAICodexDriver`，driver id 为 `openai-codex`，当前只描述 `browser` 方法。本地组合注册该驱动，设备码仅用于[协议探针](../../dev/probes/README.md)。
 
 可信组合方必须显式传入 OAuth client id；驱动没有公开上游客户端的默认值，也不从 Provider 的 request_options 或环境变量推断。issuer 固定为 `https://auth.openai.com`，scopes 为 `openid profile email offline_access`，默认 originator 为 `ouro`。浏览器 challenge 使用随机 state 与 S256 PKCE，监听 `127.0.0.1:1455`，交换时使用 `http://localhost:1455/auth/callback`。端口占用明确失败，不终止占用者。驱动不打开浏览器。
 

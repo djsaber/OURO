@@ -1,7 +1,5 @@
 # OURO 插件系统规格
 
-> 文档类型：现行规格
-
 本文定义 OURO 插件系统的规范性契约。插件包创建、SDK 调用和操作示例见
 [插件开发指南](../development/plugin-development.md)。
 
@@ -295,9 +293,7 @@ calendar-plugin/
 - 已声明的 security、runtime、contribution 和 permission 字段仍按类型、必填项与领域约束严格校验；
 - `metadata` 只保存 namespaced 非规范元数据，不参与授权和运行决策；
 - Manifest 不包含 credential 值、用户授权结果、source trust 或 plugin class；
-- 静态 contribution identity、动态工具组 identity 与执行策略必须在执行前静态可见；动态工具定义在发布边界校验；
-- `optional_feature`、MCP `auto_start` 和无消费者 placeholder 字段不存在；
-- schema 变化直接更新 schema version 和所有调用方，不保留开发期旧 reader。
+- 静态 contribution identity、动态工具组 identity 与执行策略必须在执行前静态可见；动态工具定义在发布边界校验。
 
 ### 6.3 Package 路径
 

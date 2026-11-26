@@ -20,7 +20,6 @@ class TextContent(OuroModel):
 
 
 class _MediaSource(OuroModel):
-    # A materialized read may carry both. Persisted content keeps only the resource.
     uri: str = ""
     resource_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
     uri_prefix: str | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -109,7 +108,6 @@ def same_content_observation(left: ToolContent, right: ToolContent) -> bool:
     return True
 
 
-# A local planning allowance; duration and the provider determine actual media tokens.
 MEDIA_CONTENT_COST = 2048
 
 

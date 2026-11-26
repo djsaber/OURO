@@ -122,8 +122,6 @@ class ContextBuilder:
     ) -> None:
         self.skill_instructions = skill_instructions.strip()
         self.token_estimator = token_estimator or estimate_text_tokens
-        # Only small immutable reference keys and costs for the last active input.
-        # Dynamic/literal input and custom estimators are evaluated on every build.
         self._message_estimates: dict[str, int] = {}
 
     def build(
@@ -228,8 +226,6 @@ def _message_estimate_key(message: RequestMessage, sources: dict[str, MessageRec
             return None
         return sources[item.message_id].session_id, item.message_id
 
-    # Media payload/size do not contribute to the default estimator's fixed
-    # media cost. Text replacements and semantic envelopes stay literal above.
     values = message.model_dump(
         exclude={"content", "tool_calls", "reasoning_content", "provider_continuation"}
     )
@@ -337,8 +333,6 @@ def _estimate_visible_message_tokens(
         if model_message.tool_result is not None
         else None,
     }
-    # Budget both representations without coupling the estimate to a wire protocol.
-    # The codec may send native state, a dedicated text field, or omit reasoning.
     native_tokens = (
         active_estimator(model_message.provider_continuation.model_dump_json())
         if model_message.provider_continuation is not None
@@ -356,8 +350,6 @@ def _estimate_visible_message_tokens(
 
 
 def _estimate_tool_tokens(tool: dict[str, Any], estimator: TokenEstimator) -> int:
-    # Execution/provenance fields remain available to Provider integrations, but
-    # only the model-facing declaration consumes the shared tool input budget.
     return estimator(
         json.dumps(
             {

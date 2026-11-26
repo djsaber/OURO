@@ -87,8 +87,6 @@ async def test_tree_observes_child_materialized_after_delegation_reservation(
                 subscription = await service.subscribe_agent_tree("ses_root")
                 snapshot = subscription.initial_snapshot
             else:
-                # An unrelated parent activity refresh may see the reserved ID
-                # before the Spawn protocol has published the child Session.
                 await supervisor.runtime.event_recorder.publish(
                     session_id="ses_root",
                     run_id="run_parent",
@@ -222,8 +220,6 @@ async def test_fact_burst_coalesces_before_tree_query(tmp_path, monkeypatch, cou
         queries.append(threading.get_ident())
         return project(*args)
 
-    # Pause before the page owns a read scope, so subscription setup and the
-    # burst writer can finish before the follower takes its snapshot.
     monkeypatch.setattr(supervisor.runtime.sessions, "observation_changes", paused_read)
     monkeypatch.setattr(service._tree_projector, "snapshot", counted_project)
     subscription = await service.subscribe_agent_tree("ses_root")
@@ -247,7 +243,6 @@ async def test_fact_burst_coalesces_before_tree_query(tmp_path, monkeypatch, cou
         marker = await asyncio.to_thread(update_facts)
         release.set()
         await asyncio.wait_for(published.wait(), 5)
-        # Delivery never computes a tree; even a burst larger than a page is one invalidation.
         assert len(queries) == 1
         notification = await asyncio.wait_for(subscription.get(), 5)
         assert notification.kind == "snapshot", notification

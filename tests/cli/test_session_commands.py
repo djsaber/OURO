@@ -567,6 +567,5 @@ def test_session_compact_aborted_is_not_reported_as_skipped(capsys) -> None:
     assert payload["skipped"] is False
 
 
-# Keep pytest from treating helper classes as test classes.
 _DummyProvider.__test__ = False  # type: ignore[attr-defined]
 _RecordingStrategy.__test__ = False  # type: ignore[attr-defined]

@@ -1,7 +1,5 @@
 # Skills 与扩展规格
 
-> 文档类型：现行规格
-
 ## Agent Skills
 
 每个 Skill 是包含 `SKILL.md` 的目录。Frontmatter 当前支持：

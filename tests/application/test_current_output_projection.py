@@ -120,7 +120,6 @@ def test_committed_catchup_replaces_previous_request_without_repeating_live_pref
     )
     previous.payload["context_id"] = "ctx_old"
     projection.apply(previous)
-    # Joining mid-request can receive a current Draft before its started event.
     projection.apply(event(2, "model_text_delta", context_id="ctx_current", cursor=1, text="new "))
     assert projection.assistant_text == "new "
     assert projection.reasoning_text == ""

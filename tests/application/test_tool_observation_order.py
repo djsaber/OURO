@@ -66,8 +66,6 @@ async def test_observation_precedes_control_and_remains_distinct_from_feedback(
         return outcome
 
     def activate(call):
-        # This callback runs in another thread: it can acquire the native lock
-        # because observation persistence has finished before entering the plugin.
         with store.session_mutation(call.session_id):
             observed(call.session_id)
         note("controller")

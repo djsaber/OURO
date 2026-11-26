@@ -32,7 +32,6 @@ def startup_message(frame: int) -> str:
 def startup_lines(frame: int, *, width: int) -> tuple[str, ...]:
     message = startup_message(frame)
     art_width = min(width, len(message))
-    # Match Textual's centering when the spare width is odd.
     brand = (" " * max(0, (art_width - len(BRAND)) // 2) + BRAND).ljust(art_width)
     return brand[:art_width], "", message[:art_width]
 
@@ -104,12 +103,10 @@ class TerminalStartup:
         width = max(map(len, lines))
         row = max(1, (size.lines - len(lines)) // 2 + 1)
         column = max(1, (size.columns - width) // 2 + 1)
-        # The fixed palette is monochrome, as is Textual's NO_COLOR projection.
         output = ["\x1b[48;2;12;12;12m"]
         resized = size != self._size
         if resized:
-            # Erase-in-display may use the terminal's default background (not the
-            # active SGR color), notably through ConPTY. Paint every cell instead.
+            # ConPTY may erase using the default background instead of the active SGR color.
             output.extend(
                 f"\x1b[{line};1H" + " " * size.columns for line in range(1, size.lines + 1)
             )

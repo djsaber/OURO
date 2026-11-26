@@ -31,7 +31,6 @@ from ouro.config.provider_templates import (
 from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError
 
-#: Current structure (schema) version of the local template file.
 SCHEMA_VERSION = 7
 
 
@@ -393,7 +392,6 @@ class ProviderTemplateStore:
                     notices.append(
                         f"provider template '{template_id}' added from the inline catalog"
                     )
-                # A locally broken entry occupies the id; keep it untouched.
                 continue
             if item.meta.origin == "custom":
                 notices.append(
@@ -414,7 +412,6 @@ class ProviderTemplateStore:
                 or item.meta.baseline_fingerprint is None
                 or baseline > inline_template.revision
             ):
-                # A saved baseline is required; never infer one or downgrade content.
                 continue
             if baseline == inline_template.revision:
                 continue
@@ -476,8 +473,6 @@ class ProviderTemplateStore:
         notices: list[str],
         inline: Mapping[str, ProviderTemplate],
     ) -> ProviderTemplateCatalogSnapshot:
-        # The inline catalog's curation order is part of the source of truth;
-        # templates the user added follow it in stable alphabetical order.
         ordered = (*inline, *sorted(loaded.keys() - inline.keys()))
         return ProviderTemplateCatalogSnapshot(
             entries=tuple(

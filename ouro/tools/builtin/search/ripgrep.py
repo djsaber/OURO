@@ -133,7 +133,6 @@ def _ripgrep_arguments(
             argv += ["--glob", arguments.glob]
         if arguments.file_type is not None:
             argv += ["--type", arguments.file_type]
-        # Unconditional exclusions follow include globs so they cannot be overridden.
         for excluded in (".env", ".env.*", ".git", ".hg", ".svn"):
             argv += ["--glob", f"!{excluded}"]
         for values, prefix in ((exclusions.names, "**/"), (exclusions.paths, "/")):

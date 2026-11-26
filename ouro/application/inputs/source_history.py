@@ -27,7 +27,6 @@ def _delivered_cursor(
     key: str,
     preceding: Sequence[MessageRecord] = (),
 ) -> tuple[int, MessageBoundary | None]:
-    # An earlier input in this same commit can already own part of the range.
     receipt = next(
         (m for m in reversed(preceding) if m.metadata.get("context_provider_delivery_key") == key),
         None,

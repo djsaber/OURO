@@ -201,9 +201,6 @@ async def test_both_pages_keep_input_when_draft_save_fails(tmp_path, existing, m
             await wait_until(
                 recovery_started.is_set, pilot, description="restored draft save in flight"
             )
-            # Restoring rejected input schedules another debounced save. Keep
-            # the injected disk fault in force until that owned write settles;
-            # restoring the method cannot replace a callable already in flight.
             save_task = app._draft_persistence._task
             assert save_task is not None and not save_task.done()
             release_recovery.set()

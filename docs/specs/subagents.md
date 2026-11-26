@@ -1,53 +1,17 @@
 # 子智能体规格
 
-> 文档类型：现行规格
-
 ## 目标与范围
 
 本规格定义 OURO 子智能体的领域模型、运行语义、持久化、控制面、事件投影、HITL、权限和恢复契约。
 子智能体是 application/runtime 的一等平台能力：模型可通过内置控制工具派遣，Host 也可通过类型化
 application service/DTO 直接操作；CLI、Desktop、API 或其他 Host 不拥有子智能体业务状态机。
 
-子智能体闭环包括：模型决策绑定 AgentDefinition 目录、durable Delegation、独立 child Session/Run、
-Host/CLI 与模型控制面、sync/async、durable join、exact-once 结果交付、HITL 路由、取消级联、恢复协调、
-显式 spawn/capability 权限求交、执行边界动态撤销、共享预算上限，以及可重建且可动态订阅的 root
-AgentTree/interaction projection。本规格陈述由自动化证据约束的当前语义；范围外能力集中列在文末，不能
-从本契约外推。
-
-## 设计目标
-
-- 子智能体复用现有 Session、Run、Message、Event、ToolBatch、Approval、AskUser 和恢复语义。
-- 同一套非阻塞 spawn 原语覆盖同步等待、异步运行、并行派遣和后续批量编排。
-- 父子委派具有 durable identity、明确来源、权限上限、预算和结果交付状态。
-- child 的完整消息与工具流可独立订阅；根 Host 可展示有界的整棵 Agent 活动树。
-- Host detach、进程退出、审批等待和失败不会伪造完成、重复副作用或丢失 canonical 状态。
-- 子智能体权限不超过父级可下放能力；审批只能处理 ask，不能突破 hard deny。
-- OURO 提供不可编辑、不可删除的通用 AgentDefinition，并允许用户管理自定义 definition；两者进入同一目录、
-  校验、冻结、派遣和恢复管道。
-- AgentDefinition 目录与 SpawnAgent（Host 展示名“派遣子智能体”）的 agent_id 参数从同一模型决策绑定的目录快照生成，避免配置、
-  工具 schema 与实际解析结果漂移。
-- 新能力保持 core、application、tools、plugins 和 Host 的既有依赖方向。
-
-## 非目标
-
-本规格不包括：
-
-- 分布式队列、远程 worker 集群或跨设备接管；
-- 宿主进程崩溃后透明复活原 Python coroutine、子进程或未知外部副作用；
-- 通用 DAG、工作流 DSL、长期 Goal/Task 调度器或任意 swarm 语言；
-- 默认复制完整父 Session history；
-- 为共享工作区写入增加路径锁、单写者配额或自动合并协议；
-- 让 user plugin 直接取得 RuntimeService、RuntimeSupervisor、SessionStore 或 AgentService；
-- 允许模型通过普通工具创建、修改或删除 AgentDefinition；definition 管理由 Host application API 承担；
-- 把子智能体结果或 Host 控制消息伪装为真实用户输入；
-- 为子智能体建立第二套模型循环、工具执行器、审批系统、事件协议或 SessionStore。
-
 ## 核心术语
 
 ### Agent definition
 
 AgentDefinition 是可选择的能力模板，不是运行实例。它描述稳定 agent_id、说明、指令、模型策略、
-工具能力上限、workspace 策略和预算。
+候选工具和默认预算。
 
 ### Delegation
 
@@ -105,7 +69,7 @@ Handle 是控制引用，不是 canonical 运行事实。
     application AgentService
           |
           +---- AgentDefinitionService -> config + AgentCatalogSnapshot
-          +---- DelegationRepository port
+          +---- SessionRepository
           +---- SessionService / RuntimeService
           +---- narrow RunScheduler port -> RuntimeSupervisor
           +---- AgentTree / interaction projection
@@ -125,9 +89,8 @@ Handle 是控制引用，不是 canonical 运行事实。
 - ouro.config：`agents.definitions` 中的 user AgentDefinition 配置、原子 CRUD 和严格校验。
 - ouro.application：AgentDefinitionService 管理定义/目录/兼容性，AgentService 编排 child；同时提供控制 DTO、根树投影、
   interaction 汇聚和恢复协调。
-- ouro.sessions：组合进 SessionStore 的 DelegationRepository 端口，以及文件和 SQLite 两个 canonical 实现。
+- ouro.sessions：实现 Core 中 `SessionRepository` 的委派读写方法，提供文件与 SQLite 后端。
 - ouro.tools：模型可见的内置 Agent 控制工具定义、schema 和普通 ToolExecutor 权限闸门。
-- ouro.plugins：未来可贡献 AgentDefinition 或策略，但不拥有调度、持久化或 child 生命周期。
 - Host：展示 DTO、订阅事件、提交类型化命令，不实现状态迁移。
 
 ## AgentDefinition
@@ -191,7 +154,7 @@ AgentCatalogSnapshot、SpawnAgent schema 投影、capability 求交、Session/Ru
 
 builtin definition 不复制进用户配置；目录在读取时把 code-owned builtin 与 user section 合并。细粒度
 AgentDefinitionService 提供 list/get/create/update/delete/copy_builtin 和 compatibility/tool-option 查询，底层
-AgentDefinitionConfigManager 复用 JsonConfigFile 的跨进程锁、read-validate-write 和原子 replace。mutation 接受
+`AgentDefinitionsConfigManager` 复用 JsonConfigFile 的跨进程锁、read-validate-write 和原子 replace。mutation 接受
 expected revision，避免 Desktop/CLI 并发编辑丢失更新。
 
 Agent 配置模型继续遵循全局 `OuroModel(extra="ignore")` 兼容策略：历史数据中的未知字段可被忽略，已知必填字段、字段
@@ -280,7 +243,7 @@ SpawnAgent（Host 展示名“派遣子智能体”）从本轮快照生成 Tool
 - system_prompt、完整 tool list 和敏感 policy 不拼入工具描述；
 - 执行 AgentControlRequest 时按 parent Run snapshot 解析 agent_id，不重新读取 current config；
 - `execution_mode` 的工具声明和执行均使用本轮快照的派遣策略。省略时默认使用 `async`，仅允许同步时使用 `sync`。
-- Run 保存决策时的目录，Delegation 嵌入实际选中的完整 definition 和 EffectiveToolRefs。
+- Run 保存决策时的目录，Delegation 嵌入实际选中的完整 definition 和 `EffectiveToolRef` 集合。
 
 配置 CRUD 返回 effective_from=next_decision。已发出的 Provider 请求及其调用使用该轮 schema；下一轮生成当前参数。
 
@@ -309,7 +272,7 @@ DelegationRecord 是 schema 3 的 canonical record，主要字段如下：
 | child | child_session_id、current_child_run_id、nickname |
 | task | description、initial_message_id、prompt_digest、显式 resource refs |
 | execution | execution_mode、spawn_state、control_state |
-| policy | frozen AgentDefinition、EffectiveToolRefs、显式 workspace/model 约束、approval_mode、interaction_mode、RunBudgetPolicy |
+| policy | frozen AgentDefinition、`EffectiveToolRef` 集合、显式 workspace/model 约束、approval_mode、interaction_mode、RunBudgetPolicy |
 | result | terminal child run、result message/resource refs、usage、delivery |
 
 模型委派必须同时保存 parent_batch_id 和 parent_tool_call_id；Host 直接委派两者均为空。
@@ -414,11 +377,11 @@ ToolCall 协议；在出现真实的多子任务 join 产品语义前，不预�
 
 Call 状态通过原生身份及 attempt 关联 started 事实。同步等待在 child 创建和调度前持久化，此时 Call 可以仍为
 running；父执行停驻时复用同一个 wait_id。取消收尾保留该绑定，resolved 等待不能被旧执行快照重新打开。
-Run 不建立重复这些 identity 的 AgentWaitCheckpoint。child 完成后解析原 ToolCall，恢复同一父 Run。
+child 完成后解析原 ToolCall，恢复同一父 Run。
 
 ## 持久化布局与 Store 端口
 
-默认本地布局在现有 Session 数据下增加：
+文件后端分别保存主会话的委派记录与子会话正文：
 
     sessions/
       <root_session_id>/
@@ -431,7 +394,7 @@ Run 不建立重复这些 identity 的 AgentWaitCheckpoint。child 完成后解�
 
 Delegation 由发起它的 primary Session 自身拥有。child Session 只保存 delegation_id 引用，不复制完整 relation。
 
-DelegationRepository 作为后端中立端口组合进现有 SessionStore，至少支持：
+委派读写通过 `SessionRepository` 完成，应用层用这些记录构建子树并检查生命周期约束：
 
 - create/load/save delegation；
 - list direct children、descendants 和 root tree；
@@ -701,7 +664,7 @@ DelegationResult 记录运行终态、资源引用和用量。
 - auto 只跳过 ask，不扩大 candidate capability；
 - tool-controlled permission 继续不可被 Session 模式绕过。
 
-可下放工具的身份、来源、effect 与最低调用权限由冻结的 `EffectiveToolRefs` 表达。
+可下放工具的身份、来源、effect 与最低调用权限由冻结的 `effective_tools` 中的 `EffectiveToolRef` 表达。
 `allow_write` 按声明的 effect 筛选工具，`allow_mcp` 按 source 筛选工具；这些规则控制工具目录，不构成资源隔离。
 Delegation constraints 保存已接受的 workspace，确保恢复时路径解释一致。实际工具调用进入 permission/ToolPolicy
 边界，不复制可由冻结目录推导的筛选配置。工具能力不参与 subagent 派遣并发决策。
@@ -709,7 +672,7 @@ Delegation constraints 保存已接受的 workspace，确保恢复时路径解�
 父 Agent 只能下放自己拥有的能力。AgentDefinition、child Session 配置、一次审批、插件 ToolPolicy 或模型请求都不能
 扩大父 capability。
 
-运行时先从 parent 当前决策绑定的 ToolRegistry 解析 exact EffectiveToolRefs，再由 AgentService 将 AgentSpawnPolicy 与
+运行时先从 parent 当前决策绑定的 ToolRegistry 解析 exact `EffectiveToolRef` 集合，再由 AgentService 将 AgentSpawnPolicy 与
 definition 结果求交并把最终目录持久化到 parent Run。插件 Host 服务权限在各自端口检查，不用于推断工具的资源访问范围。
 Delegation 是冻结定义、工具权限上限、workspace 和 child 预算的持久来源；child Run 记录所属 root 和 Delegation 的身份。
 Runtime 在首次绑定或等待后重新绑定时点读该记录，核对 Session backlink、冻结策略
@@ -894,7 +857,7 @@ application 提供 root subtree subscription：
 - 消费者请求更新时在线程中执行 canonical projector，同一订阅最多一个查询在途，不积压历史树快照；
 - 新 child 创建后自动加入；
 - child close/archive 后移除 live subscription，但历史节点仍可查询；
-- 每 child 保留自己的 event sequence；
+- 各子会话的在线通知在本进程内独立编号；
 - root projection 使用独立 revision，不把多个 Session sequence 假装成单一 durable 全序；
 - 文本片段在状态通知缓冲之前过滤；活动类型的改变仍触发更新，不逐片段重读树；
 - 慢状态观察者恢复消费后取得最新树，不抢占其他观察者的通知，也不反向阻塞 child；
@@ -931,15 +894,6 @@ Host 默认显示任务、状态、当前工具、elapsed 和控制入口；用�
 - reserved Agent control tools 由 composition root 注册；
 - durable child 不归 PluginGeneration owner；
 - 禁用、升级或崩溃某个插件不能删除或接管 child Session。
-
-未来可新增 AgentDefinitionContribution，但必须满足：
-
-- definition 先经不可变 ExtensionCatalogLease 解析，再进入 decision-bound AgentCatalogSnapshot 和 Delegation；
-- user plugin 只能提出更窄能力模板，不能取得 Host 调度对象；
-- contribution 若未来进入产品，必须先归一化为同一 AgentDefinition/AgentCatalogSnapshot，不能产生第三套 spawn 管道；
-- contribution disable 后，旧 Delegation 按冻结 contract 恢复或明确 blocked，不按同名新 definition 替换；
-- plugin tool 要派遣 child 也必须返回类型化 intent，并经过 Spawn 权限；
-- AgentDefinitionContribution 不属于本规格。
 
 ToolRegistry 将 Agent control names 视为 product-reserved：只有 `source=builtin` 且带 Host 生成标记的动态 overlay
 可以注册，plugin/MCP 即使伪造 metadata 也会被拒绝。tools/plugins/sdk 不导入或命名 AgentService；CLI Host 通过
@@ -1067,7 +1021,7 @@ SessionStore 或 RuntimeSupervisor 内部 job，也不依赖一个大一统 appl
 CLI definition 命令通过不需要模型 Provider 的本地 composition 使用 AgentDefinitionService；运行命令构建完整
 LocalApplication 并使用 AgentService。短生命周期 CLI 可从 completed parent Run 的冻结目录发起 unattended Host
 delegation，并在退出前等待 terminal；模型 `SpawnAgent` 仍只接受当前 active parent。长期运行 Host 可在 active parent
-上 spawn、保持 subscription，并按 child Session event cursor 增量打开完整流。完整的 snapshot/live 交接、父 ToolCall
+上 spawn、保持 subscription，并从子会话已确认的观察位置增量读取正文。完整的 snapshot/live 交接、父 ToolCall
 导航与 Host 只读策略边界由[会话观察规格](session-observation.md)定义。Agent handle 携带 relation revision 与
 control state；tree refresh/reconnect 从 canonical snapshot 重建，不要求 UI 缓存业务状态。
 CLI 的 completed-parent spawn 固定 notify-only；会启动 parent next-boundary/follow-up Run 的 delivery policy 只由
@@ -1089,7 +1043,7 @@ CLI 的 completed-parent spawn 固定 notify-only；会启动 parent next-bounda
 - system_prompt 只进入目标 child，不替换 base instructions、不泄漏到派遣 schema/事件/根树测试；
 - LocalSessionStore delegation 原子写、幂等、索引重建和布局版本拒绝测试；
 - SQLiteSessionStore delegation 事务、revision、索引和 schema 版本拒绝测试；
-- 两个后端共享的 DelegationRepository contract tests；
+- 两个后端共享的 委派读写契约测试；
 - spawn 每个崩溃窗口的 reconciliation 测试；
 - max_concurrency=1 的 sync join 无死锁测试；
 - async result exact-once delivery 测试；
@@ -1109,24 +1063,6 @@ CLI 的 completed-parent spawn 固定 notify-only；会启动 parent next-bounda
 - reserved tool name 与插件架构边界测试；
 - 裸 RuntimeService 不暴露不可执行的 Agent 工具、标准 Host 统一经过 Supervisor 的架构测试；
 - CLI 或无窗口 Host 的完整 spawn/wait/interrupt 恢复集成测试。
-
-## 延后能力
-
-以下能力不属于当前契约，必须单独设计和验收：
-
-- nested depth 大于 1；
-- per-child git worktree 与结果合并；
-- AgentSwarm/batch map；
-- durable Task/Workflow tree 自动调度；
-- remote worker/process isolation；
-- AgentDefinition plugin contribution；
-- 模型侧 AgentDefinition CRUD 工具；
-- 可扩大 definition 的 per-dispatch system prompt/tool/model/workspace override；
-- child_session/subtree/root_session 记忆型审批授权；
-- 通用 capability algebra 或独立 AgentBudget 引擎；
-- root-aware 公平调度策略；
-- 跨根 Session 共享 child；
-- 进程重启后自动重启明确声明为 replay-safe 的 child 工作。
 
 ## 相关规格与计划
 

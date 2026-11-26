@@ -1,5 +1,3 @@
-"""Selection behavior shared by multi-choice menus."""
-
 from __future__ import annotations
 
 import pytest

@@ -302,8 +302,6 @@ async def test_active_session_model_switch_applies_to_the_next_model_request(tmp
     running = asyncio.create_task(runtime.run("start"))
     phase = "first model request"
     try:
-        # Events define the model-change boundary; this deadline only guards
-        # against a deadlock, not the latency of durable Session/Run writes.
         async with asyncio.timeout(30):
             await alpha.request_started.wait()
             session_id = next(entry.session_id for entry in runtime.sessions.catalog().entries)
@@ -375,7 +373,6 @@ async def test_active_session_reasoning_switch_applies_to_the_next_model_request
 
     running = asyncio.create_task(runtime.run("start"))
     try:
-        # This verifies request boundaries and persistence, not storage latency.
         async with asyncio.timeout(30):
             await provider.request_started.wait()
             session_id = next(entry.session_id for entry in runtime.sessions.catalog().entries)

@@ -86,9 +86,6 @@ class AssistantTurn(RangeSelectionOnly, Vertical):
         else:
             blocks, tail_reset = self._stream.append(text)
         if tail_reset:
-            # Keep the completed source visible while its immutable strips are
-            # rendered off-loop. The caller commits the shorter tail immediately
-            # after those strips enter history, avoiding a transient blank region.
             self._tail_reset_pending = True
             self.tail.display = True
             self.tail.append(text)

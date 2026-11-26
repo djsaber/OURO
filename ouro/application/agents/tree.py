@@ -67,8 +67,7 @@ class AgentTreeProjector:
         self.usage = usage_service
 
     def snapshot(self, root_session_id: str) -> AgentTreeSnapshot:
-        # One root read boundary avoids reopening the database for each fact.
-        # Release it before reading children; file adapters must not nest Session locks.
+        # Release the root read boundary before taking a child Session lock.
         with self.store.session_read(root_session_id):
             root = self.store.load_session_record(root_session_id)
             if root.session_kind != "primary":
@@ -395,9 +394,6 @@ class AgentTreeSubscription(AsyncIterator[AgentTreeNotification]):
             try:
                 await self._open_runtime_subscription(session_id)
             except SessionNotFoundError:
-                # Spawn reserves child IDs before publishing their Sessions.
-                # Keep observing the root; agent_spawned will retry attachment
-                # after materialization, without polling or restarting the tree.
                 continue
         if self._closed:
             return

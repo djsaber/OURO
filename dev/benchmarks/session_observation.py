@@ -1,8 +1,4 @@
-"""Measure cold/repeated/live Session selection with disposable data and a held Provider.
-
-Use --root to run the same probe against an extracted baseline checkout.
-Measurements are headless; they exclude actual terminal paint and keyboard transport.
-"""
+"""Measure cold, repeated, and live Session selection in a headless Host."""
 
 from __future__ import annotations
 
@@ -117,7 +113,6 @@ def distribution(values):
 
 
 async def measure(backend, count, home):
-    # Imports follow --root selection so the probe is identical across checkouts.
     import ouro.tui.conversation.history_rendering as history_module
     from ouro.application.runtime.environment import RuntimeEnvironment
     from ouro.application.runtime.service import RuntimeService

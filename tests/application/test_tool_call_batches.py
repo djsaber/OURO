@@ -162,7 +162,6 @@ async def test_modified_approval_starts_from_call_facts_without_embedding_bodies
             tool_call_id=invocation.tool_call_id,
             tool_name=invocation.tool_name,
             content=content,
-            # Tool-owned JSON must not change the framework's execution status.
             structured={"outcome_unknown": True, "answer": "distinct structured value"},
         )
 
@@ -222,8 +221,6 @@ async def test_modified_approval_starts_from_call_facts_without_embedding_bodies
         acceptance = next(request for request in writes if request.tool_facts.calls)
         assert acceptance.runs[0].active_tool_batch.call_ids == ("write_once",)
         assert any(step.message and step.message.tool_calls for step in acceptance.steps)
-        # A different reader reconstructs content from committed identities even if
-        # every live notification was lost. Neither large body is stored in events.
         sid = pending.session.session_id
         live = recorded_events(sid)
         if not drop_notifications:
@@ -1129,7 +1126,6 @@ async def test_resumable_tool_can_request_multiple_inputs_and_owns_final_result(
 
     first = await runtime.run("advance")
 
-    # Failure while reading the committed question leaves the original wait retryable.
     def unavailable_harness(*_args, **_kwargs):
         raise OSError("question state unavailable")
 
@@ -1158,7 +1154,6 @@ async def test_resumable_tool_can_request_multiple_inputs_and_owns_final_result(
         return commit_session(request)
 
     monkeypatch.setattr(runtime.store, "commit_session", commit)
-    # A second Host accepts an answer while its only execution permit is occupied.
     held = HeldProvider()
     other_store = store_type(
         tmp_path / "sessions.db" if store_type is SQLiteSessionStore else tmp_path
@@ -1189,7 +1184,6 @@ async def test_resumable_tool_can_request_multiple_inputs_and_owns_final_result(
             held.release.set()
             await supervisor.shutdown()
     assert batch_reads == [first.run.run_id, first.run.run_id]
-    # A concurrent answer selected the first question before the second one was published.
     with monkeypatch.context() as pending:
         pending.setattr(runtime.parked_runs, "_target", AsyncMock(return_value=first.run))
         with pytest.raises(ValueError, match="question changed"):
@@ -1553,7 +1547,6 @@ async def test_batch_waits_for_every_approval_and_marks_running_before_execution
     )
     assert still_waiting.run.status == "waiting_approval"
     assert executed == []
-    # The competing command observed the first pending approval before acquiring the lock.
     with monkeypatch.context() as stale:
         stale.setattr(runtime.parked_runs, "_target", AsyncMock(return_value=pending.run))
         with pytest.raises(ValueError, match="approval is not pending"):

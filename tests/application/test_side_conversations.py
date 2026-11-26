@@ -241,7 +241,6 @@ async def test_large_tool_batch_is_omitted_as_a_unit_after_model_budget_shrinks(
         store = app.runtime.store
         source = app.sessions.create().session.session_id
         side = app.sessions.create_side_conversation(source, "Ask").session.session_id
-        # The call is the last record in the first read page. Its result begins the next one.
         store.append_messages(
             [
                 MessageRecord.text(session_id=source, role="assistant", text=f"progress {i}")

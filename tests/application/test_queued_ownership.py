@@ -56,7 +56,6 @@ async def test_queued_owner_is_visible_to_every_native_entry(store, entry):
     provider = SteeringProvider()
     runtime = runtime_for(store, provider)
     supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
-    # Separate Runtime and Store instances cannot consult the supervisor's maps.
     other_store = type(store)(
         store.database if isinstance(store, SQLiteSessionStore) else store.root
     )

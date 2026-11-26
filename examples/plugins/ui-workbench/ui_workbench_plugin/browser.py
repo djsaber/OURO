@@ -36,7 +36,7 @@ _START_TIMEOUT = 12.0
 _COMMAND_TIMEOUT = 8.0
 _CLOSE_TIMEOUT = 3.0
 _CONTROL_BYTES = 64 * 1024
-_SCREENSHOT_BYTES = 8 * 1024 * 1024  # encoded response; decoded artifacts are smaller
+_SCREENSHOT_BYTES = 8 * 1024 * 1024
 
 
 def _object_schema(properties: dict, *required: str) -> dict:
@@ -135,8 +135,6 @@ element.dispatchEvent(new Event('change', {bubbles: true}));
 return true;
 """
 
-# Report counts, never excerpts or URLs. Only compare solid, opaque foregrounds and
-# backgrounds, including an ordinary white canvas. This is not an accessibility audit.
 _DIAGNOSTICS_SCRIPT = """
 const limit = 2000;
 const root = document.documentElement;
@@ -280,7 +278,6 @@ def _loopback_url(value: str) -> tuple[SplitResult, str]:
 
 
 def _endpoint(value: str) -> str:
-    # No proxy, redirects, credentials, query parameters or endpoint supplied by capture arguments.
     try:
         if not isinstance(value, str) or "?" in value or "#" in value:
             raise ValueError
@@ -323,8 +320,6 @@ def _capabilities(browser: str, viewport: str) -> dict:
     name, key = _BROWSERS[browser]
     width, height = _VIEWPORTS[viewport]
     mobile = viewport == "mobile"
-    # Chromium's window-size is an outer size and can be clamped by the display.
-    # Explicit device metrics set the viewport itself, without mobile behavior on desktop.
     metrics: dict[str, object] = {
         "deviceMetrics": {
             "width": width,
@@ -375,7 +370,6 @@ async def _command(
                 if claimed is not None and int(claimed) > limit:
                     raise WorkbenchError("WebDriver response exceeds the capture limit.")
                 body = bytearray()
-                # aiter_bytes is raw-equivalent because non-identity encodings are rejected.
                 async for chunk in response.aiter_bytes():
                     if len(body) + len(chunk) > limit:
                         raise WorkbenchError("WebDriver response exceeds the capture limit.")
@@ -417,7 +411,7 @@ async def _close_session(client: httpx.AsyncClient, opening: asyncio.Task[str]) 
     try:
         session = await opening
     except WorkbenchError:
-        return True  # No known session to delete.
+        return True
     try:
         await _command(client, "DELETE", session, "close the browser", timeout=_CLOSE_TIMEOUT)
     except WorkbenchError:
@@ -450,7 +444,6 @@ async def _session(client: httpx.AsyncClient, browser: str, viewport: str) -> As
 
 async def _check_page(client: httpx.AsyncClient, session: str, target: _Target) -> None:
     value = await _command(client, "GET", f"{session}/url", "check the current page")
-    # This guards what we interact with and publish, not the page's own network activity.
     try:
         if isinstance(value, str):
             if target.origin is not None:

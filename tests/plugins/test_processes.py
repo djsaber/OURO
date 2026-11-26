@@ -119,8 +119,6 @@ async def test_failed_output_consumer_stops_process_without_waiting_for_deadline
 async def test_completed_parent_does_not_leave_an_unowned_descendant(tmp_path, inherit_output):
     port = PluginProcessService(GenerationGate("process-test"), frozenset({"process.spawn"}))
     ready, release, lock_path = (tmp_path / name for name in ("ready", "release", "owner.lock"))
-    # The child holds an OS lock until it dies. A delayed marker cannot distinguish
-    # a dead process from a live process that simply has not been scheduled yet.
     child = (
         "import time;from pathlib import Path;from ouro.local_locks import FileOwnerLock\n"
         f"with FileOwnerLock(Path({str(lock_path)!r}), owner={{}}):\n"

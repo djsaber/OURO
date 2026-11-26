@@ -66,7 +66,7 @@ async def test_fork_and_edit_restore_complete_input_without_reupload(
         ),
     )
     before = runtime.store.load_session(session.session_id).messages
-    source.unlink()  # Fork and resubmit must use the owned upload, not the original file.
+    source.unlink()
 
     def unexpected_upload(*args, **kwargs):
         pytest.fail("Restoring a fork or edit must not upload the attachment again")

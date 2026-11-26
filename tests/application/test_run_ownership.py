@@ -55,7 +55,6 @@ async def test_abort_poll_only_materializes_cancelled_runs(tmp_path, backend, mo
         ).run.abort_requested
     finally:
         await ownership.release_signal(run.run_id, signal)
-    # Startup must also observe an already settled cancellation with no pending flag.
     other.save_run(run.model_copy(update={"status": "aborted"}))
     signal = await ownership.activate_signal(session.session_id, run.run_id)
     try:
@@ -195,9 +194,6 @@ async def test_run_execution_ownership_tracks_lock_and_signal_lifecycle(tmp_path
     await ownership.release(run.run_id, lock)
     await asyncio.wait_for(settlement, timeout=1)
 
-    # The poller captures the cancellation request once. Its signal does not
-    # promise terminal settlement or keep refreshing after cancellation. The
-    # runtime finalizes the Run only after the execution owner has settled.
     async with asyncio.timeout(30):
         await signal.wait()
     assert signal.is_aborted()

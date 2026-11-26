@@ -170,7 +170,6 @@ async def test_exhausted_delivery_stays_pending_and_targeted_recovery_retries(
             approval_mode="auto",
             current_model=app.runtime.current_model().key,
         ).session
-        # Fail the provider after its first shell request; deny all real shell execution.
         from ouro.tools import ProcessResult, ToolExecutionContext
 
         async def process(self, arguments, **kwargs):
@@ -187,8 +186,6 @@ async def test_exhausted_delivery_stays_pending_and_targeted_recovery_retries(
         monkeypatch.setattr(app.supervisor, "route_host_input", unavailable)
         handle = await app.supervisor.submit("Delegate", session_id=session.session_id)
         await app.supervisor.wait(handle)
-        # The parent has admitted its child and armed settlement. Await those
-        # owned tasks, including all retries and diagnostic publication.
         async with asyncio.timeout(60):
             await asyncio.gather(*tuple(app.agents._execution._tasks.values()))
         relation = app.runtime.store.list_delegations(session.session_id)[0]

@@ -165,12 +165,9 @@ async def test_driver_parallel_agents_review_and_conditional_approved_action(
         assert len(relations) == 2
         assert all(relation.parent_run_id == pending.run.run_id for relation in relations)
         if restart:
-            # Leave native child results durable without a live parent waiter.
             await agents.close()
         provider.release_children.set()
         if restart:
-            # Durable child writes and their journal notifications may lag under
-            # parallel coverage. This guards hangs, not settlement latency.
             async with asyncio.timeout(30):
                 completed_children = await asyncio.gather(
                     *(

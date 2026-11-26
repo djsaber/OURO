@@ -1,8 +1,4 @@
-"""Measure context preparation with unrelated covered prefixes and summaries.
-
-Run: uv run --frozen python -m dev.benchmarks.compaction_boundaries --repeat 5
-Setup uses disposable synthetic snapshots. This is not an end-to-end request benchmark.
-"""
+"""Measure context preparation with unrelated covered prefixes and summaries."""
 
 from __future__ import annotations
 

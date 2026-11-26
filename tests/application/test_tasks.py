@@ -88,8 +88,6 @@ def configuration(home, *, title=None, **target_changes) -> TaskConfiguration:
 async def settle(tasks, execution, task_id, *, status="completed"):
     async with asyncio.timeout(60):
         while True:
-            # Reconcile on invalidation, as the scheduler does. Polling storage
-            # competes with the same durable writes this helper is waiting for.
             tasks.changed.clear()
             await execution.reconcile()
             task = await tasks.get(task_id)
@@ -240,7 +238,6 @@ async def test_missed_occurrences_coalesce_and_claim_is_atomic(tmp_path):
         claimed = await tasks.get(task.task_id)
         assert claimed.next_run_at == now[0] + timedelta(hours=1)
         assert len(await tasks.executions(task.task_id)) == 1
-        # A crash between claim and Session creation does not replay the prompt.
         await execution.recover()
         assert (await tasks.get(task.task_id)).status == "waiting"
         assert (await tasks.executions(task.task_id))[0].status == "interrupted"
@@ -347,7 +344,6 @@ async def wait_for_scheduled_stream(provider, execution):
             provider.started, completion, description="scheduled model stream"
         )
     finally:
-        # This task only watches the receipt; execution remains Supervisor-owned.
         completion.cancel()
         await asyncio.gather(completion, return_exceptions=True)
 
@@ -413,8 +409,6 @@ async def test_background_concurrency_preserves_interactive_execution_and_abort(
             async with asyncio.timeout(60):
                 assert (await supervisor.wait(foreground)).status == "completed"
             supervisor.release_handle(foreground)
-            # Foreground progress must be independent of the blocked background
-            # stream, regardless of how long persistence takes.
             assert not provider.stopped.is_set()
             active = tasks.repository.active()
             await supervisor.abort(active[0].target.session_id)

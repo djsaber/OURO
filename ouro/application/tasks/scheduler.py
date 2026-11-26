@@ -72,11 +72,9 @@ class TaskScheduler:
                     await self.execution.tick()
                     due = await run_blocking(self.tasks.repository.next_due)
                     if due is not None:
-                        # A due but busy Session or exhausted execution capacity
-                        # must not turn into a tight loop.
                         delay = min(delay, max(1.0, (due - self.tasks.clock()).total_seconds()))
                 self.diagnostics = ()
-            except Exception as exc:  # scheduling failure must not stop interactive hosts
+            except Exception as exc:
                 self._report_failure(exc)
             try:
                 async with asyncio.timeout(delay):

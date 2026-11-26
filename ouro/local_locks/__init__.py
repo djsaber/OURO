@@ -178,8 +178,6 @@ class FileMutationLock:
             wait = remaining
             if cancel_event is not None:
                 wait = 0.005 if wait is None else min(0.005, wait)
-            # The native thread lock wakes a local waiter when the owner exits.
-            # Poll only for cancellation, not to discover an in-process release.
             if (
                 self._local_lock.acquire()
                 if wait is None

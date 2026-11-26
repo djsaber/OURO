@@ -1,7 +1,5 @@
 # 连接 MCP Server
 
-> 文档类型：使用指南
-
 MCP server 配置保存在 `OURO_HOME/config/mcp.json` 的 `mcp.servers`。启用且 `auto_start` 的 server 会随
 Host 启动在后台连接，不阻塞交互模式、`run` 或工具审批恢复。连接成功后，发现的工具会原子地
 加入当前工具注册表；连接前或连接失败时其他 Agent 功能保持可用，Host 退出时统一关闭。

@@ -22,9 +22,6 @@ class QuantumScene:
             if grid.width > 1
             else (float(grid.y[1] - grid.y[0]) if grid.height > 1 else 1.0)
         )
-        # One broad oval wraps both sources and their outward waves. Its
-        # quintic shoulder reaches zero with no slope or curvature at the edge.
-        # Bake it into the existing gains once per size, not once per frame.
         half_width = abs(float(grid.x[-1])) + pitch * 0.5
         half_height = abs(float(grid.y[-1])) + pitch * 0.5
         horizontal = np.abs((grid.x / half_width - 0.04) / 0.90)
@@ -39,18 +36,13 @@ class QuantumScene:
         falloff *= aperture * aperture * (3 - 2 * aperture)
         falloff *= frame_envelope
         dots = np.flatnonzero(falloff > 0)
-        # Match the reference shader's working precision while keeping the
-        # engine's float64 radiance contract and full terminal colour precision.
         x_squared = np.asarray((x[dots] + 0.7) ** 2, dtype=np.float32)
         y = np.asarray(rotated_y[dots], dtype=np.float32)
         envelope = np.asarray(falloff[dots], dtype=np.float32)
-        # Keep the moving carrier resolved on coarse terminal lattices.
         carrier_frequency = min(19.0, 0.8 / pitch)
         d1, d2, difference, total, light, phase, work, color = (
             np.empty(len(dots), dtype=np.float32) for _ in range(8)
         )
-        # Six Gaussian widths cover both cores' complete motion. Outside this
-        # envelope their emission is below terminal colour precision.
         nearest_y = np.maximum(np.abs(np.abs(y) - 0.46) - 0.08, 0)
         cores = np.flatnonzero(x_squared + nearest_y * nearest_y < (6 * 0.07) ** 2)
         core_dots = dots[cores]
@@ -76,7 +68,7 @@ class QuantumScene:
             position += (target - position) * (1 - exp(-2.7626363100844 * delta))
             if abs(target - position) < 0.0001:
                 position = target
-            t = seconds + 12.0  # The reference opens at this phase of the cycle.
+            t = seconds + 12.0
             separation = 0.46 + 0.08 * sin(t * 0.15)
             coherence = 0.72 + 0.28 * sin(t * 0.19)
             for distance, offset in ((d1, separation), (d2, -separation)):

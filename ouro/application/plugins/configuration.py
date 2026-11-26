@@ -167,7 +167,6 @@ class PluginConfigurationService:
     async def apply(
         self, candidate: PluginConfigurationCandidate, *, request_id: str | None = None
     ) -> PluginConfigurationResult:
-        # Copy/revalidate at entry so caller edits cannot change a suspended operation.
         candidate = PluginConfigurationCandidate.model_validate(
             candidate.model_dump(warnings=False)
         )

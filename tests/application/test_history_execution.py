@@ -307,8 +307,6 @@ async def test_queue_consumption_failure_is_one_native_decision(
             for event in recorded_events(after.session.session_id)
             if event.event_type in {"plugin_message_added", "queued_input_consumed"}
         ]
-        # The interrupted caller never publishes notifications; durable input
-        # receipts and messages above remain the source of truth.
         assert notifications == []
         if decided:
             for item in inputs:

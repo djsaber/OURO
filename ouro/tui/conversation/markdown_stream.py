@@ -6,7 +6,6 @@ from itertools import pairwise
 
 from markdown_it import MarkdownIt
 
-# Use Rich's block grammar. Only the renderer needs emphasis, links and other inline tokens.
 _MARKDOWN_PARSER = MarkdownIt().enable("table")
 _MARKDOWN_PARSER.core.ruler.enableOnly(["normalize", "block"])
 
@@ -136,6 +135,5 @@ class AssistantMarkdownStream:
 def split_markdown_blocks(text: str) -> tuple[str, ...]:
     """Split a complete markdown document into top-level block slices."""
     stream = AssistantMarkdownStream()
-    # Complete documents need no intermediate streaming parse or live-tail copy.
     stream._append_logical_lines(text)
     return stream.close()

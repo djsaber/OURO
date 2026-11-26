@@ -1,5 +1,3 @@
-"""TUI application scenarios: mcp."""
-
 from __future__ import annotations
 
 import asyncio
@@ -172,8 +170,6 @@ async def test_mcp_catalog_can_create_edit_and_delete_its_last_entry(
         options.highlighted = options.get_option_index("mcp-save")
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="MCPs")
-        # Dismissing the editor restores this page before the parent action
-        # finishes saving, reconciling runtime state, and refreshing its rows.
         await wait_for_menu_action(pilot, menu)
         assert app.screen is menu
         server_id = build_local_configuration(tmp_path).mcp_server_by_name("Local").server_id
@@ -303,7 +299,6 @@ async def test_mcp_connect_runs_in_background_and_contains_failures(
         assert failed.disabled is False
         assert app.screen is menu
 
-        # Refresh disables Connect after an external connection completes.
         runtime_status = "connected"
         await menu.refresh_choices()
         connected = next(choice for choice in menu._choices if choice.value == "start")
@@ -505,7 +500,7 @@ async def test_tool_permissions_group_all_registered_sources(tmp_path: Path) -> 
         await pilot.pause()
         options = app.screen.query_one(OptionList)
         assert options.get_option("tool-source:Built-in").disabled
-        assert options.option_count == 3  # Permissions heading, source heading and tool.
+        assert options.option_count == 3
         assert options.highlighted == options.get_option_index("permission:BuiltinTest")
         search.value = "Plugin"
         await pilot.pause()

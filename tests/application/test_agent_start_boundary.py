@@ -45,7 +45,6 @@ async def test_child_start_rechecks_parent_after_scheduler_admission(
             child_id, child_run_id = relation.child_session_id, relation.current_child_run_id
             assert store.load_run(child_id, child_run_id).status == "queued"
             if parent_change == "abort":
-                # Persist from another Host without relying on its later cascade.
                 await asyncio.to_thread(
                     request_run_abort_state,
                     other.runtime.store,

@@ -62,7 +62,6 @@ async def test_frame_computation_does_not_block_editing_or_publish_obsolete_size
             assert editor.text == "ac"
             assert app.focused is editor
             assert app.cursor_position == editor.cursor_screen_offset
-            # Resizes coalesce while the old viewport is still being computed.
             matrix.styles.width = 30
             await pilot.pause()
             matrix.styles.width = 32
@@ -143,7 +142,6 @@ def test_raster_reuses_unchanged_rows_and_bounds_damage_to_changed_cells():
             for dx in range(2):
                 channel[(y * 4 + dy) * columns * 2 + x * 2 + dx] = light
 
-    # Control the numerical input instead of relying on a theme's visual density.
     artwork = DotArtwork(lambda grid: None, span=(4.0, 2.0), engine_factory=Engine)
     raster = PhosphorRaster(artwork, columns, rows)
     set_cell(2, 1, 0.3)
@@ -153,9 +151,9 @@ def test_raster_reuses_unchanged_rows_and_bounds_damage_to_changed_cells():
     assert same is first
     assert not raster.damage
 
-    set_cell(2, 1, 0.7)  # Color changes without changing the glyph.
-    set_cell(5, 1, 0.7)  # A previously blank cell appears.
-    set_cell(0, 3, 0.0)  # An old cell must be erased.
+    set_cell(2, 1, 0.7)
+    set_cell(5, 1, 0.7)
+    set_cell(0, 3, 0.0)
     changed = raster.frame(1 / 30, 1 / 30)
 
     def cells(row):
@@ -172,8 +170,6 @@ def test_raster_reuses_unchanged_rows_and_bounds_damage_to_changed_cells():
     }
     assert different == {(2, 1), (5, 1), (0, 3)}
     assert different <= covered
-    # Damage spans the first through last changed cell of each affected row;
-    # the gap between changed cells is intentionally included in that span.
     assert raster.damage == (Region(2, 1, 4, 1), Region(0, 3, 1, 1))
     assert changed[0] is same[0] and changed[2] is same[2]
     assert raster.frame(1 / 30, 0) is changed
@@ -241,8 +237,6 @@ async def test_replacement_engine_uses_same_widget_pipeline_and_one_lifetime_wor
         worker = next(worker for worker in app.workers if worker.node is matrix)
         try:
             assert await asyncio.to_thread(started.wait, 5)
-            # Theme requests may invalidate initial rendering before its raster
-            # is published. They must retain this size's numerical engine.
             for _ in range(3):
                 matrix.refresh_theme()
         finally:
@@ -260,7 +254,6 @@ async def test_replacement_engine_uses_same_widget_pipeline_and_one_lifetime_wor
         assert prepared == [(60, 24, unused_sampler)]
         assert all(thread != threading.get_ident() for _, _, thread in sampled)
         assert list(worker for worker in app.workers if worker.node is matrix) == [worker]
-        # CSS and cropping still pass through Textual before the transient row boundary.
         assert all(
             isinstance(line, FrameStrip) for line in matrix.render_lines(Region(0, 0, 15, 2))
         )

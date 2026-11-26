@@ -1,9 +1,8 @@
 # 模型请求认证规格
 
-> 文档类型：现行规格
-> 范围：通用请求认证、三种模型协议 adapter、HTTP 边界、共享重试、Runtime 认证生命周期、配置重绑定及 CLI/TUI 管理。
+范围：通用请求认证、三种模型协议 adapter、HTTP 边界、共享重试、Runtime 认证生命周期、配置重绑定及 CLI/TUI 管理。
 
-凭据生命周期以[凭据核心规格](credentials.md)为准；驱动材料见[认证驱动规格](authorization.md)，产品接入契约见[订阅认证规格](subscription-authentication.md)，实际验证范围见[订阅指南](../guides/subscriptions.md#证据范围)。
+凭据生命周期以[凭据核心规格](credentials.md)为准；驱动材料见[认证驱动规格](authorization.md)，产品接入契约见[订阅认证规格](subscription-authentication.md)，支持范围见[订阅指南](../guides/subscriptions.md#支持范围)。
 
 ## 认证端口与材料
 
@@ -83,7 +82,7 @@ ConfiguredModelCatalog 在所有已配置路由（含初始默认路由）上比
 
 并发 Session 请求在同一临界区内解析、构建和发布缓存，避免重复构造导致 HTTP client 失去关闭归属。替换后的 adapter 保留到 Runtime 关闭，已开始的请求不被中断；普通 Token 更新不改变缓存键。专用压缩请求通过同一 catalog 在边界重新选择 adapter，绑定变化会生效；受管理请求失败、结构化认证/访问/额度错误以及已绑定压缩路由配置失效是终止错误，不触发其他模型或策略回退。未分类摘要质量等失败保留既有压缩回退契约。
 
-LocalApplication 与轻量认证组合均内建 openai-codex 浏览器驱动；额外注入的驱动/策略作为补充，重复 id 明确拒绝。服务策略只允许 https://chatgpt.com/backend-api/codex/responses 路径子树，billing_mode=subscription、supports_output_limit=false；标准协议 adapter 不判断产品。驱动按请求创建并关闭 HTTP client，纯构造不读秘密或发网络请求。公开客户端兼容接入与能力范围见[使用指南](../guides/subscriptions.md)。真实 adapter 探针已通过，持久凭据的真实 CLI 登录、check/run、跨进程续接及注销已通过；证据范围见上述使用指南。
+LocalApplication 与轻量认证组合均内建 openai-codex 浏览器驱动；额外注入的驱动/策略作为补充，重复 id 明确拒绝。服务策略只允许 https://chatgpt.com/backend-api/codex/responses 路径子树，billing_mode=subscription、supports_output_limit=false；标准协议 adapter 不判断产品。驱动按请求创建并关闭 HTTP client，纯构造不读秘密或发网络请求。公开客户端兼容接入与能力范围见[使用指南](../guides/subscriptions.md)。
 
 验收证据：
 

@@ -168,7 +168,6 @@ async def test_late_callback_result_retains_only_original_observation(
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(execution, 60)
         else:
-            # The durable withdrawal can be observed before task cancellation.
             try:
                 result = await asyncio.wait_for(execution, 60)
             except asyncio.CancelledError:

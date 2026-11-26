@@ -65,8 +65,6 @@ def test_file_import_syncs_journals_in_batches(tmp_path, monkeypatch):
     bundle = history_bundle()
     store.import_bundle(bundle)
     assert store.load_session("ses_transfer") == bundle.sessions[0].snapshot.materialize()
-    # Canonical journals synchronize batches; the native location index commits
-    # one transaction. Neither boundary synchronizes each individual message.
     assert 0 < calls < 30
 
 

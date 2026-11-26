@@ -112,8 +112,6 @@ async def _login(service: ProviderAuthService, args: argparse.Namespace) -> Logi
                 print("Could not open a browser; use the authorization URL above.", file=sys.stderr)
         return await service.wait(started.operation_id)
     except asyncio.CancelledError:
-        # Commit may have won cancellation. Only Application can determine the
-        # durable result; never turn a successful save into a cancelled report.
         return await service.cancel(started.operation_id)
 
 

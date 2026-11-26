@@ -130,7 +130,6 @@ async def test_reusable_multiline_form_preserves_newlines_across_save_reopen_and
         await pilot.pause()
         await pilot.press("enter", "a", "ctrl+enter", "b")
         assert form._edit_text == "a\nb"
-        # Exercise the LF encoding used by legacy terminals as well as enhanced keys.
         for event in XTermParser().feed("\n"):
             app.post_message(event)
         await pilot.pause()

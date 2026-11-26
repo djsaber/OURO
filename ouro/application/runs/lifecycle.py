@@ -175,8 +175,6 @@ class RunLifecycle:
             if not resume and run.origin == "delegation":
                 if session.parent_session_id is None or run.parent_run_id is None:
                     raise PersistenceError("Delegated Run has no parent identity")
-                # Keep the parent's cancellation/withdrawal boundary stable through
-                # the child's first start commit. No provider or plugin runs here.
                 locks.enter_context(self.store.session_mutation(session.parent_session_id))
                 parent = self.store.load_session_record(session.parent_session_id)
                 parent_run = self.store.load_run(parent.session_id, run.parent_run_id)
@@ -1347,8 +1345,6 @@ class RunLifecycle:
                     "error": error,
                     "error_code": error_code,
                     "pending_approval_id": None,
-                    # Failure must retain committed outcomes until recovery
-                    # publishes their canonical tool-result messages.
                     "active_tool_batch": latest_run.active_tool_batch,
                     "metadata": _result_metadata(
                         latest_run,
@@ -1624,9 +1620,6 @@ class RunLifecycle:
             for message, canonical in zip(messages, committed_messages, strict=True):
                 message.sequence = canonical.sequence
                 message.before_harness_version = canonical.before_harness_version
-        # A durable message batch changes the bounded list projection even
-        # while its Run remains active. Refresh only this Session; catalog
-        # query paths never compensate by scanning canonical history.
         self.store.refresh_catalog(session.session_id)
         return committed_events
 

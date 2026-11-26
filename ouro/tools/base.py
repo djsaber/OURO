@@ -256,8 +256,6 @@ def _cancelled_result(execution: asyncio.Task[object]) -> object:
     except CallbackCancelled as exc:
         return exc.result
     except Exception:
-        # No valid returned result was observed. Cancellation does not establish
-        # that external work was rolled back or never happened.
         return None
 
 

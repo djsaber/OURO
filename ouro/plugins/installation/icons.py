@@ -6,7 +6,6 @@ from pathlib import Path
 
 from ouro.plugins.installation.paths import resolve_manifest_path
 
-# Bound inline query payloads, not the size of images allowed in a plugin package.
 MAX_INLINE_ICON_BYTES = 512 * 1024
 
 

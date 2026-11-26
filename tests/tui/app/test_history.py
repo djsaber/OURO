@@ -1,5 +1,3 @@
-"""TUI application scenarios: history."""
-
 from __future__ import annotations
 
 import asyncio
@@ -141,7 +139,6 @@ async def test_history_restores_each_model_call_timing_with_one_run_summary(
         assert "Answer 1" in history.rendered_text
         if collapse_traces:
             await history.toggle_trace(history.entries.index(summaries[0]))
-        # Expanding the trace must restore the earlier call's original timing.
         assert history.rendered_text.count("+ Thought • 500ms") == 2
         assert "Answer 0" in history.rendered_text
         assert "provider-model" in history.rendered_text
@@ -306,7 +303,6 @@ async def test_history_restores_compaction_boundaries_in_chronological_order(
             estimated_tokens_before=800,
             estimated_tokens_after=300,
             duration_seconds=3_425.4,
-            # The durable boundary, not wall-clock ordering, owns placement.
             created_at=datetime(2026, 1, 1, 11, 0, tzinfo=UTC),
         ),
         CompactionRecord(
@@ -561,7 +557,6 @@ async def test_session_picker_closes_modal_before_rendering_selected_history(
         try:
             await pilot.press("enter")
             await wait_for_events(loading, pilot=pilot, description="selected Session loading")
-            # Closing the picker must not depend on storage or history loading.
             assert session_menu not in app.screen_stack
             assert app._controller.session_id is None
             assert app.query_one(ConversationHistory).user_turns == ()
@@ -600,7 +595,6 @@ async def test_session_picker_restores_history_after_returning_to_welcome(
         await _wait_for_screen(app, ChoiceScreen, title="SESSION • USER")
         session_menu = app.screen
         await pilot.press("enter")
-        # Projection identity is published before the complete Session surface is installed.
         await wait_for_menu_action(pilot, session_menu)
         assert app._controller.session_id == session.session_id
         assert app.query_one(ConversationHistory).user_turns == ("Persisted user message",)

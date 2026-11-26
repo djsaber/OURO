@@ -150,7 +150,7 @@ class TaskCounts(OuroModel):
     completed: int = 0
     failed: int = 0
     interrupted: int = 0
-    awaiting_approval: int = 0  # Subset of paused executions; excludes disabled schedules.
+    awaiting_approval: int = 0
     completed_executions: int = 0
     failed_executions: int = 0
 

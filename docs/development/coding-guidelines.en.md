@@ -1,7 +1,6 @@
 # Development Principles
 
-> Document type: development standard
-> Scope: current source, tests, documentation, and contribution workflow
+Scope: current source, tests, documentation, and contribution workflow
 
 The purpose of these guidelines is not to reduce the amount of code an Agent writes, but to ensure that what is written resembles a designed, maintainable, and evolvable system.
 

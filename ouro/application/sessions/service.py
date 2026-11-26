@@ -838,8 +838,6 @@ class SessionService:
         diagnostics: Iterable[Diagnostic] = (),
     ) -> SessionTrashResult:
         def validate_scope() -> None:
-            # A source can publish a branch while a Run owns it. Recheck through
-            # the original discovery path inside the store's publication boundary.
             entries = (
                 self._store.read_catalog().sessions if from_catalog else self._store.list_sessions()
             )
@@ -1237,9 +1235,6 @@ class SessionService:
         transform: Callable[[SessionRecord], SessionRecord] | None = None,
         **changes: object,
     ) -> SessionMutationResult:
-        # Metadata mutations are independent of the append-only message and event
-        # journals. Loading the complete aggregate here makes a constant-size
-        # policy change scale with the lifetime of the conversation.
         self._load_session_record(session_id)
         lock = self._store.acquire_session_lock(session_id, new_id("session"))
         if lock is None:

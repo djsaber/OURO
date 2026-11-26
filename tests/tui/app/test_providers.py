@@ -1,5 +1,3 @@
-"""TUI application scenarios: providers."""
-
 from __future__ import annotations
 
 import asyncio
@@ -76,7 +74,6 @@ async def test_first_markdown_chunk_renders_while_provider_is_still_running(
 
 @pytest.mark.asyncio
 async def test_status_line_default_reflects_endpoint_default(tmp_path: Path) -> None:
-    # An endpoint whose default is disabled shows nothing under a default intent.
     store = LocalSessionStore(tmp_path)
     store.initialize()
     runtime = RuntimeService(
@@ -102,8 +99,6 @@ async def test_status_line_default_reflects_endpoint_default(tmp_path: Path) -> 
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await pilot.pause()
         indicator = app.query_one(ActivityIndicator)
-        # The default intent resolves to the endpoint's disabled default, so the
-        # thinking indicator stays hidden.
         assert indicator._reasoning is None
 
 
@@ -139,7 +134,6 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(
         try:
             await choose_menu(pilot, "Secondary")
             await asyncio.wait_for(catalog_started.wait(), timeout=15)
-            # An idle message pump does not imply that the catalog read has finished.
             await pilot.pause()
             assert app.screen.page_title == "PROVIDERS"
             assert app.screen.query_one("#choice-filter", Input).has_focus

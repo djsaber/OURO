@@ -1,7 +1,6 @@
 # OURO TUI 规格
 
-> 文档类型：现行规格
-> 主要实现：`ouro/tui/`、`ouro/local_application.py`、`ouro/application/`
+主要实现：`ouro/tui/`、`ouro/local_application.py`、`ouro/application/`
 
 ## 目标与边界
 
@@ -474,11 +473,10 @@ Provider 子菜单的 `Authentication` 入口通过 `TuiController.provider_auth
 ## 子智能体视图
 
 SpawnAgent 工具记录携带类型化导航 identity。用户可从历史或 live 工具行打开 child Session，并通过键盘或
-Agent tree 在主会话和多个 child 之间切换，也可从 child 的工具行进入其嵌套子会话。
+Agent tree 在主会话及其派遣的子会话之间切换。
 
 child surface 为只读：禁止普通输入、steer、follow-up、abort、fork、模型修改、审批策略修改和 destructive
-Session 操作。root interaction inbox 中的 child 审批与 AskUser 仍由 controlled root 的交互面板处理；只读限制
-不等于丢弃 HITL。不可见 child 继续运行，重新打开时使用 snapshot/high-water/cursor 衔接全部缺失事件。
+Session 操作。root interaction inbox 中的 child 审批与 AskUser 由受控主会话的交互面板处理。不可见 child 继续运行，重新打开时从已确认位置补齐事实与当前草稿。
 
 `TuiController` 通过 `runtime.add_event_sink` 接收子会话的审批、问答和 Run 状态通知。
 它按 `sessions.view` 提供的 `agent_root_session_id` 筛选当前主会话的通知，App 再通过

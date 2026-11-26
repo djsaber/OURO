@@ -62,7 +62,6 @@ class PluginConfigurationScreen(CredentialEditableChoiceScreen):
             return
         field = self._fields.get(selected)
         if self._editing_value is not None:
-            # Entering an empty string is distinct from leaving an unset/null field untouched.
             if (
                 field is not None
                 and field.kind == "string"

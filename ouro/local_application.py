@@ -139,8 +139,6 @@ _BUILTIN_SERVICE_POLICIES = (
 
 
 def _local_auth_drivers(additional: tuple[AuthDriver, ...]) -> tuple[AuthDriver, ...]:
-    # Public client used by the verified upstream Codex compatibility flow.
-    # No clients, secrets or account entitlement are resolved at construction.
     return (OpenAICodexDriver(client_id="app_EMoamEEZ73f0CkXaXp7hrann"), *additional)
 
 
@@ -359,8 +357,6 @@ class LocalApplication:
             if self.task_scheduler is not None:
                 await self.task_scheduler.start()
         except BaseException:
-            # Startup failure uses the same ownership order and cancellation-safe
-            # cleanup as ordinary shutdown; preserve the original startup error.
             with suppress(Exception):
                 await self.close()
             raise
@@ -446,9 +442,7 @@ class LocalApplication:
             except Exception as exc:  # noqa: BLE001 - close every owned resource.
                 errors.append(exc)
         try:
-            # Runtime is the consumer of plugin generation snapshots and MCP
-            # tools.  Close it first so every run lease is released before its
-            # extension owners are drained.
+            # Release Run leases before draining their plugin and MCP owners.
             await self.supervisor.shutdown()
         except Exception as exc:  # noqa: BLE001 - close every owned resource.
             errors.append(exc)
@@ -488,7 +482,6 @@ async def open_local_provider_auth(
         finally:
             await service.close()
     finally:
-        # A failed authorization cleanup must not skip credential writes/locks.
         await credentials.close()
 
 
@@ -764,8 +757,6 @@ def build_local_plugin_service(
         store,
         session_store=session_store,
         builtin_plugins=LOCAL_BUILTIN_PLUGINS,
-        # Static package operations do not depend on the accounting database.
-        # Ledger methods initialize and validate storage when a query needs it.
         usage_service=UsageService(LocalUsageLedger(store.home)),
     )
 

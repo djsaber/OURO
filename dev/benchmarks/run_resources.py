@@ -1,9 +1,4 @@
-"""Offline Run resource lifetime probe.
-
-Resource scenarios use real Runtime/coordinators/Catalog leases with a synthetic
-Catalog publisher and current Session control reads. Prepared runs use real files/SQLite stores and
-FauxProvider. Timings and allocation measurements run separately. No CI time limits.
-"""
+"""Measure Run resource lifetimes across Runtime and Catalog operations."""
 
 from __future__ import annotations
 
@@ -140,8 +135,6 @@ async def prepared_probe(root, backend):
 
     app, catalog = make_runtime(root, backend)
     try:
-        # Independent sessions avoid conflating growing conversation history with
-        # resource ownership. Session creation/reservation are outside the timer.
         samples = []
         for index in range(11):
             session = app.create_session(title="prepared timing")

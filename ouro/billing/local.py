@@ -117,8 +117,6 @@ class LocalUsageLedger:
             connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
             yield connection
             if write:
-                # Maintain bounded planner statistics as data distribution changes.
-                # Include all tables: each operation owns a fresh connection.
                 connection.execute("PRAGMA optimize=0x10012")
 
     def record(self, entry: ProviderUsageEntry) -> ProviderUsageEntry:

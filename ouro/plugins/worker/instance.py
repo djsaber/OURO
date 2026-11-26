@@ -248,7 +248,6 @@ class WorkerPluginInstance:
             result = _object_result(raw, method)
             changed = "session_state" in result
             change = result.pop("session_state", None)
-            # Decode the complete output before staging any owner state.
             output = decode(result, method)
             if changed:
                 if state_view is None:
@@ -256,7 +255,6 @@ class WorkerPluginInstance:
                 if change is None:
                     state_view.delete()
                 elif isinstance(change, dict):
-                    # Validate once at the shared SDK boundary, with host-bound identity.
                     state_view.replace(**change)
                 else:
                     raise WorkerProtocolError(

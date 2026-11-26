@@ -188,7 +188,6 @@ def project_transcript_entries(
     )
     tool_activities = _tool_activities_from_messages(visible_messages)
     message_entries: list[list[TranscriptEntry]] = [[] for _ in messages]
-    # A local compaction can be anchored at the end of the inherited context.
     message_positions = {message.message_id: index for index, message in enumerate(messages)}
     last_message_by_run: dict[str, int] = {}
 

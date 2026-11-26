@@ -279,7 +279,6 @@ def load_required(
     states: tuple[ToolCallState, ...] = (),
     messages: tuple[MessageRecord, ...] = (),
 ) -> ToolCallFacts:
-    # Equality checks require original parameters; reference binding does not.
     arguments_for = {
         *(call.identity for call in proposed.calls),
         *(start.identity for start in proposed.starts if start.arguments_override is not None),

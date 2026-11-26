@@ -69,7 +69,6 @@ class ModelGenerationService:
 
         async def settle_provider_done(event: ProviderStreamEvent) -> None:
             if event.usage is not None:
-                # Settle known usage before publishing the result, including cancellation races.
                 await run_blocking(
                     self.usage.record_plugin_usage,
                     plugin_id=plugin_id,

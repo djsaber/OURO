@@ -218,8 +218,6 @@ class SessionRecord(VersionedOuroModel):
     active_run_id: str | None = None
     continuation_request: SessionContinuationRequest | None = None
     last_message_id: str | None = None
-    # A local lost reply can confirm this write while holding the mutation boundary.
-    # This is not a revision precondition or an archive of retryable operations.
     last_commit_id: str | None = None
     last_run_id: str | None = None
     message_count: int = 0

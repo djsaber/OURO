@@ -198,8 +198,6 @@ class ConfiguredModelCatalog:
             and provider.endpoint(default.endpoint_id or default.model_id) is not None
         )
         if default_options is not None:
-            # A removal after the startup snapshot must not turn a configured
-            # route into an ad-hoc adapter that bypasses subsequent validation.
             self._default_is_configured = (
                 default_options.endpoint_id is not None
                 and default_options.provider_id == default.provider_id
@@ -213,10 +211,6 @@ class ConfiguredModelCatalog:
                 _options_key(options),
                 default_adapter,
             )
-        # A startup composition for a route outside the configured default
-        # (CLI provider/endpoint flags) owns the process default; otherwise the
-        # configured default route stays live so default-route changes apply to
-        # the next request without rebuilding the runtime.
         self._default_route_pinned = (
             model_route_key(default_adapter.model) != self._configured_default_route()
         )
@@ -354,5 +348,4 @@ class ConfiguredModelCatalog:
 
 
 def _options_key(options: ProviderRuntimeOptions) -> str:
-    # Preserve JSON types in provider-specific options (e.g. true vs 1) and ignore key order.
     return json.dumps(options.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))

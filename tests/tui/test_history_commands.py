@@ -129,7 +129,6 @@ async def command(app, pilot, value, *, attachments=(), skills=()):
         if startup:
             await wait_for_workers(app, startup)
     composer = app.query_one(Composer)
-    # Runtime admission may precede the new session surface becoming editable.
     async with asyncio.timeout(10):
         while composer.disabled:
             await pilot.pause()
@@ -472,7 +471,6 @@ async def test_tui_message_query_reloads_if_history_changes_during_event_deliver
         assert app._projection.activity.activity == "idle"
         assert app.query_one(ConversationView).user_turn_summaries() == ("keep",)
         monkeypatch.setattr(runtime.sessions, "messages_at_history", read)
-        # The same missing identity within the current epoch is data loss, not lag.
         failures = []
         monkeypatch.setattr(app, "notify", lambda message, **kwargs: failures.append(message))
         await application.supervisor._on_event(
@@ -527,7 +525,6 @@ async def test_abort_edit_resubmit_and_restart_in_tui(tmp_path, backend, edited)
         await command(app, pilot, "/edit #1")
         assert "Edit #1「first question」" in app.query_one(Composer).text
         assert app.query_one(ConversationView).user_turn_summaries() == ("first question",)
-        # A delayed input notification must not reload the withdrawn message.
         late = EventRecord.model_validate(
             EventRecord(
                 session_id=session_id,

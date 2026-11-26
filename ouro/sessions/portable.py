@@ -201,8 +201,6 @@ class SessionBundle(OuroModel):
                 raise ValueError("Delegation references a missing parent Run")
             if delegation.child_session_id is not None:
                 if delegation.child_session_id not in records:
-                    # Failed dispatch may retain a reserved identity that never
-                    # became a child Session. This is an audit fact, not data loss.
                     if (
                         delegation.spawn_state not in {"requested", "failed"}
                         or delegation.current_child_run_id is not None

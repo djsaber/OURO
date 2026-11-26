@@ -92,7 +92,6 @@ def prepare_home(root: Path, kind: str, count: int) -> Path:
         }
         (source / ".ouro-plugin" / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
         installer.install(source)
-    # Fixture setup only: publish all enable intents before measuring a new Host.
     expected = store.read_state()
     enabled = expected.model_copy(deep=True)
     for record in enabled.plugins.values():
@@ -138,7 +137,6 @@ async def sample(home: Path, kind: str, count: int) -> dict[str, object]:
         report["handles_before"] = before_handles
         report["handles_active"] = process_handles()
         io_before_calls = process_io()
-        # Declarative packages expose metadata. Executable packages perform a real call.
         samples = []
         for _ in range(21):
             started = perf_counter()

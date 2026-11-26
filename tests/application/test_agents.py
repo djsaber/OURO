@@ -2879,7 +2879,6 @@ async def test_shared_budget_checks_each_run_without_reading_child_run_bodies(
         await service.wait_agents((handle.delegation_id,))
         child = store.load_run(handle.child_session_id, handle.child_run_id)
         model = ModelMetadata(model_id="capture", provider_id="capture")
-        # An extra report in this Run must not cover another Run's missing report.
         for request_id, report_purpose in (("first", "agent"), ("extra", purpose)):
             service.usage.record_provider_usage(
                 run=child,
@@ -3044,7 +3043,6 @@ async def test_root_tree_subscription_adds_children_and_reconnects_from_store(tm
     subscription.close()
     await service.wait_agents((child.delegation_id,))
     assert child.child_session_id is not None
-    # Reconnection reads durable content; transient events are not replayed.
     recovered = supervisor.runtime.observation_snapshot(child.child_session_id)
     assert any(
         message.role == "assistant" and message.text_content for message in recovered.messages
@@ -3357,8 +3355,6 @@ async def test_sync_delivery_commits_while_parent_model_is_still_running(
             await sink.close()
         assert len(receipt_checks) == checks_before_tokens
 
-        # A committed join takes the receipt-only fast path, without creating a
-        # state observer or loading a Run checkpoint.
         relations = store.list_delegations(handle.session_id)
 
         def forbidden(*args, **kwargs):
@@ -3472,12 +3468,8 @@ async def test_parallel_sync_spawns_serialize_parent_resumption(
                 ):
                     partial_checks += 1
                     if late_check in {2, 3} and partial_checks == 1:
-                        # Exercise retry/recovery's pre-resume receipt read as
-                        # well as settlement immediately after a partial join.
                         raise OSError("temporary receipt read failure")
                     if late_check in {1, 2} and partial_checks == late_check:
-                        # Return a real, earlier absence only after the sibling
-                        # commits the batch and the parent becomes terminal.
                         stale_read.set()
                         parent_committed.wait()
             return found
@@ -3522,12 +3514,9 @@ async def test_parallel_sync_spawns_serialize_parent_resumption(
                         if updates == 256:
                             assert partial_checks == checks_before_updates
                             updates += 1
-                    # Keep the sibling unresolved until the first waiter has
-                    # consumed its negative receipt and awaits batch publication.
                     if partial_checks:
                         stale_read.set()
                         if late_check == 0 and updates == 0:
-                            # Keep only the durable page from the sibling's terminal commit.
                             await asyncio.to_thread(parent_committed.wait)
                             page, _ = await asyncio.to_thread(
                                 runtime.sessions.observation_changes,
@@ -4046,7 +4035,6 @@ async def test_delivery_run_can_message_the_same_subagent_without_deadlock(tmp_p
     initial = await supervisor.wait(parent_handle)
     assert initial.status == "completed"
     root_session_id = parent_handle.session_id
-    # Guard a deadlock, not local throughput under the 16-worker coverage run.
     async with asyncio.timeout(60):
         while True:
             snapshot = store.load_session(root_session_id)

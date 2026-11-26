@@ -46,7 +46,6 @@ class FileCredentialStore:
         except FileNotFoundError:
             return None
         except OSError, ValueError:
-            # Validation and JSON exceptions may contain secrets, even partial JSON.
             raise AuthError("credential_store_error") from None
 
     def write(self, record: CredentialRecord) -> None:
@@ -97,8 +96,6 @@ class FileCredentialStore:
         descriptor: int | None = None
         acquired = False
         try:
-            # These non-blocking lock syscalls never wait for a peer. Record I/O is
-            # dispatched by CredentialService; contention yields to the event loop.
             try:
                 deadline = asyncio.get_running_loop().time() + timeout
                 self._prepare_directory()

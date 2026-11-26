@@ -118,7 +118,6 @@ def import_skills(home: Path, archive: DataArchive, *, replace: bool) -> int:
             parsed = SkillDocumentParser().parse(staging / "skills" / name / "SKILL.md")
             if parsed.skill is None or parsed.skill.metadata.name != name:
                 raise DataTransferError(f"invalid skill document: {name}")
-        # Serialize publication with native installation and policy changes.
         with JsonConfigFile(home).mutation():
             policy = SkillConfigManager(home)
             policy.snapshot()

@@ -17,7 +17,6 @@ from ouro_upgrade.steps import UpgradeStep, plan
 from ouro_upgrade.usage import rebuild_v5_requests
 from ouro_upgrade.workspace import Workspace
 
-# The task repository has no exported container-version constant.
 TASK_SCHEMA_VERSION = 3
 
 _IDENTITIES = {
@@ -62,7 +61,6 @@ def database(
     group = ("", "-wal", "-shm", "-journal")
     for suffix in group:
         original = work.source(relative + suffix)
-        # SHM is a coordination cache. Rebuild it on the private copy.
         if original.exists() and suffix != "-shm":
             shutil.copyfile(original, target.with_name(target.name + suffix))
     try:
@@ -70,8 +68,6 @@ def database(
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA trusted_schema=OFF")
             connection.execute("PRAGMA foreign_keys=OFF")
-            # This disposable database cannot be published until Workspace syncs
-            # its closed, validated main file together with the rollback material.
             connection.execute("PRAGMA synchronous=OFF")
             require(
                 connection.execute(

@@ -441,8 +441,6 @@ async def test_wait_until_rendered_recovers_after_a_deferred_layout_miss(
                 schedule_render(rebuild=rebuild)
 
         monkeypatch.setattr(app.history, "_schedule_buffer_render", render_when_visible)
-        # Model the welcome transition after its one-shot deferred render ran
-        # while the conversation ancestor still had no layout geometry.
         app.history._reset_buffer([TranscriptEntry(kind="user", text="first message")])
         await pilot.pause()
         assert app.history.entries
@@ -468,7 +466,6 @@ async def test_restored_rows_replace_the_empty_history_height_in_the_same_frame(
         state = history.take_state()
         await pilot.pause()
 
-        # A welcome-to-Session layout can measure the visible buffer before its rows arrive.
         history.display = True
         app.screen._refresh_layout()
         assert history.region.height == 0

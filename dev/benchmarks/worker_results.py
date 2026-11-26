@@ -1,10 +1,4 @@
-"""Measure worker result decoding with synthetic responses and real SDK handlers.
-
-Use the same script with --source for each revision. The fake transport measures
-host processing only: decoded mode starts after JSON parsing; json mode includes
-parsing. Neither mode measures process startup, IPC, plugin work or terminal paint.
-Run sequentially without concurrent tests; timings are not CI thresholds.
-"""
+"""Measure worker result decoding with synthetic responses and real SDK handlers."""
 
 from __future__ import annotations
 

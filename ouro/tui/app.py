@@ -223,7 +223,6 @@ class CachedSessionHistory:
     snapshot_sequence: int
     show_harness_messages: bool
     run_ids: frozenset[str]
-    # Application cursors are opaque; a Files cursor is not a message sequence.
     before_cursor: int | None
 
 
@@ -739,7 +738,6 @@ class OuroTuiApp(App[int]):
         # Restore the pre-blur target just as Textual does for keys and mouse input.
         if isinstance(event, events.Paste) and not event.is_forwarded:
             self.app_focus = True
-        # Recognize files before Textual routes the event to the focused widget.
         if (
             isinstance(event, events.Paste)
             and not event.is_forwarded
@@ -871,7 +869,6 @@ class OuroTuiApp(App[int]):
                 if not self._owns_application:
                     self._startup_screen.show_error(str(exc))
                     return
-                # Offline maintenance must never overlap runtime work or its home lease.
                 await self._draft_persistence.wait()
                 await self._controller.close()
                 self._home_access.close()
@@ -1129,7 +1126,6 @@ class OuroTuiApp(App[int]):
                 if self._projection is not None:
                     self._projection.confirm_messages(batch.position.message_sequence)
                 if self._history_anchor is None and batch.position.message_sequence:
-                    # Observation started on an empty history and now has its first prefix.
                     self._history_anchor = SessionHistoryAnchor(
                         history_epoch=batch.history_epoch, first_sequence=1
                     )
@@ -1290,7 +1286,6 @@ class OuroTuiApp(App[int]):
                     self._observation_frame = None
 
     async def _flush_pending_runtime_events(self) -> None:
-        # A compaction completing during a render waits for it, then releases the next prefix.
         if self._observation_frame is None:
             return
         async with self._session_surface_lock:
@@ -1610,8 +1605,6 @@ class OuroTuiApp(App[int]):
             return
         if not self._surface_available() or run.kind != "agent":
             return
-        # Internal endpoint identity remains durable; only its user-facing
-        # display projection crosses into the transcript.
         presentation = project_run_presentation(run, models=self._models)
         if presentation.model == "unknown model" and model is not None:
             presentation = replace(presentation, model=model)
@@ -1680,8 +1673,6 @@ class OuroTuiApp(App[int]):
             return
         if picker is self._attachment_picker and revision == self._controller.selection_revision:
             with self.batch_update():
-                # Publish a complete directory view without collapsing the existing menu.
-                # A filter typed during the read belongs to the newly opened directory.
                 if picker.loaded and composer.text == query:
                     composer.set_attachment_query("")
                 picker.directory, picker.entries = directory, entries
@@ -1754,9 +1745,6 @@ class OuroTuiApp(App[int]):
                 self._attachment_picker.loading = True
                 self._load_attachment_directory(directory)
             picker = self._attachment_picker
-            # Keep the last complete menu, including the reference commands, until
-            # the directory snapshot is ready. Scheduling a worker must not publish
-            # an unread directory or a temporary empty list.
             if picker.loading:
                 return
             arguments = picker.arguments(query, self._tui_theme)
@@ -1912,7 +1900,6 @@ class OuroTuiApp(App[int]):
                 on_error=partial(self.notify, severity="error", markup=False),
             )
             if revision != self._controller.selection_revision:
-                # The import belongs to its captured Session, never to a later navigation.
                 content, context = insert_into_original(imported)
                 self._remember_composer(original_session, content, context)
                 await self._flush_input_drafts()
@@ -2052,7 +2039,6 @@ class OuroTuiApp(App[int]):
                     if await self._controller.input_accepted(pending.session_id, pending.input_id):
                         input_accepted()
                 except OuroError as acceptance_error:
-                    # Keep the pending input until recovery can establish its durable outcome.
                     self._notify_error("Delivery status unknown", acceptance_error)
                     return
             if not accepted:
@@ -2105,8 +2091,6 @@ class OuroTuiApp(App[int]):
         return self._controller.session_id == session_id
 
     async def _refresh_welcome_status(self, *, full: bool = False) -> None:
-        # Entry and completion notifications share one reader. A full snapshot
-        # includes usage; notifications during a read request one follow-up read.
         if not self._welcome_status_visible():
             return
         if full or self._welcome_refresh_requested != "system":
@@ -2141,8 +2125,6 @@ class OuroTuiApp(App[int]):
                 if revision != self._controller.selection_revision:
                     continue
                 if requested == "system" and previous != self._system_status:
-                    # Live workspace, model and service updates take precedence
-                    # over a snapshot captured before they were applied.
                     self._welcome_refresh_requested = "system"
                     continue
                 if status != self._system_status:
@@ -2494,7 +2476,6 @@ class OuroTuiApp(App[int]):
         self, value: str, history: tuple[str, int, int] | None, source_id: str | None
     ) -> None:
         with self.query_one(ActivityIndicator).pending_operation():
-            # Preserve submission order while leaving the message pump available.
             async with self._composer_submission_lock:
                 if self._side_command_interrupted(value, source_id):
                     return
@@ -2918,7 +2899,6 @@ class OuroTuiApp(App[int]):
         if drafts == self._input_drafts and not force_persist:
             return
         self._input_drafts = drafts
-        # A rejected on-disk artifact must survive until explicit data maintenance.
         if self._input_drafts_error is not None:
             return
         if not self._preferences.input_draft_memory_enabled and not force_persist:
@@ -3875,7 +3855,6 @@ class OuroTuiApp(App[int]):
             )
 
         async def select_session(session_id: str) -> tuple[Choice, ...] | None:
-            # History rendering needs the destination screen to be visible.
             session_menu.dismiss(None)
             try:
                 await self._open_session(session_id)
@@ -3902,7 +3881,6 @@ class OuroTuiApp(App[int]):
                         await self._controller.set_session_archived(session_id, archived=archived)
                 except Exception as exc:  # noqa: BLE001
                     self._notify_error("Could not update all selected conversations", exc)
-                # Publish completed changes even if a later item failed.
                 return await refresh_choices()
 
         async def delete_selected(session_ids: tuple[str, ...]) -> tuple[Choice, ...] | None:
@@ -4178,7 +4156,6 @@ class OuroTuiApp(App[int]):
                 await self._replace_agent_tree(
                     tree_root, prepared=prepared_tree, navigation_source=navigation_source
                 )
-                # Commit the prepared content; the history owns deferred layout.
                 with self.batch_update():
                     conversation = self.query_one(ConversationView)
                     visible_session_id = self._visible_session_id()
@@ -4229,9 +4206,6 @@ class OuroTuiApp(App[int]):
                         and selection is not None
                     ):
                         self._restore_input_draft(session.session_id, retain=side_switch)
-                    # The selected Session now owns the surface. Clear every interaction
-                    # projected by the previous Session before yielding while its history
-                    # is mounted; the new projection will restore its own pending request.
                     self._visible_read_only = read_only
                     self._session_status_harness_version = session.harness_version
                     self._visible_agent = agent
@@ -4783,8 +4757,6 @@ class OuroTuiApp(App[int]):
                 not in historical_tools
             )
 
-        # A snapshot installs complete state; it does not replay streaming handoffs.
-        # Prepare stable blocks together with history, leaving only the open tail live.
         reasoning = projection.reasoning_text
         answer = projection.assistant_text
         stream = AssistantMarkdownStream()
@@ -5173,8 +5145,6 @@ class OuroTuiApp(App[int]):
             )
         )
         if self._visible_read_only:
-            # Presentation preferences also apply while observing a child;
-            # session and runtime mutations remain unavailable there.
             actions = tuple(
                 action
                 for action in actions
@@ -5324,8 +5294,6 @@ class OuroTuiApp(App[int]):
                 self._choose_welcome_package(package, menu=theme_screen)
                 return None
             if value.startswith(_WELCOME_STYLE_PREFIX):
-                # Choice workers may be cancelled by another selection. The host
-                # owns the complete save/mount transaction, serialized with prefs.
                 worker: Worker[bool] = self.run_worker(
                     partial(self._set_welcome_style, value.removeprefix(_WELCOME_STYLE_PREFIX)),
                     group="welcome-style",
@@ -5487,8 +5455,6 @@ class OuroTuiApp(App[int]):
                 return False
             self._preferences = preferences
             await self.query_one(WelcomePanel).set_welcome_style(self._welcome_style)
-        # Menu navigation can cancel the selection callback while this App-owned
-        # transaction finishes. Refresh the current page from the durable owner.
         await self._refresh_theme_picker()
         return True
 
@@ -5557,8 +5523,6 @@ class OuroTuiApp(App[int]):
         self.query_one(ConversationView).show_harness_messages = enabled
         session_id = self._visible_session_id()
         if session_id is not None:
-            # Reload through observation so retained pages, active streams and
-            # read-only child sessions use the same snapshot/event handoff.
             await self._show_observed_session(session_id)
         return True
 
@@ -5904,7 +5868,6 @@ class OuroTuiApp(App[int]):
         hint = self._tui_theme.inline_separator.join(("↑/↓ move", "←/→ group", "Esc back"))
 
         async def keep_help_open(_selected: str) -> None:
-            # Help rows describe interactions; selection does not execute a command.
             return None
 
         if menu is not None:
@@ -5932,7 +5895,6 @@ class OuroTuiApp(App[int]):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if self._starting:
             return action == "quit"
-        # Tab owns focus navigation; disable Textual's inherited reverse-focus action.
         if action == "focus_previous":
             return False
         return super().check_action(action, parameters)
@@ -5988,7 +5950,6 @@ class OuroTuiApp(App[int]):
 def _transcript_before_cursor(
     messages: tuple[MessageRecord, ...], before_cursor: int | None, *, hide_inherited: bool
 ) -> int | None:
-    # The copied source history is a contiguous prefix of the side conversation.
     if hide_inherited and messages and "source_message_id" in messages[0].metadata:
         return None
     return before_cursor
