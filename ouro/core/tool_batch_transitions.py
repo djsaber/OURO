@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -31,28 +32,21 @@ class ToolBatchSuspension:
     status: ToolBatchOutcomeStatus
     run_phase: RunPhase
     batch_phase: ToolBatchPhase
-    call: ToolBatchCall
+
+
+def primary_tool_wait(statuses: Iterable[ToolCallStatus]) -> ToolBatchSuspension | None:
+    """Project the primary Run wait from its independently addressable Calls."""
+    pending = set(statuses)
+    for call_status, status, run_phase, batch_phase in _SUSPENSIONS:
+        if call_status in pending:
+            return ToolBatchSuspension(status, run_phase, batch_phase)
+    return None
 
 
 def tool_batch_suspension(batch: ToolCallBatchRecord) -> ToolBatchSuspension | None:
-    """Return the deterministic suspension that owns the batch, if any.
-
-    Approval is selected first because it gates execution permission. A child
-    join owns the batch before ordinary user input once permission is settled.
-    Source ordering resolves multiple calls of the same kind.
-    """
-
-    ordered = sorted(batch.calls, key=lambda item: item.request.source_index)
-    for call_status, status, run_phase, batch_phase in _SUSPENSIONS:
-        call = next((item for item in ordered if item.status == call_status), None)
-        if call is not None:
-            return ToolBatchSuspension(
-                status=status,
-                run_phase=run_phase,
-                batch_phase=batch_phase,
-                call=call,
-            )
-    return None
+    if any(call.status in {"ready", "running", "resolving_input"} for call in batch.calls):
+        return None
+    return primary_tool_wait(call.status for call in batch.calls)
 
 
 def resolve_tool_approval(
@@ -139,8 +133,4 @@ def resolve_tool_approval(
 
     if not found:
         raise ValueError(f"unknown approval: {approval_id}")
-    resolved = batch.model_copy(update={"calls": resolved_calls, "updated_at": timestamp})
-    suspension = tool_batch_suspension(resolved)
-    return resolved.model_copy(
-        update={"phase": suspension.batch_phase if suspension is not None else "ready"}
-    )
+    return batch.model_copy(update={"calls": resolved_calls, "updated_at": timestamp})

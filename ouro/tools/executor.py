@@ -466,6 +466,7 @@ def _legacy_tool_variant_hash(definition: ToolDefinition) -> str:
     contract = definition.model_dump(
         mode="json", exclude={"canonical_id", "description", "display_name", "metadata"}
     )
+    contract["execution_mode"] = "inherit"
     contract["canonical_id"] = definition.identity
     contribution = definition.metadata.get("contribution_id")
     group_tool = isinstance(contribution, str) and "/" in contribution

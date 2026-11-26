@@ -175,7 +175,8 @@ async def test_parallel_approvals_advance_one_at_a_time_without_stalling(tmp_pat
         assert app._projection.pending_interaction.tool_call_id == "call_write_2"
         assert app.query_one(InteractionBar).has_focus is True
         assert title.render().plain == "APPROVAL  2/2"
-        assert first.exists() is False
+        await _wait_until(first.exists, pilot, description="first approved write")
+        assert first.read_text(encoding="utf-8") == "first"
         assert second.exists() is False
 
         await pilot.press("enter")

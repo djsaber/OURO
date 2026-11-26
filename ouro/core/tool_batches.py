@@ -122,6 +122,28 @@ class ToolBatchCall(OuroModel):
             ToolCallIdentity(run_id, batch_id, self.request.id), self.input_revision
         )
 
+    def interrupted_feedback(self) -> Self:
+        if self.result is not None:
+            return self
+        unknown = self.status == "unknown_outcome" or tool_execution_in_flight(self)
+        return self.model_copy(
+            update={
+                "status": "unknown_outcome" if unknown else "aborted",
+                "result": ToolResult(
+                    tool_call_id=self.request.id,
+                    tool_name=self.request.name,
+                    is_error=True,
+                    content=(
+                        "Tool execution was interrupted and its outcome is unknown."
+                        if unknown
+                        else "Tool execution was interrupted before a durable result was produced."
+                    ),
+                    structured={"recovered_interruption": True, "outcome_unknown": unknown},
+                    ended_at=utc_now(),
+                ),
+            }
+        )
+
 
 class ToolCallBatchRecord(OuroModel):
     """The selected active batch, with values loaded for its execution or publication."""
@@ -151,13 +173,6 @@ class ToolCallBatchRecord(OuroModel):
             for call in self.calls
             if call.status == "awaiting_approval" and call.approval is not None
         ]
-
-    @property
-    def is_interaction_resolved(self) -> bool:
-        return all(
-            call.status not in {"awaiting_approval", "waiting_user", "waiting_child"}
-            for call in self.calls
-        )
 
     def head(self) -> ToolBatchHead:
         return ToolBatchHead(

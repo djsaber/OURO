@@ -5,6 +5,7 @@ import json
 import pytest
 
 from ouro.application.runtime.service import RuntimeService
+from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
 from ouro.providers import FauxProvider
@@ -53,4 +54,29 @@ def runtime(store, tool, arguments):
             ),
             ModelMetadata(model_id="faux", provider_id="faux"),
         ),
+    )
+
+
+def batch_runtime(
+    tmp_path, *, registry, first_calls, mode="sequential", store_type=LocalSessionStore
+):
+    store = store_type(tmp_path / "sessions.db" if store_type is SQLiteSessionStore else tmp_path)
+    store.initialize()
+    provider = FauxProvider(
+        event_batches=[
+            [
+                *(ProviderStreamEvent.from_tool_call(call) for call in first_calls),
+                ProviderStreamEvent(type="done"),
+            ],
+            [
+                ProviderStreamEvent(type="text_delta", text="batch complete"),
+                ProviderStreamEvent(type="done"),
+            ],
+        ]
+    )
+    return RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(provider, ModelMetadata(model_id="faux", provider_id="faux")),
+        tools=registry,
+        tool_execution_config=ToolExecutionConfig(mode=mode, max_concurrency=2),
     )

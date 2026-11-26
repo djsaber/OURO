@@ -848,7 +848,7 @@ tool list 和执行 registry 中按轮次隐藏。插件回调可以读取业务
 `batch_behavior = compatible | exclusive` 和 resumable 能力。builtin 与插件在定义处声明；MCP 依次采用用户 override、
 协议只读注解或 `unknown`，不做名称/描述启发式推断。准备与恢复工具调用时核对其执行权限。
 
-`batch_behavior` 控制批次是否允许组合；Host 的 `execution_mode` 控制合法批次的执行顺序。含 exclusive 工具的批次
+`batch_behavior` 控制批次是否允许组合。Host 的 `tool_execution.mode` 决定新批次的执行方式。含 exclusive 工具的批次
 若还有兄弟调用，无论顺序还是并行都必须在任何 handler 执行前整批拒绝。Host 从结构化契约统一生成模型可见的调用说明，
 插件无需在 description 中重复维护此规则；呈现不修改插件注册定义和执行契约。详见[工具规格](tools-and-interactions.md)。
 

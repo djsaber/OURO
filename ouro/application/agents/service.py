@@ -77,6 +77,7 @@ from ouro.core.session_ports import RuntimeSessionSnapshot, SessionStore
 from ouro.core.state import (
     ACTIVE_RUN_STATUSES,
     RESUMABLE_RUN_STATUSES,
+    TOOL_WAIT_RUN_STATUSES,
     RunRecord,
     RunStatus,
     SessionRecord,
@@ -308,7 +309,7 @@ class AgentService:
         identity = batch.head().identity(run.run_id, tool_call_id)
         state = await run_blocking(self.store.load_tool_call_state, session.session_id, identity)
         if (
-            durable.status != "waiting_child"
+            durable.status not in TOOL_WAIT_RUN_STATUSES
             or durable.active_tool_batch is None
             or durable.active_tool_batch.batch_id != identity.batch_id
             or state is None
@@ -1357,10 +1358,11 @@ class AgentService:
                 if item.request.id == tool_call_id
                 and item.approval is not None
                 and item.approval.approval_id == approval_id
+                and item.status == "awaiting_approval"
             ),
             None,
         )
-        if call is None or run.status != "waiting_approval":
+        if call is None or run.status not in ACTIVE_RUN_STATUSES:
             raise ValueError("approval identity does not match the child canonical request")
         handle = await self.scheduler.resolve_tool_approval(
             session_id=child_session_id,
@@ -1406,7 +1408,7 @@ class AgentService:
         if (
             batch is None
             or call is None
-            or run.status != "waiting_user"
+            or run.status not in ACTIVE_RUN_STATUSES
             or request_id != expected_request_id
         ):
             raise ValueError("input identity does not match the child canonical request")
@@ -1606,7 +1608,7 @@ class AgentService:
                 run = None
             if run is not None:
                 batch = await run_blocking(load_tool_batch, self.store, run)
-                if run.status == "waiting_child" and batch is not None:
+                if run.status in TOOL_WAIT_RUN_STATUSES and batch is not None:
                     for call in batch.calls:
                         if call.status == "waiting_child" and call.agent_wait is not None:
                             wait_error = await run_blocking(
@@ -2132,7 +2134,7 @@ class AgentService:
                 if not resolved and receipt is not None and attempt_finished:
                     receipt.result()
                     raise SessionBusyError("Parent continuation has not resolved the child wait")
-                if parent.status == "waiting_child" and not resolved and not scheduled:
+                if parent.status in TOOL_WAIT_RUN_STATUSES and not resolved and not scheduled:
                     handle = await self._schedule_agent_wait_result(
                         session_id=session_id,
                         identity=identity,

@@ -43,13 +43,14 @@ from ouro.core.session_commits import SessionCommit, SessionCommitConflict, Sess
 from ouro.core.session_ports import RuntimeSessionSnapshot, SessionStore
 from ouro.core.state import (
     ACTIVE_RUN_STATUSES,
+    TOOL_WAIT_RUN_STATUSES,
     RunPhase,
     RunRecord,
     RunStatus,
     SessionContinuationRequest,
     SessionRecord,
 )
-from ouro.core.tool_batch_transitions import tool_batch_suspension
+from ouro.core.tool_batch_transitions import ToolBatchSuspension
 from ouro.core.tool_batches import (
     ToolCallBatchRecord,
     ToolCallState,
@@ -504,7 +505,10 @@ class RunLifecycle:
         SessionRecord, RunRecord, ToolCallBatchRecord, list[MessageRecord], tuple[EventRecord, ...]
     ]:
         """Publish the source-ordered frame, Call state and Driver checkpoint together."""
-        ordered = sorted(batch.calls, key=lambda call: call.request.source_index)
+        ordered = [
+            call.interrupted_feedback() if call.status in {"unknown_outcome", "aborted"} else call
+            for call in sorted(batch.calls, key=lambda call: call.request.source_index)
+        ]
         if not ordered or any(call.result is None for call in ordered):
             raise ValueError("publishing a tool batch requires feedback for every Call")
         resource_refs = [
@@ -795,32 +799,36 @@ class RunLifecycle:
                 results=tuple(call.result for call in batch.calls if call.result is not None),
             )
 
-    def save_resolved_batch(
+    async def checkpoint_tool_dispatch(
         self,
-        *,
         session: SessionRecord,
         run: RunRecord,
         batch: ToolCallBatchRecord,
-        harness: HarnessCallSnapshot | None = None,
-        changed_call_ids: frozenset[str] | None = None,
+        suspension: ToolBatchSuspension | None,
+        *,
+        changed_call_ids: frozenset[str] | None,
         events: tuple[EventRecord, ...] = (),
-    ) -> tuple[SessionRecord, RunRecord, ToolCallBatchRecord, tuple[EventRecord, ...]]:
-        """Publish an interaction result and its next execution boundary together."""
-        suspension = tool_batch_suspension(batch)
-        if suspension is not None:
-            batch = batch.model_copy(
-                update={"phase": suspension.batch_phase, "updated_at": utc_now()}
-            )
-        return self.save_batch_state(
+        harness: HarnessCallSnapshot | None = None,
+    ) -> tuple[SessionRecord, RunRecord, ToolCallBatchRecord]:
+        """Commit interaction facts and ownership together before invoking extensions."""
+        session, run, batch, committed = await run_blocking(
+            self.save_batch_state,
             session=session,
             run=run,
-            batch=batch,
-            harness=harness,
+            batch=batch.model_copy(
+                update={
+                    "phase": suspension.batch_phase if suspension else "executing",
+                    "updated_at": utc_now(),
+                }
+            ),
+            status=suspension.status if suspension else "running",
+            phase=suspension.run_phase if suspension else "tool_execution",
             changed_call_ids=changed_call_ids,
             events=events,
-            status=suspension.status if suspension is not None else "running",
-            phase=suspension.run_phase if suspension is not None else "tool_execution",
+            harness=harness,
         )
+        await self.events.publish_committed(committed)
+        return session, run, batch
 
     def save_batch_state(
         self,
@@ -965,7 +973,7 @@ class RunLifecycle:
                 canonical = committed.messages[0]
                 assistant_message.sequence = canonical.sequence
                 assistant_message.before_harness_version = canonical.before_harness_version
-        if status in {"waiting_approval", "waiting_user", "waiting_child"}:
+        if status in TOOL_WAIT_RUN_STATUSES:
             self.store.refresh_catalog(updated_session.session_id)
         return updated_session, updated_run, batch, committed.events
 

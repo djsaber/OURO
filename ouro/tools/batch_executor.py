@@ -49,40 +49,27 @@ class ToolBatchExecutor:
                 if prepared.status == "ready"
                 else prepared
             )
-            return await resolve_outcome(outcome) if resolve_outcome is not None else outcome
+            if resolve_outcome is not None:
+                outcome = await resolve_outcome(outcome)
+            if on_outcome is not None:
+                await on_outcome(outcome)
+            return outcome
 
         if mode == "sequential":
             outcomes: list[ToolExecutionOutcome] = []
             for invocation in invocations:
-                outcome = await execute_one(invocation)
-                if on_outcome is not None:
-                    await on_outcome(outcome)
-                outcomes.append(outcome)
-                if outcome.status in {
-                    "approval_required",
-                    "waiting_user",
-                    "waiting_child",
-                }:
+                if signal is not None and signal.is_aborted():
                     break
+                outcomes.append(await execute_one(invocation))
             return outcomes
 
         semaphore = asyncio.Semaphore(max_concurrency)
-        interaction_requested = asyncio.Event()
 
         async def run(invocation: ToolInvocation) -> ToolExecutionOutcome | None:
             async with semaphore:
-                if interaction_requested.is_set():
+                if signal is not None and signal.is_aborted():
                     return None
-                outcome = await execute_one(invocation)
-                if outcome.status in {
-                    "approval_required",
-                    "waiting_user",
-                    "waiting_child",
-                }:
-                    interaction_requested.set()
-                if on_outcome is not None:
-                    await on_outcome(outcome)
-                return outcome
+                return await execute_one(invocation)
 
         completed = await asyncio.gather(
             *(run(invocation) for invocation in invocations),

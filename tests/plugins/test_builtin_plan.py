@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import shutil
@@ -664,7 +665,10 @@ async def test_plan_command_only_activates_mode_until_next_user_message(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_plan_off_cancels_activation_bound_pending_approval(tmp_path) -> None:
+@pytest.mark.parametrize("before_handoff", [False, True])
+async def test_plan_off_cancels_activation_bound_pending_approval(
+    tmp_path, before_handoff, monkeypatch
+) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -672,34 +676,57 @@ async def test_plan_off_cancels_activation_bound_pending_approval(tmp_path) -> N
     runtime, store = _runtime(home, workspace, provider)
     application = LocalApplication.from_runtime(runtime, home=home)
     await _enable_plan_mode(application)
-    waiting = await runtime.run("Design the implementation", approval_mode="auto")
-    assert waiting.run.status == "waiting_user"
     assert application.plugins is not None
+    visible, release = asyncio.Event(), asyncio.Event()
 
-    released = await application.plugins.execute_command(
-        f"{PLUGIN_ID}:plan",
-        "off",
-        session_id=waiting.session.session_id,
-        workspace=str(workspace),
-    )
+    checkpoint = runtime.run_lifecycle.checkpoint_tool_dispatch
 
-    snapshot = store.load_runtime_session(waiting.session.session_id)
-    cancelled = next(run for run in snapshot.runs if run.run_id == waiting.run.run_id)
+    async def hold_handoff(session, run, batch, suspension, **kwargs):
+        if before_handoff and suspension and suspension.status == "waiting_user":
+            visible.set()
+            await release.wait()
+        return await checkpoint(session, run, batch, suspension, **kwargs)
+
+    monkeypatch.setattr(runtime.run_lifecycle, "checkpoint_tool_dispatch", hold_handoff)
+    running = asyncio.create_task(runtime.run("Design the implementation", approval_mode="auto"))
+    try:
+        if before_handoff:
+            await asyncio.wait_for(visible.wait(), 30)
+            session = store.list_sessions()[0]
+            active = store.load_run(session.session_id, session.active_run_id)
+            assert active.status == "running"
+        else:
+            waiting = await running
+            session, active = waiting.session, waiting.run
+            assert active.status == "waiting_user"
+        released = await application.plugins.execute_command(
+            f"{PLUGIN_ID}:plan", "off", session_id=session.session_id, workspace=str(workspace)
+        )
+        if before_handoff:
+            assert store.load_run(session.session_id, active.run_id).abort_requested
+    finally:
+        release.set()
+        await asyncio.wait_for(running, 30)
+
+    snapshot = store.load_runtime_session(session.session_id)
+    cancelled = next(run for run in snapshot.runs if run.run_id == active.run_id)
     assert cancelled.status == "aborted"
     assert cancelled.active_tool_batch is not None
     pending = next(
         call for call in load_tool_batch(store, cancelled).calls if call.request.id == "call_exit"
     )
-    assert pending.status == "aborted"
-    assert pending.result is not None
-    assert pending.result.structured["error_type"] == "SessionControlReleased"
+    if before_handoff:
+        assert cancelled.metadata["abort_reason"] == "session_control_released"
+    else:
+        assert pending.status == "aborted"
+        assert pending.result.structured["error_type"] == "SessionControlReleased"
     assert snapshot.session.status == "idle"
     assert snapshot.session.active_run_id is None
     assert released.data["session_controls"][0]["data"]["cancelled_run_id"] == cancelled.run_id
     with pytest.raises(ValueError, match="not waiting for user input"):
         await runtime.answer_user(
-            session_id=waiting.session.session_id,
-            run_id=waiting.run.run_id,
+            session_id=session.session_id,
+            run_id=active.run_id,
             answer={"action": "accept"},
         )
     await application.close()

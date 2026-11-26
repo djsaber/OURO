@@ -54,10 +54,8 @@ def test_prepared_tool_values_are_stable_across_json_storage():
 @pytest.mark.parametrize("description", ["Original tool description.", ""])
 def test_context_projects_batch_contract_without_changing_registered_tools(description) -> None:
     exclusive = ToolDefinition(name="Boundary", description=description, batch_behavior="exclusive")
-    sequential = ToolDefinition(
-        name="Sequential", description="Ordinary tool.", execution_mode="sequential"
-    )
-    definitions = [exclusive, sequential]
+    ordinary = ToolDefinition(name="Ordinary", description="Ordinary tool.")
+    definitions = [exclusive, ordinary]
     original = [tool.model_dump() for tool in definitions]
     builder = ContextBuilder(token_estimator=len)
     original_cost = builder.build(

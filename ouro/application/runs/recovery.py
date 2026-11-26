@@ -4,11 +4,10 @@ from typing import TYPE_CHECKING
 
 from ouro.application.inputs.queue import PendingInputs
 from ouro.application.runs.tool_batches import load_batch_states, load_tool_batch
-from ouro.core.base import utc_now
 from ouro.core.callbacks import run_blocking
 from ouro.core.session_ports import RunReferenceReader, RuntimeSessionSnapshot, SessionRepository
 from ouro.core.state import ACTIVE_RUN_STATUSES, RESUMABLE_RUN_STATUSES
-from ouro.core.tool_batches import ToolBatchCall, tool_execution_in_flight
+from ouro.core.tool_batches import ToolBatchCall
 from ouro.core.tools import ToolResult, ToolResultFeedback, ToolResultValue
 
 if TYPE_CHECKING:
@@ -83,13 +82,7 @@ class RunRecoveryService:
         call: ToolBatchCall, *, observed: ToolResultValue | None = None
     ) -> ToolBatchCall:
         if observed is not None:
-            feedback = ToolResultFeedback(
-                error_type="ToolBusinessEffectsNotApplied",
-                error_message=(
-                    "The tool returned the observation above, but its Session state or control "
-                    "changes were not published before interruption and have been discarded."
-                ),
-            )
+            feedback = ToolResultFeedback.interrupted_effects()
             return call.model_copy(
                 update={
                     "status": "failed",
@@ -99,27 +92,7 @@ class RunRecoveryService:
                     "feedback": feedback,
                 }
             )
-        if call.result is not None:
-            return call
-        outcome_unknown = call.status == "unknown_outcome" or tool_execution_in_flight(call)
-        content = (
-            "Tool execution was interrupted and its outcome is unknown."
-            if outcome_unknown
-            else "Tool execution was interrupted before a durable result was produced."
-        )
-        return call.model_copy(
-            update={
-                "status": "unknown_outcome" if outcome_unknown else "aborted",
-                "result": ToolResult(
-                    tool_call_id=call.request.id,
-                    tool_name=call.request.name,
-                    is_error=True,
-                    content=content,
-                    structured={"recovered_interruption": True, "outcome_unknown": outcome_unknown},
-                    ended_at=utc_now(),
-                ),
-            }
-        )
+        return call.interrupted_feedback()
 
 
 def retained_plugin_releases(

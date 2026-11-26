@@ -231,3 +231,92 @@ async def test_driver_parallel_agents_review_and_conditional_approved_action(
         await agents.close()
         await supervisor.shutdown()
         await plugins.close()
+
+
+@pytest.mark.parametrize("approve_first", [True, False], ids=["approval-first", "child-first"])
+async def test_approval_and_child_join_resolve_independently(tmp_path, approve_first):
+    from ouro.application.runs.tool_batches import load_tool_batch
+
+    child_entered, release_child, child_resolved = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class MixedProvider(FauxProvider):
+        rounds = 0
+
+        async def stream(
+            self, *, model, system_prompt="", messages, tools=None, request_context=None
+        ):
+            if "CHILD ONLY" in system_prompt:
+                child_entered.set()
+                await release_child.wait()
+                yield ProviderStreamEvent(type="text_delta", text="child result")
+            else:
+                self.rounds += 1
+                if self.rounds == 1:
+                    yield ProviderStreamEvent.from_tool_call(
+                        {"id": "deploy", "name": "Deploy", "arguments": {}}, index=0
+                    )
+                    yield ProviderStreamEvent.from_tool_call(
+                        {
+                            "id": "child",
+                            "name": "SpawnAgent",
+                            "arguments": {
+                                "agent_id": "reader",
+                                "description": "Read independently",
+                                "task": "Read",
+                                "execution_mode": "sync",
+                            },
+                        },
+                        index=1,
+                    )
+                else:
+                    yield ProviderStreamEvent(type="text_delta", text="done")
+            yield ProviderStreamEvent(type="done")
+
+    provider = MixedProvider()
+    store = LocalSessionStore(tmp_path / "sessions")
+    store.initialize()
+    calls = []
+    app, supervisor, agents, plugins, _ = assemble(tmp_path, store, provider, calls)
+
+    def on_event(event):
+        if event.event_type == "agent_wait_resolved":
+            child_resolved.set()
+
+    app.add_event_sink(on_event)
+    await agents.start()
+    try:
+        start = await supervisor.submit("Run the two independent operations")
+        parked = await supervisor.wait(start)
+        target = dict(session_id=parked.session_id, run_id=parked.run_id)
+        run = store.load_run(**target)
+        assert [c.status for c in load_tool_batch(store, run).calls] == [
+            "awaiting_approval",
+            "waiting_child",
+        ]
+        await asyncio.wait_for(child_entered.wait(), 30)
+        assert run.status == "waiting_approval" and not calls
+        if not approve_first:
+            release_child.set()
+            await asyncio.wait_for(child_resolved.wait(), 30)
+            assert store.load_run(**target).status == "waiting_approval" and not calls
+        assert provider.rounds == 1
+        reply = await supervisor.resolve_tool_approval(
+            **target, approval_id=run.pending_approval_id, approved=approve_first
+        )
+        decision = await supervisor.wait(reply)
+        if approve_first:
+            assert decision.status == "waiting_child"
+            assert calls == ["deploy"] and provider.rounds == 1
+        release_child.set()
+        finished = await asyncio.wait_for(supervisor.wait_run(**target), 30)
+        assert finished.status == "completed", finished.error
+        assert provider.rounds == 2
+        assert calls == (["deploy"] if approve_first else [])
+        messages = [m for m in store.load_session(parked.session_id).messages if m.tool_result]
+        assert [m.tool_result.tool_call_id for m in messages] == ["deploy", "child"]
+        assert [m.tool_result.is_error for m in messages] == [not approve_first, False]
+    finally:
+        release_child.set()
+        await agents.close()
+        await supervisor.shutdown()
+        await plugins.close()

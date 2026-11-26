@@ -539,8 +539,10 @@ Host 观察通过统一事实页衔接本地推送、跨进程变化和缓存遗
 
 ## 恢复
 
-显式恢复命令只处理当前 history_epoch 中无 live owner 的 queued/running Run；Supervisor 已接管的 job
-不进入恢复。queued 尚未取得执行锁不构成中断证据，Host 选择会话时不据此触发恢复。满足恢复条件时：
+显式恢复仅处理当前 history_epoch、没有 live owner 的活动 Run。queued 尚未取得执行锁不构成中断证据。
+工具执行期间已记录外部等待时，先按 Call 事实恢复原 Run 的可应答状态，也兼容旧版提前写入的等待状态。
+已确定的观察、有效问题、审批和子任务绑定各自保留。失去执行者且只有 Start 的调用记为 `unknown_outcome`。
+已有停驻批次按持久化的模式和上限从正常交互入口继续。其余执行中断进入原有收尾流程。
 
 - Run 转为 `recoverable`；
 - Session 清除 active run 并恢复可操作状态；

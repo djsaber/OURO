@@ -157,13 +157,13 @@ from ouro.core.session_controls import (
 from ouro.core.session_ports import RuntimeSessionSnapshot, SessionStore
 from ouro.core.session_titles import normalize_session_title, with_session_title
 from ouro.core.state import (
+    TOOL_WAIT_RUN_STATUSES,
     RunContinuationCheckpoint,
     RunRecord,
     SessionContinuationRequest,
     SessionRecord,
 )
 from ouro.core.system_prompts import SystemPromptRegistry
-from ouro.core.tool_batch_transitions import tool_batch_suspension
 from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tool_facts import ToolCallIdentity, ToolQuestion
 from ouro.core.tool_policies import ToolPolicyRegistry
@@ -2555,28 +2555,17 @@ class RuntimeService:
         batch: ToolCallBatchRecord,
         signal: AbortSignal,
     ) -> RunResult:
-        suspension = tool_batch_suspension(batch)
-        if suspension is not None:
-            if suspension.status == "waiting_child":
-                if self._agent_controls is None or suspension.call.agent_wait is None:
-                    raise RuntimeError("Agent control executor is unavailable")
-                await self._agent_controls.wait_parked(
-                    session=session,
-                    run=run,
-                    batch=batch,
-                    tool_call_id=suspension.call.request.id,
-                    wait=suspension.call.agent_wait,
-                )
-            return RunResult(session=session, run=run)
-
         try:
-            await self._ensure_extension_snapshot(run)
+            if run.status not in TOOL_WAIT_RUN_STATUSES:
+                await self._ensure_extension_snapshot(run)
             handling = await self._tool_calls_for_run(run.run_id).execute_batch(
                 session=session,
                 run=run,
                 batch=batch,
                 abort_signal=signal,
             )
+        except SessionBusyError:
+            raise
         except Exception as exc:  # noqa: BLE001 - coordinator is a runtime boundary.
             latest_session = await run_blocking(
                 self.store.load_session_record,
@@ -2600,7 +2589,7 @@ class RuntimeService:
         )
         if abort_result is not None:
             return await self.run_lifecycle.finalize_requested_abort(abort_result)
-        if handling.status in {"waiting_approval", "waiting_user", "waiting_child"}:
+        if handling.status != "completed":
             return RunResult(
                 session=session,
                 run=run,

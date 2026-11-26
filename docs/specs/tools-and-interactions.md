@@ -67,7 +67,7 @@ AskUser 复用其交互参数模型；Agent 控制工具从 Run 目录投影参�
 - TodoList：校验并展示本次传入的完整任务列表，返回文本和结构化条目；
 - 命令行工具：启动时检测宿主可执行 shell，仅暴露一个与实际执行方言同名的工具；Windows 依次选择
   PowerShell 7、Windows PowerShell、Command Prompt，POSIX 系统依次选择 Bash、POSIX sh；
-- AskUser：暂停 Run 并请求用户输入。
+- AskUser 返回普通 `ToolInputRequest`，由 Host 保存并展示该调用的问题。
 - SpawnAgent、SendAgentMessage、InterruptAgent：从 parent 当前决策绑定目录投影的
   product-owned Agent 控制工具；只在标准 Agent-capable composition 中出现。
 
@@ -158,7 +158,7 @@ Use this for images already available on disk.”。JSON Schema 由严格参数�
 权限模式包括：
 
 - `auto`：schema 通过后可执行；
-- `approval`：生成 `ApprovalRecord`，Run 进入 `waiting_approval`；
+- `approval` 模式下生成该 Call 的 `ApprovalRecord`，批准后重新按实际参数准入。
 - `deny`：硬拒绝调用，不允许会话级 `auto` 或一次审批绕过。
 
 配置按工具名覆盖 definition 默认值。审批可批准、拒绝或替换参数；替换后的参数必须重新验证。
@@ -166,7 +166,8 @@ Use this for images already available on disk.”。JSON Schema 由严格参数�
 
 ## 工具批次
 
-一次完整 Provider 响应中的所有 tool calls 组成一个原生批次。`ToolCallBatchRecord` 是按需显式物化的工作集，包含：
+一次完整 Provider 响应中的所有 tool calls 组成一个原生批次。插件 Driver 也可以主动提交批次，
+保存 Driver 来源和 checkpoint。两种入口共用准入、执行、等待和发布流程。`ToolCallBatchRecord` 是按需显式物化的工作集，包含：
 
 - batch/turn/assistant message identity；
 - execution mode 和 max concurrency；
@@ -178,11 +179,12 @@ Run 仅保存批次引用小头；原请求、实际执行参数、确定结果�
 
 `batch_behavior` 声明批次组合约束，与执行顺序独立：
 
-- `compatible`：允许与其他调用组成批次，执行方式由 `execution_mode` 决定。
+- `compatible` 允许与其他调用组成批次，按批次头保存的宿主设置调度。
 - `exclusive`：所在批次必须只有这一个调用。无论顺序还是并行执行，混合批次都在任何 handler 执行前整批拒绝，
   每个调用收到 `ExclusiveToolBatchViolation`，包含未执行的事实和涉及的 exclusive 工具名。
 
-该规则同时适用于模型与 Driver 批次，只约束当前批次，不提供跨 Run、Session 或外部进程的资源互斥。
+EnterPlanMode、ExitPlanMode、CreateGoal、UpdateGoal 和显式声明 exclusive 的插件工具使用该约束。
+同批状态切换需要独立提交时，整批拒绝能阻止兄弟写操作抢在切换之前生效。该规则只约束当前批次。
 Host 在构建模型上下文时，将 exclusive 约束统一追加到工具描述的请求副本；注册定义与执行契约保持原样。
 说明随工具定义发送，运行时仍按结构化契约独立校验。请求呈现、预算与快照见[上下文规格](context-and-compaction.md)。
 
@@ -196,19 +198,26 @@ Host 在构建模型上下文时，将 exclusive 约束统一追加到工具描�
 
 ## 顺序与并行
 
-- `sequential`：合法批次中的调用逐个执行，不放宽 exclusive 约束，也不在调用之间自动提交工具结果或重新决策。
-- `parallel`：受 `max_concurrency` 限制并发执行。
-- 工具的 `execution_mode="sequential"` 可将所在合法批次设为顺序执行；`inherit` 使用宿主配置。
-- 批次预检处理审批。每次执行或恢复都按当时的会话审批模式、控制状态、工具契约和实际参数准入。
-  同一边界只检查一次参数 schema。处理器返回问题时，按当时的会话交互模式等待用户或交给无人值守处理。
-- SpawnAgent(sync) 可进入 durable `waiting_child`，不会在 handler 内占用 worker 轮询；async 调用仍可与其他兼容
-  工具共同执行。
-- 一个调用失败不取消其他已经允许执行的调用；批次结果保留每项状态。
+TUI 设置的宿主 `tool_execution.mode` 和 `tool_execution.max_concurrency` 在接受新批次时保存到批次头。
+内置、插件和 MCP 工具遵守同一设置。升级、重启或更改配置后，已接受的批次继续使用原决定。
+
+- `sequential` 按源序扫描就绪调用，一次执行一个 handler。`parallel` 最多占用批次头指定的名额，空出的名额交给后续就绪项。
+  调用需要其他结果时，Driver 应在收到完整反馈后另开一批。共享外部资源的安全访问由执行工具及资源方保证。
+- 批次预检逐项处理审批。启动和恢复按当时的权限、控制、工具绑定和实际参数准入，显式取消阻止后续启动。
+  用户查看一项审批时，另一个已经获准的写操作可能已经发生。拒绝只为目标 Call 生成反馈。
+- 问题、审批、子任务等待和确定结果按 Call 保存。等待项交回执行名额，已获准的兄弟项可继续。
+  直到就绪项与在途 handler 都交回控制，Run 才公布整次停驻并释放执行权。交互可先显示，答复在取得原 Run 所有权后生效。
+  升级前已经停驻的批次在首次正常唤醒后，也可能更早启动已就绪的兄弟项。
+- 子工具的 `SpawnAgent(execution_mode=sync|async)` 决定子结果的交付方式。同步等待可与其他交互共存，每个回执匹配自己的委派、Call 和 attempt。
+- 每项都有可发布反馈后，模型批次按原 `source_index` 一次发布完整结果帧。程序化调用的结果保留 Driver 来源，
+  历史中没有伪造的 assistant 调用消息，原 Driver 通过 checkpoint 接收结果。
 
 ## AskUser
 
-AskUser 调用进入 `waiting_user`，保存活动批次和问题。用户答案转换为该调用的 ToolResult，随后继续处理
-同一批次。Run id 和 tool call id 必须匹配，不能把答案写入其他 waiting Run。
+AskUser 与普通插件通过同一问题契约接入，可与 Read 同批。每个问题有自己的 Run、batch、Call 身份和
+`input_revision`。用户可按任意顺序回答同批问题。追问产生新的版本，提交旧版本的答案会被拒绝。
+普通回答可直接生成原调用的结果，可恢复工具则使用已绑定的 resume handler。保存问题时验证 handler 所用的 Harness 版本，
+并在同次提交中应用问题携带的状态提案。只读取状态的工具也可能根据旧模式提问，因此这种问题同样受版本校验保护。
 
 ## Agent 控制与 child HITL
 
@@ -256,8 +265,12 @@ Agent control 使用同一取消所有权：操作实际返回完成值时只保
 
 ## 恢复
 
-实际执行已开始但没有持久观察的调用恢复为 `unknown_outcome`，不得自动重放。有确定 Outcome 时使用其原始
-观察完成未发布消息；若尚有未发布的 Harness 或 Session control 提案，丢弃提案并追加
+冷启动按 Call 事实恢复。生效的问题、审批、子任务绑定和已确定的结果均保留，包括旧版提前保存为
+`waiting_user`、批次仍在执行的 Run。失去所有者且已有 Start 的调用若无结果或可恢复绑定，记为
+`unknown_outcome`，其外部操作不会重发。原问题仍能回答。末项结果已落盘时从原引用补齐整帧，
+帧已提交时使用原消息和 Driver checkpoint。已消费的 checkpoint 不再交付。
+
+中断执行留下的确定 Outcome 使用其原始观察完成未发布消息。若该执行尚有未发布的 Harness 或 Session control 提案，丢弃提案并追加
 `ToolBusinessEffectsNotApplied` 反馈。恢复不再次进入控制回调，也不把丢弃状态意图解释成外部操作未发生。
 
 ## Observer 与事件
@@ -267,7 +280,7 @@ batch/call/approval/AskUser 事件。
 Observer 失败隔离为 `plugin_observer_failed`，不改变工具的实际结果。
 
 调用接受、started、批次执行阶段、审批等待与决议、用户回答、子结果等待与决议由对应 Call/Run 事实保存。
-工具帧的消息、Call 发布状态和 Driver checkpoint 在同一次原生提交中生效。Host 在等待状态持久化后公布审批请求。
+工具帧的消息、Call 发布状态和 Driver checkpoint 在同一次原生提交中生效。Host 在对应 Call 的审批事实持久化后公布请求，其他获准调用此时仍可执行。
 提交成功后直接发送在线通知，使用执行者已持有的 arguments/result_data，不为通知补读磁盘或写入永久事件。
 遗漏通知时按事实修订号和消息位置补齐当前状态与成果，不重放过去的审批请求或启动动作。
 结果的独立保存仍先于业务结算，历史消息使用固定 Call/Outcome 引用，迟到结果不能改写已经发布的未知反馈。
@@ -278,8 +291,8 @@ Observer 失败隔离为 `plugin_observer_failed`，不改变工具的实际结�
 消息置于同一 `SessionCommit`；结果消息锚点指向该效果之前的版本。同一次结果提交中，对同一 owner 的多份状态提案明确拒绝。
 Session control 的返回或错误作为独立框架反馈保存，历史物化时追加到原始观察；控制失败不得覆盖原始 content、
 structured、资源或执行时间。组合后的反馈可以是错误，但原 Outcome 仍保留工具实际返回的成功或失败。
-需要独立批次提交状态的工具声明 `batch_behavior="exclusive"`；仅要求 handler 不重叠的工具可声明
-`execution_mode="sequential"`。顺序执行不会刷新同一执行阶段的 Harness 快照，不能替代状态提交边界。
+需要独立批次提交状态的工具声明 `batch_behavior="exclusive"`。同一次结果提交中的 controls 提案也须相容。
+串行执行本身不会刷新同一执行阶段的 Harness 快照。外部写入可能先于提案校验发生。
 
 超时、取消或调用结束会关闭状态视图。撤销后的旧结果仍可保留执行审计，但不得改变当前 Harness、追加
 当前消息或恢复旧 interaction。新执行重新检查许可；文件写入等已发生外部效果不参与会话撤销。
@@ -291,6 +304,10 @@ structured、资源或执行时间。组合后的反馈可以是错误，但原 
 - `tests/application/test_tool_call_batches.py`
 - `tests/application/test_tool_observation_order.py`
 - `tests/application/test_parallel_tool_observations.py`
+- `tests/application/test_tool_process_boundaries.py`
+- `tests/application/test_driver_agents.py`
+- `tests/application/test_run_drivers.py`
+- `tests/mcp/test_sdk_integration.py`
 - `tests/application/test_runtime.py`
 - `tests/application/test_agents.py`
 - `tests/tools/test_builtin_agents.py`

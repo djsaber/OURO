@@ -12,10 +12,9 @@ from ouro.application.inputs.requests import UserInputRequest
 from ouro.application.runs.tool_batches import load_tool_batch
 from ouro.application.runtime.service import RuntimeService
 from ouro.application.supervisor import RuntimeSupervisor
-from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import utc_now
-from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
+from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_policies import ToolPolicyDecision, ToolPolicyRegistration
 from ouro.core.tools import ToolCallRequest, ToolInvocation
@@ -28,6 +27,7 @@ from ouro.tools import Tool, ToolDefinition, ToolInputRequest, ToolRegistry, Too
 from ouro.tools.builtin.todolist import builtin_todolist_tool
 from tests.application.helpers import running_runtime_task
 from tests.application.test_user_input_admission import HeldProvider
+from tests.application.tool_runtime import batch_runtime
 from tests.event_capture import recorded_events
 from tests.run_facts import run_tool_results
 
@@ -38,44 +38,6 @@ def _result(invocation, content: str, *, is_error: bool = False) -> ToolResult:
         tool_name=invocation.tool_name,
         content=content,
         is_error=is_error,
-    )
-
-
-def _runtime(
-    tmp_path, *, registry, first_calls, mode="sequential", store_type=LocalSessionStore
-) -> RuntimeService:
-    store = store_type(tmp_path / "sessions.db" if store_type is SQLiteSessionStore else tmp_path)
-    store.initialize()
-    return RuntimeService(
-        store=store,
-        adapter=RuntimeAdapter(
-            FauxProvider(
-                event_batches=[
-                    [
-                        *(
-                            ProviderStreamEvent(
-                                type="tool_call_delta",
-                                tool_call_delta=ToolCallDelta(
-                                    index=tool_call.source_index,
-                                    id_delta=tool_call.id,
-                                    name_delta=tool_call.name,
-                                    arguments_delta=json.dumps(tool_call.arguments),
-                                ),
-                            )
-                            for tool_call in first_calls
-                        ),
-                        ProviderStreamEvent(type="done"),
-                    ],
-                    [
-                        ProviderStreamEvent(type="text_delta", text="batch complete"),
-                        ProviderStreamEvent(type="done"),
-                    ],
-                ]
-            ),
-            ModelMetadata(model_id="faux", provider_id="faux"),
-        ),
-        tools=registry,
-        tool_execution_config=ToolExecutionConfig(mode=mode, max_concurrency=2),
     )
 
 
@@ -92,7 +54,7 @@ async def test_approval_wait_is_committed_once_without_a_snapshot_rewrite(
             handler=lambda invocation, context: _result(invocation, "deployed"),
         )
     )
-    runtime = _runtime(
+    runtime = batch_runtime(
         tmp_path, registry=registry, first_calls=[ToolCallRequest(id="deploy", name="Deploy")]
     )
     commits = []
@@ -343,6 +305,53 @@ async def test_tool_wait_persists_the_question_and_resumes_committed_state(
         await runtime.close()
 
 
+@pytest.mark.parametrize("store_type", [LocalSessionStore, SQLiteSessionStore])
+@pytest.mark.parametrize("second_changes_state", [False, True])
+async def test_questions_in_one_batch_cannot_publish_from_a_stale_harness(
+    tmp_path, store_type, second_changes_state
+):
+    def ask(call: sdk.ToolCall) -> sdk.ToolInputRequest:
+        original = call.session_state.read()
+        if call.tool_call_id == "first" or second_changes_state:
+            call.session_state.replace(state_schema_version=1, payload={"stage": call.tool_call_id})
+        return sdk.ToolInputRequest(
+            data={"question": call.tool_call_id, "was_empty": original is None}
+        )
+
+    tool = adapt_sdk_contributions(
+        sdk.ContributionSet(
+            tools=[
+                sdk.ToolContribution(
+                    id="ask",
+                    exposed_name="WorkflowQuestion",
+                    description="Ask about this step.",
+                    handler=ask,
+                    permission_mode="auto",
+                )
+            ]
+        ),
+        owner_id="example.workflow",
+    ).tools[0]
+    registry = ToolRegistry()
+    registry.register(tool)
+    async with batch_runtime(
+        tmp_path,
+        store_type=store_type,
+        registry=registry,
+        mode="sequential",
+        first_calls=[
+            ToolCallRequest(id=key, name="WorkflowQuestion", source_index=index)
+            for index, key in enumerate(("first", "second"))
+        ],
+    ) as app:
+        result = await app.run("ask about both steps")
+        assert app.store.load_harness(result.session.session_id).state.states[0].payload == {
+            "stage": "first"
+        }
+        assert result.run.status == "failed"
+        assert "SessionCommitConflict" in result.run.error
+
+
 def test_completed_tool_result_timing_uses_monotonic_elapsed(monkeypatch) -> None:
     started_at = utc_now()
     result = ToolResult(tool_call_id="call_timed", tool_name="TimedTool")
@@ -393,7 +402,7 @@ async def test_tool_arguments_checked_once_per_admission_boundary(
             handler=execute,
         )
     )
-    runtime = _runtime(
+    runtime = batch_runtime(
         tmp_path,
         registry=registry,
         first_calls=[ToolCallRequest(id="example", name="Example", arguments=arguments)],
@@ -439,7 +448,7 @@ async def test_session_permission_changed_between_siblings_gates_the_next_start(
     registry = ToolRegistry()
     registry.register(Tool(definition=ToolDefinition(name="Act", description="Act"), handler=act))
     calls = [ToolCallRequest(id=str(i), name="Act", source_index=i) for i in range(2)]
-    async with _runtime(tmp_path, registry=registry, first_calls=calls) as runtime:
+    async with batch_runtime(tmp_path, registry=registry, first_calls=calls) as runtime:
         result = await runtime.run("act")
         assert result.run.status == "completed", result.run.error
         assert executed == ["0"]
@@ -461,7 +470,7 @@ async def test_empty_policy_registry_preserves_control_refresh_failures(tmp_path
             handler=lambda invocation, context: _result(invocation, "done"),
         )
     )
-    runtime = _runtime(tmp_path, registry=registry, first_calls=[])
+    runtime = batch_runtime(tmp_path, registry=registry, first_calls=[])
     session = SessionRecord()
     runtime.store.create_session(session)
     run = RunRecord(session_id=session.session_id, status="running")
@@ -500,7 +509,7 @@ def test_runtime_publishes_permission_updates_to_existing_and_future_coordinator
             handler=lambda invocation, context: _result(invocation, "deployed"),
         )
     )
-    runtime = _runtime(tmp_path, registry=registry, first_calls=[])
+    runtime = batch_runtime(tmp_path, registry=registry, first_calls=[])
     existing = runtime._tool_calls_for_run("existing").executor
     invocation = ToolInvocation(
         session_id="session",
@@ -550,7 +559,7 @@ async def test_parallel_batch_preserves_one_assistant_message_and_source_order(
     )
     registry.register(builtin_todolist_tool())
     todos = [{"title": "Run both tools", "status": "in_progress"}]
-    runtime = _runtime(
+    runtime = batch_runtime(
         tmp_path,
         registry=registry,
         mode="parallel",
@@ -662,7 +671,7 @@ async def test_exclusive_tool_rejects_mixed_batch_before_any_handler_runs(tmp_pa
             handler=execute,
         )
     )
-    runtime = _runtime(
+    runtime = batch_runtime(
         tmp_path,
         registry=registry,
         mode=mode,
@@ -725,7 +734,7 @@ async def test_sdk_tool_structured_input_round_trips_through_wait_and_resume(tmp
     )
     registry = ToolRegistry()
     registry.register(contributions.tools[0])
-    runtime = _runtime(
+    runtime = batch_runtime(
         tmp_path,
         registry=registry,
         first_calls=[ToolCallRequest(id="call_confirm", name="plans__confirm")],
@@ -812,7 +821,7 @@ async def test_unattended_session_resumes_capable_tool_without_waiting(
             handler=after_request,
         )
     )
-    runtime = _runtime(
+    runtime = batch_runtime(
         tmp_path,
         registry=registry,
         mode=mode,
@@ -883,7 +892,7 @@ async def test_unattended_session_returns_explicit_error_for_unsupported_tool(tm
     ).tools[0]
     registry = ToolRegistry()
     registry.register(contribution)
-    runtime = _runtime(
+    runtime = batch_runtime(
         tmp_path,
         registry=registry,
         first_calls=[ToolCallRequest(id="call_form", name="afk__form")],
@@ -935,9 +944,52 @@ def _confirming_runtime(tmp_path, invoked, resume_handler=None):
             resume_handler=resume_handler or resume,
         )
     )
-    return _runtime(
+    return batch_runtime(
         tmp_path, registry=registry, first_calls=[ToolCallRequest(id="confirm", name="Confirm")]
     )
+
+
+async def test_parallel_policy_wait_leaves_sibling_free_to_start(tmp_path):
+    checking, release, read_started = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    checked = []
+    started = []
+
+    async def policy(call):
+        if call.tool_call_id == "guarded" and call.tool_call_id in checked:
+            checking.set()
+            await release.wait()
+            return ToolPolicyDecision(action="deny", reason="revoked before start")
+        checked.append(call.tool_call_id)
+        return ToolPolicyDecision()
+
+    async def read(invocation, context):
+        started.append(invocation.tool_call_id)
+        read_started.set()
+        return _result(invocation, "ok")
+
+    tools = ToolRegistry()
+    tools.register(Tool(definition=ToolDefinition(name="Probe", description="Read"), handler=read))
+    async with batch_runtime(
+        tmp_path,
+        registry=tools,
+        mode="parallel",
+        first_calls=[
+            ToolCallRequest(id="guarded", name="Probe"),
+            ToolCallRequest(id="read", name="Probe", source_index=1),
+        ],
+    ) as app:
+        app.registries.tool_policies.replace_owner(
+            "guard", (ToolPolicyRegistration("guard", "check", policy, timeout_seconds=30),)
+        )
+        task = asyncio.create_task(app.run("inspect both"))
+        try:
+            await asyncio.wait_for(checking.wait(), 10)
+            await asyncio.wait_for(read_started.wait(), 3)
+        finally:
+            release.set()
+            result = await task
+        assert result.run.status == "completed" and started == ["read"]
+        assert [r.is_error for r in run_tool_results(app.store, result)] == [True, False]
 
 
 @pytest.mark.parametrize("interaction_mode", ["interactive", "unattended"])
@@ -1056,7 +1108,7 @@ async def test_unattended_resume_returns_the_question_that_still_needs_input(tmp
     ).tools[0]
     registry = ToolRegistry()
     registry.register(contribution)
-    runtime = _runtime(
+    runtime = batch_runtime(
         tmp_path,
         registry=registry,
         first_calls=[ToolCallRequest(id="call_loop", name="afk__loop")],
@@ -1117,7 +1169,7 @@ async def test_resumable_tool_can_request_multiple_inputs_and_owns_final_result(
     ).tools[0]
     registry = ToolRegistry()
     registry.register(contribution)
-    runtime = _runtime(
+    runtime = batch_runtime(
         tmp_path,
         registry=registry,
         first_calls=[ToolCallRequest(id="call_workflow", name="workflow__advance")],
@@ -1125,6 +1177,9 @@ async def test_resumable_tool_can_request_multiple_inputs_and_owns_final_result(
     )
 
     first = await runtime.run("advance")
+    first_question = runtime.parked_runs.pending_question(
+        first.session.session_id, first.run.run_id
+    )
 
     def unavailable_harness(*_args, **_kwargs):
         raise OSError("question state unavailable")
@@ -1185,7 +1240,7 @@ async def test_resumable_tool_can_request_multiple_inputs_and_owns_final_result(
             await supervisor.shutdown()
     assert batch_reads == [first.run.run_id, first.run.run_id]
     with monkeypatch.context() as pending:
-        pending.setattr(runtime.parked_runs, "_target", AsyncMock(return_value=first.run))
+        pending.setattr(runtime.parked_runs, "pending_question", lambda *_args: first_question)
         with pytest.raises(ValueError, match="question changed"):
             await runtime.answer_user(
                 session_id=first.session.session_id, run_id=first.run.run_id, answer="stale"
@@ -1242,7 +1297,7 @@ async def test_approved_tool_can_transition_to_user_input_without_reexecution(tm
     ).tools[0]
     registry = ToolRegistry()
     registry.register(contribution)
-    runtime = _runtime(
+    runtime = batch_runtime(
         tmp_path,
         registry=registry,
         first_calls=[ToolCallRequest(id="call_deploy", name="deploy__confirm")],
@@ -1293,7 +1348,7 @@ async def test_unattended_session_resolves_remaining_approval_with_policy_proven
     ).tools[0]
     registry = ToolRegistry()
     registry.register(contribution)
-    runtime = _runtime(
+    runtime = batch_runtime(
         tmp_path,
         registry=registry,
         first_calls=[ToolCallRequest(id="call_deploy", name="afk__deploy")],
@@ -1318,127 +1373,157 @@ async def test_unattended_session_resolves_remaining_approval_with_policy_proven
     assert resolved_event.payload["resolver_id"] == "ouro.afk"
 
 
-@pytest.mark.asyncio
-async def test_sequential_batch_stops_after_input_request_until_answer(tmp_path) -> None:
-    executed_after_request: list[str] = []
+@pytest.mark.parametrize("mode", ["sequential", "parallel"])
+async def test_ask_user_and_independent_read_finish_in_one_model_exchange(tmp_path, mode):
+    from ouro.tools import builtin_tools
 
-    def request_input(_invocation):
-        return sdk.ToolInputRequest(data={"type": "choice", "options": ["a", "b"]})
-
-    def after_request(invocation, context) -> ToolResult:
-        executed_after_request.append(invocation.tool_call_id)
-        return _result(invocation, "continued")
-
-    sdk_tool = adapt_sdk_contributions(
-        owner_id="example.plugin",
-        contributions=sdk.ContributionSet(
-            tools=[
-                sdk.ToolContribution(
-                    id="choose",
-                    exposed_name="flow__choose",
-                    description="Choose a branch.",
-                    permission_mode="auto",
-                    handler=request_input,
-                )
-            ]
-        ),
-    ).tools[0]
     registry = ToolRegistry()
-    registry.register(sdk_tool)
-    registry.register(
-        Tool(
-            definition=ToolDefinition(name="AfterChoice", description="Continue the flow."),
-            handler=after_request,
-        )
-    )
-    runtime = _runtime(
-        tmp_path,
+    for tool in builtin_tools():
+        registry.register(tool)
+    path = tmp_path / "notes.txt"
+    path.write_text("independent content", encoding="utf-8")
+    questions = [
+        {
+            "id": "color",
+            "header": "Color",
+            "question": "Which color?",
+            "options": [
+                {"label": "Red", "description": "Use red."},
+                {"label": "Blue", "description": "Use blue."},
+            ],
+        }
+    ]
+    app = batch_runtime(
+        tmp_path / "data",
         registry=registry,
-        mode="sequential",
+        mode=mode,
         first_calls=[
-            ToolCallRequest(id="call_choose", name="flow__choose", source_index=0),
-            ToolCallRequest(id="call_after", name="AfterChoice", source_index=1),
+            ToolCallRequest(id="q", name="AskUser", arguments={"questions": questions}),
+            ToolCallRequest(id="read", name="Read", arguments={"path": str(path)}, source_index=1),
         ],
     )
-
-    waiting = await runtime.run("choose and continue")
-
-    assert waiting.run.status == "waiting_user"
-    assert executed_after_request == []
-
-    completed = await runtime.answer_user(
-        session_id=waiting.session.session_id,
-        run_id=waiting.run.run_id,
-        answer={"choice": "b"},
-    )
-
-    assert completed.run.status == "completed"
-    assert executed_after_request == ["call_after"]
-
-
-@pytest.mark.asyncio
-async def test_parallel_batch_does_not_start_queued_calls_after_input_request(tmp_path) -> None:
-    started: list[str] = []
-
-    async def request_input(call: sdk.ToolCall):
-        started.append(call.tool_call_id)
-        return sdk.ToolInputRequest(data={"type": "confirm"})
-
-    async def complete(invocation, context) -> ToolResult:
-        started.append(invocation.tool_call_id)
-        await asyncio.sleep(0)
-        return _result(invocation, "done")
-
-    sdk_tool = adapt_sdk_contributions(
-        owner_id="example.plugin",
-        contributions=sdk.ContributionSet(
-            tools=[
-                sdk.ToolContribution(
-                    id="confirm",
-                    exposed_name="parallel__confirm",
-                    description="Confirm before queued work starts.",
-                    permission_mode="auto",
-                    handler=request_input,
-                )
-            ]
-        ),
-    ).tools[0]
-    registry = ToolRegistry()
-    registry.register(sdk_tool)
-    for name in ("Concurrent", "Queued"):
-        registry.register(
-            Tool(definition=ToolDefinition(name=name, description=name), handler=complete)
+    async with app:
+        waiting = await app.run("Ask and read", approval_mode="auto")
+        batch = load_tool_batch(app.store, waiting.run)
+        assert [c.status for c in batch.calls] == ["waiting_user", "completed"]
+        assert "independent content" in batch.calls[1].result.content
+        assert waiting.run.model_round_count == 1
+        done = await app.answer_user(
+            session_id=waiting.session.session_id,
+            run_id=waiting.run.run_id,
+            answer={"answers": {"color": ["Blue"]}},
         )
-    runtime = _runtime(
+        assert done.run.status == "completed", done.run.error
+        assert done.run.model_round_count == 2
+        history = app.store.load_session(done.session.session_id)
+        assert [m.tool_result.tool_call_id for m in history.messages if m.tool_result] == [
+            "q",
+            "read",
+        ]
+
+
+@pytest.mark.parametrize("store_type", [LocalSessionStore, SQLiteSessionStore])
+async def test_two_resumable_calls_release_slots_and_accept_versioned_answers_in_reverse(
+    tmp_path, store_type, monkeypatch
+):
+    from ouro.application.observations.activity import project_batch_interactions
+
+    entered = asyncio.Barrier(2)
+    starts = []
+
+    async def begin(call):
+        starts.append(call.tool_call_id)
+        await entered.wait()
+        return sdk.ToolInputRequest(data={"id": call.tool_call_id})
+
+    def resume(call):
+        if call.answer == "again":
+            return sdk.ToolInputRequest(data={"confirm": True})
+        return sdk.ToolOutput(content=call.answer)
+
+    registry = ToolRegistry()
+    registry.register(
+        adapt_sdk_contributions(
+            owner_id="example.flow",
+            contributions=sdk.ContributionSet(
+                tools=[
+                    sdk.ToolContribution(
+                        id="ask",
+                        exposed_name="flow__ask",
+                        description="Collect a choice",
+                        handler=begin,
+                        resume_handler=resume,
+                        permission_mode="auto",
+                    )
+                ]
+            ),
+        ).tools[0]
+    )
+    registry.register(
+        Tool(
+            definition=ToolDefinition(name="Read", description="Read", effect="read_only"),
+            handler=lambda inv, ctx: _result(inv, "independent result"),
+        )
+    )
+    ids = ["q1", "q2", "read"]
+    app = batch_runtime(
         tmp_path,
         registry=registry,
         mode="parallel",
+        store_type=store_type,
         first_calls=[
-            ToolCallRequest(id="call_confirm", name="parallel__confirm", source_index=0),
-            ToolCallRequest(id="call_concurrent", name="Concurrent", source_index=1),
-            ToolCallRequest(id="call_queued", name="Queued", source_index=2),
+            ToolCallRequest(id=key, name=name, source_index=i)
+            for i, (key, name) in enumerate(
+                zip(ids, ["flow__ask", "flow__ask", "Read"], strict=True)
+            )
         ],
     )
+    published_frames = []
+    commit = app.store.commit_session
 
-    waiting = await runtime.run("confirm parallel work")
+    def observe_commit(request):
+        committed = commit(request)
+        frame = [
+            step.message.outcome_ref.identity.tool_call_id
+            for step in request.steps
+            if step.message and step.message.outcome_ref
+        ]
+        if frame:
+            published_frames.append(frame)
+        return committed
 
-    assert waiting.run.status == "waiting_user"
-    assert "call_confirm" in started
-    assert "call_queued" not in started
-
-    completed = await runtime.answer_user(
-        session_id=waiting.session.session_id,
-        run_id=waiting.run.run_id,
-        answer=True,
-    )
-
-    assert completed.run.status == "completed"
-    assert started.count("call_confirm") == 1
-    assert started.count("call_queued") == 1
+    monkeypatch.setattr(app.store, "commit_session", observe_commit)
+    async with app:
+        waiting = await asyncio.wait_for(app.run("ask twice and read"), 30)
+        batch = load_tool_batch(app.store, waiting.run)
+        assert [c.status for c in batch.calls] == ["waiting_user", "waiting_user", "completed"]
+        q1, q2 = [p.question for p in project_batch_interactions(waiting.run, batch)]
+        target = {"session_id": waiting.session.session_id, "run_id": waiting.run.run_id}
+        again = await app.answer_user(**target, question=q2, answer="again")
+        revised = project_batch_interactions(again.run, load_tool_batch(app.store, again.run))[
+            1
+        ].question
+        assert revised.input_revision == q2.input_revision + 1
+        with pytest.raises(run_interactions.StaleToolQuestion):
+            await app.answer_user(**target, question=q2, answer="stale")
+        middle = await app.answer_user(**target, question=revised, answer="second")
+        assert load_tool_batch(app.store, middle.run).calls[1].result.content == "second"
+        assert middle.run.model_round_count == 1
+        assert not any(
+            m.tool_result for m in app.store.load_session(waiting.session.session_id).messages
+        )
+        done = await app.answer_user(**target, question=q1, answer="first")
+        assert done.run.status == "completed", done.run.error
+        assert done.run.model_round_count == 2
+        history = app.store.load_session(waiting.session.session_id)
+        assert published_frames == [ids]
+        assert [m.tool_result.tool_call_id for m in history.messages if m.tool_result] == ids
+        assert sorted(starts) == ["q1", "q2"]
 
 
 @pytest.mark.asyncio
-async def test_parallel_batch_marks_only_handlers_that_actually_started(tmp_path) -> None:
+@pytest.mark.parametrize("abort", [False, True])
+async def test_parallel_batch_marks_only_handlers_that_actually_started(tmp_path, abort) -> None:
     registry = ToolRegistry()
     two_started = asyncio.Event()
     release = asyncio.Event()
@@ -1455,7 +1540,7 @@ async def test_parallel_batch_marks_only_handlers_that_actually_started(tmp_path
         registry.register(
             Tool(definition=ToolDefinition(name=name, description=name), handler=blocking)
         )
-    runtime = _runtime(
+    runtime = batch_runtime(
         tmp_path,
         registry=registry,
         mode="parallel",
@@ -1484,6 +1569,17 @@ async def test_parallel_batch_marks_only_handlers_that_actually_started(tmp_path
                 if event.event_type == "tool_call_started"
             ]
             assert [event.payload["tool_call_id"] for event in started_events] == started
+            if abort:
+                await runtime.abort_run(session_id=active.session_id, run_id=active.run_id)
+                result = await asyncio.wait_for(asyncio.shield(run_task), 10)
+                assert result.run.status == "aborted"
+                assert [c.status for c in load_tool_batch(runtime.store, result.run).calls] == [
+                    "unknown_outcome",
+                    "unknown_outcome",
+                    "aborted",
+                ]
+                assert sorted(started) == ["call_1", "call_2"]
+                return
         finally:
             release.set()
         result = await run_task
@@ -1491,7 +1587,7 @@ async def test_parallel_batch_marks_only_handlers_that_actually_started(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_batch_waits_for_every_approval_and_marks_running_before_execution(
+async def test_approval_only_blocks_its_call_and_marks_running_before_execution(
     tmp_path, monkeypatch
 ) -> None:
     registry = ToolRegistry()
@@ -1501,8 +1597,9 @@ async def test_batch_waits_for_every_approval_and_marks_running_before_execution
 
     async def protected(invocation, context) -> ToolResult:
         executed.append(invocation.tool_call_id)
-        started.set()
-        await release.wait()
+        if invocation.tool_call_id == "call_2":
+            started.set()
+            await release.wait()
         return _result(invocation, invocation.tool_call_id)
 
     for name in ("ProtectedOne", "ProtectedTwo"):
@@ -1522,7 +1619,7 @@ async def test_batch_waits_for_every_approval_and_marks_running_before_execution
             handler=protected,
         )
     )
-    runtime = _runtime(
+    runtime = batch_runtime(
         tmp_path,
         registry=registry,
         mode="parallel",
@@ -1537,6 +1634,7 @@ async def test_batch_waits_for_every_approval_and_marks_running_before_execution
     batch = load_tool_batch(runtime.store, pending.run)
     assert batch is not None
     assert [call.request.id for call in batch.calls] == ["call_1", "call_2", "call_3"]
+    assert executed == ["call_3"]
     approval_ids = [approval.approval_id for approval in batch.pending_approvals]
 
     still_waiting = await runtime.approve_tool(
@@ -1546,14 +1644,14 @@ async def test_batch_waits_for_every_approval_and_marks_running_before_execution
         approved=True,
     )
     assert still_waiting.run.status == "waiting_approval"
-    assert executed == []
+    assert executed == ["call_3", "call_1"]
     with monkeypatch.context() as stale:
         stale.setattr(runtime.parked_runs, "_target", AsyncMock(return_value=pending.run))
         with pytest.raises(ValueError, match="approval is not pending"):
             await asyncio.wait_for(
                 runtime.approve_tool(session_id=pending.session.session_id, approved=False), 2
             )
-    assert executed == []
+    assert executed == ["call_3", "call_1"]
 
     resume_task = asyncio.create_task(
         runtime.approve_tool(
@@ -1594,7 +1692,7 @@ async def test_tool_failure_does_not_cancel_sibling_call(tmp_path) -> None:
     registry.register(
         Tool(definition=ToolDefinition(name="Healthy", description="healthy"), handler=healthy)
     )
-    runtime = _runtime(
+    runtime = batch_runtime(
         tmp_path,
         registry=registry,
         mode="parallel",
@@ -1614,53 +1712,220 @@ async def test_tool_failure_does_not_cancel_sibling_call(tmp_path) -> None:
     ]
 
 
-@pytest.mark.asyncio
-async def test_tool_definition_can_force_parallel_batch_to_run_sequentially(tmp_path) -> None:
+@pytest.mark.parametrize(("mode", "limit", "expected"), [("sequential", 3, 1), ("parallel", 2, 2)])
+@pytest.mark.parametrize("programmatic", [False, True], ids=["model", "programmatic-driver"])
+async def test_new_batch_runs_with_host_mode_and_limit(
+    tmp_path, mode, limit, expected, programmatic
+):
+    from ouro.config.runtime import RuntimeSettingsResolver
+    from ouro.local_application import LocalApplication, build_local_configuration
+    from tests.application.test_run_drivers import DRIVER, PLUGIN, plugin_source, set_driver_body
+
+    config = build_local_configuration(tmp_path)
+    config.update_tool_execution(mode=mode, max_concurrency=limit)
+    full, release = asyncio.Event(), asyncio.Event()
+    active = peak = 0
+
+    async def read(invocation, context):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        if active == expected:
+            full.set()
+        try:
+            await release.wait()
+            return _result(invocation, "done")
+        finally:
+            active -= 1
+
     registry = ToolRegistry()
-    order: list[str] = []
-    first_started, release_first = asyncio.Event(), asyncio.Event()
+    registry.register(
+        Tool(definition=ToolDefinition(name="Read", description="Read"), handler=read)
+    )
+    app = batch_runtime(
+        tmp_path / "data",
+        registry=registry,
+        first_calls=[
+            ToolCallRequest(id=f"read_{i}", name="Read", source_index=i) for i in range(4)
+        ],
+    )
+    app.settings_resolver = RuntimeSettingsResolver(tmp_path).snapshot
+    async with LocalApplication.from_runtime(app, home=tmp_path) as application:
+        if programmatic:
+            package = plugin_source(tmp_path, "python-inprocess")
+            set_driver_body(
+                package,
+                """async def review(context, resume):
+    calls = tuple(sdk.RunToolCall("Read") for _ in range(4))
+    result = await context.tools.execute(calls, checkpoint="read")
+    return sdk.DriverFinished(str(len(result.results)))
+""",
+            )
+            application.plugins.install(package)
+            assert (await application.plugins.enable(PLUGIN)).status == "active"
+        task = asyncio.create_task(
+            app.run("read four items", driver_id=DRIVER if programmatic else None)
+        )
+        try:
+            await asyncio.wait_for(full.wait(), 30)
+            session = app.store.list_sessions()[0]
+            run = app.store.load_run(session.session_id, session.active_run_id)
+            assert (
+                run.active_tool_batch.execution_mode,
+                run.active_tool_batch.max_concurrency,
+            ) == (mode, limit)
+        finally:
+            release.set()
+            result = await task
+        assert result.run.status == "completed", result.run.error
+        assert len(run_tool_results(app.store, result)) == 4
+        assert peak == expected
 
-    async def first(invocation, context) -> ToolResult:
-        first_started.set()
-        await release_first.wait()
-        order.append(invocation.tool_call_id)
-        return _result(invocation, "first")
 
-    async def second(invocation, context) -> ToolResult:
-        assert order == ["call_1"], "the sequential tool must finish before its sibling starts"
-        order.append(invocation.tool_call_id)
-        return _result(invocation, "second")
+async def test_restart_dispatches_previously_approved_calls_with_saved_mode(tmp_path):
+    from ouro.config.runtime import RuntimeSettingsResolver
+    from ouro.core.tool_batch_transitions import resolve_tool_approval
+    from ouro.local_application import build_local_configuration
+
+    home, data = tmp_path / "home", tmp_path / "data"
+    config = build_local_configuration(home)
+    config.update_tool_execution(mode="parallel", max_concurrency=2)
+    registry = ToolRegistry()
+    full, release = asyncio.Event(), asyncio.Event()
+    starts = []
+    active = peak = 0
+
+    async def action(inv, context):
+        nonlocal active, peak
+        starts.append(inv.tool_call_id)
+        active += 1
+        peak = max(active, peak)
+        if active == 2:
+            full.set()
+        try:
+            await release.wait()
+            return _result(inv, "done")
+        finally:
+            active -= 1
 
     registry.register(
         Tool(
             definition=ToolDefinition(
-                name="ForcedSequential",
-                description="forced",
-                execution_mode="sequential",
+                name="Action", description="Perform action", permission_mode="approval"
             ),
-            handler=first,
+            handler=action,
         )
     )
-    registry.register(
-        Tool(definition=ToolDefinition(name="Normal", description="normal"), handler=second)
-    )
-    runtime = _runtime(
+    calls = [ToolCallRequest(id=f"act_{i}", name="Action", source_index=i) for i in range(3)]
+    old = batch_runtime(data, registry=registry, first_calls=calls)
+    old.settings_resolver = RuntimeSettingsResolver(home).snapshot
+    async with old:
+        waiting = await old.run("three actions")
+        batch = load_tool_batch(old.store, waiting.run)
+        assert batch.execution_mode == "parallel" and batch.max_concurrency == 2
+        approvals = [item.approval_id for item in batch.pending_approvals]
+        # An older host recorded each decision but held all starts until the last approval.
+        for key in approvals[:2]:
+            batch = resolve_tool_approval(
+                batch, approval_id=key, approved=True, reason="", arguments_override=None
+            )
+        old.run_lifecycle.save_batch_state(
+            session=waiting.session,
+            run=waiting.run,
+            batch=batch,
+            status="waiting_approval",
+            phase="human_interaction",
+        )
+        assert not starts
+
+    config.update_tool_execution(mode="sequential", max_concurrency=1)
+    cold = batch_runtime(data, registry=registry, first_calls=[])
+    cold.adapter.provider = FauxProvider()
+    cold.settings_resolver = RuntimeSettingsResolver(home).snapshot
+    async with cold:
+        await cold.refresh_configuration()
+        task = asyncio.create_task(
+            cold.approve_tool(
+                session_id=waiting.session.session_id,
+                run_id=waiting.run.run_id,
+                approval_id=approvals[2],
+                approved=True,
+            )
+        )
+        try:
+            await asyncio.wait_for(full.wait(), 30)
+        finally:
+            release.set()
+            result = await task
+        assert result.run.status == "completed", result.run.error
+        assert peak == 2 and sorted(starts) == [call.id for call in calls]
+
+
+async def test_supervised_answer_waits_for_inflight_sibling_to_hand_off(tmp_path):
+    entered, requested, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    registry = ToolRegistry()
+
+    async def ask(inv, context):
+        await entered.wait()
+        return ToolInputRequest(data={"question": "continue?"})
+
+    async def read(inv, context):
+        entered.set()
+        await release.wait()
+        return _result(inv, "read")
+
+    for name, handler in (("Question", ask), ("Read", read)):
+        registry.register(
+            Tool(definition=ToolDefinition(name=name, description=name), handler=handler)
+        )
+    app = batch_runtime(
         tmp_path,
         registry=registry,
         mode="parallel",
         first_calls=[
-            ToolCallRequest(id="call_1", name="ForcedSequential", source_index=0),
-            ToolCallRequest(id="call_2", name="Normal", source_index=1),
+            ToolCallRequest(id="q", name="Question"),
+            ToolCallRequest(id="r", name="Read", source_index=1),
         ],
     )
 
-    running = asyncio.create_task(runtime.run("run both"))
+    def capture(event):
+        if event.event_type == "ask_user_requested":
+            requested.set()
+
+    app.add_event_sink(capture)
+    supervisor = RuntimeSupervisor(app, max_concurrency=1)
+    reply = None
     try:
-        await asyncio.wait_for(first_started.wait(), 30)
-        release_first.set()
-        await running
-        assert order == ["call_1", "call_2"]
+        handle = await supervisor.submit("question and slow read")
+        await asyncio.wait_for(requested.wait(), 30)
+        session = app.store.load_session_record(handle.session_id)
+        run = app.store.load_run(handle.session_id, session.active_run_id)
+        batch = load_tool_batch(app.store, run)
+        assert run.status == "running" and [c.status for c in batch.calls] == [
+            "waiting_user",
+            "running",
+        ]
+        submitted = asyncio.Event()
+
+        async def answer():
+            submitted.set()
+            return await supervisor.resolve_tool_input(
+                session_id=run.session_id,
+                run_id=run.run_id,
+                answer="yes",
+                question=batch.calls[0].question(run.run_id, batch.batch_id),
+            )
+
+        reply = asyncio.create_task(answer())
+        await asyncio.wait_for(submitted.wait(), 5)
+        assert not reply.done()
+        release.set()
+        assert (await supervisor.wait(handle)).status == "waiting_user"
+        assert (await supervisor.wait(await reply)).status == "completed"
+        snapshot = app.store.load_session(handle.session_id)
+        assert [m.text_content for m in snapshot.messages if m.tool_result] == ["yes", "read"]
     finally:
-        release_first.set()
-        await asyncio.gather(running, return_exceptions=True)
-        await runtime.close()
+        release.set()
+        if reply is not None:
+            await asyncio.gather(reply, return_exceptions=True)
+        await supervisor.shutdown()

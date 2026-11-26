@@ -26,7 +26,6 @@ from ouro.core.session_controls import (
     SessionControlTransitionResult,
 )
 
-ToolExecutionPreference = Literal["inherit", "sequential"]
 ToolEffect = Literal["read_only", "state_changing", "unknown"]
 ToolBatchBehavior = Literal["compatible", "exclusive"]
 ToolKind = Literal["standard", "user_input"]
@@ -60,7 +59,6 @@ class ToolDefinition(OuroModel):
     permission_mode: PermissionMode = "auto"
     permission_control: ToolPermissionControl = "host"
     result_schema: dict[str, Any] = Field(default_factory=dict)
-    execution_mode: ToolExecutionPreference = "inherit"
     effect: ToolEffect = "unknown"
     batch_behavior: ToolBatchBehavior = "compatible"
     resumable: bool = False
@@ -252,6 +250,16 @@ class ToolResultFeedback(OuroModel):
     controls: tuple[SessionControlTransitionResult, ...] = ()
     error_type: str | None = None
     error_message: str | None = None
+
+    @classmethod
+    def interrupted_effects(cls) -> ToolResultFeedback:
+        return cls(
+            error_type="ToolBusinessEffectsNotApplied",
+            error_message=(
+                "The tool returned the observation above, but its Session state or control "
+                "changes were not published before interruption and have been discarded."
+            ),
+        )
 
     @model_validator(mode="after")
     def validate_feedback(self) -> Self:

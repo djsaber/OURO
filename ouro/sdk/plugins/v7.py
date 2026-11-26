@@ -205,7 +205,7 @@ class ToolOutput:
 
 @dataclass(frozen=True)
 class ToolInputRequest:
-    """Suspend the current Run and let the host collect an opaque JSON answer."""
+    """Park this tool call while the host collects an opaque JSON answer."""
 
     data: JsonValue
 

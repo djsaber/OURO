@@ -10,7 +10,12 @@ from ouro.core.cancellation import AbortSignal, settle_owned_tasks
 from ouro.core.errors import SessionBusyError
 from ouro.core.results import RunResult
 from ouro.core.session_ports import SessionLock, SessionStore
-from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, RunStatus, SessionRecord
+from ouro.core.state import (
+    ACTIVE_RUN_STATUSES,
+    RunRecord,
+    RunStatus,
+    SessionRecord,
+)
 
 
 @dataclass
@@ -89,45 +94,56 @@ class RunExecutionOwnership:
         *,
         expected_status: RunStatus,
         source_run_id: str | None = None,
-        timeout: float = 5.0,
+        timeout: float | None = 5.0,
+        batch_id: str | None = None,
     ) -> SessionLock | None:
         """Acquire a parked Run after its announcing owner releases the lock.
 
         The durable boundary can be visible before that owner returns, in any
         Host. The next execution may reuse the parked Run or start a new one.
-        Wait only while the source remains parked, with a bounded delay; the
-        caller must revalidate the exact boundary under the acquired lock.
+        Follow-ups wait for the indicated Run status. A tool interaction can
+        arrive while the owner is still dispatching the same batch.
         """
 
-        deadline = asyncio.get_running_loop().time() + timeout
+        deadline = asyncio.get_running_loop().time() + timeout if timeout is not None else None
         while True:
             lock = await self.acquire(session_id, run_id)
             if lock is not None:
                 return lock
             run = await run_blocking(self.store.load_run, session_id, source_run_id or run_id)
-            remaining = deadline - asyncio.get_running_loop().time()
-            if run.status != expected_status or remaining <= 0:
+            if batch_id is not None:
+                if (
+                    run.abort_requested
+                    or run.status not in ACTIVE_RUN_STATUSES
+                    or run.active_tool_batch is None
+                    or run.active_tool_batch.batch_id != batch_id
+                ):
+                    return None
+            elif run.status != expected_status:
                 return None
-            await asyncio.sleep(min(0.05, remaining))
+            if deadline is not None and asyncio.get_running_loop().time() >= deadline:
+                return None
+            await asyncio.sleep(0.05)
 
     @asynccontextmanager
-    async def parked_run(
-        self, run: RunRecord
-    ) -> AsyncIterator[tuple[SessionRecord, RunRecord, AbortSignal]]:
-        """Own an interaction attempt and read its authoritative state under the lock."""
+    async def parked_run(self, run: RunRecord) -> AsyncIterator[AbortSignal]:
+        """Own one interaction attempt, including recovery of a departed execution owner."""
+        head = run.active_tool_batch
+        if head is None:
+            raise ValueError("run has no active tool batch")
         lock = await self.acquire_parked(
             run.session_id,
             run.run_id,
             expected_status=run.status,
+            batch_id=head.batch_id,
+            timeout=None,
         )
         if lock is None:
             raise SessionBusyError(f"run is already active: {run.run_id}")
         try:
-            session = await run_blocking(self.store.load_session_record, run.session_id)
-            latest = await run_blocking(self.store.load_run, run.session_id, run.run_id)
             signal = await self.activate_signal(run.session_id, run.run_id)
             try:
-                yield session, latest, signal
+                yield signal
             finally:
                 await self.release_signal(run.run_id, signal)
         finally:

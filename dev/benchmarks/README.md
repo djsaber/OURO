@@ -4,6 +4,18 @@
 使用锁定依赖，独立运行，不要与 pytest 或其他基准争用资源。输出为 JSON Lines，包含环境、原始样本和统计量；需要保存时写入本
 地忽略目录。基准结果只适用于测量环境，不能替代真实终端和网络 Provider 验证，也不作为 CI 的固定时间断言。
 
+## 工具批次调度、交权与发布
+
+```powershell
+uv run --frozen python dev/benchmarks/tool_call_pipeline.py --repeat 9 --sizes 4 12 --cases single serial parallel wait policy
+```
+
+默认模型使用 FauxProvider。程序化入口安装示例 SDK Driver，通过 `context.tools.execute` 提交同一负载。
+每次采样创建独立的临时会话。计时取最外层会话事务成功退出的时刻。首启延迟从批次接受到首个 handler 进入，发布延迟从最后一个 Outcome 落盘到反馈帧落盘，吞吐量覆盖接受到发布。
+`single` 和 `serial` 的 handler 立即返回。`parallel` 的 handler 与 `policy` 场景的执行前权限回调各等待固定的 35 ms，默认上限为 2。
+`wait` 通过正常答复入口立即恢复单项提问，原工具的 resume handler 恰好执行一次。输出含逐次耗时、提交与点读方法调用数，以及实际重叠峰值。磁盘缓存保持暖态。
+跨版本可用同一解释器和同一份脚本，将 `PYTHONPATH` 依次指向各版本的源码根，核对输出首行的 `code`。运行结果见[工具调用管线性能实测](../../docs/plans/archive/2026-11-27-tool-call-pipeline-refactor.md#性能实测)。
+
 ## 长 Run、慢查询与取消
 
 ```powershell

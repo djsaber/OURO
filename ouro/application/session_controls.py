@@ -34,7 +34,7 @@ from ouro.core.session_controls import (
     SessionControlTransitionResult,
 )
 from ouro.core.session_ports import SessionStore
-from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
+from ouro.core.state import ACTIVE_RUN_STATUSES, TOOL_WAIT_RUN_STATUSES, RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolCallState
 from ouro.core.tool_facts import ToolCallFacts
 from ouro.core.tools import ToolResult
@@ -338,7 +338,11 @@ class SessionControlCoordinator:
                 tool_starts.extend(cancelled_facts.starts)
                 tool_outcomes.extend(cancelled_facts.outcomes)
                 call_states.extend(cancelled_states)
-                if cancelled_run is not None:
+                if cancelled_run is not None and cancelled_run.status == "running":
+                    # The executing owner still has handlers to settle. Route this
+                    # release through the same durable stop as an explicit abort.
+                    stop_run_reason = stop_run_reason or "session_control_released"
+                elif cancelled_run is not None:
                     runs = [run for run in runs if run.run_id != cancelled_run.run_id]
                     runs.append(cancelled_run)
                     events.append(
@@ -616,7 +620,7 @@ class SessionControlCoordinator:
         batch = load_tool_batch(self.store, run)
         if (
             run.history_epoch != session.history_epoch
-            or run.status != "waiting_user"
+            or (run.status != "running" and run.status not in TOOL_WAIT_RUN_STATUSES)
             or batch is None
         ):
             return session, None, ToolCallFacts(), ()
@@ -631,6 +635,8 @@ class SessionControlCoordinator:
         ]
         if not owned:
             return session, None, ToolCallFacts(), ()
+        if run.status == "running":
+            return session, run, ToolCallFacts(), ()
         owned_ids = {call.request.id for call in owned}
         calls = [
             call.model_copy(

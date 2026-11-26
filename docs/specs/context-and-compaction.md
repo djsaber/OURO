@@ -46,8 +46,8 @@ Manifest 与该值在同一次构建中产生；来源限定为本次已读取�
 不是同一语义。媒体读取仍受原有只读寿命保护，策略与网络调用不持有存储锁。
 
 `ContextBuilder` 接收注册工具定义，根据 `batch_behavior="exclusive"` 为请求副本的 description 追加统一的
-单独调用约束，说明混合调用会在执行前整批拒绝。其他工具的描述保持原样；`execution_mode` 是宿主调度设置，
-不生成额外模型指令。投影不修改注册定义、参数 schema 或执行权限。
+单独调用约束，说明混合调用会在执行前整批拒绝。其他工具沿用注册描述。宿主在接受批次时读取
+`tool_execution.mode`，调度设置不占模型上下文。投影保留注册定义、参数 schema 和执行权限。
 `ContextView.provider_context.tools` 保存已呈现的完整工具定义，Provider 扩展与请求记录使用同一份内容。
 共享 token 估算只读取其中的名称、呈现后的描述和参数 schema；权限、执行策略、结果 schema 与 provenance metadata
 不计入模型输入预算。估算器 `builtin.conservative` 的版本为 5，是协议无关的近似，不代表供应商实际计量。

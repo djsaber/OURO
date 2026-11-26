@@ -175,9 +175,10 @@ application 用例负责取得 mutation lock 并准备业务字段。预留与�
 账本记账、continuation、tool batch 审计和消息游标等不改变 Run status 的写入不属于状态迁移。
 
 审批、回答和子任务返回均由 `ParkedRunExecution` 取得原 Run 的执行锁。它在锁内重读当前批次，按交互身份裁决，
-在一次会话提交内保存批次、等待状态和事件，再通知订阅者。审批允许覆盖参数，回答可产生下一次提问；
-子任务返回按 Run、批次、Call 和尝试编号取得已经落盘的结果。批次可运行时继续原 Driver，
-仍有等待时返回该状态。Session 的后续输入在释放执行锁后调度。
+在一次会话提交内保存该项决议及 Run 的下一状态，再通知订阅者。审批允许覆盖参数，回答可产生下一次提问。
+子任务返回按 Run、批次、Call 和尝试编号取得已经落盘的结果。有就绪项时继续调度，只有外部等待时交权，
+整帧反馈发布后才继续原 Driver。原执行者在交互等锁期间退出时，新执行者在锁内依据调用事实恢复该批次，
+随后校验并应用原交互。Session 的后续输入在释放执行锁后调度。
 
 运行时识别预留 Run 已写入的目录绑定时，代次集合可以为空。执行时按记录的身份取得所需实现，进程内租约由当前执行者持有。
 
@@ -382,8 +383,8 @@ Host 的 Driver 选择在存储锁外执行，进入接受事务后重新检查�
 ## 子智能体等待
 
 模型侧 `SpawnAgent(execution_mode=sync)` 不在工具 handler 内轮询 child。原 SpawnAgent 所在
-对应 `ToolCallState` 保存 durable `AgentWaitRequest`，父 Run 进入 `waiting_child/subagent_join`，`RuntimeService` 把 waiting outcome 交还
-`RuntimeSupervisor` 并释放 execution permit。child 终态后，application 按原 parent session/run/batch/tool-call
+对应 `ToolCallState` 保存 durable `AgentWaitRequest`。父 Run 执行完就绪项、收齐在途 handler 后才停驻并释放 Supervisor 的执行名额。
+审批可作为主要等待原因同时展示，各同步子任务保留独立的回执。child 终态后，application 按原 parent session/run/batch/tool-call
 identity 解析该调用并恢复同一父 Run；重复结果通知只会命中已经解析的 checkpoint，不创建第二个父 Run。
 每个同步 SpawnAgent 的 wait 固定引用它创建的 Delegation 和 child Run；Host 批量等待不进入该持久协议。
 AgentService 在 child 调度前把同步等待绑定到当前 started Call attempt，独立保存匹配原等待的确定 Outcome；

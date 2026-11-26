@@ -148,3 +148,58 @@ def _unused_tcp_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+async def test_model_batch_preserves_builtin_plugin_and_stdio_result_ownership(tmp_path):
+    from ouro.core.provider import ProviderStreamEvent
+    from ouro.local_application import LocalApplication
+    from ouro.providers import FauxProvider
+    from tests.plugins.test_builtin_plan import _runtime
+
+    note = tmp_path / "note.txt"
+    note.write_text("local content", encoding="utf-8")
+    group = [("Read", {"path": str(note)}), ("GetGoal", {}), ("stdio__echo", {"value": "remote"})]
+    provider = FauxProvider(
+        event_batches=[
+            [
+                *(
+                    ProviderStreamEvent.from_tool_call(
+                        {"id": f"id_{i}", "name": name, "arguments": args}, index=i
+                    )
+                    for i, (name, args) in enumerate(group)
+                ),
+                ProviderStreamEvent(type="done"),
+            ],
+            [ProviderStreamEvent(type="text_delta", text="done"), ProviderStreamEvent(type="done")],
+        ]
+    )
+    home = tmp_path / "home"
+    runtime, store = _runtime(home, tmp_path, provider)
+    async with LocalApplication.from_runtime(runtime, home=home) as app:
+        assert (await app.plugins.enable("dev.ouro.goal")).status == "active"
+        app.mcp.apply_config(
+            MCPServerConfig(
+                server_id="stdio",
+                name="Echo",
+                command=sys.executable,
+                args=[str(SERVER_SCRIPT), "--transport", "stdio"],
+                auto_start=False,
+            )
+        )
+        server = await app.mcp.start_server("stdio")
+        assert server.status == "connected", server.error
+        done = await runtime.run("read, get goal and echo", approval_mode="auto")
+        assert done.run.status == "completed", done.run.error
+        snapshot = store.load_session(done.session.session_id)
+        starts = {item.identity.tool_call_id: item for item in snapshot.tool_facts.starts}
+        receipts = [m for m in snapshot.messages if m.tool_result]
+        assert [m.tool_result.tool_call_id for m in receipts] == ["id_0", "id_1", "id_2"]
+        assert all(m.tool_result.producer.kind == "model" for m in receipts)
+        assert [starts[m.tool_result.tool_call_id].binding.source for m in receipts] == [
+            "builtin",
+            "official_plugin",
+            "mcp",
+        ]
+        assert len({m.outcome_ref.identity.batch_id for m in receipts}) == 1
+        assert [m.tool_result.is_error for m in receipts] == [False, True, False]
+        assert "local content" in receipts[0].text_content and "remote" in receipts[2].text_content

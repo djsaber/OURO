@@ -652,8 +652,6 @@ def _ask_tools() -> ToolRegistry:
                     "additionalProperties": False,
                 },
                 effect="read_only",
-                execution_mode="sequential",
-                batch_behavior="exclusive",
                 kind="user_input",
             ),
             handler=lambda invocation, context: ToolInputRequest(
@@ -3650,6 +3648,11 @@ async def test_sync_child_hitl_keeps_parent_parked_and_single_worker_progresses(
         interaction = service.list_agent_interactions(root_session_id)[0]
         assert interaction.kind == "user_input"
         assert store.load_run(root_session_id, parked.run_id).status == "waiting_child"
+        await supervisor.wait_run(
+            interaction.child_session_id,
+            interaction.child_run_id,
+            until=frozenset({"waiting_user"}),
+        )
         tree = service.agent_tree_snapshot(root_session_id)
         assert tree.nodes[0].status == "waiting_user"
         assert tree.pending_interaction_count == 1

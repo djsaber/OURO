@@ -553,27 +553,12 @@ class RuntimeSupervisor:
     ) -> RunHandle:
         """Schedule continuation of one parked parent Run."""
 
-        run_id = identity.run_id
-        await self.start()
-        lock = self._parked_session_locks.setdefault(session_id, asyncio.Lock())
-        async with lock:
-            await self._await_parked_session(
-                session_id,
-                run_id=run_id,
-                expected_status="waiting_child",
-            )
-            run = await run_blocking(self.store.load_run, session_id, run_id)
-            if run.status != "waiting_child":
-                raise ValueError(f"run is not waiting for a child: {run.status}")
-            if run.active_tool_batch is None or run.active_tool_batch.batch_id != identity.batch_id:
-                raise ValueError("Agent wait belongs to another native batch")
-            handle = RunHandle(session_id=session_id)
-            job = _RunJob(
-                handle=handle,
-                operation=_ResumeAgentWait(identity, resolution),
-            )
-            await self._enqueue_job(job, run_id=run_id)
-            return handle
+        run = await run_blocking(self.store.load_run, session_id, identity.run_id)
+        if run.active_tool_batch is None or run.active_tool_batch.batch_id != identity.batch_id:
+            raise ValueError("Agent wait belongs to another native batch")
+        return await self._schedule_tool_interaction(
+            session_id, identity.run_id, _ResumeAgentWait(identity, resolution)
+        )
 
     async def route_host_input(
         self,
@@ -710,26 +695,11 @@ class RuntimeSupervisor:
         reason: str = "User rejected",
         arguments_override: dict[str, object] | None = None,
     ) -> RunHandle:
-        await self.start()
-        await self._await_parked_session(
+        return await self._schedule_tool_interaction(
             session_id,
-            run_id=run_id,
-            expected_status="waiting_approval",
+            run_id,
+            _ResolveApproval(run_id, approval_id, approved, reason, arguments_override),
         )
-        run = await run_blocking(self.store.load_run, session_id, run_id)
-        if run.status != "waiting_approval":
-            raise ValueError(f"run is not waiting for approval: {run.status}")
-        handle = RunHandle(session_id=session_id)
-        await self._enqueue_job(
-            _RunJob(
-                handle=handle,
-                operation=_ResolveApproval(
-                    run_id, approval_id, approved, reason, arguments_override
-                ),
-            ),
-            run_id=run_id,
-        )
-        return handle
 
     async def resolve_tool_input(
         self,
@@ -745,36 +715,28 @@ class RuntimeSupervisor:
             )
         elif question.call.run_id != run_id:
             raise ValueError("question belongs to another Run")
-        await self.start()
-        await self._await_parked_session(
-            session_id,
-            run_id=run_id,
-            expected_status="waiting_user",
+        return await self._schedule_tool_interaction(
+            session_id, run_id, _AnswerUser(question, answer)
         )
-        handle = RunHandle(session_id=session_id)
-        await self._enqueue_job(
-            _RunJob(
-                handle=handle,
-                operation=_AnswerUser(question, answer),
-            ),
-            run_id=run_id,
-        )
-        return handle
 
-    async def _await_parked_session(
+    async def _schedule_tool_interaction(
         self,
         session_id: str,
-        *,
         run_id: str,
-        expected_status: str,
-    ) -> None:
-        job = self._jobs_by_session.get(session_id)
-        if job is None:
-            return
-        run = await run_blocking(self.store.load_run, session_id, run_id)
-        if run.status != expected_status:
-            raise SessionBusyError(f"session already has a supervised run: {session_id}")
-        await job.done.wait()
+        operation: _ResumeAgentWait | _ResolveApproval | _AnswerUser,
+    ) -> RunHandle:
+        await self.start()
+        lock = self._parked_session_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            job = self._jobs_by_session.get(session_id)
+            if job is not None:
+                run = await run_blocking(self.store.load_run, session_id, run_id)
+                if run.active_tool_batch is None or run.status not in ACTIVE_RUN_STATUSES:
+                    raise SessionBusyError(f"session already has a supervised run: {session_id}")
+                await job.done.wait()
+            handle = RunHandle(session_id=session_id)
+            await self._enqueue_job(_RunJob(handle=handle, operation=operation), run_id=run_id)
+            return handle
 
     async def _enqueue_job(self, job: _RunJob, *, run_id: str | None = None) -> None:
         session_id = job.handle.session_id
@@ -1734,8 +1696,6 @@ def _status_from_event(
     mapping: dict[str, SupervisorRunStatus] = {
         "run_started": "running",
         "run_abort_requested": "cancelling",
-        "approval_requested": "waiting_approval",
-        "ask_user_requested": "waiting_user",
         "run_completed": "completed",
         "run_aborted": "aborted",
         "run_failed": "failed",

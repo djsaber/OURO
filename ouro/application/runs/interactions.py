@@ -21,8 +21,8 @@ from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.results import RunResult
-from ouro.core.state import RunRecord, SessionRecord
-from ouro.core.tool_batch_transitions import resolve_tool_approval
+from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
+from ouro.core.tool_batch_transitions import resolve_tool_approval, tool_batch_suspension
 from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tool_facts import ToolCallIdentity, ToolQuestion
 from ouro.core.tools import ToolResult
@@ -57,12 +57,9 @@ class ParkedRunExecution:
     tool_calls_for_run: Callable[[str], ToolCallCoordinator]
 
     async def _target(self, session_id: str, run_id: str | None) -> RunRecord:
-        snapshot = await run_blocking(self.recovery.recover_runtime, session_id)
         if run_id is not None:
-            for run in snapshot.runs:
-                if run.run_id == run_id:
-                    return run
             return await run_blocking(self.runs.store.load_run, session_id, run_id)
+        snapshot = await run_blocking(self.runs.store.load_runtime_session, session_id)
         return find_active_run(snapshot.runs, history_epoch=snapshot.session.history_epoch)
 
     async def _resolve(
@@ -70,23 +67,20 @@ class ParkedRunExecution:
         target: RunRecord,
         decide: Callable[[SessionRecord, RunRecord, AbortSignal], Awaitable[_ResolvedInteraction]],
     ) -> RunResult:
-        async with self.ownership.parked_run(target) as (session, run, signal):
+        async with self.ownership.parked_run(target) as signal:
+            session, run = await run_blocking(self.recovery.load_parked_run, target)
             try:
                 decision = await decide(session, run, signal)
-                session, run, batch, events = await run_blocking(
-                    self.runs.save_resolved_batch,
-                    session=session,
-                    run=run,
-                    batch=decision.batch,
+                session, run, batch = await self.runs.checkpoint_tool_dispatch(
+                    session,
+                    run,
+                    decision.batch,
+                    tool_batch_suspension(decision.batch),
+                    changed_call_ids=decision.changed_call_ids,
                     events=decision.events,
                     harness=decision.harness,
-                    changed_call_ids=decision.changed_call_ids,
                 )
-                await self.runs.events.publish_committed(events)
-                if target.status == "waiting_approval" and run.status != "running":
-                    result = RunResult(session=session, run=run)
-                else:
-                    result = await self.continue_batch(session, run, batch, signal)
+                result = await self.continue_batch(session, run, batch, signal)
             except SessionBusyError:
                 self.release_resources(run.run_id)
                 aborted = await run_blocking(
@@ -122,14 +116,9 @@ class ParkedRunExecution:
         reason: str,
         arguments_override: dict[str, object] | None,
     ) -> RunResult:
-        def require_approval(run: RunRecord) -> None:
-            if run.status != "waiting_approval":
-                raise ValueError(f"run is not waiting for approval: {run.status}")
-            if run.active_tool_batch is None:
-                raise ValueError("run has no active tool batch")
-
         target = await self._target(session_id, run_id or None)
-        require_approval(target)
+        if target.status not in ACTIVE_RUN_STATUSES:
+            raise ValueError(f"run is not waiting for approval: {target.status}")
         selected = approval_id or target.pending_approval_id
         if selected is None:
             raise ValueError("run has no pending approval")
@@ -137,7 +126,6 @@ class ParkedRunExecution:
         async def decide(
             session: SessionRecord, run: RunRecord, _signal: AbortSignal
         ) -> _ResolvedInteraction:
-            require_approval(run)
             batch = await run_blocking(load_tool_batch, self.runs.store, run)
             assert batch is not None
             batch = resolve_tool_approval(
@@ -178,7 +166,7 @@ class ParkedRunExecution:
         store = self.runs.store
         with store.session_read(session_id):
             run = store.load_run(session_id, run_id)
-            if run.status != "waiting_user":
+            if run.status not in ACTIVE_RUN_STATUSES:
                 raise ValueError(f"run is not waiting for user input: {run.status}")
             for state in load_batch_states(store, run):
                 if state.status == "waiting_user" and state.input_request is not None:
@@ -188,18 +176,9 @@ class ParkedRunExecution:
     async def answer(
         self, session_id: str, run_id: str, answer: JsonValue, question: ToolQuestion | None = None
     ) -> RunResult:
-        def require_question(run: RunRecord) -> None:
-            if run.status != "waiting_user":
-                raise ValueError(f"run is not waiting for user input: {run.status}")
-            if run.active_tool_batch is None:
-                raise ValueError("run has no active tool batch")
-
         async def decide(
             session: SessionRecord, run: RunRecord, signal: AbortSignal
         ) -> _ResolvedInteraction:
-            require_question(run)
-            if question is None and run.active_tool_batch != target.active_tool_batch:
-                raise StaleToolQuestion("pending question changed while acquiring the Run")
             batch = await run_blocking(load_tool_batch, self.runs.store, run)
             assert batch is not None
             waiting_call = next(
@@ -207,7 +186,7 @@ class ParkedRunExecution:
                     call
                     for call in batch.calls
                     if call.status == "waiting_user"
-                    and (question is None or call.question(run_id, batch.batch_id) == question)
+                    and call.question(run_id, batch.batch_id) == question
                 ),
                 None,
             )
@@ -281,7 +260,8 @@ class ParkedRunExecution:
             )
 
         target = await self._target(session_id, run_id)
-        require_question(target)
+        if question is None:
+            question = await run_blocking(self.pending_question, session_id, run_id)
         return await self._resolve(target, decide)
 
     async def resume_child(
@@ -292,7 +272,7 @@ class ParkedRunExecution:
         async def decide(
             session: SessionRecord, run: RunRecord, _signal: AbortSignal
         ) -> _ResolvedInteraction:
-            if run.status != "waiting_child" or run.active_tool_batch is None:
+            if run.active_tool_batch is None:
                 raise ValueError("parent Run no longer has a durable child wait")
             if run.active_tool_batch.batch_id != identity.batch_id:
                 raise ValueError("Agent wait belongs to another native batch")
@@ -329,9 +309,7 @@ class ParkedRunExecution:
                 else call
                 for call in batch.calls
             ]
-            batch = batch.model_copy(
-                update={"calls": calls, "phase": "executing", "updated_at": utc_now()}
-            )
+            batch = batch.model_copy(update={"calls": calls, "updated_at": utc_now()})
             resolved = EventRecord(
                 session_id=session.session_id,
                 run_id=run.run_id,
@@ -366,6 +344,6 @@ class ParkedRunExecution:
             )
 
         target = await self._target(session_id, run_id)
-        if target.status != "waiting_child":
+        if target.status not in ACTIVE_RUN_STATUSES:
             raise ValueError(f"run is not waiting for a child: {target.status}")
         return await self._resolve(target, decide)

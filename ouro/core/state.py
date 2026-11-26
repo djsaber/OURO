@@ -36,9 +36,10 @@ RunStatus = Literal[
     "paused",
     "recoverable",
 ]
-ACTIVE_RUN_STATUSES: frozenset[RunStatus] = frozenset(
-    {"queued", "running", "waiting_user", "waiting_approval", "waiting_child"}
+TOOL_WAIT_RUN_STATUSES: frozenset[RunStatus] = frozenset(
+    {"waiting_user", "waiting_approval", "waiting_child"}
 )
+ACTIVE_RUN_STATUSES: frozenset[RunStatus] = TOOL_WAIT_RUN_STATUSES | {"queued", "running"}
 RESUMABLE_RUN_STATUSES: frozenset[RunStatus] = frozenset(
     {"aborted", "failed", "paused", "recoverable"}
 )

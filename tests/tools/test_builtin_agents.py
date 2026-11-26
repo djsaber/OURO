@@ -121,7 +121,6 @@ def test_agent_controls_use_ordinary_tool_batch_scheduling() -> None:
     }
 
     for name in ("SendAgentMessage", "InterruptAgent"):
-        assert controls[name].execution_mode == "inherit"
         assert controls[name].batch_behavior == "compatible"
 
 

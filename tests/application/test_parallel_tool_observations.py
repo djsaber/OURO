@@ -19,7 +19,7 @@ from tests.application.helpers import wait_for_runtime_event
 from tests.application.tool_runtime import store as store
 
 
-@pytest.mark.parametrize("conflict", [False, True])
+@pytest.mark.parametrize("conflict", [None, "owner state", "control"])
 async def test_arrival_persistence_does_not_wait_for_other_business_callbacks(
     store, tmp_path, monkeypatch, conflict
 ):
@@ -38,15 +38,15 @@ async def test_arrival_persistence_does_not_wait_for_other_business_callbacks(
         return sdk.ToolOutput(
             content=f"observed {call.tool_call_id}",
             session_control_transitions=[
-                sdk.SessionControlTransition(action="acquire", controller_id="mode")
+                sdk.SessionControlTransition(action="acquire", controller_id=call.tool_call_id)
             ]
-            if call.tool_call_id == "second"
+            if call.tool_call_id == "second" or conflict == "control"
             else [],
         )
 
     registry = ToolRegistry()
     for index, name in enumerate(("First", "Second")):
-        owner = "example.shared" if conflict else f"example.owner{index}"
+        owner = "example.shared" if conflict == "owner state" else f"example.owner{index}"
         tool = adapt_sdk_contributions(
             sdk.ContributionSet(
                 tools=[
@@ -101,9 +101,10 @@ async def test_arrival_persistence_does_not_wait_for_other_business_callbacks(
         saved.append(identity)
 
     async def hold_controller(transition, *, draft, **kwargs):
-        record_observation("second")
-        second_saved.set()
-        await release.wait()
+        if transition.controller_id == "second":
+            record_observation("second")
+            second_saved.set()
+            await release.wait()
         return draft, SessionControlTransitionResult(
             action=transition.action, changed=False, session_revision=draft.state.controls.revision
         )
@@ -130,7 +131,7 @@ async def test_arrival_persistence_does_not_wait_for_other_business_callbacks(
         if conflict:
             assert result.run.status == "failed"
             assert "SessionCommitConflict" in result.run.error
-            assert "competing owner state proposals" in result.run.error
+            assert f"competing {conflict} proposals" in result.run.error
             assert not store.load_harness(session.session_id).state.states
             assert not any(
                 message.role == "tool_result"
@@ -148,7 +149,7 @@ async def test_arrival_persistence_does_not_wait_for_other_business_callbacks(
             if message.role == "tool_result"
         ]
         assert [message.tool_result.tool_call_id for message in messages] == ["first", "second"]
-        assert [message.tool_result.is_error for message in messages] == [conflict, conflict]
+        assert [message.tool_result.is_error for message in messages] == [bool(conflict)] * 2
         for identity in saved:
             outcome = store.load_tool_outcome(session.session_id, identity, 1)
             assert outcome.value.content == f"observed {identity.tool_call_id}"

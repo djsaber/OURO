@@ -697,7 +697,15 @@ async def test_programmatic_unknown_outcome_is_delivered_without_repeating_side_
     store = LocalSessionStore(tmp_path / "sessions")
     store.initialize()
     calls = []
-    runtime, plugins, service = host(tmp_path, store, calls, mode="auto")
+
+    def deploy(invocation, context):
+        observation = ToolResult(
+            tool_call_id=invocation.tool_call_id, tool_name=invocation.tool_name, content="deployed"
+        )
+        calls.append((context.on_late_result, invocation, observation))
+        return observation
+
+    runtime, plugins, service = host(tmp_path, store, calls, mode="auto", handler=deploy)
     package = plugin_source(tmp_path, "worker")
     set_driver_body(
         package,
@@ -737,6 +745,18 @@ async def test_programmatic_unknown_outcome_is_delivered_without_repeating_side_
         receipt = next(item for item in history.messages if item.tool_result is not None)
         assert receipt.tool_result.producer.driver_id == DRIVER
         assert receipt.tool_result.is_error
+        assert receipt.outcome_ref.outcome_attempt is None
+        assert result.run.driver_checkpoint.state == "consumed"
+        receive_late, invocation, observation = calls[0]
+        await receive_late(invocation, observation)
+        outcome = store.load_tool_outcome(
+            history.session.session_id, receipt.outcome_ref.identity, 1
+        )
+        assert outcome.value.content == "deployed"
+        after = store.load_session(history.session.session_id)
+        assert after.messages == history.messages
+        assert after.session.harness_version == history.session.harness_version
+        assert store.load_run(history.session.session_id, result.run.run_id) == result.run
     finally:
         await runtime.close()
         await plugins.close()
@@ -885,3 +905,76 @@ async def test_driver_abort_waits_for_native_tool_cancellation_receipts(tmp_path
         await asyncio.gather(running, return_exceptions=True)
         await runtime.close()
         await plugins.close()
+
+
+@pytest.mark.parametrize("programmatic", [False, True], ids=["default-model", "plugin-driver"])
+async def test_plan_and_goal_transitions_reject_mixed_batches_without_start(tmp_path, programmatic):
+    from ouro.local_application import LocalApplication
+    from tests.plugins.test_builtin_plan import _runtime
+
+    target = tmp_path / "outside-plan.txt"
+    groups = [
+        [("EnterPlanMode", {}), ("Write", {"path": str(target), "content": "changed"})],
+        [
+            ("CreateGoal", {"objective": "Ship"}),
+            ("UpdateGoal", {"status": "complete", "report": "done"}),
+        ],
+    ]
+    provider = FauxProvider(
+        event_batches=[
+            [
+                *(
+                    ProviderStreamEvent.from_tool_call(
+                        {"id": f"id_{i}", "name": name, "arguments": args}, index=i
+                    )
+                    for i, (name, args) in enumerate(group)
+                ),
+                ProviderStreamEvent(type="done"),
+            ]
+            for group in groups
+        ]
+        + [[ProviderStreamEvent(type="text_delta", text="done"), ProviderStreamEvent(type="done")]]
+    )
+    home = tmp_path / "home"
+    app, store = _runtime(home, tmp_path, provider)
+    application = LocalApplication.from_runtime(app, home=home)
+    async with application:
+        for plugin in ("dev.ouro.plan", "dev.ouro.goal"):
+            assert (await application.plugins.enable(plugin)).status == "active"
+        if programmatic:
+            package = plugin_source(tmp_path, "python-inprocess")
+            set_driver_body(
+                package,
+                f"""async def review(context, resume):
+    for group in {groups!r}:
+        calls = tuple(sdk.RunToolCall(name, args) for name, args in group)
+        result = await context.tools.execute(calls, checkpoint="finish")
+        assert not result.suspended and all(item.is_error for item in result.results)
+    return sdk.DriverFinished("done")
+""",
+            )
+            application.plugins.install(package)
+            assert (await application.plugins.enable(PLUGIN)).status == "active"
+        done = await app.run(
+            "try both transitions", driver_id=DRIVER if programmatic else None, approval_mode="auto"
+        )
+        assert done.run.status == "completed", done.run.error
+        snapshot = store.load_session(done.session.session_id)
+        assert not snapshot.tool_facts.starts and not target.exists()
+        assert not snapshot.session.controls.activations
+        calls = snapshot.tool_facts.calls
+        assert len(calls) == 4 and len({c.identity.batch_id for c in calls}) == 2
+        assert all(c.producer.kind == ("driver" if programmatic else "model") for c in calls)
+        assert done.run.model_round_count == (0 if programmatic else 3)
+        messages = [m for m in snapshot.messages if m.tool_result]
+        assert [m.tool_result.tool_name for m in messages] == [
+            name for group in groups for name, _ in group
+        ]
+        by_id = {call.identity: call for call in calls}
+        for message in messages:
+            identity = message.outcome_ref.identity
+            assert by_id[identity].producer == message.tool_result.producer
+            outcome = store.load_tool_outcome(
+                done.session.session_id, identity, message.outcome_ref.outcome_attempt
+            )
+            assert outcome.value.structured["error_type"] == "ExclusiveToolBatchViolation"

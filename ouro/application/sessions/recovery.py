@@ -3,14 +3,16 @@ from __future__ import annotations
 from ouro.application.runs.tool_batches import load_batch_states
 from ouro.application.usage import UsageService
 from ouro.core.base import utc_now
-from ouro.core.errors import PersistenceError
+from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.run_transitions import plan_run_transition, session_state_for_run
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_ports import RuntimeSessionSnapshot, SessionSnapshot, SessionStore
-from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
+from ouro.core.state import ACTIVE_RUN_STATUSES, TOOL_WAIT_RUN_STATUSES, RunRecord, SessionRecord
+from ouro.core.tool_batch_transitions import primary_tool_wait
 from ouro.core.tool_batches import ToolCallState, tool_execution_in_flight
+from ouro.core.tools import ToolResultFeedback
 
 _INCOMPLETE_RUN_STATUSES = {"queued", "running"}
 
@@ -103,7 +105,38 @@ class SessionRecoveryService:
             self.store.refresh_catalog(session_id)
         return recovered_runtime
 
-    def _recover_runs(self, snapshot: RuntimeSessionSnapshot) -> bool:
+    def load_parked_run(self, target: RunRecord) -> tuple[SessionRecord, RunRecord]:
+        """Read the interaction boundary after acquiring the originating Run's execution lock."""
+        session_id = target.session_id
+        changed = False
+        with self.store.session_mutation(session_id):
+            session = self.store.load_session_record(session_id)
+            run = self.store.load_run(session_id, target.run_id)
+            head = run.active_tool_batch
+            if (
+                head is None
+                or target.active_tool_batch is None
+                or head.batch_id != target.active_tool_batch.batch_id
+            ):
+                raise SessionBusyError(f"active tool batch changed: {run.run_id}")
+            if session.active_run_id != run.run_id:
+                raise SessionBusyError(f"run is not parked: {run.run_id}")
+            if _interrupted_tool_dispatch(run):
+                # Reconcile only the active Run whose execution lock was transferred.
+                changed = self._recover_runs(
+                    RuntimeSessionSnapshot(session=session, runs=[run]), owned_run_id=run.run_id
+                )
+                session = self.store.load_session_record(session_id)
+                run = self.store.load_run(session_id, target.run_id)
+        if changed:
+            self.store.refresh_catalog(session_id)
+        if run.status not in TOOL_WAIT_RUN_STATUSES or run.abort_requested:
+            raise SessionBusyError(f"run is not parked: {run.run_id}")
+        return session, run
+
+    def _recover_runs(
+        self, snapshot: RuntimeSessionSnapshot, *, owned_run_id: str | None = None
+    ) -> bool:
         session, runs = snapshot.session, snapshot.runs
         run_is_live = bool(runs) and self.store.is_session_locked(session.session_id)
         recovered_runs: list[RunRecord] = []
@@ -114,13 +147,20 @@ class SessionRecoveryService:
 
         for run in runs:
             if (
-                run_is_live
+                (run_is_live and run.run_id != owned_run_id)
                 or run.history_epoch != session.history_epoch
                 or run.status not in ACTIVE_RUN_STATUSES
             ):
                 recovered_runs.append(run)
                 continue
             states = load_batch_states(self.store, run)
+            parked = _recover_tool_wait(run, states) if _interrupted_tool_dispatch(run) else None
+            if parked is not None:
+                recovered, updates = parked
+                changed_calls.extend(updates)
+                changed_runs.append(recovered)
+                recovered_runs.append(recovered)
+                continue
             interaction_error = _interaction_state_error(run, states)
             if run.status in _INCOMPLETE_RUN_STATUSES or interaction_error is not None:
                 metadata = dict(run.metadata)
@@ -298,6 +338,71 @@ def _reconcile_session_projection(
     return session.model_copy(update=changes), True
 
 
+def _interrupted_tool_dispatch(run: RunRecord) -> bool:
+    return (
+        run.active_tool_batch is not None
+        and not run.abort_requested
+        and (
+            run.active_tool_batch.phase == "executing"
+            or (run.status == "running" and run.phase == "tool_execution")
+        )
+    )
+
+
+def _recover_tool_wait(
+    run: RunRecord, calls: tuple[ToolCallState, ...]
+) -> tuple[RunRecord, list[ToolCallState]] | None:
+    """Recover the owner's unfinished dispatch without consuming its interaction receipts."""
+    head = run.active_tool_batch
+    assert head is not None
+    recovered = []
+    updates = []
+    for call in calls:
+        if tool_execution_in_flight(call):
+            status = (
+                "waiting_child"
+                if call.agent_wait and call.agent_wait.resolution is None
+                else "unknown_outcome"
+            )
+            call = call.model_copy(update={"status": status})
+            updates.append(call)
+        elif call.status == "resolving_input":
+            call = call.model_copy(update={"status": "aborted"})
+            updates.append(call)
+        elif call.proposals is not None:
+            call = call.model_copy(
+                update={
+                    "status": "failed",
+                    "proposals": None,
+                    "feedback": ToolResultFeedback.interrupted_effects(),
+                }
+            )
+            updates.append(call)
+        recovered.append(call)
+    wait = primary_tool_wait(call.status for call in recovered)
+    if wait is None:
+        return None
+    approval_id = next(
+        (
+            call.approval.approval_id
+            for call in recovered
+            if call.status == "awaiting_approval" and call.approval
+        ),
+        None,
+    )
+    parked = run.model_copy(
+        update={
+            "status": wait.status,
+            "phase": wait.run_phase,
+            "pending_approval_id": approval_id,
+            "active_tool_batch": head.model_copy(update={"phase": wait.batch_phase}),
+        }
+    )
+    if _interaction_state_error(parked, tuple(recovered)) is not None:
+        return None
+    return parked, updates
+
+
 def _interaction_state_error(run: RunRecord, calls: tuple[ToolCallState, ...]) -> str | None:
     if run.status == "waiting_approval":
         pending = [
@@ -311,7 +416,9 @@ def _interaction_state_error(run: RunRecord, calls: tuple[ToolCallState, ...]) -
         if run.pending_approval_id not in approval_ids:
             return "Run pending approval does not match its active tool batch."
     if run.status == "waiting_user":
-        if not any(call.status == "waiting_user" for call in calls):
+        if not any(
+            call.status == "waiting_user" and call.input_request is not None for call in calls
+        ):
             return "Run was waiting for user input without a waiting tool call."
     if run.status == "waiting_child":
         if not any(

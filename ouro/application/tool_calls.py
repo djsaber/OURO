@@ -45,12 +45,12 @@ from ouro.core.session_controls import (
     SessionControlState,
     SessionControlTransitionResult,
 )
-from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.state import TOOL_WAIT_RUN_STATUSES, RunRecord, SessionRecord
 from ouro.core.tool_batch_transitions import tool_batch_suspension
 from ouro.core.tool_batches import (
     ToolBatchCall,
+    ToolBatchOutcomeStatus,
     ToolCallBatchRecord,
-    ToolExecutionMode,
 )
 from ouro.core.tool_facts import ToolCallIdentity
 from ouro.core.tool_policies import ToolPolicyCall, ToolPolicyMode, ToolPolicyRegistry
@@ -171,7 +171,7 @@ class ToolCallCoordinator:
             else new_id("batch"),
             turn_id=turn_id,
             assistant_message_id=assistant_message.message_id,
-            execution_mode=self._effective_mode(tool_calls),
+            execution_mode=self.execution_config.mode,
             max_concurrency=self.execution_config.max_concurrency,
             calls=[ToolBatchCall(request=request) for request in tool_calls],
         )
@@ -207,7 +207,7 @@ class ToolCallCoordinator:
             batch_id=checkpoint.batch_id,
             turn_id=turn_id,
             producer=ToolCallProducer(kind="driver", driver_id=run.driver.driver_id),
-            execution_mode=self._effective_mode(list(tool_calls)),
+            execution_mode=self.execution_config.mode,
             max_concurrency=self.execution_config.max_concurrency,
             calls=[ToolBatchCall(request=request) for request in tool_calls],
         )
@@ -297,34 +297,19 @@ class ToolCallCoordinator:
                 pending_events.extend(call_events)
         batch = batch.model_copy(update={"calls": calls, "updated_at": utc_now()})
 
-        suspension = tool_batch_suspension(batch)
-        if suspension is not None:
-            batch = batch.model_copy(
-                update={"phase": suspension.batch_phase, "updated_at": utc_now()}
-            )
-            session, run, batch, committed_events = await run_blocking(
-                self.runs.save_batch_state,
-                session=session,
-                run=run,
-                batch=batch,
-                status=suspension.status,
-                phase=suspension.run_phase,
-                events=tuple(pending_events),
-            )
-            await self.events.publish_committed(committed_events)
-            return ToolBatchHandlingResult(
-                session=session,
-                run=run,
-                status=suspension.status,
-                had_tool_error=any(call.result.is_error for call in batch.calls if call.result),
-            )
-
+        session, run, batch = await self.runs.checkpoint_tool_dispatch(
+            session,
+            run,
+            batch,
+            tool_batch_suspension(batch),
+            events=tuple(pending_events),
+            changed_call_ids=None,
+        )
         return await self.execute_batch(
             session=session,
             run=run,
             batch=batch,
             abort_signal=abort_signal,
-            events=tuple(pending_events),
             driver_continues=True,
         )
 
@@ -335,21 +320,17 @@ class ToolCallCoordinator:
         run: RunRecord,
         batch: ToolCallBatchRecord,
         abort_signal: AbortSignal,
-        events: tuple[EventRecord, ...] = (),
         driver_continues: bool = False,
     ) -> ToolBatchHandlingResult:
-        ready_calls = [call for call in batch.calls if call.status == "ready" and call.invocation]
-        batch = batch.model_copy(update={"phase": "executing", "updated_at": utc_now()})
-        _, _, _, committed_events = await run_blocking(
-            self.runs.save_batch_state,
-            session=session,
-            run=run,
-            batch=batch,
-            status="running",
-            phase="tool_execution",
-            events=events,
-        )
-        await self.events.publish_committed(committed_events)
+        if run.status in TOOL_WAIT_RUN_STATUSES:
+            return await self._handoff(
+                session, run, batch, cast(ToolBatchOutcomeStatus, run.status)
+            )
+        ready_invocations = [
+            call.invocation
+            for call in batch.calls
+            if call.status == "ready" and call.invocation is not None
+        ]
         checkpoint_batch = batch
         head = batch.head()
         positions = {call.request.id: index for index, call in enumerate(batch.calls)}
@@ -369,29 +350,25 @@ class ToolCallCoordinator:
         async def recheck_before_execute(
             invocation: ToolInvocation,
         ) -> ToolExecutionOutcome:
-            async with checkpoint_lock:
-                call = current_call(invocation.tool_call_id)
-                current, prepared = await self._prepare_call(
-                    session=session,
-                    run=run,
-                    invocation=invocation,
-                    phase="execution_boundary",
-                    approved=call.approved,
+            call = current_call(invocation.tool_call_id)
+            current, prepared = await self._prepare_call(
+                session=session,
+                run=run,
+                invocation=invocation,
+                phase="execution_boundary",
+                approved=call.approved,
+            )
+            if prepared.status == "approval_required" and current.interaction_mode == "unattended":
+                return _interaction_error_outcome(
+                    prepared.invocation,
+                    error_type="ApprovalUnavailable",
+                    error_message=(
+                        "tool permission tightened before execution while the Session "
+                        "was unattended"
+                    ),
+                    structured={"policy_reason": prepared.invocation.tool_policy_reason},
                 )
-                if (
-                    prepared.status == "approval_required"
-                    and current.interaction_mode == "unattended"
-                ):
-                    return _interaction_error_outcome(
-                        prepared.invocation,
-                        error_type="ApprovalUnavailable",
-                        error_message=(
-                            "tool permission tightened before execution while the Session "
-                            "was unattended"
-                        ),
-                        structured={"policy_reason": prepared.invocation.tool_policy_reason},
-                    )
-                return prepared
+            return prepared
 
         async def checkpoint_started(invocation: ToolInvocation) -> None:
             nonlocal checkpoint_batch
@@ -400,14 +377,13 @@ class ToolCallCoordinator:
                 checkpoint_batch = replace_call(
                     call.model_copy(update={"status": "running", "invocation": invocation})
                 )
-                suspension = tool_batch_suspension(checkpoint_batch)
                 _, _, checkpoint_batch, committed_events = await run_blocking(
                     self.runs.save_batch_state,
                     session=session,
                     run=run,
                     batch=checkpoint_batch,
-                    status=suspension.status if suspension is not None else "running",
-                    phase=suspension.run_phase if suspension is not None else "tool_execution",
+                    status="running",
+                    phase="tool_execution",
                     changed_call_ids=frozenset({invocation.tool_call_id}),
                     started_call_ids=frozenset({invocation.tool_call_id}),
                 )
@@ -588,17 +564,14 @@ class ToolCallCoordinator:
                 checkpoint_batch = replace_call(completed_call)
                 pending_events = outcome_events(completed_call, outcome)
                 try:
-                    suspension = tool_batch_suspension(checkpoint_batch)
                     _, _, checkpoint_batch, committed_events = await run_blocking(
                         self.runs.save_batch_state,
                         session=session,
                         run=run,
                         batch=checkpoint_batch,
                         harness=call_harness if outcome.status == "waiting_user" else None,
-                        status=suspension.status if suspension is not None else "running",
-                        phase=(
-                            suspension.run_phase if suspension is not None else "tool_execution"
-                        ),
+                        status="running",
+                        phase="tool_execution",
                         changed_call_ids=frozenset({outcome.invocation.tool_call_id}),
                         events=pending_events,
                     )
@@ -684,30 +657,31 @@ class ToolCallCoordinator:
                 context=replace(execution_context, harness=resume_harness),
             )
 
-        execution_context = ToolExecutionContext(
-            harness=await run_blocking(
-                capture_harness,
-                self.runs.store,
-                session.session_id,
-                run=run,
-                usage_service=self.runs.usage_service,
-            ),
-            signal=abort_signal,
-            on_late_result=preserve_late_result,
-            workspace=session.workspace or self.default_workspace,
-            max_output_chars=self.execution_config.max_output_chars,
-        )
-        await self.batch_executor.execute(
-            [call.invocation for call in ready_calls if call.invocation is not None],
-            mode=batch.execution_mode,
-            max_concurrency=batch.max_concurrency,
-            signal=abort_signal,
-            context=execution_context,
-            pre_execute=recheck_before_execute,
-            resolve_outcome=resolve_outcome,
-            on_start=checkpoint_started,
-            on_outcome=checkpoint_outcome,
-        )
+        if ready_invocations:
+            execution_context = ToolExecutionContext(
+                harness=await run_blocking(
+                    capture_harness,
+                    self.runs.store,
+                    session.session_id,
+                    run=run,
+                    usage_service=self.runs.usage_service,
+                ),
+                signal=abort_signal,
+                on_late_result=preserve_late_result,
+                workspace=session.workspace or self.default_workspace,
+                max_output_chars=self.execution_config.max_output_chars,
+            )
+            await self.batch_executor.execute(
+                ready_invocations,
+                mode=batch.execution_mode,
+                max_concurrency=batch.max_concurrency,
+                signal=abort_signal,
+                context=execution_context,
+                pre_execute=recheck_before_execute,
+                resolve_outcome=resolve_outcome,
+                on_start=checkpoint_started,
+                on_outcome=checkpoint_outcome,
+            )
         if abort_signal.is_aborted():
             aborted_batch = checkpoint_batch.model_copy(
                 update={"phase": "aborted", "updated_at": utc_now()}
@@ -727,37 +701,10 @@ class ToolCallCoordinator:
             )
         suspension = tool_batch_suspension(checkpoint_batch)
         if suspension is not None:
-            waiting_batch = checkpoint_batch.model_copy(
-                update={"phase": suspension.batch_phase, "updated_at": utc_now()}
+            session, run, batch = await self.runs.checkpoint_tool_dispatch(
+                session, run, checkpoint_batch, suspension, changed_call_ids=frozenset()
             )
-            session, run, waiting_batch, committed_events = await run_blocking(
-                self.runs.save_batch_state,
-                session=session,
-                run=run,
-                batch=waiting_batch,
-                status=suspension.status,
-                phase=suspension.run_phase,
-            )
-            await self.events.publish_committed(committed_events)
-            if suspension.status == "waiting_child":
-                assert suspension.call.agent_wait is not None
-                if self.agent_controls is None:
-                    raise RuntimeError("Agent control executor is unavailable")
-                await self.agent_controls.wait_parked(
-                    session=session,
-                    run=run,
-                    batch=waiting_batch,
-                    tool_call_id=suspension.call.request.id,
-                    wait=suspension.call.agent_wait,
-                )
-            return ToolBatchHandlingResult(
-                session=session,
-                run=run,
-                status=suspension.status,
-                had_tool_error=any(
-                    call.result.is_error for call in waiting_batch.calls if call.result
-                ),
-            )
+            return await self._handoff(session, run, batch, suspension.status)
         batch = checkpoint_batch
         await self.events.emit(
             run,
@@ -786,6 +733,32 @@ class ToolCallCoordinator:
             had_tool_error=any(
                 call.result.is_error for call in completed_batch.calls if call.result
             ),
+        )
+
+    async def _handoff(
+        self,
+        session: SessionRecord,
+        run: RunRecord,
+        batch: ToolCallBatchRecord,
+        status: ToolBatchOutcomeStatus,
+    ) -> ToolBatchHandlingResult:
+        for call in batch.calls:
+            if call.status == "waiting_child" and call.agent_wait is not None:
+                if self.agent_controls is None:
+                    raise RuntimeError("Agent control executor is unavailable")
+                await self.agent_controls.wait_parked(
+                    session=session,
+                    run=run,
+                    batch=batch,
+                    tool_call_id=call.request.id,
+                    wait=call.agent_wait,
+                )
+
+        return ToolBatchHandlingResult(
+            session=session,
+            run=run,
+            status=status,
+            had_tool_error=any(call.result.is_error for call in batch.calls if call.result),
         )
 
     async def _apply_agent_control(
@@ -945,6 +918,7 @@ class ToolCallCoordinator:
                 run=run,
                 batch=batch.model_copy(
                     update={
+                        "phase": "executing",
                         "calls": [
                             started if item.request.id == tool_call_id else item
                             for item in batch.calls
@@ -1023,16 +997,7 @@ class ToolCallCoordinator:
         resolved_calls = [
             resolved if item.request.id == tool_call_id else item for item in batch.calls
         ]
-        phase = (
-            "ready"
-            if all(
-                call.status not in {"awaiting_approval", "waiting_user"} for call in resolved_calls
-            )
-            else "awaiting_interaction"
-        )
-        return batch.model_copy(
-            update={"calls": resolved_calls, "phase": phase, "updated_at": utc_now()}
-        )
+        return batch.model_copy(update={"calls": resolved_calls, "updated_at": utc_now()})
 
     async def _resume_input(
         self,
@@ -1420,18 +1385,6 @@ class ToolCallCoordinator:
             if definition.batch_behavior == "exclusive":
                 exclusive.append(call.name)
         return list(dict.fromkeys(exclusive))
-
-    def _effective_mode(self, calls: list[ToolCallRequest]) -> ToolExecutionMode:
-        if self.execution_config.mode == "sequential":
-            return "sequential"
-        for call in calls:
-            try:
-                definition = self.registry.get(call.name).definition
-            except KeyError:
-                continue
-            if definition.execution_mode == "sequential":
-                return "sequential"
-        return "parallel"
 
 
 def _tool_input_result_content(answer: object) -> str:
