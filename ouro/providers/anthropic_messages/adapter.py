@@ -335,15 +335,14 @@ class AnthropicMessagesProvider(ChatMessageProvider):
                             ),
                         )
                         return
-                    if not delta.get("partial_json"):
-                        continue
-                    if index in continuation_blocks:
-                        tool_inputs.setdefault(index, []).append(str(delta["partial_json"]))
+                    partial_json = str(delta["partial_json"])
+                    if partial_json and index in continuation_blocks:
+                        tool_inputs.setdefault(index, []).append(partial_json)
                     yield ProviderStreamEvent(
                         type="tool_call_delta",
                         tool_call_delta=ToolCallDelta(
                             index=tool_call_indices[index],
-                            arguments_delta=str(delta["partial_json"]),
+                            arguments_delta=partial_json,
                         ),
                     )
                 elif delta_type == "citations_delta" and isinstance(delta.get("citation"), Mapping):

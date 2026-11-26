@@ -71,7 +71,7 @@ class _ToolCallParts:
             self.ids.append(delta.id_delta)
         if delta.name_delta:
             self.names.append(delta.name_delta)
-        if delta.arguments_delta or not (delta.id_delta or delta.name_delta):
+        if delta.arguments_delta is not None:
             self.arguments.append(delta.arguments_delta)
 
 

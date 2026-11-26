@@ -302,7 +302,9 @@ Session 继续的整体前提。持久 ToolInvocation、控制 activation 和 De
   非流式响应从完整调用中提取同样的身份和参数。
 - `tool_call_delta.index` 是当前 assistant 响应内从零开始的工具调用序号，并稳定关联同一调用；Provider
   适配器必须在统一边界内把供应商原生 content-block 坐标归一化，不能向 Core 泄漏。`id_delta`、
-  `name_delta` 和 `arguments_delta` 字段均保持追加分片语义。
+  `name_delta` 和 `arguments_delta` 字段均保持追加分片语义。省略 `arguments_delta` 或传入 `None` 表示本片没有参数文本。
+  字符串按原样追加，可与身份同片到达。完成时若从未收到参数文本，沿用空对象 `{}`；若收到过文本，则解析拼接结果，
+  包括显式空串。空串后续补齐为合法 JSON 对象时，调用有效。
 - `RunModelRequests` 按到达顺序发布 `model_tool_call_delta`。Core 执行器按工具 index 追加分片，
   完成时一次拼接参数并校验调用身份。参数 JSON 必须是键唯一、数值有限的对象，同批调用标识必须唯一。
 - 完成事件的用量记录先于输出可用性判断。输出长度受限、过滤或不完整时，不执行工具片段，不保留可重放 continuation。

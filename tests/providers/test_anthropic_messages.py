@@ -19,7 +19,10 @@ from ouro.core.provider import ModelMetadata, Usage
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.core.tools import ToolCallRequest
 from ouro.providers import AnthropicMessagesProvider
-from ouro.providers.anthropic_messages.codec import messages_to_anthropic_messages
+from ouro.providers.anthropic_messages.codec import (
+    content_blocks_from_response,
+    messages_to_anthropic_messages,
+)
 from ouro.providers.reasoning import ReasoningPayloadEncoder
 
 
@@ -45,6 +48,18 @@ class FakeTransport:
             }
         )
         return self.response
+
+
+def test_complete_tool_blocks_distinguish_missing_input_from_json_values():
+    _, _, calls = content_blocks_from_response(
+        {
+            "content": [
+                {"type": "tool_use", "id": str(i), "name": "Act", **fields}
+                for i, fields in enumerate([{}, {"input": None}, {"input": {}}])
+            ]
+        }
+    )
+    assert [call.arguments_delta for call in calls] == [None, "null", "{}"]
 
 
 def test_native_replay_requires_complete_response_content():
@@ -133,8 +148,12 @@ async def test_messages_requires_output_limit_before_transport() -> None:
 
 @pytest.mark.parametrize(
     "arguments",
-    ['{"text":"line\nbreak"}', "[" * sys.getrecursionlimit() + "0" + "]" * sys.getrecursionlimit()],
-    ids=["invalid-json", "unrepresentable-nesting"],
+    [
+        "",
+        '{"text":"line\nbreak"}',
+        "[" * sys.getrecursionlimit() + "0" + "]" * sys.getrecursionlimit(),
+    ],
+    ids=["empty", "invalid-json", "unrepresentable-nesting"],
 )
 async def test_invalid_tool_json_reaches_core_with_completion_and_usage(arguments: str) -> None:
     transport = FakeStreamingTransport(
@@ -173,14 +192,16 @@ async def test_invalid_tool_json_reaches_core_with_completion_and_usage(argument
             messages=[],
         )
     ]
-    assert not any(event.type in {"error", "continuation"} for event in events)
+    assert not any(event.type == "error" for event in events)
+    if arguments:
+        assert not any(event.type == "continuation" for event in events)
     assert events[-1].type == "done"
     assert events[-1].usage.output_tokens == 7
     assert events[-1].completion.finish_reason == "tool_call"
-    assert (
-        "".join(event.tool_call_delta.arguments_delta for event in events if event.tool_call_delta)
-        == arguments
-    )
+    assert [event.tool_call_delta.arguments_delta for event in events if event.tool_call_delta] == [
+        None,
+        arguments,
+    ]
 
 
 @pytest.mark.parametrize("streaming", [False, True])

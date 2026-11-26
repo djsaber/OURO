@@ -142,15 +142,15 @@ class ToolCallDelta(OuroModel):
 
     ``index`` is the zero-based ordinal among tool calls in the assistant
     response. Provider-native content-block coordinates must be normalized by
-    the adapter before crossing this boundary. Identity fragments can open a
-    call without arguments. An arguments-only fragment carries its literal
-    JSON text, including an explicitly empty input.
+    the adapter before crossing this boundary. ``arguments_delta`` is None
+    when this fragment supplies no argument text. Every string, including
+    the empty string, contributes literal text to the call's arguments.
     """
 
     index: int = Field(ge=0)
     id_delta: str = ""
     name_delta: str = ""
-    arguments_delta: str = ""
+    arguments_delta: str | None = None
 
 
 class ProviderStreamEvent(OuroModel):

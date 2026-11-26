@@ -298,7 +298,15 @@ async def test_provider_tool_stream_executes_native_tool_and_replays_result(syst
         display_name="Tool model",
         request_options={"path": str(path)},
     )
+    events = []
+    app.runtime.add_event_sink(events.append)
     outcome = await app.runtime.run("Read the file", workspace=home)
+    await app.runtime.drain_events()
+    assert [
+        event.payload["arguments_delta"]
+        for event in events
+        if event.event_type == "model_tool_call_delta"
+    ] == [None, json.dumps({"path": str(path)})]
     assert outcome.run.status == "completed", outcome.run.error
     assert "native tool result" in outcome.final_text
     assert outcome.run.model_round_count == 2

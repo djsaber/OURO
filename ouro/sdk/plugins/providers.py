@@ -118,10 +118,12 @@ class ProviderRequest:
 
 @dataclass(frozen=True)
 class ProviderToolDelta:
+    """Omit arguments_delta when no text arrived. Supply each string verbatim."""
+
     index: int
     id_delta: str = ""
     name_delta: str = ""
-    arguments_delta: str = ""
+    arguments_delta: str | None = None
 
 
 @dataclass(frozen=True)

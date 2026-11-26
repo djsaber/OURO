@@ -184,7 +184,7 @@ async def test_active_stream_can_exceed_timeout_regardless_of_display_lane(provi
     assert body.sent * INTERVAL > TIMEOUT
     if lane == "tool":
         assert "".join(
-            event.tool_call_delta.arguments_delta for event in events if event.tool_call_delta
+            event.tool_call_delta.arguments_delta or "" for event in events if event.tool_call_delta
         ) == json.dumps({"content": text})
     elif lane == "reasoning":
         assert "".join(event.reasoning_content or "" for event in events) == text

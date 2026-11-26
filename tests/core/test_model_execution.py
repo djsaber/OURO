@@ -325,7 +325,30 @@ async def test_usage_observation_precedes_output_validation(finish_reason) -> No
         assert output.tool_call_failure.arguments == "{}{"
 
 
-@pytest.mark.parametrize("arguments", ['{"value":"line\nbreak"}', "[]"])
+@pytest.mark.parametrize(
+    ("header_arguments", "tail", "expected"),
+    [
+        ({}, {}, {}),
+        ({"arguments_delta": ""}, {"arguments_delta": '{"value":1}'}, {"value": 1}),
+        ({"arguments_delta": "{}"}, {}, {}),
+    ],
+)
+async def test_tool_arguments_are_assembled_at_completion(header_arguments, tail, expected):
+    parts = [
+        ToolCallDelta(index=0, id_delta="call", name_delta="Act", **header_arguments),
+        ToolCallDelta(index=0, **tail),
+    ]
+    output = await _execute(
+        FauxProvider(
+            [ProviderStreamEvent(type="tool_call_delta", tool_call_delta=part) for part in parts]
+            + [ProviderStreamEvent(type="done")]
+        )
+    )
+    assert output.error is None
+    assert [call.arguments for call in output.tool_calls] == [expected]
+
+
+@pytest.mark.parametrize("arguments", ["", '{"value":"line\nbreak"}', "[]"])
 async def test_invalid_arguments_preserve_diagnostic_without_executable_calls(arguments):
     output = await _execute(
         FauxProvider(

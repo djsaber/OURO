@@ -57,12 +57,17 @@ async def stream(request, output):
         if not results:
             await output(
                 ProviderEvent(
+                    "tool_call_delta", tool_call_delta=ProviderToolDelta(0, "read-1", "Read")
+                )
+            )
+            await output(
+                ProviderEvent(
                     "tool_call_delta",
                     tool_call_delta=ProviderToolDelta(
                         0,
-                        "read-1",
-                        "Read",
-                        json.dumps({"path": request.connection.request_options["path"]}),
+                        arguments_delta=json.dumps(
+                            {"path": request.connection.request_options["path"]}
+                        ),
                     ),
                 )
             )

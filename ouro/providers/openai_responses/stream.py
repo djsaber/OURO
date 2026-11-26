@@ -35,13 +35,14 @@ class _Text:
         self.parts.append(value)
         return value
 
-    def finish(self, value: object) -> str:
+    def finish(self, value: object) -> str | None:
+        """Return unseen text, including an empty first value."""
         if not isinstance(value, str):
             raise OpenAIResponsesError("invalid_event")
         prefix = "".join(self.parts)
         if not value.startswith(prefix) or (self.complete and value != prefix):
             raise OpenAIResponsesError("conflicting_delta")
-        suffix = value[len(prefix) :]
+        suffix = None if self.parts and value == prefix else value[len(prefix) :]
         self.parts = [value]
         self.complete = True
         return suffix
@@ -108,7 +109,7 @@ class OpenAIResponsesStreamDecoder:
             if complete:
                 return self._complete_item(index, output_item(item))
             if item["type"] == "function_call":
-                return self._tool_header(index, item)
+                return self._tool_item_delta(index, item, complete=False)
             if item["type"] not in {"message", "reasoning"}:
                 raise OpenAIResponsesError("unsupported_output_item")
             return []
@@ -138,7 +139,7 @@ class OpenAIResponsesStreamDecoder:
                 if suffix == "delta"
                 else tool.arguments.finish(event.get("arguments"))
             )
-            return _tool_delta(tool.ordinal, arguments=text) if text else []
+            return _tool_delta(tool.ordinal, arguments=text)
         if kind in {
             "response.created",
             "response.queued",
@@ -234,7 +235,9 @@ class OpenAIResponsesStreamDecoder:
             self._tools[index] = _Tool(ordinal=len(self._tools))
         return self._tools[index]
 
-    def _tool_header(self, index: int, item: dict[str, Any]) -> list[ProviderStreamEvent]:
+    def _tool_item_delta(
+        self, index: int, item: dict[str, Any], *, complete: bool
+    ) -> list[ProviderStreamEvent]:
         tool = self._tool(index)
         call_id = item["call_id"] if isinstance(item.get("call_id"), str) else ""
         name = item["name"] if isinstance(item.get("name"), str) else ""
@@ -243,19 +246,17 @@ class OpenAIResponsesStreamDecoder:
                 "conflicting_output_item", detail=f"tool_identity, output_index={index}"
             )
         events = _tool_delta(
-            tool.ordinal, call_id="" if tool.call_id else call_id, name="" if tool.name else name
+            tool.ordinal,
+            call_id="" if tool.call_id else call_id,
+            name="" if tool.name else name,
+            arguments=tool.arguments.finish(item["arguments"]) if complete else None,
         )
         tool.call_id, tool.name = call_id, name
         return events
 
     def _complete_item(self, index: int, item: dict[str, Any]) -> list[ProviderStreamEvent]:
         if item["type"] == "function_call":
-            events = self._tool_header(index, item)
-            tool = self._tool(index)
-            suffix = tool.arguments.finish(item["arguments"])
-            if suffix or not item["arguments"]:
-                events.extend(_tool_delta(tool.ordinal, arguments=suffix))
-            return events
+            return self._tool_item_delta(index, item, complete=True)
         events = []
         pending: dict[tuple[str, int], _Text] = self._text.pop(index, {})
         fields = ("content",) if item["type"] == "message" else ("summary", "content")
@@ -283,7 +284,7 @@ def _index(event: dict[str, Any], key: str) -> int:
     return value
 
 
-def _display(lane: str, text: str) -> list[ProviderStreamEvent]:
+def _display(lane: str, text: str | None) -> list[ProviderStreamEvent]:
     if not text:
         return []
     if lane in {"summary_text", "reasoning_text"}:
@@ -294,12 +295,11 @@ def _display(lane: str, text: str) -> list[ProviderStreamEvent]:
 def _tool_delta(
     ordinal: int, *, call_id: str = "", name: str = "", arguments: str | None = None
 ) -> list[ProviderStreamEvent]:
-    if arguments is not None:
-        delta = ToolCallDelta(index=ordinal, arguments_delta=arguments)
-    elif call_id or name:
-        delta = ToolCallDelta(index=ordinal, id_delta=call_id, name_delta=name)
-    else:
+    if not call_id and not name and arguments is None:
         return []
+    delta = ToolCallDelta(
+        index=ordinal, id_delta=call_id, name_delta=name, arguments_delta=arguments
+    )
     return [ProviderStreamEvent(type="tool_call_delta", tool_call_delta=delta)]
 
 

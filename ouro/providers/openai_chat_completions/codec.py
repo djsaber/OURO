@@ -325,19 +325,9 @@ def _tool_call_deltas(delta: Mapping[str, Any]) -> list[ToolCallDelta]:
         name = function.get("name")
         id_delta = call_id if isinstance(call_id, str) else ""
         name_delta = name if isinstance(name, str) else ""
-        if "arguments" not in function:
-            deltas.append(ToolCallDelta(index=index, id_delta=id_delta, name_delta=name_delta))
-            continue
-        raw_arguments = function["arguments"]
-        if raw_arguments == "" and (id_delta or name_delta):
-            deltas.append(ToolCallDelta(index=index, id_delta=id_delta, name_delta=name_delta))
-            deltas.append(ToolCallDelta(index=index, arguments_delta=""))
-            continue
-        arguments_delta = (
-            raw_arguments
-            if isinstance(raw_arguments, str)
-            else json.dumps(raw_arguments, separators=(",", ":"))
-        )
+        arguments_delta = function.get("arguments")
+        if "arguments" in function and not isinstance(arguments_delta, str):
+            arguments_delta = json.dumps(arguments_delta, separators=(",", ":"))
         deltas.append(
             ToolCallDelta(
                 index=index,

@@ -64,14 +64,15 @@ def tool_use_delta(block: Mapping[str, Any], index: int, *, streaming: bool) -> 
     call_id = block["id"] if isinstance(block.get("id"), str) else ""
     name = block["name"] if isinstance(block.get("name"), str) else ""
     value = block.get("input")
-    if streaming and ("input" not in block or value == {}):
-        # A streamed block starts with a placeholder. Its JSON follows as deltas.
-        return ToolCallDelta(index=index, id_delta=call_id, name_delta=name)
+    arguments = None
+    # A streamed block can open with an empty object before its JSON deltas.
+    if "input" in block and not (streaming and value == {}):
+        arguments = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     return ToolCallDelta(
         index=index,
         id_delta=call_id,
         name_delta=name,
-        arguments_delta=json.dumps(value, ensure_ascii=False, separators=(",", ":")),
+        arguments_delta=arguments,
     )
 
 

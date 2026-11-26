@@ -134,6 +134,7 @@ def test_interleaved_tools_use_call_id_and_dense_tool_ordinals_without_duplicate
             item_event(1, {**first, "status": "in_progress", "arguments": ""}, complete=False),
             item_event(2, output[2]),
             item_event(3, {**second, "status": "in_progress", "arguments": ""}, complete=False),
+            delta("response.function_call_arguments.delta", 1, "item-1", ""),
             delta("response.function_call_arguments.delta", 3, "item-2", '{"round":'),
             delta("response.function_call_arguments.delta", 1, "item-1", '{"round":1}'),
             delta("response.function_call_arguments.delta", 3, "item-2", "2}"),
@@ -148,7 +149,10 @@ def test_interleaved_tools_use_call_id_and_dense_tool_ordinals_without_duplicate
         parts = [f for f in fragments if f.index == index]
         assert "".join(f.id_delta for f in parts) == f"call-{index + 1}"
         assert "".join(f.name_delta for f in parts) == "echo"
-        assert json.loads("".join(f.arguments_delta for f in parts)) == {"round": index + 1}
+        assert parts[0].arguments_delta is None
+        if index == 0:
+            assert parts[1].arguments_delta == ""
+        assert json.loads("".join(f.arguments_delta or "" for f in parts)) == {"round": index + 1}
     assert decoded[-1].completion.finish_reason == "tool_call"
 
 
@@ -167,10 +171,23 @@ def test_function_call_optional_item_id_does_not_replace_required_call_id(mode, 
     fragments = [event.tool_call_delta for event in decoded if event.type == "tool_call_delta"]
     assert "".join(part.id_delta for part in fragments) == "call-1"
     assert "".join(part.name_delta for part in fragments) == "echo"
-    assert json.loads("".join(part.arguments_delta for part in fragments)) == {"round": 1}
+    assert json.loads("".join(part.arguments_delta or "" for part in fragments)) == {"round": 1}
     assert decoded[-1].completion.finish_reason == "tool_call"
     continuation = next(event.continuation for event in decoded if event.type == "continuation")
     assert continuation.blocks[0]["items"] == [item]
+
+
+@pytest.mark.parametrize("prior_delta", [True, False])
+def test_completed_empty_arguments_emit_the_literal_once(prior_delta):
+    item = call(arguments="")
+    events = (
+        [delta("response.function_call_arguments.delta", 0, item["id"], "")] if prior_delta else []
+    )
+    decoded = decode([*events, terminal([item])])
+    parts = [e.tool_call_delta for e in decoded if e.tool_call_delta]
+    assert [p.arguments_delta for p in parts if p.arguments_delta is not None] == [""]
+    if not prior_delta:
+        assert len(parts) == 1 and parts[0].id_delta == item["call_id"]
 
 
 @pytest.mark.parametrize("rich_event", [False, True])
@@ -236,7 +253,12 @@ def test_terminal_supplies_missing_items_in_output_order_without_reprojecting_co
     final = parser.finish()
     assert not any(event.type == "text_delta" for event in final)
     assert "".join(event.reasoning_content or "" for event in final) == "checking"
-    assert len([event for event in final if event.type == "tool_call_delta"]) == 2
+    (tool,) = [event.tool_call_delta for event in final if event.tool_call_delta]
+    assert (tool.id_delta, tool.name_delta, tool.arguments_delta) == (
+        "call-1",
+        "echo",
+        '{"round":1}',
+    )
     continuation = next(event.continuation for event in final if event.type == "continuation")
     assert continuation.blocks[0]["items"] == [reasoning(), message(), call()]
 

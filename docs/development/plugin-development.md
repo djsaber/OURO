@@ -741,6 +741,8 @@ Manifest 的 `contributes.providers` 声明本地 `id`，`ContributionSet.provid
 
 `stream(request, output)` 接收 `ProviderRequest` 并逐次 `await output(ProviderEvent(...))`。
 正文、推理、工具参数片段、continuation、重试通知和终态分别使用相应事件；`done` 携带规范化用量及完成原因。
+仅提供身份时省略 `ProviderToolDelta.arguments_delta` 或传入 `None`。收到参数文本时原样传递，允许与身份同片。
+旧版 worker SDK 会将省略值序列化为 `""`。这类 worker 应更新 SDK 或在发送身份时省略该字段，否则只有身份的调用会因空文本无法解析而被拒绝。
 `ProviderModel.reasoning` 只表达本次请求意图。插件协议独立解析实际返回的可读思考并发出 reasoning 事件，
 需要续接的原生状态通过 continuation 事件返回；请求控制不用于过滤响应或停用续接。
 handler 必须等待输出、取消后结算自己的请求资源，并在返回后停止输出。`check(request)` 返回 `ProviderCheck`。

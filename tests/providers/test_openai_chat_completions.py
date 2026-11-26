@@ -889,15 +889,28 @@ async def test_chat_completions_streams_tool_call_chunks() -> None:
                                 {
                                     "index": 0,
                                     "id": "call_1",
+                                    "function": {"name": "Read", "arguments": ""},
+                                },
+                                {"index": 1, "id": "call_2", "function": {"name": "Read"}},
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
                                     "type": "function",
-                                    "function": {"name": "Read", "arguments": '{"path"'},
+                                    "function": {"arguments": '{"path"'},
                                 },
                                 {
                                     "index": 1,
-                                    "id": "call_2",
                                     "type": "function",
                                     "function": {
-                                        "name": "Read",
                                         "arguments": '{"path": "CHANGELOG.md"}',
                                     },
                                 },
@@ -939,6 +952,8 @@ async def test_chat_completions_streams_tool_call_chunks() -> None:
         "tool_call_delta",
         "tool_call_delta",
         "tool_call_delta",
+        "tool_call_delta",
+        "tool_call_delta",
         "done",
     ]
     assert [
@@ -950,12 +965,24 @@ async def test_chat_completions_streams_tool_call_chunks() -> None:
             "index": 0,
             "id_delta": "call_1",
             "name_delta": "Read",
-            "arguments_delta": '{"path"',
+            "arguments_delta": "",
         },
         {
             "index": 1,
             "id_delta": "call_2",
             "name_delta": "Read",
+            "arguments_delta": None,
+        },
+        {
+            "index": 0,
+            "id_delta": "",
+            "name_delta": "",
+            "arguments_delta": '{"path"',
+        },
+        {
+            "index": 1,
+            "id_delta": "",
+            "name_delta": "",
             "arguments_delta": '{"path": "CHANGELOG.md"}',
         },
         {

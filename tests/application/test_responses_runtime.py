@@ -191,7 +191,7 @@ async def test_long_tool_arguments_execute_only_after_successful_completion(
         assert body.closed
         assert (
             "".join(
-                event.payload["arguments_delta"]
+                event.payload["arguments_delta"] or ""
                 for event in streamed
                 if event.event_type == "model_tool_call_delta"
             )
