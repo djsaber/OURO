@@ -100,9 +100,7 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
     TuiCommand(
         "/btw",
         "Side conversation",
-        "Ask about this conversation in a separate session",
-        "<question>",
-        freeform_arguments=True,
+        "Start a new side conversation with the main conversation's context",
     ),
     TuiCommand("/continue", "Continue task", "Resume an interrupted task"),
     TuiCommand(

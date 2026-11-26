@@ -997,18 +997,20 @@ class SessionService:
             lock.release()
 
     def create_side_conversation(
-        self, source_session_id: str, question: str
+        self, source_session_id: str, question: str | None = None
     ) -> SessionBranchResult:
-        title = fallback_session_title(question)
-        if title is None:
-            raise ValueError("A side conversation needs a question")
+        title = fallback_session_title(question) if question is not None else None
+        if question is not None and title is None:
+            raise ValueError("A supplied side conversation question cannot be blank")
         with self._store.session_mutation(source_session_id):
             source = self._load_session_record(source_session_id)
             if source.session_kind != "primary":
                 raise SessionBranchError("A side conversation requires a writable source session")
             messages = self._load_messages(source_session_id)
             selected, _ = published_history(self._store, source, messages)
-            return self._copy_branch(source, messages, selected, side_title=title)
+            return self._copy_branch(
+                source, messages, selected, side_conversation=True, side_title=title
+            )
 
     def _copy_branch(
         self,
@@ -1018,6 +1020,7 @@ class SessionService:
         *,
         source_message: MessageRecord | None = None,
         resource_refs: tuple[str, ...] = (),
+        side_conversation: bool = False,
         side_title: str | None = None,
     ) -> SessionBranchResult:
         """Copy the selected history and its dependencies under the source mutation lock."""
@@ -1062,7 +1065,7 @@ class SessionService:
             versions,
             branch.session_id,
         )
-        if side_title is not None:
+        if side_conversation:
             source_message = selected_messages[-1] if selected_messages else None
             branch = with_session_title(branch, side_title)
             branch.context_source_session_id = source_session_id

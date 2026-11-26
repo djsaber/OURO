@@ -33,6 +33,9 @@ TranscriptEntryKind = Literal[
     "user", "harness", "assistant", "tool", "notice", "command", "compaction", "run"
 ]
 
+_INPUT_MESSAGE_KINDS = {"user", "harness"}
+_FRAMED_MESSAGE_KINDS = _INPUT_MESSAGE_KINDS | {"command"}
+
 
 @dataclass(frozen=True)
 class CompactionPresentation:
@@ -128,7 +131,6 @@ class _EntryRenderRequest:
     """Detached input for rendering one history entry outside the UI loop."""
 
     entry: TranscriptEntry
-    previous_kind: TranscriptEntryKind | None
     entry_index: int
     theme: TuiTheme
     reasoning_expanded: bool
@@ -160,6 +162,7 @@ class ConversationHistoryState:
     piece_indexes_by_entry: dict[int, list[int]]
     user_lines: list[int]
     lines: list[PreparedLine]
+    last_visible_kind: TranscriptEntryKind | None
     widest_line_width: int
     render_width: int
     rendered_count: int

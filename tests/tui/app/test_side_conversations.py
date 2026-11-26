@@ -44,6 +44,15 @@ from tests.tui.helpers import (
 from tests.tui.test_history_commands import application_at
 
 
+async def open_side_conversation(app, pilot):
+    source = app._controller.session_id
+    await pilot.press("slash", *"btw", "enter")
+    await wait_for_worker_group(app, pilot, group="composer-command")
+    side = app._visible_session_id()
+    assert side and side != source and app._controller.session_id == side
+    return side
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("remember", [True, False])
 async def test_btw_command_and_node_switches_keep_independent_input_surfaces(
@@ -67,7 +76,9 @@ async def test_btw_command_and_node_switches_keep_independent_input_surfaces(
         )
         composer.load_input(source_draft)
         composer.move_cursor((0, 0))
-        await pilot.press("slash", *"btw", "space", *"explain", "enter")
+        side = await open_side_conversation(app, pilot)
+        assert composer.input_content.is_empty and not composer.disabled
+        await pilot.press(*"explain", "enter")
         await wait_until(
             lambda: (
                 app._controller.session_id not in {source, None}
@@ -77,8 +88,6 @@ async def test_btw_command_and_node_switches_keep_independent_input_surfaces(
             pilot,
             description="writable side response",
         )
-        side = app._controller.session_id
-        assert side and app._visible_session_id() == side and not composer.disabled
         assert [
             m.text_content
             for m in application.runtime.store.load_session(side).messages
@@ -86,9 +95,9 @@ async def test_btw_command_and_node_switches_keep_independent_input_surfaces(
         ] == ["explain"]
         assert not application.runtime.store.load_session(source).messages
         panel = app.query_one(SessionNavigationPanel)
-        assert panel.current_session_id == side and panel.render_content(120).plain.endswith(
-            "▣ | ■"
-        )
+        node_text = panel.render_content(120).plain
+        assert panel.current_session_id == side and node_text.endswith("▣ | ■")
+        assert "explain" in node_text
         side_draft = InputContent(text="side draft", skills=(InputSkillReference(name="debug"),))
         composer.load_input(side_draft)
         await pilot.press("alt+up")
@@ -134,7 +143,9 @@ async def test_rejected_first_question_is_retriable_in_the_same_side_session(tmp
         await app._open_session(source)
         with monkeypatch.context() as patch:
             patch.setattr(application.supervisor, "submit_user_input", reject)
-            await app._dispatch_command(f"/btw {question}")
+            await open_side_conversation(app, pilot)
+            app.query_one(Composer).load_text(question)
+            await pilot.press("enter")
             await wait_until(
                 lambda: app.query_one(Composer).text == question and not app._input_drafts.pending,
                 pilot,
@@ -164,7 +175,7 @@ async def test_queued_side_command_returns_to_its_source_as_a_command(tmp_path):
     async with run_ready_app(app) as pilot:
         composer = app.query_one(Composer)
         async with app._composer_submission_lock:
-            composer.load_text("/btw Explain the log in A")
+            composer.load_text("/btw")
             await pilot.press("enter")
             await app._open_session(other)
         await wait_for_worker_group(app, pilot, group="composer-command")
@@ -174,7 +185,7 @@ async def test_queued_side_command_returns_to_its_source_as_a_command(tmp_path):
         }
         assert composer.input_content.is_empty
         await app._open_session(source)
-        assert composer.command_context() == ("/btw Explain the log in A", "")
+        assert composer.command_context() == ("/btw", "")
         assert application.sessions.view(other).message_count == 0
 
 
@@ -187,7 +198,8 @@ async def test_side_nodes_open_its_own_agent_then_return_to_source(tmp_path):
         run_ready_app(app) as pilot,
         release_on_exit(provider.release_root, *provider.releases.values()),
     ):
-        app.query_one(Composer).load_text("/btw start two children")
+        await open_side_conversation(app, pilot)
+        app.query_one(Composer).load_text("start two children")
         await pilot.press("enter")
         panel = app.query_one(SessionNavigationPanel)
         await wait_until(
@@ -212,12 +224,10 @@ async def test_side_nodes_open_its_own_agent_then_return_to_source(tmp_path):
             )
 
 
-async def test_nested_nodes_follow_direct_source_without_scheduling_runs(tmp_path, monkeypatch):
+async def test_btw_from_a_side_opens_a_sibling_and_right_returns_to_main(tmp_path, monkeypatch):
     application = application_at(tmp_path)
     sessions = application.sessions
     root = sessions.create().session.session_id
-    side = sessions.create_side_conversation(root, "Explain the log").session.session_id
-    nested = sessions.create_side_conversation(side, "Explain the unit").session.session_id
     app = OuroTuiApp(application=application, resume_session_id=root)
     async with run_ready_app(app) as pilot:
 
@@ -226,13 +236,25 @@ async def test_nested_nodes_follow_direct_source_without_scheduling_runs(tmp_pat
 
         monkeypatch.setattr(application.supervisor, "schedule_session", unexpected_schedule)
         panel = app.query_one(SessionNavigationPanel)
+        side = await open_side_conversation(app, pilot)
+        store = application.runtime.store
+        store.append_message(MessageRecord.text(session_id=side, role="user", text="Side only"))
+        store.append_message(MessageRecord.text(session_id=root, role="user", text="Main update"))
+        sibling = await open_side_conversation(app, pilot)
+        assert sessions.view(sibling).context_source_session_id == root
+        assert [m.text_content for m in store.load_session(sibling).messages] == ["Main update"]
+        assert not app.query_one(ConversationHistory).entries
+        assert panel.visible_related_session_ids == (sibling, side)
+        newest = await open_side_conversation(app, pilot)
+        assert panel.visible_related_session_ids == (newest, sibling, side)
         for key, target in (
+            ("alt+right", sibling),
+            ("alt+right", side),
+            ("alt+right", root),
             ("alt+left", side),
-            ("alt+right", nested),
-            ("alt+up", side),
+            ("alt+left", sibling),
+            ("alt+left", newest),
             ("alt+up", root),
-            ("alt+left", side),
-            ("alt+right", nested),
         ):
             await pilot.press(key)
             await wait_until(
@@ -240,10 +262,35 @@ async def test_nested_nodes_follow_direct_source_without_scheduling_runs(tmp_pat
                     app._visible_session_id() == target and not app._session_switch_in_progress
                 ),
                 pilot,
-                description="direct source and nested side are reachable",
+                description="main and side conversations are reachable in display order",
             )
             assert app._controller.session_id == panel.current_session_id == target
-        assert all(sessions.view(s).message_count == 0 for s in (root, side, nested))
+
+
+async def test_existing_nested_side_can_go_right_to_main_and_create_a_sibling(tmp_path):
+    application = application_at(tmp_path)
+    sessions = application.sessions
+    main = sessions.create().session.session_id
+    side = sessions.create_side_conversation(main).session.session_id
+    nested = sessions.create_side_conversation(side).session.session_id
+    app = OuroTuiApp(application=application, resume_session_id=nested)
+    async with run_ready_app(app) as pilot:
+        for key, target in (
+            ("alt+right", side),
+            ("alt+right", main),
+            ("alt+left", side),
+            ("alt+left", nested),
+        ):
+            await pilot.press(key)
+            await wait_until(
+                lambda target=target: (
+                    app._visible_session_id() == target and not app._session_switch_in_progress
+                ),
+                pilot,
+                description="navigate existing nested side conversations",
+            )
+        sibling = await open_side_conversation(app, pilot)
+        assert sessions.view(sibling).context_source_session_id == main
 
 
 @pytest.mark.asyncio
@@ -258,7 +305,8 @@ async def test_btw_while_streaming_keeps_both_runs_alive(tmp_path: Path) -> None
         await wait_until(provider.first_chunk_sent.is_set, pilot, description="source streaming")
         run_id = application.sessions.view(source).active_run_id
         try:
-            await pilot.press("slash", *"btw", "space", *"explain", "enter")
+            await open_side_conversation(app, pilot)
+            await pilot.press(*"explain", "enter")
             await wait_until(
                 lambda: (
                     app._visible_session_id() not in {None, source}
@@ -331,7 +379,8 @@ async def test_two_pending_approvals_follow_their_session_nodes(tmp_path: Path) 
     app = OuroTuiApp(application=application)
     async with run_ready_app(app, size=(100, 32)) as pilot:
         await app._open_session(source)
-        await pilot.press("slash", *"btw", "space", *"write", "enter")
+        await open_side_conversation(app, pilot)
+        await pilot.press(*"write", "enter")
         await _wait_for_tool_approval(app, pilot, tool_call_id="side_write")
         side = app._controller.session_id
         pending = app._interaction
@@ -526,7 +575,12 @@ async def test_side_conversation_delivers_source_progress_at_user_consumption(
 
             side_reasoning = "Checking the pool log."
             replies.extend([terminal([reasoning(side_reasoning), call(702)]), explain_log])
-            tui.query_one(Composer).load_text("/btw SIDE-QUESTION: explain the log.")
+            side_id = await open_side_conversation(tui, pilot)
+            assert not tui.query_one(ConversationView).showing_welcome
+            assert not tui.query_one(ConversationHistory).entries
+            assert not app.runtime.store.load_runs(side_id)
+            assert app.sessions.view(side_id).title_source == "placeholder"
+            tui.query_one(Composer).load_text("SIDE-QUESTION: explain the log.")
             await pilot.press("enter")
             await wait_until(
                 lambda: (
@@ -537,6 +591,7 @@ async def test_side_conversation_delivers_source_progress_at_user_consumption(
                 description="side answer through Responses",
             )
             side = app.sessions.view(tui._visible_session_id())
+            assert side.title == "SIDE-QUESTION: explain the log."
             assert side.context_source_session_id == source
             assert side.parent_session_id is None and side.root_session_id == side.session_id
             assert side.forked_from_message_id == app.sessions.view(source).last_message_id

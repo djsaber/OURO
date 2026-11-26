@@ -1,6 +1,6 @@
 import pytest
 
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageRecord, TextContent
 from ouro.core.session_titles import fill_session_title, normalize_session_title, with_session_title
 from ouro.core.state import SessionRecord
 
@@ -15,6 +15,12 @@ def test_title_uses_first_user_text_and_limits_unicode_characters():
             text="Attachment data",
         ),
         MessageRecord.text(session_id=session.session_id, role="assistant", text="An answer"),
+        MessageRecord(
+            session_id=session.session_id,
+            role="user",
+            content=[TextContent(text="Progress")],
+            metadata={"context_provider_delivery_key": "test:progress:0"},
+        ),
         MessageRecord.text(session_id=session.session_id, role="user", text=" \n "),
         MessageRecord.text(session_id=session.session_id, role="user", text="你好\n" * 30),
         MessageRecord.text(session_id=session.session_id, role="user", text="Another topic"),

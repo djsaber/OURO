@@ -50,7 +50,10 @@ def fill_session_title(session: SessionRecord, messages: Iterable[MessageRecord]
     if session.title_source != "placeholder":
         return session
     for message in messages:
-        if message.role != "user":
+        if (
+            message.role != "user"
+            or message.metadata.get("context_provider_delivery_key") is not None
+        ):
             continue
         title = fallback_session_title(message.text_content)
         if title is None and message.skill_activations:

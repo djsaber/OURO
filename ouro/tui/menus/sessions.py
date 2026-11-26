@@ -53,8 +53,19 @@ def _has_navigation_node(item: SessionCatalogEntry) -> bool:
 
 
 def _side_session_nodes(related: Iterable[SessionCatalogEntry]) -> tuple[SessionCatalogEntry, ...]:
-    visible = (item for item in related if _has_navigation_node(item))
-    return tuple(sorted(visible, key=lambda item: (item.created_at, item.session_id)))
+    visible = {item.session_id: item for item in related if _has_navigation_node(item)}
+
+    def node_order(item: SessionCatalogEntry) -> tuple[datetime, str, bool, datetime, str]:
+        owner = visible.get(item.context_source_session_id or "", item)
+        return (
+            owner.created_at,
+            owner.session_id,
+            owner is not item,
+            item.created_at,
+            item.session_id,
+        )
+
+    return tuple(sorted(visible.values(), key=node_order, reverse=True))
 
 
 def _session_open_targets(

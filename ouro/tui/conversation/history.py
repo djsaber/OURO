@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections.abc import Iterable
 from dataclasses import replace
 
@@ -20,6 +20,8 @@ from textual.worker import Worker
 from ouro.application.contracts.agents import AgentTreeNode
 from ouro.application.contracts.execution import RuntimeToolCallActivity
 from ouro.tui.conversation.history_models import (
+    _FRAMED_MESSAGE_KINDS,
+    _INPUT_MESSAGE_KINDS,
     ConversationHistoryState,
     PreparedLine,
     ReasoningLayout,
@@ -92,6 +94,7 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
     ) -> None:
         super().__init__(id="conversation-history")
         self.lines: list[PreparedLine] = []
+        self._last_visible_kind: TranscriptEntryKind | None = None
         self._line_cache: LRUCache[tuple[int, int, int], Strip] = LRUCache(1024)
         self._widest_line_width = 0
         self._size_known = False
@@ -324,6 +327,7 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
             piece_indexes_by_entry=self._piece_indexes_by_entry,
             user_lines=self._user_lines,
             lines=self.lines,
+            last_visible_kind=self._last_visible_kind,
             widest_line_width=self._widest_line_width,
             render_width=self._render_width,
             rendered_count=0 if self._prefix_pending else self._rendered_count,
@@ -345,6 +349,7 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         self._tool_entry_indexes = {}
         self._user_lines = []
         self.lines = []
+        self._last_visible_kind = None
         self._widest_line_width = 0
         self._render_width = 0
         self._reasoning_expanded_by_entry = {}
@@ -427,6 +432,7 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         self._piece_indexes_by_entry = state.piece_indexes_by_entry
         self._user_lines = state.user_lines
         self.lines = state.lines
+        self._last_visible_kind = state.last_visible_kind
         self._widest_line_width = state.widest_line_width
         self._render_width = state.render_width
         self._render_theme = state.theme
@@ -469,7 +475,7 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
             self._rebuild_lines()
         self._line_cache.clear()
         self.display = bool(self._entries)
-        self.virtual_size = Size(self._widest_line_width, len(self.lines))
+        self._sync_virtual_size()
         self._box_model_cache.clear()
         self.refresh(layout=True)
         return shared
@@ -501,10 +507,8 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
             if self._trace_entry_hidden(index):
                 continue
             entry = self._entries[index]
-            previous_kind = self._entries[index - 1].kind if index > 0 else None
             self._write_entry(
                 entry,
-                previous_kind=previous_kind,
                 entry_index=index,
                 sync_size=False,
             )
@@ -759,7 +763,6 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
                 requests = self._render_requests(
                     tuple(self._entries[start:stop]),
                     start_index=start,
-                    previous_kind=self._entries[start - 1].kind if start else None,
                     missing_only=visibility and not rebuild and not prefix,
                 )
                 console = self.app.console
@@ -797,7 +800,6 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
                     != self._render_requests(
                         tuple(self._entries[start:stop]),
                         start_index=start,
-                        previous_kind=self._entries[start - 1].kind if start else None,
                         missing_only=visibility and not rebuild and not prefix,
                     )
                 ):
@@ -867,11 +869,11 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         """Prepare changed reasoning bodies once, preserving the review anchor."""
         if self._reasoning_expanded == expanded and not self._reasoning_expanded_by_entry:
             return 0
-        before = self._height_before(above_line)
+        before, boundary = self._height_before(above_line)
         self._reasoning_expanded = expanded
         self._reasoning_expanded_by_entry.clear()
         await self._apply_visibility()
-        return self._height_at_boundary(before[1]) - before[0]
+        return self.entry_line(boundary) - before
 
     async def toggle_reasoning(self, entry_index: int) -> None:
         """Toggle one reasoning entry without changing the global display default."""
@@ -936,6 +938,7 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         self._widest_line_width = 0
         self._line_cache.clear()
         self.lines.clear()
+        self._last_visible_kind = None
         self.display = bool(entries)
         self.virtual_size = Size(0, 0)
         return self._size_known and self.scrollable_content_region.width > 0
@@ -959,12 +962,11 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         self,
         entry: TranscriptEntry,
         *,
-        previous_kind: TranscriptEntryKind | None,
         entry_index: int,
         sync_size: bool = True,
     ) -> None:
         self._append_rendered_entry(
-            self._render_one(entry, previous_kind=previous_kind, entry_index=entry_index),
+            self._render_one(entry, entry_index=entry_index),
             sync_size=sync_size,
         )
 
@@ -981,21 +983,22 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
     ) -> None:
         self._prepared_reasoning.pop(rendered.entry_index, None)
         for rows, tag in rendered.pieces:
-            if tag == "user":
-                self._user_lines.append(len(self.lines))
-            self._piece_line_starts.append(len(self.lines))
-            if not self._trace_entry_hidden(rendered.entry_index):
-                self._append_rows(rows)
-            self._pieces.append(
-                _Piece(
-                    rows=rows,
-                    tag=tag,
-                    entry_index=rendered.entry_index,
-                    reasoning_layout=rendered.reasoning_layout,
-                    reasoning_expanded=rendered.reasoning_expanded,
-                    trace_collapsed=rendered.trace_collapsed,
-                )
+            piece = _Piece(
+                rows=rows,
+                tag=tag,
+                entry_index=rendered.entry_index,
+                reasoning_layout=rendered.reasoning_layout,
+                reasoning_expanded=rendered.reasoning_expanded,
+                trace_collapsed=rendered.trace_collapsed,
             )
+            start = len(self.lines)
+            if not self._trace_entry_hidden(rendered.entry_index):
+                start = self._place_rows(self.lines, self._entries[rendered.entry_index].kind, rows)
+                self._widest_line_width = max(self._widest_line_width, rows[0].cell_length)
+                if tag == "user":
+                    self._user_lines.append(start)
+            self._piece_line_starts.append(start)
+            self._pieces.append(piece)
             self._piece_indexes_by_entry.setdefault(rendered.entry_index, []).append(
                 len(self._pieces) - 1
             )
@@ -1009,10 +1012,8 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         entry = self._entries[entry_index]
         if entry.reasoning and self._visibility_pending and self._entry_needs_render(entry_index):
             return False
-        previous_kind = self._entries[entry_index - 1].kind if entry_index > 0 else None
         rendered = self._render_one(
             entry,
-            previous_kind=previous_kind,
             entry_index=entry_index,
         )
         if len(rendered.pieces) != len(piece_indexes):
@@ -1052,13 +1053,11 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         self,
         entry: TranscriptEntry,
         *,
-        previous_kind: TranscriptEntryKind | None,
         entry_index: int,
     ) -> _RenderedEntry:
         requests = self._render_requests(
             (entry,),
             start_index=entry_index,
-            previous_kind=previous_kind,
             visible_only=False,
         )
         console = self.app.console
@@ -1074,24 +1073,20 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         entries: tuple[TranscriptEntry, ...],
         *,
         start_index: int,
-        previous_kind: TranscriptEntryKind | None,
         missing_only: bool = False,
         visible_only: bool = True,
     ) -> tuple[_EntryRenderRequest, ...]:
         theme = theme_for(self)
         requests: list[_EntryRenderRequest] = []
-        previous = previous_kind
         for offset, entry in enumerate(entries):
             entry_index = start_index + offset
             if (visible_only and self._trace_entry_hidden(entry_index)) or (
                 missing_only and not self._entry_needs_render(entry_index)
             ):
-                previous = entry.kind
                 continue
             requests.append(
                 _EntryRenderRequest(
                     entry=entry,
-                    previous_kind=previous,
                     entry_index=entry_index,
                     theme=theme,
                     reasoning_expanded=self._reasoning_expanded_by_entry.get(
@@ -1115,7 +1110,6 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
                     ),
                 )
             )
-            previous = entry.kind
         return tuple(requests)
 
     def _entry_needs_render(self, entry_index: int) -> bool:
@@ -1136,12 +1130,19 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
             for index in indexes
         )
 
-    def _append_rows(self, rows: list[PreparedLine]) -> None:
-        self.lines.extend(rows)
-        self._widest_line_width = max(
-            self._widest_line_width,
-            rows[0].cell_length,
-        )
+    def _place_rows(
+        self, lines: list[PreparedLine], kind: TranscriptEntryKind, rows: list[PreparedLine]
+    ) -> int:
+        """Join visible pieces. Framed messages already supply one row on either side."""
+        previous = self._last_visible_kind
+        if previous in _INPUT_MESSAGE_KINDS and kind not in _FRAMED_MESSAGE_KINDS:
+            lines.append(lines[-1])
+        elif previous == "tool" and kind not in {"tool", "run", "command"}:
+            lines.append(PreparedLine.blank(rows[0].cell_length))
+        start = len(lines)
+        lines.extend(rows)
+        self._last_visible_kind = kind
+        return start
 
     def _sync_virtual_size(self) -> None:
         """Publish one size change after a complete entry or load chunk."""
@@ -1149,6 +1150,9 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         if self._trace_visibility_dirty:
             self._rebuild_lines()
             return
+        margin = int(self._last_visible_kind in _INPUT_MESSAGE_KINDS)
+        if self.styles.margin.bottom != margin:
+            self.styles.margin = (0, 0, margin, 0)
         self.virtual_size = Size(self._widest_line_width, len(self.lines))
 
     def _rebuild_lines(self) -> None:
@@ -1160,21 +1164,24 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         user_lines: list[int] = []
         piece_indexes_by_entry: dict[int, list[int]] = {}
         widest = 0
+        self._last_visible_kind = None
         for piece_index, piece in enumerate(self._pieces):
-            starts.append(len(lines))
             piece_indexes_by_entry.setdefault(piece.entry_index, []).append(piece_index)
             if self._trace_entry_hidden(piece.entry_index):
+                starts.append(len(lines))
                 continue
+            kind = self._entries[piece.entry_index].kind
+            start = self._place_rows(lines, kind, piece.rows)
+            starts.append(start)
             if piece.tag == "user":
-                user_lines.append(len(lines))
+                user_lines.append(start)
             widest = max(widest, piece.rows[0].cell_length)
-            lines.extend(piece.rows)
         self.lines = lines
         self._piece_line_starts = starts
         self._piece_indexes_by_entry = piece_indexes_by_entry
         self._user_lines = user_lines
         self._widest_line_width = widest
-        self.virtual_size = Size(widest, len(lines))
+        self._sync_virtual_size()
         self.refresh(layout=True)
 
     def _refresh_traces(self) -> None:
@@ -1237,6 +1244,8 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         return run_id is not None and self.is_trace_collapsed(run_id)
 
     def entry_line(self, entry_index: int) -> int:
+        if entry_index == len(self._entries):
+            return len(self.lines)
         indexes = self._piece_indexes_by_entry.get(entry_index)
         if indexes:
             return self._piece_line_starts[indexes[0]]
@@ -1276,27 +1285,10 @@ class ConversationHistory(RangeSelectionOnly, ScrollView, can_focus=False):
         before, boundary = self._height_before(above_line)
         self._collapse_traces = collapsed
         await self._apply_visibility()
-        return self._height_at_boundary(boundary) - before
+        return self.entry_line(boundary) - before
 
     def _height_before(self, above_line: int) -> tuple[int, int]:
-        before = sum(
-            len(piece.rows)
-            for piece, start in zip(self._pieces, self._piece_line_starts, strict=True)
-            if start < above_line and not self._trace_entry_hidden(piece.entry_index)
-        )
-        boundary = next(
-            (
-                piece.entry_index
-                for piece, start in zip(self._pieces, self._piece_line_starts, strict=True)
-                if start >= above_line
-            ),
-            len(self._entries),
-        )
-        return before, boundary
-
-    def _height_at_boundary(self, boundary: int) -> int:
-        return sum(
-            len(piece.rows)
-            for piece in self._pieces
-            if piece.entry_index < boundary and not self._trace_entry_hidden(piece.entry_index)
-        )
+        index = bisect_left(self._piece_line_starts, above_line)
+        if index == len(self._pieces):
+            return len(self.lines), len(self._entries)
+        return self._piece_line_starts[index], self._pieces[index].entry_index

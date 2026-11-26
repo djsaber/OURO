@@ -1399,6 +1399,14 @@ class OuroTuiApp(App[int]):
         if not self._visible_read_only and self._active_title != facts.session.title:
             self._active_title = facts.session.title
             self.query_one(BrandHeader).set_context(session_title=self._active_title)
+            if facts.session.context_source_session_id is not None:
+                self._side_sessions = tuple(
+                    side.model_copy(update={"title": facts.session.title})
+                    if side.session_id == facts.session.session_id
+                    else side
+                    for side in self._side_sessions
+                )
+                self._sync_session_navigation_panel()
         if facts.session.harness_version != self._session_status_harness_version:
             self._session_status_harness_version = facts.session.harness_version
             self._schedule_session_status_refresh()
@@ -2466,7 +2474,7 @@ class OuroTuiApp(App[int]):
         if source_id is not None:
             self._interrupted_commands[source_id] = value
         self.notify(
-            "Reopen the conversation where you started this question to continue.",
+            "Reopen the conversation where you entered /btw to continue.",
             severity="warning",
         )
         return True
@@ -2926,24 +2934,19 @@ class OuroTuiApp(App[int]):
         elif command.name == "/new":
             await self._new_session()
         elif command.name == "/btw":
-            if not argument or self._controller.session_id is None or self._visible_read_only:
+            if argument or self._controller.session_id is None or self._visible_read_only:
                 self.notify(
-                    "In a conversation where you can send messages, type /btw <question>.",
+                    "Type /btw on its own in a conversation where you can send messages.",
                     severity="warning",
                 )
                 return
             revision = self._view_revision
             try:
-                branch = await self._controller.create_side_conversation(argument)
-                side_id = branch.session.session_id
-                self._remember_input_draft(side_id, argument)
+                branch = await self._controller.create_side_conversation()
                 if revision == self._view_revision:
-                    await self._show_observed_session(side_id, inherit_progress=False)
-                    if self._controller.session_id == side_id and self._owns_session_surface(
-                        side_id
-                    ):
-                        self.query_one(Composer).clear()
-                        self._submit_run(InputContent(text=argument), "follow_up")
+                    await self._show_observed_session(
+                        branch.session.session_id, inherit_progress=False
+                    )
             except (OuroError, ValueError) as exc:
                 self._notify_error("Side conversation unavailable", exc)
         elif command.name == "/workspace":

@@ -951,9 +951,17 @@ class TuiController:
         session = self._services().sessions.view(session_id)
         return self._services().sessions.branch(session_id, session.last_message_id)
 
-    async def create_side_conversation(self, question: str) -> SessionBranchResult:
+    async def create_side_conversation(self) -> SessionBranchResult:
+        source = await self.session_view(self._require_session())
+        visited = {source.session_id}
+        while source.context_source_session_id is not None:
+            parent_id = source.context_source_session_id
+            if parent_id in visited:
+                raise PersistenceError("The side conversation's source chain contains a cycle.")
+            visited.add(parent_id)
+            source = await self.session_view(parent_id)
         return await asyncio.to_thread(
-            self._services().sessions.create_side_conversation, self._require_session(), question
+            self._services().sessions.create_side_conversation, source.session_id
         )
 
     async def queued_user_inputs(

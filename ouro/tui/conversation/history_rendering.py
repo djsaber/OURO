@@ -20,6 +20,7 @@ from textual.strip import Strip
 from textual.widget import Widget
 
 from ouro.tui.conversation.history_models import (
+    _FRAMED_MESSAGE_KINDS,
     CompactionPresentation,
     PreparedLine,
     ReasoningLayout,
@@ -565,8 +566,7 @@ def _reasoning_rows(
         expanded=request.reasoning_expanded,
         theme=request.theme,
     )
-    top = 1 if request.previous_kind == "tool" else 0
-    rows = _render_rows(console, options, Padding(label, (top, 0, 1, 0)))
+    rows = _render_rows(console, options, Padding(label, (0, 0, 1, 0)))
     if request.reasoning_expanded and layout is not None:
         rows.extend(
             row
@@ -586,7 +586,7 @@ def _entry_renderables(
 
     entry = request.entry
     theme = request.theme
-    if entry.kind in {"user", "harness", "command"}:
+    if entry.kind in _FRAMED_MESSAGE_KINDS:
         return [
             (
                 Padding(
@@ -598,7 +598,7 @@ def _entry_renderables(
                         reference_start=entry.reference_start,
                         source_label=entry.message_source.label if entry.message_source else None,
                     ),
-                    (1, 0, 1, 0),
+                    (1, 0),
                 ),
                 "user" if entry.kind == "user" else "body",
             )
@@ -617,14 +617,12 @@ def _entry_renderables(
             rendered.stylize(_ACTION_STYLE, 0, len(rendered))
         return [(rendered, "body")]
     if entry.kind == "notice":
-        top = 1 if request.previous_kind == "tool" else 0
         summary = _summary_line(entry.text, marker_tone=theme.accent, details=(), theme=theme)
-        return [(Padding(summary, (top, 0, 1, 0)), "body")]
+        return [(Padding(summary, (0, 0, 1, 0)), "body")]
     if entry.kind == "compaction":
         assert entry.compaction is not None
-        top = 1 if request.previous_kind == "tool" else 0
         summary = _compaction_summary(entry.compaction, theme)
-        return [(Padding(summary, (top, 0, 1, 0)), "body")]
+        return [(Padding(summary, (0, 0, 1, 0)), "body")]
     if entry.kind == "run":
         assert entry.run is not None
         summary = _run_summary(entry.run, theme)
@@ -645,12 +643,10 @@ def _entry_renderables(
         return [(Padding(summary, (0, 0, 1, 0)), "body")]
 
     pieces: list[tuple[RenderableType, _PieceTag]] = []
-    top = 1 if request.previous_kind == "tool" else 0
     if entry.text:
-        text_top = 0 if entry.reasoning else top
         pieces.append(
             (
-                Padding(assistant_markdown(entry.text, theme), (text_top, 0, 1, 0)),
+                Padding(assistant_markdown(entry.text, theme), (0, 0, 1, 0)),
                 "body",
             )
         )
@@ -664,12 +660,8 @@ def _render_rows(
 ) -> list[PreparedLine]:
     """Render one immutable piece using captured console geometry."""
 
-    segments = console.render(renderable, options)
     width = options.max_width
-    rows = [
-        PreparedLine(tuple(Segment.adjust_line_length(line, width)), width)
-        for line in Segment.split_lines(segments)
-    ]
+    rows = [PreparedLine(tuple(line), width) for line in console.render_lines(renderable, options)]
     return rows or [PreparedLine.blank(width)]
 
 
