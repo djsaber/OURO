@@ -391,8 +391,7 @@ def project_recovery_messages(messages: list[MessageRecord]) -> list[MessageReco
             role="harness",
             text=(
                 "The previous assistant response was interrupted. The text below is "
-                "unfinished and does not confirm that any planned action succeeded. "
-                "Check the latest tool results and continue from existing progress:\n\n"
+                "unfinished and does not confirm that any planned action succeeded.\n\n"
                 f"{message.text_content}"
             ),
             sequence=message.sequence,

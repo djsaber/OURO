@@ -3,12 +3,10 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from dataclasses import replace
 from typing import Never
 
 from pydantic import JsonValue
 
-from ouro.application.models.corrections import MAX_TOOL_ARGUMENT_RETRIES
 from ouro.application.runs.lifecycle import RunLifecycle
 from ouro.core.base import new_id
 from ouro.core.callbacks import run_blocking
@@ -31,6 +29,7 @@ from ouro.core.run_drivers import (
     DriverResume,
     DriverSuspended,
     DriverToolResult,
+    ModelOutputRejected,
     RunDriverHandler,
 )
 from ouro.core.state import RunRecord, SessionRecord
@@ -77,7 +76,6 @@ class NativeRunDriverContext:
         self._operation_idle = asyncio.Event()
         self._operation_idle.set()
         self._operation_task: asyncio.Task[object] | None = None
-        self._pending: tuple[str, str, ModelExecutionResult] | None = None
         self._response: tuple[str, ModelExecutionResult] | None = None
         self.turn_id = (
             run.active_tool_batch.turn_id if run.active_tool_batch is not None else resume_turn_id
@@ -101,7 +99,7 @@ class NativeRunDriverContext:
 
     def close(self) -> None:
         self._active = False
-        self._pending = None
+        self._response = None
 
     @asynccontextmanager
     async def _operation(self) -> AsyncGenerator[None]:
@@ -125,18 +123,13 @@ class NativeRunDriverContext:
         self, *, prompt: str = "", tools: tuple[str, ...] | None = None
     ) -> DriverModelResponse:
         async with self._operation():
-            if self._pending is not None:
-                raise ValueError(
-                    "resolve the pending model tool response before requesting another model"
-                )
+            await self._skip_pending_tools()
             response = await self._generate_response(prompt=prompt, tools=tools)
             turn_id = self.turn_id
             assert turn_id is not None
             response_id = new_id("response")
             self._response = (response_id, response)
-            if response.tool_calls:
-                self._pending = (response_id, turn_id, response)
-            else:
+            if not response.tool_calls:
                 await run_blocking(
                     self._runs.append_assistant_message,
                     session=self.session,
@@ -157,68 +150,50 @@ class NativeRunDriverContext:
     async def _generate_response(
         self, *, prompt: str, tools: tuple[str, ...] | None
     ) -> ModelExecutionResult:
-        while True:
-            if self.is_aborted:
-                raise asyncio.CancelledError
-            await self._deliver_inputs()
-            turn_id = new_id("turn")
-            self.turn_id = turn_id
-            self._response = None
-            self.final_text = ""
-            result = await self._request_model(
-                RunModelRequest(
-                    session=self.session,
-                    run=self.run,
-                    model_round=self.run.model_round_count + 1,
-                    turn_id=turn_id,
-                    abort_signal=self.signal,
-                    prompt=prompt,
-                    tools=tools,
-                )
+        if self.is_aborted:
+            raise asyncio.CancelledError
+        await self._deliver_inputs()
+        turn_id = new_id("turn")
+        self.turn_id = turn_id
+        self._response = None
+        self.final_text = ""
+        result = await self._request_model(
+            RunModelRequest(
+                session=self.session,
+                run=self.run,
+                model_round=self.run.model_round_count + 1,
+                turn_id=turn_id,
+                abort_signal=self.signal,
+                prompt=prompt,
+                tools=tools,
             )
-            self.session, self.run = result.session, result.run
-            response = result.outcome
-            if isinstance(response, ModelRequestBlocked):
-                await self.pause(response.reason)
-            if isinstance(response, ModelRequestFailed):
-                await self.fail(response.error)
-            assert isinstance(response, ModelExecutionResult)
-            self.final_text = response.text
-            self._inputs_checked = False
-            if response.aborted or self.is_aborted:
-                raise asyncio.CancelledError
-            if response.tool_call_failure is not None:
-                self.session, self.run = await self._runs.correct_model_output(
-                    self.run, turn_id, response
-                )
-                self.final_text = ""
+        )
+        self.session, self.run = result.session, result.run
+        self._inputs_checked = False
+        response = result.outcome
+        if isinstance(response, ModelRequestBlocked):
+            await self.pause(response.reason)
+        if isinstance(response, ModelRequestFailed):
+            raise RuntimeError(response.error)
+        assert isinstance(response, ModelExecutionResult)
+        self.final_text = response.text
+        if response.aborted or self.is_aborted:
+            raise asyncio.CancelledError
+        if failure := response.tool_call_failure:
+            self.session, self.run = await self._runs.record_unexecuted_model_tools(
+                self.run, turn_id, response
+            )
+            self.final_text = ""
 
-                if self.is_aborted or self.run.abort_requested:
-                    raise asyncio.CancelledError
-                if (
-                    int(self.run.metadata.get("model_correction_attempt", 0))
-                    <= MAX_TOOL_ARGUMENT_RETRIES
-                ):
-                    continue
-                # The rejected response is already recorded on the correction. Never
-                # append it as assistant history, even when recovery is exhausted.
-                await self.fail(
-                    response.error or "invalid tool arguments",
-                    response=replace(
-                        response,
-                        text="",
-                        reasoning="",
-                        continuation=None,
-                    ),
-                )
-            if response.error:
-                await self.fail(response.error, response=response)
-            return response
+            if self.is_aborted or self.run.abort_requested:
+                raise asyncio.CancelledError
+            raise ModelOutputRejected(failure.code, failure.error)
+        if response.error:
+            await self.fail(response.error, response=response)
+        return response
 
     async def consume_inputs(self) -> tuple[MessageRecord, ...]:
         async with self._operation():
-            if self._pending is not None:
-                raise ValueError("resolve the pending model tool response before consuming inputs")
             # The algorithm may start a new decision without a model or tool
             # operation, for example after waiting on a plugin service.
             self._inputs_checked = False
@@ -237,21 +212,35 @@ class NativeRunDriverContext:
             self.final_text = ""
         return delivered
 
+    async def _skip_pending_tools(self) -> None:
+        if self._response is not None and self._response[1].tool_calls:
+            _, response = self._response
+            assert self.turn_id is not None
+            self.session, self.run = await self._runs.record_unexecuted_model_tools(
+                self.run, self.turn_id, response
+            )
+            self._response = None
+
     async def execute_model_tools(
         self, response_id: str, *, checkpoint: JsonValue
     ) -> DriverToolResult:
         async with self._operation():
-            if self._pending is None or self._pending[0] != response_id:
+            if (
+                self._response is None
+                or self._response[0] != response_id
+                or not self._response[1].tool_calls
+            ):
                 raise ValueError("model response handle is unavailable or already consumed")
             durable = DriverCheckpoint(batch_id=new_id("batch"), payload=checkpoint)
-            _, turn_id, response = self._pending
-            self._pending = None
+            _, response = self._response
+            self._response = None
+            assert self.turn_id is not None
             result = await self._request_tools(
                 ModelToolBatchRequest(
                     session=self.session,
                     run=self.run,
                     response=response,
-                    turn_id=turn_id,
+                    turn_id=self.turn_id,
                     abort_signal=self.signal,
                     driver_checkpoint=durable,
                 )
@@ -262,10 +251,7 @@ class NativeRunDriverContext:
         self, calls: tuple[ToolCallRequest, ...], *, checkpoint: JsonValue
     ) -> DriverToolResult:
         async with self._operation():
-            if self._pending is not None:
-                raise ValueError(
-                    "resolve the pending model tool response before programmatic calls"
-                )
+            await self._skip_pending_tools()
             self._response = None
             result = await self._request_driver_tools(
                 DriverToolBatchRequest(
@@ -281,7 +267,7 @@ class NativeRunDriverContext:
 
     async def _accept_tool_result(self, result: ToolBatchHandlingResult) -> DriverToolResult:
         self.session, self.run = result.session, result.run
-        self.had_tool_error |= any(item.is_error for item in result.results)
+        self.had_tool_error |= result.had_tool_error
         self._inputs_checked = False
         self.final_text = ""
         self.suspended = result.status != "completed"
@@ -289,6 +275,8 @@ class NativeRunDriverContext:
             return DriverToolResult(True)
         if self.is_aborted:
             raise asyncio.CancelledError
+        if self.run.driver.is_default:
+            return DriverToolResult(False)
         self.run, resume = await run_blocking(
             self._runs.consume_driver_checkpoint, self.session_id, self.run_id
         )
@@ -379,13 +367,13 @@ class NativeRunDriverContext:
                 )
             if not isinstance(outcome, DriverFinished):
                 raise ValueError("DriverSuspended requires a native waiting operation")
-            if self._pending is not None:
-                raise ValueError("Driver cannot finish with unresolved model tool calls")
             committed = outcome.response_id is not None
             if outcome.response_id is not None:
                 response = self.model_response(outcome.response_id)
                 if response.tool_calls or outcome.text != response.text:
                     raise ValueError("final response must match the committed model output")
+            else:
+                await self._skip_pending_tools()
             return await self._runs.complete(
                 session=self.session,
                 run=self.run,

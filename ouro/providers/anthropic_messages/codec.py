@@ -6,9 +6,8 @@ from copy import deepcopy
 from typing import Any
 
 from ouro.core.messages import ImageContent, ModelMessage, TextContent
-from ouro.core.provider import Usage
+from ouro.core.provider import ToolCallDelta, Usage
 from ouro.core.tool_result_projection import project_provider_messages
-from ouro.core.tools import ToolCallRequest
 from ouro.providers.tool_content import ToolContentPolicy
 
 
@@ -61,16 +60,31 @@ def tool_to_anthropic_messages(tool: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def tool_use_delta(block: Mapping[str, Any], index: int, *, streaming: bool) -> ToolCallDelta:
+    call_id = block["id"] if isinstance(block.get("id"), str) else ""
+    name = block["name"] if isinstance(block.get("name"), str) else ""
+    value = block.get("input")
+    if streaming and ("input" not in block or value == {}):
+        # A streamed block starts with a placeholder. Its JSON follows as deltas.
+        return ToolCallDelta(index=index, id_delta=call_id, name_delta=name)
+    return ToolCallDelta(
+        index=index,
+        id_delta=call_id,
+        name_delta=name,
+        arguments_delta=json.dumps(value, ensure_ascii=False, separators=(",", ":")),
+    )
+
+
 def content_blocks_from_response(
     response: Mapping[str, Any],
-) -> tuple[list[str], list[str], list[ToolCallRequest]]:
+) -> tuple[list[str], list[str], list[ToolCallDelta]]:
     raw_content = response.get("content")
     if not isinstance(raw_content, list):
         return [], [], []
 
     text_parts: list[str] = []
     reasoning_parts: list[str] = []
-    tool_calls: list[ToolCallRequest] = []
+    tool_calls: list[ToolCallDelta] = []
     for block in raw_content:
         if not isinstance(block, Mapping):
             continue
@@ -82,19 +96,7 @@ def content_blocks_from_response(
             if isinstance(thinking, str) and thinking:
                 reasoning_parts.append(thinking)
         elif block_type == "tool_use":
-            name = block.get("name")
-            call_id = block.get("id")
-            if not isinstance(name, str) or not name or not isinstance(call_id, str) or not call_id:
-                continue
-            arguments = block.get("input")
-            tool_calls.append(
-                ToolCallRequest(
-                    id=call_id,
-                    name=name,
-                    arguments=dict(arguments) if isinstance(arguments, Mapping) else {},
-                    source_index=len(tool_calls),
-                )
-            )
+            tool_calls.append(tool_use_delta(block, len(tool_calls), streaming=False))
     return text_parts, reasoning_parts, tool_calls
 
 
@@ -189,13 +191,23 @@ def _message_to_anthropic(
                 continuation.blocks[0].get("content"), list
             ):
                 raise ValueError("Anthropic continuation requires complete response content")
-            native = continuation.blocks[0]
-            _, _, calls = content_blocks_from_response(native)
-            if [(call.id, call.name, call.arguments) for call in calls] != [
-                (call.id, call.name, call.arguments) for call in message.tool_calls
-            ]:
+            content = []
+            calls = []
+            for block in continuation.blocks[0]["content"]:
+                if isinstance(block, Mapping) and block.get("type") == "tool_use":
+                    # Older sessions committed only identified calls, with {} for non-objects.
+                    call_id, name = block.get("id"), block.get("name")
+                    if not isinstance(call_id, str) or not call_id:
+                        continue
+                    if not isinstance(name, str) or not name:
+                        continue
+                    if not isinstance(block.get("input"), dict):
+                        block = {**block, "input": {}}
+                    calls.append((call_id, name, block["input"]))
+                content.append(block)
+            if calls != [(call.id, call.name, call.arguments) for call in message.tool_calls]:
                 raise ValueError("Anthropic continuation does not match tool calls")
-            return {"role": role, "content": deepcopy(native["content"])}
+            return {"role": role, "content": deepcopy(content)}
     content = _message_content(message, supports_image_input=supports_image_input)
     if role == "assistant":
         content.extend(

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 from contextlib import aclosing
 from copy import deepcopy
@@ -17,6 +16,7 @@ from ouro.core.provider import (
     ProviderStreamEvent,
     ToolCallDelta,
 )
+from ouro.core.tools import parse_tool_arguments
 from ouro.providers.anthropic_messages.codec import (
     content_blocks_from_response,
     continuation_blocks_from_response,
@@ -24,6 +24,7 @@ from ouro.providers.anthropic_messages.codec import (
     merge_usage,
     messages_to_anthropic_messages,
     tool_to_anthropic_messages,
+    tool_use_delta,
     usage_from_anthropic,
 )
 from ouro.providers.authentication import (
@@ -222,8 +223,8 @@ class AnthropicMessagesProvider(ChatMessageProvider):
             yield ProviderStreamEvent(type="reasoning_delta", reasoning_content=reasoning)
         for text in text_parts:
             yield ProviderStreamEvent(type="text_delta", text=text)
-        for index, tool_call in enumerate(tool_calls):
-            yield ProviderStreamEvent.from_tool_call(tool_call, index=index)
+        for tool_call in tool_calls:
+            yield ProviderStreamEvent(type="tool_call_delta", tool_call_delta=tool_call)
         continuation_blocks = continuation_blocks_from_response(response)
         if continuation_blocks:
             yield ProviderStreamEvent(
@@ -288,21 +289,11 @@ class AnthropicMessagesProvider(ChatMessageProvider):
                             ),
                         )
                         return
-                    name = block.get("name")
-                    call_id = block.get("id")
-                    if isinstance(name, str) and name and isinstance(call_id, str) and call_id:
-                        tool_call_index = tool_call_indices.setdefault(
-                            index,
-                            len(tool_call_indices),
-                        )
-                        yield ProviderStreamEvent(
-                            type="tool_call_delta",
-                            tool_call_delta=ToolCallDelta(
-                                index=tool_call_index,
-                                id_delta=call_id,
-                                name_delta=name,
-                            ),
-                        )
+                    tool_call_index = tool_call_indices.setdefault(index, len(tool_call_indices))
+                    yield ProviderStreamEvent(
+                        type="tool_call_delta",
+                        tool_call_delta=tool_use_delta(block, tool_call_index, streaming=True),
+                    )
                 elif block.get("type") in {"thinking", "redacted_thinking"}:
                     saw_reasoning = True
             elif event_type == "content_block_delta":
@@ -381,8 +372,10 @@ class AnthropicMessagesProvider(ChatMessageProvider):
                         continuation_blocks[index][field] = initial + "".join(fragments)
                     try:
                         for index, fragments in tool_inputs.items():
-                            continuation_blocks[index]["input"] = json.loads("".join(fragments))
-                    except json.JSONDecodeError:
+                            continuation_blocks[index]["input"] = parse_tool_arguments(
+                                "".join(fragments)
+                            )
+                    except ValueError, RecursionError:
                         # Core diagnoses the already emitted argument deltas. Still
                         # deliver completion/usage, without replaying invalid input.
                         pass
@@ -393,13 +386,13 @@ class AnthropicMessagesProvider(ChatMessageProvider):
                                 provider_id=self.provider_id,
                                 protocol="anthropic-messages",
                                 model_id=model.model_id,
-                                blocks=continuation_blocks_from_response(
+                                blocks=(
                                     {
                                         "content": [
-                                            continuation_blocks[index]
-                                            for index in sorted(continuation_blocks)
+                                            continuation_blocks[i]
+                                            for i in sorted(continuation_blocks)
                                         ]
-                                    }
+                                    },
                                 ),
                             ),
                         )

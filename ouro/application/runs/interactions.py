@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import JsonValue
 
-from ouro.application.harness import capture_harness
+from ouro.application.harness import capture_session_harness
 from ouro.application.runs.lifecycle import RunLifecycle, find_active_run
 from ouro.application.runs.ownership import RunExecutionOwnership
 from ouro.application.runs.tool_batches import load_batch_states, load_tool_batch
@@ -16,7 +16,8 @@ from ouro.application.sessions.recovery import SessionRecoveryService
 from ouro.core.agents import AgentWaitResolution
 from ouro.core.base import utc_now
 from ouro.core.callbacks import run_blocking
-from ouro.core.errors import PersistenceError
+from ouro.core.cancellation import AbortSignal
+from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.harness_calls import HarnessCallSnapshot
 from ouro.core.results import RunResult
@@ -47,7 +48,9 @@ class ParkedRunExecution:
     ownership: RunExecutionOwnership
     runs: RunLifecycle
     recovery: SessionRecoveryService
-    continue_batch: Callable[[SessionRecord, RunRecord, ToolCallBatchRecord], Awaitable[RunResult]]
+    continue_batch: Callable[
+        [SessionRecord, RunRecord, ToolCallBatchRecord, AbortSignal], Awaitable[RunResult]
+    ]
     finish: Callable[[RunResult], Awaitable[RunResult]]
     release_resources: Callable[[str], None]
     bind_run: Callable[[RunRecord], Awaitable[None]]
@@ -65,11 +68,11 @@ class ParkedRunExecution:
     async def _resolve(
         self,
         target: RunRecord,
-        decide: Callable[[SessionRecord, RunRecord], Awaitable[_ResolvedInteraction]],
+        decide: Callable[[SessionRecord, RunRecord, AbortSignal], Awaitable[_ResolvedInteraction]],
     ) -> RunResult:
-        async with self.ownership.parked_run(target) as (session, run):
+        async with self.ownership.parked_run(target) as (session, run, signal):
             try:
-                decision = await decide(session, run)
+                decision = await decide(session, run, signal)
                 session, run, batch, events = await run_blocking(
                     self.runs.save_resolved_batch,
                     session=session,
@@ -83,7 +86,27 @@ class ParkedRunExecution:
                 if target.status == "waiting_approval" and run.status != "running":
                     result = RunResult(session=session, run=run)
                 else:
-                    result = await self.continue_batch(session, run, batch)
+                    result = await self.continue_batch(session, run, batch, signal)
+            except SessionBusyError:
+                self.release_resources(run.run_id)
+                aborted = await run_blocking(
+                    self.ownership.abort_state, session.session_id, run.run_id
+                )
+                if aborted is None:
+                    raise
+                session, run = aborted
+                interrupted = await run_blocking(load_tool_batch, self.runs.store, run)
+                if interrupted is not None:
+                    _, events = await run_blocking(
+                        self.runs.save_aborted_batch,
+                        session_id=session.session_id,
+                        run_id=run.run_id,
+                        batch=interrupted.model_copy(update={"phase": "aborted"}),
+                    )
+                    await self.runs.events.publish_committed(events)
+                result = await self.runs.finalize_requested_abort(
+                    RunResult(session=session, run=run)
+                )
             except BaseException:
                 # A failed answer or commit can leave a newly bound catalog on a parked Run.
                 self.release_resources(run.run_id)
@@ -112,7 +135,9 @@ class ParkedRunExecution:
         if selected is None:
             raise ValueError("run has no pending approval")
 
-        async def decide(session: SessionRecord, run: RunRecord) -> _ResolvedInteraction:
+        async def decide(
+            session: SessionRecord, run: RunRecord, _signal: AbortSignal
+        ) -> _ResolvedInteraction:
             require_approval(run)
             batch = await run_blocking(load_tool_batch, self.runs.store, run)
             assert batch is not None
@@ -144,7 +169,9 @@ class ParkedRunExecution:
                     "resolver_id": None,
                 },
             )
-            return _ResolvedInteraction(batch, (event,))
+            return _ResolvedInteraction(
+                batch, (event,), changed_call_ids=frozenset({call.request.id})
+            )
 
         return await self._resolve(target, decide)
 
@@ -168,7 +195,9 @@ class ParkedRunExecution:
             if run.active_tool_batch is None:
                 raise ValueError("run has no active tool batch")
 
-        async def decide(session: SessionRecord, run: RunRecord) -> _ResolvedInteraction:
+        async def decide(
+            session: SessionRecord, run: RunRecord, signal: AbortSignal
+        ) -> _ResolvedInteraction:
             require_question(run)
             if question is None and run.active_tool_batch != target.active_tool_batch:
                 raise StaleToolQuestion("pending question changed while acquiring the Run")
@@ -186,8 +215,8 @@ class ParkedRunExecution:
             if waiting_call is None:
                 raise StaleToolQuestion("pending question changed before the answer was applied")
             await self.bind_run(run)
-            answer_harness = await run_blocking(
-                capture_harness,
+            session, answer_harness = await run_blocking(
+                capture_session_harness,
                 self.runs.store,
                 session.session_id,
                 run=run,
@@ -200,6 +229,7 @@ class ParkedRunExecution:
                 tool_call_id=waiting_call.request.id,
                 answer=answer,
                 harness=answer_harness,
+                signal=signal,
                 workspace=session.workspace,
             )
             pending_events: list[EventRecord] = []
@@ -244,7 +274,12 @@ class ParkedRunExecution:
                         },
                     )
                 )
-            return _ResolvedInteraction(batch, tuple(pending_events), harness=answer_harness)
+            return _ResolvedInteraction(
+                batch,
+                tuple(pending_events),
+                harness=answer_harness,
+                changed_call_ids=frozenset({waiting_call.request.id}),
+            )
 
         target = await self._target(session_id, run_id)
         require_question(target)
@@ -255,7 +290,9 @@ class ParkedRunExecution:
     ) -> RunResult:
         run_id, tool_call_id = identity.run_id, identity.tool_call_id
 
-        async def decide(session: SessionRecord, run: RunRecord) -> _ResolvedInteraction:
+        async def decide(
+            session: SessionRecord, run: RunRecord, _signal: AbortSignal
+        ) -> _ResolvedInteraction:
             if run.status != "waiting_child" or run.active_tool_batch is None:
                 raise ValueError("parent Run no longer has a durable child wait")
             if run.active_tool_batch.batch_id != identity.batch_id:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
@@ -64,6 +65,32 @@ def test_native_replay_requires_complete_response_content():
         )
 
 
+def test_legacy_tool_continuation_replays_committed_arguments_and_signed_content():
+    thinking = {"type": "thinking", "thinking": "check", "signature": "sig"}
+    old_call = {"type": "tool_use", "id": "old", "name": "Read", "input": []}
+    dropped = {"type": "tool_use", "id": "", "name": "Read", "input": {}}
+    message = MessageRecord(
+        session_id="test",
+        role="assistant",
+        tool_calls=[ToolCallRequest(id="old", name="Read", arguments={})],
+        provider_continuation=ProviderContinuationArtifact(
+            provider_id="test",
+            protocol="anthropic-messages",
+            model_id="test",
+            blocks=({"content": [thinking, dropped, old_call]},),
+        ),
+    )
+    _, dialogue = messages_to_anthropic_messages(
+        [message],
+        system_prompt="",
+        supports_image_input=False,
+        provider_id="test",
+        model_id="test",
+    )
+    assert dialogue == [{"role": "assistant", "content": [thinking, {**old_call, "input": {}}]}]
+    assert message.provider_continuation.blocks[0]["content"] == [thinking, dropped, old_call]
+
+
 class FakeStreamingTransport(FakeTransport):
     def __init__(self, chunks: list[dict[str, Any]]) -> None:
         super().__init__({})
@@ -104,7 +131,12 @@ async def test_messages_requires_output_limit_before_transport() -> None:
     assert transport.requests == []
 
 
-async def test_invalid_tool_json_reaches_core_with_completion_and_usage() -> None:
+@pytest.mark.parametrize(
+    "arguments",
+    ['{"text":"line\nbreak"}', "[" * sys.getrecursionlimit() + "0" + "]" * sys.getrecursionlimit()],
+    ids=["invalid-json", "unrepresentable-nesting"],
+)
+async def test_invalid_tool_json_reaches_core_with_completion_and_usage(arguments: str) -> None:
     transport = FakeStreamingTransport(
         [
             {
@@ -122,7 +154,7 @@ async def test_invalid_tool_json_reaches_core_with_completion_and_usage() -> Non
                 "index": 0,
                 "delta": {
                     "type": "input_json_delta",
-                    "partial_json": '{"text":"line\nbreak"}',
+                    "partial_json": arguments,
                 },
             },
             {
@@ -147,7 +179,7 @@ async def test_invalid_tool_json_reaches_core_with_completion_and_usage() -> Non
     assert events[-1].completion.finish_reason == "tool_call"
     assert (
         "".join(event.tool_call_delta.arguments_delta for event in events if event.tool_call_delta)
-        == '{"text":"line\nbreak"}'
+        == arguments
     )
 
 

@@ -332,7 +332,8 @@ Call 的确定 attempt，或表明本条消息自有的未知/中断反馈。持
 `load_message_fact` 只点读固定消息骨架；已发布调用的工作集读取可据此取得反馈，而不重复加载 Outcome 正文。
 
 `publish_tool_batch` 一次提交整个 source_index 顺序帧、每个 Call 的结果消息身份及待接受 Harness 变化，
-同时把相应 Driver checkpoint 从 pending 改为 ready。冲突提案拒绝整个发布，已经保存的确定 Outcome 保留。
+默认 Driver 当场继续时，同次提交直接消费 checkpoint。插件 Driver 或等待后恢复的 Driver 在同次提交取得 ready checkpoint，
+领取时记录 consumed。冲突提案拒绝整个发布，已经保存的确定 Outcome 保留。
 重提已发布批次通过 CallState 的消息身份定向读取完整帧；不存在逐条补齐缺失后缀的发布路径。
 中断恢复先读取原 Call/Outcome，必要时构造明确的未知或未执行反馈，再通过同一提交边界发布；不恢复旧业务提案。
 Files 未决帧决定使消息、Call 状态与 Run 点查明确报需恢复，显式 mutation 完成决定；SQLite 失败回滚整帧。

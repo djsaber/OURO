@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -117,7 +118,7 @@ class ToolPolicyRegistry(PolicyRegistry[ToolPolicyRegistration]):
             try:
                 raw = await invoke_bounded_callback(
                     registration.handler,
-                    call,
+                    call.model_copy(update={"arguments": deepcopy(call.arguments)}),
                     timeout_seconds=registration.timeout_seconds,
                 )
                 if not isinstance(raw, ToolPolicyDecision):

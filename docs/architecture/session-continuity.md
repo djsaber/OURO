@@ -90,7 +90,7 @@ Core 定义待处理条件，存储适配器在原生提交内维护可定位的
 follow-up 的输入接受与 child queued Run 属于同一原生提交，Delegation 通过该 Run 的前驱和 Input 引用完成当前关联。
 Files 的局部恢复补齐关联，SQLite 使用原生事务；调度按身份引用 Input 正文。
 模型接受与执行前检查点各自通过既有原生提交边界持久化；整批结果发布同时提交消息、Call 发布状态、
-Harness 变更与 Driver ready，恢复无需补齐逐条消息。具体契约见
+Harness 变更与 Driver checkpoint，恢复无需补齐逐条消息。具体契约见
 [工具事实存储](../specs/session-persistence.md#工具事实存储)。
 
 ## 中断操作的局部收尾

@@ -10,12 +10,13 @@ from ouro.core.agents import AgentWaitRequest
 from ouro.core.approvals import ApprovalRecord
 from ouro.core.base import Metadata, MetadataField, OuroModel, VersionedOuroModel, new_id, utc_now
 from ouro.core.harness_calls import HarnessStateChange
-from ouro.core.interactions import ToolInputResolution
+from ouro.core.interactions import ToolInputResolution, UnattendedResolution
 from ouro.core.session_controls import SessionControlTransitionRequest
 from ouro.core.tool_facts import ToolCallFacts, ToolCallIdentity, ToolFactConflict, ToolQuestion
 from ouro.core.tools import (
     ToolCallProducer,
     ToolCallRequest,
+    ToolExecutionOutcome,
     ToolInputRequest,
     ToolInvocation,
     ToolInvocationBinding,
@@ -52,6 +53,18 @@ ToolCallStatus = Literal[
 ToolBatchOutcomeStatus = Literal["completed", "waiting_approval", "waiting_user", "waiting_child"]
 
 
+def tool_execution_in_flight(call: ToolBatchCall | ToolCallState) -> bool:
+    if call.status == "resolving_input":
+        # A durable unattended question accounts for the first Start. Older
+        # sessions may only have recorded that a resume was already in flight.
+        return not (
+            call.attempt == 1
+            and call.input_request is not None
+            and isinstance(call.input_resolution, UnattendedResolution)
+        )
+    return call.status == "running"
+
+
 class ToolBatchCall(OuroModel):
     """An explicitly loaded execution value, never embedded in a durable Run."""
 
@@ -69,6 +82,40 @@ class ToolBatchCall(OuroModel):
     result_message_id: str | None = None
     attempt: int = Field(default=0, ge=0)
     metadata: Metadata = MetadataField
+
+    @property
+    def approved(self) -> bool:
+        return self.approval is not None and self.approval.status in {"approved", "modified"}
+
+    def with_outcome(
+        self,
+        outcome: ToolExecutionOutcome,
+        *,
+        resolution: ToolInputResolution | None = None,
+    ) -> Self:
+        status: ToolCallStatus
+        if outcome.status == "approval_required":
+            status = "awaiting_approval"
+        elif outcome.status in ("waiting_user", "waiting_child", "aborted", "unknown_outcome"):
+            status = outcome.status
+        else:
+            status = (
+                "failed" if outcome.result is not None and outcome.result.is_error else "completed"
+            )
+        waiting = status == "waiting_user"
+        return self.model_copy(
+            update={
+                "status": status,
+                "invocation": outcome.invocation,
+                "approval": outcome.approval if status == "awaiting_approval" else self.approval,
+                "input_request": outcome.input_request if waiting else self.input_request,
+                "input_resolution": None if waiting else resolution or self.input_resolution,
+                "input_revision": self.input_revision + int(waiting),
+                "agent_wait": outcome.agent_wait if status == "waiting_child" else self.agent_wait,
+                "result": outcome.result,
+                "feedback": outcome.feedback,
+            }
+        )
 
     def question(self, run_id: str, batch_id: str) -> ToolQuestion:
         return ToolQuestion(

@@ -10,7 +10,7 @@ from ouro.core.run_transitions import plan_run_transition, session_state_for_run
 from ouro.core.session_commits import SessionCommit, SessionCommitStep
 from ouro.core.session_ports import RuntimeSessionSnapshot, SessionSnapshot, SessionStore
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
-from ouro.core.tool_batches import ToolCallState
+from ouro.core.tool_batches import ToolCallState, tool_execution_in_flight
 
 _INCOMPLETE_RUN_STATUSES = {"queued", "running"}
 
@@ -147,7 +147,7 @@ class SessionRecoveryService:
                     changed_calls.extend(
                         call.model_copy(update={"status": "unknown_outcome"})
                         for call in states
-                        if call.status in {"running", "resolving_input"}
+                        if tool_execution_in_flight(call)
                     )
                     active_batch = active_batch.model_copy(
                         update={

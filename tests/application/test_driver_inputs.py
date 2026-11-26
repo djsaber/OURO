@@ -253,12 +253,6 @@ async def test_steering_waits_for_model_tool_results_and_survives_driver_restart
         """async def review(context, resume):
     if resume is None:
         response = await context.models.request()
-        try:
-            await context.inputs.consume()
-        except (ValueError, RuntimeError) as error:
-            assert "pending model tool response" in str(error)
-        else:
-            raise AssertionError("input split a model tool response")
         result = await context.tools.execute_model_response(
             response.response_id, checkpoint="resume"
         )
@@ -303,6 +297,79 @@ async def test_steering_waits_for_model_tool_results_and_survives_driver_restart
         roles = [message.role for message in history.messages]
         assert roles == ["user", "assistant", "tool_result", "user", "assistant"]
         assert not runtime.queued_inputs.eligible_session(history.session)
+    finally:
+        provider.release.set()
+        if running is not None:
+            await asyncio.gather(running, return_exceptions=True)
+        await runtime.close()
+        await plugins.close()
+
+
+@pytest.mark.parametrize("kind", ["python-inprocess", "worker"])
+@pytest.mark.parametrize("decision", ["finish", "ask again", "use another tool"])
+async def test_driver_can_read_steering_and_drop_an_unexecuted_proposal(tmp_path, kind, decision):
+    store = LocalSessionStore(tmp_path / "sessions")
+    store.initialize()
+    calls = []
+    runtime, plugins, service = host(tmp_path, store, calls)
+    provider = SteeringProvider(tool=True)
+    runtime.adapter.provider = provider
+    package = plugin_source(tmp_path, kind)
+    set_driver_body(
+        package,
+        """async def review(context, resume):
+    proposal = await context.models.request()
+    assert proposal.tool_calls[0].name == "Deploy"
+    steering, = await context.inputs.consume()
+    if steering.text == "finish":
+        return sdk.DriverFinished("No deployment needed.")
+    if steering.text == "ask again":
+        answer = await context.models.request(tools=())
+        outcome = sdk.DriverFinished(answer.text, response_id=answer.response_id)
+    else:
+        batch = await context.tools.execute((sdk.RunToolCall("MissingTool"),), checkpoint=None)
+        outcome = sdk.DriverFinished(batch.results[0].structured["error_type"])
+    try:
+        await context.tools.execute_model_response(proposal.response_id, checkpoint=None)
+    except (ValueError, RuntimeError) as exc:
+        assert "handle is unavailable" in str(exc)
+    else:
+        raise AssertionError("a superseded proposal could still execute")
+    return outcome
+""",
+    )
+    service.install(package)
+    running = None
+    try:
+        assert (await service.enable(PLUGIN)).status == "active"
+        session = runtime.create_session()
+        running = asyncio.create_task(
+            runtime.run("Review the deployment", session_id=session.session_id, driver_id=DRIVER)
+        )
+        await wait_for_runtime_event(provider.started, running, description="Driver proposal")
+        await runtime.run(decision, session_id=session.session_id, queue_mode="steer")
+        provider.release.set()
+        result = await running
+        assert result.run.status == "completed", result.run.error
+        assert (
+            result.final_text
+            == {
+                "finish": "No deployment needed.",
+                "ask again": "done",
+                "use another tool": "UnknownTool",
+            }[decision]
+        )
+        assert calls == []
+        history = store.load_session(session.session_id)
+        skipped = [m for m in history.messages if m.semantic_tag == "model-tools-skipped"]
+        assert len(skipped) == 1 and "Deploy" in skipped[0].text_content
+        assert all(header.response_closed_at for header in history.request_headers)
+        assert all(
+            not m.tool_calls and (m.tool_result is None or m.tool_result.tool_name != "Deploy")
+            for m in history.messages
+        )
+        if decision == "ask again":
+            assert any(skipped[0].text_content in message for message in provider.requests[1])
     finally:
         provider.release.set()
         if running is not None:

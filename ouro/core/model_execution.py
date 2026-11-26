@@ -15,7 +15,7 @@ from ouro.core.messages import ModelResponseRecord, ProviderContinuationArtifact
 from ouro.core.model_completion import model_completion_failure
 from ouro.core.provider import ProviderCompletion, ProviderStreamEvent, ToolCallDelta, Usage
 from ouro.core.request_context import ProviderRequestContext
-from ouro.core.tools import ToolCallRequest
+from ouro.core.tools import ToolCallRequest, parse_tool_arguments
 
 
 @dataclass(frozen=True)
@@ -27,16 +27,17 @@ class ModelExecutionEvent:
 
 @dataclass(frozen=True)
 class ToolCallFailure:
-    """Rejected arguments are diagnostic text, never an executable tool call."""
+    """A rejected tool frame. Raw arguments, when present, are diagnostic text."""
 
-    index: int
-    name: str
-    arguments: str
+    code: str
     error: str
+    index: int | None = None
+    name: str | None = None
+    arguments: str | None = None
     position: int = 0
 
 
-class _InvalidToolArguments(ValueError):
+class _InvalidToolCall(ValueError):
     def __init__(self, failure: ToolCallFailure) -> None:
         super().__init__(failure.error)
         self.failure = failure
@@ -70,7 +71,7 @@ class _ToolCallParts:
             self.ids.append(delta.id_delta)
         if delta.name_delta:
             self.names.append(delta.name_delta)
-        if delta.arguments_delta:
+        if delta.arguments_delta or not (delta.id_delta or delta.name_delta):
             self.arguments.append(delta.arguments_delta)
 
 
@@ -138,15 +139,17 @@ class _Response:
         if failure is not None:
             self.error = failure.message
             self.error_code = failure.code
+            if failure.code == "model_missing_tool_call":
+                self.tool_call_failure = ToolCallFailure(failure.code, failure.message)
             # Rejected output must not become replayable provider continuation.
             self.continuation = None
             return
         try:
             self.tool_calls = _complete_tool_calls(self.tool_parts)
-        except _InvalidToolArguments as exc:
+        except _InvalidToolCall as exc:
             self.tool_call_failure = exc.failure
             self.error = str(exc)
-            self.error_code = "model_tool_arguments_invalid"
+            self.error_code = exc.failure.code
             self.continuation = None
 
 
@@ -242,35 +245,36 @@ def _complete_tool_calls(parts_by_index: dict[int, _ToolCallParts]) -> tuple[Too
         call_id = "".join(parts.ids)
         name = "".join(parts.names)
         raw_arguments = "".join(parts.arguments)
+        identity_error = None
         if not call_id:
-            raise ValueError(f"provider tool call id must not be empty at stream index {index}")
-        if not name:
-            raise ValueError(f"provider tool call name must not be empty at stream index {index}")
-        if call_id in ids:
-            raise ValueError(f"duplicate provider tool call id: {call_id}")
+            identity_error = f"provider tool call id must not be empty at stream index {index}"
+        elif not name:
+            identity_error = f"provider tool call name must not be empty at stream index {index}"
+        elif call_id in ids:
+            identity_error = f"duplicate provider tool call id: {call_id}"
+        if identity_error is not None:
+            raise _InvalidToolCall(
+                ToolCallFailure("model_tool_identity_invalid", identity_error, index, name)
+            )
         ids.add(call_id)
         try:
-            arguments = json.loads(raw_arguments) if raw_arguments.strip() else {}
-        except json.JSONDecodeError as exc:
-            raise _InvalidToolArguments(
+            arguments = parse_tool_arguments(raw_arguments) if parts.arguments else {}
+        except (ValueError, RecursionError) as exc:
+            error = (
+                "provider tool call arguments are not valid JSON"
+                if isinstance(exc, json.JSONDecodeError)
+                else "invalid provider tool call arguments"
+            )
+            raise _InvalidToolCall(
                 ToolCallFailure(
-                    index,
-                    name,
-                    raw_arguments,
-                    f"provider tool call arguments are not valid JSON at stream index {index}: "
-                    f"{exc}",
-                    exc.pos,
+                    "model_tool_arguments_invalid",
+                    f"{error} at stream index {index}: {exc}",
+                    index=index,
+                    name=name,
+                    arguments=raw_arguments,
+                    position=exc.pos if isinstance(exc, json.JSONDecodeError) else 0,
                 )
             ) from exc
-        if not isinstance(arguments, dict):
-            raise _InvalidToolArguments(
-                ToolCallFailure(
-                    index,
-                    name,
-                    raw_arguments,
-                    f"provider tool call arguments must be a JSON object at stream index {index}",
-                )
-            )
         calls.append(
             ToolCallRequest(id=call_id, name=name, arguments=arguments, source_index=source_index)
         )

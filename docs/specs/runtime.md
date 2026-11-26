@@ -104,8 +104,9 @@ SDK `context.inputs.consume()` 允许算法显式声明一个安全决策边界�
 交付遵循 `one_by_one`／`all_at_once` 和原子 batch 的队列规则，保留 Prompt Policy、来源、媒体及资源引用，
 不消费 `follow_up`。返回视图与 Host 记录分离，修改视图不改写历史。输入读取只加载 Session 队列元数据，不重复读取完整历史。
 
-未结算的模型工具响应、正在执行的原生操作以及暂停／已关闭的调用不能接受输入消费；输入只能在工具结果完成提交后交付。
-审批等等待期间，steering 保留在持久队列，恢复 Driver 后仍交付给同一 Run。取消或策略拒绝不提前移除未交付输入。
+模型提出工具后，Driver 可以先读取 steering，再决定是否执行提议。转向新的模型请求、程序化工具调用或自己的最终答复时，
+Host 关闭原请求，在历史中用 `model-tools-skipped` 标明哪些工具未执行。原句柄随之失效。
+原生工具已开始执行或正在等待审批时，steering 保留在持久队列，待结果提交后交付给同一 Run。取消或策略拒绝不提前移除未交付输入。
 自定义算法负责决定何时完成；没有进一步安全决策边界的剩余输入依照排队输入终结规则处理，Host 不擅自重跑算法。
 
 `DriverFinished(text, response_id=...)` 可以选定当前已保存的无工具模型响应作为最终答复。Host 校验句柄和文本，
@@ -128,8 +129,9 @@ Agent 端口将类型化的 spawn、send、interrupt 请求交给原生工具边
 - `ready`：原生结果已提交，完成的批次保留在 Run 上供 Driver 恢复；
 - `consumed`：Host 已原子标记消费并移除活动批次，允许把 checkpoint 与工具结果交给 Driver 一次。
 
-结果沿用原生工具事实，不建立独立 Driver 操作账本。立即完成的工具批次也在返回调用者前消费 checkpoint。
-确定 Outcome 保存后，原生工具帧、Call 发布状态与 ready checkpoint 在同一 Session 决定中发布。
+结果沿用原生工具事实。原生工具帧、Call 发布状态与 checkpoint 在同一次 Session 提交中生效。
+默认 Driver 当场继续时，发布直接将 checkpoint 记为 `consumed`。插件结果交付和暂停后的恢复先记为 `ready`，
+由取回结果的 Driver 消费。开始发布的在线进度通知无需单独保存批次。
 发布前中断时，恢复协调器使用原 Call/Outcome 完成整帧；发布已决定后按原生决定收尾，不补写逐条结果回执。
 媒体、资源引用与执行时间从固定 Outcome 读取，不重新执行工具。执行中断且没有可靠结果时记录未知反馈，
 不推断外部副作用已经撤销；该历史反馈不因迟到结果而改变。
@@ -296,26 +298,23 @@ Session 继续的整体前提。持久 ToolInvocation、控制 activation 和 De
   并关闭 provider async iterator，不能遗留网络读取任务。
 - 模型请求执行器以第一个 `done` 或 `error` 为终止边界，返回前关闭 adapter 及其 provider 流。
   Python task cancellation 在关闭流后向调用方传播；AbortSignal 返回部分输出，宿主结算原生取消状态。
-- Provider 必须把流式 chunk 与非流式完整调用都在 adapter 边界规范化为 `tool_call_delta`；Core 不接受第二种
-  完整 `tool_call` event。流式路径不得在 Provider 内等待完整响应后再
-  一次性提交；只支持非流式响应的 Provider 为每个完整调用产生一个包含全部字段的 delta event。
+- Provider 在适配器边界将流式和非流式工具调用统一转换为 `tool_call_delta`。流式响应收到分片即交付，
+  非流式响应从完整调用中提取同样的身份和参数。
 - `tool_call_delta.index` 是当前 assistant 响应内从零开始的工具调用序号，并稳定关联同一调用；Provider
   适配器必须在统一边界内把供应商原生 content-block 坐标归一化，不能向 Core 泄漏。`id_delta`、
   `name_delta` 和 `arguments_delta` 字段均保持追加分片语义。
 - `RunModelRequests` 按到达顺序发布 `model_tool_call_delta`。Core 执行器按工具 index 追加分片，
-  完成时一次拼接并解析 arguments JSON，校验身份和批次唯一性；不逐分片复制累积参数。
+  完成时一次拼接参数并校验调用身份。参数 JSON 必须是键唯一、数值有限的对象，同批调用标识必须唯一。
 - 完成事件的用量记录先于输出可用性判断。输出长度受限、过滤或不完整时，不执行工具片段，不保留可重放 continuation。
-- 响应正常结束但工具参数不是合法 JSON 对象时，Core 返回 `model_tool_arguments_invalid` 与错误位置、
-  工具名和原始参数；整批调用不执行，原生 continuation 不进入上下文。身份错误、传输错误和输出截断不属于参数纠错。
-- Native Driver 的模型请求边界最多自动纠正两次连续参数错误，普通会话、子智能体和插件 Driver 共用此路径。
-  每次尝试重新经过正常请求准备、预算、计费和取消边界，具有独立 turn/request 身份；不在 Provider 内重试生成。
-- 纠错通过一次 SessionCommit 关闭失败请求、清理 Draft，并追加 `role=harness`、
-  `semantic_tag=model-output-correction` 的消息。消息明确整批未执行，包含首个错误及最多 1024 字符的参数片段，
-  要求重新生成完整调用。错误参数不被修复，也不伪装成 assistant 调用或 tool 结果。
+- 正常结束的模型响应可能包含非法参数 JSON、缺失或重复的调用标识、缺失的工具名，或缺少结束原因所声明的调用。
+  这些问题产生 `ModelOutputRejected`，携带本次原因和错误码，整批工具均未执行。
+  Driver 显式指定本次请求的工具集合时，集合外的提议也按整批拒绝。使用默认目录时，查无此工具或实际参数不符合 schema 均按调用返回工具错误。
+- 每次原生模型请求只生成一次。默认 Driver 将拒绝事实交给下一轮模型决策。插件 Driver 可捕获 SDK 同名异常，自行选择下一步。
+  新请求遵循同一套用户预算、计费和取消规则，拥有独立的 turn 和 request 身份。
+- Host 在一次 SessionCommit 中关闭失败请求、清理 Draft 并追加 `role=harness`、
+  `semantic_tag=model-output-correction` 的消息。正文说明整批未执行、具体错误，以及参数解析失败时最多 1024 字符的诊断片段。
 - 纠错消息持久保留，成功后不删除；既有历史消息不修改。失败正文、推理和首个非法调用的诊断保存在该消息 metadata，
   不参与 Provider 投影。请求消息前缀在上下文配置稳定且未触发正常压缩时保持一致；纠错不引入专用历史重写。
-- Run metadata 中的纠错轮次与次数随消息原子提交，暂停或进程重启不重置连续计数；中间一次成功请求会结束连续错误链。
-  第三次连续参数错误仍提交诊断与纠错消息，但 Run 以原错误码失败。显式续跑使用保留的上下文，不重放非法响应。
 - Provider 可在普通回答或工具调用响应中产生一个 `continuation` 事件；执行器只接受一个类型化 artifact，
   与对应 assistant 消息原子提交。可见思考文本与原生续接状态分别保存。
 - `done` 只携带完成边界和 usage，不重复携带工具调用，避免增量流和最终快照成为两个互相竞争的真相来源。
@@ -364,7 +363,8 @@ role 不改变 producer provenance，也不授予直接用户权限。Host 和�
 插件来源缺少完整执行归属、delegation 来源缺少 relation identity，或缺少消息三维契约字段的持久化项均明确报错，
 不在查询中移除、不按来源或历史默认值补全。
 
-工具请求及结果共享原子 turn，steer 必须在工具结果提交后插入。`queued_inputs.consumption_mode` 决定每个
+默认 Driver 在接受模型工具提议前读取 steer。有新指示时，下一轮模型同时看到这条指示和原提议未执行的事实。
+已接受的工具请求及其结果构成完整帧，此后到达的 steer 在结果提交后交付。`queued_inputs.consumption_mode` 决定每个
 消费边界只取一条（`one_by_one`）或取出当时全部符合交付时机的消息（`all_at_once`）。过滤不同交付模式时，
 符合条件的消息保持原始入队顺序；较早的 follow-up 不阻塞较晚 steer 在 turn 边界生效。逐条选择只读取首个完整消费单位，
 提交时只复核本次选中的输入身份与状态，不重复加载队列中其他输入正文。

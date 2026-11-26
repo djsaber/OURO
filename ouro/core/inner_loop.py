@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from ouro.core.run_drivers import DriverFinished, DriverResume, DriverSuspended, RunDriverContext
+from ouro.core.run_drivers import (
+    DriverFinished,
+    DriverResume,
+    DriverSuspended,
+    ModelOutputRejected,
+    RunDriverContext,
+)
 
 
 class DefaultRunTurns(Protocol):
@@ -23,14 +29,16 @@ class InnerAgentLoop:
         if resume is not None:
             await self.turns.consume_inputs()
         while True:
-            response = await context.request_model()
+            try:
+                response = await context.request_model()
+            except ModelOutputRejected:
+                continue
+            if await self.turns.consume_inputs():
+                continue
             if response.tool_calls:
                 result = await context.execute_model_tools(response.response_id, checkpoint="turn")
                 if result.suspended:
                     return DriverSuspended()
-                await self.turns.consume_inputs()
-                continue
-            if await self.turns.consume_inputs():
                 continue
             if await self.turns.may_finish(response.response_id):
                 return DriverFinished(response.text, response_id=response.response_id)

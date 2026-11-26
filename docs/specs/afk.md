@@ -70,7 +70,7 @@ UnattendedResolution
 
 工具定义必须显式声明 `supports_unattended`。只有同时 resumable 且声明支持的工具会收到 `UnattendedResolution`；其他工具产生标准 `UserInputUnavailable` ToolResult。该能力进入 manifest、SDK 和 worker descriptor。
 
-收到无人值守 resolution 的 handler 必须返回终态 ToolOutput。再次请求用户输入属于 `UnattendedInteractionLoop` 协议错误，避免 AFK 快速自循环。
+收到无人值守 resolution 后，handler 仍可提出输入请求。Host 将仍需回答的问题作为 `UserInputUnavailable` 工具结果交给 Agent 决策。
 
 ## 5. Run 与持久化语义
 
@@ -88,7 +88,7 @@ tool preflight
   -> continue the same batch and model loop
 ```
 
-原始 request、interaction revision、resolution provenance、精确 execution contract 和最终结果都保存在 active ToolBatch 中。恢复检查具体 invocation 的契约与当前权限，不重建旧 Catalog。进程在工具或 resume handler 内中断时，沿用 OURO 对未知副作用的 recoverable 语义，不猜测调用结果。
+原始 request、interaction revision、resolution provenance、精确 execution contract 和最终结果都保存在 active ToolBatch 中。人工回答与无人值守共用恢复入口。每次进入恢复处理器前，Host 检查当时的契约与权限，再写入新的 Start。仅返回输入不可用或权限拒绝时，保留原尝试编号。进程在工具或 resume handler 内中断时，沿用 OURO 对未知副作用的 recoverable 语义，不猜测调用结果。
 
 事件至少区分：
 

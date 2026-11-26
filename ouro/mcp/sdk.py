@@ -8,6 +8,7 @@ from datetime import timedelta
 from tempfile import TemporaryFile
 from typing import Any, TextIO, cast
 
+import anyio
 import httpx
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
@@ -27,6 +28,7 @@ from ouro.mcp.errors import (
     MCPConfigurationError,
     MCPConnectionError,
     MCPDisconnectedError,
+    MCPError,
     MCPProtocolError,
     MCPTimeoutError,
 )
@@ -290,24 +292,29 @@ def _remote_result(result: types.CallToolResult) -> MCPRemoteToolResult:
 
 
 def _translate_sdk_error(exc: Exception, *, operation: str) -> Exception:
-    if isinstance(
-        exc,
-        (MCPConfigurationError, MCPConnectionError, MCPProtocolError, MCPTimeoutError),
-    ):
+    if isinstance(exc, MCPError):
         return exc
     if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
         return MCPTimeoutError(f"MCP {operation} timed out")
     if isinstance(exc, McpError):
         message = redact_text(str(exc))
-        lowered = message.lower()
-        if "timed out" in lowered or "timeout" in lowered:
+        if exc.error.code == httpx.codes.REQUEST_TIMEOUT:
             return MCPTimeoutError(f"MCP {operation} timed out")
-        if "connection closed" in lowered or "disconnected" in lowered:
+        if exc.error.code == types.CONNECTION_CLOSED and exc.error.message == "Connection closed":
             return MCPDisconnectedError(f"MCP {operation} failed: connection closed")
         return MCPProtocolError(f"MCP {operation} failed: {message}")
-    if isinstance(exc, (httpx.RequestError, OSError)):
+    if isinstance(
+        exc,
+        (
+            anyio.BrokenResourceError,
+            anyio.ClosedResourceError,
+            anyio.EndOfStream,
+            httpx.RequestError,
+            OSError,
+        ),
+    ):
         return MCPConnectionError(f"MCP {operation} failed: {redact_text(str(exc))}")
-    return MCPConnectionError(f"MCP {operation} failed: {redact_text(str(exc))}")
+    return MCPError(f"MCP {operation} failed: {redact_text(str(exc))}")
 
 
 def _safe_text(value: object) -> str:

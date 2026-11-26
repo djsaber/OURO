@@ -261,6 +261,10 @@ async def test_reused_provider_call_id_has_distinct_delegations_and_delivery_rec
                 )
                 for item in relations
             ]
+            # A child can start its model request before the parent commits its wait.
+            await app.supervisor.wait_run(
+                handle.session_id, identities[1].run_id, until=frozenset({"waiting_child"})
+            )
             first, second = [
                 store.load_tool_call_state(handle.session_id, identity) for identity in identities
             ]

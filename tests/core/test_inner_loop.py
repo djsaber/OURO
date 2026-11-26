@@ -54,7 +54,6 @@ async def test_default_driver_returns_on_native_wait_without_requesting_another_
     assert isinstance(outcome, DriverSuspended)
     assert scenario.executed == [("action", "turn")]
     assert scenario.requests == 1
-    assert scenario.consumed_inputs == 0
     assert scenario.reviewed == []
 
 

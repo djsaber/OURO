@@ -2559,6 +2559,7 @@ class RuntimeService:
         session: SessionRecord,
         run: RunRecord,
         batch: ToolCallBatchRecord,
+        signal: AbortSignal,
     ) -> RunResult:
         suspension = tool_batch_suspension(batch)
         if suspension is not None:
@@ -2574,68 +2575,55 @@ class RuntimeService:
                 )
             return RunResult(session=session, run=run)
 
-        active_signal = await self.run_ownership.activate_signal(
-            session.session_id,
-            run.run_id,
-        )
         try:
-            try:
-                await self._ensure_extension_snapshot(run)
-                handling = await self._tool_calls_for_run(run.run_id).execute_batch(
-                    session=session,
-                    run=run,
-                    batch=batch,
-                    abort_signal=active_signal,
-                )
-            except Exception as exc:  # noqa: BLE001 - coordinator is a runtime boundary.
-                latest_session = await run_blocking(
-                    self.store.load_session_record,
-                    session.session_id,
-                )
-                latest_run = await run_blocking(self.store.load_run, session.session_id, run.run_id)
-                failed = await self.run_lifecycle.fail(
-                    session=latest_session,
-                    run=latest_run,
-                    error=f"tool batch handling failed: {exc}",
-                    final_text="",
-                    had_tool_error=False,
-                )
-                return await self.run_lifecycle.finalize_requested_abort(failed)
-            latest = await run_blocking(
-                self.session_recovery.recover_runtime,
-                session.session_id,
-            )
-            session = latest.session
-            run = await run_blocking(self.store.load_run, session.session_id, run.run_id)
-            abort_result = self.run_ownership.aborted_result(
-                session_id=session.session_id,
-                run_id=run.run_id,
-                final_text="",
-                had_tool_error=any(item.is_error for item in handling.results),
-            )
-            if abort_result is not None:
-                return await self.run_lifecycle.finalize_requested_abort(abort_result)
-            if handling.status in {"waiting_approval", "waiting_user", "waiting_child"}:
-                return RunResult(
-                    session=session,
-                    run=run,
-                    had_tool_error=any(item.is_error for item in handling.results),
-                )
-            session, active_adapter = await run_blocking(
-                self.session_models.bind_session, session.session_id
-            )
-            resumed = await self.driver_execution.execute(
-                extensions=self._extension_catalog,
+            await self._ensure_extension_snapshot(run)
+            handling = await self._tool_calls_for_run(run.run_id).execute_batch(
                 session=session,
                 run=run,
-                abort_signal=active_signal,
-                adapter=active_adapter,
-                resuming_driver=True,
-                resume_turn_id=batch.turn_id,
+                batch=batch,
+                abort_signal=signal,
             )
-        finally:
-            await self.run_ownership.release_signal(run.run_id, active_signal)
-        return resumed
+        except Exception as exc:  # noqa: BLE001 - coordinator is a runtime boundary.
+            latest_session = await run_blocking(
+                self.store.load_session_record,
+                session.session_id,
+            )
+            latest_run = await run_blocking(self.store.load_run, session.session_id, run.run_id)
+            failed = await self.run_lifecycle.fail(
+                session=latest_session,
+                run=latest_run,
+                error=f"tool batch handling failed: {exc}",
+                final_text="",
+                had_tool_error=False,
+            )
+            return await self.run_lifecycle.finalize_requested_abort(failed)
+        session, run = handling.session, handling.run
+        abort_result = self.run_ownership.aborted_result(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            final_text="",
+            had_tool_error=handling.had_tool_error,
+        )
+        if abort_result is not None:
+            return await self.run_lifecycle.finalize_requested_abort(abort_result)
+        if handling.status in {"waiting_approval", "waiting_user", "waiting_child"}:
+            return RunResult(
+                session=session,
+                run=run,
+                had_tool_error=handling.had_tool_error,
+            )
+        session, active_adapter = await run_blocking(
+            self.session_models.bind_session, session.session_id
+        )
+        return await self.driver_execution.execute(
+            extensions=self._extension_catalog,
+            session=session,
+            run=run,
+            abort_signal=signal,
+            adapter=active_adapter,
+            resuming_driver=True,
+            resume_turn_id=batch.turn_id,
+        )
 
     async def _finalize_run_boundary(
         self,

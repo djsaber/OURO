@@ -8,7 +8,7 @@ from ouro.core.base import utc_now
 from ouro.core.callbacks import run_blocking
 from ouro.core.session_ports import RunReferenceReader, RuntimeSessionSnapshot, SessionRepository
 from ouro.core.state import ACTIVE_RUN_STATUSES, RESUMABLE_RUN_STATUSES
-from ouro.core.tool_batches import ToolBatchCall
+from ouro.core.tool_batches import ToolBatchCall, tool_execution_in_flight
 from ouro.core.tools import ToolResult, ToolResultFeedback, ToolResultValue
 
 if TYPE_CHECKING:
@@ -101,10 +101,9 @@ class RunRecoveryService:
             )
         if call.result is not None:
             return call
-        outcome_unknown = call.status in {"running", "resolving_input", "unknown_outcome"}
+        outcome_unknown = call.status == "unknown_outcome" or tool_execution_in_flight(call)
         content = (
-            "Tool execution was interrupted and its outcome is unknown. "
-            "Do not repeat side-effecting work without first verifying external state."
+            "Tool execution was interrupted and its outcome is unknown."
             if outcome_unknown
             else "Tool execution was interrupted before a durable result was produced."
         )

@@ -82,6 +82,9 @@ configured/disabled
   legacy SSE 的读取或 POST 状态失败也进入同一 session stream。长连接读取没有被动 read timeout，存活性统一
   由 owner 的有界 ping 监督；初始消息端点等待和每次 POST 仍受请求 timeout 约束。显式 reconnect 执行完整
   stop/start；
+- 单次工具协议错误和请求超时只回传给调用者。已发出的调用超时或连接中断时，
+  Call 保留启动事实并标记 `unknown_outcome`，历史记录未收到远端结果的原因。
+  重连恢复后续调用的连接，原调用由 Agent 决定如何跟进。
 - `stop`、`close` 和 RuntimeSupervisor shutdown 退出 session、HTTP client、stdio 管道与子进程；
 - legacy SSE transport 是两对 AnyIO memory stream 的创建者，退出时必须关闭全部 send/receive 端点，不能把
   接收端留给 SDK 对象析构器回收；
@@ -111,10 +114,9 @@ Supervisor 装配所需资源并管理其生命周期。
 
 ## 调用、取消与错误
 
-ToolInvocation 只把远程原名和 arguments 交给 MCP session。SDK 提供 JSON-RPC request id correlation 和
-request timeout；OURO 在 ToolExecutionContext abort 时取消本地等待任务，ToolExecutor 将其作为 aborted
-结果处理。远端 `isError` 保留为 ToolResult error；连接、协议、timeout、disconnect 和 schema 错误在 MCP
-边界分类，之后由工具执行边界隔离，不能改变 durable Run 事务。
+ToolInvocation 只把远程原名和 arguments 交给 MCP session。SDK 负责 JSON-RPC 请求关联与超时。
+OURO 在取消时结束本地等待。启动前取消返回 `aborted`，已启动且未取得结果的调用返回 `unknown_outcome`。
+远端明确返回的 `isError` 或协议错误作为确定的工具错误回传。只有确定的结果才建立 Outcome 引用。
 
 文本和图片按远端顺序转换为类型化工具内容；纯文本结果可使用字符串简写，structuredContent 独立保存在
 `ToolResult.structured`。图片使用带 MIME 类型的 data URL，不拼入文本；未支持模态的二进制用省略标记替代。

@@ -60,6 +60,25 @@ async def test_tool_policies_compose_to_the_most_restrictive_decision() -> None:
     assert result.failures == []
 
 
+async def test_each_policy_observes_the_same_validated_arguments():
+    registry = ToolPolicyRegistry()
+    call = _call().model_copy(update={"arguments": {"choices": ["original"]}})
+    observed = []
+
+    def observe(view):
+        observed.append(tuple(view.arguments["choices"]))
+        view.arguments["choices"].append("local")
+        return ToolPolicyDecision()
+
+    registry.replace_owner(
+        "views",
+        tuple(ToolPolicyRegistration("views", name, observe) for name in ("first", "second")),
+    )
+    assert (await registry.evaluate(call)).failures == []
+    assert observed == [("original",), ("original",)]
+    assert call.arguments == {"choices": ["original"]}
+
+
 @pytest.mark.asyncio
 async def test_tool_policy_failure_is_fail_closed_and_redacted() -> None:
     registry = ToolPolicyRegistry()

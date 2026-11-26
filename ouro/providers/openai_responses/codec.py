@@ -14,6 +14,7 @@ from ouro.core.messages import (
 )
 from ouro.core.provider import Usage
 from ouro.core.tool_result_projection import project_provider_messages
+from ouro.core.tools import parse_tool_arguments
 from ouro.providers.openai_responses.errors import OpenAIResponsesError
 from ouro.providers.openai_responses.items import OpenAIResponsesItemAccumulator
 from ouro.providers.tool_content import ToolContentPolicy
@@ -25,29 +26,9 @@ def tool_arguments(value: object) -> dict[str, Any]:
     if not isinstance(value, str):
         raise OpenAIResponsesError("invalid_tool_arguments")
     try:
-        # Reject non-JSON numeric constants rather than executing altered arguments.
-        parsed = json.loads(
-            value, parse_constant=lambda _: _invalid_arguments(), object_pairs_hook=_unique_object
-        )
-        json.dumps(parsed, allow_nan=False)
-    except ValueError:
+        return parse_tool_arguments(value)
+    except ValueError, RecursionError:
         raise OpenAIResponsesError("invalid_tool_arguments") from None
-    if not isinstance(parsed, dict):
-        raise OpenAIResponsesError("invalid_tool_arguments")
-    return parsed
-
-
-def _invalid_arguments() -> None:
-    raise ValueError
-
-
-def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError
-        result[key] = value
-    return result
 
 
 def output_item(item: object) -> dict[str, Any]:
@@ -58,9 +39,8 @@ def output_item(item: object) -> dict[str, Any]:
     if not isinstance(kind, str):
         raise OpenAIResponsesError("invalid_output_item")
     if kind == "function_call":
-        if any(not isinstance(item.get(key), str) or not item[key] for key in ("call_id", "name")):
+        if not isinstance(item.get("arguments"), str):
             raise OpenAIResponsesError("invalid_output_item")
-        tool_arguments(item.get("arguments"))
     elif kind in {"message", "reasoning"}:
         if kind == "message" and item.get("role") != "assistant":
             raise OpenAIResponsesError("invalid_output_item")
@@ -103,8 +83,6 @@ def continuation_from_output(
 ) -> ProviderContinuationArtifact:
     if not items or not scope or any(not item for item in scope):
         raise OpenAIResponsesError("invalid_continuation")
-    for item in items:
-        output_item(item)
     return ProviderContinuationArtifact(
         provider_id=provider_id,
         protocol=PROTOCOL,
@@ -200,7 +178,7 @@ def responses_input(
         )
         if replay is not None:
             calls = [
-                (item["call_id"], item["name"], tool_arguments(item["arguments"]))
+                (item.get("call_id"), item.get("name"), tool_arguments(item["arguments"]))
                 for item in replay
                 if item["type"] == "function_call"
             ]

@@ -38,18 +38,19 @@ async def review(context, resume):
     await service.enable(PLUGIN)
     previous = []
     accepted = 0
-    accept = NativeRunDriverContext._accept_tool_result
+    execute = NativeRunDriverContext.execute_tools
 
-    async def capture(context, result):
+    async def capture(context, calls, *, checkpoint):
         nonlocal accepted
         gc.collect()
         assert not any(reference() is not None for reference in previous)
-        previous[:] = [weakref.ref(item) for item in result.results]
+        delivered = await execute(context, calls, checkpoint=checkpoint)
+        previous[:] = [weakref.ref(item) for item in delivered.results]
         assert previous
         accepted += 1
-        return await accept(context, result)
+        return delivered
 
-    monkeypatch.setattr(NativeRunDriverContext, "_accept_tool_result", capture)
+    monkeypatch.setattr(NativeRunDriverContext, "execute_tools", capture)
     try:
         result = await runtime.run("repeat independent operations", driver_id=DRIVER)
         assert result.run.status == "completed", result.run.error

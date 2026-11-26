@@ -7,11 +7,18 @@ from contextlib import asynccontextmanager
 import anyio
 import pytest
 from mcp import types
+from mcp.shared.exceptions import McpError
 
 from ouro.core.content import AudioContent, ImageContent, TextContent
 from ouro.core.tools import ToolInvocation
-from ouro.mcp import MCPServerConfig, SDKMCPClientFactory
-from ouro.mcp.sdk import _remote_result
+from ouro.mcp import (
+    MCPDisconnectedError,
+    MCPProtocolError,
+    MCPServerConfig,
+    MCPTimeoutError,
+    SDKMCPClientFactory,
+)
+from ouro.mcp.sdk import SDKMCPClientSession, _remote_result
 from ouro.mcp.tool_adapter import mcp_tool_result
 
 
@@ -36,6 +43,23 @@ def test_mcp_content_preserves_order_and_media_without_stringifying_pixels():
     ]
     assert result.text_content == "beforeafter"
     assert result.structured == {"width": 1}
+
+
+@pytest.mark.parametrize(
+    ("code", "message", "kind"),
+    [
+        (-32602, "disconnected or timeout is not a valid argument", MCPProtocolError),
+        (types.CONNECTION_CLOSED, "Connection closed", MCPDisconnectedError),
+        (408, "Timed out while waiting for response", MCPTimeoutError),
+    ],
+)
+async def test_sdk_tool_call_classifies_response_by_protocol_code(code, message, kind):
+    class Session:
+        async def call_tool(self, name, arguments):
+            raise McpError(types.ErrorData(code=code, message=message))
+
+    with pytest.raises(kind):
+        await SDKMCPClientSession(Session()).call_tool("read", {})
 
 
 @pytest.mark.asyncio

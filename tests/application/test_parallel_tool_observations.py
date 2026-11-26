@@ -5,16 +5,17 @@ import asyncio
 import pytest
 
 from ouro.application.runtime.service import RuntimeService
-from ouro.application.tool_calls import ToolCallCoordinator
 from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
+from ouro.core.session_controls import SessionControlTransitionResult
 from ouro.core.state import SessionRecord
 from ouro.core.tools import ToolCallRequest
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.providers import FauxProvider
 from ouro.sdk.plugins import v7 as sdk
 from ouro.tools import ToolRegistry
+from tests.application.helpers import wait_for_runtime_event
 from tests.application.tool_runtime import store as store
 
 
@@ -22,23 +23,30 @@ from tests.application.tool_runtime import store as store
 async def test_arrival_persistence_does_not_wait_for_other_business_callbacks(
     store, tmp_path, monkeypatch, conflict
 ):
-    second_staging = asyncio.Event()
+    second_saved = asyncio.Event()
     first_saved = asyncio.Event()
     release = asyncio.Event()
-    stage = ToolCallCoordinator._stage_control_transitions
     saved = []
     effects = tmp_path / "effects.txt"
 
     async def callback(call):
         if call.tool_call_id == "first":
-            await second_staging.wait()
+            await second_saved.wait()
         with effects.open("a", encoding="utf-8") as stream:
             stream.write(call.tool_call_id + "\n")
         call.session_state.replace(state_schema_version=1, payload={"call": call.tool_call_id})
-        return sdk.ToolOutput(content=f"observed {call.tool_call_id}")
+        return sdk.ToolOutput(
+            content=f"observed {call.tool_call_id}",
+            session_control_transitions=[
+                sdk.SessionControlTransition(action="acquire", controller_id="mode")
+            ]
+            if call.tool_call_id == "second"
+            else [],
+        )
 
     registry = ToolRegistry()
     for index, name in enumerate(("First", "Second")):
+        owner = "example.shared" if conflict else f"example.owner{index}"
         tool = adapt_sdk_contributions(
             sdk.ContributionSet(
                 tools=[
@@ -52,8 +60,11 @@ async def test_arrival_persistence_does_not_wait_for_other_business_callbacks(
                     )
                 ]
             ),
-            owner_id="example.shared" if conflict else f"example.owner{index}",
+            owner_id=owner,
         ).tools[0]
+        tool.definition.metadata.update(
+            plugin_id=owner, generation_id="test", execution_contract_hash="c" * 64
+        )
         registry.register(tool)
     app = RuntimeService(
         store=store,
@@ -81,23 +92,32 @@ async def test_arrival_persistence_does_not_wait_for_other_business_callbacks(
     session = SessionRecord()
     store.create_session(session)
 
-    async def held_stage(coordinator, outcome, **kwargs):
-        run = store.load_run(session.session_id, outcome.invocation.run_id)
-        identity = run.active_tool_batch.identity(run.run_id, outcome.invocation.tool_call_id)
+    def record_observation(call_id):
+        current = store.load_session_record(session.session_id)
+        run = store.load_run(session.session_id, current.active_run_id)
+        identity = run.active_tool_batch.identity(run.run_id, call_id)
         observed = store.load_tool_outcome(session.session_id, identity, 1)
-        assert observed.value.content == f"observed {identity.tool_call_id}"
+        assert observed.value.content == f"observed {call_id}"
         saved.append(identity)
-        if identity.tool_call_id == "second":
-            second_staging.set()
-            await release.wait()
-        else:
-            first_saved.set()
-        return await stage(coordinator, outcome, **kwargs)
 
-    monkeypatch.setattr(ToolCallCoordinator, "_stage_control_transitions", held_stage)
+    async def hold_controller(transition, *, draft, **kwargs):
+        record_observation("second")
+        second_saved.set()
+        await release.wait()
+        return draft, SessionControlTransitionResult(
+            action=transition.action, changed=False, session_revision=draft.state.controls.revision
+        )
+
+    async def observe(event):
+        if event.event_type == "tool_call_completed" and event.payload["tool_call_id"] == "first":
+            record_observation("first")
+            first_saved.set()
+
+    monkeypatch.setattr(app.session_controls, "stage", hold_controller)
+    app.add_event_sink(observe)
     task = asyncio.create_task(app.run("run both", session_id=session.session_id))
     try:
-        await asyncio.wait_for(first_saved.wait(), 60)
+        await wait_for_runtime_event(first_saved, task, description="first durable tool result")
         assert [identity.tool_call_id for identity in saved] == ["second", "first"]
         assert effects.read_text(encoding="utf-8").splitlines() == ["second", "first"]
         assert not store.load_harness(session.session_id).state.states

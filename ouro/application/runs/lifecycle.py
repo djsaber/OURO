@@ -9,7 +9,7 @@ from ouro.application.events import RuntimeEventRecorder
 from ouro.application.harness import capture_harness
 from ouro.application.inputs.queue import consumption_changes
 from ouro.application.inputs.requests import InputSessionSettings
-from ouro.application.models.corrections import commit_model_correction
+from ouro.application.models.tool_feedback import commit_unexecuted_model_tools
 from ouro.application.runs.tool_batches import load_tool_batch, prepare_batch_changes
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.application.usage import SummaryRequestRecorder, UsageService
@@ -50,7 +50,12 @@ from ouro.core.state import (
     SessionRecord,
 )
 from ouro.core.tool_batch_transitions import tool_batch_suspension
-from ouro.core.tool_batches import ToolCallBatchRecord, ToolCallState, ToolResultProposals
+from ouro.core.tool_batches import (
+    ToolCallBatchRecord,
+    ToolCallState,
+    ToolResultProposals,
+    tool_execution_in_flight,
+)
 from ouro.core.tool_facts import (
     ToolCallFacts,
     ToolCallIdentity,
@@ -353,11 +358,11 @@ class RunLifecycle:
             )
             return updated, committed.events
 
-    async def correct_model_output(
+    async def record_unexecuted_model_tools(
         self, run: RunRecord, turn_id: str, response: ModelExecutionResult
     ) -> tuple[SessionRecord, RunRecord]:
         session, latest, events = await run_blocking(
-            commit_model_correction, self.store, run, turn_id, response
+            commit_unexecuted_model_tools, self.store, run, turn_id, response
         )
         await self.events.publish_committed(events)
         return session, latest
@@ -418,7 +423,8 @@ class RunLifecycle:
         attempt: int,
         invocation: ToolInvocation,
         result: ToolResult,
-    ) -> bool:
+        events: tuple[EventRecord, ...] = (),
+    ) -> tuple[EventRecord, ...] | None:
         """Save the observation and its pending proposals before business callbacks."""
         outcome = self._prepare_tool_outcome(identity, attempt, invocation, result)
         with self.store.session_mutation(invocation.session_id):
@@ -438,7 +444,7 @@ class RunLifecycle:
                 or state.result_message_id is not None
             ):
                 self.store.commit_tool_outcome(outcome)
-                return False
+                return None
             accepted = state.model_copy(
                 update={
                     "status": "failed" if result.is_error else "completed",
@@ -447,14 +453,15 @@ class RunLifecycle:
                     "feedback": None,
                 }
             )
-            self.store.commit_session(
+            committed = self.store.commit_session(
                 SessionCommit(
                     before=session,
                     tool_facts=ToolCallFacts(outcomes=(outcome,)),
                     call_states=(accepted,),
+                    events=events,
                 )
             )
-            return True
+            return committed.events
 
     def _prepare_tool_outcome(
         self,
@@ -494,10 +501,11 @@ class RunLifecycle:
         run: RunRecord,
         batch: ToolCallBatchRecord,
         recovering: bool = False,
+        driver_continues: bool = False,
     ) -> tuple[
         SessionRecord, RunRecord, ToolCallBatchRecord, list[MessageRecord], tuple[EventRecord, ...]
     ]:
-        """Publish a resolved source-ordered frame, Call state and Driver ready together."""
+        """Publish the source-ordered frame, Call state and Driver checkpoint together."""
         ordered = sorted(batch.calls, key=lambda call: call.request.source_index)
         if not ordered or any(call.result is None for call in ordered):
             raise ValueError("publishing a tool batch requires feedback for every Call")
@@ -637,7 +645,13 @@ class RunLifecycle:
             if checkpoint is not None and checkpoint.state == "pending":
                 if checkpoint.batch_id != batch.batch_id:
                     raise SessionCommitConflict("Driver checkpoint belongs to another batch")
-                checkpoint = checkpoint.model_copy(update={"state": "ready"})
+                checkpoint = checkpoint.model_copy(
+                    update={
+                        "state": "consumed"
+                        if driver_continues and latest.driver.is_default
+                        else "ready"
+                    }
+                )
             completed_batch = batch.model_copy(
                 update={
                     "phase": "completed",
@@ -1020,11 +1034,6 @@ class RunLifecycle:
                         for call in batch.calls
                     ],
                 )
-            elif previous.phase != batch.phase and batch.phase == "committing_results":
-                event(
-                    "tool_batch_results_committing",
-                    tool_result_count=sum(call.result is not None for call in batch.calls),
-                )
         if status != run.status:
             event("run_status_changed", to_status=status, status=status)
         return tuple(events)
@@ -1052,7 +1061,7 @@ class RunLifecycle:
                         call.model_copy(
                             update={
                                 "status": "unknown_outcome"
-                                if call.status == "running"
+                                if tool_execution_in_flight(call)
                                 else "aborted"
                             }
                         )

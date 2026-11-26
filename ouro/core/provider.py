@@ -142,19 +142,15 @@ class ToolCallDelta(OuroModel):
 
     ``index`` is the zero-based ordinal among tool calls in the assistant
     response. Provider-native content-block coordinates must be normalized by
-    the adapter before crossing this boundary.
+    the adapter before crossing this boundary. Identity fragments can open a
+    call without arguments. An arguments-only fragment carries its literal
+    JSON text, including an explicitly empty input.
     """
 
     index: int = Field(ge=0)
     id_delta: str = ""
     name_delta: str = ""
     arguments_delta: str = ""
-
-    @model_validator(mode="after")
-    def _require_content(self) -> ToolCallDelta:
-        if not (self.id_delta or self.name_delta or self.arguments_delta):
-            raise ValueError("tool call delta must contain at least one fragment")
-        return self
 
 
 class ProviderStreamEvent(OuroModel):

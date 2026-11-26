@@ -281,13 +281,18 @@ async def test_host_follow_up_preserves_message_role_and_attribution(tmp_path, r
 
 
 @pytest.mark.asyncio
-async def test_steering_waits_for_tool_results_before_entering_model_context(tmp_path) -> None:
+@pytest.mark.parametrize("started", [False, True])
+async def test_default_driver_handles_steering_at_the_tool_boundary(tmp_path, started) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     provider = ToolTurnGateProvider()
     tools = ToolRegistry()
 
-    def echo(invocation, context):
+    entered, finish = asyncio.Event(), asyncio.Event()
+
+    async def echo(invocation, context):
+        entered.set()
+        await finish.wait()
         return ToolResult(
             tool_call_id=invocation.tool_call_id,
             tool_name=invocation.tool_name,
@@ -316,17 +321,31 @@ async def test_steering_waits_for_tool_results_before_entering_model_context(tmp
     async with running_runtime_task(runtime, runtime.run("initial")) as first_task:
         await provider.first_started.wait()
         session = store.list_sessions()[0]
-        await runtime.run("steer", session_id=session.session_id, queue_mode="steer")
+        if started:
+            provider.release_first.set()
+            await entered.wait()
+        await runtime.run("Skip the echo", session_id=session.session_id, queue_mode="steer")
         provider.release_first.set()
+        finish.set()
         await first_task
 
-        assert [message.role for message in provider.contexts[1]] == [
-            "user",
-            "assistant",
-            "tool_result",
-            "user",
-        ]
-        assert provider.contexts[1][-1].text_content == "steer"
+        before, after = provider.contexts
+        assert after[: len(before)] == before
+        assert entered.is_set() == started
+        history = store.load_session(session.session_id)
+        assert len(history.runs) == 1 and history.runs[0].status == "completed"
+        if started:
+            assert [message.role for message in after[len(before) :]] == [
+                "assistant",
+                "tool_result",
+                "user",
+            ]
+            assert after[-1].text_content == "Skip the echo"
+        else:
+            assert after[len(before)].text_content == "Skip the echo"
+            assert "Echo" in after[-1].text_content
+            assert history.messages[-2].semantic_tag == "model-tools-skipped"
+            assert all(not m.tool_calls and m.tool_result is None for m in history.messages)
 
 
 @pytest.mark.asyncio

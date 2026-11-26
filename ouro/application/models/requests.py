@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from time import monotonic
 from typing import Protocol
 
@@ -14,7 +14,7 @@ from ouro.core.cancellation import AbortSignal
 from ouro.core.context import ContextView
 from ouro.core.errors import ContextBlockedError
 from ouro.core.events import EventRecord, EventType
-from ouro.core.model_execution import ModelExecutionEvent, execute_model_request
+from ouro.core.model_execution import ModelExecutionEvent, ToolCallFailure, execute_model_request
 from ouro.core.model_requests import (
     ModelRequestBlocked,
     ModelRequestFailed,
@@ -296,14 +296,22 @@ class RunModelRequests:
                 provider_done=False,
                 usage_entry_id=None,
             )
-        if request.tools is not None and any(
-            call.name not in selected for call in output.tool_calls
-        ):
-            return RunModelResult(
-                session,
-                run,
-                ModelRequestFailed("model requested a tool outside this request's selected tools"),
-            )
+        if request.tools is not None:
+            excluded = [call.name for call in output.tool_calls if call.name not in selected]
+            if excluded:
+                failure = ToolCallFailure(
+                    "model_tool_not_selected",
+                    "model requested a tool outside this request's selected tools: "
+                    + ", ".join(excluded),
+                )
+                output = replace(
+                    output,
+                    tool_calls=(),
+                    continuation=None,
+                    tool_call_failure=failure,
+                    error_code=failure.code,
+                    error=failure.error,
+                )
         return RunModelResult(session, run, output)
 
     async def _budget_reason(self, run: RunRecord, model_round: int) -> RunPauseReason | None:

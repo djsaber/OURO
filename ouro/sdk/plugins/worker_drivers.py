@@ -10,6 +10,7 @@ from .run_drivers import (
     DriverFinished,
     DriverResume,
     DriverSuspended,
+    ModelOutputRejected,
     ModelResponse,
     ModelToolCall,
     NativeToolResult,
@@ -74,6 +75,9 @@ class WorkerRunPorts:
                 timeout=0,
             ),
         )
+        if "rejection" in raw:
+            rejection = raw["rejection"]
+            raise ModelOutputRejected(rejection["code"], rejection["message"])
         return ModelResponse(
             raw["response_id"],
             raw["text"],

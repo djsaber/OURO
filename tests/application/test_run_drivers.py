@@ -455,6 +455,88 @@ async def test_model_cannot_call_tools_excluded_by_the_driver_request(tmp_path, 
         await plugins.close()
 
 
+@pytest.mark.parametrize("kind", ["python-inprocess", "worker"])
+@pytest.mark.parametrize(
+    ("arguments", "code"),
+    [("{}", "model_tool_not_selected"), ("{", "model_tool_arguments_invalid")],
+)
+async def test_driver_decides_how_to_handle_one_rejected_model_response(
+    tmp_path, kind, arguments, code
+):
+    store = LocalSessionStore(tmp_path / "sessions")
+    store.initialize()
+    calls = []
+    runtime, plugins, service = host(tmp_path, store, calls, mode="auto")
+    runtime.adapter.provider = FauxProvider(
+        [
+            ProviderStreamEvent(
+                type="tool_call_delta",
+                tool_call_delta=ToolCallDelta(
+                    index=0, id_delta="deploy", name_delta="Deploy", arguments_delta=arguments
+                ),
+            ),
+            ProviderStreamEvent(type="done"),
+        ]
+    )
+    package = plugin_source(tmp_path, kind)
+    set_driver_body(
+        package,
+        """async def review(context, resume):
+    try:
+        await context.models.request(tools=())
+    except sdk.ModelOutputRejected as exc:
+        return sdk.DriverFinished(f"{exc.code}: {exc}")
+    raise AssertionError("expected a rejected response")
+""",
+    )
+    service.install(package)
+    try:
+        assert (await service.enable(PLUGIN)).status == "active"
+        result = await runtime.run("review", driver_id=DRIVER)
+        assert result.run.status == "completed", result.run.error
+        assert result.final_text.startswith(f"{code}: ")
+        assert result.run.model_round_count == 1
+        assert calls == []
+        snapshot = store.load_session(result.session.session_id)
+        assert all(m.role != "tool_result" and not m.tool_calls for m in snapshot.messages)
+        assert sum(m.semantic_tag == "model-output-correction" for m in snapshot.messages) == 1
+    finally:
+        await runtime.close()
+        await plugins.close()
+
+
+@pytest.mark.parametrize("kind", ["python-inprocess", "worker"])
+async def test_driver_can_change_unavailable_tool_selection_before_generation(tmp_path, kind):
+    store = LocalSessionStore(tmp_path / "sessions")
+    store.initialize()
+    runtime, plugins, service = host(tmp_path, store, [])
+    package = plugin_source(tmp_path, kind)
+    set_driver_body(
+        package,
+        """async def review(context, resume):
+    try:
+        await context.models.request(tools=("Unavailable",))
+    except RuntimeError as exc:
+        assert "Unavailable" in str(exc)
+    else:
+        raise AssertionError("unavailable selection was accepted")
+    answer = await context.models.request(tools=())
+    return sdk.DriverFinished(answer.text, response_id=answer.response_id)
+""",
+    )
+    service.install(package)
+    try:
+        assert (await service.enable(PLUGIN)).status == "active"
+        result = await runtime.run("review", driver_id=DRIVER)
+        assert result.run.status == "completed", result.run.error
+        assert result.final_text == "reviewed"
+        assert result.run.model_round_count == 1
+        assert len(store.load_session(result.session.session_id).request_headers) == 1
+    finally:
+        await runtime.close()
+        await plugins.close()
+
+
 @pytest.mark.parametrize("store_type", [LocalSessionStore, SQLiteSessionStore])
 @pytest.mark.parametrize("kind", ["python-inprocess", "worker"])
 async def test_programmatic_tool_wait_preserves_driver_provenance_without_model_calls(
@@ -583,9 +665,7 @@ async def test_result_commit_interruption_recovers_checkpoint_without_repeating_
         assert len(calls) == 1
         saved = store.load_run(failed.session.session_id, failed.run.run_id)
         assert saved.driver_checkpoint.state == ("ready" if after_commit else "pending")
-        assert saved.active_tool_batch.phase == (
-            "completed" if after_commit else "committing_results"
-        )
+        assert saved.active_tool_batch.phase == ("completed" if after_commit else "executing")
         # The only durable result body belongs to Outcome; Run stores its batch head.
         assert "calls" not in saved.active_tool_batch.model_dump()
         saved_content = load_tool_batch(store, saved).calls[0].result.content

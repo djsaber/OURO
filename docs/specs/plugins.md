@@ -534,6 +534,11 @@ JSON 数据。服务定位使用字典索引，不复制整份 Catalog。
 canonical 历史、预算、计数和用量仍属于调用者的 Run。跨 worker 调用保留相同作用域，Host 不接受服务传入的 Run ID。
 `WorkerRunPorts(peer)` 与进程内端口等价；服务调用不使用普通 RPC 默认期限截断原生工作，取消跟随调用者和代次。
 
+当前 Run 中，每个成功发出的 `models.request` 计一个模型回合。请求准备失败的原因会返回调用方，例如所选工具已不可用。
+Driver 可调整选择后再发起请求。整帧工具输出被拒绝时，SDK 抛出 `ModelOutputRejected`。
+Driver 可读取 `code` 和异常消息，决定下一步。直接实现 worker 协议时，
+`run.models.request` 的结果在此情况下为 `{"rejection": {"code": "…", "message": "…"}}`。
+
 ### 独立模型请求
 
 `PluginContext.models.generate(ModelRequest, on_output=...)` 执行一次独立文本对话请求，要求 `models.request`。

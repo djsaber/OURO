@@ -8,9 +8,13 @@ from dataclasses import dataclass, field
 
 import pytest
 
+from ouro.application.runtime.service import RuntimeService
+from ouro.core.adapter import RuntimeAdapter
 from ouro.core.cancellation import AbortSignal
+from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.mcp import (
     MCPManager,
+    MCPProtocolError,
     MCPRemoteTool,
     MCPRemoteToolResult,
     MCPRuntimeResource,
@@ -18,8 +22,11 @@ from ouro.mcp import (
     MCPServerConfig,
     MCPServerInfo,
     MCPStateError,
+    MCPTimeoutError,
     MCPToolCallError,
 )
+from ouro.providers import FauxProvider
+from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.tools import (
     Tool,
     ToolDefinition,
@@ -469,7 +476,7 @@ async def test_remote_disconnect_recycles_session_and_restores_tools() -> None:
         arguments={"path": "README.md"},
     )
 
-    with pytest.raises(MCPToolCallError, match="connection closed"):
+    with pytest.raises(MCPToolCallError, match="connection closed.*remote outcome is unknown"):
         await registry.get("fs__read").execute(invocation)
     await wait_until(
         lambda: factory.open_count == 2 and manager.get("fs").status == "connected",
@@ -477,10 +484,72 @@ async def test_remote_disconnect_recycles_session_and_restores_tools() -> None:
     )
 
     assert factory.open_count == 2
+    assert len(failing.calls) == 1 and recovered.calls == []
     assert registry.names() == ["fs__read"]
     result = await registry.get("fs__read").execute(invocation)
     assert result.content == "ok"
     await manager.close()
+
+
+@pytest.mark.parametrize(
+    ("error", "unknown"),
+    [(MCPProtocolError("invalid params"), False), (MCPTimeoutError("timed out"), True)],
+)
+async def test_remote_request_error_keeps_connection_and_never_replays(tmp_path, error, unknown):
+    session = FakeSession(tools=[_remote_tool()], call_error=error)
+    factory = FakeFactory(session)
+    registry = ToolRegistry()
+    manager = MCPManager(registry=registry, client_factory=factory)
+    manager.configure(_config(permission_mode="auto"))
+    await manager.start("fs")
+    try:
+        tool = registry.get("fs__read")
+        invocation = ToolInvocation(
+            session_id="session",
+            run_id="run",
+            tool_name="fs__read",
+            arguments={"path": "README.md"},
+        )
+        provider = FauxProvider(
+            event_batches=[
+                [
+                    ProviderStreamEvent.from_tool_call(
+                        {
+                            "id": "remote",
+                            "name": tool.definition.name,
+                            "arguments": invocation.arguments,
+                        }
+                    ),
+                    ProviderStreamEvent(type="done"),
+                ],
+                [
+                    ProviderStreamEvent(type="text_delta", text="done"),
+                    ProviderStreamEvent(type="done"),
+                ],
+            ]
+        )
+        store = LocalSessionStore(tmp_path)
+        store.initialize()
+        model = ModelMetadata(model_id="test", provider_id="test")
+        async with RuntimeService(
+            store=store, tools=registry, adapter=RuntimeAdapter(provider, model)
+        ) as runtime:
+            result = await runtime.run("Read the file.")
+        assert result.run.status == "completed"
+        history = store.load_session(result.session.session_id)
+        (feedback,) = (message for message in history.messages if message.role == "tool_result")
+        state = store.load_tool_call_state(result.session.session_id, feedback.outcome_ref.identity)
+        assert state.status == ("unknown_outcome" if unknown else "failed")
+        assert (feedback.outcome_ref.outcome_attempt is None) == unknown
+        assert ("remote outcome is unknown" in feedback.text_content) == unknown
+        assert len(history.tool_facts.starts) == len(session.calls) == 1
+        assert len(history.tool_facts.outcomes) == (0 if unknown else 1)
+        assert any(str(error) in entry.message for entry in manager.diagnostics("fs"))
+        session.call_error = None
+        assert (await tool.execute(invocation)).content == "ok"
+        assert len(session.calls) == 2 and factory.open_count == 1
+    finally:
+        await manager.close()
 
 
 @pytest.mark.asyncio

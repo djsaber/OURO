@@ -1191,17 +1191,23 @@ async def test_runtime_rejects_incomplete_streamed_tool_arguments_before_batch_c
         store=store,
         adapter=RuntimeAdapter(
             FauxProvider(
-                [
-                    ProviderStreamEvent(
-                        type="tool_call_delta",
-                        tool_call_delta=ToolCallDelta(
-                            index=0,
-                            id_delta="call_1",
-                            name_delta="Write",
-                            arguments_delta='{"path":',
+                event_batches=[
+                    [
+                        ProviderStreamEvent(
+                            type="tool_call_delta",
+                            tool_call_delta=ToolCallDelta(
+                                index=0,
+                                id_delta="call_1",
+                                name_delta="Write",
+                                arguments_delta='{"path":',
+                            ),
                         ),
-                    ),
-                    ProviderStreamEvent(type="done"),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                    [
+                        ProviderStreamEvent(type="text_delta", text="Which file should I write?"),
+                        ProviderStreamEvent(type="done"),
+                    ],
                 ]
             ),
             ModelMetadata(model_id="faux", provider_id="faux"),
@@ -1209,11 +1215,16 @@ async def test_runtime_rejects_incomplete_streamed_tool_arguments_before_batch_c
         tools=_tools(),
     )
 
-    result = await runtime.run("Write a file")
+    async with runtime:
+        result = await runtime.run("Write a file")
     snapshot = store.load_session(result.session.session_id)
 
-    assert result.run.status == "failed"
-    assert "tool call arguments are not valid JSON" in (result.run.error or "")
+    assert result.run.status == "completed"
+    assert result.final_text == "Which file should I write?"
+    assert result.run.model_round_count == 2
+    (feedback,) = [m for m in snapshot.messages if m.semantic_tag == "model-output-correction"]
+    assert "tool call arguments are not valid JSON" in feedback.text_content
+    assert all(not m.tool_calls and m.tool_result is None for m in snapshot.messages)
     assert "model_tool_call_delta" not in [
         event.event_type for event in recorded_events(snapshot.session.session_id)
     ]

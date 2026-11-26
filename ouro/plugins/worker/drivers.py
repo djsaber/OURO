@@ -71,11 +71,13 @@ class WorkerDriverBridge:
                 )
             ):
                 raise ValueError("invalid model request")
-            return to_jsonable_python(
-                await self.models.request(
+            try:
+                response = await self.models.request(
                     prompt=prompt, tools=tuple(tools) if tools is not None else None
                 )
-            )
+            except sdk.ModelOutputRejected as exc:
+                return {"rejection": {"code": exc.code, "message": str(exc)}}
+            return to_jsonable_python(response)
         if method == "run.tools.execute":
             return to_jsonable_python(
                 await self.tools.execute(

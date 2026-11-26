@@ -108,7 +108,10 @@ ResponsesStreamDecoder 处理一个响应，responses_events 将已有 HTTP/SSE 
 摘要也不归为完全空响应。Core 对只有思考、空输出和拒绝响应分别报告失败，保留可见内容和此 `done` 携带的
 usage，不将失败响应的 continuation 提交为可重放状态。
 
-message、reasoning 和 function_call 是当前支持的完整输出类型。未知元数据事件可忽略，选定的完整项包含未知输出类型时明确失败。完整工具 arguments 必须为 JSON 对象，拒绝重复键、非有限数字、数组和残缺 JSON；同响应 call_id 不得重复。交错工具通过各自 item identity 聚合。
+message、reasoning 和 function_call 是当前支持的完整输出类型。未知元数据事件可忽略，选定的完整项包含未知输出类型时明确失败。
+function_call 的 arguments 字段承载 JSON 文本，交错分片按 item identity 聚合。协议正常结束后交付原始参数与用量。
+Core 拒绝残缺 JSON、非对象、重复键、非有限数字，以及缺失或重复的调用标识。该帧的 continuation 随之丢弃，
+各调用均未启动。Driver 通过同一 Run 的模型输出反馈决定下一步。
 
 按事件语义应用终态约束：终态后再次收到已识别的输出、生命周期事件或重复终态明确失败；未知事件类型在终态前后均忽略，不按供应商或具体扩展名称设置特例，不从扩展事件推断完成或用量。事件仍须带字符串 type，选定的完整 output item 内的未知类型仍失败。完成事实延迟到输入流正常结束后提交，避免已经发出成功/usage 后又发现矛盾。解码器 finish 后不再接受事件。网络等待由公共 transport 计时，重试预算由共享请求策略拥有。消费者提前退出时必须显式关闭外层异步生成器。
 

@@ -111,7 +111,9 @@ class RunExecutionOwnership:
             await asyncio.sleep(min(0.05, remaining))
 
     @asynccontextmanager
-    async def parked_run(self, run: RunRecord) -> AsyncIterator[tuple[SessionRecord, RunRecord]]:
+    async def parked_run(
+        self, run: RunRecord
+    ) -> AsyncIterator[tuple[SessionRecord, RunRecord, AbortSignal]]:
         """Own an interaction attempt and read its authoritative state under the lock."""
         lock = await self.acquire_parked(
             run.session_id,
@@ -123,7 +125,11 @@ class RunExecutionOwnership:
         try:
             session = await run_blocking(self.store.load_session_record, run.session_id)
             latest = await run_blocking(self.store.load_run, run.session_id, run.run_id)
-            yield session, latest
+            signal = await self.activate_signal(run.session_id, run.run_id)
+            try:
+                yield session, latest, signal
+            finally:
+                await self.release_signal(run.run_id, signal)
         finally:
             await self.release(run.run_id, lock)
 

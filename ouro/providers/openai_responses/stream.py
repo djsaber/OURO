@@ -67,7 +67,6 @@ class OpenAIResponsesStreamDecoder:
             lambda: defaultdict(_Text)
         )
         self._tools: dict[int, _Tool] = {}
-        self._call_ids: dict[str, int] = {}
         self._terminal: dict[str, Any] | None = None
         self._finished = False
 
@@ -139,7 +138,7 @@ class OpenAIResponsesStreamDecoder:
                 if suffix == "delta"
                 else tool.arguments.finish(event.get("arguments"))
             )
-            return _tool_delta(tool.ordinal, arguments=text)
+            return _tool_delta(tool.ordinal, arguments=text) if text else []
         if kind in {
             "response.created",
             "response.queued",
@@ -237,16 +236,12 @@ class OpenAIResponsesStreamDecoder:
 
     def _tool_header(self, index: int, item: dict[str, Any]) -> list[ProviderStreamEvent]:
         tool = self._tool(index)
-        call_id, name = item.get("call_id"), item.get("name")
-        if not isinstance(call_id, str) or not call_id or not isinstance(name, str) or not name:
-            raise OpenAIResponsesError("invalid_output_item")
+        call_id = item["call_id"] if isinstance(item.get("call_id"), str) else ""
+        name = item["name"] if isinstance(item.get("name"), str) else ""
         if (tool.call_id and tool.call_id != call_id) or (tool.name and tool.name != name):
             raise OpenAIResponsesError(
                 "conflicting_output_item", detail=f"tool_identity, output_index={index}"
             )
-        if self._call_ids.get(call_id, index) != index:
-            raise OpenAIResponsesError("duplicate_tool_call")
-        self._call_ids[call_id] = index
         events = _tool_delta(
             tool.ordinal, call_id="" if tool.call_id else call_id, name="" if tool.name else name
         )
@@ -257,9 +252,9 @@ class OpenAIResponsesStreamDecoder:
         if item["type"] == "function_call":
             events = self._tool_header(index, item)
             tool = self._tool(index)
-            events.extend(
-                _tool_delta(tool.ordinal, arguments=tool.arguments.finish(item["arguments"]))
-            )
+            suffix = tool.arguments.finish(item["arguments"])
+            if suffix or not item["arguments"]:
+                events.extend(_tool_delta(tool.ordinal, arguments=suffix))
             return events
         events = []
         pending: dict[tuple[str, int], _Text] = self._text.pop(index, {})
@@ -297,18 +292,15 @@ def _display(lane: str, text: str) -> list[ProviderStreamEvent]:
 
 
 def _tool_delta(
-    ordinal: int, *, call_id: str = "", name: str = "", arguments: str = ""
+    ordinal: int, *, call_id: str = "", name: str = "", arguments: str | None = None
 ) -> list[ProviderStreamEvent]:
-    if not (call_id or name or arguments):
+    if arguments is not None:
+        delta = ToolCallDelta(index=ordinal, arguments_delta=arguments)
+    elif call_id or name:
+        delta = ToolCallDelta(index=ordinal, id_delta=call_id, name_delta=name)
+    else:
         return []
-    return [
-        ProviderStreamEvent(
-            type="tool_call_delta",
-            tool_call_delta=ToolCallDelta(
-                index=ordinal, id_delta=call_id, name_delta=name, arguments_delta=arguments
-            ),
-        )
-    ]
+    return [ProviderStreamEvent(type="tool_call_delta", tool_call_delta=delta)]
 
 
 async def responses_events(

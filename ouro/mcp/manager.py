@@ -12,8 +12,10 @@ from ouro.core.base import utc_now
 from ouro.core.redaction import redact_text
 from ouro.mcp.client import MCPClientFactory, MCPClientSession
 from ouro.mcp.errors import (
+    MCPConnectionError,
     MCPDisconnectedError,
     MCPStateError,
+    MCPTimeoutError,
     MCPToolCallError,
 )
 from ouro.mcp.models import (
@@ -32,9 +34,14 @@ from ouro.tools import (
     ToolRegistry,
     ToolResult,
 )
+from ouro.tools.base import ToolExecutionInterrupted
 
 CredentialResolver = Callable[[str], str | None]
 _ACTIVE_STATUSES = {"starting", "connected", "reconnecting", "stopping"}
+
+
+class _RemoteToolInterrupted(ToolExecutionInterrupted, MCPToolCallError):
+    """The dispatched MCP request lost its result."""
 
 
 @dataclass
@@ -513,7 +520,14 @@ class MCPManager:
         except Exception as exc:  # noqa: BLE001 - remote call failure is isolated.
             error = self._safe_error(server_id, exc)
             self._record_diagnostic(server_id, "error", error)
-            self._request_recycle(runtime, error)
+            if isinstance(exc, (MCPConnectionError, ConnectionError)):
+                self._request_recycle(runtime, error)
+            if isinstance(
+                exc, (MCPConnectionError, ConnectionError, MCPTimeoutError, TimeoutError)
+            ):
+                raise _RemoteToolInterrupted(
+                    f"{error}. No tool result was received. The remote outcome is unknown."
+                ) from exc
             raise MCPToolCallError(error) from exc
         return mcp_tool_result(invocation, remote_result)
 

@@ -36,7 +36,6 @@ from tests.run_facts import run_events, run_tool_results
         ("content_filter", "partial answer", "", "model_content_filtered"),
         ("content_filter", "", "", "model_content_filtered"),
         ("other", "partial answer", "", "model_incomplete"),
-        ("tool_call", "preamble", "", "model_missing_tool_call"),
         ("stop", "", "thinking", "model_reasoning_only"),
         ("stop", "", "", "model_empty_response"),
         ("stop", " \n\t", "", "model_empty_response"),

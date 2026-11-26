@@ -28,9 +28,9 @@
 注册时验证 schema；执行前使用同一 schema 验证参数。未知工具或非法参数返回 error `ToolResult`，
 不进入审批或实际 handler。
 
-每个预检和执行边界先刷新当前 Session controls。当前环境没有注册 ToolPolicy 时，不构造策略调用或执行
-策略专用的参数校验；宿主预检仍负责参数、工具契约、权限覆盖与审批。有策略时，在调用策略前验证参数，
-策略只能收紧权限；等待恢复与实际执行边界重新检查当前控制状态和权限，不跨边界缓存判定。
+预检、实际执行和恢复共用准入顺序。Host 刷新当前 Session controls，检查工具契约和实际参数，
+再向已注册的 ToolPolicy 提供独立的参数视图，最后合并宿主权限、策略决定与已取得的审批。
+参数在每个边界验证一次。工具策略只能收紧权限。等待期间的权限变化或用户修改的参数在下次准入时生效。
 
 内部 Tool 的执行回调固定为 `handler(invocation, context)`，恢复回调固定为
 `resume_handler(invocation, resolution, request, context)`，各参数按位置传入。取消信号通过 `context.signal`
@@ -173,7 +173,7 @@ Use this for images already available on disk.”。JSON Schema 由严格参数�
 - batch/turn/assistant message identity；
 - execution mode 和 max concurrency；
 - 每个调用的 request、invocation、approval、result 和 result message；
-- planned、interaction、execution、commit、terminal 或 recoverable phase。
+- 接受、等待交互、执行、完成或恢复阶段。
 
 Run 仅保存批次引用小头；原请求、实际执行参数、确定结果与等待状态分别按
 [工具事实存储契约](session-persistence.md#工具事实存储)持久化，不序列化完整工作集。
@@ -182,7 +182,7 @@ Run 仅保存批次引用小头；原请求、实际执行参数、确定结果�
 
 - `compatible`：允许与其他调用组成批次，执行方式由 `execution_mode` 决定。
 - `exclusive`：所在批次必须只有这一个调用。无论顺序还是并行执行，混合批次都在任何 handler 执行前整批拒绝，
-  每个调用收到 `ExclusiveToolBatchViolation`，说明没有工具执行，并要求将 exclusive 调用分别提交。
+  每个调用收到 `ExclusiveToolBatchViolation`，包含未执行的事实和涉及的 exclusive 工具名。
 
 该规则同时适用于模型与 Driver 批次，只约束当前批次，不提供跨 Run、Session 或外部进程的资源互斥。
 Host 在构建模型上下文时，将 exclusive 约束统一追加到工具描述的请求副本；注册定义与执行契约保持原样。
@@ -192,7 +192,7 @@ Host 在构建模型上下文时，将 exclusive 约束统一追加到工具描�
 正常 handler 或 resume handler 返回后，确定观察与待处理提案先通过原生提交保存，再进入 Session control 回调；
 回调不占用存储事务或 mutation 锁。每项结果独立保存，不等待其他调用的业务处理，历史按原始 `source_index`
 顺序发布并回灌模型。完成批次先统一验证全部资源引用，
-再原子发布整帧消息、Call 发布状态、Harness 效果及 Driver ready；任何结果或提案验证失败不得留下部分效果。
+再原子发布整帧消息、Call 发布状态、Harness 效果及 Driver checkpoint。
 提交成功后才投递 tool-finished Observer。恢复使用固定 Call/Outcome 引用完成整个未发布帧，已发布帧按 Call 状态
 中的消息身份读取；完整身份包含 Run 与 batch，Provider call ID 可以跨批次复用。
 
@@ -201,7 +201,8 @@ Host 在构建模型上下文时，将 exclusive 约束统一追加到工具描�
 - `sequential`：合法批次中的调用逐个执行，不放宽 exclusive 约束，也不在调用之间自动提交工具结果或重新决策。
 - `parallel`：受 `max_concurrency` 限制并发执行。
 - 工具的 `execution_mode="sequential"` 可将所在合法批次设为顺序执行；`inherit` 使用宿主配置。
-- AskUser 和审批会在实际执行前完成 preflight；未解决交互时不启动批次副作用。
+- 批次预检处理审批。每次执行或恢复都按当时的会话审批模式、控制状态、工具契约和实际参数准入。
+  同一边界只检查一次参数 schema。处理器返回问题时，按当时的会话交互模式等待用户或交给无人值守处理。
 - SpawnAgent(sync) 可进入 durable `waiting_child`，不会在 handler 内占用 worker 轮询；async 调用仍可与其他兼容
   工具共同执行。
 - 一个调用失败不取消其他已经允许执行的调用；批次结果保留每项状态。
@@ -268,7 +269,7 @@ batch/call/approval/AskUser 事件。
 Observer 失败隔离为 `plugin_observer_failed`，不改变工具的实际结果。
 
 调用接受、started、批次执行阶段、审批等待与决议、用户回答、子结果等待与决议由对应 Call/Run 事实保存。
-工具帧的消息、Call 发布状态和 Driver ready 在同一次原生提交中生效；审批请求不会先于持久等待状态向 Host 公布。
+工具帧的消息、Call 发布状态和 Driver checkpoint 在同一次原生提交中生效。Host 在等待状态持久化后公布审批请求。
 提交成功后直接发送在线通知，使用执行者已持有的 arguments/result_data，不为通知补读磁盘或写入永久事件。
 遗漏通知时按事实修订号和消息位置补齐当前状态与成果，不重放过去的审批请求或启动动作。
 结果的独立保存仍先于业务结算，历史消息使用固定 Call/Outcome 引用，迟到结果不能改写已经发布的未知反馈。

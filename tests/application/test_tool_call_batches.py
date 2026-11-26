@@ -7,6 +7,7 @@ import pytest
 
 import ouro.application.runs.interactions as run_interactions
 import ouro.application.tool_calls as tool_calls_module
+import ouro.tools.executor as executor_module
 from ouro.application.inputs.requests import UserInputRequest
 from ouro.application.runs.tool_batches import load_tool_batch
 from ouro.application.runtime.service import RuntimeService
@@ -16,13 +17,14 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import utc_now
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.tool_policies import ToolPolicyDecision, ToolPolicyRegistration
 from ouro.core.tools import ToolCallRequest, ToolInvocation
 from ouro.plugins.inprocess.contributions import adapt_sdk_contributions
 from ouro.providers import FauxProvider
 from ouro.sdk.plugins import v7 as sdk
 from ouro.sessions.backends.files.store import LocalSessionStore
 from ouro.sessions.backends.sqlite.store import SQLiteSessionStore
-from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
+from ouro.tools import Tool, ToolDefinition, ToolInputRequest, ToolRegistry, ToolResult
 from ouro.tools.builtin.todolist import builtin_todolist_tool
 from tests.application.helpers import running_runtime_task
 from tests.application.test_user_input_admission import HeldProvider
@@ -245,6 +247,7 @@ async def test_modified_approval_starts_from_call_facts_without_embedding_bodies
             )
             assert all(state.status == expected for state in request.call_states)
             if kind == "tool_call_completed":
+                assert request.tool_facts.outcomes
                 assert (
                     store.load_tool_outcome(
                         sid, identity, request.events[-1].payload["outcome_attempt"]
@@ -264,11 +267,10 @@ async def test_modified_approval_starts_from_call_facts_without_embedding_bodies
 
 @pytest.mark.parametrize("store_type", [LocalSessionStore, SQLiteSessionStore])
 @pytest.mark.asyncio
-async def test_tool_wait_returns_consumed_state_change_and_resumes_committed_state(
-    tmp_path, store_type, monkeypatch
+async def test_tool_wait_persists_the_question_and_resumes_committed_state(
+    tmp_path, store_type
 ) -> None:
     seen = []
-    outcomes = []
 
     def begin(call: sdk.ToolCall) -> sdk.ToolInputRequest:
         seen.append("begin")
@@ -322,21 +324,13 @@ async def test_tool_wait_returns_consumed_state_change_and_resumes_committed_sta
             ModelMetadata(model_id="faux", provider_id="faux"),
         ),
     )
-    original_request = runtime.driver_execution.request_model_tools
-
-    async def request_tools(request):
-        result = await original_request(request)
-        outcomes.append(result)
-        return result
-
-    monkeypatch.setattr(runtime.driver_execution, "request_model_tools", request_tools)
     try:
         waiting = await runtime.run("advance")
         assert waiting.run.status == "waiting_user"
         batch = load_tool_batch(store, waiting.run)
         assert batch is not None
         assert batch.calls[0].input_request.harness_change is None
-        assert outcomes[0].input_request == batch.calls[0].input_request
+        assert batch.calls[0].input_request.data == {"question": "continue?"}
         persisted = store.load_run(waiting.session.session_id, waiting.run.run_id)
         assert persisted.active_tool_batch == batch.head()
 
@@ -376,8 +370,9 @@ def test_completed_tool_result_timing_uses_monotonic_elapsed(monkeypatch) -> Non
     ],
 )
 @pytest.mark.asyncio
-async def test_empty_policy_registry_skips_policy_validation_but_keeps_host_preflight(
-    tmp_path, monkeypatch, arguments, permission, expected_error
+@pytest.mark.parametrize("with_policy", [True, False])
+async def test_tool_arguments_checked_once_per_admission_boundary(
+    tmp_path, monkeypatch, arguments, permission, expected_error, with_policy
 ):
     registry = ToolRegistry()
     executed = []
@@ -406,17 +401,22 @@ async def test_empty_policy_registry_skips_policy_validation_but_keeps_host_pref
         registry=registry,
         first_calls=[ToolCallRequest(id="example", name="Example", arguments=arguments)],
     )
-    policy_validations = []
-    validate = tool_calls_module.tool_argument_error
+    if with_policy:
+        runtime.registries.tool_policies.replace_owner(
+            "guard",
+            (ToolPolicyRegistration("guard", "observe", lambda call: ToolPolicyDecision()),),
+        )
+    validations = []
+    validate = executor_module.tool_argument_error
 
     def policy_argument_error(definition, arguments):
-        policy_validations.append(definition.name)
+        validations.append(definition.name)
         return validate(definition, arguments)
 
-    monkeypatch.setattr(tool_calls_module, "tool_argument_error", policy_argument_error)
+    monkeypatch.setattr(executor_module, "tool_argument_error", policy_argument_error)
     try:
         result = await runtime.run("run example")
-        assert policy_validations == []
+        assert validations == ["Example"] * (2 if executed else 1)
         assert len(executed) == int(permission == "auto" and expected_error is None)
         if permission == "approval":
             assert result.run.status == "waiting_approval"
@@ -431,8 +431,40 @@ async def test_empty_policy_registry_skips_policy_validation_but_keeps_host_pref
 
 
 @pytest.mark.asyncio
+async def test_session_permission_changed_between_siblings_gates_the_next_start(tmp_path):
+    executed = []
+
+    def act(invocation, context):
+        executed.append(invocation.tool_call_id)
+        runtime.set_session_approval_mode(invocation.session_id, "deny")
+        return _result(invocation, "done")
+
+    registry = ToolRegistry()
+    registry.register(Tool(definition=ToolDefinition(name="Act", description="Act"), handler=act))
+    calls = [ToolCallRequest(id=str(i), name="Act", source_index=i) for i in range(2)]
+    async with _runtime(tmp_path, registry=registry, first_calls=calls) as runtime:
+        result = await runtime.run("act")
+        assert result.run.status == "completed", result.run.error
+        assert executed == ["0"]
+        first, second = run_tool_results(runtime.store, result)
+        assert not first.is_error and second.structured["error_type"] == "ToolPermissionDenied"
+        assert [
+            event.payload["tool_call_id"]
+            for event in recorded_events(result.session.session_id)
+            if event.event_type == "tool_call_started"
+        ] == ["0"]
+
+
+@pytest.mark.asyncio
 async def test_empty_policy_registry_preserves_control_refresh_failures(tmp_path):
-    runtime = _runtime(tmp_path, registry=ToolRegistry(), first_calls=[])
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            definition=ToolDefinition(name="Example", description="Example"),
+            handler=lambda invocation, context: _result(invocation, "done"),
+        )
+    )
+    runtime = _runtime(tmp_path, registry=registry, first_calls=[])
     session = SessionRecord()
     runtime.store.create_session(session)
     run = RunRecord(session_id=session.session_id, status="running")
@@ -448,12 +480,14 @@ async def test_empty_policy_registry_preserves_control_refresh_failures(tmp_path
         session_id=session.session_id, run_id=run.run_id, tool_name="Example"
     )
     try:
-        _, mode, reason = await coordinator._evaluate_tool_policies(
+        _, outcome = await coordinator._prepare_call(
             session=session, run=run, invocation=invocation, phase="execution_boundary"
         )
         assert refreshed == [session.controls]
-        assert mode == "deny"
-        assert reason == "Required Session controls are unavailable"
+        assert outcome.result.structured == {
+            "error_type": "ToolPermissionDenied",
+            "error_message": "Required Session controls are unavailable",
+        }
         assert not recorded_events(session.session_id)
     finally:
         await runtime.close()
@@ -655,7 +689,7 @@ async def test_exclusive_tool_rejects_mixed_batch_before_any_handler_runs(tmp_pa
         for item in run_tool_results(runtime.store, result)
     )
     assert all(
-        "Call each separately" in item.text_content
+        item.structured["exclusive_tools"] == ["EnterWorkflow"]
         for item in run_tool_results(runtime.store, result)
     )
     assert any(
@@ -815,6 +849,12 @@ async def test_unattended_session_resumes_capable_tool_without_waiting(
     resolution = resolutions[0]
     assert isinstance(resolution, sdk.UnattendedResolution)
     assert resolution.resolver_id == "ouro.afk"
+    assert [
+        event.payload["attempt"]
+        for event in recorded_events(snapshot.session.session_id)
+        if event.event_type == "tool_call_started"
+        and event.payload["tool_call_id"] == "call_confirm"
+    ] == [1, 2]
     assert requested_event.payload["interaction_mode"] == "unattended"
     assert requested_event.payload["will_suspend"] is False
     assert resolved_event.payload["resolution"]["kind"] == "unattended"
@@ -864,6 +904,11 @@ async def test_unattended_session_returns_explicit_error_for_unsupported_tool(tm
         run_tool_results(runtime.store, result)[0].structured["error_type"]
         == "UserInputUnavailable"
     )
+    assert [
+        event.payload["attempt"]
+        for event in recorded_events(result.session.session_id)
+        if event.event_type == "tool_call_started"
+    ] == [1]
     assert run_tool_results(runtime.store, result)[0].structured["resolved_by"] == "host_policy"
     assert run_tool_results(runtime.store, result)[0].structured["input_request"] == {
         "type": "form",
@@ -871,8 +916,125 @@ async def test_unattended_session_returns_explicit_error_for_unsupported_tool(tm
     }
 
 
+def _confirming_runtime(tmp_path, invoked, resume_handler=None):
+    def request(invocation, context):
+        invoked.append("execute")
+        return ToolInputRequest(data={"question": "Confirm?"})
+
+    def resume(invocation, resolution, request, context):
+        invoked.append("resume")
+        return _result(invocation, "resumed")
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            definition=ToolDefinition(
+                name="Confirm",
+                description="Requires input.",
+                resumable=True,
+                supports_unattended=True,
+            ),
+            handler=request,
+            resume_handler=resume_handler or resume,
+        )
+    )
+    return _runtime(
+        tmp_path, registry=registry, first_calls=[ToolCallRequest(id="confirm", name="Confirm")]
+    )
+
+
+@pytest.mark.parametrize("interaction_mode", ["interactive", "unattended"])
+async def test_resume_honors_policy_tightened_by_initial_call(tmp_path, interaction_mode):
+    invoked = []
+
+    def guard(call):
+        if invoked:
+            return ToolPolicyDecision(action="deny", reason="permission revoked")
+        return ToolPolicyDecision()
+
+    async with _confirming_runtime(tmp_path, invoked) as runtime:
+        runtime.registries.tool_policies.replace_owner(
+            "guard", (ToolPolicyRegistration("guard", "revoke", guard),)
+        )
+        result = await runtime.run("confirm", interaction_mode=interaction_mode)
+        if interaction_mode == "interactive":
+            assert result.run.status == "waiting_user"
+            result = await runtime.answer_user(
+                session_id=result.session.session_id, run_id=result.run.run_id, answer=True
+            )
+        assert result.run.status == "completed", result.run.error
+        assert invoked == ["execute"]
+        assert [
+            event.payload["attempt"]
+            for event in recorded_events(result.session.session_id)
+            if event.event_type == "tool_call_started"
+        ] == [1]
+        feedback = run_tool_results(runtime.store, result)
+        assert len(feedback) == 1
+        assert feedback[0].structured["error_type"] == "ToolPermissionDenied"
+        assert "permission revoked" in feedback[0].text_content
+
+
+@pytest.mark.parametrize("legacy_resume_start", [False, True])
+async def test_recovery_uses_persisted_resume_start_after_unattended_request(
+    tmp_path, monkeypatch, legacy_resume_start
+):
+    invoked = []
+    async with _confirming_runtime(tmp_path, invoked) as runtime:
+        persist = runtime.run_lifecycle.save_batch_state
+
+        def interrupt_after_request(**kwargs):
+            if kwargs["batch"].calls[0].status != "resolving_input":
+                return persist(**kwargs)
+            if legacy_resume_start:
+                kwargs["started_call_ids"] = frozenset({"confirm"})
+            persist(**kwargs)
+            raise RuntimeError("interrupted after the input request")
+
+        monkeypatch.setattr(runtime.run_lifecycle, "save_batch_state", interrupt_after_request)
+        result = await runtime.run("confirm", interaction_mode="unattended")
+        assert result.run.status == "failed"
+        snapshot = await runtime.run_recovery.reconcile(
+            runtime.store.load_runtime_session(result.session.session_id)
+        )
+        run = next(item for item in snapshot.runs if item.run_id == result.run.run_id)
+        call = load_tool_batch(runtime.store, run).calls[0]
+        assert call.status == ("unknown_outcome" if legacy_resume_start else "aborted")
+        assert call.attempt == (2 if legacy_resume_start else 1)
+        assert invoked == ["execute"]
+
+
+async def test_abort_during_answer_stops_resume_and_retains_unknown_outcome(tmp_path):
+    started, stopped = asyncio.Event(), asyncio.Event()
+
+    async def resume(invocation, resolution, request, context):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    async with _confirming_runtime(tmp_path, [], resume_handler=resume) as runtime:
+        waiting = await runtime.run("confirm")
+        target = {"session_id": waiting.session.session_id, "run_id": waiting.run.run_id}
+        answer = asyncio.create_task(runtime.answer_user(**target, answer=True))
+        try:
+            async with asyncio.timeout(5):
+                await started.wait()
+                await runtime.abort_run(**target)
+                result = await answer
+            assert result.run.status == "aborted"
+            assert stopped.is_set()
+            batch = load_tool_batch(runtime.store, result.run)
+            assert batch.calls[0].attempt == 2
+            assert batch.calls[0].status == "unknown_outcome"
+        finally:
+            answer.cancel()
+            await asyncio.gather(answer, return_exceptions=True)
+
+
 @pytest.mark.asyncio
-async def test_unattended_resume_cannot_request_user_input_again(tmp_path) -> None:
+async def test_unattended_resume_returns_the_question_that_still_needs_input(tmp_path) -> None:
     def request_input(_call: sdk.ToolCall) -> sdk.ToolInputRequest:
         return sdk.ToolInputRequest(data={"stage": "first"})
 
@@ -912,7 +1074,7 @@ async def test_unattended_resume_cannot_request_user_input_again(tmp_path) -> No
     assert result.run.status == "completed"
     assert (
         run_tool_results(runtime.store, result)[0].structured["error_type"]
-        == "UnattendedInteractionLoop"
+        == "UserInputUnavailable"
     )
     assert run_tool_results(runtime.store, result)[0].structured["input_request"] == {
         "stage": "second"
@@ -972,7 +1134,7 @@ async def test_resumable_tool_can_request_multiple_inputs_and_owns_final_result(
         raise OSError("question state unavailable")
 
     with monkeypatch.context() as failing:
-        failing.setattr(run_interactions, "capture_harness", unavailable_harness)
+        failing.setattr(run_interactions, "capture_session_harness", unavailable_harness)
         with pytest.raises(OSError, match="question state unavailable"):
             await runtime.answer_user(
                 session_id=first.session.session_id, run_id=first.run.run_id, answer="retry"

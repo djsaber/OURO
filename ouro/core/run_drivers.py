@@ -58,6 +58,14 @@ class DriverCheckpoint(OuroModel):
         return self
 
 
+class ModelOutputRejected(ValueError):
+    """The response was recorded as rejected and none of its tools ran."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 @dataclass(frozen=True)
 class DriverModelResponse:
     response_id: str

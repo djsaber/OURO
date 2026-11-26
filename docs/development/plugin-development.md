@@ -180,9 +180,8 @@ Tool handler 除 `ToolOutput` 或字符串外，还可返回 `ToolInputRequest(d
 `ToolResumeCall.resolution` 是判别联合，而不是把控制信息混入任意回答 JSON：正常交互收到
 `AnswerResolution(kind="answer", value=...)`，`call.answer` 仍可作为该分支的便捷投影；AFK 等 Host policy
 会发送 `UnattendedResolution(kind="unattended", resolved_by="host_policy", resolver_id=...)`。只有同时声明
-`resume_handler` 和 `supports_unattended=True` 的工具会收到无人值守 resolution。该 handler 必须返回最终输出；
-再次返回 `ToolInputRequest` 会被 Host 转换为 `UnattendedInteractionLoop`。未声明能力的工具不会收到伪造答案，而会
-得到标准 `UserInputUnavailable` 工具结果。
+`resume_handler` 和 `supports_unattended=True` 的工具会收到无人值守 resolution。若 handler 仍返回 `ToolInputRequest`，
+Host 将新的问题放入 `UserInputUnavailable` 工具结果。缺少无人值守能力的工具使用同一种结果报告原问题。
 
 ```python
 from ouro.sdk.plugins.interactions import PlanConfirmationRequest
@@ -660,7 +659,8 @@ Host 校验真实响应句柄与文本，沿用已提交的 assistant 消息和�
 
 `context.tools.execute((RunToolCall(name, arguments), ...), checkpoint=...)` 发起程序化工具批次。
 Host 分配调用 ID、按当前决策目录绑定执行契约，并记录 Driver 来源。调用不会伪造模型工具请求或增加模型计数；
-结果由 Provider 按来源投影并应用媒体支持策略。存在未解决的模型工具响应时必须先消费该响应。
+结果由 Provider 按来源投影并应用媒体支持策略。Driver 可以先读取 steering，再选择执行模型提议、调用其他工具、
+发起新模型请求或直接给出答复。改用其他行动时，Host 记录原提议未执行并关闭其句柄。
 
 `context.agents.spawn((AgentTask(agent_id, task, description), ...), checkpoint=...)` 使用原生 Agent
 目录、权限与共享预算。`AgentTask` 支持 `nickname`、`execution_mode`（默认 `sync`）和 `resource_refs`。

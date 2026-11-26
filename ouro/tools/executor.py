@@ -25,6 +25,7 @@ from ouro.core.tools import (
     ToolDefinition,
 )
 from ouro.tools.base import (
+    Tool,
     ToolExecutionAborted,
     ToolExecutionContext,
     ToolExecutionInterrupted,
@@ -98,6 +99,21 @@ class ToolExecutor:
         policy_mode: ToolPolicyMode | None = None,
         policy_reason: str | None = None,
     ) -> ToolExecutionOutcome:
+        if arguments_override is not None:
+            invocation = invocation.model_copy(update={"arguments": arguments_override})
+        tool = self.resolve_call(invocation)
+        if isinstance(tool, ToolExecutionOutcome):
+            return tool
+        return self.authorize(
+            invocation,
+            tool.definition,
+            approved=approved,
+            approval_mode=approval_mode,
+            policy_mode=policy_mode,
+            policy_reason=policy_reason,
+        )
+
+    def resolve_call(self, invocation: ToolInvocation) -> Tool | ToolExecutionOutcome:
         try:
             tool = self.registry.get(invocation.tool_name)
         except KeyError:
@@ -113,14 +129,33 @@ class ToolExecutor:
                 error_type="ToolExecutionContractMismatch",
                 error_message=contract_error,
             )
-        raw_plugin_id = tool.definition.metadata.get("plugin_id")
+        argument_error = tool_argument_error(tool.definition, invocation.arguments)
+        if argument_error is not None:
+            return _error_outcome(
+                invocation,
+                error_type="ToolArgumentValidationError",
+                error_message=argument_error,
+            )
+        return tool
+
+    def authorize(
+        self,
+        invocation: ToolInvocation,
+        definition: ToolDefinition,
+        *,
+        approved: bool,
+        approval_mode: SessionApprovalMode,
+        policy_mode: ToolPolicyMode | None,
+        policy_reason: str | None,
+    ) -> ToolExecutionOutcome:
+        raw_plugin_id = definition.metadata.get("plugin_id")
         plugin_id = raw_plugin_id if isinstance(raw_plugin_id, str) and raw_plugin_id else None
         effective_mode = resolve_tool_permission(
-            tool.definition.permission_mode,
+            definition.permission_mode,
             approval_mode,
-            permission_control=tool.definition.permission_control,
+            permission_control=definition.permission_control,
             override=configured_tool_permission(
-                tool.definition.name,
+                definition.name,
                 plugin_id,
                 tool_overrides=self.permission_overrides,
                 plugin_overrides=self.plugin_permission_overrides,
@@ -128,7 +163,7 @@ class ToolExecutor:
         )
         effective_mode = restrict_tool_permission(
             effective_mode,
-            self.permission_floors.get(tool.definition.name, "auto"),
+            self.permission_floors.get(definition.name, "auto"),
         )
         denial_reason: str | None = None
         if policy_mode == "deny":
@@ -138,23 +173,13 @@ class ToolExecutor:
             effective_mode = "approval"
         invocation = invocation.model_copy(
             update={
-                "source": tool.definition.source,
-                "effect": tool.definition.effect,
-                "batch_behavior": tool.definition.batch_behavior,
+                "source": definition.source,
+                "effect": definition.effect,
+                "batch_behavior": definition.batch_behavior,
                 "permission_mode": effective_mode,
-                "permission_control": tool.definition.permission_control,
-                "arguments": arguments_override
-                if arguments_override is not None
-                else invocation.arguments,
+                "permission_control": definition.permission_control,
             }
         )
-        argument_error = tool_argument_error(tool.definition, invocation.arguments)
-        if argument_error is not None:
-            return _error_outcome(
-                invocation,
-                error_type="ToolArgumentValidationError",
-                error_message=argument_error,
-            )
         if invocation.permission_mode == "deny":
             reason = denial_reason or (
                 f"tool is disabled by permission policy: {invocation.tool_name}"
@@ -166,7 +191,7 @@ class ToolExecutor:
             )
         if (
             invocation.permission_mode == "approval"
-            and tool.definition.kind != "user_input"
+            and definition.kind != "user_input"
             and not approved
         ):
             approval = ApprovalRecord(
@@ -214,33 +239,32 @@ class ToolExecutor:
         signal: AbortSignal | None = None,
         context: ToolExecutionContext | None = None,
     ) -> ToolExecutionOutcome:
-        try:
-            tool = self.registry.get(invocation.tool_name)
-        except KeyError:
-            return _error_outcome(
-                invocation,
-                error_type="UnknownTool",
-                error_message=f"unknown tool: {invocation.tool_name}",
-            )
-        contract_error = _tool_contract_error(invocation, tool.definition)
-        if contract_error is not None:
-            return _error_outcome(
-                invocation,
-                error_type="ToolExecutionContractMismatch",
-                error_message=contract_error,
-            )
-        argument_error = tool_argument_error(tool.definition, invocation.arguments)
-        if argument_error is not None:
-            return _error_outcome(
-                invocation, error_type="ToolArgumentValidationError", error_message=argument_error
-            )
+        tool = self.resolve_call(invocation)
+        if isinstance(tool, ToolExecutionOutcome):
+            return tool
+        return await self.resume_prepared(
+            tool,
+            invocation,
+            resolution=resolution,
+            request=request,
+            context=context or ToolExecutionContext(signal=signal),
+        )
+
+    async def resume_prepared(
+        self,
+        tool: Tool,
+        invocation: ToolInvocation,
+        *,
+        resolution: ToolInputResolution,
+        request: ToolInputRequest,
+        context: ToolExecutionContext,
+    ) -> ToolExecutionOutcome:
         if not tool.definition.resumable or tool.resume_handler is None:
             return _error_outcome(
                 invocation,
                 error_type="ToolResumeUnsupported",
                 error_message=f"tool does not support resume: {invocation.tool_name}",
             )
-        context = context or ToolExecutionContext(signal=signal)
         return await _invoke_tool_handler(
             invocation,
             context,

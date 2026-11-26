@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from datetime import datetime
+from math import isfinite
 from typing import Any, Literal, Self
 
 from pydantic import ConfigDict, Field, JsonValue, model_validator
@@ -80,6 +82,32 @@ class ToolDefinition(OuroModel):
         if self.interaction_controller_id is not None and not self.resumable:
             raise ValueError("interaction controller binding requires a resumable tool")
         return self
+
+
+def parse_tool_arguments(raw: str) -> dict[str, Any]:
+    """Read one argument object without dropping duplicate keys or changing numeric values."""
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result = dict(pairs)
+        if len(result) != len(pairs):
+            raise ValueError("duplicate object key")
+        return result
+
+    def finite_number(text: str) -> float:
+        value = float(text)
+        if not isfinite(value):
+            raise ValueError("non-finite number")
+        return value
+
+    value = json.loads(
+        raw,
+        object_pairs_hook=unique_object,
+        parse_float=finite_number,
+        parse_constant=finite_number,
+    )
+    if not isinstance(value, dict):
+        raise ValueError("arguments must be a JSON object")
+    return value
 
 
 class ToolCallRequest(OuroModel):

@@ -111,7 +111,10 @@ class SDKRunDriverContext:
         self, *, prompt: str = "", tools: tuple[str, ...] | None = None
     ) -> sdk.ModelResponse:
         self._require_invocation()
-        value = await self._context.request_model(prompt=prompt, tools=tools)
+        try:
+            value = await self._context.request_model(prompt=prompt, tools=tools)
+        except core.ModelOutputRejected as exc:
+            raise sdk.ModelOutputRejected(exc.code, str(exc)) from exc
         return sdk.ModelResponse(
             value.response_id,
             value.text,

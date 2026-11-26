@@ -348,6 +348,40 @@ async def test_tool_loop_persists_and_replays_after_restart_and_refresh(response
     assert not replies
 
 
+async def test_completed_responses_return_bad_tool_frames_to_the_same_run(responses_runtime):
+    build, replies, requests, executions = responses_runtime
+    invalid = [
+        call(arguments="{"),
+        call(arguments="[]"),
+        call(arguments=""),
+        call(arguments='{"round": NaN}'),
+        call(arguments='{"round": 1e999}'),
+        call(arguments='{"round": 1, "round": 2}'),
+        call(call_id=None),
+        call(name=""),
+        call(call_id="call-2"),
+    ]
+    for item in invalid:
+        replies.append(terminal([item, call(2)]))
+    replies.extend([terminal([call(3)]), terminal([message("done")])])
+    async with build() as app:
+        await login(app.provider_auth)
+        result = await app.runtime.run("Use the tool.")
+        assert result.run.status == "completed", result.run.error
+        assert executions == [3]
+        assert result.run.model_round_count == len(requests) == len(invalid) + 2
+        assert app.runtime.usage.run_usage(
+            result.session.session_id, result.run.run_id
+        ).request_count == len(requests)
+        for (previous, _), (current, _) in zip(requests, requests[1:], strict=False):
+            assert current["input"][: len(previous["input"])] == previous["input"]
+        history = app.runtime.store.load_session(result.session.session_id)
+        assert sum(m.semantic_tag == "model-output-correction" for m in history.messages) == len(
+            invalid
+        )
+        assert [c.id for m in history.messages for c in m.tool_calls] == ["call-3"]
+
+
 async def test_incomplete_tool_response_cannot_execute_and_recovery_uses_completed_history(
     responses_runtime,
 ):
